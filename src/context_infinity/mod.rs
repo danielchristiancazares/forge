@@ -11,10 +11,12 @@
 //! ```text
 //! ContextManager
 //! ├── history: FullHistory (never discards messages)
-//! ├── working_context: WorkingContext (derived view for API)
 //! ├── counter: TokenCounter (tiktoken)
 //! ├── registry: ModelRegistry (limits per model)
 //! └── journal: StreamJournal (streaming durability)
+//!
+//! PreparedContext (ephemeral proof)
+//! └── working_context: WorkingContext (derived view for API)
 //! ```
 
 #![allow(unused_imports)]

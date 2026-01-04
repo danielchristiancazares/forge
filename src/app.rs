@@ -734,7 +734,7 @@ impl App {
         }
 
         // Try to build working context to see if summarization is needed
-        let message_ids = match self.context_manager.build_working_context() {
+        let message_ids = match self.context_manager.prepare() {
             Ok(_) => return SummarizationStart::NotNeeded, // No summarization needed
             Err(needed) => needed.messages_to_summarize,
         };
@@ -998,8 +998,8 @@ impl App {
         let QueuedUserMessage { config } = queued;
 
         let api_messages = if self.context_infinity_enabled {
-            match self.context_manager.get_api_messages() {
-                Ok(messages) => messages,
+            match self.context_manager.prepare() {
+                Ok(prepared) => prepared.api_messages(),
                 Err(needed) => {
                     self.set_status(format!(
                         "{} (excess ~{} tokens)",

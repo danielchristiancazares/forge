@@ -80,12 +80,31 @@ pub struct PendingSummarization {
     pub target_tokens: u32,
 }
 
+/// Proof that a working context was successfully built.
+#[derive(Debug)]
+pub struct PreparedContext<'a> {
+    manager: &'a ContextManager,
+    working_context: WorkingContext,
+}
+
+impl<'a> PreparedContext<'a> {
+    /// Materialize messages for an API call.
+    pub fn api_messages(&self) -> Vec<Message> {
+        self.working_context.materialize(&self.manager.history)
+    }
+
+    /// Usage stats for UI.
+    pub fn usage(&self) -> ContextUsage {
+        ContextUsage::from_context(&self.working_context)
+    }
+
+}
+
 /// The main context manager.
+#[derive(Debug)]
 pub struct ContextManager {
     /// Complete history - never discarded.
     history: FullHistory,
-    /// Current working context (derived view).
-    working_context: Option<WorkingContext>,
     /// Token counter.
     counter: TokenCounter,
     /// Model registry.
@@ -110,7 +129,6 @@ impl ContextManager {
 
         Self {
             history: FullHistory::new(),
-            working_context: None,
             counter: TokenCounter::new(),
             registry,
             current_model: initial_model.to_string(),
@@ -125,9 +143,6 @@ impl ContextManager {
         let token_count = self.counter.count_message(&message);
         let id = self.history.push(message, token_count);
 
-        // Invalidate working context - will be rebuilt on next access
-        self.working_context = None;
-
         id
     }
 
@@ -141,7 +156,6 @@ impl ContextManager {
         self.current_model = new_model.to_string();
         self.current_limits = new_limits;
         self.current_limits_source = new_source;
-        self.working_context = None; // Force rebuild
 
         let old_budget = old_limits.effective_input_budget();
         let new_budget = new_limits.effective_input_budget();
@@ -169,17 +183,12 @@ impl ContextManager {
         self.current_model = new_model.to_string();
         self.current_limits = resolved.limits();
         self.current_limits_source = resolved.source();
-        self.working_context = None; // Force rebuild if queried
     }
 
     /// Build the working context for current model.
     ///
     /// Returns an error if summarization is needed to fit within budget.
-    pub fn build_working_context(&mut self) -> Result<&WorkingContext, SummarizationNeeded> {
-        if self.working_context.is_some() {
-            return Ok(self.working_context.as_ref().unwrap());
-        }
-
+    fn build_working_context(&self) -> Result<WorkingContext, SummarizationNeeded> {
         let budget = self.current_limits.effective_input_budget();
         let mut ctx = WorkingContext::new(budget);
 
@@ -372,8 +381,7 @@ impl ContextManager {
             ctx.push_original(entry.id(), entry.token_count());
         }
 
-        self.working_context = Some(ctx);
-        Ok(self.working_context.as_ref().unwrap())
+        Ok(ctx)
     }
 
     /// Prepare a summarization request for the given messages.
@@ -469,20 +477,16 @@ impl ContextManager {
         );
 
         self.history.add_summary(summary);
-        self.working_context = None; // Force rebuild
     }
 
     /// Try to restore summarized messages when budget allows.
     ///
     /// This does not mutate history. If the current model's budget can fit original messages for
     /// previously-summarized segments, `build_working_context()` will choose originals.
-    pub fn try_restore_messages(&mut self) -> usize {
-        if self.build_working_context().is_err() {
-            return 0;
-        }
-
-        let Some(ctx) = self.working_context.as_ref() else {
-            return 0;
+    pub fn try_restore_messages(&self) -> usize {
+        let ctx = match self.build_working_context() {
+            Ok(ctx) => ctx,
+            Err(_) => return 0,
         };
 
         ctx.segments()
@@ -500,26 +504,24 @@ impl ContextManager {
             .count()
     }
 
-    /// Get messages to send to API.
-    pub fn get_api_messages(&mut self) -> Result<Vec<Message>, SummarizationNeeded> {
-        // Build context first (mutably borrows self)
-        self.build_working_context()?;
-        // Now we can immutably borrow both
-        let ctx = self.working_context.as_ref().unwrap();
-        Ok(ctx.materialize(&self.history))
+    /// Build a working context proof for the current model.
+    pub(crate) fn prepare(&self) -> Result<PreparedContext<'_>, SummarizationNeeded> {
+        let working_context = self.build_working_context()?;
+        Ok(PreparedContext {
+            manager: self,
+            working_context,
+        })
     }
 
     /// Get current usage statistics.
     pub fn usage(&self) -> ContextUsage {
-        if let Some(ref ctx) = self.working_context {
-            ContextUsage::from_context(ctx)
-        } else {
-            // No working context yet - estimate from history
-            ContextUsage {
+        match self.prepare() {
+            Ok(prepared) => prepared.usage(),
+            Err(_) => ContextUsage {
                 used_tokens: self.history.total_tokens(),
                 budget_tokens: self.current_limits.effective_input_budget(),
                 summarized_segments: 0,
-            }
+            },
         }
     }
 
@@ -564,7 +566,6 @@ impl ContextManager {
 
         Ok(Self {
             history,
-            working_context: None,
             counter: TokenCounter::new(),
             registry,
             current_model: model.to_string(),
