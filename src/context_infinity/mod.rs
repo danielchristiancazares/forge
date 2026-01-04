@@ -1,0 +1,41 @@
+//! ContextInfinity - Adaptive context window management
+//!
+//! This module provides:
+//! - Model-specific context window limits
+//! - Exact token counting via tiktoken
+//! - Full history preservation with summarization
+//! - Stream journal for durability (crash recovery)
+//!
+//! # Architecture
+//!
+//! ```text
+//! ContextManager
+//! ├── history: FullHistory (never discards messages)
+//! ├── working_context: WorkingContext (derived view for API)
+//! ├── counter: TokenCounter (tiktoken)
+//! ├── registry: ModelRegistry (limits per model)
+//! └── journal: StreamJournal (streaming durability)
+//! ```
+
+#![allow(unused_imports)]
+
+mod history;
+mod manager;
+mod model_limits;
+mod stream_journal;
+mod summarization;
+mod token_counter;
+mod working_context;
+
+pub use history::{FullHistory, HistoryEntry, MessageId, Summary, SummaryId};
+pub use manager::{
+    ContextAdaptation, ContextManager, PendingSummarization, SummarizationNeeded,
+    SummarizationScope,
+};
+pub use model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry, ResolvedModelLimits};
+pub use stream_journal::{
+    JournalSession, JournalState, JournalStats, RecoveredStream, StepId, StreamDelta, StreamJournal,
+};
+pub use summarization::{generate_summary, summarization_model};
+pub use token_counter::TokenCounter;
+pub use working_context::{ContextSegment, ContextUsage, WorkingContext};

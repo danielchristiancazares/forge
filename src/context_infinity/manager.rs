@@ -1,0 +1,638 @@
+//! Context Manager - orchestrates all context management components.
+//!
+//! The ContextManager is the main entry point for:
+//! - Adding messages to history
+//! - Switching models (triggers adaptation)
+//! - Building working context for API calls
+//! - Managing summarization
+//! - Persistence
+
+use anyhow::Result;
+use std::path::Path;
+
+use crate::message::{Message, NonEmptyString};
+
+use super::history::{FullHistory, MessageId, Summary, SummaryId};
+use super::model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry};
+use super::token_counter::TokenCounter;
+use super::working_context::{ContextSegment, ContextUsage, WorkingContext};
+
+/// Configuration for summarization behavior.
+#[derive(Debug, Clone)]
+pub struct SummarizationConfig {
+    /// Target compression ratio (e.g., 0.15 = 15% of original size).
+    pub target_ratio: f32,
+    /// Don't summarize the N most recent messages.
+    pub preserve_recent: usize,
+}
+
+impl Default for SummarizationConfig {
+    fn default() -> Self {
+        Self {
+            target_ratio: 0.15,
+            preserve_recent: 4,
+        }
+    }
+}
+
+/// Error indicating summarization is required to proceed.
+#[derive(Debug)]
+pub struct SummarizationNeeded {
+    pub excess_tokens: u32,
+    pub messages_to_summarize: Vec<MessageId>,
+    pub suggestion: String,
+}
+
+/// A contiguous set of message IDs to summarize.
+#[derive(Debug, Clone)]
+pub struct SummarizationScope {
+    ids: Vec<MessageId>,
+    range: std::ops::Range<MessageId>,
+}
+
+/// Result of switching models.
+#[derive(Debug)]
+pub enum ContextAdaptation {
+    /// No change in effective budget.
+    NoChange,
+    /// Switched to a model with smaller context.
+    Shrinking {
+        old_budget: u32,
+        new_budget: u32,
+        needs_summarization: bool,
+    },
+    /// Switched to a model with larger context.
+    Expanding {
+        old_budget: u32,
+        new_budget: u32,
+        /// Number of messages that could potentially be restored.
+        can_restore: usize,
+    },
+}
+
+/// Pending summarization request for async processing.
+#[derive(Debug)]
+pub struct PendingSummarization {
+    pub summary_id: SummaryId,
+    pub scope: SummarizationScope,
+    pub messages: Vec<(MessageId, Message)>,
+    pub original_tokens: u32,
+    pub target_tokens: u32,
+}
+
+/// The main context manager.
+pub struct ContextManager {
+    /// Complete history - never discarded.
+    history: FullHistory,
+    /// Current working context (derived view).
+    working_context: Option<WorkingContext>,
+    /// Token counter.
+    counter: TokenCounter,
+    /// Model registry.
+    registry: ModelRegistry,
+    /// Current model name.
+    current_model: String,
+    /// Current model's limits.
+    current_limits: ModelLimits,
+    /// Where the current limits came from.
+    current_limits_source: ModelLimitsSource,
+    /// Summarization configuration.
+    summarization_config: SummarizationConfig,
+}
+
+impl ContextManager {
+    /// Create a new context manager for the given model.
+    pub fn new(initial_model: &str) -> Self {
+        let registry = ModelRegistry::new();
+        let resolved = registry.get(initial_model);
+        let limits = resolved.limits();
+        let limits_source = resolved.source();
+
+        Self {
+            history: FullHistory::new(),
+            working_context: None,
+            counter: TokenCounter::new(),
+            registry,
+            current_model: initial_model.to_string(),
+            current_limits: limits,
+            current_limits_source: limits_source,
+            summarization_config: SummarizationConfig::default(),
+        }
+    }
+
+    /// Add a message to history and invalidate working context.
+    pub fn push_message(&mut self, message: Message) -> MessageId {
+        let token_count = self.counter.count_message(&message);
+        let id = self.history.push(message, token_count);
+
+        // Invalidate working context - will be rebuilt on next access
+        self.working_context = None;
+
+        id
+    }
+
+    /// Switch to a different model - triggers context adaptation.
+    pub fn switch_model(&mut self, new_model: &str) -> ContextAdaptation {
+        let old_limits = self.current_limits;
+        let resolved = self.registry.get(new_model);
+        let new_limits = resolved.limits();
+        let new_source = resolved.source();
+
+        self.current_model = new_model.to_string();
+        self.current_limits = new_limits;
+        self.current_limits_source = new_source;
+        self.working_context = None; // Force rebuild
+
+        let old_budget = old_limits.effective_input_budget();
+        let new_budget = new_limits.effective_input_budget();
+
+        if new_budget < old_budget {
+            ContextAdaptation::Shrinking {
+                old_budget,
+                new_budget,
+                needs_summarization: self.build_working_context().is_err(),
+            }
+        } else if new_budget > old_budget {
+            ContextAdaptation::Expanding {
+                old_budget,
+                new_budget,
+                can_restore: self.history.summarized_count(),
+            }
+        } else {
+            ContextAdaptation::NoChange
+        }
+    }
+
+    /// Update model limits without triggering summarization behavior.
+    pub fn set_model_without_adaptation(&mut self, new_model: &str) {
+        let resolved = self.registry.get(new_model);
+        self.current_model = new_model.to_string();
+        self.current_limits = resolved.limits();
+        self.current_limits_source = resolved.source();
+        self.working_context = None; // Force rebuild if queried
+    }
+
+    /// Build the working context for current model.
+    ///
+    /// Returns an error if summarization is needed to fit within budget.
+    pub fn build_working_context(&mut self) -> Result<&WorkingContext, SummarizationNeeded> {
+        if self.working_context.is_some() {
+            return Ok(self.working_context.as_ref().unwrap());
+        }
+
+        let budget = self.current_limits.effective_input_budget();
+        let mut ctx = WorkingContext::new(budget);
+
+        let entries = self.history.entries();
+        let preserve_count = self.summarization_config.preserve_recent.min(entries.len());
+        let recent_start = entries.len().saturating_sub(preserve_count);
+
+        // Phase 1: Always include the N most recent messages.
+        let tokens_for_recent: u32 = entries[recent_start..]
+            .iter()
+            .map(|e| e.token_count())
+            .sum();
+
+        // Check if even recent messages exceed budget.
+        if tokens_for_recent > budget {
+            return Err(SummarizationNeeded {
+                excess_tokens: tokens_for_recent - budget,
+                messages_to_summarize: entries[recent_start..].iter().map(|e| e.id()).collect(),
+                suggestion: "Recent messages alone exceed context window".to_string(),
+            });
+        }
+
+        let remaining_budget = budget - tokens_for_recent;
+
+        #[derive(Debug)]
+        enum Block {
+            Unsummarized(Vec<(MessageId, u32)>),
+            Summarized {
+                summary_id: SummaryId,
+                messages: Vec<(MessageId, u32)>,
+                summary_tokens: u32,
+            },
+        }
+
+        // Phase 2: Partition older messages into contiguous blocks.
+        let older_entries = &entries[..recent_start];
+        let mut blocks: Vec<Block> = Vec::new();
+        let mut unsummarized: Vec<(MessageId, u32)> = Vec::new();
+        let mut summary_block: Option<(SummaryId, u32)> = None;
+        let mut summarized: Vec<(MessageId, u32)> = Vec::new();
+
+        for entry in older_entries {
+            let summarized_here = entry.summary_id().and_then(|sid| {
+                self.history
+                    .get_summary(sid)
+                    .map(|s| (sid, s.token_count()))
+            });
+
+            match summarized_here {
+                Some((summary_id, summary_tokens)) => {
+                    if !unsummarized.is_empty() {
+                        blocks.push(Block::Unsummarized(std::mem::take(&mut unsummarized)));
+                    }
+
+                    match summary_block {
+                        Some((current_id, _)) if current_id == summary_id => {}
+                        Some((current_id, current_tokens)) => {
+                            blocks.push(Block::Summarized {
+                                summary_id: current_id,
+                                messages: std::mem::take(&mut summarized),
+                                summary_tokens: current_tokens,
+                            });
+                            summary_block = Some((summary_id, summary_tokens));
+                        }
+                        None => {
+                            summary_block = Some((summary_id, summary_tokens));
+                        }
+                    }
+
+                    summarized.push((entry.id(), entry.token_count()));
+                }
+                None => {
+                    if let Some((summary_id, summary_tokens)) = summary_block.take() {
+                        blocks.push(Block::Summarized {
+                            summary_id,
+                            messages: std::mem::take(&mut summarized),
+                            summary_tokens,
+                        });
+                    }
+
+                    unsummarized.push((entry.id(), entry.token_count()));
+                }
+            }
+        }
+
+        if let Some((summary_id, summary_tokens)) = summary_block.take() {
+            blocks.push(Block::Summarized {
+                summary_id,
+                messages: summarized,
+                summary_tokens,
+            });
+        } else if !unsummarized.is_empty() {
+            blocks.push(Block::Unsummarized(unsummarized));
+        }
+
+        // Phase 3: Select older content from newest to oldest within remaining budget.
+        let mut selected_rev: Vec<ContextSegment> = Vec::new();
+        let mut need_summary_rev: Vec<MessageId> = Vec::new();
+        let mut tokens_used: u32 = 0;
+        let mut exhausted = false;
+
+        for block in blocks.iter().rev() {
+            if exhausted {
+                if let Block::Unsummarized(messages) = block {
+                    for (id, _) in messages.iter().rev() {
+                        need_summary_rev.push(*id);
+                    }
+                }
+                continue;
+            }
+
+            match block {
+                Block::Summarized {
+                    summary_id,
+                    messages,
+                    summary_tokens,
+                } => {
+                    let original_tokens: u32 = messages.iter().map(|(_, t)| *t).sum();
+
+                    // Prefer full originals when budget allows; otherwise fall back to the summary.
+                    if tokens_used + original_tokens <= remaining_budget {
+                        for (id, tokens) in messages.iter().rev() {
+                            selected_rev.push(ContextSegment::original(*id, *tokens));
+                        }
+                        tokens_used += original_tokens;
+                    } else if tokens_used + *summary_tokens <= remaining_budget {
+                        let replaces: Vec<MessageId> = messages.iter().map(|(id, _)| *id).collect();
+                        selected_rev.push(ContextSegment::summarized(
+                            *summary_id,
+                            replaces,
+                            *summary_tokens,
+                        ));
+                        tokens_used += *summary_tokens;
+                    }
+                }
+                Block::Unsummarized(messages) => {
+                    // Include as many of the most recent messages as we can.
+                    for i in (0..messages.len()).rev() {
+                        let (id, tokens) = messages[i];
+                        if tokens_used + tokens <= remaining_budget {
+                            selected_rev.push(ContextSegment::original(id, tokens));
+                            tokens_used += tokens;
+                        } else {
+                            // Everything older than this point should be summarized.
+                            exhausted = true;
+                            for (id, _) in messages[..=i].iter().rev() {
+                                need_summary_rev.push(*id);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut need_summary: Vec<MessageId> = need_summary_rev.into_iter().rev().collect();
+
+        if !need_summary.is_empty() {
+            need_summary.sort_by_key(|id| id.as_u64());
+            need_summary.dedup();
+
+            let excess_tokens: u32 = need_summary
+                .iter()
+                .filter_map(|id| self.history.get_entry(*id))
+                .map(|e| e.token_count())
+                .sum();
+
+            let msg_count = need_summary.len();
+            return Err(SummarizationNeeded {
+                excess_tokens,
+                messages_to_summarize: need_summary,
+                suggestion: format!("{} older messages need summarization", msg_count),
+            });
+        }
+
+        // Phase 4: Materialize selected older segments in chronological order.
+        for segment in selected_rev.into_iter().rev() {
+            match segment {
+                ContextSegment::Original { id, tokens } => ctx.push_original(id, tokens),
+                ContextSegment::Summarized {
+                    summary_id,
+                    replaces,
+                    tokens,
+                } => ctx.push_summary(summary_id, replaces, tokens),
+            }
+        }
+
+        // Phase 5: Always include the N most recent messages.
+        for entry in &entries[recent_start..] {
+            ctx.push_original(entry.id(), entry.token_count());
+        }
+
+        self.working_context = Some(ctx);
+        Ok(self.working_context.as_ref().unwrap())
+    }
+
+    /// Prepare a summarization request for the given messages.
+    pub fn prepare_summarization(
+        &mut self,
+        message_ids: &[MessageId],
+    ) -> Option<PendingSummarization> {
+        let mut ids: Vec<MessageId> = message_ids.to_vec();
+        ids.sort_by_key(|id| id.as_u64());
+        ids.dedup();
+
+        if ids.is_empty() {
+            return None;
+        }
+
+        // Keep only the first contiguous run - summaries must represent a contiguous slice of history.
+        let mut end = 1usize;
+        while end < ids.len() {
+            if ids[end].as_u64() == ids[end - 1].as_u64() + 1 {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        ids.truncate(end);
+
+        let messages: Vec<_> = ids
+            .iter()
+            .filter_map(|id| {
+                self.history
+                    .get_entry(*id)
+                    .map(|e| (*id, e.message().clone()))
+            })
+            .collect();
+
+        if messages.is_empty() {
+            return None;
+        }
+
+        let original_tokens: u32 = ids
+            .iter()
+            .filter_map(|id| self.history.get_entry(*id))
+            .map(|e| e.token_count())
+            .sum();
+
+        let target_tokens =
+            (original_tokens as f32 * self.summarization_config.target_ratio) as u32;
+
+        let summary_id = self.history.allocate_summary_id();
+
+        let first = ids.first().copied()?;
+        let last = ids.last().copied()?;
+        let end_exclusive = MessageId::new(last.as_u64() + 1);
+        let scope = SummarizationScope {
+            ids,
+            range: first..end_exclusive,
+        };
+
+        Some(PendingSummarization {
+            summary_id,
+            scope,
+            messages,
+            original_tokens,
+            target_tokens,
+        })
+    }
+
+    /// Complete a summarization by adding the generated summary.
+    pub fn complete_summarization(
+        &mut self,
+        summary_id: SummaryId,
+        scope: SummarizationScope,
+        content: NonEmptyString,
+        generated_by: String,
+    ) {
+        let token_count = self.counter.count_str(content.as_str());
+
+        let SummarizationScope { ids, range } = scope;
+
+        let original_tokens: u32 = ids
+            .iter()
+            .filter_map(|id| self.history.get_entry(*id))
+            .map(|e| e.token_count())
+            .sum();
+
+        let summary = Summary::new(
+            summary_id,
+            range,
+            content,
+            token_count,
+            original_tokens,
+            generated_by,
+        );
+
+        self.history.add_summary(summary);
+        self.working_context = None; // Force rebuild
+    }
+
+    /// Try to restore summarized messages when budget allows.
+    ///
+    /// This does not mutate history. If the current model's budget can fit original messages for
+    /// previously-summarized segments, `build_working_context()` will choose originals.
+    pub fn try_restore_messages(&mut self) -> usize {
+        if self.build_working_context().is_err() {
+            return 0;
+        }
+
+        let Some(ctx) = self.working_context.as_ref() else {
+            return 0;
+        };
+
+        ctx.segments()
+            .iter()
+            .filter(|segment| {
+                matches!(
+                    segment,
+                    ContextSegment::Original { id, .. }
+                        if self
+                            .history
+                            .get_entry(*id)
+                            .is_some_and(|e| e.summary_id().is_some())
+                )
+            })
+            .count()
+    }
+
+    /// Get messages to send to API.
+    pub fn get_api_messages(&mut self) -> Result<Vec<Message>, SummarizationNeeded> {
+        // Build context first (mutably borrows self)
+        self.build_working_context()?;
+        // Now we can immutably borrow both
+        let ctx = self.working_context.as_ref().unwrap();
+        Ok(ctx.materialize(&self.history))
+    }
+
+    /// Get current usage statistics.
+    pub fn usage(&self) -> ContextUsage {
+        if let Some(ref ctx) = self.working_context {
+            ContextUsage::from_context(ctx)
+        } else {
+            // No working context yet - estimate from history
+            ContextUsage {
+                used_tokens: self.history.total_tokens(),
+                budget_tokens: self.current_limits.effective_input_budget(),
+                summarized_segments: 0,
+            }
+        }
+    }
+
+    /// Access to full history.
+    pub fn history(&self) -> &FullHistory {
+        &self.history
+    }
+
+    /// Current model name.
+    pub fn current_model(&self) -> &str {
+        &self.current_model
+    }
+
+    /// Current model limits.
+    pub fn current_limits(&self) -> ModelLimits {
+        self.current_limits
+    }
+
+    /// Where the current model limits came from.
+    pub fn current_limits_source(&self) -> ModelLimitsSource {
+        self.current_limits_source
+    }
+
+    // === Persistence ===
+
+    /// Save history to a JSON file.
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        let json = serde_json::to_string_pretty(&self.history)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Load history from a JSON file.
+    pub fn load(path: impl AsRef<Path>, model: &str) -> Result<Self> {
+        let json = std::fs::read_to_string(path)?;
+        let history: FullHistory = serde_json::from_str(&json)?;
+
+        let registry = ModelRegistry::new();
+        let resolved = registry.get(model);
+        let limits = resolved.limits();
+        let limits_source = resolved.source();
+
+        Ok(Self {
+            history,
+            working_context: None,
+            counter: TokenCounter::new(),
+            registry,
+            current_model: model.to_string(),
+            current_limits: limits,
+            current_limits_source: limits_source,
+            summarization_config: SummarizationConfig::default(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_manager() {
+        let manager = ContextManager::new("claude-opus-4");
+        assert_eq!(manager.current_model(), "claude-opus-4");
+        assert_eq!(manager.history().len(), 0);
+    }
+
+    #[test]
+    fn test_push_message() {
+        let mut manager = ContextManager::new("claude-opus-4");
+
+        let id1 = manager.push_message(Message::try_user("Hello").expect("non-empty test message"));
+        let id2 = manager.push_message(Message::try_user("World").expect("non-empty test message"));
+
+        assert_eq!(id1.as_u64(), 0);
+        assert_eq!(id2.as_u64(), 1);
+        assert_eq!(manager.history().len(), 2);
+    }
+
+    #[test]
+    fn test_switch_model_shrinking() {
+        let mut manager = ContextManager::new("claude-opus-4"); // 200k context
+
+        let result = manager.switch_model("gpt-4"); // 8k context
+
+        match result {
+            ContextAdaptation::Shrinking { .. } => (),
+            _ => panic!("Expected Shrinking adaptation"),
+        }
+    }
+
+    #[test]
+    fn test_switch_model_expanding() {
+        let mut manager = ContextManager::new("gpt-4"); // 8k context
+
+        let result = manager.switch_model("claude-opus-4"); // 200k context
+
+        match result {
+            ContextAdaptation::Expanding { .. } => (),
+            _ => panic!("Expected Expanding adaptation"),
+        }
+    }
+
+    #[test]
+    fn test_build_context_simple() {
+        let mut manager = ContextManager::new("claude-opus-4");
+
+        manager.push_message(Message::try_user("Hello").expect("non-empty test message"));
+        manager.push_message(Message::try_user("World").expect("non-empty test message"));
+
+        let result = manager.build_working_context();
+        assert!(result.is_ok());
+
+        let ctx = result.unwrap();
+        assert_eq!(ctx.segments().len(), 2);
+    }
+}

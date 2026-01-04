@@ -1,0 +1,5 @@
+[alias]
+# Generates an LCOV report at `lcov.info` (requires `cargo-llvm-cov`).
+cov = "llvm-cov --lcov --output-path lcov.info"
+# Removes cached coverage artifacts.
+cov-clean = "llvm-cov clean"

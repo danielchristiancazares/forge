@@ -1,0 +1,27 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Coverage (cargo-llvm-cov)
+/lcov.info
+/coverage/
+
+# IDEs / Editors
+.vscode/
+.idea/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+
+# Local environment / secrets
+.env
+.env.*
+
+# Tooling local config
+.claude/settings.local.json
