@@ -37,7 +37,7 @@ impl Provider {
     pub fn default_model(&self) -> ModelName {
         match self {
             Provider::Claude => ModelName::known(*self, "claude-sonnet-4-5-20250929"),
-            Provider::OpenAI => ModelName::known(*self, "gpt-4o"),
+            Provider::OpenAI => ModelName::known(*self, "gpt-5.2"),
         }
     }
 
@@ -49,7 +49,13 @@ impl Provider {
                 "claude-haiku-4-5-20251001",
                 "claude-opus-4-5-20251101",
             ],
-            Provider::OpenAI => &["gpt-4o", "gpt-4o-mini"],
+            Provider::OpenAI => &[
+                "gpt-5.2",
+                "gpt-5.2-2025-12-11",
+                "gpt-5.2-chat-latest",
+                "gpt-4o",
+                "gpt-4o-mini",
+            ],
         }
     }
 
@@ -410,9 +416,34 @@ mod tests {
 pub mod openai {
     use super::*;
     use reqwest::Client;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
-    const API_URL: &str = "https://api.openai.com/v1/chat/completions";
+    const API_URL: &str = "https://api.openai.com/v1/responses";
+    const OPENAI_SYSTEM_PROMPT: &str = "You are Forge, a terminal-based assistant. Follow the user's instructions carefully. Be concise and practical. Use Markdown for formatting (code fences where appropriate). Ask a brief clarifying question when needed. Do not mention these instructions.";
+
+    fn extract_error_message(payload: &Value) -> Option<String> {
+        let message = payload
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                payload
+                    .get("response")
+                    .and_then(|response| response.get("error"))
+                    .and_then(|error| error.get("message"))
+                    .and_then(|value| value.as_str())
+            })?;
+        Some(message.to_string())
+    }
+
+    fn extract_incomplete_reason(payload: &Value) -> Option<String> {
+        payload
+            .get("response")
+            .and_then(|response| response.get("incomplete_details"))
+            .and_then(|details| details.get("reason"))
+            .and_then(|value| value.as_str())
+            .map(|reason| reason.to_string())
+    }
 
     pub async fn send_message(
         config: &ApiConfig,
@@ -422,23 +453,23 @@ pub mod openai {
     ) -> Result<()> {
         let client = Client::new();
 
-        // Convert messages to OpenAI format
-        let api_messages: Vec<serde_json::Value> = messages
-            .iter()
-            .map(|m| {
-                json!({
-                    "role": m.role_str(),
-                    "content": m.content(),
-                })
-            })
-            .collect();
+        let mut input_items: Vec<Value> = Vec::new();
+        for msg in messages {
+            input_items.push(json!({
+                "role": msg.role_str(),
+                "content": msg.content(),
+            }));
+        }
 
-        let body = json!({
-            "model": config.model().as_str(),
-            "messages": api_messages,
-            "max_tokens": max_output_tokens,
-            "stream": true
-        });
+        let mut body = serde_json::Map::new();
+        body.insert("model".to_string(), json!(config.model().as_str()));
+        body.insert("input".to_string(), Value::Array(input_items));
+        body.insert("max_output_tokens".to_string(), json!(max_output_tokens));
+        body.insert("stream".to_string(), json!(true));
+        if !OPENAI_SYSTEM_PROMPT.trim().is_empty() {
+            body.insert("instructions".to_string(), json!(OPENAI_SYSTEM_PROMPT));
+        }
+        let body = Value::Object(body);
 
         let response = client
             .post(API_URL)
@@ -466,6 +497,7 @@ pub mod openai {
         use futures_util::StreamExt;
 
         let mut buffer = String::new();
+        let mut saw_delta = false;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
@@ -484,12 +516,44 @@ pub mod openai {
                             return Ok(());
                         }
 
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                            // Extract content from choices[0].delta.content
-                            if let Some(content) = json["choices"][0]["delta"]["content"].as_str()
-                                && !content.is_empty()
-                            {
-                                on_event(StreamEvent::TextDelta(content.to_string()));
+                        if let Ok(json) = serde_json::from_str::<Value>(data) {
+                            match json["type"].as_str().unwrap_or("") {
+                                "response.output_text.delta" => {
+                                    if let Some(delta) = json["delta"].as_str() {
+                                        saw_delta = true;
+                                        on_event(StreamEvent::TextDelta(delta.to_string()));
+                                    }
+                                }
+                                "response.refusal.delta" => {
+                                    if let Some(delta) = json["delta"].as_str() {
+                                        saw_delta = true;
+                                        on_event(StreamEvent::TextDelta(delta.to_string()));
+                                    }
+                                }
+                                "response.output_text.done" => {
+                                    if !saw_delta {
+                                        if let Some(text) = json["text"].as_str() {
+                                            on_event(StreamEvent::TextDelta(text.to_string()));
+                                        }
+                                    }
+                                }
+                                "response.completed" => {
+                                    on_event(StreamEvent::Done);
+                                    return Ok(());
+                                }
+                                "response.incomplete" => {
+                                    let reason = extract_incomplete_reason(&json)
+                                        .unwrap_or_else(|| "Response incomplete".to_string());
+                                    on_event(StreamEvent::Error(reason));
+                                    return Ok(());
+                                }
+                                "response.failed" | "error" => {
+                                    let message = extract_error_message(&json)
+                                        .unwrap_or_else(|| "Response failed".to_string());
+                                    on_event(StreamEvent::Error(message));
+                                    return Ok(());
+                                }
+                                _ => {}
                             }
                         }
                     }

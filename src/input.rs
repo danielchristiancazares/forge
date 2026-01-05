@@ -65,7 +65,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
             app.scroll_down();
         }
         // Jump to bottom
-        KeyCode::Down => {
+        KeyCode::Down | KeyCode::End => {
             app.scroll_to_bottom();
         }
         // Go to top

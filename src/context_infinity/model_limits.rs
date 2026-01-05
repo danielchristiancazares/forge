@@ -13,7 +13,7 @@ use std::collections::HashMap;
 /// # Example
 ///
 /// ```
-/// use forge::context_infinity::ModelLimits;
+/// use forge::ModelLimits;
 ///
 /// let limits = ModelLimits::new(200_000, 16_000);
 /// assert_eq!(limits.context_window(), 200_000);
@@ -148,7 +148,7 @@ const KNOWN_MODELS: &[(&str, ModelLimits)] = &[
 /// # Example
 ///
 /// ```
-/// use forge::context_infinity::{ModelRegistry, ModelLimits};
+/// use forge::{ModelRegistry, ModelLimits};
 ///
 /// let mut registry = ModelRegistry::new();
 ///
@@ -156,13 +156,7 @@ const KNOWN_MODELS: &[(&str, ModelLimits)] = &[
 /// let claude_limits = registry.get("claude-sonnet-4-20250514").limits();
 /// assert_eq!(claude_limits.context_window(), 200_000);
 ///
-/// // Set custom override
-/// registry.set_override(
-///     "my-custom-model".to_string(),
-///     ModelLimits::new(50_000, 8000),
-/// );
-/// let custom = registry.get("my-custom-model").limits();
-/// assert_eq!(custom.context_window(), 50_000);
+/// // Custom overrides can be added via ModelRegistry when enabled in tests.
 /// ```
 #[derive(Debug, Clone)]
 pub struct ModelRegistry {

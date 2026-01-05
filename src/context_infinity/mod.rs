@@ -31,12 +31,12 @@ mod working_context;
 
 pub use history::{FullHistory, HistoryEntry, MessageId, Summary, SummaryId};
 pub use manager::{
-    ContextAdaptation, ContextManager, PendingSummarization, SummarizationNeeded,
-    SummarizationScope,
+    ContextAdaptation, ContextManager, ContextUsageStatus, PendingSummarization,
+    SummarizationNeeded, SummarizationScope,
 };
 pub use model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry, ResolvedModelLimits};
 pub use stream_journal::{
-    JournalSession, JournalState, JournalStats, RecoveredStream, StepId, StreamDelta, StreamJournal,
+    ActiveJournal, JournalStats, RecoveredStream, StepId, StreamJournal,
 };
 pub use summarization::{generate_summary, summarization_model};
 pub use token_counter::TokenCounter;

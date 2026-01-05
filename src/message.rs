@@ -23,19 +23,9 @@ impl NonEmptyString {
         }
     }
 
-    pub fn from_static(value: &'static str) -> Self {
-        if value.trim().is_empty() {
-            Self("[invalid]".to_string())
-        } else {
-            Self(value.to_string())
-        }
-    }
-
-    pub fn from_string_or(value: String, fallback: &'static str) -> Self {
-        match Self::new(value) {
-            Ok(value) => value,
-            Err(_) => Self::from_static(fallback),
-        }
+    pub fn append(mut self, suffix: impl AsRef<str>) -> Self {
+        self.0.push_str(suffix.as_ref());
+        Self(self.0)
     }
 
     pub fn as_str(&self) -> &str {
@@ -44,6 +34,28 @@ impl NonEmptyString {
 
     pub fn into_inner(self) -> String {
         self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NonEmptyStaticStr(&'static str);
+
+impl NonEmptyStaticStr {
+    pub const fn new(value: &'static str) -> Self {
+        if value.is_empty() {
+            panic!("NonEmptyStaticStr must not be empty");
+        }
+        Self(value)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+impl From<NonEmptyStaticStr> for NonEmptyString {
+    fn from(value: NonEmptyStaticStr) -> Self {
+        Self(value.0.to_string())
     }
 }
 
@@ -192,22 +204,10 @@ impl Message {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamDisposition {
-    InProgress,
-    Finished,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamFinishReason {
     Done,
     Error(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StreamState {
-    InProgress,
-    Finished(StreamFinishReason),
 }
 
 /// A message being streamed - existence proves streaming is active.
@@ -218,7 +218,6 @@ pub struct StreamingMessage {
     content: String,
     timestamp: SystemTime,
     receiver: mpsc::UnboundedReceiver<StreamEvent>,
-    state: StreamState,
 }
 
 impl StreamingMessage {
@@ -228,7 +227,6 @@ impl StreamingMessage {
             content: String::new(),
             timestamp: SystemTime::now(),
             receiver,
-            state: StreamState::InProgress,
         }
     }
 
@@ -244,33 +242,18 @@ impl StreamingMessage {
         &self.content
     }
 
-    pub fn finish_reason(&self) -> Option<&StreamFinishReason> {
-        match &self.state {
-            StreamState::Finished(reason) => Some(reason),
-            StreamState::InProgress => None,
-        }
-    }
-
     pub fn try_recv_event(&mut self) -> Result<StreamEvent, mpsc::error::TryRecvError> {
         self.receiver.try_recv()
     }
 
-    pub fn apply_event(&mut self, event: StreamEvent) -> StreamDisposition {
+    pub fn apply_event(&mut self, event: StreamEvent) -> Option<StreamFinishReason> {
         match event {
             StreamEvent::TextDelta(text) => {
-                if matches!(self.state, StreamState::InProgress) {
-                    self.content.push_str(&text);
-                }
-                StreamDisposition::InProgress
+                self.content.push_str(&text);
+                None
             }
-            StreamEvent::Done => {
-                self.state = StreamState::Finished(StreamFinishReason::Done);
-                StreamDisposition::Finished
-            }
-            StreamEvent::Error(err) => {
-                self.state = StreamState::Finished(StreamFinishReason::Error(err));
-                StreamDisposition::Finished
-            }
+            StreamEvent::Done => Some(StreamFinishReason::Done),
+            StreamEvent::Error(err) => Some(StreamFinishReason::Error(err)),
         }
     }
 

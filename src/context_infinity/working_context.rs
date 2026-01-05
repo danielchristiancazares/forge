@@ -8,9 +8,12 @@
 //! It represents what will actually be sent to the LLM API,
 //! mixing original messages and summaries to fit within the token budget.
 
-use crate::message::{Message, NonEmptyString};
+use crate::message::{Message, NonEmptyStaticStr, NonEmptyString};
 
 use super::history::{FullHistory, MessageId, SummaryId};
+
+const SUMMARY_PREFIX: NonEmptyStaticStr =
+    NonEmptyStaticStr::new("[Earlier conversation summary]");
 
 /// Represents a segment of the working context.
 #[derive(Debug, Clone)]
@@ -139,20 +142,16 @@ impl WorkingContext {
         for segment in &self.segments {
             match segment {
                 ContextSegment::Original { id, .. } => {
-                    if let Some(entry) = history.get_entry(*id) {
-                        let msg = entry.message();
-                        messages.push(msg.clone());
-                    }
+                    let entry = history.get_entry(*id);
+                    messages.push(entry.message().clone());
                 }
                 ContextSegment::Summarized { summary_id, .. } => {
-                    if let Some(summary) = history.get_summary(*summary_id) {
-                        // Inject summary as a system message.
-                        let content = NonEmptyString::from_string_or(
-                            format!("[Earlier conversation summary]\n{}", summary.content()),
-                            "[Earlier conversation summary]",
-                        );
-                        messages.push(Message::system(content));
-                    }
+                    let summary = history.summary(*summary_id);
+                    // Inject summary as a system message.
+                    let content = NonEmptyString::from(SUMMARY_PREFIX)
+                        .append("\n")
+                        .append(summary.content());
+                    messages.push(Message::system(content));
                 }
             }
         }

@@ -254,10 +254,6 @@ impl Summary {
         }
     }
 
-    pub fn id(&self) -> SummaryId {
-        self.id
-    }
-
     pub fn content(&self) -> &str {
         self.content.as_str()
     }
@@ -285,12 +281,144 @@ impl Summary {
 }
 
 /// Complete conversation history - append-only, never discards messages.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default)]
 pub struct FullHistory {
     entries: Vec<HistoryEntry>,
     summaries: Vec<Summary>,
     next_message_id: u64,
     next_summary_id: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FullHistorySerde {
+    entries: Vec<HistoryEntrySerde>,
+    summaries: Vec<Summary>,
+    next_message_id: u64,
+    next_summary_id: u64,
+}
+
+impl From<&FullHistory> for FullHistorySerde {
+    fn from(history: &FullHistory) -> Self {
+        Self {
+            entries: history.entries.iter().map(HistoryEntrySerde::from).collect(),
+            summaries: history.summaries.clone(),
+            next_message_id: history.next_message_id,
+            next_summary_id: history.next_summary_id,
+        }
+    }
+}
+
+impl Serialize for FullHistory {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        FullHistorySerde::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for FullHistory {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let serde = FullHistorySerde::deserialize(deserializer)?;
+        serde
+            .into_history()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl FullHistorySerde {
+    fn into_history(self) -> Result<FullHistory, String> {
+        let FullHistorySerde {
+            entries,
+            summaries,
+            next_message_id,
+            next_summary_id,
+        } = self;
+
+        let expected_next_message_id = entries.len() as u64;
+        if next_message_id != expected_next_message_id {
+            return Err(format!(
+                "next_message_id {} does not match entry count {}",
+                next_message_id, expected_next_message_id
+            ));
+        }
+
+        let expected_next_summary_id = summaries.len() as u64;
+        if next_summary_id != expected_next_summary_id {
+            return Err(format!(
+                "next_summary_id {} does not match summary count {}",
+                next_summary_id, expected_next_summary_id
+            ));
+        }
+
+        for (index, summary) in summaries.iter().enumerate() {
+            let expected_id = index as u64;
+            if summary.id.0 != expected_id {
+                return Err(format!(
+                    "summary id {} does not match position {}",
+                    summary.id.0, expected_id
+                ));
+            }
+
+            let start = summary.covers.start.as_u64();
+            let end = summary.covers.end.as_u64();
+            if start > end {
+                return Err(format!(
+                    "summary id {} has invalid range {}..{}",
+                    summary.id.0, start, end
+                ));
+            }
+            if end > next_message_id {
+                return Err(format!(
+                    "summary id {} covers past last message ({})",
+                    summary.id.0, next_message_id
+                ));
+            }
+        }
+
+        for (index, entry) in entries.iter().enumerate() {
+            let expected_id = index as u64;
+            if entry.id.as_u64() != expected_id {
+                return Err(format!(
+                    "entry id {} does not match position {}",
+                    entry.id.as_u64(), expected_id
+                ));
+            }
+
+            if let Some(summary_id) = entry.summary_id {
+                let summary_index = summary_id.0 as usize;
+                if summary_index >= summaries.len() {
+                    return Err(format!(
+                        "entry {} references missing summary {}",
+                        entry.id.as_u64(), summary_id.0
+                    ));
+                }
+
+                let summary = &summaries[summary_index];
+                let entry_id = entry.id.as_u64();
+                let start = summary.covers.start.as_u64();
+                let end = summary.covers.end.as_u64();
+                if entry_id < start || entry_id >= end {
+                    return Err(format!(
+                        "entry {} references summary {} but is outside {}..{}",
+                        entry_id, summary_id.0, start, end
+                    ));
+                }
+            }
+        }
+
+        let entries = entries.into_iter().map(HistoryEntry::from).collect();
+
+        Ok(FullHistory {
+            entries,
+            summaries,
+            next_message_id,
+            next_summary_id,
+        })
+    }
 }
 
 impl FullHistory {
@@ -338,17 +466,14 @@ impl FullHistory {
     }
 
     /// Get a specific entry by ID.
-    pub fn get_entry(&self, id: MessageId) -> Option<&HistoryEntry> {
+    pub fn get_entry(&self, id: MessageId) -> &HistoryEntry {
         let index = id.as_u64() as usize;
-        match self.entries.get(index) {
-            Some(entry) if entry.id() == id => Some(entry),
-            _ => self.entries.iter().find(|e| e.id() == id),
-        }
+        &self.entries[index]
     }
 
     /// Get a specific summary by ID.
-    pub fn get_summary(&self, id: SummaryId) -> Option<&Summary> {
-        self.summaries.iter().find(|s| s.id() == id)
+    pub fn summary(&self, id: SummaryId) -> &Summary {
+        &self.summaries[id.0 as usize]
     }
 
     /// Total tokens across all original messages.
@@ -422,8 +547,8 @@ mod tests {
         history.add_summary(summary);
 
         // First two should be summarized
-        assert!(history.get_entry(id1).unwrap().is_summarized());
-        assert!(history.get_entry(id2).unwrap().is_summarized());
+        assert!(history.get_entry(id1).is_summarized());
+        assert!(history.get_entry(id2).is_summarized());
         // Third should not
         assert!(!history.entries()[2].is_summarized());
 

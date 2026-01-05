@@ -11,6 +11,8 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, InputMode};
+use crate::context_infinity::ContextUsageStatus;
+use crate::markdown::render_markdown;
 use crate::message::Message;
 use crate::provider::Provider;
 use crate::theme::{colors, spinner_frame, styles};
@@ -89,36 +91,24 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         lines.push(header_line);
         lines.push(Line::from("")); // Space after header
 
-        // Message content
+        // Message content - render as markdown
         let content_style = match msg {
             Message::System(_) => Style::default().fg(colors::TEXT_MUTED),
             Message::User(_) => Style::default().fg(colors::TEXT_PRIMARY),
             Message::Assistant(_) => Style::default().fg(colors::TEXT_SECONDARY),
         };
 
-        for content_line in msg.content().lines() {
-            if content_line.is_empty() {
-                lines.push(Line::from(""));
-            } else {
-                lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(content_line.to_string(), content_style),
-                ]));
-            }
-        }
+        let rendered = render_markdown(msg.content(), content_style);
+        lines.extend(rendered);
     }
 
     // Render complete messages from display items
     for item in app.display_items() {
         let msg = match item {
-            crate::app::DisplayItem::History(id) => {
-                app.history().get_entry(*id).map(|e| e.message())
-            }
-            crate::app::DisplayItem::Local(msg) => Some(msg),
+            crate::app::DisplayItem::History(id) => app.history().get_entry(*id).message(),
+            crate::app::DisplayItem::Local(msg) => msg,
         };
-        if let Some(msg) = msg {
-            render_message(msg, &mut lines, &mut msg_count);
-        }
+        render_message(msg, &mut lines, &mut msg_count);
     }
 
     // Render streaming message if present (State as Location)
@@ -151,16 +141,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             ]));
         } else {
             let content_style = Style::default().fg(colors::TEXT_SECONDARY);
-            for content_line in streaming.content().lines() {
-                if content_line.is_empty() {
-                    lines.push(Line::from(""));
-                } else {
-                    lines.push(Line::from(vec![
-                        Span::raw("    "),
-                        Span::styled(content_line.to_string(), content_style),
-                    ]));
-                }
-            }
+            let rendered = render_markdown(streaming.content(), content_style);
+            lines.extend(rendered);
         }
     }
 
@@ -218,7 +200,7 @@ fn wrapped_line_count(lines: &[Line], width: u16) -> u16 {
     total
 }
 
-fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
+pub(crate) fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     let mode = app.input_mode();
     let command_line = if mode == InputMode::Command {
         app.command_text()
@@ -321,13 +303,25 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let usage = app.context_usage();
-    let usage_str = usage.format_compact();
-    let usage_color = match usage.severity() {
-        0 => colors::GREEN,  // < 70%
-        1 => colors::YELLOW, // 70-90%
-        _ => colors::RED,    // > 90%
+pub(crate) fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let usage_status = app.context_usage_status();
+    let (usage, needs_summary) = match &usage_status {
+        ContextUsageStatus::Ready(usage) => (usage, false),
+        ContextUsageStatus::NeedsSummarization { usage, .. } => (usage, true),
+    };
+    let usage_str = if needs_summary {
+        format!("{} !", usage.format_compact())
+    } else {
+        usage.format_compact()
+    };
+    let usage_color = if needs_summary {
+        colors::RED
+    } else {
+        match usage.severity() {
+            0 => colors::GREEN,  // < 70%
+            1 => colors::YELLOW, // 70-90%
+            _ => colors::RED,    // > 90%
+        }
     };
 
     let (status_text, status_style) = if let Some(msg) = app.status_message() {

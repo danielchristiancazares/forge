@@ -97,7 +97,16 @@ impl<'a> PreparedContext<'a> {
     pub fn usage(&self) -> ContextUsage {
         ContextUsage::from_context(&self.working_context)
     }
+}
 
+/// Usage state for the current model.
+#[derive(Debug)]
+pub enum ContextUsageStatus {
+    Ready(ContextUsage),
+    NeedsSummarization {
+        usage: ContextUsage,
+        needed: SummarizationNeeded,
+    },
 }
 
 /// The main context manager.
@@ -231,11 +240,9 @@ impl ContextManager {
         let mut summarized: Vec<(MessageId, u32)> = Vec::new();
 
         for entry in older_entries {
-            let summarized_here = entry.summary_id().and_then(|sid| {
-                self.history
-                    .get_summary(sid)
-                    .map(|s| (sid, s.token_count()))
-            });
+            let summarized_here = entry
+                .summary_id()
+                .map(|sid| (sid, self.history.summary(sid).token_count()));
 
             match summarized_here {
                 Some((summary_id, summary_tokens)) => {
@@ -352,8 +359,7 @@ impl ContextManager {
 
             let excess_tokens: u32 = need_summary
                 .iter()
-                .filter_map(|id| self.history.get_entry(*id))
-                .map(|e| e.token_count())
+                .map(|id| self.history.get_entry(*id).token_count())
                 .sum();
 
             let msg_count = need_summary.len();
@@ -410,21 +416,12 @@ impl ContextManager {
 
         let messages: Vec<_> = ids
             .iter()
-            .filter_map(|id| {
-                self.history
-                    .get_entry(*id)
-                    .map(|e| (*id, e.message().clone()))
-            })
+            .map(|id| (*id, self.history.get_entry(*id).message().clone()))
             .collect();
-
-        if messages.is_empty() {
-            return None;
-        }
 
         let original_tokens: u32 = ids
             .iter()
-            .filter_map(|id| self.history.get_entry(*id))
-            .map(|e| e.token_count())
+            .map(|id| self.history.get_entry(*id).token_count())
             .sum();
 
         let target_tokens =
@@ -463,8 +460,7 @@ impl ContextManager {
 
         let original_tokens: u32 = ids
             .iter()
-            .filter_map(|id| self.history.get_entry(*id))
-            .map(|e| e.token_count())
+            .map(|id| self.history.get_entry(*id).token_count())
             .sum();
 
         let summary = Summary::new(
@@ -495,10 +491,7 @@ impl ContextManager {
                 matches!(
                     segment,
                     ContextSegment::Original { id, .. }
-                        if self
-                            .history
-                            .get_entry(*id)
-                            .is_some_and(|e| e.summary_id().is_some())
+                        if self.history.get_entry(*id).summary_id().is_some()
                 )
             })
             .count()
@@ -513,14 +506,17 @@ impl ContextManager {
         })
     }
 
-    /// Get current usage statistics.
-    pub fn usage(&self) -> ContextUsage {
+    /// Get current usage statistics with explicit summarization status.
+    pub fn usage_status(&self) -> ContextUsageStatus {
         match self.prepare() {
-            Ok(prepared) => prepared.usage(),
-            Err(_) => ContextUsage {
-                used_tokens: self.history.total_tokens(),
-                budget_tokens: self.current_limits.effective_input_budget(),
-                summarized_segments: 0,
+            Ok(prepared) => ContextUsageStatus::Ready(prepared.usage()),
+            Err(needed) => ContextUsageStatus::NeedsSummarization {
+                usage: ContextUsage {
+                    used_tokens: self.history.total_tokens(),
+                    budget_tokens: self.current_limits.effective_input_budget(),
+                    summarized_segments: 0,
+                },
+                needed,
             },
         }
     }

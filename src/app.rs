@@ -6,13 +6,14 @@ use futures_util::future::{AbortHandle, Abortable};
 use tokio::sync::mpsc;
 
 use crate::context_infinity::{
-    ContextAdaptation, ContextManager, ContextUsage, JournalSession, MessageId, ModelLimitsSource,
-    PendingSummarization, RecoveredStream, StreamJournal, SummarizationScope, SummaryId,
-    generate_summary, summarization_model,
+    ActiveJournal, ContextAdaptation, ContextManager, ContextUsageStatus, MessageId,
+    ModelLimitsSource, PendingSummarization, RecoveredStream, StreamJournal, SummarizationScope,
+    SummaryId, generate_summary, summarization_model,
 };
 use crate::message::{
-    Message, NonEmptyString, StreamDisposition, StreamFinishReason, StreamingMessage,
+    Message, NonEmptyStaticStr, NonEmptyString, StreamFinishReason, StreamingMessage,
 };
+use crate::config::ForgeConfig;
 use crate::provider::{ApiConfig, ApiKey, ModelName, ModelNameKind, Provider, StreamEvent};
 
 /// A background summarization task.
@@ -47,6 +48,35 @@ const MAX_SUMMARIZATION_ATTEMPTS: u8 = 5;
 const SUMMARIZATION_RETRY_BASE_MS: u64 = 500;
 const SUMMARIZATION_RETRY_MAX_MS: u64 = 8000;
 const SUMMARIZATION_RETRY_JITTER_MS: u64 = 200;
+
+const RECOVERY_COMPLETE_BADGE: NonEmptyStaticStr =
+    NonEmptyStaticStr::new("[Recovered - stream completed but not finalized]");
+const RECOVERY_INCOMPLETE_BADGE: NonEmptyStaticStr =
+    NonEmptyStaticStr::new("[Recovered - incomplete response from previous session]");
+const ABORTED_JOURNAL_BADGE: NonEmptyStaticStr =
+    NonEmptyStaticStr::new("[Aborted - journal write failed]");
+const STREAM_ERROR_BADGE: NonEmptyStaticStr = NonEmptyStaticStr::new("[Stream error]");
+const EMPTY_RESPONSE_BADGE: NonEmptyStaticStr =
+    NonEmptyStaticStr::new("[Empty response - API returned no content]");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DataDirSource {
+    System,
+    Fallback,
+}
+
+#[derive(Debug, Clone)]
+struct DataDir {
+    path: PathBuf,
+    source: DataDirSource,
+}
+
+impl DataDir {
+    fn join(&self, child: &str) -> PathBuf {
+        self.path.join(child)
+    }
+
+}
 
 /// Input mode for the application
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -264,29 +294,52 @@ pub struct QueuedUserMessage {
 #[derive(Debug)]
 struct ActiveStream {
     message: StreamingMessage,
-    journal: JournalSession,
+    journal: ActiveJournal,
     abort_handle: AbortHandle,
 }
 
 #[derive(Debug)]
 struct SummarizationState {
     task: SummarizationTask,
-    queued_request: Option<ApiConfig>,
+}
+
+#[derive(Debug)]
+struct SummarizationWithQueuedState {
+    task: SummarizationTask,
+    queued: ApiConfig,
 }
 
 #[derive(Debug)]
 struct SummarizationRetryState {
     retry: SummarizationRetry,
-    queued_request: Option<ApiConfig>,
 }
 
-#[derive(Debug, Default)]
-enum AppState {
-    #[default]
+#[derive(Debug)]
+struct SummarizationRetryWithQueuedState {
+    retry: SummarizationRetry,
+    queued: ApiConfig,
+}
+
+#[derive(Debug)]
+enum EnabledState {
     Idle,
     Streaming(ActiveStream),
     Summarizing(SummarizationState),
+    SummarizingWithQueued(SummarizationWithQueuedState),
     SummarizationRetry(SummarizationRetryState),
+    SummarizationRetryWithQueued(SummarizationRetryWithQueuedState),
+}
+
+#[derive(Debug)]
+enum DisabledState {
+    Idle,
+    Streaming(ActiveStream),
+}
+
+#[derive(Debug)]
+enum AppState {
+    Enabled(EnabledState),
+    Disabled(DisabledState),
 }
 
 #[derive(Debug, Clone)]
@@ -326,8 +379,7 @@ pub struct App {
     api_keys: HashMap<Provider, String>,
     model: ModelName,
     tick: usize,
-    /// Whether ContextInfinity (summarization) is enabled.
-    context_infinity_enabled: bool,
+    data_dir: DataDir,
     /// Context manager for adaptive context window management.
     context_manager: ContextManager,
     /// Stream journal for crash recovery.
@@ -337,31 +389,95 @@ pub struct App {
 
 impl App {
     pub fn new() -> anyhow::Result<Self> {
-        // Try to load API keys from environment
+        let config = ForgeConfig::load();
+
+        // Load API keys from config, then fall back to environment.
         let mut api_keys = HashMap::new();
-        if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-            api_keys.insert(Provider::Claude, key);
-        }
-        if let Ok(key) = std::env::var("OPENAI_API_KEY") {
-            api_keys.insert(Provider::OpenAI, key);
+        if let Some(keys) = config.as_ref().and_then(|cfg| cfg.api_keys.as_ref()) {
+            if let Some(key) = keys.anthropic.as_ref() {
+                let resolved = crate::config::expand_env_vars(key);
+                let trimmed = resolved.trim();
+                if !trimmed.is_empty() {
+                    api_keys.insert(Provider::Claude, trimmed.to_string());
+                }
+            }
+            if let Some(key) = keys.openai.as_ref() {
+                let resolved = crate::config::expand_env_vars(key);
+                let trimmed = resolved.trim();
+                if !trimmed.is_empty() {
+                    api_keys.insert(Provider::OpenAI, trimmed.to_string());
+                }
+            }
         }
 
-        // Default to Claude if available, otherwise OpenAI
-        let provider = if api_keys.contains_key(&Provider::Claude) {
-            Provider::Claude
-        } else if api_keys.contains_key(&Provider::OpenAI) {
-            Provider::OpenAI
-        } else {
-            Provider::Claude // Default even without key
-        };
+        if !api_keys.contains_key(&Provider::Claude) {
+            if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+                if !key.trim().is_empty() {
+                    api_keys.insert(Provider::Claude, key);
+                }
+            }
+        }
+        if !api_keys.contains_key(&Provider::OpenAI) {
+            if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+                if !key.trim().is_empty() {
+                    api_keys.insert(Provider::OpenAI, key);
+                }
+            }
+        }
 
-        let model = provider.default_model();
+        let provider = config
+            .as_ref()
+            .and_then(|cfg| cfg.app.as_ref())
+            .and_then(|app| app.provider.as_ref())
+            .and_then(|raw| {
+                let parsed = Provider::from_str(raw);
+                if parsed.is_none() {
+                    tracing::warn!("Unknown provider in config: {}", raw);
+                }
+                parsed
+            })
+            .or_else(|| {
+                if api_keys.contains_key(&Provider::Claude) {
+                    Some(Provider::Claude)
+                } else if api_keys.contains_key(&Provider::OpenAI) {
+                    Some(Provider::OpenAI)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(Provider::Claude);
+
+        let model = config
+            .as_ref()
+            .and_then(|cfg| cfg.app.as_ref())
+            .and_then(|app| app.model.as_ref())
+            .map(|raw| match provider.parse_model(raw) {
+                Ok(model) => model,
+                Err(err) => {
+                    tracing::warn!("Invalid model in config: {err}");
+                    provider.default_model()
+                }
+            })
+            .unwrap_or_else(|| provider.default_model());
+
         let context_manager = ContextManager::new(model.as_str());
-        let context_infinity_enabled = Self::context_infinity_enabled_from_env();
+        let context_infinity_enabled = config
+            .as_ref()
+            .and_then(|cfg| cfg.context.as_ref())
+            .and_then(|ctx| ctx.infinity)
+            .unwrap_or_else(Self::context_infinity_enabled_from_env);
+
+        let data_dir = Self::data_dir();
 
         // Initialize stream journal (required for streaming durability).
-        let journal_path = Self::journal_path();
+        let journal_path = data_dir.join("stream_journal.db");
         let stream_journal = StreamJournal::open(&journal_path)?;
+
+        let state = if context_infinity_enabled {
+            AppState::Enabled(EnabledState::Idle)
+        } else {
+            AppState::Disabled(DisabledState::Idle)
+        };
 
         let mut app = Self {
             input: InputState::default(),
@@ -373,34 +489,47 @@ impl App {
             api_keys,
             model,
             tick: 0,
-            context_infinity_enabled,
+            data_dir,
             context_manager,
             stream_journal,
-            state: AppState::Idle,
+            state,
         };
 
         // Load previous session's history if available
         app.load_history_if_exists();
         app.check_crash_recovery();
+        if app.status_message.is_none() && matches!(app.data_dir.source, DataDirSource::Fallback) {
+            app.set_status(format!(
+                "Using fallback data dir: {}",
+                app.data_dir.path.display()
+            ));
+        }
 
         Ok(app)
     }
 
     /// Get the base data directory for forge.
-    fn data_dir() -> PathBuf {
-        dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("forge")
+    fn data_dir() -> DataDir {
+        match dirs::data_local_dir() {
+            Some(path) => DataDir {
+                path: path.join("forge"),
+                source: DataDirSource::System,
+            },
+            None => DataDir {
+                path: PathBuf::from(".").join("forge"),
+                source: DataDirSource::Fallback,
+            },
+        }
     }
 
     /// Get the path to the stream journal database.
-    fn journal_path() -> PathBuf {
-        Self::data_dir().join("stream_journal.db")
+    fn journal_path(&self) -> PathBuf {
+        self.data_dir.join("stream_journal.db")
     }
 
     /// Get the path to the history file.
-    fn history_path() -> PathBuf {
-        Self::data_dir().join("history.json")
+    fn history_path(&self) -> PathBuf {
+        self.data_dir.join("history.json")
     }
 
     fn context_infinity_enabled_from_env() -> bool {
@@ -416,7 +545,7 @@ impl App {
 
     /// Save the conversation history to disk.
     pub fn save_history(&self) -> anyhow::Result<()> {
-        let path = Self::history_path();
+        let path = self.history_path();
 
         // Ensure directory exists
         if let Some(parent) = path.parent() {
@@ -428,7 +557,7 @@ impl App {
 
     /// Load conversation history from disk (called during init if file exists).
     fn load_history_if_exists(&mut self) {
-        let path = Self::history_path();
+        let path = self.history_path();
         if !path.exists() {
             return;
         }
@@ -477,37 +606,28 @@ impl App {
                 step_id,
                 partial_text,
                 last_seq,
-            } => (
-                "[Recovered - stream completed but not finalized]",
-                *step_id,
-                *last_seq,
-                partial_text,
-            ),
+            } => (RECOVERY_COMPLETE_BADGE, *step_id, *last_seq, partial_text),
             RecoveredStream::Incomplete {
                 step_id,
                 partial_text,
                 last_seq,
-            } => (
-                "[Recovered - incomplete response from previous session]",
-                *step_id,
-                *last_seq,
-                partial_text,
-            ),
+            } => (RECOVERY_INCOMPLETE_BADGE, *step_id, *last_seq, partial_text),
         };
 
         // Add the partial response as an assistant message with recovery badge.
         let recovered_content = if partial_text.is_empty() {
-            recovery_badge.to_string()
+            NonEmptyString::from(recovery_badge)
         } else {
-            format!("{}\n\n{}", recovery_badge, partial_text)
+            NonEmptyString::from(recovery_badge)
+                .append("\n\n")
+                .append(partial_text.as_str())
         };
-        let recovered_content = NonEmptyString::from_string_or(recovered_content, recovery_badge);
 
         // Push recovered partial response as a completed assistant message.
         self.push_history_message(Message::assistant(self.model.clone(), recovered_content));
 
         // Seal the recovered journal entries
-        if let Err(e) = self.stream_journal.seal() {
+        if let Err(e) = self.stream_journal.seal_unsealed(step_id) {
             eprintln!("Failed to seal recovered journal: {e}");
             // Try to discard instead
             let _ = self.stream_journal.discard_unsealed(step_id);
@@ -553,13 +673,19 @@ impl App {
 
     pub fn streaming(&self) -> Option<&StreamingMessage> {
         match &self.state {
-            AppState::Streaming(active) => Some(&active.message),
+            AppState::Enabled(EnabledState::Streaming(active))
+            | AppState::Disabled(DisabledState::Streaming(active)) => Some(&active.message),
             _ => None,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.display.is_empty() && !matches!(self.state, AppState::Streaming(_))
+        self.display.is_empty()
+            && !matches!(
+                self.state,
+                AppState::Enabled(EnabledState::Streaming(_))
+                    | AppState::Disabled(DisabledState::Streaming(_))
+            )
     }
 
     pub(crate) fn display_items(&self) -> &[DisplayItem] {
@@ -577,16 +703,32 @@ impl App {
 
     /// Whether we're currently streaming a response.
     pub fn is_loading(&self) -> bool {
-        matches!(self.state, AppState::Streaming(_))
+        matches!(
+            self.state,
+            AppState::Enabled(EnabledState::Streaming(_))
+                | AppState::Disabled(DisabledState::Streaming(_))
+        )
     }
 
     /// Get context usage statistics for the UI.
-    pub fn context_usage(&self) -> ContextUsage {
-        self.context_manager.usage()
+    pub fn context_usage_status(&self) -> ContextUsageStatus {
+        self.context_manager.usage_status()
     }
 
     pub fn context_infinity_enabled(&self) -> bool {
-        self.context_infinity_enabled
+        matches!(self.state, AppState::Enabled(_))
+    }
+
+    fn idle_state(&self) -> AppState {
+        match &self.state {
+            AppState::Enabled(_) => AppState::Enabled(EnabledState::Idle),
+            AppState::Disabled(_) => AppState::Disabled(DisabledState::Idle),
+        }
+    }
+
+    fn replace_with_idle(&mut self) -> AppState {
+        let idle = self.idle_state();
+        std::mem::replace(&mut self.state, idle)
     }
 
     fn build_basic_api_messages(&mut self) -> Vec<Message> {
@@ -632,7 +774,7 @@ impl App {
     /// Switch to a different provider
     pub fn set_provider(&mut self, provider: Provider) {
         self.model = provider.default_model();
-        if self.context_infinity_enabled {
+        if self.context_infinity_enabled() {
             // Notify context manager of model change for adaptive context
             self.handle_context_adaptation();
         } else {
@@ -644,7 +786,7 @@ impl App {
     /// Set a specific model (called from :model command).
     pub fn set_model(&mut self, model: ModelName) {
         self.model = model;
-        if self.context_infinity_enabled {
+        if self.context_infinity_enabled() {
             self.handle_context_adaptation();
         } else {
             self.context_manager
@@ -714,7 +856,7 @@ impl App {
         queued_request: Option<ApiConfig>,
         attempt: u8,
     ) -> SummarizationStart {
-        if !self.context_infinity_enabled {
+        if !self.context_infinity_enabled() {
             self.set_status("ContextInfinity disabled: summarization unavailable");
             return SummarizationStart::Failed;
         }
@@ -722,15 +864,19 @@ impl App {
             return SummarizationStart::Failed;
         }
 
-        match self.state {
-            AppState::Streaming(_) => {
+        match &self.state {
+            AppState::Enabled(EnabledState::Streaming(_))
+            | AppState::Disabled(DisabledState::Streaming(_)) => {
                 self.set_status("Cannot summarize while streaming");
                 return SummarizationStart::Failed;
             }
-            AppState::Summarizing(_) | AppState::SummarizationRetry(_) => {
+            AppState::Enabled(EnabledState::Summarizing(_))
+            | AppState::Enabled(EnabledState::SummarizingWithQueued(_))
+            | AppState::Enabled(EnabledState::SummarizationRetry(_))
+            | AppState::Enabled(EnabledState::SummarizationRetryWithQueued(_)) => {
                 return SummarizationStart::Failed;
             }
-            AppState::Idle => {}
+            AppState::Enabled(EnabledState::Idle) | AppState::Disabled(DisabledState::Idle) => {}
         }
 
         // Try to build working context to see if summarization is needed
@@ -804,10 +950,13 @@ impl App {
             attempt,
         };
 
-        self.state = AppState::Summarizing(SummarizationState {
-            task,
-            queued_request,
-        });
+        self.state = if let Some(config) = queued_request {
+            AppState::Enabled(EnabledState::SummarizingWithQueued(
+                SummarizationWithQueuedState { task, queued: config },
+            ))
+        } else {
+            AppState::Enabled(EnabledState::Summarizing(SummarizationState { task }))
+        };
         SummarizationStart::Started
     }
 
@@ -819,12 +968,15 @@ impl App {
     pub fn poll_summarization(&mut self) {
         use futures_util::future::FutureExt;
 
-        if !self.context_infinity_enabled {
+        if !self.context_infinity_enabled() {
             return;
         }
 
         let finished = match &self.state {
-            AppState::Summarizing(state) => state.task.handle.is_finished(),
+            AppState::Enabled(EnabledState::Summarizing(state)) => state.task.handle.is_finished(),
+            AppState::Enabled(EnabledState::SummarizingWithQueued(state)) => {
+                state.task.handle.is_finished()
+            }
             _ => return,
         };
 
@@ -834,13 +986,17 @@ impl App {
         }
 
         // Take ownership of the task
-        let state = match std::mem::replace(&mut self.state, AppState::Idle) {
-            AppState::Summarizing(state) => state,
-            other => {
-                self.state = other;
-                return;
-            }
-        };
+        let (task, queued_request) =
+            match std::mem::replace(&mut self.state, AppState::Enabled(EnabledState::Idle)) {
+                AppState::Enabled(EnabledState::Summarizing(state)) => (state.task, None),
+                AppState::Enabled(EnabledState::SummarizingWithQueued(state)) => {
+                    (state.task, Some(state.queued))
+                }
+                other => {
+                    self.state = other;
+                    return;
+                }
+            };
 
         let SummarizationTask {
             summary_id,
@@ -848,8 +1004,7 @@ impl App {
             generated_by,
             handle,
             attempt,
-        } = state.task;
-        let queued_request = state.queued_request;
+        } = task;
 
         // Get the result using now_or_never since we know it's finished
         let result = handle.now_or_never();
@@ -909,18 +1064,25 @@ impl App {
         error: String,
         queued_request: Option<ApiConfig>,
     ) {
-        self.state = AppState::Idle;
+        self.state = AppState::Enabled(EnabledState::Idle);
         let next_attempt = attempt.saturating_add(1);
+        let had_pending = queued_request.is_some();
 
         if next_attempt <= MAX_SUMMARIZATION_ATTEMPTS {
             let delay = summarization_retry_delay(next_attempt);
-            self.state = AppState::SummarizationRetry(SummarizationRetryState {
-                retry: SummarizationRetry {
-                    attempt: next_attempt,
-                    ready_at: Instant::now() + delay,
-                },
-                queued_request,
-            });
+            let retry = SummarizationRetry {
+                attempt: next_attempt,
+                ready_at: Instant::now() + delay,
+            };
+            self.state = if let Some(config) = queued_request {
+                AppState::Enabled(EnabledState::SummarizationRetryWithQueued(
+                    SummarizationRetryWithQueuedState { retry, queued: config },
+                ))
+            } else {
+                AppState::Enabled(EnabledState::SummarizationRetry(
+                    SummarizationRetryState { retry },
+                ))
+            };
             self.set_status(format!(
                 "Summarization failed (attempt {}/{}): {}. Retrying in {}ms...",
                 attempt,
@@ -931,7 +1093,7 @@ impl App {
             return;
         }
 
-        let suffix = if queued_request.is_some() {
+        let suffix = if had_pending {
             " Cancelled queued request."
         } else {
             ""
@@ -943,12 +1105,17 @@ impl App {
     }
 
     fn poll_summarization_retry(&mut self) {
-        if !self.context_infinity_enabled {
+        if !self.context_infinity_enabled() {
             return;
         }
 
         let ready = match &self.state {
-            AppState::SummarizationRetry(state) => state.retry.ready_at <= Instant::now(),
+            AppState::Enabled(EnabledState::SummarizationRetry(state)) => {
+                state.retry.ready_at <= Instant::now()
+            }
+            AppState::Enabled(EnabledState::SummarizationRetryWithQueued(state)) => {
+                state.retry.ready_at <= Instant::now()
+            }
             _ => return,
         };
 
@@ -956,17 +1123,21 @@ impl App {
             return;
         }
 
-        let state = match std::mem::replace(&mut self.state, AppState::Idle) {
-            AppState::SummarizationRetry(state) => state,
-            other => {
-                self.state = other;
-                return;
-            }
-        };
+        let (retry, queued_request) =
+            match std::mem::replace(&mut self.state, AppState::Enabled(EnabledState::Idle)) {
+                AppState::Enabled(EnabledState::SummarizationRetry(state)) => (state.retry, None),
+                AppState::Enabled(EnabledState::SummarizationRetryWithQueued(state)) => {
+                    (state.retry, Some(state.queued))
+                }
+                other => {
+                    self.state = other;
+                    return;
+                }
+            };
 
-        let attempt = state.retry.attempt;
-        let had_pending = state.queued_request.is_some();
-        let start_result = self.start_summarization_with_attempt(state.queued_request, attempt);
+        let attempt = retry.attempt;
+        let had_pending = queued_request.is_some();
+        let start_result = self.start_summarization_with_attempt(queued_request, attempt);
 
         if !matches!(start_result, SummarizationStart::Started) {
             let suffix = if had_pending {
@@ -983,21 +1154,26 @@ impl App {
 
     /// Start streaming response from the API.
     pub fn start_streaming(&mut self, queued: QueuedUserMessage) {
-        match self.state {
-            AppState::Streaming(_) => {
+        match &self.state {
+            AppState::Enabled(EnabledState::Streaming(_))
+            | AppState::Disabled(DisabledState::Streaming(_)) => {
                 self.set_status("Already streaming a response");
                 return;
             }
-            AppState::Summarizing(_) | AppState::SummarizationRetry(_) => {
+            AppState::Enabled(EnabledState::Summarizing(_))
+            | AppState::Enabled(EnabledState::SummarizingWithQueued(_))
+            | AppState::Enabled(EnabledState::SummarizationRetry(_))
+            | AppState::Enabled(EnabledState::SummarizationRetryWithQueued(_)) => {
                 self.set_status("Busy: summarization in progress");
                 return;
             }
-            AppState::Idle => {}
+            AppState::Enabled(EnabledState::Idle) | AppState::Disabled(DisabledState::Idle) => {}
         }
 
         let QueuedUserMessage { config } = queued;
+        let context_infinity_enabled = self.context_infinity_enabled();
 
-        let api_messages = if self.context_infinity_enabled {
+        let api_messages = if context_infinity_enabled {
             match self.context_manager.prepare() {
                 Ok(prepared) => prepared.api_messages(),
                 Err(needed) => {
@@ -1033,7 +1209,11 @@ impl App {
             abort_handle,
         };
 
-        self.state = AppState::Streaming(active);
+        self.state = if context_infinity_enabled {
+            AppState::Enabled(EnabledState::Streaming(active))
+        } else {
+            AppState::Disabled(DisabledState::Streaming(active))
+        };
 
         let max_output_tokens = self.context_manager.current_limits().max_output();
 
@@ -1061,7 +1241,11 @@ impl App {
 
     /// Process any pending stream events.
     pub fn process_stream_events(&mut self) {
-        if !matches!(self.state, AppState::Streaming(_)) {
+        if !matches!(
+            self.state,
+            AppState::Enabled(EnabledState::Streaming(_))
+                | AppState::Disabled(DisabledState::Streaming(_))
+        ) {
             return;
         }
 
@@ -1069,7 +1253,8 @@ impl App {
         loop {
             let event = {
                 let active = match self.state {
-                    AppState::Streaming(ref mut active) => active,
+                    AppState::Enabled(EnabledState::Streaming(ref mut active))
+                    | AppState::Disabled(DisabledState::Streaming(ref mut active)) => active,
                     _ => return,
                 };
 
@@ -1084,109 +1269,128 @@ impl App {
             };
 
             let mut journal_error: Option<String> = None;
-            let mut finished = false;
+            let mut finish_reason: Option<StreamFinishReason> = None;
 
             {
                 let active = match self.state {
-                    AppState::Streaming(ref mut active) => active,
+                    AppState::Enabled(EnabledState::Streaming(ref mut active))
+                    | AppState::Disabled(DisabledState::Streaming(ref mut active)) => active,
                     _ => return,
                 };
 
-                let delta = match &event {
-                    StreamEvent::TextDelta(text) => active.journal.next_text(text.clone()),
-                    StreamEvent::Done => active.journal.next_done(),
-                    StreamEvent::Error(msg) => active.journal.next_error(msg.clone()),
+                let persist_result = match &event {
+                    StreamEvent::TextDelta(text) => {
+                        active.journal.append_text(&mut self.stream_journal, text.clone())
+                    }
+                    StreamEvent::Done => active.journal.append_done(&mut self.stream_journal),
+                    StreamEvent::Error(msg) => {
+                        active.journal.append_error(&mut self.stream_journal, msg.clone())
+                    }
                 };
 
                 // Persist BEFORE display.
-                if let Err(e) = self.stream_journal.append_delta(delta) {
+                if let Err(e) = persist_result {
                     journal_error = Some(e.to_string());
                 }
 
                 if journal_error.is_none() {
-                    finished = active.message.apply_event(event) == StreamDisposition::Finished;
+                    finish_reason = active.message.apply_event(event);
                 }
             }
 
             if let Some(err) = journal_error {
                 // Abort streaming without applying the unpersisted event.
-                let active = match std::mem::replace(&mut self.state, AppState::Idle) {
-                    AppState::Streaming(active) => active,
+                let active = match self.replace_with_idle() {
+                    AppState::Enabled(EnabledState::Streaming(active))
+                    | AppState::Disabled(DisabledState::Streaming(active)) => active,
                     other => {
                         self.state = other;
                         return;
                     }
                 };
 
-                active.abort_handle.abort();
+                let ActiveStream {
+                    message,
+                    journal,
+                    abort_handle,
+                } = active;
 
-                if let Err(seal_err) = self.stream_journal.seal() {
+                abort_handle.abort();
+
+                if let Err(seal_err) = journal.seal(&mut self.stream_journal) {
                     eprintln!("Journal seal failed after append error: {seal_err}");
                 }
 
-                let model = active.message.model_name().clone();
-                let partial = active.message.content().to_string();
-                let aborted = NonEmptyString::from_string_or(
-                    format!("[Aborted - journal write failed]\n\n{partial}"),
-                    "[Aborted - journal write failed]",
-                );
+                let model = message.model_name().clone();
+                let partial = message.content().to_string();
+                let aborted = if partial.is_empty() {
+                    NonEmptyString::from(ABORTED_JOURNAL_BADGE)
+                } else {
+                    NonEmptyString::from(ABORTED_JOURNAL_BADGE)
+                        .append("\n\n")
+                        .append(partial.as_str())
+                };
                 self.push_local_message(Message::assistant(model, aborted));
                 self.set_status(format!("Journal append failed: {err}"));
                 return;
             }
 
-            if finished {
-                self.finish_streaming();
+            if let Some(reason) = finish_reason {
+                self.finish_streaming(reason);
                 return;
             }
         }
     }
 
     /// Finish the current streaming session and commit the message.
-    fn finish_streaming(&mut self) {
-        let active = match std::mem::replace(&mut self.state, AppState::Idle) {
-            AppState::Streaming(active) => active,
+    fn finish_streaming(&mut self, finish_reason: StreamFinishReason) {
+        let active = match self.replace_with_idle() {
+            AppState::Enabled(EnabledState::Streaming(active))
+            | AppState::Disabled(DisabledState::Streaming(active)) => active,
             other => {
                 self.state = other;
                 return;
             }
         };
 
-        active.abort_handle.abort();
+        let ActiveStream {
+            message,
+            journal,
+            abort_handle,
+        } = active;
+
+        abort_handle.abort();
 
         // Seal the journal
-        if let Err(e) = self.stream_journal.seal() {
+        if let Err(e) = journal.seal(&mut self.stream_journal) {
             eprintln!("Journal seal failed: {e}");
         }
 
-        // Capture metadata and finish reason before consuming the streaming message.
-        let model = active.message.model_name().clone();
-        let finish_reason = active.message.finish_reason().cloned();
+        // Capture metadata before consuming the streaming message.
+        let model = message.model_name().clone();
 
         // Convert streaming message to completed message (empty content is invalid).
-        let message = active.message.into_message().ok();
+        let message = message.into_message().ok();
 
         match finish_reason {
-            Some(StreamFinishReason::Error(err)) => {
+            StreamFinishReason::Error(err) => {
                 if let Some(message) = message {
                     self.push_history_message(message);
                 }
-                let system_msg = Message::system(NonEmptyString::from_string_or(
-                    format!("[Stream error]\n\n{err}"),
-                    "[Stream error]",
-                ));
+                let system_msg = Message::system(
+                    NonEmptyString::from(STREAM_ERROR_BADGE)
+                        .append("\n\n")
+                        .append(err.as_str()),
+                );
                 self.push_local_message(system_msg);
                 self.set_status(format!("Stream error: {err}"));
                 return;
             }
-            Some(StreamFinishReason::Done) | None => {}
+            StreamFinishReason::Done => {}
         }
 
         let Some(message) = message else {
-            let empty_msg = Message::assistant(
-                model,
-                NonEmptyString::from_static("[Empty response - API returned no content]"),
-            );
+            let empty_msg = Message::assistant(model, NonEmptyString::from(EMPTY_RESPONSE_BADGE));
             self.push_local_message(empty_msg);
             self.set_status("Warning: API returned empty response");
             return;
@@ -1326,18 +1530,23 @@ impl App {
                 self.request_quit();
             }
             Some("clear") => {
-                match std::mem::replace(&mut self.state, AppState::Idle) {
-                    AppState::Streaming(active) => {
+                let state = self.replace_with_idle();
+                match state {
+                    AppState::Enabled(EnabledState::Streaming(active))
+                    | AppState::Disabled(DisabledState::Streaming(active)) => {
                         active.abort_handle.abort();
-
-                        let _ = self
-                            .stream_journal
-                            .discard_unsealed(active.journal.step_id());
+                        let _ = active.journal.discard(&mut self.stream_journal);
                     }
-                    AppState::Summarizing(state) => {
+                    AppState::Enabled(EnabledState::Summarizing(state)) => {
                         state.task.handle.abort();
                     }
-                    AppState::SummarizationRetry(_) | AppState::Idle => {}
+                    AppState::Enabled(EnabledState::SummarizingWithQueued(state)) => {
+                        state.task.handle.abort();
+                    }
+                    AppState::Enabled(EnabledState::SummarizationRetry(_))
+                    | AppState::Enabled(EnabledState::SummarizationRetryWithQueued(_))
+                    | AppState::Enabled(EnabledState::Idle)
+                    | AppState::Disabled(DisabledState::Idle) => {}
                 }
 
                 self.display.clear();
@@ -1362,11 +1571,18 @@ impl App {
                         }
                     }
                 } else {
-                    let usage = self.context_usage();
+                    let usage_status = self.context_usage_status();
+                    let (usage, suffix) = match &usage_status {
+                        ContextUsageStatus::Ready(usage) => (usage, ""),
+                        ContextUsageStatus::NeedsSummarization { usage, .. } => {
+                            (usage, " (needs summarization)")
+                        }
+                    };
                     self.set_status(format!(
-                        "Model: {} │ Context: {}",
+                        "Model: {} │ Context: {}{}",
                         self.model,
-                        usage.format_compact()
+                        usage.format_compact(),
+                        suffix
                     ));
                 }
             }
@@ -1401,20 +1617,33 @@ impl App {
                 }
             }
             Some("context" | "ctx") => {
-                let usage = self.context_usage();
+                let usage_status = self.context_usage_status();
+                let (usage, needs_summary) = match &usage_status {
+                    ContextUsageStatus::Ready(usage) => (usage, None),
+                    ContextUsageStatus::NeedsSummarization { usage, needed } => {
+                        (usage, Some(needed))
+                    }
+                };
                 let limits = self.context_manager.current_limits();
                 let limits_source = match self.context_manager.current_limits_source() {
                     ModelLimitsSource::Override => "override".to_string(),
                     ModelLimitsSource::Prefix(prefix) => prefix.to_string(),
                     ModelLimitsSource::DefaultFallback => "fallback(default)".to_string(),
                 };
-                let context_flag = if self.context_infinity_enabled {
+                let context_flag = if self.context_infinity_enabled() {
                     "on"
                 } else {
                     "off"
                 };
+                let summarize_suffix = needs_summary.map_or(String::new(), |needed| {
+                    format!(
+                        " │ Summarize: {} msgs (~{} tokens)",
+                        needed.messages_to_summarize.len(),
+                        needed.excess_tokens
+                    )
+                });
                 self.set_status(format!(
-                    "ContextInfinity: {} │ Context: {} │ Model: {} │ Limits: {} │ Window: {}k │ Budget: {}k │ Max output: {}k",
+                    "ContextInfinity: {} │ Context: {} │ Model: {} │ Limits: {} │ Window: {}k │ Budget: {}k │ Max output: {}k{}",
                     context_flag,
                     usage.format_compact(),
                     self.context_manager.current_model(),
@@ -1422,14 +1651,22 @@ impl App {
                     limits.context_window() / 1000,
                     limits.effective_input_budget() / 1000,
                     limits.max_output() / 1000,
+                    summarize_suffix,
                 ));
             }
             Some("journal" | "jrnl") => match self.stream_journal.stats() {
                 Ok(stats) => {
-                    let state_desc = match self.stream_journal.state() {
-                        crate::context_infinity::JournalState::Empty => "idle",
-                        crate::context_infinity::JournalState::Streaming { .. } => "streaming",
-                        crate::context_infinity::JournalState::Sealed { .. } => "sealed",
+                    let streaming = matches!(
+                        self.state,
+                        AppState::Enabled(EnabledState::Streaming(_))
+                            | AppState::Disabled(DisabledState::Streaming(_))
+                    );
+                    let state_desc = if streaming {
+                        "streaming"
+                    } else if stats.unsealed_entries > 0 {
+                        "unsealed"
+                    } else {
+                        "idle"
                     };
                     self.set_status(format!(
                         "Journal: {} │ Total: {} │ Sealed: {} │ Unsealed: {} │ Steps: {}",
@@ -1445,14 +1682,21 @@ impl App {
                 }
             },
             Some("summarize" | "sum") => {
-                if !self.context_infinity_enabled {
+                if !self.context_infinity_enabled() {
                     self.set_status("ContextInfinity disabled: summarization unavailable");
                 } else if matches!(
                     self.state,
-                    AppState::Summarizing(_) | AppState::SummarizationRetry(_)
+                    AppState::Enabled(EnabledState::Summarizing(_))
+                        | AppState::Enabled(EnabledState::SummarizingWithQueued(_))
+                        | AppState::Enabled(EnabledState::SummarizationRetry(_))
+                        | AppState::Enabled(EnabledState::SummarizationRetryWithQueued(_))
                 ) {
                     self.set_status("Summarization already in progress");
-                } else if matches!(self.state, AppState::Streaming(_)) {
+                } else if matches!(
+                    self.state,
+                    AppState::Enabled(EnabledState::Streaming(_))
+                        | AppState::Disabled(DisabledState::Streaming(_))
+                ) {
                     self.set_status("Cannot summarize while streaming");
                 } else {
                     self.set_status("Summarizing older messages...");
@@ -1463,14 +1707,13 @@ impl App {
                 }
             }
             Some("cancel") => {
-                match std::mem::replace(&mut self.state, AppState::Idle) {
-                    AppState::Streaming(active) => {
+                match self.replace_with_idle() {
+                    AppState::Enabled(EnabledState::Streaming(active))
+                    | AppState::Disabled(DisabledState::Streaming(active)) => {
                         active.abort_handle.abort();
 
                         // Clean up journal state
-                        let _ = self
-                            .stream_journal
-                            .discard_unsealed(active.journal.step_id());
+                        let _ = active.journal.discard(&mut self.stream_journal);
                         self.set_status("Streaming cancelled");
                     }
                     other => {
@@ -1555,16 +1798,20 @@ impl<'a> InsertMode<'a> {
     /// Returns a token proving that a non-empty user message was queued, and that it is valid to
     /// begin a new stream.
     pub fn queue_message(self) -> Option<QueuedUserMessage> {
-        match self.app.state {
-            AppState::Streaming(_) => {
+        match &self.app.state {
+            AppState::Enabled(EnabledState::Streaming(_))
+            | AppState::Disabled(DisabledState::Streaming(_)) => {
                 self.app.set_status("Already streaming a response");
                 return None;
             }
-            AppState::Summarizing(_) | AppState::SummarizationRetry(_) => {
+            AppState::Enabled(EnabledState::Summarizing(_))
+            | AppState::Enabled(EnabledState::SummarizingWithQueued(_))
+            | AppState::Enabled(EnabledState::SummarizationRetry(_))
+            | AppState::Enabled(EnabledState::SummarizationRetryWithQueued(_)) => {
                 self.app.set_status("Busy: summarization in progress");
                 return None;
             }
-            AppState::Idle => {}
+            AppState::Enabled(EnabledState::Idle) | AppState::Disabled(DisabledState::Idle) => {}
         }
 
         if self.app.draft_text().trim().is_empty() {
@@ -1657,6 +1904,10 @@ mod tests {
         api_keys.insert(Provider::Claude, "test".to_string());
         let model = Provider::Claude.default_model();
         let stream_journal = StreamJournal::open_in_memory().expect("in-memory journal for tests");
+        let data_dir = DataDir {
+            path: PathBuf::from(".").join("forge-test"),
+            source: DataDirSource::Fallback,
+        };
 
         App {
             input: InputState::default(),
@@ -1668,10 +1919,10 @@ mod tests {
             api_keys,
             model: model.clone(),
             tick: 0,
-            context_infinity_enabled: true,
+            data_dir,
             context_manager: ContextManager::new(model.as_str()),
             stream_journal,
-            state: AppState::Idle,
+            state: AppState::Enabled(EnabledState::Idle),
         }
     }
 
@@ -1811,11 +2062,11 @@ mod tests {
         let streaming = StreamingMessage::new(app.model.clone(), rx);
         let (abort_handle, _abort_registration) = AbortHandle::new_pair();
         let journal = app.stream_journal.begin_session().expect("journal session");
-        app.state = AppState::Streaming(ActiveStream {
+        app.state = AppState::Enabled(EnabledState::Streaming(ActiveStream {
             message: streaming,
             journal,
             abort_handle,
-        });
+        }));
         assert!(app.is_loading());
 
         tx.send(StreamEvent::TextDelta("hello".to_string()))

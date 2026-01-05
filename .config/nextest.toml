@@ -1,0 +1,18 @@
+# Nextest configuration
+# Run with: cargo nextest run
+
+[profile.default]
+# Default timeout per test
+slow-timeout = { period = "15s", terminate-after = 2 }
+
+# Fail fast by default (override with --no-fail-fast)
+fail-fast = true
+
+# Retry flaky tests once
+retries = 1
+
+[profile.ci]
+# CI profile: stricter settings
+fail-fast = false
+retries = 0
+slow-timeout = { period = "30s", terminate-after = 2 }

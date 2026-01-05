@@ -37,7 +37,7 @@ fn get_encoder() -> &'static CoreBPE {
 /// # Example
 ///
 /// ```
-/// use forge::context_infinity::TokenCounter;
+/// use forge::TokenCounter;
 ///
 /// let counter = TokenCounter::new();
 ///
@@ -87,7 +87,7 @@ impl TokenCounter {
     /// # Example
     ///
     /// ```
-    /// use forge::context_infinity::TokenCounter;
+    /// use forge::TokenCounter;
     ///
     /// let counter = TokenCounter::new();
     /// let tokens = counter.count_str("Hello, world!");
@@ -115,7 +115,7 @@ impl TokenCounter {
     /// # Example
     ///
     /// ```
-    /// use forge::context_infinity::TokenCounter;
+    /// use forge::TokenCounter;
     /// use forge::message::Message;
     ///
     /// let counter = TokenCounter::new();

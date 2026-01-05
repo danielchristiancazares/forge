@@ -13,8 +13,8 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::{Connection, params};
-use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Unique identifier for a streaming step/session
@@ -23,8 +23,8 @@ pub type StepId = i64;
 /// A single delta event in a streaming response.
 ///
 /// This makes invalid deltas unrepresentable (e.g., a "done" event with text content).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum StreamDeltaEvent {
+#[derive(Clone, Debug)]
+enum StreamDeltaEvent {
     TextDelta(String),
     Done,
     Error(String),
@@ -47,95 +47,69 @@ impl StreamDeltaEvent {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct StreamDelta {
+#[derive(Clone, Debug)]
+struct StreamDelta {
     /// The step this delta belongs to
-    pub step_id: StepId,
+    step_id: StepId,
     /// Sequence number within the step (monotonically increasing)
-    pub seq: u64,
-    pub event: StreamDeltaEvent,
+    seq: u64,
+    event: StreamDeltaEvent,
     /// When this delta was created
-    pub timestamp: SystemTime,
+    timestamp: SystemTime,
 }
 
 impl StreamDelta {
-    /// Create a new text delta
-    pub fn text(step_id: StepId, seq: u64, content: impl Into<String>) -> Self {
+    fn new(step_id: StepId, seq: u64, event: StreamDeltaEvent) -> Self {
         Self {
             step_id,
             seq,
-            event: StreamDeltaEvent::TextDelta(content.into()),
-            timestamp: SystemTime::now(),
-        }
-    }
-
-    /// Create a "done" marker
-    pub fn done(step_id: StepId, seq: u64) -> Self {
-        Self {
-            step_id,
-            seq,
-            event: StreamDeltaEvent::Done,
-            timestamp: SystemTime::now(),
-        }
-    }
-
-    /// Create an error marker
-    pub fn error(step_id: StepId, seq: u64, message: impl Into<String>) -> Self {
-        Self {
-            step_id,
-            seq,
-            event: StreamDeltaEvent::Error(message.into()),
+            event,
             timestamp: SystemTime::now(),
         }
     }
 }
 
-/// Current state of the journal
-#[derive(Clone, Debug)]
-pub enum JournalState {
-    /// Actively streaming with current step and sequence number
-    Streaming { step_id: StepId, seq: u64 },
-    /// Stream completed and sealed
-    Sealed { step_id: StepId },
-    /// No active stream
-    Empty,
-}
-
-/// A live journal session required for streaming.
-#[derive(Debug, Clone)]
-pub struct JournalSession {
+/// Active streaming journal.
+///
+/// Possessing this type is the proof that a stream is in-flight.
+#[derive(Debug)]
+pub struct ActiveJournal {
+    journal_id: u64,
     step_id: StepId,
     next_seq: u64,
 }
 
-impl JournalSession {
-    fn new(step_id: StepId) -> Self {
-        Self {
-            step_id,
-            next_seq: 1,
-        }
-    }
-
+impl ActiveJournal {
     pub fn step_id(&self) -> StepId {
         self.step_id
     }
 
-    pub fn next_text(&mut self, content: impl Into<String>) -> StreamDelta {
-        let seq = self.next_seq;
-        self.next_seq += 1;
-        StreamDelta::text(self.step_id, seq, content)
+    pub fn append_text(
+        &mut self,
+        journal: &mut StreamJournal,
+        content: impl Into<String>,
+    ) -> Result<()> {
+        journal.append_event(self, StreamDeltaEvent::TextDelta(content.into()))
     }
 
-    pub fn next_done(&mut self) -> StreamDelta {
-        let seq = self.next_seq;
-        self.next_seq += 1;
-        StreamDelta::done(self.step_id, seq)
+    pub fn append_done(&mut self, journal: &mut StreamJournal) -> Result<()> {
+        journal.append_event(self, StreamDeltaEvent::Done)
     }
 
-    pub fn next_error(&mut self, message: impl Into<String>) -> StreamDelta {
-        let seq = self.next_seq;
-        self.next_seq += 1;
-        StreamDelta::error(self.step_id, seq, message)
+    pub fn append_error(
+        &mut self,
+        journal: &mut StreamJournal,
+        message: impl Into<String>,
+    ) -> Result<()> {
+        journal.append_event(self, StreamDeltaEvent::Error(message.into()))
+    }
+
+    pub fn seal(self, journal: &mut StreamJournal) -> Result<String> {
+        journal.seal_active(self)
+    }
+
+    pub fn discard(self, journal: &mut StreamJournal) -> Result<u64> {
+        journal.discard_active(self)
     }
 }
 
@@ -162,13 +136,16 @@ pub enum RecoveredStream {
     },
 }
 
+static JOURNAL_ID: AtomicU64 = AtomicU64::new(1);
+
 /// Stream journal for durable streaming with crash recovery
 ///
 /// This journal persists every streaming delta to SQLite before it's
 /// displayed to the user, enabling recovery after crashes.
 pub struct StreamJournal {
     db: Connection,
-    state: JournalState,
+    journal_id: u64,
+    active_step: Option<StepId>,
 }
 
 impl StreamJournal {
@@ -230,198 +207,135 @@ impl StreamJournal {
         db.execute_batch(Self::SCHEMA)
             .context("Failed to create schema")?;
 
-        // Determine current state by checking for unsealed entries
-        let state = Self::determine_state(&db)?;
-
-        Ok(Self { db, state })
+        Ok(Self {
+            db,
+            journal_id: JOURNAL_ID.fetch_add(1, Ordering::Relaxed),
+            active_step: None,
+        })
     }
 
-    /// Determine the current journal state from the database
-    fn determine_state(db: &Connection) -> Result<JournalState> {
-        // Check for any unsealed entries (most recent row across all steps).
-        // This avoids undefined GROUP BY behavior when selecting non-aggregated columns.
-        let mut stmt = db
+    /// Find the most recent unsealed step (if any).
+    fn latest_unsealed_step(&self) -> Result<Option<(StepId, u64)>> {
+        let mut stmt = self
+            .db
             .prepare(
-                "SELECT step_id, seq
-                 FROM stream_journal
+                "SELECT step_id, MAX(seq) FROM stream_journal
                  WHERE sealed = 0
-                 ORDER BY step_id DESC, seq DESC
+                 GROUP BY step_id
+                 ORDER BY step_id DESC
                  LIMIT 1",
             )
-            .context("Failed to prepare state query")?;
+            .context("Failed to prepare unsealed-step query")?;
 
-        let result: Option<(StepId, u64)> = stmt
+        Ok(stmt
             .query_row([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .ok();
-
-        match result {
-            Some((step_id, seq)) => Ok(JournalState::Streaming { step_id, seq }),
-            None => Ok(JournalState::Empty),
-        }
-    }
-
-    /// Start a new streaming session
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if there's already an active streaming session.
-    fn begin_step(&mut self, step_id: StepId) -> Result<()> {
-        match &self.state {
-            JournalState::Streaming {
-                step_id: active_id, ..
-            } => {
-                bail!(
-                    "Cannot begin step {}: already streaming step {}",
-                    step_id,
-                    active_id
-                );
-            }
-            JournalState::Sealed { .. } | JournalState::Empty => {
-                self.state = JournalState::Streaming { step_id, seq: 0 };
-                Ok(())
-            }
-        }
+            .ok())
     }
 
     /// Begin a new journal session for streaming.
     ///
     /// # Errors
     ///
-    /// Returns an error if no step ID can be allocated or the journal is already streaming.
-    pub fn begin_session(&mut self) -> Result<JournalSession> {
+    /// Returns an error if a session is already active, unsealed entries exist,
+    /// or a new step ID cannot be allocated.
+    pub fn begin_session(&mut self) -> Result<ActiveJournal> {
+        if let Some(step_id) = self.active_step {
+            bail!("Cannot begin session: already streaming step {}", step_id);
+        }
+        if let Some((step_id, _)) = self.latest_unsealed_step()? {
+            bail!("Cannot begin session: unsealed step {} exists", step_id);
+        }
+
         let step_id = self.next_step_id()?;
-        self.begin_step(step_id)?;
-        Ok(JournalSession::new(step_id))
+        self.active_step = Some(step_id);
+        Ok(ActiveJournal {
+            journal_id: self.journal_id,
+            step_id,
+            next_seq: 1,
+        })
     }
 
-    /// Append a delta to the journal
-    ///
-    /// **CRITICAL**: This operation MUST complete successfully before the delta
-    /// is displayed to the user. This ensures crash recovery is possible.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - No active streaming session
-    /// - Delta's step_id doesn't match active step
-    /// - Database write fails
-    pub fn append_delta(&mut self, delta: StreamDelta) -> Result<()> {
-        let (active_step_id, current_seq) = match &self.state {
-            JournalState::Streaming { step_id, seq } => (*step_id, *seq),
-            JournalState::Empty => {
-                bail!("Cannot append delta: no active streaming session");
-            }
-            JournalState::Sealed { step_id } => {
-                bail!("Cannot append delta: step {} is already sealed", step_id);
-            }
-        };
-
-        if delta.step_id != active_step_id {
-            bail!(
-                "Delta step_id {} doesn't match active step {}",
-                delta.step_id,
-                active_step_id
-            );
-        }
-
-        let expected_seq = current_seq + 1;
-        if delta.seq != expected_seq {
-            bail!(
-                "Delta seq {} doesn't match expected seq {}",
-                delta.seq,
-                expected_seq
-            );
-        }
-
-        // Convert timestamp to ISO 8601 string
-        let created_at = system_time_to_iso8601(delta.timestamp);
-
-        // Insert the delta - this MUST complete before returning
-        self.db
-            .execute(
-                "INSERT INTO stream_journal (step_id, seq, event_type, content, created_at, sealed)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-                params![
-                    delta.step_id,
-                    delta.seq as i64,
-                    delta.event.event_type(),
-                    delta.event.content(),
-                    created_at
-                ],
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to insert delta for step {} seq {}",
-                    delta.step_id, delta.seq
-                )
-            })?;
-
-        // Update state with new sequence number
-        self.state = JournalState::Streaming {
-            step_id: active_step_id,
-            seq: delta.seq,
-        };
-
-        Ok(())
-    }
-
-    /// Seal the journal when streaming completes
-    ///
-    /// Marks all rows for the current step as sealed and returns the
-    /// accumulated text content from all text_delta events.
-    ///
-    /// # Returns
-    ///
-    /// The concatenated text content from all text_delta events.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no active streaming session or database operation fails.
-    pub fn seal(&mut self) -> Result<String> {
-        let step_id = match &self.state {
-            JournalState::Streaming { step_id, .. } => *step_id,
-            JournalState::Empty => {
-                bail!("Cannot seal: no active streaming session");
-            }
-            JournalState::Sealed { step_id } => {
-                bail!("Cannot seal: step {} is already sealed", step_id);
-            }
-        };
-
-        // Collect all text content before sealing
-        let accumulated_text = self.collect_text(step_id)?;
-
-        // Mark all entries for this step as sealed
-        self.db
-            .execute(
-                "UPDATE stream_journal SET sealed = 1 WHERE step_id = ?1 AND sealed = 0",
-                params![step_id],
-            )
-            .with_context(|| format!("Failed to seal step {}", step_id))?;
-
-        self.state = JournalState::Sealed { step_id };
-
+    /// Seal unsealed entries for a step (used for crash recovery).
+    pub fn seal_unsealed(&mut self, step_id: StepId) -> Result<String> {
+        self.ensure_idle()?;
+        let accumulated_text = collect_text(&self.db, step_id)?;
+        seal_step(&self.db, step_id)?;
         Ok(accumulated_text)
     }
 
-    /// Collect text content from all text_delta events for a step
-    fn collect_text(&self, step_id: StepId) -> Result<String> {
-        let mut stmt = self
+    /// Delete all unsealed entries for a step (discard recovery data).
+    pub fn discard_unsealed(&mut self, step_id: StepId) -> Result<u64> {
+        self.ensure_idle()?;
+        discard_step(&self.db, step_id)
+    }
+
+    /// Get statistics about the journal.
+    pub fn stats(&self) -> Result<JournalStats> {
+        stats_for_db(&self.db)
+    }
+
+    /// Allocate the next step ID
+    ///
+    /// This atomically increments the step counter and returns the new ID.
+    pub fn next_step_id(&self) -> Result<StepId> {
+        let step_id: StepId = self
             .db
-            .prepare(
-                "SELECT content FROM stream_journal
-                 WHERE step_id = ?1 AND event_type = 'text_delta'
-                 ORDER BY seq ASC",
+            .query_row(
+                "UPDATE step_counter SET next_step_id = next_step_id + 1
+                 WHERE id = 1
+                 RETURNING next_step_id - 1",
+                [],
+                |row| row.get(0),
             )
-            .context("Failed to prepare text collection query")?;
+            .context("Failed to allocate next step ID")?;
 
-        let contents: Vec<String> = stmt
-            .query_map(params![step_id], |row| row.get(0))
-            .context("Failed to query text deltas")?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .context("Failed to collect text deltas")?;
+        Ok(step_id)
+    }
 
-        Ok(contents.join(""))
+    fn append_event(&mut self, session: &mut ActiveJournal, event: StreamDeltaEvent) -> Result<()> {
+        self.ensure_active(session)?;
+        let seq = session.next_seq;
+        let delta = StreamDelta::new(session.step_id, seq, event);
+        append_delta(&self.db, &delta)?;
+        session.next_seq += 1;
+        Ok(())
+    }
+
+    fn seal_active(&mut self, session: ActiveJournal) -> Result<String> {
+        self.ensure_active(&session)?;
+        let text = collect_text(&self.db, session.step_id)?;
+        seal_step(&self.db, session.step_id)?;
+        self.active_step = None;
+        Ok(text)
+    }
+
+    fn discard_active(&mut self, session: ActiveJournal) -> Result<u64> {
+        self.ensure_active(&session)?;
+        let deleted = discard_step(&self.db, session.step_id)?;
+        self.active_step = None;
+        Ok(deleted)
+    }
+
+    fn ensure_active(&self, session: &ActiveJournal) -> Result<()> {
+        if session.journal_id != self.journal_id {
+            bail!("Journal session does not belong to this journal");
+        }
+        match self.active_step {
+            Some(step_id) if step_id == session.step_id => Ok(()),
+            Some(step_id) => bail!(
+                "Active step {} does not match session {}",
+                step_id,
+                session.step_id
+            ),
+            None => bail!("No active streaming session"),
+        }
+    }
+
+    fn ensure_idle(&self) -> Result<()> {
+        if self.active_step.is_some() {
+            bail!("Cannot perform recovery while streaming");
+        }
+        Ok(())
     }
 
     /// Check for and recover incomplete streams after a crash
@@ -433,24 +347,15 @@ impl StreamJournal {
     ///
     /// `Some(RecoveredStream)` if there are unsealed entries, `None` otherwise.
     pub fn recover(&self) -> Option<RecoveredStream> {
-        // Find the most recent unsealed step
-        let result: Option<(StepId, u64)> = self
-            .db
-            .query_row(
-                "SELECT step_id, MAX(seq) FROM stream_journal
-                 WHERE sealed = 0
-                 GROUP BY step_id
-                 ORDER BY step_id DESC
-                 LIMIT 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .ok();
+        if self.active_step.is_some() {
+            return None;
+        }
 
-        let (step_id, last_seq) = result?;
+        // Find the most recent unsealed step
+        let (step_id, last_seq) = self.latest_unsealed_step().ok()??;
 
         // Collect partial text
-        let partial_text = self.collect_text(step_id).ok()?;
+        let partial_text = collect_text(&self.db, step_id).ok()?;
 
         // Check if stream has a terminal event (done or error)
         let is_complete: bool = self
@@ -507,96 +412,100 @@ impl StreamJournal {
         Ok(deleted as u64)
     }
 
-    /// Get the current journal state
-    pub fn state(&self) -> &JournalState {
-        &self.state
-    }
+}
 
-    /// Allocate the next step ID
-    ///
-    /// This atomically increments the step counter and returns the new ID.
-    pub fn next_step_id(&self) -> Result<StepId> {
-        let step_id: StepId = self
-            .db
-            .query_row(
-                "UPDATE step_counter SET next_step_id = next_step_id + 1
-                 WHERE id = 1
-                 RETURNING next_step_id - 1",
-                [],
-                |row| row.get(0),
-            )
-            .context("Failed to allocate next step ID")?;
+fn append_delta(db: &Connection, delta: &StreamDelta) -> Result<()> {
+    let created_at = system_time_to_iso8601(delta.timestamp);
 
-        Ok(step_id)
-    }
+    db.execute(
+        "INSERT INTO stream_journal (step_id, seq, event_type, content, created_at, sealed)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+        params![
+            delta.step_id,
+            delta.seq as i64,
+            delta.event.event_type(),
+            delta.event.content(),
+            created_at
+        ],
+    )
+    .with_context(|| {
+        format!(
+            "Failed to insert delta for step {} seq {}",
+            delta.step_id, delta.seq
+        )
+    })?;
 
-    /// Abandon the current streaming session without sealing
-    ///
-    /// This leaves the entries unsealed so they can be recovered later.
-    /// Useful when an error occurs and we want to abort.
-    #[cfg(test)]
-    pub fn abandon(&mut self) {
-        if let JournalState::Streaming { .. } = &self.state {
-            self.state = JournalState::Empty;
-        }
-    }
+    Ok(())
+}
 
-    /// Delete all unsealed entries for a step (discard recovery data)
-    pub fn discard_unsealed(&mut self, step_id: StepId) -> Result<u64> {
-        let deleted = self
-            .db
-            .execute(
-                "DELETE FROM stream_journal WHERE step_id = ?1 AND sealed = 0",
-                params![step_id],
-            )
-            .with_context(|| format!("Failed to discard unsealed entries for step {}", step_id))?;
+fn collect_text(db: &Connection, step_id: StepId) -> Result<String> {
+    let mut stmt = db
+        .prepare(
+            "SELECT content FROM stream_journal
+             WHERE step_id = ?1 AND event_type = 'text_delta'
+             ORDER BY seq ASC",
+        )
+        .context("Failed to prepare text collection query")?;
 
-        // If we discarded the current streaming step, reset state
-        if let JournalState::Streaming {
-            step_id: current, ..
-        } = &self.state
-            && *current == step_id
-        {
-            self.state = JournalState::Empty;
-        }
+    let contents: Vec<String> = stmt
+        .query_map(params![step_id], |row| row.get(0))
+        .context("Failed to query text deltas")?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("Failed to collect text deltas")?;
 
-        Ok(deleted as u64)
-    }
+    Ok(contents.join(""))
+}
 
-    /// Get statistics about the journal
-    pub fn stats(&self) -> Result<JournalStats> {
-        let total_entries: i64 = self
-            .db
-            .query_row("SELECT COUNT(*) FROM stream_journal", [], |row| row.get(0))
-            .context("Failed to count entries")?;
+fn seal_step(db: &Connection, step_id: StepId) -> Result<()> {
+    db.execute(
+        "UPDATE stream_journal SET sealed = 1 WHERE step_id = ?1 AND sealed = 0",
+        params![step_id],
+    )
+    .with_context(|| format!("Failed to seal step {}", step_id))?;
 
-        let sealed_entries: i64 = self
-            .db
-            .query_row(
-                "SELECT COUNT(*) FROM stream_journal WHERE sealed = 1",
-                [],
-                |row| row.get(0),
-            )
-            .context("Failed to count sealed entries")?;
+    Ok(())
+}
 
-        let unsealed_entries = total_entries - sealed_entries;
+fn discard_step(db: &Connection, step_id: StepId) -> Result<u64> {
+    let deleted = db
+        .execute(
+            "DELETE FROM stream_journal WHERE step_id = ?1 AND sealed = 0",
+            params![step_id],
+        )
+        .with_context(|| format!("Failed to discard unsealed entries for step {}", step_id))?;
 
-        let current_step_id: StepId = self
-            .db
-            .query_row(
-                "SELECT next_step_id - 1 FROM step_counter WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .context("Failed to get current step ID")?;
+    Ok(deleted as u64)
+}
 
-        Ok(JournalStats {
-            total_entries: total_entries as u64,
-            sealed_entries: sealed_entries as u64,
-            unsealed_entries: unsealed_entries as u64,
-            current_step_id,
-        })
-    }
+fn stats_for_db(db: &Connection) -> Result<JournalStats> {
+    let total_entries: i64 = db
+        .query_row("SELECT COUNT(*) FROM stream_journal", [], |row| row.get(0))
+        .context("Failed to count entries")?;
+
+    let sealed_entries: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM stream_journal WHERE sealed = 1",
+            [],
+            |row| row.get(0),
+        )
+        .context("Failed to count sealed entries")?;
+
+    let unsealed_entries = total_entries - sealed_entries;
+
+    let current_step_id: StepId = db
+        .query_row(
+            "SELECT next_step_id - 1 FROM step_counter WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .context("Failed to get current step ID")?;
+
+    Ok(JournalStats {
+        total_entries: total_entries as u64,
+        sealed_entries: sealed_entries as u64,
+        unsealed_entries: unsealed_entries as u64,
+        current_step_id,
+    })
 }
 
 /// Statistics about the journal
@@ -711,11 +620,23 @@ fn ymd_to_days(year: i32, month: u32, day: u32) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn unique_db_path(label: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        path.push(format!("forge_{label}_{stamp}.db"));
+        path
+    }
 
     #[test]
     fn test_open_in_memory() {
         let journal = StreamJournal::open_in_memory().unwrap();
-        assert!(matches!(journal.state(), JournalState::Empty));
+        assert!(journal.recover().is_none());
     }
 
     #[test]
@@ -732,151 +653,83 @@ mod tests {
     }
 
     #[test]
-    fn test_begin_step_sets_streaming_state() {
+    fn test_begin_session_returns_active_journal() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
-
-        let expected_step_id = journal.begin_session().unwrap().step_id();
-
-        match journal.state() {
-            JournalState::Streaming { step_id, seq } => {
-                assert_eq!(*step_id, expected_step_id);
-                assert_eq!(*seq, 0);
-            }
-            _ => panic!("Expected Streaming state"),
-        }
+        let active = journal.begin_session().unwrap();
+        assert_eq!(active.step_id(), 1);
     }
 
     #[test]
-    fn test_begin_step_fails_when_already_streaming() {
-        let mut journal = StreamJournal::open_in_memory().unwrap();
+    fn test_begin_session_fails_when_unsealed_exists() {
+        let db_path = unique_db_path("begin_session_unsealed");
+        let _ = fs::remove_file(&db_path);
 
-        let _session = journal.begin_session().unwrap();
+        {
+            let mut journal = StreamJournal::open(&db_path).unwrap();
+            let mut active = journal.begin_session().unwrap();
+            active.append_text(&mut journal, "Hello").unwrap();
+            // Drop without sealing to leave unsealed entries.
+        }
+
+        let mut journal = StreamJournal::open(&db_path).unwrap();
         let result = journal.begin_session();
-
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("already streaming")
-        );
+
+        let _ = fs::remove_file(&db_path);
     }
 
     #[test]
     fn test_append_delta_succeeds() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
+        let mut active = journal.begin_session().unwrap();
+        active.append_text(&mut journal, "Hello").unwrap();
 
-        let expected_step_id = journal.begin_session().unwrap().step_id();
-        let delta = StreamDelta::text(expected_step_id, 1, "Hello");
-        journal.append_delta(delta).unwrap();
-
-        match journal.state() {
-            JournalState::Streaming { step_id, seq } => {
-                assert_eq!(*step_id, expected_step_id);
-                assert_eq!(*seq, 1);
-            }
-            _ => panic!("Expected Streaming state"),
-        }
-    }
-
-    #[test]
-    fn test_append_delta_fails_wrong_step() {
-        let mut journal = StreamJournal::open_in_memory().unwrap();
-
-        let step_id = journal.begin_session().unwrap().step_id();
-        let delta = StreamDelta::text(step_id + 1, 1, "Hello"); // Wrong step_id
-
-        let result = journal.append_delta(delta);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("doesn't match"));
-    }
-
-    #[test]
-    fn test_append_delta_fails_wrong_seq() {
-        let mut journal = StreamJournal::open_in_memory().unwrap();
-
-        let step_id = journal.begin_session().unwrap().step_id();
-        let delta = StreamDelta::text(step_id, 5, "Hello"); // Wrong seq (should be 1)
-
-        let result = journal.append_delta(delta);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("seq"));
-    }
-
-    #[test]
-    fn test_append_delta_fails_no_session() {
-        let mut journal = StreamJournal::open_in_memory().unwrap();
-
-        let delta = StreamDelta::text(1, 1, "Hello");
-        let result = journal.append_delta(delta);
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no active"));
+        let stats = journal.stats().unwrap();
+        assert_eq!(stats.total_entries, 1);
+        assert_eq!(stats.unsealed_entries, 1);
     }
 
     #[test]
     fn test_seal_returns_accumulated_text() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
 
-        let step_id = journal.begin_session().unwrap().step_id();
-        journal
-            .append_delta(StreamDelta::text(step_id, 1, "Hello"))
-            .unwrap();
-        journal
-            .append_delta(StreamDelta::text(step_id, 2, " "))
-            .unwrap();
-        journal
-            .append_delta(StreamDelta::text(step_id, 3, "World"))
-            .unwrap();
-        journal.append_delta(StreamDelta::done(step_id, 4)).unwrap();
+        let mut active = journal.begin_session().unwrap();
+        active.append_text(&mut journal, "Hello").unwrap();
+        active.append_text(&mut journal, " ").unwrap();
+        active.append_text(&mut journal, "World").unwrap();
+        active.append_done(&mut journal).unwrap();
 
-        let text = journal.seal().unwrap();
+        let text = active.seal(&mut journal).unwrap();
         assert_eq!(text, "Hello World");
     }
 
     #[test]
-    fn test_seal_sets_sealed_state() {
+    fn test_seal_records_entries() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
 
-        let step_id = journal.begin_session().unwrap().step_id();
-        journal
-            .append_delta(StreamDelta::text(step_id, 1, "Test"))
-            .unwrap();
-        journal.seal().unwrap();
+        let mut active = journal.begin_session().unwrap();
+        active.append_text(&mut journal, "Test").unwrap();
+        let _text = active.seal(&mut journal).unwrap();
 
-        match journal.state() {
-            JournalState::Sealed {
-                step_id: sealed_step,
-            } => {
-                assert_eq!(*sealed_step, step_id);
-            }
-            _ => panic!("Expected Sealed state"),
-        }
-    }
-
-    #[test]
-    fn test_seal_fails_no_session() {
-        let mut journal = StreamJournal::open_in_memory().unwrap();
-
-        let result = journal.seal();
-        assert!(result.is_err());
+        let stats = journal.stats().unwrap();
+        assert_eq!(stats.sealed_entries, 1);
+        assert_eq!(stats.unsealed_entries, 0);
     }
 
     #[test]
     fn test_recover_finds_unsealed_stream() {
-        let mut journal = StreamJournal::open_in_memory().unwrap();
+        let db_path = unique_db_path("recover_incomplete");
+        let _ = fs::remove_file(&db_path);
 
-        // Start a stream but don't seal it
-        let step_id = journal.begin_session().unwrap().step_id();
-        journal
-            .append_delta(StreamDelta::text(step_id, 1, "Partial"))
-            .unwrap();
-        journal
-            .append_delta(StreamDelta::text(step_id, 2, " response"))
-            .unwrap();
-        journal.abandon(); // Simulate crash by abandoning
+        {
+            let mut journal = StreamJournal::open(&db_path).unwrap();
+            let mut active = journal.begin_session().unwrap();
+            active.append_text(&mut journal, "Partial").unwrap();
+            active.append_text(&mut journal, " response").unwrap();
+            // Drop without sealing to simulate a crash.
+        }
 
-        // Recovery should find the unsealed stream
+        let journal = StreamJournal::open(&db_path).unwrap();
         let recovered = journal.recover().unwrap();
         match recovered {
             RecoveredStream::Incomplete {
@@ -884,26 +737,30 @@ mod tests {
                 partial_text,
                 last_seq,
             } => {
-                assert_eq!(recovered_step, step_id);
+                assert_eq!(recovered_step, 1);
                 assert_eq!(partial_text, "Partial response");
                 assert_eq!(last_seq, 2);
             }
             _ => panic!("Expected incomplete recovery"),
         }
+
+        let _ = fs::remove_file(&db_path);
     }
 
     #[test]
     fn test_recover_detects_complete_but_unsealed() {
-        let mut journal = StreamJournal::open_in_memory().unwrap();
+        let db_path = unique_db_path("recover_complete");
+        let _ = fs::remove_file(&db_path);
 
-        // Start a stream with done marker but don't seal
-        let step_id = journal.begin_session().unwrap().step_id();
-        journal
-            .append_delta(StreamDelta::text(step_id, 1, "Complete"))
-            .unwrap();
-        journal.append_delta(StreamDelta::done(step_id, 2)).unwrap();
-        journal.abandon();
+        {
+            let mut journal = StreamJournal::open(&db_path).unwrap();
+            let mut active = journal.begin_session().unwrap();
+            active.append_text(&mut journal, "Complete").unwrap();
+            active.append_done(&mut journal).unwrap();
+            // Drop without sealing.
+        }
 
+        let journal = StreamJournal::open(&db_path).unwrap();
         let recovered = journal.recover().unwrap();
         match recovered {
             RecoveredStream::Complete { partial_text, .. } => {
@@ -911,96 +768,97 @@ mod tests {
             }
             _ => panic!("Expected complete recovery"),
         }
+
+        let _ = fs::remove_file(&db_path);
     }
 
     #[test]
     fn test_recover_returns_none_when_all_sealed() {
-        let mut journal = StreamJournal::open_in_memory().unwrap();
+        let db_path = unique_db_path("recover_none");
+        let _ = fs::remove_file(&db_path);
 
-        let step_id = journal.begin_session().unwrap().step_id();
-        journal
-            .append_delta(StreamDelta::text(step_id, 1, "Test"))
-            .unwrap();
-        journal.seal().unwrap();
+        {
+            let mut journal = StreamJournal::open(&db_path).unwrap();
+            let mut active = journal.begin_session().unwrap();
+            active.append_text(&mut journal, "Test").unwrap();
+            let _text = active.seal(&mut journal).unwrap();
+        }
 
+        let journal = StreamJournal::open(&db_path).unwrap();
         assert!(journal.recover().is_none());
+
+        let _ = fs::remove_file(&db_path);
     }
 
     #[test]
     fn test_prune_removes_old_sealed_entries() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
 
-        // Create and seal a stream
-        let step_id = journal.begin_session().unwrap().step_id();
-        journal
-            .append_delta(StreamDelta::text(step_id, 1, "Old"))
-            .unwrap();
-        journal.seal().unwrap();
+        let mut active = journal.begin_session().unwrap();
+        active.append_text(&mut journal, "Old").unwrap();
+        let _text = active.seal(&mut journal).unwrap();
 
-        // Prune with zero duration should remove everything sealed
         let deleted = journal.prune(Duration::from_secs(0)).unwrap();
         assert!(deleted > 0);
 
-        // Stats should show no sealed entries
         let stats = journal.stats().unwrap();
         assert_eq!(stats.sealed_entries, 0);
     }
 
     #[test]
     fn test_prune_preserves_unsealed_entries() {
-        let mut journal = StreamJournal::open_in_memory().unwrap();
+        let db_path = unique_db_path("prune_unsealed");
+        let _ = fs::remove_file(&db_path);
 
-        // Create but don't seal
-        let step_id = journal.begin_session().unwrap().step_id();
-        journal
-            .append_delta(StreamDelta::text(step_id, 1, "Unsealed"))
-            .unwrap();
-        journal.abandon();
+        {
+            let mut journal = StreamJournal::open(&db_path).unwrap();
+            let mut active = journal.begin_session().unwrap();
+            active.append_text(&mut journal, "Unsealed").unwrap();
+            // Drop without sealing.
+        }
 
-        // Prune should not affect unsealed entries
+        let mut journal = StreamJournal::open(&db_path).unwrap();
         let deleted = journal.prune(Duration::from_secs(0)).unwrap();
         assert_eq!(deleted, 0);
 
         let stats = journal.stats().unwrap();
         assert_eq!(stats.unsealed_entries, 1);
+
+        let _ = fs::remove_file(&db_path);
     }
 
     #[test]
     fn test_discard_unsealed() {
-        let mut journal = StreamJournal::open_in_memory().unwrap();
+        let db_path = unique_db_path("discard_unsealed");
+        let _ = fs::remove_file(&db_path);
 
-        let step_id = journal.begin_session().unwrap().step_id();
-        journal
-            .append_delta(StreamDelta::text(step_id, 1, "Discard me"))
-            .unwrap();
-        journal
-            .append_delta(StreamDelta::text(step_id, 2, "!"))
-            .unwrap();
+        {
+            let mut journal = StreamJournal::open(&db_path).unwrap();
+            let mut active = journal.begin_session().unwrap();
+            active.append_text(&mut journal, "Discard me").unwrap();
+            active.append_text(&mut journal, "!").unwrap();
+            // Drop without sealing.
+        }
 
-        let deleted = journal.discard_unsealed(step_id).unwrap();
+        let mut journal = StreamJournal::open(&db_path).unwrap();
+        let deleted = journal.discard_unsealed(1).unwrap();
         assert_eq!(deleted, 2);
-
-        assert!(matches!(journal.state(), JournalState::Empty));
         assert!(journal.recover().is_none());
+
+        let _ = fs::remove_file(&db_path);
     }
 
     #[test]
     fn test_multiple_steps() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
 
-        // First step
-        let step_id = journal.begin_session().unwrap().step_id();
-        journal
-            .append_delta(StreamDelta::text(step_id, 1, "First"))
-            .unwrap();
-        journal.seal().unwrap();
+        let mut active = journal.begin_session().unwrap();
+        active.append_text(&mut journal, "First").unwrap();
+        let _text = active.seal(&mut journal).unwrap();
 
-        // Second step
-        let step_id2 = journal.begin_session().unwrap().step_id();
-        journal
-            .append_delta(StreamDelta::text(step_id2, 1, "Second"))
-            .unwrap();
-        let text = journal.seal().unwrap();
+        let mut active = journal.begin_session().unwrap();
+        active.append_text(&mut journal, "Second").unwrap();
+        let text = active.seal(&mut journal).unwrap();
 
         assert_eq!(text, "Second");
     }
@@ -1009,24 +867,19 @@ mod tests {
     fn test_stats() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
 
-        // Create and seal a step
-        let id = journal.begin_session().unwrap().step_id();
-        journal.append_delta(StreamDelta::text(id, 1, "A")).unwrap();
-        journal.append_delta(StreamDelta::text(id, 2, "B")).unwrap();
-        journal.seal().unwrap();
+        let mut active = journal.begin_session().unwrap();
+        active.append_text(&mut journal, "A").unwrap();
+        active.append_text(&mut journal, "B").unwrap();
+        let _text = active.seal(&mut journal).unwrap();
 
-        // Create another step, unsealed
-        let id2 = journal.begin_session().unwrap().step_id();
-        journal
-            .append_delta(StreamDelta::text(id2, 1, "C"))
-            .unwrap();
-        journal.abandon();
+        let mut active = journal.begin_session().unwrap();
+        active.append_text(&mut journal, "C").unwrap();
 
         let stats = journal.stats().unwrap();
         assert_eq!(stats.total_entries, 3);
         assert_eq!(stats.sealed_entries, 2);
         assert_eq!(stats.unsealed_entries, 1);
-        assert_eq!(stats.current_step_id, id2);
+        assert_eq!(stats.current_step_id, active.step_id());
     }
 
     #[test]
@@ -1035,7 +888,6 @@ mod tests {
         let iso = system_time_to_iso8601(original);
         let parsed = iso8601_to_system_time(&iso).unwrap();
 
-        // Should be within 1 second (we lose sub-millisecond precision)
         let diff = if original > parsed {
             original.duration_since(parsed).unwrap()
         } else {
@@ -1045,43 +897,17 @@ mod tests {
     }
 
     #[test]
-    fn test_stream_delta_constructors() {
-        let text = StreamDelta::text(1, 1, "Hello");
-        assert!(matches!(
-            text.event,
-            StreamDeltaEvent::TextDelta(ref t) if t == "Hello"
-        ));
-
-        let done = StreamDelta::done(1, 2);
-        assert!(matches!(done.event, StreamDeltaEvent::Done));
-
-        let error = StreamDelta::error(1, 3, "Something went wrong");
-        assert!(matches!(
-            error.event,
-            StreamDeltaEvent::Error(ref e) if e == "Something went wrong"
-        ));
-    }
-
-    #[test]
     fn test_persistence_across_instances() {
-        use std::fs;
-        let temp_dir = std::env::temp_dir();
-        let db_path = temp_dir.join("test_journal.db");
-
-        // Clean up any previous test
+        let db_path = unique_db_path("persist");
         let _ = fs::remove_file(&db_path);
 
-        // Create and populate journal
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
-            let step_id = journal.begin_session().unwrap().step_id();
-            journal
-                .append_delta(StreamDelta::text(step_id, 1, "Persisted"))
-                .unwrap();
-            // Don't seal - simulate crash
+            let mut active = journal.begin_session().unwrap();
+            active.append_text(&mut journal, "Persisted").unwrap();
+            // Drop without sealing.
         }
 
-        // Open new instance and recover
         {
             let journal = StreamJournal::open(&db_path).unwrap();
             let recovered = journal.recover().unwrap();
@@ -1098,53 +924,50 @@ mod tests {
             }
         }
 
-        // Clean up
         let _ = fs::remove_file(&db_path);
     }
 
     #[test]
     fn test_error_event_in_stream() {
-        let mut journal = StreamJournal::open_in_memory().unwrap();
+        let db_path = unique_db_path("error_event");
+        let _ = fs::remove_file(&db_path);
 
-        let step_id = journal.begin_session().unwrap().step_id();
-        journal
-            .append_delta(StreamDelta::text(step_id, 1, "Start"))
-            .unwrap();
-        journal
-            .append_delta(StreamDelta::error(step_id, 2, "API Error"))
-            .unwrap();
-        journal.abandon();
+        {
+            let mut journal = StreamJournal::open(&db_path).unwrap();
+            let mut active = journal.begin_session().unwrap();
+            active.append_text(&mut journal, "Start").unwrap();
+            active.append_error(&mut journal, "API Error").unwrap();
+            // Drop without sealing.
+        }
 
+        let journal = StreamJournal::open(&db_path).unwrap();
         let recovered = journal.recover().unwrap();
         match recovered {
             RecoveredStream::Complete { partial_text, .. } => {
-                // Error is a terminal event
                 assert_eq!(partial_text, "Start");
             }
             _ => panic!("Expected complete recovery"),
         }
+
+        let _ = fs::remove_file(&db_path);
     }
 
     #[test]
     fn test_empty_stream_seals_to_empty_string() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
 
-        let step_id = journal.begin_session().unwrap().step_id();
-        journal.append_delta(StreamDelta::done(step_id, 1)).unwrap();
+        let mut active = journal.begin_session().unwrap();
+        active.append_done(&mut journal).unwrap();
 
-        let text = journal.seal().unwrap();
+        let text = active.seal(&mut journal).unwrap();
         assert!(text.is_empty());
     }
 
     #[test]
     fn test_step_id_counter_persistence() {
-        use std::fs;
-        let temp_dir = std::env::temp_dir();
-        let db_path = temp_dir.join("test_counter.db");
-
+        let db_path = unique_db_path("counter");
         let _ = fs::remove_file(&db_path);
 
-        // Allocate some IDs
         {
             let journal = StreamJournal::open(&db_path).unwrap();
             assert_eq!(journal.next_step_id().unwrap(), 1);
@@ -1152,7 +975,6 @@ mod tests {
             assert_eq!(journal.next_step_id().unwrap(), 3);
         }
 
-        // Reopen and continue
         {
             let journal = StreamJournal::open(&db_path).unwrap();
             assert_eq!(journal.next_step_id().unwrap(), 4);

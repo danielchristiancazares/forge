@@ -20,7 +20,23 @@
 - `cargo clippy -- -D warnings`: lint and fail on warnings.
 
 Configuration:
-- Set `ANTHROPIC_API_KEY` to enable API-backed behavior (the app reads it on startup).
+- Config file: `~/.forge/config.toml` (preferred; supports `${ENV_VAR}` expansion for API keys).
+- Env fallback: `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` are used if config keys are empty or missing.
+- Sample config:
+```
+[app]
+provider = "claude"
+model = "claude-sonnet-4-5-20250929"
+# ui mode: "full" or "inline"
+tui = "inline"
+
+[api_keys]
+anthropic = "${ANTHROPIC_API_KEY}"
+openai = "${OPENAI_API_KEY}"
+
+[context]
+infinity = true
+```
 - PowerShell example: `$env:ANTHROPIC_API_KEY="..."; $env:RUST_LOG="info"; cargo run`.
 - Set `FORGE_CONTEXT_INFINITY=0` to disable ContextInfinity (no summarization; basic history truncation).
 
