@@ -1,0 +1,12 @@
+---
+source: tests/ui_snapshots.rs
+expression: terminal.backend().to_string()
+---
+╭ Styled ────────────────────────────────────────╮
+│Bold and colored                                │
+│Plain text line                                 │
+│                                                │
+│                                                │
+│                                                │
+│                                                │
+╰────────────────────────────────────────────────╯

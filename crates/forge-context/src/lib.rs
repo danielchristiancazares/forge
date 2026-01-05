@@ -32,7 +32,7 @@ mod working_context;
 pub use history::{FullHistory, HistoryEntry, MessageId, Summary, SummaryId};
 pub use manager::{
     ContextAdaptation, ContextManager, ContextUsageStatus, PendingSummarization,
-    SummarizationNeeded, SummarizationScope,
+    PreparedContext, SummarizationNeeded, SummarizationScope,
 };
 pub use model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry, ResolvedModelLimits};
 pub use stream_journal::{

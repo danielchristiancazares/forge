@@ -6,7 +6,7 @@
 use std::sync::OnceLock;
 use tiktoken_rs::{CoreBPE, cl100k_base};
 
-use crate::message::Message;
+use forge_types::Message;
 
 /// Singleton encoder instance.
 ///

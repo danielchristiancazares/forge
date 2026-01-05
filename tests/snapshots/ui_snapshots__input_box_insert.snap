@@ -1,0 +1,9 @@
+---
+source: tests/ui_snapshots.rs
+expression: terminal.backend().to_string()
+---
+╭ INSERT ──────────────────────────────────────────────────╮
+│Hello, how can you help me today?                         │
+│                                                          │
+│                                                          │
+╰──────────────────────────────────────────────────────────╯

@@ -1,0 +1,10 @@
+[package]
+name = "forge-types"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92.0"
+description = "Core domain types for Forge - no IO, no async"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"

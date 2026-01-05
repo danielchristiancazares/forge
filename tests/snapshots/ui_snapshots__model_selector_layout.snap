@@ -1,0 +1,17 @@
+---
+source: tests/ui_snapshots.rs
+expression: terminal.backend().to_string()
+---
+
+
+
+
+
+
+
+          ╭ Select Model ────────────────────────╮
+          │                                      │
+          │▸ 1 Claude Sonnet                     │
+          │  2 GPT-5.1                           │
+          │                                      │
+          ╰──────────────────────────────────────╯

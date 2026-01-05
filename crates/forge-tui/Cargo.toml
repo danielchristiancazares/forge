@@ -1,0 +1,29 @@
+[package]
+name = "forge-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "TUI rendering and input handling for Forge"
+
+[dependencies]
+forge-engine = { path = "../forge-engine" }
+forge-types = { path = "../forge-types" }
+
+# TUI framework
+ratatui = "0.30"
+crossterm = "0.29"
+
+# Unicode handling
+unicode-width = "0.2"
+
+# Markdown parsing
+pulldown-cmark = "0.12"
+
+# Clipboard
+arboard = "3.4"
+
+# Async
+tokio = { version = "1.42", features = ["sync"] }
+
+# Error handling
+anyhow = "1.0"

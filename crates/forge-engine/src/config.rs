@@ -6,6 +6,10 @@ pub struct ForgeConfig {
     pub app: Option<AppConfig>,
     pub api_keys: Option<ApiKeys>,
     pub context: Option<ContextConfig>,
+    pub cache: Option<CacheConfig>,
+    pub thinking: Option<ThinkingConfig>,
+    pub anthropic: Option<AnthropicConfig>,
+    pub openai: Option<OpenAIConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -13,6 +17,8 @@ pub struct AppConfig {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub tui: Option<String>,
+    /// Maximum output tokens for responses. Overrides model default.
+    pub max_output_tokens: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -24,6 +30,54 @@ pub struct ApiKeys {
 #[derive(Debug, Default, Deserialize)]
 pub struct ContextConfig {
     pub infinity: Option<bool>,
+}
+
+/// Legacy configuration for prompt caching.
+/// Prefer [anthropic] cache_enabled going forward.
+#[derive(Debug, Default, Deserialize)]
+pub struct CacheConfig {
+    /// Enable prompt caching. Default: true for Claude, ignored for OpenAI.
+    pub enabled: Option<bool>,
+}
+
+/// Legacy configuration for extended thinking/reasoning.
+/// Prefer [anthropic] thinking_* fields going forward.
+#[derive(Debug, Default, Deserialize)]
+pub struct ThinkingConfig {
+    /// Enable extended thinking. Default: false.
+    pub enabled: Option<bool>,
+    /// Token budget for thinking. Default: 10000. Minimum: 1024.
+    pub budget_tokens: Option<u32>,
+}
+
+/// Anthropic/Claude request defaults.
+///
+/// ```toml
+/// [anthropic]
+/// cache_enabled = true
+/// thinking_enabled = false
+/// thinking_budget_tokens = 10000
+/// ```
+#[derive(Debug, Default, Deserialize)]
+pub struct AnthropicConfig {
+    pub cache_enabled: Option<bool>,
+    pub thinking_enabled: Option<bool>,
+    pub thinking_budget_tokens: Option<u32>,
+}
+
+/// OpenAI Responses API request defaults.
+///
+/// ```toml
+/// [openai]
+/// reasoning_effort = "high"
+/// verbosity = "high"
+/// truncation = "auto"
+/// ```
+#[derive(Debug, Default, Deserialize)]
+pub struct OpenAIConfig {
+    pub reasoning_effort: Option<String>,
+    pub verbosity: Option<String>,
+    pub truncation: Option<String>,
 }
 
 pub fn expand_env_vars(value: &str) -> String {

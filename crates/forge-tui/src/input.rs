@@ -1,8 +1,10 @@
+//! Input handling for Forge TUI.
+
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::time::Duration;
 
-use crate::app::{App, InputMode};
+use forge_engine::{App, InputMode};
 
 /// Handle terminal events
 /// Returns true if the app should quit
@@ -25,6 +27,7 @@ pub async fn handle_events(app: &mut App) -> Result<bool> {
             InputMode::Normal => handle_normal_mode(app, key),
             InputMode::Insert => handle_insert_mode(app, key),
             InputMode::Command => handle_command_mode(app, key),
+            InputMode::ModelSelect => handle_model_select_mode(app, key),
         }
     }
 
@@ -53,7 +56,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
             app.clear_status();
         }
         // Enter command mode
-        KeyCode::Char(':') => {
+        KeyCode::Char(':') | KeyCode::Char('/') => {
             app.enter_command_mode();
         }
         // Scroll up
@@ -181,5 +184,36 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
                 _ => {}
             }
         }
+    }
+}
+
+fn handle_model_select_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        // Cancel and return to normal mode
+        KeyCode::Esc => {
+            app.enter_normal_mode();
+        }
+        // Confirm selection
+        KeyCode::Enter => {
+            app.model_select_confirm();
+        }
+        // Move selection up
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.model_select_move_up();
+        }
+        // Move selection down
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.model_select_move_down();
+        }
+        // Direct selection with number keys
+        KeyCode::Char('1') => {
+            app.model_select_set_index(0);
+            app.model_select_confirm();
+        }
+        KeyCode::Char('2') => {
+            app.model_select_set_index(1);
+            app.model_select_confirm();
+        }
+        _ => {}
     }
 }

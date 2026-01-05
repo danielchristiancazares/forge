@@ -1,4 +1,4 @@
-//! Color theme and styling constants for the TUI
+//! Color theme and styling constants for the TUI.
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -13,6 +13,7 @@ pub mod colors {
     // Background colors
     pub const BG_DARK: Color = Color::Rgb(17, 17, 27); // Near black
     pub const BG_PANEL: Color = Color::Rgb(30, 30, 46); // Panel background
+    pub const BG_HIGHLIGHT: Color = Color::Rgb(44, 46, 68); // Row highlight
 
     // Text colors
     pub const TEXT_PRIMARY: Color = Color::Rgb(205, 214, 244); // Main text

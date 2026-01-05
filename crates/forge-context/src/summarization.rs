@@ -7,9 +7,11 @@
 use anyhow::{Result, anyhow};
 use reqwest::Client;
 use serde_json::json;
+use std::sync::OnceLock;
+use std::time::Duration;
 
-use crate::message::Message;
-use crate::provider::{ApiConfig, Provider};
+use forge_providers::ApiConfig;
+use forge_types::{Message, Provider};
 
 use super::MessageId;
 
@@ -17,9 +19,23 @@ use super::MessageId;
 const CLAUDE_SUMMARIZATION_MODEL: &str = "claude-3-haiku-20240307";
 const OPENAI_SUMMARIZATION_MODEL: &str = "gpt-4o-mini";
 
+const MIN_SUMMARY_TOKENS: u32 = 64;
+const MAX_SUMMARY_TOKENS: u32 = 2048;
+const SUMMARY_TIMEOUT_SECS: u64 = 60;
+
 /// API endpoints.
 const CLAUDE_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const OPENAI_API_URL: &str = "https://api.openai.com/v1/chat/completions";
+
+fn http_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .timeout(Duration::from_secs(SUMMARY_TIMEOUT_SECS))
+            .build()
+            .expect("build summarization client")
+    })
+}
 
 /// Build a summarization prompt for a slice of messages.
 ///
@@ -99,13 +115,26 @@ pub async fn generate_summary(
 
     let (system_instruction, conversation_text) =
         build_summarization_prompt(messages, target_tokens);
+    let max_tokens = target_tokens.clamp(MIN_SUMMARY_TOKENS, MAX_SUMMARY_TOKENS);
 
     match config.provider() {
         Provider::Claude => {
-            generate_summary_claude(config.api_key(), &system_instruction, &conversation_text).await
+            generate_summary_claude(
+                config.api_key(),
+                &system_instruction,
+                &conversation_text,
+                max_tokens,
+            )
+            .await
         }
         Provider::OpenAI => {
-            generate_summary_openai(config.api_key(), &system_instruction, &conversation_text).await
+            generate_summary_openai(
+                config.api_key(),
+                &system_instruction,
+                &conversation_text,
+                max_tokens,
+            )
+            .await
         }
     }
 }
@@ -115,12 +144,13 @@ async fn generate_summary_claude(
     api_key: &str,
     system_instruction: &str,
     conversation_text: &str,
+    max_tokens: u32,
 ) -> Result<String> {
-    let client = Client::new();
+    let client = http_client();
 
     let body = json!({
         "model": CLAUDE_SUMMARIZATION_MODEL,
-        "max_tokens": 2048,
+        "max_tokens": max_tokens,
         "stream": false,
         "system": system_instruction,
         "messages": [
@@ -167,12 +197,14 @@ async fn generate_summary_openai(
     api_key: &str,
     system_instruction: &str,
     conversation_text: &str,
+    max_tokens: u32,
 ) -> Result<String> {
-    let client = Client::new();
+    let client = http_client();
 
     let body = json!({
         "model": OPENAI_SUMMARIZATION_MODEL,
         "stream": false,
+        "max_tokens": max_tokens,
         "messages": [
             {
                 "role": "system",
@@ -230,12 +262,12 @@ mod tests {
     fn make_test_messages() -> Vec<(MessageId, Message)> {
         vec![
             (
-                MessageId::new(0),
+                MessageId::new_for_test(0),
                 Message::try_user("Hello, can you help me with Rust?")
                     .expect("non-empty test message"),
             ),
             (
-                MessageId::new(1),
+                MessageId::new_for_test(1),
                 Message::try_user("I need to understand lifetimes")
                     .expect("non-empty test message"),
             ),
@@ -299,15 +331,15 @@ mod tests {
     fn test_build_prompt_preserves_message_order() {
         let messages = vec![
             (
-                MessageId::new(5),
+                MessageId::new_for_test(5),
                 Message::try_user("First message").expect("non-empty test message"),
             ),
             (
-                MessageId::new(10),
+                MessageId::new_for_test(10),
                 Message::try_user("Second message").expect("non-empty test message"),
             ),
             (
-                MessageId::new(15),
+                MessageId::new_for_test(15),
                 Message::try_user("Third message").expect("non-empty test message"),
             ),
         ];
@@ -324,7 +356,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_summary_empty_messages() {
-        use crate::provider::ApiKey;
+        use forge_types::ApiKey;
 
         let model = Provider::Claude
             .parse_model("claude-sonnet-4-20250514")

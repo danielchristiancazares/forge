@@ -1,0 +1,24 @@
+---
+source: tests/ui_snapshots.rs
+expression: terminal.backend().to_string()
+---
+╭──────────────────────────────────────────────────────────╮
+│                                                          │
+│ ○ You                                                    │
+│                                                          │
+│    What is Rust?                                         │
+│                                                          │
+│                                                          │
+│ ◆ Claude                                                 │
+│                                                          │
+│    Rust is a systems programming language focused on     │
+│    safety, speed, and concurrency. It achieves memory    │
+│    safety without garbage collection.                    │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+╰──────────────────────────────────────────────────────────╯

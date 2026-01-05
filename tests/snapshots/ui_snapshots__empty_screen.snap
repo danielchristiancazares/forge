@@ -1,0 +1,5 @@
+---
+source: tests/ui_snapshots.rs
+expression: terminal.backend().to_string()
+---
+

@@ -1,0 +1,36 @@
+[package]
+name = "forge-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Core state machine and orchestration for Forge"
+
+[dependencies]
+forge-types = { path = "../forge-types" }
+forge-providers = { path = "../forge-providers" }
+forge-context = { path = "../forge-context" }
+
+# Async runtime
+tokio = { version = "1.42", features = ["sync", "rt"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Async utilities
+futures-util = "0.3"
+
+# Data directory
+dirs = "5.0"
+
+# Logging
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1.42", features = ["full"] }
+tempfile = "3.15"

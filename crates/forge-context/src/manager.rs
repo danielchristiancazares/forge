@@ -10,12 +10,17 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::message::{Message, NonEmptyString};
+use forge_types::{Message, NonEmptyString};
 
 use super::history::{FullHistory, MessageId, Summary, SummaryId};
 use super::model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry};
 use super::token_counter::TokenCounter;
-use super::working_context::{ContextSegment, ContextUsage, WorkingContext};
+use super::working_context::{ContextSegment, ContextUsage, WorkingContext, SUMMARY_PREFIX};
+
+const MIN_SUMMARY_RATIO: f32 = 0.01;
+const MAX_SUMMARY_RATIO: f32 = 0.95;
+const MIN_SUMMARY_TOKENS: u32 = 64;
+const MAX_SUMMARY_TOKENS: u32 = 2048;
 
 /// Configuration for summarization behavior.
 #[derive(Debug, Clone)]
@@ -73,7 +78,6 @@ pub enum ContextAdaptation {
 /// Pending summarization request for async processing.
 #[derive(Debug)]
 pub struct PendingSummarization {
-    pub summary_id: SummaryId,
     pub scope: SummarizationScope,
     pub messages: Vec<(MessageId, Message)>,
     pub original_tokens: u32,
@@ -202,25 +206,22 @@ impl ContextManager {
         let mut ctx = WorkingContext::new(budget);
 
         let entries = self.history.entries();
-        let preserve_count = self.summarization_config.preserve_recent.min(entries.len());
-        let recent_start = entries.len().saturating_sub(preserve_count);
+        let max_preserve = self.summarization_config.preserve_recent.min(entries.len());
+        let mut preserve_count = 0usize;
+        let mut tokens_for_recent = 0u32;
 
-        // Phase 1: Always include the N most recent messages.
-        let tokens_for_recent: u32 = entries[recent_start..]
-            .iter()
-            .map(|e| e.token_count())
-            .sum();
-
-        // Check if even recent messages exceed budget.
-        if tokens_for_recent > budget {
-            return Err(SummarizationNeeded {
-                excess_tokens: tokens_for_recent - budget,
-                messages_to_summarize: entries[recent_start..].iter().map(|e| e.id()).collect(),
-                suggestion: "Recent messages alone exceed context window".to_string(),
-            });
+        // Phase 1: Prefer to include up to N most recent messages if they fit.
+        for entry in entries.iter().rev().take(max_preserve) {
+            let next_tokens = tokens_for_recent.saturating_add(entry.token_count());
+            if next_tokens > budget {
+                break;
+            }
+            tokens_for_recent = next_tokens;
+            preserve_count += 1;
         }
 
-        let remaining_budget = budget - tokens_for_recent;
+        let recent_start = entries.len().saturating_sub(preserve_count);
+        let remaining_budget = budget.saturating_sub(tokens_for_recent);
 
         #[derive(Debug)]
         enum Block {
@@ -357,10 +358,12 @@ impl ContextManager {
             need_summary.sort_by_key(|id| id.as_u64());
             need_summary.dedup();
 
-            let excess_tokens: u32 = need_summary
+            let tokens_to_summarize: u32 = need_summary
                 .iter()
                 .map(|id| self.history.get_entry(*id).token_count())
                 .sum();
+            let available_left = remaining_budget.saturating_sub(tokens_used);
+            let excess_tokens = tokens_to_summarize.saturating_sub(available_left);
 
             let msg_count = need_summary.len();
             return Err(SummarizationNeeded {
@@ -424,21 +427,22 @@ impl ContextManager {
             .map(|id| self.history.get_entry(*id).token_count())
             .sum();
 
-        let target_tokens =
-            (original_tokens as f32 * self.summarization_config.target_ratio) as u32;
-
-        let summary_id = self.history.allocate_summary_id();
+        let ratio = self
+            .summarization_config
+            .target_ratio
+            .clamp(MIN_SUMMARY_RATIO, MAX_SUMMARY_RATIO);
+        let target_tokens = ((original_tokens as f64) * ratio as f64).round() as u32;
+        let target_tokens = target_tokens.clamp(MIN_SUMMARY_TOKENS, MAX_SUMMARY_TOKENS);
 
         let first = ids.first().copied()?;
         let last = ids.last().copied()?;
-        let end_exclusive = MessageId::new(last.as_u64() + 1);
+        let end_exclusive = last.next();
         let scope = SummarizationScope {
             ids,
             range: first..end_exclusive,
         };
 
         Some(PendingSummarization {
-            summary_id,
             scope,
             messages,
             original_tokens,
@@ -449,12 +453,14 @@ impl ContextManager {
     /// Complete a summarization by adding the generated summary.
     pub fn complete_summarization(
         &mut self,
-        summary_id: SummaryId,
         scope: SummarizationScope,
         content: NonEmptyString,
         generated_by: String,
-    ) {
-        let token_count = self.counter.count_str(content.as_str());
+    ) -> Result<SummaryId> {
+        let injected = NonEmptyString::from(SUMMARY_PREFIX)
+            .append("\n")
+            .append(content.as_str());
+        let token_count = self.counter.count_message(&Message::system(injected));
 
         let SummarizationScope { ids, range } = scope;
 
@@ -463,6 +469,7 @@ impl ContextManager {
             .map(|id| self.history.get_entry(*id).token_count())
             .sum();
 
+        let summary_id = self.history.next_summary_id();
         let summary = Summary::new(
             summary_id,
             range,
@@ -472,7 +479,8 @@ impl ContextManager {
             generated_by,
         );
 
-        self.history.add_summary(summary);
+        self.history.add_summary(summary)?;
+        Ok(summary_id)
     }
 
     /// Try to restore summarized messages when budget allows.
@@ -498,7 +506,7 @@ impl ContextManager {
     }
 
     /// Build a working context proof for the current model.
-    pub(crate) fn prepare(&self) -> Result<PreparedContext<'_>, SummarizationNeeded> {
+    pub fn prepare(&self) -> Result<PreparedContext<'_>, SummarizationNeeded> {
         let working_context = self.build_working_context()?;
         Ok(PreparedContext {
             manager: self,
@@ -545,8 +553,19 @@ impl ContextManager {
 
     /// Save history to a JSON file.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
         let json = serde_json::to_string_pretty(&self.history)?;
-        std::fs::write(path, json)?;
+        let tmp_path = path.with_extension("tmp");
+        std::fs::write(&tmp_path, json)?;
+
+        if let Err(err) = std::fs::rename(&tmp_path, path) {
+            if path.exists() {
+                std::fs::remove_file(path)?;
+                std::fs::rename(&tmp_path, path)?;
+            } else {
+                return Err(err.into());
+            }
+        }
         Ok(())
     }
 

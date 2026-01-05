@@ -1,30 +1,172 @@
+//! Core engine for Forge - state machine and orchestration.
+//!
+//! This crate contains the App state machine without TUI dependencies.
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::future::{AbortHandle, Abortable};
+use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::context_infinity::{
-    ActiveJournal, ContextAdaptation, ContextManager, ContextUsageStatus, MessageId,
-    ModelLimitsSource, PendingSummarization, RecoveredStream, StreamJournal, SummarizationScope,
-    SummaryId, generate_summary, summarization_model,
+use config::OpenAIConfig;
+
+// Re-export from crates for public API
+pub use forge_context::{
+    ActiveJournal, ContextAdaptation, ContextManager, ContextUsageStatus, FullHistory, MessageId,
+    ModelLimits, ModelLimitsSource, ModelRegistry, PendingSummarization, PreparedContext,
+    RecoveredStream, StreamJournal, SummarizationNeeded, SummarizationScope,
+    TokenCounter, generate_summary, summarization_model,
 };
-use crate::message::{
-    Message, NonEmptyStaticStr, NonEmptyString, StreamFinishReason, StreamingMessage,
+pub use forge_providers::{self, ApiConfig};
+pub use forge_types::{
+    ApiKey, CacheHint, CacheableMessage, EmptyStringError, Message, ModelName, ModelNameKind,
+    NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort, OpenAIRequestOptions,
+    OpenAITextVerbosity, OpenAITruncation, OutputLimits, Provider, StreamEvent, StreamFinishReason,
 };
-use crate::config::ForgeConfig;
-use crate::provider::{ApiConfig, ApiKey, ModelName, ModelNameKind, Provider, StreamEvent};
+
+// Config types - passed in from caller
+mod config;
+pub use config::{AppConfig, ForgeConfig};
+
+// ============================================================================
+// StreamingMessage - async message being streamed
+// ============================================================================
+
+/// A message being streamed - existence proves streaming is active.
+/// Typestate: consuming this produces a complete assistant `Message`.
+#[derive(Debug)]
+pub struct StreamingMessage {
+    model: ModelName,
+    content: String,
+    timestamp: SystemTime,
+    receiver: mpsc::UnboundedReceiver<StreamEvent>,
+}
+
+impl StreamingMessage {
+    pub fn new(model: ModelName, receiver: mpsc::UnboundedReceiver<StreamEvent>) -> Self {
+        Self {
+            model,
+            content: String::new(),
+            timestamp: SystemTime::now(),
+            receiver,
+        }
+    }
+
+    pub fn provider(&self) -> Provider {
+        self.model.provider()
+    }
+
+    pub fn model_name(&self) -> &ModelName {
+        &self.model
+    }
+
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    pub fn try_recv_event(&mut self) -> Result<StreamEvent, mpsc::error::TryRecvError> {
+        self.receiver.try_recv()
+    }
+
+    pub fn apply_event(&mut self, event: StreamEvent) -> Option<StreamFinishReason> {
+        match event {
+            StreamEvent::TextDelta(text) => {
+                self.content.push_str(&text);
+                None
+            }
+            StreamEvent::ThinkingDelta(_) => {
+                // Silently consume thinking content - not displayed for now
+                None
+            }
+            StreamEvent::Done => Some(StreamFinishReason::Done),
+            StreamEvent::Error(err) => Some(StreamFinishReason::Error(err)),
+        }
+    }
+
+    /// Consume streaming message and produce a complete message.
+    pub fn into_message(self) -> Result<Message, forge_types::EmptyStringError> {
+        let content = NonEmptyString::new(self.content)?;
+        Ok(Message::assistant(self.model, content))
+    }
+}
+
+// ============================================================================
+// Modal Effect - animation state for TUI overlays
+// ============================================================================
+
+/// The kind of modal animation effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModalEffectKind {
+    PopScale,
+    SlideUp,
+}
+
+/// Modal animation effect state.
+#[derive(Debug, Clone)]
+pub struct ModalEffect {
+    kind: ModalEffectKind,
+    elapsed: Duration,
+    duration: Duration,
+}
+
+impl ModalEffect {
+    /// Create a pop-scale effect (used when entering model select).
+    pub fn pop_scale(duration: Duration) -> Self {
+        Self {
+            kind: ModalEffectKind::PopScale,
+            elapsed: Duration::ZERO,
+            duration,
+        }
+    }
+
+    /// Create a slide-up effect.
+    pub fn slide_up(duration: Duration) -> Self {
+        Self {
+            kind: ModalEffectKind::SlideUp,
+            elapsed: Duration::ZERO,
+            duration,
+        }
+    }
+
+    /// Advance the animation by the given delta time.
+    pub fn advance(&mut self, delta: Duration) {
+        self.elapsed = self.elapsed.saturating_add(delta);
+    }
+
+    /// Get the animation progress (0.0 to 1.0).
+    pub fn progress(&self) -> f32 {
+        if self.duration.is_zero() {
+            return 1.0;
+        }
+        let elapsed = self.elapsed.as_secs_f32();
+        let total = self.duration.as_secs_f32();
+        (elapsed / total).clamp(0.0, 1.0)
+    }
+
+    /// Check if the animation is finished.
+    pub fn is_finished(&self) -> bool {
+        self.elapsed >= self.duration
+    }
+
+    /// Get the effect kind.
+    pub fn kind(&self) -> ModalEffectKind {
+        self.kind
+    }
+}
+
+// ============================================================================
+// Summarization Types
+// ============================================================================
 
 /// A background summarization task.
 ///
 /// Holds the state for an in-progress summarization operation:
-/// - The summary ID that will be used when complete
 /// - The message IDs being summarized
 /// - The JoinHandle for the async task
 #[derive(Debug)]
 pub struct SummarizationTask {
-    summary_id: SummaryId,
     scope: SummarizationScope,
     generated_by: String,
     handle: tokio::task::JoinHandle<anyhow::Result<String>>,
@@ -53,11 +195,18 @@ const RECOVERY_COMPLETE_BADGE: NonEmptyStaticStr =
     NonEmptyStaticStr::new("[Recovered - stream completed but not finalized]");
 const RECOVERY_INCOMPLETE_BADGE: NonEmptyStaticStr =
     NonEmptyStaticStr::new("[Recovered - incomplete response from previous session]");
+const RECOVERY_ERROR_BADGE: NonEmptyStaticStr =
+    NonEmptyStaticStr::new("[Recovered - stream error from previous session]");
 const ABORTED_JOURNAL_BADGE: NonEmptyStaticStr =
     NonEmptyStaticStr::new("[Aborted - journal write failed]");
 const STREAM_ERROR_BADGE: NonEmptyStaticStr = NonEmptyStaticStr::new("[Stream error]");
 const EMPTY_RESPONSE_BADGE: NonEmptyStaticStr =
     NonEmptyStaticStr::new("[Empty response - API returned no content]");
+
+struct StreamErrorUi {
+    status: String,
+    message: NonEmptyString,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DataDirSource {
@@ -85,6 +234,7 @@ pub enum InputMode {
     Normal,
     Insert,
     Command,
+    ModelSelect,
 }
 
 #[derive(Debug, Default)]
@@ -197,11 +347,48 @@ impl DraftInput {
     }
 }
 
+/// Predefined model options for the model selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PredefinedModel {
+    ClaudeOpus,
+    Gpt52,
+}
+
+impl PredefinedModel {
+    pub const fn all() -> &'static [PredefinedModel] {
+        &[PredefinedModel::ClaudeOpus, PredefinedModel::Gpt52]
+    }
+
+    pub const fn display_name(&self) -> &'static str {
+        match self {
+            PredefinedModel::ClaudeOpus => "Anthropic Claude Opus 4.5",
+            PredefinedModel::Gpt52 => "OpenAI GPT 5.2",
+        }
+    }
+
+    pub fn to_model_name(&self) -> ModelName {
+        match self {
+            PredefinedModel::ClaudeOpus => {
+                ModelName::known(Provider::Claude, "claude-opus-4-5-20251101")
+            }
+            PredefinedModel::Gpt52 => ModelName::known(Provider::OpenAI, "gpt-5.2"),
+        }
+    }
+
+    pub const fn provider(&self) -> Provider {
+        match self {
+            PredefinedModel::ClaudeOpus => Provider::Claude,
+            PredefinedModel::Gpt52 => Provider::OpenAI,
+        }
+    }
+}
+
 #[derive(Debug)]
 enum InputState {
     Normal(DraftInput),
     Insert(DraftInput),
     Command { draft: DraftInput, command: String },
+    ModelSelect { draft: DraftInput, selected: usize },
 }
 
 impl Default for InputState {
@@ -216,20 +403,21 @@ impl InputState {
             InputState::Normal(_) => InputMode::Normal,
             InputState::Insert(_) => InputMode::Insert,
             InputState::Command { .. } => InputMode::Command,
+            InputState::ModelSelect { .. } => InputMode::ModelSelect,
         }
     }
 
     fn draft(&self) -> &DraftInput {
         match self {
             InputState::Normal(draft) | InputState::Insert(draft) => draft,
-            InputState::Command { draft, .. } => draft,
+            InputState::Command { draft, .. } | InputState::ModelSelect { draft, .. } => draft,
         }
     }
 
     fn draft_mut(&mut self) -> &mut DraftInput {
         match self {
             InputState::Normal(draft) | InputState::Insert(draft) => draft,
-            InputState::Command { draft, .. } => draft,
+            InputState::Command { draft, .. } | InputState::ModelSelect { draft, .. } => draft,
         }
     }
 
@@ -247,17 +435,28 @@ impl InputState {
         }
     }
 
+    fn model_select_index(&self) -> Option<usize> {
+        match self {
+            InputState::ModelSelect { selected, .. } => Some(*selected),
+            _ => None,
+        }
+    }
+
     fn into_normal(self) -> InputState {
         match self {
             InputState::Normal(draft) | InputState::Insert(draft) => InputState::Normal(draft),
-            InputState::Command { draft, .. } => InputState::Normal(draft),
+            InputState::Command { draft, .. } | InputState::ModelSelect { draft, .. } => {
+                InputState::Normal(draft)
+            }
         }
     }
 
     fn into_insert(self) -> InputState {
         match self {
             InputState::Normal(draft) | InputState::Insert(draft) => InputState::Insert(draft),
-            InputState::Command { draft, .. } => InputState::Insert(draft),
+            InputState::Command { draft, .. } | InputState::ModelSelect { draft, .. } => {
+                InputState::Insert(draft)
+            }
         }
     }
 
@@ -267,10 +466,24 @@ impl InputState {
                 draft,
                 command: String::new(),
             },
-            InputState::Command { draft, .. } => InputState::Command {
+            InputState::Command { draft, .. } | InputState::ModelSelect { draft, .. } => {
+                InputState::Command {
+                    draft,
+                    command: String::new(),
+                }
+            }
+        }
+    }
+
+    fn into_model_select(self) -> InputState {
+        match self {
+            InputState::Normal(draft) | InputState::Insert(draft) => InputState::ModelSelect {
                 draft,
-                command: String::new(),
+                selected: 0,
             },
+            InputState::Command { draft, .. } | InputState::ModelSelect { draft, .. } => {
+                InputState::ModelSelect { draft, selected: 0 }
+            }
         }
     }
 }
@@ -343,28 +556,32 @@ enum AppState {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum DisplayItem {
+pub enum DisplayItem {
     History(MessageId),
     Local(Message),
 }
 
 /// Proof that a command line was entered in Command mode.
 #[derive(Debug)]
-pub(crate) struct EnteredCommand {
+pub struct EnteredCommand {
     raw: String,
 }
 
+/// Proof token for Insert mode operations.
 #[derive(Debug)]
-pub(crate) struct InsertToken(());
+pub struct InsertToken(());
 
+/// Proof token for Command mode operations.
 #[derive(Debug)]
-pub(crate) struct CommandToken(());
+pub struct CommandToken(());
 
-pub(crate) struct InsertMode<'a> {
+/// Mode wrapper for safe insert operations.
+pub struct InsertMode<'a> {
     app: &'a mut App,
 }
 
-pub(crate) struct CommandMode<'a> {
+/// Mode wrapper for safe command operations.
+pub struct CommandMode<'a> {
     app: &'a mut App,
 }
 
@@ -375,6 +592,8 @@ pub struct App {
     scroll: ScrollState,
     scroll_max: u16,
     should_quit: bool,
+    /// Request to toggle between fullscreen and inline UI modes.
+    toggle_screen_mode: bool,
     status_message: Option<String>,
     api_keys: HashMap<Provider, String>,
     model: ModelName,
@@ -385,6 +604,17 @@ pub struct App {
     /// Stream journal for crash recovery.
     stream_journal: StreamJournal,
     state: AppState,
+    /// Validated output limits (max tokens + optional thinking budget).
+    /// Invariant: if thinking is enabled, budget < max_tokens.
+    output_limits: OutputLimits,
+    /// Whether prompt caching is enabled (for Claude).
+    cache_enabled: bool,
+    /// OpenAI request defaults (reasoning/verbosity/truncation).
+    openai_options: OpenAIRequestOptions,
+    /// Frame timing for animations.
+    last_frame: Instant,
+    /// Active modal animation effect.
+    modal_effect: Option<ModalEffect>,
 }
 
 impl App {
@@ -395,14 +625,14 @@ impl App {
         let mut api_keys = HashMap::new();
         if let Some(keys) = config.as_ref().and_then(|cfg| cfg.api_keys.as_ref()) {
             if let Some(key) = keys.anthropic.as_ref() {
-                let resolved = crate::config::expand_env_vars(key);
+                let resolved = config::expand_env_vars(key);
                 let trimmed = resolved.trim();
                 if !trimmed.is_empty() {
                     api_keys.insert(Provider::Claude, trimmed.to_string());
                 }
             }
             if let Some(key) = keys.openai.as_ref() {
-                let resolved = crate::config::expand_env_vars(key);
+                let resolved = config::expand_env_vars(key);
                 let trimmed = resolved.trim();
                 if !trimmed.is_empty() {
                     api_keys.insert(Provider::OpenAI, trimmed.to_string());
@@ -467,6 +697,67 @@ impl App {
             .and_then(|ctx| ctx.infinity)
             .unwrap_or_else(Self::context_infinity_enabled_from_env);
 
+        let anthropic_config = config.as_ref().and_then(|cfg| cfg.anthropic.as_ref());
+
+        // Load cache config (default: enabled)
+        let cache_enabled = anthropic_config
+            .and_then(|cfg| cfg.cache_enabled)
+            .or_else(|| {
+                config
+                    .as_ref()
+                    .and_then(|cfg| cfg.cache.as_ref())
+                    .and_then(|cache| cache.enabled)
+            })
+            .unwrap_or(true);
+
+        // Build OutputLimits at the boundary - validates invariants here, not at runtime
+        let output_limits = {
+            let max_output = config
+                .as_ref()
+                .and_then(|cfg| cfg.app.as_ref())
+                .and_then(|app| app.max_output_tokens)
+                .unwrap_or(16_000); // Default max output
+
+            let thinking_enabled = anthropic_config
+                .and_then(|cfg| cfg.thinking_enabled)
+                .or_else(|| {
+                    config
+                        .as_ref()
+                        .and_then(|cfg| cfg.thinking.as_ref())
+                        .and_then(|t| t.enabled)
+                })
+                .unwrap_or(false);
+
+            if thinking_enabled {
+                let budget = anthropic_config
+                    .and_then(|cfg| cfg.thinking_budget_tokens)
+                    .or_else(|| {
+                        config
+                            .as_ref()
+                            .and_then(|cfg| cfg.thinking.as_ref())
+                            .and_then(|t| t.budget_tokens)
+                    })
+                    .unwrap_or(10_000);
+
+                // Validate at boundary - if invalid, warn and fall back to no thinking
+                match OutputLimits::with_thinking(max_output, budget) {
+                    Ok(limits) => limits,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Invalid thinking config: {e}. Disabling extended thinking."
+                        );
+                        OutputLimits::new(max_output)
+                    }
+                }
+            } else {
+                OutputLimits::new(max_output)
+            }
+        };
+
+        let openai_options = Self::openai_request_options_from_config(
+            config.as_ref().and_then(|cfg| cfg.openai.as_ref()),
+        );
+
         let data_dir = Self::data_dir();
 
         // Initialize stream journal (required for streaming durability).
@@ -485,6 +776,7 @@ impl App {
             scroll: ScrollState::AutoBottom,
             scroll_max: 0,
             should_quit: false,
+            toggle_screen_mode: false,
             status_message: None,
             api_keys,
             model,
@@ -493,6 +785,11 @@ impl App {
             context_manager,
             stream_journal,
             state,
+            output_limits,
+            cache_enabled,
+            openai_options,
+            last_frame: Instant::now(),
+            modal_effect: None,
         };
 
         // Load previous session's history if available
@@ -543,6 +840,40 @@ impl App {
         }
     }
 
+    fn openai_request_options_from_config(config: Option<&OpenAIConfig>) -> OpenAIRequestOptions {
+        let reasoning_effort = config
+            .and_then(|cfg| cfg.reasoning_effort.as_deref())
+            .map(|raw| {
+                OpenAIReasoningEffort::parse(raw).unwrap_or_else(|| {
+                    tracing::warn!("Unknown OpenAI reasoning_effort in config: {raw}");
+                    OpenAIReasoningEffort::default()
+                })
+            })
+            .unwrap_or_default();
+
+        let verbosity = config
+            .and_then(|cfg| cfg.verbosity.as_deref())
+            .map(|raw| {
+                OpenAITextVerbosity::parse(raw).unwrap_or_else(|| {
+                    tracing::warn!("Unknown OpenAI verbosity in config: {raw}");
+                    OpenAITextVerbosity::default()
+                })
+            })
+            .unwrap_or_default();
+
+        let truncation = config
+            .and_then(|cfg| cfg.truncation.as_deref())
+            .map(|raw| {
+                OpenAITruncation::parse(raw).unwrap_or_else(|| {
+                    tracing::warn!("Unknown OpenAI truncation in config: {raw}");
+                    OpenAITruncation::default()
+                })
+            })
+            .unwrap_or_default();
+
+        OpenAIRequestOptions::new(reasoning_effort, verbosity, truncation)
+    }
+
     /// Save the conversation history to disk.
     pub fn save_history(&self) -> anyhow::Result<()> {
         let path = self.history_path();
@@ -562,7 +893,7 @@ impl App {
             return;
         }
 
-        match crate::context_infinity::ContextManager::load(&path, self.model.as_str()) {
+        match forge_context::ContextManager::load(&path, self.model.as_str()) {
             Ok(loaded_manager) => {
                 self.context_manager = loaded_manager;
                 self.rebuild_display_from_history();
@@ -599,29 +930,65 @@ impl App {
     /// Returns `Some(RecoveredStream)` if there was an incomplete stream that was recovered.
     /// The recovered partial response is added to the conversation with a warning badge.
     pub fn check_crash_recovery(&mut self) -> Option<RecoveredStream> {
-        let recovered = self.stream_journal.recover()?;
+        let recovered = match self.stream_journal.recover() {
+            Ok(Some(recovered)) => recovered,
+            Ok(None) => return None,
+            Err(e) => {
+                self.set_status(format!("Recovery failed: {e}"));
+                return None;
+            }
+        };
 
-        let (recovery_badge, step_id, last_seq, partial_text) = match &recovered {
+        let (recovery_badge, step_id, last_seq, partial_text, error_text) = match &recovered {
             RecoveredStream::Complete {
                 step_id,
                 partial_text,
                 last_seq,
-            } => (RECOVERY_COMPLETE_BADGE, *step_id, *last_seq, partial_text),
+            } => (
+                RECOVERY_COMPLETE_BADGE,
+                *step_id,
+                *last_seq,
+                partial_text.as_str(),
+                None,
+            ),
             RecoveredStream::Incomplete {
                 step_id,
                 partial_text,
                 last_seq,
-            } => (RECOVERY_INCOMPLETE_BADGE, *step_id, *last_seq, partial_text),
+            } => (
+                RECOVERY_INCOMPLETE_BADGE,
+                *step_id,
+                *last_seq,
+                partial_text.as_str(),
+                None,
+            ),
+            RecoveredStream::Errored {
+                step_id,
+                partial_text,
+                last_seq,
+                error,
+            } => (
+                RECOVERY_ERROR_BADGE,
+                *step_id,
+                *last_seq,
+                partial_text.as_str(),
+                Some(error.as_str()),
+            ),
         };
 
         // Add the partial response as an assistant message with recovery badge.
-        let recovered_content = if partial_text.is_empty() {
-            NonEmptyString::from(recovery_badge)
-        } else {
-            NonEmptyString::from(recovery_badge)
-                .append("\n\n")
-                .append(partial_text.as_str())
-        };
+        let mut recovered_content = NonEmptyString::from(recovery_badge);
+        if !partial_text.is_empty() {
+            recovered_content = recovered_content.append("\n\n").append(partial_text);
+        }
+        if let Some(error) = error_text {
+            if !error.is_empty() {
+                let error_line = format!("Error: {error}");
+                recovered_content = recovered_content
+                    .append("\n\n")
+                    .append(error_line.as_str());
+            }
+        }
 
         // Push recovered partial response as a completed assistant message.
         self.push_history_message(Message::assistant(self.model.clone(), recovered_content));
@@ -651,6 +1018,11 @@ impl App {
         self.should_quit = true;
     }
 
+    /// Check if screen mode toggle was requested and clear the flag.
+    pub fn take_toggle_screen_mode(&mut self) -> bool {
+        std::mem::take(&mut self.toggle_screen_mode)
+    }
+
     pub fn status_message(&self) -> Option<&str> {
         self.status_message.as_deref()
     }
@@ -667,7 +1039,7 @@ impl App {
         self.tick
     }
 
-    pub fn history(&self) -> &crate::context_infinity::FullHistory {
+    pub fn history(&self) -> &forge_context::FullHistory {
         self.context_manager.history()
     }
 
@@ -688,7 +1060,7 @@ impl App {
             )
     }
 
-    pub(crate) fn display_items(&self) -> &[DisplayItem] {
+    pub fn display_items(&self) -> &[DisplayItem] {
         &self.display
     }
 
@@ -891,7 +1263,6 @@ impl App {
         };
 
         let PendingSummarization {
-            summary_id,
             scope,
             messages,
             original_tokens,
@@ -943,7 +1314,6 @@ impl App {
             tokio::spawn(async move { generate_summary(&config, &messages, target_tokens).await });
 
         let task = SummarizationTask {
-            summary_id,
             scope,
             generated_by,
             handle,
@@ -999,7 +1369,6 @@ impl App {
             };
 
         let SummarizationTask {
-            summary_id,
             scope,
             generated_by,
             handle,
@@ -1024,12 +1393,18 @@ impl App {
                 };
 
                 // Apply the summarization result
-                self.context_manager.complete_summarization(
-                    summary_id,
+                if let Err(e) = self.context_manager.complete_summarization(
                     scope,
                     summary_text,
                     generated_by,
-                );
+                ) {
+                    self.handle_summarization_failure(
+                        attempt,
+                        format!("failed to apply summary: {e}"),
+                        queued_request,
+                    );
+                    return;
+                }
                 self.set_status("Summarization complete");
 
                 // If a request was queued waiting for summarization, start it now.
@@ -1215,18 +1590,41 @@ impl App {
             AppState::Disabled(DisabledState::Streaming(active))
         };
 
-        let max_output_tokens = self.context_manager.current_limits().max_output();
+        // OutputLimits is pre-validated at config load time - no runtime checks needed
+        // Invariant: if thinking is enabled, budget < max_tokens (guaranteed by type)
+        let limits = self.output_limits;
 
+        // Convert messages to cacheable format based on cache_enabled setting
+        let cache_enabled = self.cache_enabled;
+        let cacheable_messages: Vec<CacheableMessage> = if cache_enabled {
+            // Cache older messages, keep recent ones fresh
+            let len = api_messages.len();
+            let recent_threshold = len.saturating_sub(4); // Don't cache last 4 messages
+            api_messages
+                .into_iter()
+                .enumerate()
+                .map(|(i, msg)| {
+                    if i < recent_threshold {
+                        CacheableMessage::cached(msg)
+                    } else {
+                        CacheableMessage::plain(msg)
+                    }
+                })
+                .collect()
+        } else {
+            api_messages
+                .into_iter()
+                .map(CacheableMessage::plain)
+                .collect()
+        };
+
+        // System prompt is passed as None here - the binary should set it via App field
+        let system_prompt: Option<&str> = None;
         let task = async move {
             let tx_events = tx.clone();
-            let result = crate::provider::send_message(
-                &config,
-                &api_messages,
-                max_output_tokens,
-                move |event| {
-                    let _ = tx_events.send(event);
-                },
-            )
+            let result = forge_providers::send_message(&config, &cacheable_messages, limits, system_prompt, move |event| {
+                let _ = tx_events.send(event);
+            })
             .await;
 
             if let Err(e) = result {
@@ -1268,6 +1666,11 @@ impl App {
                 }
             };
 
+            let event = match event {
+                StreamEvent::Error(msg) => StreamEvent::Error(sanitize_stream_error(&msg)),
+                other => other,
+            };
+
             let mut journal_error: Option<String> = None;
             let mut finish_reason: Option<StreamFinishReason> = None;
 
@@ -1281,6 +1684,10 @@ impl App {
                 let persist_result = match &event {
                     StreamEvent::TextDelta(text) => {
                         active.journal.append_text(&mut self.stream_journal, text.clone())
+                    }
+                    StreamEvent::ThinkingDelta(_) => {
+                        // Don't persist thinking content to journal - silently consume
+                        Ok(())
                     }
                     StreamEvent::Done => active.journal.append_done(&mut self.stream_journal),
                     StreamEvent::Error(msg) => {
@@ -1377,13 +1784,10 @@ impl App {
                 if let Some(message) = message {
                     self.push_history_message(message);
                 }
-                let system_msg = Message::system(
-                    NonEmptyString::from(STREAM_ERROR_BADGE)
-                        .append("\n\n")
-                        .append(err.as_str()),
-                );
+                let ui_error = format_stream_error(self.provider(), self.model.as_str(), &err);
+                let system_msg = Message::system(ui_error.message);
                 self.push_local_message(system_msg);
-                self.set_status(format!("Stream error: {err}"));
+                self.set_status(ui_error.status);
                 return;
             }
             StreamFinishReason::Done => {}
@@ -1406,6 +1810,23 @@ impl App {
         self.poll_summarization_retry();
     }
 
+    /// Get elapsed time since last frame and update timing.
+    pub fn frame_elapsed(&mut self) -> Duration {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_frame);
+        self.last_frame = now;
+        elapsed
+    }
+
+    /// Get mutable reference to modal effect for UI processing.
+    pub fn modal_effect_mut(&mut self) -> Option<&mut ModalEffect> {
+        self.modal_effect.as_mut()
+    }
+
+    pub fn clear_modal_effect(&mut self) {
+        self.modal_effect = None;
+    }
+
     pub fn set_status(&mut self, message: impl Into<String>) {
         self.status_message = Some(message.into());
     }
@@ -1418,34 +1839,35 @@ impl App {
         self.input.mode()
     }
 
-    pub(crate) fn insert_token(&self) -> Option<InsertToken> {
+    pub fn insert_token(&self) -> Option<InsertToken> {
         matches!(&self.input, InputState::Insert(_)).then_some(InsertToken(()))
     }
 
-    pub(crate) fn command_token(&self) -> Option<CommandToken> {
+    pub fn command_token(&self) -> Option<CommandToken> {
         matches!(&self.input, InputState::Command { .. }).then_some(CommandToken(()))
     }
 
-    pub(crate) fn insert_mode(&mut self, _token: InsertToken) -> InsertMode<'_> {
+    pub fn insert_mode(&mut self, _token: InsertToken) -> InsertMode<'_> {
         InsertMode { app: self }
     }
 
-    pub(crate) fn command_mode(&mut self, _token: CommandToken) -> CommandMode<'_> {
+    pub fn command_mode(&mut self, _token: CommandToken) -> CommandMode<'_> {
         CommandMode { app: self }
     }
 
-    pub(crate) fn enter_insert_mode_at_end(&mut self) {
+    pub fn enter_insert_mode_at_end(&mut self) {
         self.input.draft_mut().move_cursor_end();
         self.enter_insert_mode();
     }
 
-    pub(crate) fn enter_insert_mode_with_clear(&mut self) {
+    pub fn enter_insert_mode_with_clear(&mut self) {
         self.input.draft_mut().clear();
         self.enter_insert_mode();
     }
 
     pub fn enter_normal_mode(&mut self) {
         self.input = std::mem::take(&mut self.input).into_normal();
+        self.modal_effect = None;
     }
 
     pub fn enter_insert_mode(&mut self) {
@@ -1454,6 +1876,54 @@ impl App {
 
     pub fn enter_command_mode(&mut self) {
         self.input = std::mem::take(&mut self.input).into_command();
+    }
+
+    pub fn enter_model_select_mode(&mut self) {
+        self.input = std::mem::take(&mut self.input).into_model_select();
+        self.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
+        self.last_frame = Instant::now();
+    }
+
+    pub fn model_select_index(&self) -> Option<usize> {
+        self.input.model_select_index()
+    }
+
+    pub fn model_select_move_up(&mut self) {
+        if let InputState::ModelSelect { selected, .. } = &mut self.input {
+            if *selected > 0 {
+                *selected -= 1;
+            }
+        }
+    }
+
+    pub fn model_select_move_down(&mut self) {
+        if let InputState::ModelSelect { selected, .. } = &mut self.input {
+            let max_index = PredefinedModel::all().len().saturating_sub(1);
+            if *selected < max_index {
+                *selected += 1;
+            }
+        }
+    }
+
+    pub fn model_select_set_index(&mut self, index: usize) {
+        if let InputState::ModelSelect { selected, .. } = &mut self.input {
+            let max_index = PredefinedModel::all().len().saturating_sub(1);
+            *selected = index.min(max_index);
+        }
+    }
+
+    /// Select the current model and return to normal mode.
+    pub fn model_select_confirm(&mut self) {
+        let Some(index) = self.model_select_index() else {
+            return;
+        };
+        let models = PredefinedModel::all();
+        if let Some(predefined) = models.get(index) {
+            let model = predefined.to_model_name();
+            self.set_model(model);
+            self.set_status(format!("Model set to: {}", predefined.display_name()));
+        }
+        self.enter_normal_mode();
     }
 
     pub fn draft_text(&self) -> &str {
@@ -1522,7 +1992,7 @@ impl App {
         self.scroll = ScrollState::AutoBottom;
     }
 
-    pub(crate) fn process_command(&mut self, command: EnteredCommand) {
+    pub fn process_command(&mut self, command: EnteredCommand) {
         let parts: Vec<&str> = command.raw.split_whitespace().collect();
 
         match parts.first().copied() {
@@ -1571,19 +2041,8 @@ impl App {
                         }
                     }
                 } else {
-                    let usage_status = self.context_usage_status();
-                    let (usage, suffix) = match &usage_status {
-                        ContextUsageStatus::Ready(usage) => (usage, ""),
-                        ContextUsageStatus::NeedsSummarization { usage, .. } => {
-                            (usage, " (needs summarization)")
-                        }
-                    };
-                    self.set_status(format!(
-                        "Model: {} │ Context: {}{}",
-                        self.model,
-                        usage.format_compact(),
-                        suffix
-                    ));
+                    // Enter model selection mode with TUI list
+                    self.enter_model_select_mode();
                 }
             }
             Some("provider" | "p") => {
@@ -1722,9 +2181,12 @@ impl App {
                     }
                 }
             }
+            Some("screen") => {
+                self.toggle_screen_mode = true;
+            }
             Some("help") => {
                 self.set_status(
-                    "Commands: :q(uit), :clear, :cancel, :model, :p(rovider), :ctx, :jrnl, :sum",
+                    "Commands: /q(uit), /clear, /cancel, /model, /p(rovider), /ctx, /jrnl, /sum, /screen",
                 );
             }
             Some(cmd) => {
@@ -1849,7 +2311,7 @@ impl<'a> InsertMode<'a> {
         };
 
         let config = match ApiConfig::new(api_key, self.app.model.clone()) {
-            Ok(config) => config,
+            Ok(config) => config.with_openai_options(self.app.openai_options),
             Err(e) => {
                 self.app.set_status(format!("Cannot queue request: {e}"));
                 return None;
@@ -1893,11 +2355,167 @@ impl<'a> CommandMode<'a> {
     }
 }
 
+fn sanitize_stream_error(raw: &str) -> String {
+    redact_api_keys(raw.trim())
+}
+
+fn redact_api_keys(raw: &str) -> String {
+    let mut output = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == 's' {
+            let mut lookahead = chars.clone();
+            if lookahead.next() == Some('k') && lookahead.next() == Some('-') {
+                // Consume the remaining "k-" in the real iterator.
+                chars.next();
+                chars.next();
+                output.push_str("sk-***");
+                while let Some(&next_ch) = chars.peek() {
+                    if is_key_delimiter(next_ch) {
+                        break;
+                    }
+                    chars.next();
+                }
+                continue;
+            }
+        }
+        output.push(ch);
+    }
+    output
+}
+
+fn is_key_delimiter(ch: char) -> bool {
+    ch.is_whitespace()
+        || matches!(ch, '"' | '\'' | ',' | '}' | ']' | ')' | '\\')
+}
+
+fn split_api_error(raw: &str) -> Option<(String, String)> {
+    let rest = raw.strip_prefix("API error ")?;
+    let (status, body) = rest.split_once(": ")?;
+    Some((status.trim().to_string(), body.trim().to_string()))
+}
+
+fn extract_error_message(raw: &str) -> Option<String> {
+    let body = split_api_error(raw)
+        .map(|(_, body)| body)
+        .unwrap_or_else(|| raw.trim().to_string());
+    let payload: Value = serde_json::from_str(&body).ok()?;
+    payload
+        .pointer("/error/message")
+        .and_then(|value| value.as_str())
+        .or_else(|| payload.pointer("/response/error/message").and_then(|value| value.as_str()))
+        .or_else(|| payload.pointer("/message").and_then(|value| value.as_str()))
+        .or_else(|| payload.as_str())
+        .map(|msg| msg.to_string())
+}
+
+fn is_auth_error(raw: &str) -> bool {
+    let lower = raw.to_ascii_lowercase();
+    let mentions_key = lower.contains("api key")
+        || lower.contains("x-api-key")
+        || lower.contains("authorization");
+    let auth_words = lower.contains("invalid")
+        || lower.contains("incorrect")
+        || lower.contains("missing")
+        || lower.contains("unauthorized")
+        || lower.contains("not provided")
+        || lower.contains("authentication");
+    let has_code = lower.contains("401");
+
+    lower.contains("invalid_api_key")
+        || lower.contains("you must provide an api key")
+        || (mentions_key && auth_words)
+        || (mentions_key && has_code)
+        || (has_code && lower.contains("unauthorized"))
+}
+
+fn truncate_with_ellipsis(raw: &str, max: usize) -> String {
+    let max = max.max(3);
+    let trimmed = raw.trim();
+    if trimmed.chars().count() <= max {
+        trimmed.to_string()
+    } else {
+        let head: String = trimmed.chars().take(max - 3).collect();
+        format!("{head}...")
+    }
+}
+
+fn format_stream_error(provider: Provider, model: &str, err: &str) -> StreamErrorUi {
+    let trimmed = err.trim();
+    let (status, body) = split_api_error(trimmed).unwrap_or_else(|| (String::new(), trimmed.to_string()));
+    let extracted = extract_error_message(&body).unwrap_or_else(|| body.clone());
+    let is_auth = is_auth_error(&extracted) || is_auth_error(trimmed) || is_auth_error(&status);
+
+    if is_auth {
+        let env_var = provider.env_var();
+        let mut content = String::new();
+        content.push_str(STREAM_ERROR_BADGE.as_str());
+        content.push_str("\n\n");
+        content.push_str(&format!(
+            "{} authentication failed for model {}.",
+            provider.display_name(),
+            model
+        ));
+        content.push_str("\n\nFix:\n- Set ");
+        content.push_str(env_var);
+        content.push_str(" (env) or add it to ~/.forge/config.toml under [api_keys].\n- Then retry your message.");
+
+        let detail = if !status.trim().is_empty() {
+            status.trim().to_string()
+        } else {
+            truncate_with_ellipsis(&extracted, 160)
+        };
+        if !detail.is_empty() {
+            content.push_str("\n\nDetails: ");
+            content.push_str(&detail);
+        }
+
+        let message = NonEmptyString::new(content)
+            .unwrap_or_else(|_| NonEmptyString::from(STREAM_ERROR_BADGE));
+        return StreamErrorUi {
+            status: format!("Auth error: set {env_var}"),
+            message,
+        };
+    }
+
+    let detail = if !extracted.trim().is_empty() {
+        extracted.trim().to_string()
+    } else if !trimmed.is_empty() {
+        trimmed.to_string()
+    } else {
+        "unknown error".to_string()
+    };
+    let detail_short = truncate_with_ellipsis(&detail, 200);
+    let status_source = detail.lines().next().unwrap_or("");
+    let status_short = truncate_with_ellipsis(status_source, 80);
+    let mut content = String::new();
+    content.push_str(STREAM_ERROR_BADGE.as_str());
+    content.push_str("\n\n");
+    if !status.trim().is_empty() {
+        content.push_str("Request failed (");
+        content.push_str(status.trim());
+        content.push_str(").");
+    } else {
+        content.push_str("Request failed.");
+    }
+    if !detail_short.is_empty() {
+        content.push_str("\n\nDetails: ");
+        content.push_str(&detail_short);
+    }
+
+    let message = NonEmptyString::new(content)
+        .unwrap_or_else(|_| NonEmptyString::from(STREAM_ERROR_BADGE));
+    StreamErrorUi {
+        status: format!("Stream error: {status_short}"),
+        message,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use crate::provider::StreamEvent;
+    // StreamEvent is already in scope from the use statement above
 
     fn test_app() -> App {
         let mut api_keys = HashMap::new();
@@ -1915,6 +2533,7 @@ mod tests {
             scroll: ScrollState::AutoBottom,
             scroll_max: 0,
             should_quit: false,
+            toggle_screen_mode: false,
             status_message: None,
             api_keys,
             model: model.clone(),
@@ -1923,6 +2542,11 @@ mod tests {
             context_manager: ContextManager::new(model.as_str()),
             stream_journal,
             state: AppState::Enabled(EnabledState::Idle),
+            output_limits: OutputLimits::new(4096),
+            cache_enabled: false,
+            openai_options: OpenAIRequestOptions::default(),
+            last_frame: Instant::now(),
+            modal_effect: None,
         }
     }
 

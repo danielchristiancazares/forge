@@ -1,16 +1,18 @@
+//! Inline TUI mode - minimal viewport for shell integration.
+
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Widget, Wrap},
+    widgets::{Clear, Paragraph, Widget, Wrap},
 };
 use ratatui::prelude::{Backend, Terminal};
 
-use crate::app::{App, DisplayItem};
-use crate::message::Message;
+use forge_engine::{App, DisplayItem, InputMode, Message};
+
 use crate::theme::{colors, styles};
-use crate::ui::{draw_input, draw_status_bar};
+use crate::{draw_input, draw_model_selector, draw_status_bar};
 
 pub const INLINE_INPUT_HEIGHT: u16 = 5;
 pub const INLINE_VIEWPORT_HEIGHT: u16 = INLINE_INPUT_HEIGHT + 1;
@@ -68,18 +70,39 @@ impl InlineOutput {
     }
 }
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    frame.render_widget(Clear, area);
+
+    let input_height = match app.input_mode() {
+        InputMode::Normal => 3,
+        _ => INLINE_INPUT_HEIGHT,
+    };
+    let total_height = input_height + 1;
+    let top_padding = area.height.saturating_sub(total_height);
+    let content_area = Rect {
+        x: area.x,
+        y: area.y.saturating_add(top_padding),
+        width: area.width,
+        height: area.height.saturating_sub(top_padding),
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(INLINE_INPUT_HEIGHT),
+            Constraint::Length(input_height),
             Constraint::Length(1),
         ])
-        .split(area);
+        .split(content_area);
 
     draw_input(frame, app, chunks[0]);
     draw_status_bar(frame, app, chunks[1]);
+
+    // TODO: Inline model picker needs a compact layout (bug report: pretty modal is cramped).
+    // Draw model selector overlay if in model select mode
+    if app.input_mode() == InputMode::ModelSelect {
+        draw_model_selector(frame, app);
+    }
 }
 
 fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut usize) {
@@ -97,7 +120,7 @@ fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut us
                 .fg(colors::TEXT_MUTED)
                 .add_modifier(Modifier::BOLD),
         ),
-        Message::User(_) => (">", "You", styles::user_name()),
+        Message::User(_) => ("○", "You", styles::user_name()),
         Message::Assistant(m) => ("*", m.provider().display_name(), styles::assistant_name()),
     };
 

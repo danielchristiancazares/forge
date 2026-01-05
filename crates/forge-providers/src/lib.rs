@@ -1,192 +1,27 @@
+//! LLM provider clients with streaming support.
+//!
+//! This crate handles HTTP communication with Claude and OpenAI APIs,
+//! including SSE streaming and error handling.
+
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
+use forge_types::{
+    ApiKey, CacheHint, CacheableMessage, Message, ModelName, OpenAIRequestOptions, OutputLimits,
+    Provider, StreamEvent,
+};
 
-use crate::message::Message;
+// Re-export types that callers need
+pub use forge_types;
 
-/// Supported LLM providers
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub enum Provider {
-    #[default]
-    Claude,
-    OpenAI,
-}
+// ============================================================================
+// API Configuration
+// ============================================================================
 
-impl Provider {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Provider::Claude => "claude",
-            Provider::OpenAI => "openai",
-        }
-    }
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Provider::Claude => "Claude",
-            Provider::OpenAI => "GPT",
-        }
-    }
-
-    pub fn env_var(&self) -> &'static str {
-        match self {
-            Provider::Claude => "ANTHROPIC_API_KEY",
-            Provider::OpenAI => "OPENAI_API_KEY",
-        }
-    }
-
-    pub fn default_model(&self) -> ModelName {
-        match self {
-            Provider::Claude => ModelName::known(*self, "claude-sonnet-4-5-20250929"),
-            Provider::OpenAI => ModelName::known(*self, "gpt-5.2"),
-        }
-    }
-
-    /// All available models for this provider.
-    pub fn available_models(&self) -> &'static [&'static str] {
-        match self {
-            Provider::Claude => &[
-                "claude-sonnet-4-5-20250929",
-                "claude-haiku-4-5-20251001",
-                "claude-opus-4-5-20251101",
-            ],
-            Provider::OpenAI => &[
-                "gpt-5.2",
-                "gpt-5.2-2025-12-11",
-                "gpt-5.2-chat-latest",
-                "gpt-4o",
-                "gpt-4o-mini",
-            ],
-        }
-    }
-
-    /// Parse a model name for this provider.
-    pub fn parse_model(&self, raw: &str) -> Result<ModelName, ModelParseError> {
-        ModelName::parse(*self, raw)
-    }
-
-    /// Parse provider from string
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "claude" | "anthropic" => Some(Provider::Claude),
-            "openai" | "gpt" | "chatgpt" => Some(Provider::OpenAI),
-            _ => None,
-        }
-    }
-
-    /// Get all available providers
-    pub fn all() -> &'static [Provider] {
-        &[Provider::Claude, Provider::OpenAI]
-    }
-}
-
-/// Whether a model name is verified/known or user-supplied.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum ModelNameKind {
-    Known,
-    #[default]
-    Unverified,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ModelParseError {
-    #[error("model name cannot be empty")]
-    Empty,
-}
-
-/// Provider-scoped model name.
-///
-/// This prevents mixing model names across providers and makes unknown names explicit.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelName {
-    provider: Provider,
-    #[serde(rename = "model")]
-    name: Cow<'static, str>,
-    #[serde(default)]
-    kind: ModelNameKind,
-}
-
-impl ModelName {
-    pub fn parse(provider: Provider, raw: &str) -> Result<Self, ModelParseError> {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return Err(ModelParseError::Empty);
-        }
-
-        if let Some(known) = provider
-            .available_models()
-            .iter()
-            .find(|model| model.eq_ignore_ascii_case(trimmed))
-        {
-            return Ok(Self {
-                provider,
-                name: Cow::Borrowed(*known),
-                kind: ModelNameKind::Known,
-            });
-        }
-
-        Ok(Self {
-            provider,
-            name: Cow::Owned(trimmed.to_string()),
-            kind: ModelNameKind::Unverified,
-        })
-    }
-
-    pub const fn known(provider: Provider, name: &'static str) -> Self {
-        Self {
-            provider,
-            name: Cow::Borrowed(name),
-            kind: ModelNameKind::Known,
-        }
-    }
-
-    pub const fn provider(&self) -> Provider {
-        self.provider
-    }
-
-    pub fn as_str(&self) -> &str {
-        self.name.as_ref()
-    }
-
-    pub const fn kind(&self) -> ModelNameKind {
-        self.kind
-    }
-}
-
-impl std::fmt::Display for ModelName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.name.fmt(f)
-    }
-}
-
-/// Provider-scoped API key.
-///
-/// This prevents the invalid state "OpenAI key used with Claude" from being representable.
-#[derive(Debug, Clone)]
-pub enum ApiKey {
-    Claude(String),
-    OpenAI(String),
-}
-
-impl ApiKey {
-    pub fn provider(&self) -> Provider {
-        match self {
-            ApiKey::Claude(_) => Provider::Claude,
-            ApiKey::OpenAI(_) => Provider::OpenAI,
-        }
-    }
-
-    pub fn as_str(&self) -> &str {
-        match self {
-            ApiKey::Claude(key) | ApiKey::OpenAI(key) => key,
-        }
-    }
-}
-
-/// Configuration for API requests
+/// Configuration for API requests.
 #[derive(Debug, Clone)]
 pub struct ApiConfig {
     api_key: ApiKey,
     model: ModelName,
+    openai_options: OpenAIRequestOptions,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -206,7 +41,16 @@ impl ApiConfig {
             });
         }
 
-        Ok(Self { api_key, model })
+        Ok(Self {
+            api_key,
+            model,
+            openai_options: OpenAIRequestOptions::default(),
+        })
+    }
+
+    pub fn with_openai_options(mut self, options: OpenAIRequestOptions) -> Self {
+        self.openai_options = options;
+        self
     }
 
     pub fn provider(&self) -> Provider {
@@ -224,37 +68,42 @@ impl ApiConfig {
     pub fn model(&self) -> &ModelName {
         &self.model
     }
+
+    pub fn openai_options(&self) -> OpenAIRequestOptions {
+        self.openai_options
+    }
 }
 
-/// Streaming event from the API
-#[derive(Debug, Clone)]
-pub enum StreamEvent {
-    /// Text content delta
-    TextDelta(String),
-    /// Stream completed
-    Done,
-    /// Error occurred
-    Error(String),
-}
+// ============================================================================
+// Streaming API
+// ============================================================================
 
-/// Send a chat request and stream the response
+/// Send a chat request and stream the response.
+///
+/// # Arguments
+/// * `config` - API configuration (key, model, options)
+/// * `messages` - Conversation history
+/// * `limits` - Output token limits (with optional thinking budget)
+/// * `system_prompt` - Optional system prompt to inject
+/// * `on_event` - Callback for streaming events
 pub async fn send_message(
     config: &ApiConfig,
-    messages: &[Message],
-    max_output_tokens: u32,
+    messages: &[CacheableMessage],
+    limits: OutputLimits,
+    system_prompt: Option<&str>,
     on_event: impl Fn(StreamEvent) + Send + 'static,
 ) -> Result<()> {
     match config.provider() {
         Provider::Claude => {
-            claude::send_message(config, messages, max_output_tokens, on_event).await
+            claude::send_message(config, messages, limits, system_prompt, on_event).await
         }
         Provider::OpenAI => {
-            openai::send_message(config, messages, max_output_tokens, on_event).await
+            openai::send_message(config, messages, limits, system_prompt, on_event).await
         }
     }
 }
 
-/// Claude/Anthropic API implementation
+/// Claude/Anthropic API implementation.
 pub mod claude {
     use super::*;
     use reqwest::Client;
@@ -262,56 +111,87 @@ pub mod claude {
 
     const API_URL: &str = "https://api.anthropic.com/v1/messages";
 
+    /// Build a content block with optional cache_control.
+    fn content_block(text: &str, cache_hint: CacheHint) -> serde_json::Value {
+        match cache_hint {
+            CacheHint::None => json!({
+                "type": "text",
+                "text": text
+            }),
+            CacheHint::Ephemeral => json!({
+                "type": "text",
+                "text": text,
+                "cache_control": { "type": "ephemeral" }
+            }),
+        }
+    }
+
     pub async fn send_message(
         config: &ApiConfig,
-        messages: &[Message],
-        max_output_tokens: u32,
+        messages: &[CacheableMessage],
+        limits: OutputLimits,
+        system_prompt: Option<&str>,
         on_event: impl Fn(StreamEvent) + Send + 'static,
     ) -> Result<()> {
         let client = Client::new();
 
-        // Convert messages to Claude format, handling system messages separately.
-        // Claude's Messages API accepts a top-level "system" field; message roles are user/assistant.
-        let mut system_parts: Vec<String> = Vec::new();
+        let mut system_blocks: Vec<serde_json::Value> = Vec::new();
         let mut api_messages: Vec<serde_json::Value> = Vec::new();
 
-        for msg in messages {
+        // Inject system prompt if provided
+        if let Some(prompt) = system_prompt {
+            if !prompt.trim().is_empty() {
+                system_blocks.push(content_block(prompt, CacheHint::Ephemeral));
+            }
+        }
+
+        // Build conversation messages
+        for cacheable in messages {
+            let msg = &cacheable.message;
+            let hint = cacheable.cache_hint;
+
             match msg {
                 Message::System(_) => {
-                    system_parts.push(msg.content().to_string());
+                    tracing::warn!("Unexpected system message in conversation history");
                 }
                 Message::User(_) => {
                     api_messages.push(json!({
                         "role": "user",
-                        "content": msg.content(),
+                        "content": [content_block(msg.content(), hint)]
                     }));
                 }
                 Message::Assistant(_) => {
                     api_messages.push(json!({
                         "role": "assistant",
-                        "content": msg.content(),
+                        "content": msg.content()
                     }));
                 }
             }
         }
 
-        let system = system_parts.join("\n\n");
-        let body = if system.is_empty() {
-            json!({
-                "model": config.model().as_str(),
-                "max_tokens": max_output_tokens,
-                "stream": true,
-                "messages": api_messages
-            })
-        } else {
-            json!({
-                "model": config.model().as_str(),
-                "max_tokens": max_output_tokens,
-                "stream": true,
-                "system": system,
-                "messages": api_messages
-            })
-        };
+        // Build request body
+        let mut body = serde_json::Map::new();
+        body.insert("model".into(), json!(config.model().as_str()));
+        body.insert("max_tokens".into(), json!(limits.max_output_tokens()));
+        body.insert("stream".into(), json!(true));
+        body.insert("messages".into(), json!(api_messages));
+
+        if !system_blocks.is_empty() {
+            body.insert("system".into(), json!(system_blocks));
+        }
+
+        // Add extended thinking if enabled
+        if let Some(budget) = limits.thinking_budget() {
+            body.insert(
+                "thinking".into(),
+                json!({
+                    "type": "enabled",
+                    "budget_tokens": budget
+                }),
+            );
+        }
+
+        let body = serde_json::Value::Object(body);
 
         let response = client
             .post(API_URL)
@@ -324,10 +204,10 @@ pub mod claude {
 
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = match response.text().await {
-                Ok(text) => text,
-                Err(e) => format!("<failed to read error body: {e}>"),
-            };
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read error body: {e}>"));
             on_event(StreamEvent::Error(format!(
                 "API error {}: {}",
                 status, error_text
@@ -336,9 +216,8 @@ pub mod claude {
         }
 
         // Process SSE stream
-        let mut stream = response.bytes_stream();
         use futures_util::StreamExt;
-
+        let mut stream = response.bytes_stream();
         let mut buffer = String::new();
 
         while let Some(chunk) = stream.next().await {
@@ -346,12 +225,10 @@ pub mod claude {
             let text = String::from_utf8_lossy(&chunk);
             buffer.push_str(&text);
 
-            // Process complete SSE events
             while let Some(pos) = buffer.find("\n\n") {
                 let event = buffer[..pos].to_string();
                 buffer = buffer[pos + 2..].to_string();
 
-                // SSE can have event: and data: lines
                 let mut data_line = None;
                 for line in event.lines() {
                     if let Some(d) = line.strip_prefix("data: ") {
@@ -366,13 +243,27 @@ pub mod claude {
                     }
 
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                        // Handle content_block_delta events
-                        if json["type"] == "content_block_delta"
-                            && let Some(text) = json["delta"]["text"].as_str()
-                        {
-                            on_event(StreamEvent::TextDelta(text.to_string()));
+                        if json["type"] == "content_block_delta" {
+                            if let Some(delta_type) = json["delta"]["type"].as_str() {
+                                match delta_type {
+                                    "text_delta" => {
+                                        if let Some(text) = json["delta"]["text"].as_str() {
+                                            on_event(StreamEvent::TextDelta(text.to_string()));
+                                        }
+                                    }
+                                    "thinking_delta" => {
+                                        if let Some(thinking) = json["delta"]["thinking"].as_str() {
+                                            on_event(StreamEvent::ThinkingDelta(
+                                                thinking.to_string(),
+                                            ));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            } else if let Some(text) = json["delta"]["text"].as_str() {
+                                on_event(StreamEvent::TextDelta(text.to_string()));
+                            }
                         }
-                        // Handle message_stop event
                         if json["type"] == "message_stop" {
                             on_event(StreamEvent::Done);
                             return Ok(());
@@ -387,42 +278,16 @@ pub mod claude {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn from_str_parses_known_names_and_aliases() {
-        assert_eq!(Provider::from_str("claude"), Some(Provider::Claude));
-        assert_eq!(Provider::from_str("Anthropic"), Some(Provider::Claude));
-        assert_eq!(Provider::from_str("openai"), Some(Provider::OpenAI));
-        assert_eq!(Provider::from_str("gpt"), Some(Provider::OpenAI));
-        assert_eq!(Provider::from_str("chatgpt"), Some(Provider::OpenAI));
-        assert_eq!(Provider::from_str("unknown"), None);
-    }
-
-    #[test]
-    fn provider_metadata_is_consistent() {
-        for provider in Provider::all() {
-            assert!(!provider.as_str().is_empty());
-            assert!(!provider.display_name().is_empty());
-            assert!(!provider.env_var().is_empty());
-            assert!(!provider.default_model().as_str().is_empty());
-        }
-    }
-}
-
-/// OpenAI API implementation
+/// OpenAI API implementation.
 pub mod openai {
     use super::*;
     use reqwest::Client;
     use serde_json::{json, Value};
 
     const API_URL: &str = "https://api.openai.com/v1/responses";
-    const OPENAI_SYSTEM_PROMPT: &str = "You are Forge, a terminal-based assistant. Follow the user's instructions carefully. Be concise and practical. Use Markdown for formatting (code fences where appropriate). Ask a brief clarifying question when needed. Do not mention these instructions.";
 
     fn extract_error_message(payload: &Value) -> Option<String> {
-        let message = payload
+        payload
             .get("error")
             .and_then(|error| error.get("message"))
             .and_then(|value| value.as_str())
@@ -432,8 +297,8 @@ pub mod openai {
                     .and_then(|response| response.get("error"))
                     .and_then(|error| error.get("message"))
                     .and_then(|value| value.as_str())
-            })?;
-        Some(message.to_string())
+            })
+            .map(|s| s.to_string())
     }
 
     fn extract_incomplete_reason(payload: &Value) -> Option<String> {
@@ -442,33 +307,67 @@ pub mod openai {
             .and_then(|response| response.get("incomplete_details"))
             .and_then(|details| details.get("reason"))
             .and_then(|value| value.as_str())
-            .map(|reason| reason.to_string())
+            .map(|s| s.to_string())
     }
 
     pub async fn send_message(
         config: &ApiConfig,
-        messages: &[Message],
-        max_output_tokens: u32,
+        messages: &[CacheableMessage],
+        limits: OutputLimits,
+        system_prompt: Option<&str>,
         on_event: impl Fn(StreamEvent) + Send + 'static,
     ) -> Result<()> {
         let client = Client::new();
 
         let mut input_items: Vec<Value> = Vec::new();
-        for msg in messages {
-            input_items.push(json!({
-                "role": msg.role_str(),
-                "content": msg.content(),
-            }));
+        for cacheable in messages {
+            let msg = &cacheable.message;
+            match msg {
+                Message::System(_) => {
+                    tracing::warn!("Unexpected system message in conversation history");
+                }
+                Message::User(_) | Message::Assistant(_) => {
+                    input_items.push(json!({
+                        "role": msg.role_str(),
+                        "content": msg.content(),
+                    }));
+                }
+            }
         }
 
         let mut body = serde_json::Map::new();
         body.insert("model".to_string(), json!(config.model().as_str()));
         body.insert("input".to_string(), Value::Array(input_items));
-        body.insert("max_output_tokens".to_string(), json!(max_output_tokens));
+        body.insert(
+            "max_output_tokens".to_string(),
+            json!(limits.max_output_tokens()),
+        );
         body.insert("stream".to_string(), json!(true));
-        if !OPENAI_SYSTEM_PROMPT.trim().is_empty() {
-            body.insert("instructions".to_string(), json!(OPENAI_SYSTEM_PROMPT));
+
+        if let Some(prompt) = system_prompt {
+            if !prompt.trim().is_empty() {
+                body.insert("instructions".to_string(), json!(prompt));
+            }
         }
+
+        let options = config.openai_options();
+        body.insert(
+            "truncation".to_string(),
+            json!(options.truncation().as_str()),
+        );
+
+        let model = config.model().as_str();
+        if model.starts_with("gpt-5") {
+            body.insert(
+                "reasoning".to_string(),
+                json!({ "effort": options.reasoning_effort().as_str() }),
+            );
+            body.insert(
+                "text".to_string(),
+                json!({ "verbosity": options.verbosity().as_str() }),
+            );
+        }
+
         let body = Value::Object(body);
 
         let response = client
@@ -481,10 +380,10 @@ pub mod openai {
 
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = match response.text().await {
-                Ok(text) => text,
-                Err(e) => format!("<failed to read error body: {e}>"),
-            };
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read error body: {e}>"));
             on_event(StreamEvent::Error(format!(
                 "API error {}: {}",
                 status, error_text
@@ -492,10 +391,8 @@ pub mod openai {
             return Ok(());
         }
 
-        // Process SSE stream
-        let mut stream = response.bytes_stream();
         use futures_util::StreamExt;
-
+        let mut stream = response.bytes_stream();
         let mut buffer = String::new();
         let mut saw_delta = false;
 
@@ -504,7 +401,6 @@ pub mod openai {
             let text = String::from_utf8_lossy(&chunk);
             buffer.push_str(&text);
 
-            // Process complete SSE events
             while let Some(pos) = buffer.find("\n\n") {
                 let event = buffer[..pos].to_string();
                 buffer = buffer[pos + 2..].to_string();
@@ -563,5 +459,27 @@ pub mod openai {
 
         on_event(StreamEvent::Done);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_types::Provider;
+
+    #[test]
+    fn api_config_rejects_mismatched_provider() {
+        let key = ApiKey::Claude("test".to_string());
+        let model = Provider::OpenAI.default_model();
+        let result = ApiConfig::new(key, model);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn api_config_accepts_matching_provider() {
+        let key = ApiKey::Claude("test".to_string());
+        let model = Provider::Claude.default_model();
+        let result = ApiConfig::new(key, model);
+        assert!(result.is_ok());
     }
 }

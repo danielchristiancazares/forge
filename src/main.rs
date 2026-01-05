@@ -1,13 +1,4 @@
-mod app;
-mod config;
-mod context_infinity;
-mod input;
-mod markdown;
-mod message;
-mod provider;
-mod theme;
-mod ui;
-mod ui_inline;
+mod assets;
 
 use anyhow::Result;
 use crossterm::{
@@ -19,14 +10,30 @@ use ratatui::{prelude::*, TerminalOptions, Viewport};
 use std::{env, io::{Stdout, stdout}};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-use crate::app::App;
-use crate::config::ForgeConfig;
-use crate::input::handle_events;
+use forge_engine::{App, ForgeConfig};
+use forge_tui::{draw, draw_inline, handle_events, InlineOutput, INLINE_VIEWPORT_HEIGHT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UiMode {
     Full,
     Inline,
+}
+
+impl UiMode {
+    fn toggle(self) -> Self {
+        match self {
+            UiMode::Full => UiMode::Inline,
+            UiMode::Inline => UiMode::Full,
+        }
+    }
+}
+
+/// Result of running the app loop.
+enum RunResult {
+    /// User requested quit.
+    Quit,
+    /// User requested to switch screen mode.
+    SwitchMode,
 }
 
 impl UiMode {
@@ -80,7 +87,7 @@ impl TerminalSession {
             UiMode::Inline => Terminal::with_options(
                 backend,
                 TerminalOptions {
-                    viewport: Viewport::Inline(ui_inline::INLINE_VIEWPORT_HEIGHT),
+                    viewport: Viewport::Inline(INLINE_VIEWPORT_HEIGHT),
                 },
             ),
         };
@@ -124,34 +131,47 @@ async fn main() -> Result<()> {
         .with(EnvFilter::from_default_env())
         .init();
 
-    let result = {
-        let config = ForgeConfig::load();
-        let ui_mode = UiMode::from_config(config.as_ref())
-            .or_else(UiMode::from_env)
-            .unwrap_or(UiMode::Full);
-        let mut session = TerminalSession::new(ui_mode)?;
-        let mut app = App::new()?;
+    assets::init();
 
-        let run_result = match ui_mode {
-            UiMode::Full => run_app_full(&mut session.terminal, &mut app).await,
-            UiMode::Inline => run_app_inline(&mut session.terminal, &mut app).await,
+    let config = ForgeConfig::load();
+    let mut ui_mode = UiMode::from_config(config.as_ref())
+        .or_else(UiMode::from_env)
+        .unwrap_or(UiMode::Full);
+    let mut app = App::new()?;
+
+    loop {
+        let run_result = {
+            let mut session = TerminalSession::new(ui_mode)?;
+            let result = match ui_mode {
+                UiMode::Full => run_app_full(&mut session.terminal, &mut app).await,
+                UiMode::Inline => run_app_inline(&mut session.terminal, &mut app).await,
+            };
+            // Session drops here, restoring terminal state
+            result
         };
-        // Save history before exit
-        if let Err(e) = app.save_history() {
-            eprintln!("Failed to save history: {e}");
+
+        match run_result {
+            Ok(RunResult::SwitchMode) => {
+                ui_mode = ui_mode.toggle();
+                // Continue loop with new mode
+            }
+            Ok(RunResult::Quit) => break,
+            Err(err) => {
+                eprintln!("Error: {err:?}");
+                break;
+            }
         }
+    }
 
-        run_result
-    };
-
-    if let Err(err) = result {
-        eprintln!("Error: {err:?}");
+    // Save history before exit
+    if let Err(e) = app.save_history() {
+        eprintln!("Failed to save history: {e}");
     }
 
     Ok(())
 }
 
-async fn run_app_full<B>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
+async fn run_app_full<B>(terminal: &mut Terminal<B>, app: &mut App) -> Result<RunResult>
 where
     B: Backend,
     B::Error: Send + Sync + 'static,
@@ -166,20 +186,24 @@ where
 
         app.process_stream_events();
 
-        terminal.draw(|frame| ui::draw(frame, app))?;
+        terminal.draw(|frame| draw(frame, app))?;
+
+        if app.take_toggle_screen_mode() {
+            return Ok(RunResult::SwitchMode);
+        }
 
         if handle_events(app).await? {
-            return Ok(());
+            return Ok(RunResult::Quit);
         }
     }
 }
 
-async fn run_app_inline<B>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
+async fn run_app_inline<B>(terminal: &mut Terminal<B>, app: &mut App) -> Result<RunResult>
 where
     B: Backend,
     B::Error: Send + Sync + 'static,
 {
-    let mut output = ui_inline::InlineOutput::new();
+    let mut output = InlineOutput::new();
 
     loop {
         app.tick();
@@ -192,10 +216,14 @@ where
         app.process_stream_events();
         output.flush(terminal, app)?;
 
-        terminal.draw(|frame| ui_inline::draw(frame, app))?;
+        terminal.draw(|frame| draw_inline(frame, app))?;
+
+        if app.take_toggle_screen_mode() {
+            return Ok(RunResult::SwitchMode);
+        }
 
         if handle_events(app).await? {
-            return Ok(());
+            return Ok(RunResult::Quit);
         }
     }
 }

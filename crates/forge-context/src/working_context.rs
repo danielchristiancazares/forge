@@ -8,11 +8,11 @@
 //! It represents what will actually be sent to the LLM API,
 //! mixing original messages and summaries to fit within the token budget.
 
-use crate::message::{Message, NonEmptyStaticStr, NonEmptyString};
+use forge_types::{Message, NonEmptyStaticStr, NonEmptyString};
 
 use super::history::{FullHistory, MessageId, SummaryId};
 
-const SUMMARY_PREFIX: NonEmptyStaticStr =
+pub(crate) const SUMMARY_PREFIX: NonEmptyStaticStr =
     NonEmptyStaticStr::new("[Earlier conversation summary]");
 
 /// Represents a segment of the working context.
@@ -253,11 +253,11 @@ mod tests {
     fn test_push_segments() {
         let mut ctx = WorkingContext::new(1000);
 
-        ctx.push_original(MessageId::new(0), 100);
-        ctx.push_original(MessageId::new(1), 150);
+        ctx.push_original(MessageId::new_for_test(0), 100);
+        ctx.push_original(MessageId::new_for_test(1), 150);
         ctx.push_summary(
-            super::super::history::SummaryId::new(0),
-            vec![MessageId::new(2), MessageId::new(3)],
+            super::super::history::SummaryId::new_for_test(0),
+            vec![MessageId::new_for_test(2), MessageId::new_for_test(3)],
             50,
         );
 

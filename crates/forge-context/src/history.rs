@@ -4,18 +4,28 @@
 //! Summarization adds `Summary` entries and links messages to them,
 //! but original messages remain accessible.
 
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 use std::time::SystemTime;
 
-use crate::message::{Message, NonEmptyString};
+use forge_types::{Message, NonEmptyString};
 
 /// Unique identifier for a message in history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MessageId(u64);
 
 impl MessageId {
-    pub(super) const fn new(id: u64) -> Self {
+    const fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    pub(crate) const fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn new_for_test(id: u64) -> Self {
         Self(id)
     }
 
@@ -29,7 +39,12 @@ impl MessageId {
 pub struct SummaryId(u64);
 
 impl SummaryId {
-    pub(super) const fn new(id: u64) -> Self {
+    const fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn new_for_test(id: u64) -> Self {
         Self(id)
     }
 }
@@ -436,33 +451,60 @@ impl FullHistory {
     }
 
     /// Add a summary for a range of messages.
-    pub fn add_summary(&mut self, summary: Summary) -> SummaryId {
-        let id = summary.id;
+    pub fn add_summary(&mut self, summary: Summary) -> Result<SummaryId> {
+        let expected_id = SummaryId::new(self.summaries.len() as u64);
+        if summary.id != expected_id {
+            return Err(anyhow!(
+                "summary id {} does not match expected id {}",
+                summary.id.0,
+                expected_id.0
+            ));
+        }
 
-        // Mark covered messages as summarized
         let start = summary.covers.start.as_u64();
         let end = summary.covers.end.as_u64();
+        if start >= end {
+            return Err(anyhow!(
+                "summary id {} has invalid range {}..{}",
+                summary.id.0,
+                start,
+                end
+            ));
+        }
+        if end > self.entries.len() as u64 {
+            return Err(anyhow!(
+                "summary id {} covers past last message ({})",
+                summary.id.0,
+                self.entries.len()
+            ));
+        }
+
+        // Mark covered messages as summarized.
         for entry in &mut self.entries {
             let entry_id = entry.id().as_u64();
             if entry_id >= start && entry_id < end {
-                entry.mark_summarized(id);
+                entry.mark_summarized(summary.id);
             }
         }
 
         self.summaries.push(summary);
-        id
-    }
-
-    /// Allocate a new summary ID without creating the summary yet.
-    pub fn allocate_summary_id(&mut self) -> SummaryId {
-        let id = SummaryId::new(self.next_summary_id);
-        self.next_summary_id += 1;
-        id
+        self.next_summary_id = self.summaries.len() as u64;
+        Ok(expected_id)
     }
 
     /// Get all history entries.
     pub fn entries(&self) -> &[HistoryEntry] {
         &self.entries
+    }
+
+    /// Number of summaries in history.
+    pub fn summaries_len(&self) -> usize {
+        self.summaries.len()
+    }
+
+    /// Next summary ID to assign.
+    pub fn next_summary_id(&self) -> SummaryId {
+        SummaryId::new(self.summaries.len() as u64)
     }
 
     /// Get a specific entry by ID.
@@ -534,7 +576,7 @@ mod tests {
         let id2 = history.push(make_test_message("Second"), 100);
         let _id3 = history.push(make_test_message("Third"), 100);
 
-        let summary_id = history.allocate_summary_id();
+        let summary_id = SummaryId::new(history.summaries_len() as u64);
         let summary = Summary::new(
             summary_id,
             id1..MessageId::new(id2.as_u64() + 1),
@@ -544,7 +586,7 @@ mod tests {
             "test-model".to_string(),
         );
 
-        history.add_summary(summary);
+        history.add_summary(summary).expect("summary add");
 
         // First two should be summarized
         assert!(history.get_entry(id1).is_summarized());

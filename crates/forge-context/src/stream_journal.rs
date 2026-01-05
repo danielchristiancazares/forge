@@ -12,7 +12,7 @@
 //! slightly higher latency per delta.
 
 use anyhow::{Context, Result, anyhow, bail};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -125,6 +125,17 @@ pub enum RecoveredStream {
         /// Last sequence number seen
         last_seq: u64,
     },
+    /// The stream ended with an error but was not sealed.
+    Errored {
+        /// The step ID that was interrupted
+        step_id: StepId,
+        /// Accumulated text from text_delta events
+        partial_text: String,
+        /// Last sequence number seen
+        last_seq: u64,
+        /// Error message captured from the stream
+        error: String,
+    },
     /// The stream ended mid-flight.
     Incomplete {
         /// The step ID that was interrupted
@@ -200,7 +211,7 @@ impl StreamJournal {
     /// Initialize database with schema and determine current state
     fn initialize(db: Connection) -> Result<Self> {
         // Enable WAL mode for better concurrent performance
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
             .context("Failed to set pragmas")?;
 
         // Create schema
@@ -227,9 +238,12 @@ impl StreamJournal {
             )
             .context("Failed to prepare unsealed-step query")?;
 
-        Ok(stmt
+        let row = stmt
             .query_row([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .ok())
+            .optional()
+            .context("Failed to query unsealed step")?;
+
+        Ok(row)
     }
 
     /// Begin a new journal session for streaming.
@@ -277,17 +291,27 @@ impl StreamJournal {
     /// Allocate the next step ID
     ///
     /// This atomically increments the step counter and returns the new ID.
-    pub fn next_step_id(&self) -> Result<StepId> {
-        let step_id: StepId = self
+    pub fn next_step_id(&mut self) -> Result<StepId> {
+        let tx = self
             .db
+            .transaction()
+            .context("Failed to start step-id transaction")?;
+
+        let step_id: StepId = tx
             .query_row(
-                "UPDATE step_counter SET next_step_id = next_step_id + 1
-                 WHERE id = 1
-                 RETURNING next_step_id - 1",
+                "SELECT next_step_id FROM step_counter WHERE id = 1",
                 [],
                 |row| row.get(0),
             )
-            .context("Failed to allocate next step ID")?;
+            .context("Failed to read next step ID")?;
+
+        tx.execute(
+            "UPDATE step_counter SET next_step_id = next_step_id + 1 WHERE id = 1",
+            [],
+        )
+        .context("Failed to increment step counter")?;
+
+        tx.commit().context("Failed to commit step-id transaction")?;
 
         Ok(step_id)
     }
@@ -346,16 +370,27 @@ impl StreamJournal {
     /// # Returns
     ///
     /// `Some(RecoveredStream)` if there are unsealed entries, `None` otherwise.
-    pub fn recover(&self) -> Option<RecoveredStream> {
+    pub fn recover(&self) -> Result<Option<RecoveredStream>> {
         if self.active_step.is_some() {
-            return None;
+            return Ok(None);
         }
 
         // Find the most recent unsealed step
-        let (step_id, last_seq) = self.latest_unsealed_step().ok()??;
+        let Some((step_id, last_seq)) = self.latest_unsealed_step()? else {
+            return Ok(None);
+        };
 
         // Collect partial text
-        let partial_text = collect_text(&self.db, step_id).ok()?;
+        let partial_text = collect_text(&self.db, step_id)?;
+
+        if let Some(error) = latest_error(&self.db, step_id)? {
+            return Ok(Some(RecoveredStream::Errored {
+                step_id,
+                partial_text,
+                last_seq,
+                error,
+            }));
+        }
 
         // Check if stream has a terminal event (done or error)
         let is_complete: bool = self
@@ -363,11 +398,13 @@ impl StreamJournal {
             .query_row(
                 "SELECT 1 FROM stream_journal
                  WHERE step_id = ?1 AND sealed = 0
-                   AND (event_type = 'done' OR event_type = 'error')
+                   AND event_type = 'done'
                  LIMIT 1",
                 params![step_id],
                 |_| Ok(true),
             )
+            .optional()
+            .context("Failed to query completion status")?
             .unwrap_or(false);
 
         let recovered = if is_complete {
@@ -384,7 +421,7 @@ impl StreamJournal {
             }
         };
 
-        Some(recovered)
+        Ok(Some(recovered))
     }
 
     /// Clean up sealed entries older than the retention period
@@ -416,13 +453,14 @@ impl StreamJournal {
 
 fn append_delta(db: &Connection, delta: &StreamDelta) -> Result<()> {
     let created_at = system_time_to_iso8601(delta.timestamp);
+    let seq_i64 = i64::try_from(delta.seq).context("seq overflow")?;
 
     db.execute(
         "INSERT INTO stream_journal (step_id, seq, event_type, content, created_at, sealed)
          VALUES (?1, ?2, ?3, ?4, ?5, 0)",
         params![
             delta.step_id,
-            delta.seq as i64,
+            seq_i64,
             delta.event.event_type(),
             delta.event.content(),
             created_at
@@ -454,6 +492,24 @@ fn collect_text(db: &Connection, step_id: StepId) -> Result<String> {
         .context("Failed to collect text deltas")?;
 
     Ok(contents.join(""))
+}
+
+fn latest_error(db: &Connection, step_id: StepId) -> Result<Option<String>> {
+    let mut stmt = db
+        .prepare(
+            "SELECT content FROM stream_journal
+             WHERE step_id = ?1 AND event_type = 'error' AND sealed = 0
+             ORDER BY seq DESC
+             LIMIT 1",
+        )
+        .context("Failed to prepare error query")?;
+
+    let error = stmt
+        .query_row(params![step_id], |row| row.get(0))
+        .optional()
+        .context("Failed to query error event")?;
+
+    Ok(error)
 }
 
 fn seal_step(db: &Connection, step_id: StepId) -> Result<()> {
@@ -636,12 +692,12 @@ mod tests {
     #[test]
     fn test_open_in_memory() {
         let journal = StreamJournal::open_in_memory().unwrap();
-        assert!(journal.recover().is_none());
+        assert!(journal.recover().unwrap().is_none());
     }
 
     #[test]
     fn test_next_step_id_increments() {
-        let journal = StreamJournal::open_in_memory().unwrap();
+        let mut journal = StreamJournal::open_in_memory().unwrap();
 
         let id1 = journal.next_step_id().unwrap();
         let id2 = journal.next_step_id().unwrap();
@@ -730,7 +786,7 @@ mod tests {
         }
 
         let journal = StreamJournal::open(&db_path).unwrap();
-        let recovered = journal.recover().unwrap();
+        let recovered = journal.recover().unwrap().expect("recovered stream");
         match recovered {
             RecoveredStream::Incomplete {
                 step_id: recovered_step,
@@ -761,7 +817,7 @@ mod tests {
         }
 
         let journal = StreamJournal::open(&db_path).unwrap();
-        let recovered = journal.recover().unwrap();
+        let recovered = journal.recover().unwrap().expect("recovered stream");
         match recovered {
             RecoveredStream::Complete { partial_text, .. } => {
                 assert_eq!(partial_text, "Complete");
@@ -785,7 +841,7 @@ mod tests {
         }
 
         let journal = StreamJournal::open(&db_path).unwrap();
-        assert!(journal.recover().is_none());
+        assert!(journal.recover().unwrap().is_none());
 
         let _ = fs::remove_file(&db_path);
     }
@@ -843,7 +899,7 @@ mod tests {
         let mut journal = StreamJournal::open(&db_path).unwrap();
         let deleted = journal.discard_unsealed(1).unwrap();
         assert_eq!(deleted, 2);
-        assert!(journal.recover().is_none());
+        assert!(journal.recover().unwrap().is_none());
 
         let _ = fs::remove_file(&db_path);
     }
@@ -910,7 +966,7 @@ mod tests {
 
         {
             let journal = StreamJournal::open(&db_path).unwrap();
-            let recovered = journal.recover().unwrap();
+            let recovered = journal.recover().unwrap().expect("recovered stream");
             match recovered {
                 RecoveredStream::Incomplete {
                     partial_text,
@@ -941,12 +997,15 @@ mod tests {
         }
 
         let journal = StreamJournal::open(&db_path).unwrap();
-        let recovered = journal.recover().unwrap();
+        let recovered = journal.recover().unwrap().expect("recovered stream");
         match recovered {
-            RecoveredStream::Complete { partial_text, .. } => {
+            RecoveredStream::Errored {
+                partial_text, error, ..
+            } => {
                 assert_eq!(partial_text, "Start");
+                assert_eq!(error, "API Error");
             }
-            _ => panic!("Expected complete recovery"),
+            _ => panic!("Expected error recovery"),
         }
 
         let _ = fs::remove_file(&db_path);
@@ -969,14 +1028,14 @@ mod tests {
         let _ = fs::remove_file(&db_path);
 
         {
-            let journal = StreamJournal::open(&db_path).unwrap();
+            let mut journal = StreamJournal::open(&db_path).unwrap();
             assert_eq!(journal.next_step_id().unwrap(), 1);
             assert_eq!(journal.next_step_id().unwrap(), 2);
             assert_eq!(journal.next_step_id().unwrap(), 3);
         }
 
         {
-            let journal = StreamJournal::open(&db_path).unwrap();
+            let mut journal = StreamJournal::open(&db_path).unwrap();
             assert_eq!(journal.next_step_id().unwrap(), 4);
             assert_eq!(journal.next_step_id().unwrap(), 5);
         }
