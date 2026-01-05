@@ -1,7 +1,6 @@
 //! Message type tests
 
-use forge::message::{EmptyStringError, Message, NonEmptyString};
-use forge::provider::{ModelName, Provider};
+use forge_types::{EmptyStringError, Message, ModelName, NonEmptyString, Provider};
 
 #[test]
 fn non_empty_string_rejects_empty() {

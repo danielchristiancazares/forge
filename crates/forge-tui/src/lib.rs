@@ -2,7 +2,7 @@
 
 mod effects;
 mod input;
-mod markdown;
+pub mod markdown;
 mod theme;
 mod ui_inline;
 

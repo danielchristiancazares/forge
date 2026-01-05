@@ -154,9 +154,7 @@ impl ContextManager {
     /// Add a message to history and invalidate working context.
     pub fn push_message(&mut self, message: Message) -> MessageId {
         let token_count = self.counter.count_message(&message);
-        let id = self.history.push(message, token_count);
-
-        id
+        self.history.push(message, token_count)
     }
 
     /// Switch to a different model - triggers context adaptation.

@@ -74,11 +74,11 @@ impl TerminalSession {
 
         let mut out = stdout();
         let use_alternate_screen = matches!(mode, UiMode::Full);
-        if use_alternate_screen {
-            if let Err(err) = execute!(out, EnterAlternateScreen, EnableMouseCapture) {
-                let _ = disable_raw_mode();
-                return Err(err.into());
-            }
+        if use_alternate_screen
+            && let Err(err) = execute!(out, EnterAlternateScreen, EnableMouseCapture)
+        {
+            let _ = disable_raw_mode();
+            return Err(err.into());
         }
 
         let backend = CrosstermBackend::new(out);
@@ -137,17 +137,16 @@ async fn main() -> Result<()> {
     let mut ui_mode = UiMode::from_config(config.as_ref())
         .or_else(UiMode::from_env)
         .unwrap_or(UiMode::Full);
-    let mut app = App::new()?;
+    let mut app = App::new(Some(assets::system_prompt()))?;
 
     loop {
         let run_result = {
             let mut session = TerminalSession::new(ui_mode)?;
-            let result = match ui_mode {
+            // Session drops here, restoring terminal state
+            match ui_mode {
                 UiMode::Full => run_app_full(&mut session.terminal, &mut app).await,
                 UiMode::Inline => run_app_inline(&mut session.terminal, &mut app).await,
-            };
-            // Session drops here, restoring terminal state
-            result
+            }
         };
 
         match run_result {

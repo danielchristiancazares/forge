@@ -163,7 +163,7 @@ impl Provider {
     }
 
     /// Parse provider from string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "claude" | "anthropic" => Some(Provider::Claude),
             "openai" | "gpt" | "chatgpt" => Some(Provider::OpenAI),
@@ -294,11 +294,12 @@ impl ApiKey {
 // OpenAI Request Options
 // ============================================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OpenAIReasoningEffort {
     None,
     Low,
     Medium,
+    #[default]
     High,
     XHigh,
 }
@@ -326,16 +327,11 @@ impl OpenAIReasoningEffort {
     }
 }
 
-impl Default for OpenAIReasoningEffort {
-    fn default() -> Self {
-        Self::High
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OpenAITextVerbosity {
     Low,
     Medium,
+    #[default]
     High,
 }
 
@@ -358,14 +354,9 @@ impl OpenAITextVerbosity {
     }
 }
 
-impl Default for OpenAITextVerbosity {
-    fn default() -> Self {
-        Self::High
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OpenAITruncation {
+    #[default]
     Auto,
     Disabled,
 }
@@ -384,12 +375,6 @@ impl OpenAITruncation {
             Self::Auto => "auto",
             Self::Disabled => "disabled",
         }
-    }
-}
-
-impl Default for OpenAITruncation {
-    fn default() -> Self {
-        Self::Auto
     }
 }
 
@@ -700,11 +685,11 @@ mod tests {
 
     #[test]
     fn provider_from_str_parses_aliases() {
-        assert_eq!(Provider::from_str("claude"), Some(Provider::Claude));
-        assert_eq!(Provider::from_str("Anthropic"), Some(Provider::Claude));
-        assert_eq!(Provider::from_str("openai"), Some(Provider::OpenAI));
-        assert_eq!(Provider::from_str("gpt"), Some(Provider::OpenAI));
-        assert_eq!(Provider::from_str("unknown"), None);
+        assert_eq!(Provider::parse("claude"), Some(Provider::Claude));
+        assert_eq!(Provider::parse("Anthropic"), Some(Provider::Claude));
+        assert_eq!(Provider::parse("openai"), Some(Provider::OpenAI));
+        assert_eq!(Provider::parse("gpt"), Some(Provider::OpenAI));
+        assert_eq!(Provider::parse("unknown"), None);
     }
 
     #[test]

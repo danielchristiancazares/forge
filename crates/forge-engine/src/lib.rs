@@ -40,7 +40,6 @@ pub use config::{AppConfig, ForgeConfig};
 pub struct StreamingMessage {
     model: ModelName,
     content: String,
-    timestamp: SystemTime,
     receiver: mpsc::UnboundedReceiver<StreamEvent>,
 }
 
@@ -49,7 +48,6 @@ impl StreamingMessage {
         Self {
             model,
             content: String::new(),
-            timestamp: SystemTime::now(),
             receiver,
         }
     }
@@ -615,10 +613,12 @@ pub struct App {
     last_frame: Instant,
     /// Active modal animation effect.
     modal_effect: Option<ModalEffect>,
+    /// System prompt sent to the LLM with each request.
+    system_prompt: Option<&'static str>,
 }
 
 impl App {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(system_prompt: Option<&'static str>) -> anyhow::Result<Self> {
         let config = ForgeConfig::load();
 
         // Load API keys from config, then fall back to environment.
@@ -640,18 +640,20 @@ impl App {
             }
         }
 
-        if !api_keys.contains_key(&Provider::Claude) {
-            if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-                if !key.trim().is_empty() {
-                    api_keys.insert(Provider::Claude, key);
-                }
+        if let std::collections::hash_map::Entry::Vacant(e) = api_keys.entry(Provider::Claude)
+            && let Ok(key) = std::env::var("ANTHROPIC_API_KEY")
+        {
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                e.insert(key);
             }
         }
-        if !api_keys.contains_key(&Provider::OpenAI) {
-            if let Ok(key) = std::env::var("OPENAI_API_KEY") {
-                if !key.trim().is_empty() {
-                    api_keys.insert(Provider::OpenAI, key);
-                }
+        if let std::collections::hash_map::Entry::Vacant(e) = api_keys.entry(Provider::OpenAI)
+            && let Ok(key) = std::env::var("OPENAI_API_KEY")
+        {
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                e.insert(key);
             }
         }
 
@@ -660,7 +662,7 @@ impl App {
             .and_then(|cfg| cfg.app.as_ref())
             .and_then(|app| app.provider.as_ref())
             .and_then(|raw| {
-                let parsed = Provider::from_str(raw);
+                let parsed = Provider::parse(raw);
                 if parsed.is_none() {
                     tracing::warn!("Unknown provider in config: {}", raw);
                 }
@@ -760,6 +762,8 @@ impl App {
 
         let data_dir = Self::data_dir();
 
+        std::fs::create_dir_all(&data_dir.path)?;
+
         // Initialize stream journal (required for streaming durability).
         let journal_path = data_dir.join("stream_journal.db");
         let stream_journal = StreamJournal::open(&journal_path)?;
@@ -790,6 +794,7 @@ impl App {
             openai_options,
             last_frame: Instant::now(),
             modal_effect: None,
+            system_prompt,
         };
 
         // Load previous session's history if available
@@ -817,11 +822,6 @@ impl App {
                 source: DataDirSource::Fallback,
             },
         }
-    }
-
-    /// Get the path to the stream journal database.
-    fn journal_path(&self) -> PathBuf {
-        self.data_dir.join("stream_journal.db")
     }
 
     /// Get the path to the history file.
@@ -981,13 +981,13 @@ impl App {
         if !partial_text.is_empty() {
             recovered_content = recovered_content.append("\n\n").append(partial_text);
         }
-        if let Some(error) = error_text {
-            if !error.is_empty() {
-                let error_line = format!("Error: {error}");
-                recovered_content = recovered_content
-                    .append("\n\n")
-                    .append(error_line.as_str());
-            }
+        if let Some(error) = error_text
+            && !error.is_empty()
+        {
+            let error_line = format!("Error: {error}");
+            recovered_content = recovered_content
+                .append("\n\n")
+                .append(error_line.as_str());
         }
 
         // Push recovered partial response as a completed assistant message.
@@ -1618,8 +1618,7 @@ impl App {
                 .collect()
         };
 
-        // System prompt is passed as None here - the binary should set it via App field
-        let system_prompt: Option<&str> = None;
+        let system_prompt = self.system_prompt;
         let task = async move {
             let tx_events = tx.clone();
             let result = forge_providers::send_message(&config, &cacheable_messages, limits, system_prompt, move |event| {
@@ -1889,10 +1888,10 @@ impl App {
     }
 
     pub fn model_select_move_up(&mut self) {
-        if let InputState::ModelSelect { selected, .. } = &mut self.input {
-            if *selected > 0 {
-                *selected -= 1;
-            }
+        if let InputState::ModelSelect { selected, .. } = &mut self.input
+            && *selected > 0
+        {
+            *selected -= 1;
         }
     }
 
@@ -2047,7 +2046,7 @@ impl App {
             }
             Some("provider" | "p") => {
                 if let Some(provider_str) = parts.get(1) {
-                    if let Some(provider) = Provider::from_str(provider_str) {
+                    if let Some(provider) = Provider::parse(provider_str) {
                         self.set_provider(provider);
                         let has_key = self.current_api_key().is_some();
                         let status = if has_key {

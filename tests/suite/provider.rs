@@ -1,23 +1,24 @@
 //! Provider and API configuration tests
 
-use forge::provider::{ApiConfig, ApiKey, ModelName, ModelNameKind, Provider};
+use forge_engine::{ApiConfig, ApiKey};
+use forge_types::{ModelName, ModelNameKind, Provider};
 
 #[test]
-fn provider_from_str_aliases() {
+fn provider_parse_aliases() {
     // Claude aliases
-    assert_eq!(Provider::from_str("claude"), Some(Provider::Claude));
-    assert_eq!(Provider::from_str("Claude"), Some(Provider::Claude));
-    assert_eq!(Provider::from_str("CLAUDE"), Some(Provider::Claude));
-    assert_eq!(Provider::from_str("anthropic"), Some(Provider::Claude));
+    assert_eq!(Provider::parse("claude"), Some(Provider::Claude));
+    assert_eq!(Provider::parse("Claude"), Some(Provider::Claude));
+    assert_eq!(Provider::parse("CLAUDE"), Some(Provider::Claude));
+    assert_eq!(Provider::parse("anthropic"), Some(Provider::Claude));
     
     // OpenAI aliases
-    assert_eq!(Provider::from_str("openai"), Some(Provider::OpenAI));
-    assert_eq!(Provider::from_str("gpt"), Some(Provider::OpenAI));
-    assert_eq!(Provider::from_str("chatgpt"), Some(Provider::OpenAI));
+    assert_eq!(Provider::parse("openai"), Some(Provider::OpenAI));
+    assert_eq!(Provider::parse("gpt"), Some(Provider::OpenAI));
+    assert_eq!(Provider::parse("chatgpt"), Some(Provider::OpenAI));
     
     // Unknown
-    assert_eq!(Provider::from_str("gemini"), None);
-    assert_eq!(Provider::from_str(""), None);
+    assert_eq!(Provider::parse("gemini"), None);
+    assert_eq!(Provider::parse(""), None);
 }
 
 #[test]
@@ -42,9 +43,9 @@ fn model_name_parse_known() {
 
 #[test]
 fn model_name_parse_known_case_insensitive() {
-    let model = ModelName::parse(Provider::OpenAI, "GPT-4O").unwrap();
+    let model = ModelName::parse(Provider::OpenAI, "GPT-5.2").unwrap();
     assert_eq!(model.kind(), ModelNameKind::Known);
-    assert_eq!(model.as_str(), "gpt-4o"); // Normalized to known spelling
+    assert_eq!(model.as_str(), "gpt-5.2"); // Normalized to known spelling
 }
 
 #[test]

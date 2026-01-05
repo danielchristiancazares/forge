@@ -17,6 +17,7 @@ use crate::{draw_input, draw_model_selector, draw_status_bar};
 pub const INLINE_INPUT_HEIGHT: u16 = 5;
 pub const INLINE_VIEWPORT_HEIGHT: u16 = INLINE_INPUT_HEIGHT + 1;
 
+#[derive(Default)]
 pub struct InlineOutput {
     next_display_index: usize,
     has_output: bool,

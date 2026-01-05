@@ -1,6 +1,6 @@
 //! Markdown rendering tests
 
-use forge::markdown::render_markdown;
+use forge_tui::markdown::render_markdown;
 use ratatui::style::Style;
 
 #[test]

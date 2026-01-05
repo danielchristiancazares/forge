@@ -528,6 +528,11 @@ impl FullHistory {
         self.entries.len()
     }
 
+    /// Returns true if history has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Count of summarized messages.
     pub fn summarized_count(&self) -> usize {
         self.entries.iter().filter(|e| e.is_summarized()).count()

@@ -12,6 +12,35 @@ use forge_types::{
 // Re-export types that callers need
 pub use forge_types;
 
+fn normalize_sse_buffer(buffer: &mut String) {
+    if buffer.contains('\r') {
+        let normalized = buffer.replace("\r\n", "\n");
+        *buffer = normalized;
+        buffer.retain(|c| c != '\r');
+    }
+}
+
+fn extract_sse_data(event: &str) -> Option<String> {
+    let mut data = String::new();
+    let mut found = false;
+
+    for line in event.lines() {
+        if let Some(mut rest) = line.strip_prefix("data:") {
+            if let Some(stripped) = rest.strip_prefix(' ') {
+                rest = stripped;
+            }
+
+            if found {
+                data.push('\n');
+            }
+            data.push_str(rest);
+            found = true;
+        }
+    }
+
+    if found { Some(data) } else { None }
+}
+
 // ============================================================================
 // API Configuration
 // ============================================================================
@@ -139,10 +168,10 @@ pub mod claude {
         let mut api_messages: Vec<serde_json::Value> = Vec::new();
 
         // Inject system prompt if provided
-        if let Some(prompt) = system_prompt {
-            if !prompt.trim().is_empty() {
-                system_blocks.push(content_block(prompt, CacheHint::Ephemeral));
-            }
+        if let Some(prompt) = system_prompt
+            && !prompt.trim().is_empty()
+        {
+            system_blocks.push(content_block(prompt, CacheHint::Ephemeral));
         }
 
         // Build conversation messages
@@ -224,25 +253,19 @@ pub mod claude {
             let chunk = chunk?;
             let text = String::from_utf8_lossy(&chunk);
             buffer.push_str(&text);
+            normalize_sse_buffer(&mut buffer);
 
             while let Some(pos) = buffer.find("\n\n") {
                 let event = buffer[..pos].to_string();
-                buffer = buffer[pos + 2..].to_string();
+                buffer.drain(..pos + 2);
 
-                let mut data_line = None;
-                for line in event.lines() {
-                    if let Some(d) = line.strip_prefix("data: ") {
-                        data_line = Some(d);
-                    }
-                }
-
-                if let Some(data) = data_line {
+                if let Some(data) = extract_sse_data(&event) {
                     if data == "[DONE]" {
                         on_event(StreamEvent::Done);
                         return Ok(());
                     }
 
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
                         if json["type"] == "content_block_delta" {
                             if let Some(delta_type) = json["delta"]["type"].as_str() {
                                 match delta_type {
@@ -344,10 +367,10 @@ pub mod openai {
         );
         body.insert("stream".to_string(), json!(true));
 
-        if let Some(prompt) = system_prompt {
-            if !prompt.trim().is_empty() {
-                body.insert("instructions".to_string(), json!(prompt));
-            }
+        if let Some(prompt) = system_prompt
+            && !prompt.trim().is_empty()
+        {
+            body.insert("instructions".to_string(), json!(prompt));
         }
 
         let options = config.openai_options();
@@ -400,57 +423,56 @@ pub mod openai {
             let chunk = chunk?;
             let text = String::from_utf8_lossy(&chunk);
             buffer.push_str(&text);
+            normalize_sse_buffer(&mut buffer);
 
             while let Some(pos) = buffer.find("\n\n") {
                 let event = buffer[..pos].to_string();
-                buffer = buffer[pos + 2..].to_string();
+                buffer.drain(..pos + 2);
 
-                for line in event.lines() {
-                    if let Some(data) = line.strip_prefix("data: ") {
-                        if data == "[DONE]" {
-                            on_event(StreamEvent::Done);
-                            return Ok(());
-                        }
+                if let Some(data) = extract_sse_data(&event) {
+                    if data == "[DONE]" {
+                        on_event(StreamEvent::Done);
+                        return Ok(());
+                    }
 
-                        if let Ok(json) = serde_json::from_str::<Value>(data) {
-                            match json["type"].as_str().unwrap_or("") {
-                                "response.output_text.delta" => {
-                                    if let Some(delta) = json["delta"].as_str() {
-                                        saw_delta = true;
-                                        on_event(StreamEvent::TextDelta(delta.to_string()));
-                                    }
+                    if let Ok(json) = serde_json::from_str::<Value>(&data) {
+                        match json["type"].as_str().unwrap_or("") {
+                            "response.output_text.delta" => {
+                                if let Some(delta) = json["delta"].as_str() {
+                                    saw_delta = true;
+                                    on_event(StreamEvent::TextDelta(delta.to_string()));
                                 }
-                                "response.refusal.delta" => {
-                                    if let Some(delta) = json["delta"].as_str() {
-                                        saw_delta = true;
-                                        on_event(StreamEvent::TextDelta(delta.to_string()));
-                                    }
-                                }
-                                "response.output_text.done" => {
-                                    if !saw_delta {
-                                        if let Some(text) = json["text"].as_str() {
-                                            on_event(StreamEvent::TextDelta(text.to_string()));
-                                        }
-                                    }
-                                }
-                                "response.completed" => {
-                                    on_event(StreamEvent::Done);
-                                    return Ok(());
-                                }
-                                "response.incomplete" => {
-                                    let reason = extract_incomplete_reason(&json)
-                                        .unwrap_or_else(|| "Response incomplete".to_string());
-                                    on_event(StreamEvent::Error(reason));
-                                    return Ok(());
-                                }
-                                "response.failed" | "error" => {
-                                    let message = extract_error_message(&json)
-                                        .unwrap_or_else(|| "Response failed".to_string());
-                                    on_event(StreamEvent::Error(message));
-                                    return Ok(());
-                                }
-                                _ => {}
                             }
+                            "response.refusal.delta" => {
+                                if let Some(delta) = json["delta"].as_str() {
+                                    saw_delta = true;
+                                    on_event(StreamEvent::TextDelta(delta.to_string()));
+                                }
+                            }
+                            "response.output_text.done" => {
+                                if !saw_delta
+                                    && let Some(text) = json["text"].as_str()
+                                {
+                                    on_event(StreamEvent::TextDelta(text.to_string()));
+                                }
+                            }
+                            "response.completed" => {
+                                on_event(StreamEvent::Done);
+                                return Ok(());
+                            }
+                            "response.incomplete" => {
+                                let reason = extract_incomplete_reason(&json)
+                                    .unwrap_or_else(|| "Response incomplete".to_string());
+                                on_event(StreamEvent::Error(reason));
+                                return Ok(());
+                            }
+                            "response.failed" | "error" => {
+                                let message = extract_error_message(&json)
+                                    .unwrap_or_else(|| "Response failed".to_string());
+                                on_event(StreamEvent::Error(message));
+                                return Ok(());
+                            }
+                            _ => {}
                         }
                     }
                 }
