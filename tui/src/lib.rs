@@ -9,7 +9,10 @@ mod ui_inline;
 pub use effects::apply_modal_effect;
 pub use input::handle_events;
 pub use theme::{colors, spinner_frame, styles};
-pub use ui_inline::{draw as draw_inline, InlineOutput, INLINE_INPUT_HEIGHT, INLINE_VIEWPORT_HEIGHT};
+pub use ui_inline::{
+    INLINE_INPUT_HEIGHT, INLINE_MODEL_SELECTOR_HEIGHT, INLINE_VIEWPORT_HEIGHT, InlineOutput,
+    draw as draw_inline, inline_viewport_height,
+};
 
 use ratatui::{
     Frame,
@@ -44,9 +47,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Min(1),        // Messages
+            Constraint::Min(1),               // Messages
             Constraint::Length(input_height), // Input
-            Constraint::Length(1),     // Status bar
+            Constraint::Length(1),            // Status bar
         ])
         .split(frame.area());
 
@@ -304,23 +307,24 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let usage_status = app.context_usage_status();
-    let (usage, needs_summary) = match &usage_status {
-        ContextUsageStatus::Ready(usage) => (usage, false),
-        ContextUsageStatus::NeedsSummarization { usage, .. } => (usage, true),
+    // 0 = ready, 1 = needs summarization, 2 = recent messages too large (unrecoverable)
+    let (usage, severity_override) = match &usage_status {
+        ContextUsageStatus::Ready(usage) => (usage, 0),
+        ContextUsageStatus::NeedsSummarization { usage, .. } => (usage, 1),
+        ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => (usage, 2),
     };
-    let usage_str = if needs_summary {
-        format!("{} !", usage.format_compact())
-    } else {
-        usage.format_compact()
+    let usage_str = match severity_override {
+        2 => format!("{} !!", usage.format_compact()), // Double bang for unrecoverable
+        1 => format!("{} !", usage.format_compact()),
+        _ => usage.format_compact(),
     };
-    let usage_color = if needs_summary {
-        colors::RED
-    } else {
-        match usage.severity() {
+    let usage_color = match severity_override {
+        1 | 2 => colors::RED,
+        _ => match usage.severity() {
             0 => colors::GREEN,  // < 70%
             1 => colors::YELLOW, // 70-90%
             _ => colors::RED,    // > 90%
-        }
+        },
     };
 
     let input_padding = if mode == InputMode::Normal {
@@ -337,8 +341,11 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
             .title_top(Line::from(vec![Span::styled(mode_text, mode_style)]))
             .title_top(Line::from(hints).alignment(Alignment::Right))
             .title_bottom(
-                Line::from(vec![Span::styled(usage_str, Style::default().fg(usage_color))])
-                    .alignment(Alignment::Right),
+                Line::from(vec![Span::styled(
+                    usage_str,
+                    Style::default().fg(usage_color),
+                )])
+                .alignment(Alignment::Right),
             )
             .padding(input_padding),
     );
@@ -492,7 +499,11 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App) {
         let gap = if right_text.is_empty() { 0 } else { 2 };
         let filler = content_width.saturating_sub(left_width + right_width + gap);
 
-        let bg = if selected { Some(colors::BG_HIGHLIGHT) } else { None };
+        let bg = if selected {
+            Some(colors::BG_HIGHLIGHT)
+        } else {
+            None
+        };
         let mut left_style = if selected {
             Style::default()
                 .fg(colors::TEXT_PRIMARY)
@@ -540,7 +551,9 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App) {
         true,
         Some((
             "preview",
-            Style::default().fg(colors::PEACH).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(colors::PEACH)
+                .add_modifier(Modifier::BOLD),
         )),
     );
 
@@ -609,7 +622,6 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App) {
 
     frame.render_widget(selector, selector_area);
 }
-
 
 fn create_welcome_screen(app: &App) -> Paragraph<'static> {
     let logo = vec![

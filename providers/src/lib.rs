@@ -12,12 +12,22 @@ use forge_types::{
 // Re-export types that callers need
 pub use forge_types;
 
-fn normalize_sse_buffer(buffer: &mut String) {
-    if buffer.contains('\r') {
-        let normalized = buffer.replace("\r\n", "\n");
-        *buffer = normalized;
-        buffer.retain(|c| c != '\r');
+fn find_sse_event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
+    let lf = buffer.windows(2).position(|w| w == b"\n\n");
+    let crlf = buffer.windows(4).position(|w| w == b"\r\n\r\n");
+    match (lf, crlf) {
+        (Some(a), Some(b)) => Some(if a <= b { (a, 2) } else { (b, 4) }),
+        (Some(a), None) => Some((a, 2)),
+        (None, Some(b)) => Some((b, 4)),
+        (None, None) => None,
     }
+}
+
+fn drain_next_sse_event(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let (pos, delim_len) = find_sse_event_boundary(buffer)?;
+    let event = buffer[..pos].to_vec();
+    buffer.drain(..pos + delim_len);
+    Some(event)
 }
 
 fn extract_sse_data(event: &str) -> Option<String> {
@@ -25,6 +35,8 @@ fn extract_sse_data(event: &str) -> Option<String> {
     let mut found = false;
 
     for line in event.lines() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+
         if let Some(mut rest) = line.strip_prefix("data:") {
             if let Some(stripped) = rest.strip_prefix(' ') {
                 rest = stripped;
@@ -185,6 +197,11 @@ pub mod claude {
                     }));
                 }
                 Message::Assistant(_) => {
+                    // Assistant messages sent as strings, not content blocks.
+                    // This means cache_control can't be applied to them - Anthropic's
+                    // API only supports cache hints on content blocks. This is acceptable
+                    // because caching is most valuable for system prompts and early user
+                    // messages that remain stable across turns.
                     api_messages.push(json!({
                         "role": "assistant",
                         "content": msg.content()
@@ -252,19 +269,28 @@ pub mod claude {
         // Process SSE stream
         use futures_util::StreamExt;
         let mut stream = response.bytes_stream();
-        let mut buffer = String::new();
+        let mut buffer: Vec<u8> = Vec::new();
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
-            let text = String::from_utf8_lossy(&chunk);
-            buffer.push_str(&text);
-            normalize_sse_buffer(&mut buffer);
+            buffer.extend_from_slice(&chunk);
 
-            while let Some(pos) = buffer.find("\n\n") {
-                let event = buffer[..pos].to_string();
-                buffer.drain(..pos + 2);
+            while let Some(event) = drain_next_sse_event(&mut buffer) {
+                if event.is_empty() {
+                    continue;
+                }
 
-                if let Some(data) = extract_sse_data(&event) {
+                let event = match std::str::from_utf8(&event) {
+                    Ok(event) => event,
+                    Err(_) => {
+                        on_event(StreamEvent::Error(
+                            "Received invalid UTF-8 from SSE stream".to_string(),
+                        ));
+                        return Ok(());
+                    }
+                };
+
+                if let Some(data) = extract_sse_data(event) {
                     if data == "[DONE]" {
                         on_event(StreamEvent::Done);
                         return Ok(());
@@ -316,9 +342,7 @@ pub mod claude {
             let limits = OutputLimits::new(1024);
 
             let messages = vec![
-                CacheableMessage::plain(Message::system(
-                    NonEmptyString::new("summary").unwrap(),
-                )),
+                CacheableMessage::plain(Message::system(NonEmptyString::new("summary").unwrap())),
                 CacheableMessage::plain(Message::try_user("hi").unwrap()),
             ];
 
@@ -347,7 +371,10 @@ pub mod claude {
             let system = body.get("system").unwrap().as_array().unwrap();
             assert_eq!(system.len(), 2);
             assert_eq!(system[0]["text"].as_str(), Some("prompt"));
-            assert_eq!(system[0]["cache_control"]["type"].as_str(), Some("ephemeral"));
+            assert_eq!(
+                system[0]["cache_control"]["type"].as_str(),
+                Some("ephemeral")
+            );
             assert_eq!(system[1]["text"].as_str(), Some("summary"));
         }
     }
@@ -357,7 +384,7 @@ pub mod claude {
 pub mod openai {
     use super::*;
     use reqwest::Client;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     const API_URL: &str = "https://api.openai.com/v1/responses";
 
@@ -385,6 +412,22 @@ pub mod openai {
             .map(|s| s.to_string())
     }
 
+    /// Map message role to OpenAI Responses API role.
+    ///
+    /// Per the OpenAI Model Spec, the authority hierarchy is:
+    ///   Root > System > Developer > User > Guideline
+    ///
+    /// "System" level is reserved for OpenAI's own runtime injections.
+    /// API developers operate at "Developer" level, so Message::System
+    /// maps to "developer" role, not "system".
+    fn openai_role(msg: &Message) -> &'static str {
+        match msg {
+            Message::System(_) => "developer",
+            Message::User(_) => "user",
+            Message::Assistant(_) => "assistant",
+        }
+    }
+
     fn build_request_body(
         config: &ApiConfig,
         messages: &[CacheableMessage],
@@ -395,7 +438,7 @@ pub mod openai {
         for cacheable in messages {
             let msg = &cacheable.message;
             input_items.push(json!({
-                "role": msg.role_str(),
+                "role": openai_role(msg),
                 "content": msg.content(),
             }));
         }
@@ -470,20 +513,29 @@ pub mod openai {
 
         use futures_util::StreamExt;
         let mut stream = response.bytes_stream();
-        let mut buffer = String::new();
+        let mut buffer: Vec<u8> = Vec::new();
         let mut saw_delta = false;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
-            let text = String::from_utf8_lossy(&chunk);
-            buffer.push_str(&text);
-            normalize_sse_buffer(&mut buffer);
+            buffer.extend_from_slice(&chunk);
 
-            while let Some(pos) = buffer.find("\n\n") {
-                let event = buffer[..pos].to_string();
-                buffer.drain(..pos + 2);
+            while let Some(event) = drain_next_sse_event(&mut buffer) {
+                if event.is_empty() {
+                    continue;
+                }
 
-                if let Some(data) = extract_sse_data(&event) {
+                let event = match std::str::from_utf8(&event) {
+                    Ok(event) => event,
+                    Err(_) => {
+                        on_event(StreamEvent::Error(
+                            "Received invalid UTF-8 from SSE stream".to_string(),
+                        ));
+                        return Ok(());
+                    }
+                };
+
+                if let Some(data) = extract_sse_data(event) {
                     if data == "[DONE]" {
                         on_event(StreamEvent::Done);
                         return Ok(());
@@ -504,9 +556,7 @@ pub mod openai {
                                 }
                             }
                             "response.output_text.done" => {
-                                if !saw_delta
-                                    && let Some(text) = json["text"].as_str()
-                                {
+                                if !saw_delta && let Some(text) = json["text"].as_str() {
                                     on_event(StreamEvent::TextDelta(text.to_string()));
                                 }
                             }
@@ -543,15 +593,13 @@ pub mod openai {
         use forge_types::NonEmptyString;
 
         #[test]
-        fn includes_system_messages_in_input_items() {
+        fn maps_system_message_to_developer_role() {
             let key = ApiKey::OpenAI("test".to_string());
             let model = Provider::OpenAI.default_model();
             let config = ApiConfig::new(key, model).unwrap();
 
             let messages = vec![
-                CacheableMessage::plain(Message::system(
-                    NonEmptyString::new("summary").unwrap(),
-                )),
+                CacheableMessage::plain(Message::system(NonEmptyString::new("summary").unwrap())),
                 CacheableMessage::plain(Message::try_user("hi").unwrap()),
             ];
 
@@ -559,7 +607,8 @@ pub mod openai {
 
             let input = body.get("input").unwrap().as_array().unwrap();
             assert_eq!(input.len(), 2);
-            assert_eq!(input[0]["role"].as_str(), Some("system"));
+            // Message::System maps to "developer" per OpenAI Model Spec hierarchy
+            assert_eq!(input[0]["role"].as_str(), Some("developer"));
             assert_eq!(input[0]["content"].as_str(), Some("summary"));
             assert_eq!(input[1]["role"].as_str(), Some("user"));
         }
@@ -574,12 +623,8 @@ pub mod openai {
                 NonEmptyString::new("summary").unwrap(),
             ))];
 
-            let body = build_request_body(
-                &config,
-                &messages,
-                OutputLimits::new(1024),
-                Some("prompt"),
-            );
+            let body =
+                build_request_body(&config, &messages, OutputLimits::new(1024), Some("prompt"));
 
             assert_eq!(body.get("instructions").unwrap().as_str(), Some("prompt"));
         }

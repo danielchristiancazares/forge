@@ -37,14 +37,14 @@ Forge uses a terminal-based user interface built on the [ratatui](https://github
 ### File Structure
 
 ```
-src/
+cli/src/
 └── main.rs                     # Application entry point and event loop
 
-crates/forge-engine/src/
+engine/src/
 ├── lib.rs                      # App state machine, commands, model select
 └── config.rs                   # Config parsing
 
-crates/forge-tui/src/
+tui/src/
 ├── lib.rs                      # Full-screen UI rendering + overlays
 ├── ui_inline.rs                # Inline terminal UI rendering
 ├── input.rs                    # Keyboard input handling
@@ -52,19 +52,19 @@ crates/forge-tui/src/
 ├── markdown.rs                 # Markdown to ratatui conversion
 └── effects.rs                  # Modal animation transforms (PopScale, SlideUp)
 
-crates/forge-context/src/       # Context window management
-crates/forge-providers/src/     # Provider HTTP/SSE implementations
-crates/forge-types/src/         # Shared domain types
+context/src/                    # Context window management
+providers/src/                  # Provider HTTP/SSE implementations
+types/src/                      # Shared domain types
 ```
 
 > **Note:** For readability, this document refers to logical files like
 > `app.rs`, `ui.rs`, and `input.rs`. In the current workspace layout those
-> map to `crates/forge-engine/src/lib.rs` (App/state),
-> `crates/forge-tui/src/lib.rs`/`ui_inline.rs` (rendering), and
-> `crates/forge-tui/src/input.rs` (key handling). ContextInfinity lives in
-> `crates/forge-context/src/`, provider references map to
-> `crates/forge-providers/src/lib.rs`, and shared message/types live in
-> `crates/forge-types/src/lib.rs`.
+> map to `engine/src/lib.rs` (App/state),
+> `tui/src/lib.rs`/`ui_inline.rs` (rendering), and
+> `tui/src/input.rs` (key handling). ContextInfinity lives in
+> `context/src/`, provider references map to
+> `providers/src/lib.rs`, and shared message/types live in
+> `types/src/lib.rs`.
 
 ---
 
@@ -808,7 +808,6 @@ impl NonEmptyString {
 pub struct StreamingMessage {
     model: ModelName,
     content: String,
-    timestamp: SystemTime,
     receiver: mpsc::UnboundedReceiver<StreamEvent>,
 }
 ```
@@ -959,6 +958,24 @@ let usage_color = match usage.severity() {
 };
 ```
 
+### Context Usage Status
+
+The `ContextUsageStatus` enum represents the current state of context management:
+
+```rust
+pub enum ContextUsageStatus {
+    Ready(ContextUsage),                    // Normal operation
+    NeedsSummarization { usage, needed },   // Context full, summarization required
+    RecentMessagesTooLarge {                // Recent messages exceed budget
+        usage,
+        required_tokens,
+        budget_tokens,
+    },
+}
+```
+
+The `RecentMessagesTooLarge` variant indicates that recent messages alone exceed the token budget, which cannot be resolved by summarization.
+
 ### Summarization Flow
 
 ```
@@ -1106,6 +1123,12 @@ impl PredefinedModel {
     pub const fn provider(&self) -> Provider { /* ... */ }
 }
 ```
+
+> **Note:** The `PredefinedModel` options shown in the model selector differ from the provider default models:
+> - **Provider default** (used on startup): `claude-sonnet-4-5-20250929` for Claude, `gpt-5.2` for OpenAI
+> - **PredefinedModel::ClaudeOpus**: `claude-opus-4-5-20251101` (premium option)
+>
+> **OpenAI Model Validation:** The codebase requires OpenAI model names to start with `gpt-5`. Models like `gpt-4o` will be rejected with a `ModelParseError::OpenAIMinimum` error. This ensures compatibility with the OpenAI Responses API.
 
 ---
 
@@ -1256,8 +1279,8 @@ The model selector features animation effects using a custom `ModalEffect` syste
 ```rust
 pub fn enter_model_select_mode(&mut self) {
     self.input = std::mem::take(&mut self.input).into_model_select();
-    // Create pop-scale animation (scales up from 60% to 100% over 120ms)
-    self.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(120)));
+    // Create pop-scale animation (scales up from 60% to 100% over 700ms)
+    self.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
 }
 ```
 
@@ -1520,7 +1543,9 @@ fn draw_token_bar(frame: &mut Frame, app: &App, area: Rect) {
     let usage = app.context_usage_status();
     let (current, max) = match &usage {
         ContextUsageStatus::Ready(u) => (u.used_tokens(), u.budget_tokens()),
-        ContextUsageStatus::NeedsSummarization { usage, .. } => 
+        ContextUsageStatus::NeedsSummarization { usage, .. } =>
+            (usage.used_tokens(), usage.budget_tokens()),
+        ContextUsageStatus::RecentMessagesTooLarge { usage, .. } =>
             (usage.used_tokens(), usage.budget_tokens()),
     };
 
@@ -1604,7 +1629,7 @@ impl App {
         self.input = std::mem::take(&mut self.input).into_your_modal();
 
         // Create animation effect (choose one):
-        self.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(120)));
+        self.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
         // Or: ModalEffect::slide_up(Duration::from_millis(100))
     }
 
@@ -1718,7 +1743,7 @@ impl Provider {
     pub fn default_model(&self) -> ModelName {
         match self {
             Provider::Claude => ModelName::known(Self::Claude, "claude-sonnet-4-5-20250929"),
-            Provider::OpenAI => ModelName::known(Self::OpenAI, "gpt-4o"),
+            Provider::OpenAI => ModelName::known(Self::OpenAI, "gpt-5.2"),
             Provider::YourProvider => ModelName::known(Self::YourProvider, "your-default-model"),
         }
     }

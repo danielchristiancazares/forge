@@ -29,13 +29,11 @@ mod working_context;
 
 pub use history::{FullHistory, HistoryEntry, MessageId, Summary, SummaryId};
 pub use manager::{
-    ContextAdaptation, ContextManager, ContextUsageStatus, PendingSummarization,
+    ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus, PendingSummarization,
     PreparedContext, SummarizationNeeded, SummarizationScope,
 };
 pub use model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry, ResolvedModelLimits};
-pub use stream_journal::{
-    ActiveJournal, JournalStats, RecoveredStream, StepId, StreamJournal,
-};
+pub use stream_journal::{ActiveJournal, JournalStats, RecoveredStream, StepId, StreamJournal};
 pub use summarization::{generate_summary, summarization_model};
 pub use token_counter::TokenCounter;
 pub use working_context::{ContextSegment, ContextUsage, WorkingContext};

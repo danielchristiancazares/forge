@@ -1,5 +1,6 @@
 //! Inline TUI mode - minimal viewport for shell integration.
 
+use ratatui::prelude::{Backend, Terminal};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -7,7 +8,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Clear, Paragraph, Widget, Wrap},
 };
-use ratatui::prelude::{Backend, Terminal};
 
 use forge_engine::{App, DisplayItem, InputMode, Message};
 
@@ -16,6 +16,18 @@ use crate::{draw_input, draw_model_selector, draw_status_bar};
 
 pub const INLINE_INPUT_HEIGHT: u16 = 5;
 pub const INLINE_VIEWPORT_HEIGHT: u16 = INLINE_INPUT_HEIGHT + 1;
+
+/// Height needed for the model selector overlay in inline mode.
+/// Calculated as: inner content + borders + padding.
+pub const INLINE_MODEL_SELECTOR_HEIGHT: u16 = 18;
+
+/// Returns the viewport height needed for inline mode based on current input mode.
+pub fn inline_viewport_height(mode: InputMode) -> u16 {
+    match mode {
+        InputMode::ModelSelect => INLINE_MODEL_SELECTOR_HEIGHT,
+        _ => INLINE_VIEWPORT_HEIGHT,
+    }
+}
 
 #[derive(Default)]
 pub struct InlineOutput {
@@ -90,10 +102,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(input_height),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Length(input_height), Constraint::Length(1)])
         .split(content_area);
 
     draw_input(frame, app, chunks[0]);

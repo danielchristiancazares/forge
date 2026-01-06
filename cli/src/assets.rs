@@ -1,9 +1,7 @@
 use std::sync::OnceLock;
 
-const SYSTEM_PROMPT_RAW: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/assets/prompt.md"
-));
+const SYSTEM_PROMPT_RAW: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/prompt.md"));
 
 static SYSTEM_PROMPT: OnceLock<String> = OnceLock::new();
 

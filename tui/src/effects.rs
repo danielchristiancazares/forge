@@ -14,9 +14,9 @@ pub fn apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> R
         }
         ModalEffectKind::SlideUp => {
             let t = ease_out_cubic(effect.progress());
-            let max_offset = viewport
-                .height
-                .saturating_sub(base.y.saturating_add(base.height));
+            let viewport_bottom = viewport.y.saturating_add(viewport.height);
+            let base_bottom = base.y.saturating_add(base.height);
+            let max_offset = viewport_bottom.saturating_sub(base_bottom);
             let offset = max_offset.min(base.height.saturating_div(2)).min(6);
             let y_offset = ((1.0 - t) * offset as f32).round() as u16;
             Rect {

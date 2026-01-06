@@ -1,5 +1,7 @@
 # Context Infinity: Adaptive Context Window Management
 
+> Note: This is an implementation-focused overview of the current summarization system; the authoritative spec is `docs/CONTEXT_ARCHITECTURE.md`.
+
 Context Infinity is Forge's system for managing unlimited conversation context with LLMs. It preserves complete conversation history while automatically summarizing older content to fit within model-specific token limits.
 
 ## Overview
@@ -35,7 +37,7 @@ WorkingContext -----> API Messages
 ### Directory Structure
 
 ```
-crates/forge-context/src/
+context/src/
   lib.rs              # Module exports and public API
   manager.rs          # ContextManager - main orchestrator
   history.rs          # FullHistory, MessageId, SummaryId, Summary

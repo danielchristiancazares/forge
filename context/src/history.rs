@@ -315,7 +315,11 @@ struct FullHistorySerde {
 impl From<&FullHistory> for FullHistorySerde {
     fn from(history: &FullHistory) -> Self {
         Self {
-            entries: history.entries.iter().map(HistoryEntrySerde::from).collect(),
+            entries: history
+                .entries
+                .iter()
+                .map(HistoryEntrySerde::from)
+                .collect(),
             summaries: history.summaries.clone(),
             next_message_id: history.next_message_id,
             next_summary_id: history.next_summary_id,
@@ -338,9 +342,7 @@ impl<'de> Deserialize<'de> for FullHistory {
         D: serde::Deserializer<'de>,
     {
         let serde = FullHistorySerde::deserialize(deserializer)?;
-        serde
-            .into_history()
-            .map_err(serde::de::Error::custom)
+        serde.into_history().map_err(serde::de::Error::custom)
     }
 }
 
@@ -399,7 +401,8 @@ impl FullHistorySerde {
             if entry.id.as_u64() != expected_id {
                 return Err(format!(
                     "entry id {} does not match position {}",
-                    entry.id.as_u64(), expected_id
+                    entry.id.as_u64(),
+                    expected_id
                 ));
             }
 
@@ -408,7 +411,8 @@ impl FullHistorySerde {
                 if summary_index >= summaries.len() {
                     return Err(format!(
                         "entry {} references missing summary {}",
-                        entry.id.as_u64(), summary_id.0
+                        entry.id.as_u64(),
+                        summary_id.0
                     ));
                 }
 

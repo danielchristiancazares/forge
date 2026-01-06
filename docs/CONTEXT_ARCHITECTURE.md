@@ -1,5 +1,7 @@
 # ContextInfinity™ Software Requirements Document (SRD)
 
+> Note: This is the authoritative ContextInfinity spec; `docs/CONTEXT_INFINITY.md` is implementation notes and may lag behind.
+
 **Document version:** 0.31
 **Status:** Draft
 

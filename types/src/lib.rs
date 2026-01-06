@@ -189,6 +189,8 @@ pub enum ModelNameKind {
 pub enum ModelParseError {
     #[error("model name cannot be empty")]
     Empty,
+    #[error("Claude model must start with claude- (got {0})")]
+    ClaudePrefix(String),
     #[error("OpenAI model must start with gpt-5 (got {0})")]
     OpenAIMinimum(String),
 }
@@ -210,6 +212,10 @@ impl ModelName {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return Err(ModelParseError::Empty);
+        }
+
+        if provider == Provider::Claude && !trimmed.to_ascii_lowercase().starts_with("claude-") {
+            return Err(ModelParseError::ClaudePrefix(trimmed.to_string()));
         }
 
         if provider == Provider::OpenAI && !trimmed.to_ascii_lowercase().starts_with("gpt-5") {
@@ -436,6 +442,11 @@ pub enum CacheHint {
     #[default]
     None,
     /// Content is stable and should be cached if supported.
+    ///
+    /// Named "Ephemeral" to match Anthropic's API terminology. Despite the name,
+    /// this actually means "cache this content" - Anthropic uses "ephemeral" to
+    /// indicate the cache entry has a limited TTL (~5 min) rather than permanent
+    /// storage. The content itself should be stable/unchanging for caching to help.
     Ephemeral,
 }
 
@@ -654,7 +665,10 @@ pub struct CacheableMessage {
 
 impl CacheableMessage {
     pub fn new(message: Message, cache_hint: CacheHint) -> Self {
-        Self { message, cache_hint }
+        Self {
+            message,
+            cache_hint,
+        }
     }
 
     /// Create a message with no cache hint.
@@ -697,6 +711,13 @@ mod tests {
         let provider = Provider::OpenAI;
         assert!(provider.parse_model("gpt-4o").is_err());
         assert!(provider.parse_model("gpt-5.2").is_ok());
+    }
+
+    #[test]
+    fn model_parse_validates_claude_prefix() {
+        let provider = Provider::Claude;
+        assert!(provider.parse_model("gpt-5.2").is_err());
+        assert!(provider.parse_model("claude-sonnet-4-5-20250929").is_ok());
     }
 
     #[test]

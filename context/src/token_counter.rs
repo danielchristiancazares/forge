@@ -27,9 +27,7 @@ static ENCODER: OnceLock<Option<CoreBPE>> = OnceLock::new();
 ///
 /// Initializes the encoder on first call using `cl100k_base` encoding.
 fn get_encoder() -> Option<&'static CoreBPE> {
-    ENCODER
-        .get_or_init(|| cl100k_base().ok())
-        .as_ref()
+    ENCODER.get_or_init(|| cl100k_base().ok()).as_ref()
 }
 
 /// Thread-safe approximate token counter using tiktoken's cl100k_base encoding.

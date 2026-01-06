@@ -20,7 +20,7 @@
 
 #[cfg(test)]
 use anyhow::anyhow;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -319,7 +319,8 @@ impl StreamJournal {
         )
         .context("Failed to increment step counter")?;
 
-        tx.commit().context("Failed to commit step-id transaction")?;
+        tx.commit()
+            .context("Failed to commit step-id transaction")?;
 
         Ok(step_id)
     }
@@ -456,7 +457,6 @@ impl StreamJournal {
 
         Ok(deleted as u64)
     }
-
 }
 
 fn append_delta(db: &Connection, delta: &StreamDelta) -> Result<()> {
@@ -1008,7 +1008,9 @@ mod tests {
         let recovered = journal.recover().unwrap().expect("recovered stream");
         match recovered {
             RecoveredStream::Errored {
-                partial_text, error, ..
+                partial_text,
+                error,
+                ..
             } => {
                 assert_eq!(partial_text, "Start");
                 assert_eq!(error, "API Error");

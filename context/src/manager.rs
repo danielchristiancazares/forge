@@ -15,7 +15,7 @@ use forge_types::{Message, NonEmptyString};
 use super::history::{FullHistory, MessageId, Summary, SummaryId};
 use super::model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry};
 use super::token_counter::TokenCounter;
-use super::working_context::{ContextSegment, ContextUsage, WorkingContext, SUMMARY_PREFIX};
+use super::working_context::{ContextSegment, ContextUsage, SUMMARY_PREFIX, WorkingContext};
 
 const MIN_SUMMARY_RATIO: f32 = 0.01;
 const MAX_SUMMARY_RATIO: f32 = 0.95;
@@ -40,7 +40,21 @@ impl Default for SummarizationConfig {
     }
 }
 
-/// Error indicating summarization is required to proceed.
+/// Error indicating context cannot be built within budget.
+#[derive(Debug)]
+pub enum ContextBuildError {
+    /// Older messages need summarization to fit within budget.
+    SummarizationNeeded(SummarizationNeeded),
+    /// The most recent N messages alone exceed the budget.
+    /// This is unrecoverable - user must reduce input or switch to larger model.
+    RecentMessagesTooLarge {
+        required_tokens: u32,
+        budget_tokens: u32,
+        message_count: usize,
+    },
+}
+
+/// Details about summarization needed to proceed.
 #[derive(Debug)]
 pub struct SummarizationNeeded {
     pub excess_tokens: u32,
@@ -110,6 +124,11 @@ pub enum ContextUsageStatus {
     NeedsSummarization {
         usage: ContextUsage,
         needed: SummarizationNeeded,
+    },
+    RecentMessagesTooLarge {
+        usage: ContextUsage,
+        required_tokens: u32,
+        budget_tokens: u32,
     },
 }
 
@@ -198,11 +217,12 @@ impl ContextManager {
 
     /// Build the working context for current model.
     ///
-    /// Returns an error if summarization is needed to fit within budget.
+    /// Returns an error if summarization is needed to fit within budget, or if
+    /// the most recent messages alone exceed the budget (unrecoverable).
     // TODO: Accept configured output limit to use effective_input_budget_with_reserved()
     // instead of reserving the model's full max_output. This would allow more input
     // context when users configure smaller output limits.
-    fn build_working_context(&self) -> Result<WorkingContext, SummarizationNeeded> {
+    fn build_working_context(&self) -> Result<WorkingContext, ContextBuildError> {
         let budget = self.current_limits.effective_input_budget();
         let mut ctx = WorkingContext::new(budget);
 
@@ -211,14 +231,19 @@ impl ContextManager {
         let mut preserve_count = 0usize;
         let mut tokens_for_recent = 0u32;
 
-        // Phase 1: Prefer to include up to N most recent messages if they fit.
+        // Phase 1: The N most recent messages are always preserved and never summarized.
+        // Count them unconditionally - if they exceed budget, that's an unrecoverable error.
         for entry in entries.iter().rev().take(max_preserve) {
-            let next_tokens = tokens_for_recent.saturating_add(entry.token_count());
-            if next_tokens > budget {
-                break;
-            }
-            tokens_for_recent = next_tokens;
+            tokens_for_recent = tokens_for_recent.saturating_add(entry.token_count());
             preserve_count += 1;
+        }
+
+        if tokens_for_recent > budget {
+            return Err(ContextBuildError::RecentMessagesTooLarge {
+                required_tokens: tokens_for_recent,
+                budget_tokens: budget,
+                message_count: preserve_count,
+            });
         }
 
         let recent_start = entries.len().saturating_sub(preserve_count);
@@ -370,11 +395,13 @@ impl ContextManager {
             let excess_tokens = tokens_to_summarize.saturating_sub(available_left);
 
             let msg_count = need_summary.len();
-            return Err(SummarizationNeeded {
-                excess_tokens,
-                messages_to_summarize: need_summary,
-                suggestion: format!("{} older messages need summarization", msg_count),
-            });
+            return Err(ContextBuildError::SummarizationNeeded(
+                SummarizationNeeded {
+                    excess_tokens,
+                    messages_to_summarize: need_summary,
+                    suggestion: format!("{} older messages need summarization", msg_count),
+                },
+            ));
         }
 
         // Phase 4: Materialize selected older segments in chronological order.
@@ -510,7 +537,7 @@ impl ContextManager {
     }
 
     /// Build a working context proof for the current model.
-    pub fn prepare(&self) -> Result<PreparedContext<'_>, SummarizationNeeded> {
+    pub fn prepare(&self) -> Result<PreparedContext<'_>, ContextBuildError> {
         let working_context = self.build_working_context()?;
         Ok(PreparedContext {
             manager: self,
@@ -520,15 +547,28 @@ impl ContextManager {
 
     /// Get current usage statistics with explicit summarization status.
     pub fn usage_status(&self) -> ContextUsageStatus {
+        let fallback_usage = || ContextUsage {
+            used_tokens: self.history.total_tokens(),
+            budget_tokens: self.current_limits.effective_input_budget(),
+            summarized_segments: 0,
+        };
+
         match self.prepare() {
             Ok(prepared) => ContextUsageStatus::Ready(prepared.usage()),
-            Err(needed) => ContextUsageStatus::NeedsSummarization {
-                usage: ContextUsage {
-                    used_tokens: self.history.total_tokens(),
-                    budget_tokens: self.current_limits.effective_input_budget(),
-                    summarized_segments: 0,
-                },
-                needed,
+            Err(ContextBuildError::SummarizationNeeded(needed)) => {
+                ContextUsageStatus::NeedsSummarization {
+                    usage: fallback_usage(),
+                    needed,
+                }
+            }
+            Err(ContextBuildError::RecentMessagesTooLarge {
+                required_tokens,
+                budget_tokens,
+                ..
+            }) => ContextUsageStatus::RecentMessagesTooLarge {
+                usage: fallback_usage(),
+                required_tokens,
+                budget_tokens,
             },
         }
     }

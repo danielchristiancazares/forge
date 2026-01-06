@@ -1,6 +1,6 @@
-# CLAUDE.md
+# Forge Architecture
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Forge is a vim-modal TUI for LLMs built with ratatui/crossterm.
 
 ## Build Commands
 
@@ -9,38 +9,9 @@ cargo check              # Fast type-check (use during development)
 cargo build              # Debug build
 cargo test               # Run tests
 cargo clippy -- -D warnings  # Lint (run before committing)
-cargo cov                # Coverage report (requires cargo-llvm-cov)
 ```
 
-## Configuration
-
-Config: `~/.forge/config.toml` (supports `${ENV_VAR}` expansion)
-
-```toml
-[app]
-provider = "claude"        # or "openai"
-model = "claude-sonnet-4-5-20250929"
-tui = "full"               # or "inline"
-
-[api_keys]
-anthropic = "${ANTHROPIC_API_KEY}"
-openai = "${OPENAI_API_KEY}"
-
-[context]
-infinity = true            # Enable summarization-based context management
-
-[anthropic]
-cache_enabled = true
-thinking_enabled = false
-```
-
-Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `FORGE_TUI`, `FORGE_CONTEXT_INFINITY=0`
-
-## Architecture
-
-Forge is a vim-modal TUI for LLMs built with ratatui/crossterm.
-
-### Workspace Structure
+## Workspace Structure
 
 ```
 forge/
@@ -55,7 +26,7 @@ forge/
 └── docs/           # Architecture documentation
 ```
 
-### Key Files
+## Key Files
 
 | Crate | File | Purpose |
 |-------|------|---------|
@@ -80,7 +51,7 @@ forge/
 | `providers` | `openai.rs` | OpenAI API client |
 | `types` | `lib.rs` | Message types, `NonEmptyString`, `ModelName` |
 
-### Main Event Loop (`cli/src/main.rs`)
+## Main Event Loop (`cli/src/main.rs`)
 
 ```
 loop {
@@ -94,7 +65,7 @@ loop {
 
 The `yield_now()` is essential because crossterm's event polling is blocking.
 
-### Input State Machine
+## Input State Machine
 
 Mode transitions are type-safe via `InputState` enum variants:
 - `Normal(DraftInput)` → navigation
@@ -110,7 +81,7 @@ let mode = app.insert_mode(token);
 mode.enter_char('x');  // Now safe to call
 ```
 
-### Type-Driven Design
+## Type-Driven Design
 
 The codebase enforces correctness through types (see `docs/DESIGN.md`):
 
@@ -125,7 +96,7 @@ The codebase enforces correctness through types (see `docs/DESIGN.md`):
 | `PreparedContext` | Proof that context was prepared before API call |
 | `AppState` variants | Mutually exclusive async operation states |
 
-### Provider System (`providers/src/lib.rs`)
+## Provider System (`providers/src/lib.rs`)
 
 `Provider` enum (Claude, OpenAI) with:
 - `default_model()` → provider's default model
@@ -134,7 +105,7 @@ The codebase enforces correctness through types (see `docs/DESIGN.md`):
 
 Adding a provider: extend `Provider` enum, implement all match arms, add module in `providers/src/`.
 
-### Context Infinity (`context/`)
+## Context Infinity (`context/`)
 
 Adaptive context management with automatic summarization:
 - `manager.rs` - orchestrates token counting, triggers summarization
@@ -147,7 +118,7 @@ Adaptive context management with automatic summarization:
 
 See `docs/CONTEXT_INFINITY.md` and `docs/CONTEXT_ARCHITECTURE.md` for details.
 
-### Key Extension Points
+## Key Extension Points
 
 | Task | Location |
 |------|----------|
@@ -165,23 +136,33 @@ See `docs/TUI_ARCHITECTURE.md` Extension Guide for detailed patterns.
 | Document | Description |
 |----------|-------------|
 | `docs/TUI_ARCHITECTURE.md` | Comprehensive TUI system documentation |
+| `docs/ENGINE_ARCHITECTURE.md` | Engine state machine and orchestration |
+| `docs/PROVIDERS_ARCHITECTURE.md` | LLM API clients and SSE streaming |
 | `docs/CONTEXT_INFINITY.md` | Context management system overview |
 | `docs/CONTEXT_ARCHITECTURE.md` | Context subsystem architecture |
 | `docs/DESIGN.md` | Type-driven design patterns |
 | `docs/OPENAI_RESPONSES_GPT52.md` | OpenAI Responses API integration |
-| `docs/RUST_2024_REFERENCE.md` | Rust 2024 edition features used |
 
-## Testing
+## Configuration
 
-Uses wiremock for HTTP mocking, insta for snapshots, tempfile for isolation:
-```bash
-cargo test test_name                    # Single test
-cargo test -- --nocapture               # With stdout
-cargo test --test integration_test      # Integration tests only
+Config: `~/.forge/config.toml` (supports `${ENV_VAR}` expansion)
+
+```toml
+[app]
+provider = "claude"        # or "openai"
+model = "claude-sonnet-4-5-20250929"
+tui = "full"               # or "inline"
+
+[api_keys]
+anthropic = "${ANTHROPIC_API_KEY}"
+openai = "${OPENAI_API_KEY}"
+
+[context]
+infinity = true            # Enable summarization-based context management
+
+[anthropic]
+cache_enabled = true
+thinking_enabled = false
 ```
 
-## Commit Style
-
-Conventional commits: `type(scope): summary`
-
-Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
+Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `FORGE_TUI`, `FORGE_CONTEXT_INFINITY=0`

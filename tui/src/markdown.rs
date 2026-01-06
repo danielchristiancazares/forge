@@ -37,8 +37,7 @@ struct MarkdownRenderer {
     table_alignments: Vec<pulldown_cmark::Alignment>,
 
     // List state
-    list_depth: usize,
-    list_index: Option<u64>,
+    list_stack: Vec<Option<u64>>,
 }
 
 impl MarkdownRenderer {
@@ -57,15 +56,13 @@ impl MarkdownRenderer {
             current_row: Vec::new(),
             current_cell: String::new(),
             table_alignments: Vec::new(),
-            list_depth: 0,
-            list_index: None,
+            list_stack: Vec::new(),
         }
     }
 
     fn render(mut self, content: &str) -> Vec<Line<'static>> {
-        let options = Options::ENABLE_TABLES
-            | Options::ENABLE_STRIKETHROUGH
-            | Options::ENABLE_TASKLISTS;
+        let options =
+            Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
 
         let parser = Parser::new_ext(content, options);
 
@@ -109,18 +106,18 @@ impl MarkdownRenderer {
             }
             Tag::List(start) => {
                 self.flush_line();
-                self.list_depth += 1;
-                self.list_index = start;
+                self.list_stack.push(start);
             }
             Tag::Item => {
                 // Add list marker
-                let indent = "    ".repeat(self.list_depth.saturating_sub(1));
-                let marker = if let Some(ref mut idx) = self.list_index {
-                    let m = format!("{}{}. ", indent, idx);
-                    *idx += 1;
-                    m
-                } else {
-                    format!("{}• ", indent)
+                let indent = "    ".repeat(self.list_stack.len().saturating_sub(1));
+                let marker = match self.list_stack.last_mut() {
+                    Some(Some(idx)) => {
+                        let m = format!("{}{}. ", indent, idx);
+                        *idx += 1;
+                        m
+                    }
+                    _ => format!("{}• ", indent),
                 };
                 self.current_spans
                     .push(Span::styled(marker, self.base_style));
@@ -139,7 +136,7 @@ impl MarkdownRenderer {
             }
             Tag::Paragraph => {
                 // Add spacing before paragraphs (except at start)
-                if !self.lines.is_empty() && self.list_depth == 0 {
+                if !self.lines.is_empty() && self.list_stack.is_empty() {
                     self.lines.push(Line::from(""));
                 }
             }
@@ -168,10 +165,7 @@ impl MarkdownRenderer {
                 self.render_code_block();
             }
             TagEnd::List(_) => {
-                self.list_depth = self.list_depth.saturating_sub(1);
-                if self.list_depth == 0 {
-                    self.list_index = None;
-                }
+                self.list_stack.pop();
             }
             TagEnd::Item => {
                 self.flush_line();
@@ -186,7 +180,8 @@ impl MarkdownRenderer {
                 }
             }
             TagEnd::TableCell => {
-                self.current_row.push(std::mem::take(&mut self.current_cell));
+                self.current_row
+                    .push(std::mem::take(&mut self.current_cell));
             }
             TagEnd::Paragraph => {
                 self.flush_line();
