@@ -15,9 +15,9 @@ use config::OpenAIConfig;
 
 // Re-export from crates for public API
 pub use forge_context::{
-    ActiveJournal, ContextAdaptation, ContextManager, ContextUsageStatus, FullHistory, MessageId,
-    ModelLimits, ModelLimitsSource, ModelRegistry, PendingSummarization, PreparedContext,
-    RecoveredStream, StreamJournal, SummarizationNeeded, SummarizationScope,
+    ActiveJournal, ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus,
+    FullHistory, MessageId, ModelLimits, ModelLimitsSource, ModelRegistry, PendingSummarization,
+    PreparedContext, RecoveredStream, StreamJournal, SummarizationNeeded, SummarizationScope,
     TokenCounter, generate_summary, summarization_model,
 };
 pub use forge_providers::{self, ApiConfig};
@@ -223,7 +223,6 @@ impl DataDir {
     fn join(&self, child: &str) -> PathBuf {
         self.path.join(child)
     }
-
 }
 
 /// Input mode for the application
@@ -485,10 +484,9 @@ impl InputState {
 
     fn into_model_select(self) -> InputState {
         match self {
-            InputState::Normal(draft) | InputState::Insert(draft) => InputState::ModelSelect {
-                draft,
-                selected: 0,
-            },
+            InputState::Normal(draft) | InputState::Insert(draft) => {
+                InputState::ModelSelect { draft, selected: 0 }
+            }
             InputState::Command { draft, .. } | InputState::ModelSelect { draft, .. } => {
                 InputState::ModelSelect { draft, selected: 0 }
             }
@@ -507,6 +505,11 @@ pub enum ScrollState {
 }
 
 /// Proof that a non-empty user message was queued.
+///
+/// The `config` captures the model/provider at queue time. If summarization runs
+/// before streaming starts, the original config is preserved - changing model/provider
+/// during summarization won't affect the queued request. This is intentional: the user
+/// message was validated against the original model's context limits.
 #[derive(Debug)]
 pub struct QueuedUserMessage {
     config: ApiConfig,
@@ -807,6 +810,8 @@ impl App {
             system_prompt,
         };
 
+        app.clamp_output_limits_to_model();
+
         // Load previous session's history if available
         app.load_history_if_exists();
         app.check_crash_recovery();
@@ -931,6 +936,14 @@ impl App {
         id
     }
 
+    /// Autosave history to disk (best-effort, errors logged but not propagated).
+    /// Called after user messages and assistant completions for crash durability.
+    fn autosave_history(&self) {
+        if let Err(e) = self.save_history() {
+            tracing::warn!("Autosave failed: {e}");
+        }
+    }
+
     fn push_local_message(&mut self, message: Message) {
         self.display.push(DisplayItem::Local(message));
     }
@@ -995,13 +1008,12 @@ impl App {
             && !error.is_empty()
         {
             let error_line = format!("Error: {error}");
-            recovered_content = recovered_content
-                .append("\n\n")
-                .append(error_line.as_str());
+            recovered_content = recovered_content.append("\n\n").append(error_line.as_str());
         }
 
         // Push recovered partial response as a completed assistant message.
         self.push_history_message(Message::assistant(self.model.clone(), recovered_content));
+        self.autosave_history(); // Persist recovered message immediately
 
         // Seal the recovered journal entries
         if let Err(e) = self.stream_journal.seal_unsealed(step_id) {
@@ -1153,6 +1165,45 @@ impl App {
         selected_rev
     }
 
+    fn clamp_output_limits_to_model(&mut self) {
+        let model_max_output = self.context_manager.current_limits().max_output();
+        let current = self.output_limits;
+
+        if current.max_output_tokens() <= model_max_output {
+            return;
+        }
+
+        let clamped = if let Some(budget) = current.thinking_budget() {
+            if budget < model_max_output {
+                OutputLimits::with_thinking(model_max_output, budget)
+                    .unwrap_or(OutputLimits::new(model_max_output))
+            } else {
+                OutputLimits::new(model_max_output)
+            }
+        } else {
+            OutputLimits::new(model_max_output)
+        };
+
+        let warning = if current.has_thinking() && !clamped.has_thinking() {
+            format!(
+                "Clamped max_output_tokens {} → {} for {}; disabled thinking budget",
+                current.max_output_tokens(),
+                clamped.max_output_tokens(),
+                self.model
+            )
+        } else {
+            format!(
+                "Clamped max_output_tokens {} → {} for {}",
+                current.max_output_tokens(),
+                clamped.max_output_tokens(),
+                self.model
+            )
+        };
+        tracing::warn!("{warning}");
+
+        self.output_limits = clamped;
+    }
+
     /// Switch to a different provider
     pub fn set_provider(&mut self, provider: Provider) {
         self.model = provider.default_model();
@@ -1163,6 +1214,8 @@ impl App {
             self.context_manager
                 .set_model_without_adaptation(self.model.as_str());
         }
+
+        self.clamp_output_limits_to_model();
     }
 
     /// Set a specific model (called from :model command).
@@ -1174,6 +1227,8 @@ impl App {
             self.context_manager
                 .set_model_without_adaptation(self.model.as_str());
         }
+
+        self.clamp_output_limits_to_model();
     }
 
     /// Handle context adaptation after a model switch.
@@ -1264,7 +1319,18 @@ impl App {
         // Try to build working context to see if summarization is needed
         let message_ids = match self.context_manager.prepare() {
             Ok(_) => return SummarizationStart::NotNeeded, // No summarization needed
-            Err(needed) => needed.messages_to_summarize,
+            Err(ContextBuildError::SummarizationNeeded(needed)) => needed.messages_to_summarize,
+            Err(ContextBuildError::RecentMessagesTooLarge {
+                required_tokens,
+                budget_tokens,
+                message_count,
+            }) => {
+                self.set_status(format!(
+                    "Recent {} messages ({} tokens) exceed budget ({} tokens). Reduce input or use larger model.",
+                    message_count, required_tokens, budget_tokens
+                ));
+                return SummarizationStart::Failed;
+            }
         };
 
         // Prepare summarization request
@@ -1293,11 +1359,12 @@ impl App {
         self.set_status(status);
 
         // Build API config for summarization.
-        // Prefer the queued request's key if present so we don't get stuck.
-        let api_key = if let Some(config) = queued_request.as_ref() {
-            config.api_key_owned()
+        // When a request is queued, use its config (key + model) to ensure provider
+        // consistency even if the user switches providers during summarization.
+        let (api_key, model) = if let Some(config) = queued_request.as_ref() {
+            (config.api_key_owned(), config.model().clone())
         } else {
-            match self.current_api_key().cloned() {
+            let key = match self.current_api_key().cloned() {
                 Some(key) => match self.model.provider() {
                     Provider::Claude => ApiKey::Claude(key),
                     Provider::OpenAI => ApiKey::OpenAI(key),
@@ -1306,10 +1373,11 @@ impl App {
                     self.set_status("Cannot summarize: no API key configured");
                     return SummarizationStart::Failed;
                 }
-            }
+            };
+            (key, self.model.clone())
         };
 
-        let config = match ApiConfig::new(api_key, self.model.clone()) {
+        let config = match ApiConfig::new(api_key, model) {
             Ok(config) => config,
             Err(e) => {
                 self.set_status(format!("Cannot summarize: {e}"));
@@ -1332,7 +1400,10 @@ impl App {
 
         self.state = if let Some(config) = queued_request {
             AppState::Enabled(EnabledState::SummarizingWithQueued(
-                SummarizationWithQueuedState { task, queued: config },
+                SummarizationWithQueuedState {
+                    task,
+                    queued: config,
+                },
             ))
         } else {
             AppState::Enabled(EnabledState::Summarizing(SummarizationState { task }))
@@ -1403,11 +1474,10 @@ impl App {
                 };
 
                 // Apply the summarization result
-                if let Err(e) = self.context_manager.complete_summarization(
-                    scope,
-                    summary_text,
-                    generated_by,
-                ) {
+                if let Err(e) =
+                    self.context_manager
+                        .complete_summarization(scope, summary_text, generated_by)
+                {
                     self.handle_summarization_failure(
                         attempt,
                         format!("failed to apply summary: {e}"),
@@ -1416,6 +1486,7 @@ impl App {
                     return;
                 }
                 self.set_status("Summarization complete");
+                self.autosave_history(); // Persist summarized history immediately
 
                 // If a request was queued waiting for summarization, start it now.
                 if let Some(config) = queued_request {
@@ -1461,12 +1532,15 @@ impl App {
             };
             self.state = if let Some(config) = queued_request {
                 AppState::Enabled(EnabledState::SummarizationRetryWithQueued(
-                    SummarizationRetryWithQueuedState { retry, queued: config },
+                    SummarizationRetryWithQueuedState {
+                        retry,
+                        queued: config,
+                    },
                 ))
             } else {
-                AppState::Enabled(EnabledState::SummarizationRetry(
-                    SummarizationRetryState { retry },
-                ))
+                AppState::Enabled(EnabledState::SummarizationRetry(SummarizationRetryState {
+                    retry,
+                }))
             };
             self.set_status(format!(
                 "Summarization failed (attempt {}/{}): {}. Retrying in {}ms...",
@@ -1561,7 +1635,7 @@ impl App {
         let api_messages = if context_infinity_enabled {
             match self.context_manager.prepare() {
                 Ok(prepared) => prepared.api_messages(),
-                Err(needed) => {
+                Err(ContextBuildError::SummarizationNeeded(needed)) => {
                     self.set_status(format!(
                         "{} (excess ~{} tokens)",
                         needed.suggestion, needed.excess_tokens
@@ -1570,6 +1644,17 @@ impl App {
                     if !matches!(start_result, SummarizationStart::Started) {
                         self.set_status("Cannot start: summarization did not start");
                     }
+                    return;
+                }
+                Err(ContextBuildError::RecentMessagesTooLarge {
+                    required_tokens,
+                    budget_tokens,
+                    message_count,
+                }) => {
+                    self.set_status(format!(
+                        "Recent {} messages ({} tokens) exceed budget ({} tokens). Reduce input or use larger model.",
+                        message_count, required_tokens, budget_tokens
+                    ));
                     return;
                 }
             }
@@ -1631,9 +1716,15 @@ impl App {
         let system_prompt = self.system_prompt;
         let task = async move {
             let tx_events = tx.clone();
-            let result = forge_providers::send_message(&config, &cacheable_messages, limits, system_prompt, move |event| {
-                let _ = tx_events.send(event);
-            })
+            let result = forge_providers::send_message(
+                &config,
+                &cacheable_messages,
+                limits,
+                system_prompt,
+                move |event| {
+                    let _ = tx_events.send(event);
+                },
+            )
             .await;
 
             if let Err(e) = result {
@@ -1691,17 +1782,17 @@ impl App {
                 };
 
                 let persist_result = match &event {
-                    StreamEvent::TextDelta(text) => {
-                        active.journal.append_text(&mut self.stream_journal, text.clone())
-                    }
+                    StreamEvent::TextDelta(text) => active
+                        .journal
+                        .append_text(&mut self.stream_journal, text.clone()),
                     StreamEvent::ThinkingDelta(_) => {
                         // Don't persist thinking content to journal - silently consume
                         Ok(())
                     }
                     StreamEvent::Done => active.journal.append_done(&mut self.stream_journal),
-                    StreamEvent::Error(msg) => {
-                        active.journal.append_error(&mut self.stream_journal, msg.clone())
-                    }
+                    StreamEvent::Error(msg) => active
+                        .journal
+                        .append_error(&mut self.stream_journal, msg.clone()),
                 };
 
                 // Persist BEFORE display.
@@ -1792,8 +1883,10 @@ impl App {
             StreamFinishReason::Error(err) => {
                 if let Some(message) = message {
                     self.push_history_message(message);
+                    self.autosave_history(); // Persist partial response for crash durability
                 }
-                let ui_error = format_stream_error(self.provider(), self.model.as_str(), &err);
+                // Use stream's model/provider, not current app settings (user may have changed during stream)
+                let ui_error = format_stream_error(model.provider(), model.as_str(), &err);
                 let system_msg = Message::system(ui_error.message);
                 self.push_local_message(system_msg);
                 self.set_status(ui_error.status);
@@ -1810,6 +1903,7 @@ impl App {
         };
 
         self.push_history_message(message);
+        self.autosave_history(); // Persist completed response for crash durability
     }
 
     /// Increment animation tick and poll background tasks.
@@ -2034,6 +2128,7 @@ impl App {
 
                 self.display.clear();
                 self.context_manager = ContextManager::new(self.model.as_str());
+                self.autosave_history(); // Persist cleared state immediately
                 self.set_status("Conversation cleared");
             }
             Some("model") => {
@@ -2090,11 +2185,16 @@ impl App {
             }
             Some("context" | "ctx") => {
                 let usage_status = self.context_usage_status();
-                let (usage, needs_summary) = match &usage_status {
-                    ContextUsageStatus::Ready(usage) => (usage, None),
+                let (usage, needs_summary, recent_too_large) = match &usage_status {
+                    ContextUsageStatus::Ready(usage) => (usage, None, None),
                     ContextUsageStatus::NeedsSummarization { usage, needed } => {
-                        (usage, Some(needed))
+                        (usage, Some(needed), None)
                     }
+                    ContextUsageStatus::RecentMessagesTooLarge {
+                        usage,
+                        required_tokens,
+                        budget_tokens,
+                    } => (usage, None, Some((*required_tokens, *budget_tokens))),
                 };
                 let limits = self.context_manager.current_limits();
                 let limits_source = match self.context_manager.current_limits_source() {
@@ -2107,13 +2207,20 @@ impl App {
                 } else {
                     "off"
                 };
-                let summarize_suffix = needs_summary.map_or(String::new(), |needed| {
+                let status_suffix = if let Some((required, budget)) = recent_too_large {
                     format!(
-                        " │ Summarize: {} msgs (~{} tokens)",
-                        needed.messages_to_summarize.len(),
-                        needed.excess_tokens
+                        " │ ERROR: recent msgs ({} tokens) > budget ({} tokens)",
+                        required, budget
                     )
-                });
+                } else {
+                    needs_summary.map_or(String::new(), |needed| {
+                        format!(
+                            " │ Summarize: {} msgs (~{} tokens)",
+                            needed.messages_to_summarize.len(),
+                            needed.excess_tokens
+                        )
+                    })
+                };
                 self.set_status(format!(
                     "ContextInfinity: {} │ Context: {} │ Model: {} │ Limits: {} │ Window: {}k │ Budget: {}k │ Max output: {}k{}",
                     context_flag,
@@ -2123,7 +2230,7 @@ impl App {
                     limits.context_window() / 1000,
                     limits.effective_input_budget() / 1000,
                     limits.max_output() / 1000,
-                    summarize_suffix,
+                    status_suffix,
                 ));
             }
             Some("journal" | "jrnl") => match self.stream_journal.stats() {
@@ -2315,6 +2422,7 @@ impl<'a> InsertMode<'a> {
 
         // Track user message in context manager (also adds to display)
         self.app.push_history_message(Message::user(content));
+        self.app.autosave_history(); // Persist user message immediately for crash durability
 
         self.app.scroll_to_bottom();
 
@@ -2398,8 +2506,7 @@ fn redact_api_keys(raw: &str) -> String {
 }
 
 fn is_key_delimiter(ch: char) -> bool {
-    ch.is_whitespace()
-        || matches!(ch, '"' | '\'' | ',' | '}' | ']' | ')' | '\\')
+    ch.is_whitespace() || matches!(ch, '"' | '\'' | ',' | '}' | ']' | ')' | '\\')
 }
 
 fn split_api_error(raw: &str) -> Option<(String, String)> {
@@ -2416,7 +2523,11 @@ fn extract_error_message(raw: &str) -> Option<String> {
     payload
         .pointer("/error/message")
         .and_then(|value| value.as_str())
-        .or_else(|| payload.pointer("/response/error/message").and_then(|value| value.as_str()))
+        .or_else(|| {
+            payload
+                .pointer("/response/error/message")
+                .and_then(|value| value.as_str())
+        })
         .or_else(|| payload.pointer("/message").and_then(|value| value.as_str()))
         .or_else(|| payload.as_str())
         .map(|msg| msg.to_string())
@@ -2424,9 +2535,8 @@ fn extract_error_message(raw: &str) -> Option<String> {
 
 fn is_auth_error(raw: &str) -> bool {
     let lower = raw.to_ascii_lowercase();
-    let mentions_key = lower.contains("api key")
-        || lower.contains("x-api-key")
-        || lower.contains("authorization");
+    let mentions_key =
+        lower.contains("api key") || lower.contains("x-api-key") || lower.contains("authorization");
     let auth_words = lower.contains("invalid")
         || lower.contains("incorrect")
         || lower.contains("missing")
@@ -2455,7 +2565,8 @@ fn truncate_with_ellipsis(raw: &str, max: usize) -> String {
 
 fn format_stream_error(provider: Provider, model: &str, err: &str) -> StreamErrorUi {
     let trimmed = err.trim();
-    let (status, body) = split_api_error(trimmed).unwrap_or_else(|| (String::new(), trimmed.to_string()));
+    let (status, body) =
+        split_api_error(trimmed).unwrap_or_else(|| (String::new(), trimmed.to_string()));
     let extracted = extract_error_message(&body).unwrap_or_else(|| body.clone());
     let is_auth = is_auth_error(&extracted) || is_auth_error(trimmed) || is_auth_error(&status);
 
@@ -2516,8 +2627,8 @@ fn format_stream_error(provider: Provider, model: &str, err: &str) -> StreamErro
         content.push_str(&detail_short);
     }
 
-    let message = NonEmptyString::new(content)
-        .unwrap_or_else(|_| NonEmptyString::from(STREAM_ERROR_BADGE));
+    let message =
+        NonEmptyString::new(content).unwrap_or_else(|_| NonEmptyString::from(STREAM_ERROR_BADGE));
     StreamErrorUi {
         status: format!("Stream error: {status_short}"),
         message,

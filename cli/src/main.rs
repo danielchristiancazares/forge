@@ -4,14 +4,22 @@ use anyhow::Result;
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+        size as terminal_size,
+    },
 };
-use ratatui::{prelude::*, TerminalOptions, Viewport};
-use std::{env, io::{Stdout, stdout}};
+use ratatui::{TerminalOptions, Viewport, prelude::*};
+use std::{
+    env,
+    io::{Stdout, stdout},
+};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use forge_engine::{App, ForgeConfig};
-use forge_tui::{draw, draw_inline, handle_events, InlineOutput, INLINE_VIEWPORT_HEIGHT};
+use forge_tui::{
+    INLINE_VIEWPORT_HEIGHT, InlineOutput, draw, draw_inline, handle_events, inline_viewport_height,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UiMode {
@@ -203,6 +211,7 @@ where
     B::Error: Send + Sync + 'static,
 {
     let mut output = InlineOutput::new();
+    let mut current_viewport_height = INLINE_VIEWPORT_HEIGHT;
 
     loop {
         app.tick();
@@ -214,6 +223,17 @@ where
 
         app.process_stream_events();
         output.flush(terminal, app)?;
+
+        // Dynamically resize viewport for overlays (e.g., model selector needs more height)
+        let needed_height = inline_viewport_height(app.input_mode());
+        if needed_height != current_viewport_height {
+            let (term_width, term_height) = terminal_size()?;
+            // Clamp height to terminal size to avoid rendering outside bounds
+            let height = needed_height.min(term_height);
+            let y = term_height.saturating_sub(height);
+            terminal.resize(Rect::new(0, y, term_width, height))?;
+            current_viewport_height = height;
+        }
 
         terminal.draw(|frame| draw_inline(frame, app))?;
 
