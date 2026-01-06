@@ -12,8 +12,8 @@ use std::collections::HashMap;
 ///
 /// # Example
 ///
-/// ```
-/// use forge::ModelLimits;
+/// ```ignore
+/// use forge_context::ModelLimits;
 ///
 /// let limits = ModelLimits::new(200_000, 16_000);
 /// assert_eq!(limits.context_window(), 200_000);
@@ -53,9 +53,23 @@ impl ModelLimits {
     ///
     /// The 5% safety margin accounts for token counting inaccuracies and
     /// overhead from system prompts, formatting, and tool definitions.
+    /// Note: This reserves the model's max_output, which may be overly conservative
+    /// if the user has configured a smaller output limit. Consider using
+    /// `effective_input_budget_with_reserved()` when the configured limit is known.
     #[must_use]
     pub fn effective_input_budget(&self) -> u32 {
-        let available = self.context_window.saturating_sub(self.max_output);
+        self.effective_input_budget_with_reserved(self.max_output)
+    }
+
+    /// Effective input budget with custom reserved output tokens.
+    ///
+    /// Use this when you have a configured output limit that's lower than
+    /// the model's maximum output capability. The reserved amount is clamped
+    /// to the model's max_output.
+    #[must_use]
+    pub fn effective_input_budget_with_reserved(&self, reserved_output: u32) -> u32 {
+        let reserved = reserved_output.min(self.max_output);
+        let available = self.context_window.saturating_sub(reserved);
         // Subtract 5% safety margin
         let safety_margin = available / 20; // 5% = 1/20
         available.saturating_sub(safety_margin)
@@ -126,6 +140,7 @@ const KNOWN_MODELS: &[(&str, ModelLimits)] = &[
     ("claude-3", ModelLimits::new(200_000, 64_000)),
     ("claude", ModelLimits::new(200_000, 64_000)),
     // GPT models (most specific first)
+    ("gpt-5", ModelLimits::new(400_000, 128_000)),
     ("gpt-4o", ModelLimits::new(128_000, 16_384)),
     ("gpt-4-turbo", ModelLimits::new(128_000, 4096)),
     ("gpt-4", ModelLimits::new(8192, 4096)),
@@ -147,8 +162,8 @@ const KNOWN_MODELS: &[(&str, ModelLimits)] = &[
 ///
 /// # Example
 ///
-/// ```
-/// use forge::{ModelRegistry, ModelLimits};
+/// ```ignore
+/// use forge_context::{ModelRegistry, ModelLimits};
 ///
 /// let mut registry = ModelRegistry::new();
 ///
@@ -285,6 +300,27 @@ mod tests {
         }
 
         #[test]
+        fn effective_input_budget_with_reserved_uses_configured_limit() {
+            // Model has 64k max output, but user configured 16k
+            let limits = ModelLimits::new(200_000, 64_000);
+            // Using model max: 200k - 64k = 136k, - 5% = 129,200
+            assert_eq!(limits.effective_input_budget(), 129_200);
+            // Using configured 16k: 200k - 16k = 184k, - 5% = 174,800
+            assert_eq!(limits.effective_input_budget_with_reserved(16_000), 174_800);
+        }
+
+        #[test]
+        fn effective_input_budget_with_reserved_clamps_to_max() {
+            // Reserved can't exceed model's max_output
+            let limits = ModelLimits::new(200_000, 16_000);
+            // Requesting 64k reserved but model only supports 16k
+            assert_eq!(
+                limits.effective_input_budget_with_reserved(64_000),
+                limits.effective_input_budget()
+            );
+        }
+
+        #[test]
         fn limits_are_copy_and_clone() {
             let limits = ModelLimits::new(100_000, 8000);
             let copied = limits;
@@ -373,6 +409,21 @@ mod tests {
             let limits = resolved.limits();
             assert_eq!(limits.context_window(), 200_000);
             assert_eq!(limits.max_output(), 64_000);
+        }
+
+        #[test]
+        fn get_gpt_5_models() {
+            let registry = ModelRegistry::new();
+
+            let resolved = registry.get("gpt-5.2");
+            assert_eq!(resolved.source(), ModelLimitsSource::Prefix("gpt-5"));
+            let limits = resolved.limits();
+            assert_eq!(limits.context_window(), 400_000);
+            assert_eq!(limits.max_output(), 128_000);
+
+            let limits = registry.get("gpt-5.2-2025-12-11").limits();
+            assert_eq!(limits.context_window(), 400_000);
+            assert_eq!(limits.max_output(), 128_000);
         }
 
         #[test]

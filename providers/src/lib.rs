@@ -155,33 +155,28 @@ pub mod claude {
         }
     }
 
-    pub async fn send_message(
-        config: &ApiConfig,
+    fn build_request_body(
+        model: &str,
         messages: &[CacheableMessage],
         limits: OutputLimits,
         system_prompt: Option<&str>,
-        on_event: impl Fn(StreamEvent) + Send + 'static,
-    ) -> Result<()> {
-        let client = Client::new();
-
+    ) -> serde_json::Value {
         let mut system_blocks: Vec<serde_json::Value> = Vec::new();
         let mut api_messages: Vec<serde_json::Value> = Vec::new();
 
-        // Inject system prompt if provided
         if let Some(prompt) = system_prompt
             && !prompt.trim().is_empty()
         {
             system_blocks.push(content_block(prompt, CacheHint::Ephemeral));
         }
 
-        // Build conversation messages
         for cacheable in messages {
             let msg = &cacheable.message;
             let hint = cacheable.cache_hint;
 
             match msg {
                 Message::System(_) => {
-                    tracing::warn!("Unexpected system message in conversation history");
+                    system_blocks.push(content_block(msg.content(), hint));
                 }
                 Message::User(_) => {
                     api_messages.push(json!({
@@ -198,9 +193,8 @@ pub mod claude {
             }
         }
 
-        // Build request body
         let mut body = serde_json::Map::new();
-        body.insert("model".into(), json!(config.model().as_str()));
+        body.insert("model".into(), json!(model));
         body.insert("max_tokens".into(), json!(limits.max_output_tokens()));
         body.insert("stream".into(), json!(true));
         body.insert("messages".into(), json!(api_messages));
@@ -209,7 +203,6 @@ pub mod claude {
             body.insert("system".into(), json!(system_blocks));
         }
 
-        // Add extended thinking if enabled
         if let Some(budget) = limits.thinking_budget() {
             body.insert(
                 "thinking".into(),
@@ -220,7 +213,19 @@ pub mod claude {
             );
         }
 
-        let body = serde_json::Value::Object(body);
+        serde_json::Value::Object(body)
+    }
+
+    pub async fn send_message(
+        config: &ApiConfig,
+        messages: &[CacheableMessage],
+        limits: OutputLimits,
+        system_prompt: Option<&str>,
+        on_event: impl Fn(StreamEvent) + Send + 'static,
+    ) -> Result<()> {
+        let client = Client::new();
+
+        let body = build_request_body(config.model().as_str(), messages, limits, system_prompt);
 
         let response = client
             .post(API_URL)
@@ -299,6 +304,53 @@ pub mod claude {
         on_event(StreamEvent::Done);
         Ok(())
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use forge_types::NonEmptyString;
+
+        #[test]
+        fn hoists_system_messages_into_system_blocks() {
+            let model = Provider::Claude.default_model();
+            let limits = OutputLimits::new(1024);
+
+            let messages = vec![
+                CacheableMessage::plain(Message::system(
+                    NonEmptyString::new("summary").unwrap(),
+                )),
+                CacheableMessage::plain(Message::try_user("hi").unwrap()),
+            ];
+
+            let body = build_request_body(model.as_str(), &messages, limits, None);
+
+            let system = body.get("system").unwrap().as_array().unwrap();
+            assert_eq!(system.len(), 1);
+            assert_eq!(system[0]["text"].as_str(), Some("summary"));
+
+            let msgs = body.get("messages").unwrap().as_array().unwrap();
+            assert_eq!(msgs.len(), 1);
+            assert_eq!(msgs[0]["role"].as_str(), Some("user"));
+        }
+
+        #[test]
+        fn system_prompt_precedes_system_messages() {
+            let model = Provider::Claude.default_model();
+            let limits = OutputLimits::new(1024);
+
+            let messages = vec![CacheableMessage::plain(Message::system(
+                NonEmptyString::new("summary").unwrap(),
+            ))];
+
+            let body = build_request_body(model.as_str(), &messages, limits, Some("prompt"));
+
+            let system = body.get("system").unwrap().as_array().unwrap();
+            assert_eq!(system.len(), 2);
+            assert_eq!(system[0]["text"].as_str(), Some("prompt"));
+            assert_eq!(system[0]["cache_control"]["type"].as_str(), Some("ephemeral"));
+            assert_eq!(system[1]["text"].as_str(), Some("summary"));
+        }
+    }
 }
 
 /// OpenAI API implementation.
@@ -333,29 +385,19 @@ pub mod openai {
             .map(|s| s.to_string())
     }
 
-    pub async fn send_message(
+    fn build_request_body(
         config: &ApiConfig,
         messages: &[CacheableMessage],
         limits: OutputLimits,
         system_prompt: Option<&str>,
-        on_event: impl Fn(StreamEvent) + Send + 'static,
-    ) -> Result<()> {
-        let client = Client::new();
-
+    ) -> Value {
         let mut input_items: Vec<Value> = Vec::new();
         for cacheable in messages {
             let msg = &cacheable.message;
-            match msg {
-                Message::System(_) => {
-                    tracing::warn!("Unexpected system message in conversation history");
-                }
-                Message::User(_) | Message::Assistant(_) => {
-                    input_items.push(json!({
-                        "role": msg.role_str(),
-                        "content": msg.content(),
-                    }));
-                }
-            }
+            input_items.push(json!({
+                "role": msg.role_str(),
+                "content": msg.content(),
+            }));
         }
 
         let mut body = serde_json::Map::new();
@@ -391,7 +433,19 @@ pub mod openai {
             );
         }
 
-        let body = Value::Object(body);
+        Value::Object(body)
+    }
+
+    pub async fn send_message(
+        config: &ApiConfig,
+        messages: &[CacheableMessage],
+        limits: OutputLimits,
+        system_prompt: Option<&str>,
+        on_event: impl Fn(StreamEvent) + Send + 'static,
+    ) -> Result<()> {
+        let client = Client::new();
+
+        let body = build_request_body(config, messages, limits, system_prompt);
 
         let response = client
             .post(API_URL)
@@ -481,6 +535,54 @@ pub mod openai {
 
         on_event(StreamEvent::Done);
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use forge_types::NonEmptyString;
+
+        #[test]
+        fn includes_system_messages_in_input_items() {
+            let key = ApiKey::OpenAI("test".to_string());
+            let model = Provider::OpenAI.default_model();
+            let config = ApiConfig::new(key, model).unwrap();
+
+            let messages = vec![
+                CacheableMessage::plain(Message::system(
+                    NonEmptyString::new("summary").unwrap(),
+                )),
+                CacheableMessage::plain(Message::try_user("hi").unwrap()),
+            ];
+
+            let body = build_request_body(&config, &messages, OutputLimits::new(1024), None);
+
+            let input = body.get("input").unwrap().as_array().unwrap();
+            assert_eq!(input.len(), 2);
+            assert_eq!(input[0]["role"].as_str(), Some("system"));
+            assert_eq!(input[0]["content"].as_str(), Some("summary"));
+            assert_eq!(input[1]["role"].as_str(), Some("user"));
+        }
+
+        #[test]
+        fn preserves_explicit_system_prompt() {
+            let key = ApiKey::OpenAI("test".to_string());
+            let model = Provider::OpenAI.default_model();
+            let config = ApiConfig::new(key, model).unwrap();
+
+            let messages = vec![CacheableMessage::plain(Message::system(
+                NonEmptyString::new("summary").unwrap(),
+            ))];
+
+            let body = build_request_body(
+                &config,
+                &messages,
+                OutputLimits::new(1024),
+                Some("prompt"),
+            );
+
+            assert_eq!(body.get("instructions").unwrap().as_str(), Some("prompt"));
+        }
     }
 }
 

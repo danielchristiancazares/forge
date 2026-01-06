@@ -40,7 +40,22 @@ Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `FORGE_TUI`, `FORGE_CONTEX
 
 Forge is a vim-modal TUI for LLMs built with ratatui/crossterm.
 
-### Main Event Loop (`main.rs`)
+### Workspace Structure
+
+```
+forge/
+├── Cargo.toml      # Workspace root (pure workspace, no [package])
+├── cli/            # Binary entry point
+├── types/          # Core domain types (no IO, no async)
+├── providers/      # LLM API clients (Claude, OpenAI)
+├── context/        # Context window management + SQLite
+├── engine/         # State machine + orchestration
+├── tui/            # TUI rendering (ratatui)
+├── tests/          # Integration tests
+└── docs/           # Documentation
+```
+
+### Main Event Loop (`cli/src/main.rs`)
 
 ```
 loop {
@@ -91,7 +106,7 @@ The codebase enforces correctness through types (see `docs/DESIGN.md`):
 
 Adding a provider: extend `Provider` enum, implement all match arms, add streaming in `start_streaming()`.
 
-### Context Infinity (`context_infinity/`)
+### Context Infinity (`context/`)
 
 Adaptive context management with automatic summarization:
 - `manager.rs` - orchestrates token counting, triggers summarization

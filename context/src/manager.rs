@@ -199,6 +199,9 @@ impl ContextManager {
     /// Build the working context for current model.
     ///
     /// Returns an error if summarization is needed to fit within budget.
+    // TODO: Accept configured output limit to use effective_input_budget_with_reserved()
+    // instead of reserving the model's full max_output. This would allow more input
+    // context when users configure smaller output limits.
     fn build_working_context(&self) -> Result<WorkingContext, SummarizationNeeded> {
         let budget = self.current_limits.effective_input_budget();
         let mut ctx = WorkingContext::new(budget);
@@ -328,6 +331,9 @@ impl ContextManager {
                             *summary_tokens,
                         ));
                         tokens_used += *summary_tokens;
+                    } else {
+                        // Can't include this summarized block; stop to avoid holes in history.
+                        break;
                     }
                 }
                 Block::Unsummarized(messages) => {

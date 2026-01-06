@@ -1,0 +1,20 @@
+[package]
+name = "forge-providers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "LLM provider clients (Claude, OpenAI) with streaming support"
+
+[dependencies]
+forge-types.workspace = true
+
+reqwest.workspace = true
+futures-util.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+
+anyhow.workspace = true
+thiserror.workspace = true
+
+tracing.workspace = true

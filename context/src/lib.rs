@@ -19,8 +19,6 @@
 //! └── working_context: WorkingContext (derived view for API)
 //! ```
 
-#![allow(unused_imports)]
-
 mod history;
 mod manager;
 mod model_limits;

@@ -1,0 +1,31 @@
+[package]
+name = "forge-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Core state machine and orchestration for Forge"
+
+[dependencies]
+forge-types.workspace = true
+forge-providers.workspace = true
+forge-context.workspace = true
+
+tokio = { workspace = true, features = ["sync", "rt"] }
+
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+anyhow.workspace = true
+thiserror.workspace = true
+
+futures-util.workspace = true
+dirs.workspace = true
+
+tracing.workspace = true
+
+unicode-segmentation.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+tempfile.workspace = true

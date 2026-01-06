@@ -1,0 +1,27 @@
+[package]
+name = "forge-context"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Context window management with summarization and persistence"
+
+[dependencies]
+forge-types.workspace = true
+forge-providers.workspace = true
+
+reqwest.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+
+anyhow.workspace = true
+thiserror.workspace = true
+
+tiktoken-rs.workspace = true
+rusqlite.workspace = true
+dirs.workspace = true
+
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

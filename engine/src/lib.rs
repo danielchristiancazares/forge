@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use futures_util::future::{AbortHandle, Abortable};
 use serde_json::Value;
 use tokio::sync::mpsc;
+use unicode_segmentation::UnicodeSegmentation;
 
 use config::OpenAIConfig;
 
@@ -275,26 +276,21 @@ impl DraftInput {
             return;
         }
 
-        let current_index = self.cursor;
-        let from_left_to_current_index = current_index - 1;
-
-        let before_char_to_delete = self.text.chars().take(from_left_to_current_index);
-        let after_char_to_delete = self.text.chars().skip(current_index);
-
-        self.text = before_char_to_delete.chain(after_char_to_delete).collect();
+        let start = self.byte_index_at(self.cursor - 1);
+        let end = self.byte_index_at(self.cursor);
+        self.text.replace_range(start..end, "");
         self.move_cursor_left();
     }
 
     fn delete_char_forward(&mut self) {
-        let current_index = self.cursor;
-        if current_index >= self.text.chars().count() {
+        let grapheme_count = self.grapheme_count();
+        if self.cursor >= grapheme_count {
             return;
         }
 
-        let before_char = self.text.chars().take(current_index);
-        let after_char = self.text.chars().skip(current_index + 1);
-
-        self.text = before_char.chain(after_char).collect();
+        let start = self.byte_index_at(self.cursor);
+        let end = self.byte_index_at(self.cursor + 1);
+        self.text.replace_range(start..end, "");
     }
 
     fn reset_cursor(&mut self) {
@@ -302,7 +298,7 @@ impl DraftInput {
     }
 
     fn move_cursor_end(&mut self) {
-        self.cursor = self.text.chars().count();
+        self.cursor = self.grapheme_count();
     }
 
     fn clear(&mut self) {
@@ -313,8 +309,7 @@ impl DraftInput {
     fn delete_word_backwards(&mut self) {
         while self.cursor > 0 {
             let idx = self.cursor - 1;
-            let ch = self.text.chars().nth(idx);
-            if ch.is_some_and(|c| c.is_whitespace()) {
+            if self.grapheme_is_whitespace(idx) {
                 self.delete_char();
             } else {
                 break;
@@ -323,8 +318,7 @@ impl DraftInput {
 
         while self.cursor > 0 {
             let idx = self.cursor - 1;
-            let ch = self.text.chars().nth(idx);
-            if ch.is_some_and(|c| !c.is_whitespace()) {
+            if !self.grapheme_is_whitespace(idx) {
                 self.delete_char();
             } else {
                 break;
@@ -332,16 +326,32 @@ impl DraftInput {
         }
     }
 
-    fn byte_index(&self) -> usize {
+    fn grapheme_count(&self) -> usize {
+        self.text.graphemes(true).count()
+    }
+
+    fn grapheme_is_whitespace(&self, index: usize) -> bool {
         self.text
-            .char_indices()
+            .graphemes(true)
+            .nth(index)
+            .is_some_and(|grapheme| grapheme.chars().all(|c| c.is_whitespace()))
+    }
+
+    fn byte_index(&self) -> usize {
+        self.byte_index_at(self.cursor)
+    }
+
+    fn byte_index_at(&self, grapheme_index: usize) -> usize {
+        self.text
+            .grapheme_indices(true)
+            .nth(grapheme_index)
             .map(|(i, _)| i)
-            .nth(self.cursor)
             .unwrap_or(self.text.len())
     }
 
     fn clamp_cursor(&self, new_cursor_pos: usize) -> usize {
-        new_cursor_pos.clamp(0, self.text.chars().count())
+        let max = self.grapheme_count();
+        new_cursor_pos.min(max)
     }
 }
 
@@ -1933,6 +1943,10 @@ impl App {
         self.input.draft().cursor()
     }
 
+    pub fn draft_cursor_byte_index(&self) -> usize {
+        self.input.draft().byte_index()
+    }
+
     pub fn command_text(&self) -> Option<&str> {
         self.input.command()
     }
@@ -2546,6 +2560,7 @@ mod tests {
             openai_options: OpenAIRequestOptions::default(),
             last_frame: Instant::now(),
             modal_effect: None,
+            system_prompt: None,
         }
     }
 

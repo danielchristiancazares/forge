@@ -348,8 +348,8 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     // Show cursor in insert mode
     if mode == InputMode::Insert {
         // Calculate cursor position using display width (handles Unicode properly)
-        let text_before_cursor: String =
-            app.draft_text().chars().take(app.draft_cursor()).collect();
+        let cursor_index = app.draft_cursor_byte_index();
+        let text_before_cursor = &app.draft_text()[..cursor_index];
         let cursor_x = area.x + 4 + text_before_cursor.width() as u16;
         let cursor_y = area.y + 2;
         frame.set_cursor_position((cursor_x, cursor_y));
@@ -759,9 +759,9 @@ fn create_welcome_screen(app: &App) -> Paragraph<'static> {
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("  Tip: ", Style::default().fg(colors::TEXT_MUTED)),
-        Span::styled(":p claude", Style::default().fg(colors::PEACH)),
+        Span::styled("/p claude", Style::default().fg(colors::PEACH)),
         Span::styled(" or ", Style::default().fg(colors::TEXT_MUTED)),
-        Span::styled(":p gpt", Style::default().fg(colors::PEACH)),
+        Span::styled("/p gpt", Style::default().fg(colors::PEACH)),
         Span::styled(
             " to switch providers",
             Style::default().fg(colors::TEXT_MUTED),

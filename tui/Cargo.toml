@@ -1,0 +1,21 @@
+[package]
+name = "forge-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "TUI rendering and input handling for Forge"
+
+[dependencies]
+forge-engine.workspace = true
+forge-types.workspace = true
+
+ratatui.workspace = true
+crossterm.workspace = true
+
+unicode-width.workspace = true
+pulldown-cmark.workspace = true
+arboard.workspace = true
+
+tokio = { workspace = true, features = ["sync", "rt"] }
+
+anyhow.workspace = true

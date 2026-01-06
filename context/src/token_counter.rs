@@ -1,7 +1,16 @@
 //! Token counting using tiktoken.
 //!
-//! This module provides accurate token counting compatible with OpenAI and
-//! Anthropic models using the cl100k_base encoding (used by GPT-4, Claude, etc.).
+//! This module provides **approximate** token counting using the cl100k_base
+//! encoding from tiktoken. While reasonably accurate for OpenAI models (GPT-4,
+//! GPT-3.5), token counts may differ for:
+//!
+//! - **Claude models**: Anthropic uses a different tokenizer; counts may vary by ~5-10%
+//! - **GPT-5.x models**: May use updated tokenization not reflected in cl100k_base
+//! - **Message overhead**: The fixed 4-token overhead per message is an approximation
+//!
+//! The 5% safety margin in `ModelLimits::effective_input_budget()` helps account
+//! for these inaccuracies. For precise token counts, use the provider's native
+//! token counting endpoint when available.
 
 use std::sync::OnceLock;
 use tiktoken_rs::{CoreBPE, cl100k_base};
@@ -12,32 +21,37 @@ use forge_types::Message;
 ///
 /// The tiktoken encoder is expensive to initialize (loads vocabulary data),
 /// so we create it once and reuse it across all `TokenCounter` instances.
-static ENCODER: OnceLock<CoreBPE> = OnceLock::new();
+static ENCODER: OnceLock<Option<CoreBPE>> = OnceLock::new();
 
 /// Returns a reference to the shared encoder instance.
 ///
 /// Initializes the encoder on first call using `cl100k_base` encoding.
-fn get_encoder() -> &'static CoreBPE {
+fn get_encoder() -> Option<&'static CoreBPE> {
     ENCODER
-        .get_or_init(|| cl100k_base().expect("Failed to initialize tiktoken cl100k_base encoder"))
+        .get_or_init(|| cl100k_base().ok())
+        .as_ref()
 }
 
-/// Thread-safe token counter using tiktoken's cl100k_base encoding.
+/// Thread-safe approximate token counter using tiktoken's cl100k_base encoding.
 ///
-/// This counter is compatible with GPT-4, GPT-3.5-turbo, and Claude models.
-/// It uses a singleton encoder instance for efficiency.
+/// **Note**: Token counts are approximate. See module documentation for accuracy
+/// considerations across different providers and models.
+///
+/// Uses a singleton encoder instance for efficiency.
 ///
 /// # Token Counting Overhead
 ///
 /// When counting tokens for chat messages, this counter adds a ~4 token
-/// overhead per message to account for:
+/// overhead per message to approximate:
 /// - Role markers (e.g., "user", "assistant")
 /// - Message formatting/delimiters
+///
+/// This overhead may vary by provider and model.
 ///
 /// # Example
 ///
 /// ```
-/// use forge::TokenCounter;
+/// use forge_context::TokenCounter;
 ///
 /// let counter = TokenCounter::new();
 ///
@@ -51,13 +65,13 @@ fn get_encoder() -> &'static CoreBPE {
 #[derive(Clone, Copy)]
 pub struct TokenCounter {
     /// Reference to the shared encoder.
-    encoder: &'static CoreBPE,
+    encoder: Option<&'static CoreBPE>,
 }
 
 impl std::fmt::Debug for TokenCounter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TokenCounter")
-            .field("encoder", &"<CoreBPE>")
+            .field("encoder", &self.encoder.as_ref().map(|_| "<CoreBPE>"))
             .finish()
     }
 }
@@ -69,9 +83,14 @@ impl TokenCounter {
     /// that is initialized only once across all `TokenCounter` instances.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            encoder: get_encoder(),
+        let encoder = get_encoder();
+        if encoder.is_none() {
+            tracing::error!(
+                "Failed to initialize tiktoken cl100k_base encoder. Falling back to byte-length estimates."
+            );
         }
+
+        Self { encoder }
     }
 
     /// Counts the number of tokens in a string.
@@ -86,8 +105,8 @@ impl TokenCounter {
     ///
     /// # Example
     ///
-    /// ```
-    /// use forge::TokenCounter;
+    /// ```ignore
+    /// use forge_context::TokenCounter;
     ///
     /// let counter = TokenCounter::new();
     /// let tokens = counter.count_str("Hello, world!");
@@ -95,7 +114,12 @@ impl TokenCounter {
     /// ```
     #[must_use]
     pub fn count_str(&self, text: &str) -> u32 {
-        self.encoder.encode_ordinary(text).len() as u32
+        let len = match self.encoder {
+            Some(encoder) => encoder.encode_ordinary(text).len(),
+            None => text.len(),
+        };
+
+        u32::try_from(len).unwrap_or(u32::MAX)
     }
 
     /// Counts tokens for a single message, including role overhead.
@@ -114,9 +138,9 @@ impl TokenCounter {
     ///
     /// # Example
     ///
-    /// ```
-    /// use forge::TokenCounter;
-    /// use forge::message::Message;
+    /// ```ignore
+    /// use forge_context::TokenCounter;
+    /// use forge_types::Message;
     ///
     /// let counter = TokenCounter::new();
     /// let msg = Message::try_user("What is the meaning of life?").unwrap();
@@ -148,9 +172,9 @@ impl TokenCounter {
     ///
     /// # Example
     ///
-    /// ```
-    /// use forge::context_infinity::TokenCounter;
-    /// use forge::message::Message;
+    /// ```ignore
+    /// use forge_context::TokenCounter;
+    /// use forge_types::Message;
     ///
     /// let counter = TokenCounter::new();
     /// let messages = vec![

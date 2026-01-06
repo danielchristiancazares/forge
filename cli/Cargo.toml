@@ -1,0 +1,36 @@
+[package]
+name = "forge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "A custom TUI for interacting with GPT and Claude"
+
+[[bin]]
+name = "forge"
+path = "src/main.rs"
+
+[dependencies]
+forge-engine.workspace = true
+forge-tui.workspace = true
+
+ratatui.workspace = true
+crossterm.workspace = true
+
+tokio = { workspace = true, features = ["full"] }
+
+anyhow.workspace = true
+
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+forge-types.workspace = true
+
+tokio-test.workspace = true
+wiremock.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+pretty_assertions.workspace = true
+insta.workspace = true
+vt100.workspace = true

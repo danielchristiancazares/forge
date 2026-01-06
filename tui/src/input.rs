@@ -9,10 +9,17 @@ use forge_engine::{App, InputMode};
 /// Handle terminal events
 /// Returns true if the app should quit
 pub async fn handle_events(app: &mut App) -> Result<bool> {
-    // Poll for events with a timeout
-    if event::poll(Duration::from_millis(100))?
-        && let Event::Key(key) = event::read()?
-    {
+    // Poll for events without blocking the async runtime.
+    let event = tokio::task::spawn_blocking(|| -> Result<Option<Event>> {
+        if event::poll(Duration::from_millis(100))? {
+            Ok(Some(event::read()?))
+        } else {
+            Ok(None)
+        }
+    })
+    .await??;
+
+    if let Some(Event::Key(key)) = event {
         // Only handle key press events (not release) - important for Windows
         if key.kind != KeyEventKind::Press {
             return Ok(app.should_quit());

@@ -10,8 +10,17 @@
 //!
 //! This write-ahead logging approach ensures durability at the cost of
 //! slightly higher latency per delta.
+//!
+//! # Performance Consideration
+//!
+//! Currently, SQLite writes are synchronous and run in the async UI loop.
+//! For high-frequency deltas on slow disks, this could cause UI stutter.
+//! Future optimization: move journaling to a dedicated thread with channel-based
+//! event submission, batching commits per N deltas or time interval.
 
-use anyhow::{Context, Result, anyhow, bail};
+#[cfg(test)]
+use anyhow::anyhow;
+use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -202,7 +211,6 @@ impl StreamJournal {
     }
 
     /// Open an in-memory journal (for testing)
-    #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
         let db = Connection::open_in_memory().context("Failed to open in-memory database")?;
         Self::initialize(db)
