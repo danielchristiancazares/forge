@@ -3,6 +3,9 @@
 //! This crate contains pure domain types with no IO, no async, and minimal dependencies.
 //! Everything here can be used from any layer of the application.
 
+mod sanitize;
+pub use sanitize::sanitize_terminal_text;
+
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::time::SystemTime;

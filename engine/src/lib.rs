@@ -25,6 +25,7 @@ pub use forge_types::{
     ApiKey, CacheHint, CacheableMessage, EmptyStringError, Message, ModelName, ModelNameKind,
     NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort, OpenAIRequestOptions,
     OpenAITextVerbosity, OpenAITruncation, OutputLimits, Provider, StreamEvent, StreamFinishReason,
+    sanitize_terminal_text,
 };
 
 // Config types - passed in from caller
@@ -303,6 +304,12 @@ impl DraftInput {
     fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
+    }
+
+    /// Set the draft text and move cursor to end.
+    fn set_text(&mut self, text: String) {
+        self.text = text;
+        self.cursor = self.grapheme_count();
     }
 
     fn delete_word_backwards(&mut self) {
@@ -630,6 +637,12 @@ pub struct App {
     system_prompt: Option<&'static str>,
     /// Cached context usage status (invalidated when history/model changes).
     cached_usage_status: Option<ContextUsageStatus>,
+    /// Pending user message awaiting stream completion.
+    ///
+    /// When a user message is queued, we store its ID and original text here.
+    /// If the stream fails with no content, we rollback the message from history
+    /// and restore this text to the input box for easy retry.
+    pending_user_message: Option<(MessageId, String)>,
 }
 
 impl App {
@@ -811,6 +824,7 @@ impl App {
             modal_effect: None,
             system_prompt,
             cached_usage_status: None,
+            pending_user_message: None,
         };
 
         app.clamp_output_limits_to_model();
@@ -1059,12 +1073,16 @@ impl App {
         // Add the partial response as an assistant message with recovery badge.
         let mut recovered_content = NonEmptyString::from(recovery_badge);
         if !partial_text.is_empty() {
-            recovered_content = recovered_content.append("\n\n").append(partial_text);
+            // Sanitize recovered text to prevent stored terminal injection
+            let sanitized = sanitize_terminal_text(partial_text);
+            recovered_content = recovered_content.append("\n\n").append(&sanitized);
         }
         if let Some(error) = error_text
             && !error.is_empty()
         {
-            let error_line = format!("Error: {error}");
+            // Sanitize error text as well
+            let sanitized_error = sanitize_terminal_text(error);
+            let error_line = format!("Error: {sanitized_error}");
             recovered_content = recovered_content.append("\n\n").append(error_line.as_str());
         }
 
@@ -1847,6 +1865,14 @@ impl App {
             };
 
             let event = match event {
+                StreamEvent::TextDelta(text) => {
+                    // Sanitize untrusted model output to prevent terminal injection
+                    StreamEvent::TextDelta(sanitize_terminal_text(&text).into_owned())
+                }
+                StreamEvent::ThinkingDelta(text) => {
+                    // Also sanitize thinking deltas
+                    StreamEvent::ThinkingDelta(sanitize_terminal_text(&text).into_owned())
+                }
                 StreamEvent::Error(msg) => StreamEvent::Error(sanitize_stream_error(&msg)),
                 other => other,
             };
@@ -1983,6 +2009,8 @@ impl App {
         match finish_reason {
             StreamFinishReason::Error(err) => {
                 if let Some(message) = message {
+                    // Partial content received - keep both user message and partial response
+                    self.pending_user_message = None;
                     // Push with step_id for idempotent recovery
                     self.push_history_message_with_step_id(message, step_id);
                     if self.autosave_history() {
@@ -1991,8 +2019,9 @@ impl App {
                     }
                     // If save failed, leave journal recoverable for next session
                 } else {
-                    // No message content - discard the step to prevent session brick
+                    // No message content - rollback user message for easy retry
                     self.discard_journal_step(step_id);
+                    self.rollback_pending_user_message();
                 }
                 // Use stream's model/provider, not current app settings (user may have changed during stream)
                 let ui_error = format_stream_error(model.provider(), model.as_str(), &err);
@@ -2005,6 +2034,8 @@ impl App {
         }
 
         let Some(message) = message else {
+            // Stream completed successfully but with empty content - unusual but not an error
+            self.pending_user_message = None;
             let empty_msg = Message::assistant(model, NonEmptyString::from(EMPTY_RESPONSE_BADGE));
             self.push_local_message(empty_msg);
             self.set_status("Warning: API returned empty response");
@@ -2013,6 +2044,8 @@ impl App {
             return;
         };
 
+        // Stream completed successfully with content
+        self.pending_user_message = None;
         // Push with step_id for idempotent recovery
         self.push_history_message_with_step_id(message, step_id);
         if self.autosave_history() {
@@ -2035,6 +2068,45 @@ impl App {
     fn discard_journal_step(&mut self, step_id: forge_context::StepId) {
         if let Err(e) = self.stream_journal.discard_step(step_id) {
             tracing::warn!("Failed to discard journal step {}: {e}", step_id);
+        }
+    }
+
+    /// Rollback a pending user message after stream error with no content.
+    ///
+    /// This removes the user message from history and display, then restores
+    /// the original text to the input box for easy retry.
+    fn rollback_pending_user_message(&mut self) {
+        let Some((msg_id, original_text)) = self.pending_user_message.take() else {
+            return;
+        };
+
+        // Remove from history
+        if self.context_manager.rollback_last_message(msg_id).is_some() {
+            // Remove from display (should be the last History item)
+            if let Some(DisplayItem::History(display_id)) = self.display.last()
+                && *display_id == msg_id
+            {
+                self.display.pop();
+            }
+
+            // Restore to input box and enter insert mode for easy retry
+            self.input.draft_mut().set_text(original_text);
+            self.input = std::mem::take(&mut self.input).into_insert();
+
+            // Invalidate usage cache since we modified history
+            self.invalidate_usage_cache();
+
+            // Persist the rollback
+            if let Err(e) = self.save_history() {
+                tracing::warn!("Failed to save history after rollback: {e}");
+            }
+
+            tracing::debug!("Rolled back user message {:?} after stream error", msg_id);
+        } else {
+            tracing::warn!(
+                "Failed to rollback user message {:?} - not the last message in history",
+                msg_id
+            );
         }
     }
 
@@ -2546,8 +2618,8 @@ impl<'a> InsertMode<'a> {
             }
         };
 
-        let content = self.app.input.draft_mut().take_text();
-        let content = match NonEmptyString::new(content) {
+        let raw_content = self.app.input.draft_mut().take_text();
+        let content = match NonEmptyString::new(raw_content.clone()) {
             Ok(content) => content,
             Err(_) => {
                 self.app.set_status("Cannot send empty message");
@@ -2556,8 +2628,11 @@ impl<'a> InsertMode<'a> {
         };
 
         // Track user message in context manager (also adds to display)
-        self.app.push_history_message(Message::user(content));
+        let msg_id = self.app.push_history_message(Message::user(content));
         self.app.autosave_history(); // Persist user message immediately for crash durability
+
+        // Store pending message for potential rollback if stream fails with no content
+        self.app.pending_user_message = Some((msg_id, raw_content));
 
         self.app.scroll_to_bottom();
 
@@ -2612,7 +2687,9 @@ impl<'a> CommandMode<'a> {
 }
 
 fn sanitize_stream_error(raw: &str) -> String {
-    redact_api_keys(raw.trim())
+    // First redact API keys, then strip terminal controls
+    let redacted = redact_api_keys(raw.trim());
+    sanitize_terminal_text(&redacted).into_owned()
 }
 
 fn redact_api_keys(raw: &str) -> String {
@@ -2841,6 +2918,7 @@ mod tests {
             modal_effect: None,
             system_prompt: None,
             cached_usage_status: None,
+            pending_user_message: None,
         }
     }
 
@@ -3018,5 +3096,90 @@ mod tests {
         );
         assert!(app.is_empty());
         assert!(!app.is_loading());
+    }
+
+    #[test]
+    fn draft_input_set_text_moves_cursor_to_end() {
+        let mut draft = DraftInput {
+            text: "initial".to_string(),
+            cursor: 0,
+        };
+
+        draft.set_text("new text".to_string());
+
+        assert_eq!(draft.text(), "new text");
+        assert_eq!(draft.cursor(), 8); // cursor at end
+    }
+
+    #[test]
+    fn draft_input_set_text_handles_unicode() {
+        let mut draft = DraftInput::default();
+
+        draft.set_text("hello 🦀 world".to_string());
+
+        assert_eq!(draft.text(), "hello 🦀 world");
+        assert_eq!(draft.cursor(), 13); // 13 graphemes: h-e-l-l-o- -🦀- -w-o-r-l-d
+    }
+
+    #[test]
+    fn queue_message_sets_pending_user_message() {
+        let mut app = test_app();
+        app.input = InputState::Insert(DraftInput {
+            text: "test message".to_string(),
+            cursor: 12,
+        });
+
+        let token = app.insert_token().expect("insert mode");
+        let _queued = app
+            .insert_mode(token)
+            .queue_message()
+            .expect("queued message");
+
+        // Verify pending_user_message is set
+        assert!(app.pending_user_message.is_some());
+        let (msg_id, original_text) = app.pending_user_message.as_ref().unwrap();
+        assert_eq!(msg_id.as_u64(), 0); // First message
+        assert_eq!(original_text, "test message");
+    }
+
+    #[test]
+    fn rollback_pending_user_message_restores_input() {
+        let mut app = test_app();
+
+        // Simulate: user sends message (stored in history and pending)
+        let content = NonEmptyString::new("my message").expect("non-empty");
+        let msg_id = app.push_history_message(Message::user(content));
+        app.pending_user_message = Some((msg_id, "my message".to_string()));
+
+        assert_eq!(app.history().len(), 1);
+        assert_eq!(app.display.len(), 1);
+
+        // Rollback the pending message
+        app.rollback_pending_user_message();
+
+        // Message should be removed from history
+        assert_eq!(app.history().len(), 0);
+        // Display should be updated
+        assert_eq!(app.display.len(), 0);
+        // Input should be restored
+        assert_eq!(app.draft_text(), "my message");
+        // Should be in insert mode for easy retry
+        assert_eq!(app.input_mode(), InputMode::Insert);
+        // Pending should be cleared
+        assert!(app.pending_user_message.is_none());
+    }
+
+    #[test]
+    fn rollback_pending_user_message_no_op_when_empty() {
+        let mut app = test_app();
+
+        // No pending message
+        assert!(app.pending_user_message.is_none());
+
+        // Rollback should be a no-op
+        app.rollback_pending_user_message();
+
+        assert!(app.draft_text().is_empty());
+        assert!(app.pending_user_message.is_none());
     }
 }

@@ -644,6 +644,33 @@ impl FullHistory {
         self.entries.is_empty()
     }
 
+    /// Remove the last message if it matches the given ID.
+    ///
+    /// This is used for transactional rollback when a stream fails before
+    /// producing any content. The user message that was added before streaming
+    /// is removed so it doesn't create orphan user messages in history.
+    ///
+    /// Returns the removed message if successful, None if ID doesn't match last entry.
+    pub fn pop_if_last(&mut self, id: MessageId) -> Option<Message> {
+        let last = self.entries.last()?;
+        if last.id() != id {
+            return None;
+        }
+
+        // Verify the entry is not summarized - we should never rollback summarized messages
+        if last.is_summarized() {
+            tracing::warn!(
+                "Attempted to rollback summarized message {:?}, refusing",
+                id
+            );
+            return None;
+        }
+
+        let entry = self.entries.pop()?;
+        self.next_message_id = self.entries.len() as u64;
+        Some(entry.message().clone())
+    }
+
     /// Count of summarized messages.
     pub fn summarized_count(&self) -> usize {
         self.entries.iter().filter(|e| e.is_summarized()).count()
@@ -840,5 +867,93 @@ mod tests {
         let orphans = history.orphaned_summaries();
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0], summary0_id);
+    }
+
+    #[test]
+    fn test_pop_if_last_success() {
+        let mut history = FullHistory::new();
+
+        let id1 = history.push(make_test_message("First"), 10);
+        let id2 = history.push(make_test_message("Second"), 20);
+
+        assert_eq!(history.len(), 2);
+
+        // Pop the last message
+        let popped = history.pop_if_last(id2);
+        assert!(popped.is_some());
+        assert_eq!(popped.unwrap().content(), "Second");
+        assert_eq!(history.len(), 1);
+
+        // Pop the remaining message
+        let popped = history.pop_if_last(id1);
+        assert!(popped.is_some());
+        assert_eq!(popped.unwrap().content(), "First");
+        assert_eq!(history.len(), 0);
+    }
+
+    #[test]
+    fn test_pop_if_last_wrong_id() {
+        let mut history = FullHistory::new();
+
+        let id1 = history.push(make_test_message("First"), 10);
+        let _id2 = history.push(make_test_message("Second"), 20);
+
+        // Try to pop with wrong ID (not the last message)
+        let popped = history.pop_if_last(id1);
+        assert!(popped.is_none());
+        assert_eq!(history.len(), 2); // Nothing was removed
+    }
+
+    #[test]
+    fn test_pop_if_last_empty_history() {
+        let mut history = FullHistory::new();
+
+        // Try to pop from empty history
+        let popped = history.pop_if_last(MessageId::new_for_test(0));
+        assert!(popped.is_none());
+        assert_eq!(history.len(), 0);
+    }
+
+    #[test]
+    fn test_pop_if_last_refuses_summarized() {
+        let mut history = FullHistory::new();
+
+        let id1 = history.push(make_test_message("First"), 100);
+        let id2 = history.push(make_test_message("Second"), 100);
+
+        // Create a summary covering both messages
+        let summary_id = history.next_summary_id();
+        let summary = Summary::new(
+            summary_id,
+            id1..MessageId::new(id2.as_u64() + 1),
+            NonEmptyString::new("Summary").expect("non-empty"),
+            30,
+            200,
+            "test-model".to_string(),
+        );
+        history.add_summary(summary).expect("add summary");
+
+        // Both messages should now be summarized
+        assert!(history.get_entry(id2).is_summarized());
+
+        // Try to pop the last (summarized) message - should refuse
+        let popped = history.pop_if_last(id2);
+        assert!(popped.is_none());
+        assert_eq!(history.len(), 2); // Nothing was removed
+    }
+
+    #[test]
+    fn test_pop_if_last_updates_next_id() {
+        let mut history = FullHistory::new();
+
+        let _id1 = history.push(make_test_message("First"), 10);
+        let id2 = history.push(make_test_message("Second"), 20);
+
+        // Pop the last message
+        history.pop_if_last(id2);
+
+        // Push a new message - should get the recycled ID
+        let id3 = history.push(make_test_message("Third"), 30);
+        assert_eq!(id3.as_u64(), 1); // Same ID as the popped message
     }
 }

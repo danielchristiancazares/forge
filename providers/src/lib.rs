@@ -21,11 +21,21 @@ pub use forge_types;
 /// Connection timeout for API requests.
 const CONNECT_TIMEOUT_SECS: u64 = 30;
 
+/// Maximum bytes for SSE buffer before aborting (4 MiB).
+/// Prevents memory exhaustion from malicious/misbehaving servers.
+const MAX_SSE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+
+/// Maximum bytes for error body reads (32 KiB).
+/// Prevents memory spikes from large error responses.
+const MAX_ERROR_BODY_BYTES: usize = 32 * 1024;
+
 /// Shared HTTP client for all provider requests.
 ///
 /// This client is configured with:
 /// - Connection timeout: 30 seconds
 /// - No read/total timeout (SSE streams can run for extended periods)
+/// - Redirects disabled (API endpoints should never redirect)
+/// - HTTPS only
 ///
 /// For synchronous requests needing a timeout (like summarization),
 /// use [`http_client_with_timeout`] instead.
@@ -34,6 +44,8 @@ pub fn http_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .redirect(reqwest::redirect::Policy::none())
+            .https_only(true)
             .build()
             .expect("build shared HTTP client")
     })
@@ -90,6 +102,24 @@ fn extract_sse_data(event: &str) -> Option<String> {
     }
 
     if found { Some(data) } else { None }
+}
+
+/// Read an HTTP error response body with size limits.
+/// Prevents memory exhaustion from large error payloads.
+async fn read_capped_error_body(response: reqwest::Response) -> String {
+    use futures_util::StreamExt;
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else { break };
+        body.extend_from_slice(&chunk);
+        if body.len() > MAX_ERROR_BODY_BYTES {
+            body.truncate(MAX_ERROR_BODY_BYTES);
+            let text = String::from_utf8_lossy(&body);
+            return format!("{}...(truncated)", text);
+        }
+    }
+    String::from_utf8_lossy(&body).into_owned()
 }
 
 // ============================================================================
@@ -293,10 +323,7 @@ pub mod claude {
 
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|e| format!("<failed to read error body: {e}>"));
+            let error_text = read_capped_error_body(response).await;
             on_event(StreamEvent::Error(format!(
                 "API error {}: {}",
                 status, error_text
@@ -308,10 +335,19 @@ pub mod claude {
         use futures_util::StreamExt;
         let mut stream = response.bytes_stream();
         let mut buffer: Vec<u8> = Vec::new();
+        let mut saw_done = false;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
             buffer.extend_from_slice(&chunk);
+
+            // Security: prevent unbounded buffer growth
+            if buffer.len() > MAX_SSE_BUFFER_BYTES {
+                on_event(StreamEvent::Error(
+                    "SSE buffer exceeded maximum size (4 MiB)".to_string(),
+                ));
+                return Ok(());
+            }
 
             while let Some(event) = drain_next_sse_event(&mut buffer) {
                 if event.is_empty() {
@@ -330,6 +366,7 @@ pub mod claude {
 
                 if let Some(data) = extract_sse_data(event) {
                     if data == "[DONE]" {
+                        saw_done = true;
                         on_event(StreamEvent::Done);
                         return Ok(());
                     }
@@ -357,6 +394,7 @@ pub mod claude {
                             }
                         }
                         if json["type"] == "message_stop" {
+                            saw_done = true;
                             on_event(StreamEvent::Done);
                             return Ok(());
                         }
@@ -365,7 +403,12 @@ pub mod claude {
             }
         }
 
-        on_event(StreamEvent::Done);
+        // Detect premature EOF (connection closed before message_stop)
+        if !saw_done {
+            on_event(StreamEvent::Error(
+                "Connection closed before stream completed".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -537,10 +580,7 @@ pub mod openai {
 
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|e| format!("<failed to read error body: {e}>"));
+            let error_text = read_capped_error_body(response).await;
             on_event(StreamEvent::Error(format!(
                 "API error {}: {}",
                 status, error_text
@@ -552,10 +592,19 @@ pub mod openai {
         let mut stream = response.bytes_stream();
         let mut buffer: Vec<u8> = Vec::new();
         let mut saw_delta = false;
+        let mut saw_done = false;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
             buffer.extend_from_slice(&chunk);
+
+            // Security: prevent unbounded buffer growth
+            if buffer.len() > MAX_SSE_BUFFER_BYTES {
+                on_event(StreamEvent::Error(
+                    "SSE buffer exceeded maximum size (4 MiB)".to_string(),
+                ));
+                return Ok(());
+            }
 
             while let Some(event) = drain_next_sse_event(&mut buffer) {
                 if event.is_empty() {
@@ -574,6 +623,7 @@ pub mod openai {
 
                 if let Some(data) = extract_sse_data(event) {
                     if data == "[DONE]" {
+                        saw_done = true;
                         on_event(StreamEvent::Done);
                         return Ok(());
                     }
@@ -598,6 +648,7 @@ pub mod openai {
                                 }
                             }
                             "response.completed" => {
+                                saw_done = true;
                                 on_event(StreamEvent::Done);
                                 return Ok(());
                             }
@@ -620,7 +671,12 @@ pub mod openai {
             }
         }
 
-        on_event(StreamEvent::Done);
+        // Detect premature EOF (connection closed before response.completed)
+        if !saw_done {
+            on_event(StreamEvent::Error(
+                "Connection closed before stream completed".to_string(),
+            ));
+        }
         Ok(())
     }
 

@@ -218,6 +218,14 @@ impl ContextManager {
         self.history.has_step_id(step_id)
     }
 
+    /// Rollback (remove) the last message if it matches the given ID.
+    ///
+    /// This is used for transactional rollback when a stream fails before
+    /// producing any content. Returns the removed message if successful.
+    pub fn rollback_last_message(&mut self, id: MessageId) -> Option<Message> {
+        self.history.pop_if_last(id)
+    }
+
     /// Switch to a different model - triggers context adaptation.
     pub fn switch_model(&mut self, new_model: &str) -> ContextAdaptation {
         let old_budget = self.effective_budget();
@@ -825,5 +833,40 @@ mod tests {
             }
         }
         // If Ok, the context fit - which is also valid
+    }
+
+    #[test]
+    fn test_rollback_last_message_success() {
+        let mut manager = ContextManager::new("claude-opus-4");
+
+        let id1 = manager.push_message(Message::try_user("Hello").expect("non-empty"));
+        let id2 = manager.push_message(Message::try_user("World").expect("non-empty"));
+
+        assert_eq!(manager.history().len(), 2);
+
+        // Rollback the last message
+        let rolled_back = manager.rollback_last_message(id2);
+        assert!(rolled_back.is_some());
+        assert_eq!(rolled_back.unwrap().content(), "World");
+        assert_eq!(manager.history().len(), 1);
+
+        // Rollback the remaining message
+        let rolled_back = manager.rollback_last_message(id1);
+        assert!(rolled_back.is_some());
+        assert_eq!(rolled_back.unwrap().content(), "Hello");
+        assert_eq!(manager.history().len(), 0);
+    }
+
+    #[test]
+    fn test_rollback_last_message_wrong_id() {
+        let mut manager = ContextManager::new("claude-opus-4");
+
+        let id1 = manager.push_message(Message::try_user("Hello").expect("non-empty"));
+        let _id2 = manager.push_message(Message::try_user("World").expect("non-empty"));
+
+        // Try to rollback with wrong ID
+        let rolled_back = manager.rollback_last_message(id1);
+        assert!(rolled_back.is_none());
+        assert_eq!(manager.history().len(), 2); // Nothing was removed
     }
 }
