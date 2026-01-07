@@ -180,6 +180,27 @@ cargo test -- --nocapture               # With stdout
 cargo test --test integration_test      # Integration tests only
 ```
 
+## Common Pitfalls
+
+### Claude API Limits
+- **Max 4 `cache_control` blocks**: System prompt uses 1 slot, leaving 3 for messages
+- Summaries are `Message::System` and get cache hints - can exceed limit if not capped
+
+### Platform Differences
+- Use `dirs::home_dir()` for config paths, not hardcoded `~/.forge/`
+- Display actual path in error messages via `config::config_path()`
+
+### TUI Rendering
+- **Scrollbar visibility**: Only render when `max_scroll > 0` (content exceeds viewport)
+- **Scrollbar position**: Use `max_scroll` as content_length, not `total_lines`
+- **Cache expensive computations**: `context_usage_status()` should be cached, not recomputed per frame
+- **No eprintln!**: Use `tracing::warn!` to avoid corrupting TUI output
+
+### Database Transactions
+- Journal commit+prune must be atomic (single transaction)
+- Only commit journal if history save succeeds
+- Always discard or commit steps in error paths (prevent session brick)
+
 ## Commit Style
 
 Conventional commits: `type(scope): summary`
