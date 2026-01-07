@@ -2712,7 +2712,13 @@ fn format_stream_error(provider: Provider, model: &str, err: &str) -> StreamErro
         ));
         content.push_str("\n\nFix:\n- Set ");
         content.push_str(env_var);
-        content.push_str(" (env) or add it to ~/.forge/config.toml under [api_keys].\n- Then retry your message.");
+        let config_hint = config::config_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "~/.forge/config.toml".to_string());
+        content.push_str(&format!(
+            " (env) or add it to {} under [api_keys].\n- Then retry your message.",
+            config_hint
+        ));
 
         let detail = if !status.trim().is_empty() {
             status.trim().to_string()

@@ -189,25 +189,29 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 
     frame.render_widget(messages, area);
 
-    // Render scrollbar
-    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-        .begin_symbol(Some("↑"))
-        .end_symbol(Some("↓"))
-        .track_symbol(Some("│"))
-        .thumb_symbol("█")
-        .style(Style::default().fg(colors::TEXT_MUTED));
+    // Only render scrollbar when content exceeds viewport
+    if max_scroll > 0 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"))
+            .track_symbol(Some("│"))
+            .thumb_symbol("█")
+            .style(Style::default().fg(colors::TEXT_MUTED));
 
-    let mut scrollbar_state =
-        ScrollbarState::new(total_lines as usize).position(scroll_offset as usize);
+        // content_length = scrollable range (max_scroll), not total_lines
+        // This ensures thumb is at bottom when scroll_offset == max_scroll
+        let mut scrollbar_state =
+            ScrollbarState::new(max_scroll as usize).position(scroll_offset as usize);
 
-    frame.render_stateful_widget(
-        scrollbar,
-        area.inner(Margin {
-            vertical: 1,
-            horizontal: 0,
-        }),
-        &mut scrollbar_state,
-    );
+        frame.render_stateful_widget(
+            scrollbar,
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 fn wrapped_line_count(lines: &[Line], width: u16) -> u16 {

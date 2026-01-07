@@ -136,6 +136,7 @@ impl ForgeConfig {
     }
 }
 
-fn config_path() -> Option<PathBuf> {
+/// Returns the path to the forge config file.
+pub fn config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".forge").join("config.toml"))
 }
