@@ -1766,15 +1766,21 @@ impl App {
 
         // Convert messages to cacheable format based on cache_enabled setting
         let cache_enabled = self.cache_enabled;
+        let system_prompt = self.system_prompt;
         let cacheable_messages: Vec<CacheableMessage> = if cache_enabled {
             // Cache older messages, keep recent ones fresh
+            // Claude allows max 4 cache_control blocks total
+            // System prompt uses 1 slot if present, leaving 3 for messages
+            let max_cached = if system_prompt.is_some() { 3 } else { 4 };
             let len = api_messages.len();
             let recent_threshold = len.saturating_sub(4); // Don't cache last 4 messages
+            let mut cached_count = 0;
             api_messages
                 .into_iter()
                 .enumerate()
                 .map(|(i, msg)| {
-                    if i < recent_threshold {
+                    if i < recent_threshold && cached_count < max_cached {
+                        cached_count += 1;
                         CacheableMessage::cached(msg)
                     } else {
                         CacheableMessage::plain(msg)
@@ -1788,7 +1794,6 @@ impl App {
                 .collect()
         };
 
-        let system_prompt = self.system_prompt;
         let task = async move {
             let tx_events = tx.clone();
             let result = forge_providers::send_message(
