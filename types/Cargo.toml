@@ -7,4 +7,5 @@ description = "Core domain types for Forge - no IO, no async"
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true

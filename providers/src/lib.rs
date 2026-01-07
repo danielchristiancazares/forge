@@ -6,7 +6,7 @@
 use anyhow::Result;
 use forge_types::{
     ApiKey, CacheHint, CacheableMessage, Message, ModelName, OpenAIRequestOptions, OutputLimits,
-    Provider, StreamEvent,
+    Provider, StreamEvent, ToolDefinition,
 };
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -195,20 +195,22 @@ impl ApiConfig {
 /// * `messages` - Conversation history
 /// * `limits` - Output token limits (with optional thinking budget)
 /// * `system_prompt` - Optional system prompt to inject
+/// * `tools` - Optional list of tool definitions for function calling
 /// * `on_event` - Callback for streaming events
 pub async fn send_message(
     config: &ApiConfig,
     messages: &[CacheableMessage],
     limits: OutputLimits,
     system_prompt: Option<&str>,
+    tools: Option<&[ToolDefinition]>,
     on_event: impl Fn(StreamEvent) + Send + 'static,
 ) -> Result<()> {
     match config.provider() {
         Provider::Claude => {
-            claude::send_message(config, messages, limits, system_prompt, on_event).await
+            claude::send_message(config, messages, limits, system_prompt, tools, on_event).await
         }
         Provider::OpenAI => {
-            openai::send_message(config, messages, limits, system_prompt, on_event).await
+            openai::send_message(config, messages, limits, system_prompt, tools, on_event).await
         }
     }
 }
@@ -240,6 +242,7 @@ pub mod claude {
         messages: &[CacheableMessage],
         limits: OutputLimits,
         system_prompt: Option<&str>,
+        tools: Option<&[ToolDefinition]>,
     ) -> serde_json::Value {
         let mut system_blocks: Vec<serde_json::Value> = Vec::new();
         let mut api_messages: Vec<serde_json::Value> = Vec::new();
@@ -275,6 +278,30 @@ pub mod claude {
                         "content": msg.content()
                     }));
                 }
+                Message::ToolUse(call) => {
+                    // Tool use is sent as an assistant message with tool_use content block
+                    api_messages.push(json!({
+                        "role": "assistant",
+                        "content": [{
+                            "type": "tool_use",
+                            "id": call.id,
+                            "name": call.name,
+                            "input": call.arguments
+                        }]
+                    }));
+                }
+                Message::ToolResult(result) => {
+                    // Tool result is sent as a user message with tool_result content block
+                    api_messages.push(json!({
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": result.tool_call_id,
+                            "content": result.content,
+                            "is_error": result.is_error
+                        }]
+                    }));
+                }
             }
         }
 
@@ -286,6 +313,23 @@ pub mod claude {
 
         if !system_blocks.is_empty() {
             body.insert("system".into(), json!(system_blocks));
+        }
+
+        // Add tool definitions if provided
+        if let Some(tools) = tools {
+            if !tools.is_empty() {
+                let tool_schemas: Vec<serde_json::Value> = tools
+                    .iter()
+                    .map(|t| {
+                        json!({
+                            "name": t.name,
+                            "description": t.description,
+                            "input_schema": t.parameters
+                        })
+                    })
+                    .collect();
+                body.insert("tools".into(), json!(tool_schemas));
+            }
         }
 
         if let Some(budget) = limits.thinking_budget() {
@@ -306,11 +350,18 @@ pub mod claude {
         messages: &[CacheableMessage],
         limits: OutputLimits,
         system_prompt: Option<&str>,
+        tools: Option<&[ToolDefinition]>,
         on_event: impl Fn(StreamEvent) + Send + 'static,
     ) -> Result<()> {
         let client = http_client();
 
-        let body = build_request_body(config.model().as_str(), messages, limits, system_prompt);
+        let body = build_request_body(
+            config.model().as_str(),
+            messages,
+            limits,
+            system_prompt,
+            tools,
+        );
 
         let response = client
             .post(API_URL)
@@ -336,6 +387,8 @@ pub mod claude {
         let mut stream = response.bytes_stream();
         let mut buffer: Vec<u8> = Vec::new();
         let mut saw_done = false;
+        // Track current tool call ID for streaming tool arguments
+        let mut current_tool_id: Option<String> = None;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
@@ -372,6 +425,18 @@ pub mod claude {
                     }
 
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
+                        // Handle content_block_start for tool_use
+                        if json["type"] == "content_block_start" {
+                            if let Some(block) = json.get("content_block") {
+                                if block["type"] == "tool_use" {
+                                    let id = block["id"].as_str().unwrap_or("").to_string();
+                                    let name = block["name"].as_str().unwrap_or("").to_string();
+                                    current_tool_id = Some(id.clone());
+                                    on_event(StreamEvent::ToolCallStart { id, name });
+                                }
+                            }
+                        }
+
                         if json["type"] == "content_block_delta" {
                             if let Some(delta_type) = json["delta"]["type"].as_str() {
                                 match delta_type {
@@ -387,12 +452,31 @@ pub mod claude {
                                             ));
                                         }
                                     }
+                                    "input_json_delta" => {
+                                        // Tool arguments streaming
+                                        if let Some(json_chunk) =
+                                            json["delta"]["partial_json"].as_str()
+                                        {
+                                            if let Some(ref id) = current_tool_id {
+                                                on_event(StreamEvent::ToolCallDelta {
+                                                    id: id.clone(),
+                                                    arguments: json_chunk.to_string(),
+                                                });
+                                            }
+                                        }
+                                    }
                                     _ => {}
                                 }
                             } else if let Some(text) = json["delta"]["text"].as_str() {
                                 on_event(StreamEvent::TextDelta(text.to_string()));
                             }
                         }
+
+                        // Reset tool ID when content block ends
+                        if json["type"] == "content_block_stop" {
+                            current_tool_id = None;
+                        }
+
                         if json["type"] == "message_stop" {
                             saw_done = true;
                             on_event(StreamEvent::Done);
@@ -427,7 +511,7 @@ pub mod claude {
                 CacheableMessage::plain(Message::try_user("hi").unwrap()),
             ];
 
-            let body = build_request_body(model.as_str(), &messages, limits, None);
+            let body = build_request_body(model.as_str(), &messages, limits, None, None);
 
             let system = body.get("system").unwrap().as_array().unwrap();
             assert_eq!(system.len(), 1);
@@ -447,7 +531,7 @@ pub mod claude {
                 NonEmptyString::new("summary").unwrap(),
             ))];
 
-            let body = build_request_body(model.as_str(), &messages, limits, Some("prompt"));
+            let body = build_request_body(model.as_str(), &messages, limits, Some("prompt"), None);
 
             let system = body.get("system").unwrap().as_array().unwrap();
             assert_eq!(system.len(), 2);
@@ -505,6 +589,8 @@ pub mod openai {
             Message::System(_) => "developer",
             Message::User(_) => "user",
             Message::Assistant(_) => "assistant",
+            Message::ToolUse(_) => "assistant", // Tool calls come from assistant
+            Message::ToolResult(_) => "user",   // Tool results are sent as user
         }
     }
 
@@ -513,10 +599,12 @@ pub mod openai {
         messages: &[CacheableMessage],
         limits: OutputLimits,
         system_prompt: Option<&str>,
+        tools: Option<&[ToolDefinition]>,
     ) -> Value {
         let mut input_items: Vec<Value> = Vec::new();
         for cacheable in messages {
             let msg = &cacheable.message;
+            // TODO: Handle ToolUse and ToolResult message variants for OpenAI format
             input_items.push(json!({
                 "role": openai_role(msg),
                 "content": msg.content(),
@@ -537,6 +625,10 @@ pub mod openai {
         {
             body.insert("instructions".to_string(), json!(prompt));
         }
+
+        // TODO: Add tool definitions for OpenAI format when tools is Some
+        // OpenAI uses "tools" array with "type": "function" wrapper
+        let _ = tools; // Suppress unused warning for now
 
         let options = config.openai_options();
         body.insert(
@@ -564,11 +656,12 @@ pub mod openai {
         messages: &[CacheableMessage],
         limits: OutputLimits,
         system_prompt: Option<&str>,
+        tools: Option<&[ToolDefinition]>,
         on_event: impl Fn(StreamEvent) + Send + 'static,
     ) -> Result<()> {
         let client = http_client();
 
-        let body = build_request_body(config, messages, limits, system_prompt);
+        let body = build_request_body(config, messages, limits, system_prompt, tools);
 
         let response = client
             .post(API_URL)
@@ -696,7 +789,7 @@ pub mod openai {
                 CacheableMessage::plain(Message::try_user("hi").unwrap()),
             ];
 
-            let body = build_request_body(&config, &messages, OutputLimits::new(1024), None);
+            let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
 
             let input = body.get("input").unwrap().as_array().unwrap();
             assert_eq!(input.len(), 2);
@@ -716,8 +809,13 @@ pub mod openai {
                 NonEmptyString::new("summary").unwrap(),
             ))];
 
-            let body =
-                build_request_body(&config, &messages, OutputLimits::new(1024), Some("prompt"));
+            let body = build_request_body(
+                &config,
+                &messages,
+                OutputLimits::new(1024),
+                Some("prompt"),
+                None,
+            );
 
             assert_eq!(body.get("instructions").unwrap().as_str(), Some("prompt"));
         }
@@ -743,5 +841,186 @@ mod tests {
         let model = Provider::Claude.default_model();
         let result = ApiConfig::new(key, model);
         assert!(result.is_ok());
+    }
+
+    // ========================================================================
+    // SSE Parsing Tests
+    // ========================================================================
+
+    mod sse_boundary {
+        use super::*;
+
+        #[test]
+        fn finds_lf_boundary() {
+            let buffer = b"data: hello\n\ndata: world";
+            let result = find_sse_event_boundary(buffer);
+            assert_eq!(result, Some((11, 2))); // Position of first \n\n, delimiter len 2
+        }
+
+        #[test]
+        fn finds_crlf_boundary() {
+            let buffer = b"data: hello\r\n\r\ndata: world";
+            let result = find_sse_event_boundary(buffer);
+            assert_eq!(result, Some((11, 4))); // Position of first \r\n\r\n, delimiter len 4
+        }
+
+        #[test]
+        fn prefers_earlier_lf_over_crlf() {
+            // LF boundary comes first
+            let buffer = b"data: a\n\ndata: b\r\n\r\n";
+            let result = find_sse_event_boundary(buffer);
+            assert_eq!(result, Some((7, 2)));
+        }
+
+        #[test]
+        fn prefers_earlier_crlf_over_lf() {
+            // CRLF boundary comes first
+            let buffer = b"data: a\r\n\r\ndata: b\n\n";
+            let result = find_sse_event_boundary(buffer);
+            assert_eq!(result, Some((7, 4)));
+        }
+
+        #[test]
+        fn returns_none_when_no_boundary() {
+            let buffer = b"data: incomplete event\n";
+            assert_eq!(find_sse_event_boundary(buffer), None);
+        }
+
+        #[test]
+        fn returns_none_for_empty_buffer() {
+            assert_eq!(find_sse_event_boundary(b""), None);
+        }
+
+        #[test]
+        fn finds_boundary_at_start() {
+            let buffer = b"\n\nrest";
+            assert_eq!(find_sse_event_boundary(buffer), Some((0, 2)));
+        }
+    }
+
+    mod sse_drain {
+        use super::*;
+
+        #[test]
+        fn drains_single_event() {
+            let mut buffer = b"data: hello\n\ndata: world\n\n".to_vec();
+            let event = drain_next_sse_event(&mut buffer);
+            assert_eq!(event, Some(b"data: hello".to_vec()));
+            assert_eq!(buffer, b"data: world\n\n");
+        }
+
+        #[test]
+        fn drains_multiple_events_sequentially() {
+            let mut buffer = b"event: a\n\nevent: b\n\nevent: c\n\n".to_vec();
+
+            let e1 = drain_next_sse_event(&mut buffer);
+            assert_eq!(e1, Some(b"event: a".to_vec()));
+
+            let e2 = drain_next_sse_event(&mut buffer);
+            assert_eq!(e2, Some(b"event: b".to_vec()));
+
+            let e3 = drain_next_sse_event(&mut buffer);
+            assert_eq!(e3, Some(b"event: c".to_vec()));
+
+            let e4 = drain_next_sse_event(&mut buffer);
+            assert_eq!(e4, None);
+        }
+
+        #[test]
+        fn returns_none_for_incomplete_event() {
+            let mut buffer = b"data: incomplete".to_vec();
+            assert_eq!(drain_next_sse_event(&mut buffer), None);
+            // Buffer should remain unchanged
+            assert_eq!(buffer, b"data: incomplete");
+        }
+
+        #[test]
+        fn handles_empty_event() {
+            let mut buffer = b"\n\ndata: after\n\n".to_vec();
+            let event = drain_next_sse_event(&mut buffer);
+            assert_eq!(event, Some(b"".to_vec())); // Empty event
+            assert_eq!(buffer, b"data: after\n\n");
+        }
+
+        #[test]
+        fn handles_crlf_events() {
+            let mut buffer = b"data: crlf\r\n\r\nrest".to_vec();
+            let event = drain_next_sse_event(&mut buffer);
+            assert_eq!(event, Some(b"data: crlf".to_vec()));
+            assert_eq!(buffer, b"rest");
+        }
+    }
+
+    mod sse_extract {
+        use super::*;
+
+        #[test]
+        fn extracts_single_data_line() {
+            let event = "data: hello";
+            assert_eq!(extract_sse_data(event), Some("hello".to_string()));
+        }
+
+        #[test]
+        fn extracts_data_without_space() {
+            let event = "data:hello";
+            assert_eq!(extract_sse_data(event), Some("hello".to_string()));
+        }
+
+        #[test]
+        fn extracts_multiline_data() {
+            let event = "data: line1\ndata: line2\ndata: line3";
+            assert_eq!(
+                extract_sse_data(event),
+                Some("line1\nline2\nline3".to_string())
+            );
+        }
+
+        #[test]
+        fn ignores_non_data_lines() {
+            let event = "event: message\nid: 123\ndata: actual_data\nretry: 1000";
+            assert_eq!(extract_sse_data(event), Some("actual_data".to_string()));
+        }
+
+        #[test]
+        fn returns_none_for_no_data() {
+            let event = "event: ping\nid: 456";
+            assert_eq!(extract_sse_data(event), None);
+        }
+
+        #[test]
+        fn handles_empty_data() {
+            let event = "data: ";
+            assert_eq!(extract_sse_data(event), Some("".to_string()));
+        }
+
+        #[test]
+        fn handles_data_with_colons() {
+            let event = "data: {\"key\": \"value\"}";
+            assert_eq!(
+                extract_sse_data(event),
+                Some("{\"key\": \"value\"}".to_string())
+            );
+        }
+
+        #[test]
+        fn strips_carriage_return_suffix() {
+            let event = "data: windows\r";
+            assert_eq!(extract_sse_data(event), Some("windows".to_string()));
+        }
+
+        #[test]
+        fn handles_mixed_line_endings() {
+            let event = "data: line1\r\ndata: line2\ndata: line3\r";
+            assert_eq!(
+                extract_sse_data(event),
+                Some("line1\nline2\nline3".to_string())
+            );
+        }
+
+        #[test]
+        fn extracts_done_marker() {
+            let event = "data: [DONE]";
+            assert_eq!(extract_sse_data(event), Some("[DONE]".to_string()));
+        }
     }
 }

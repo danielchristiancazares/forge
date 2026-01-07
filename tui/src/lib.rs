@@ -31,8 +31,8 @@ use forge_engine::{
     App, ContextUsageStatus, DisplayItem, InputMode, Message, PredefinedModel, Provider,
 };
 
-use self::markdown::render_markdown;
 pub use self::markdown::clear_render_cache;
+use self::markdown::render_markdown;
 
 /// Main draw function
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -109,6 +109,23 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             Message::User(_) => ("○", "You", styles::user_name()),
             Message::Assistant(m) => ("◆", m.provider().display_name(), styles::assistant_name()),
+            Message::ToolUse(_call) => (
+                "⚙",
+                // TODO: Proper tool call rendering in Phase 5
+                "Tool Call",
+                Style::default()
+                    .fg(colors::TEXT_MUTED)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+            Message::ToolResult(result) => (
+                "→",
+                if result.is_error {
+                    "Tool Error"
+                } else {
+                    "Tool Result"
+                },
+                Style::default().fg(colors::TEXT_MUTED),
+            ),
         };
 
         let header_line = Line::from(vec![
@@ -123,6 +140,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             Message::System(_) => Style::default().fg(colors::TEXT_MUTED),
             Message::User(_) => Style::default().fg(colors::TEXT_PRIMARY),
             Message::Assistant(_) => Style::default().fg(colors::TEXT_SECONDARY),
+            Message::ToolUse(_) | Message::ToolResult(_) => Style::default().fg(colors::TEXT_MUTED),
         };
 
         let rendered = render_markdown(msg.content(), content_style);
@@ -350,7 +368,9 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
         } else {
             (draft.to_string(), 0u16)
         }
-    } else if mode == InputMode::Command && let Some(cmd) = &command_line {
+    } else if mode == InputMode::Command
+        && let Some(cmd) = &command_line
+    {
         let cursor_display_pos = cmd.width();
         if cursor_display_pos >= visible_content_width {
             let scroll_target = cursor_display_pos - visible_content_width + 1;
@@ -401,21 +421,21 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let input = Paragraph::new(Line::from(input_content)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(border_style)
-                .title_top(Line::from(vec![Span::styled(mode_text, mode_style)]))
-                .title_top(Line::from(hints).alignment(Alignment::Right))
-                .title_bottom(
-                    Line::from(vec![Span::styled(
-                        usage_str,
-                        Style::default().fg(usage_color),
-                    )])
-                    .alignment(Alignment::Right),
-                )
-                .padding(input_padding),
-        );
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(border_style)
+            .title_top(Line::from(vec![Span::styled(mode_text, mode_style)]))
+            .title_top(Line::from(hints).alignment(Alignment::Right))
+            .title_bottom(
+                Line::from(vec![Span::styled(
+                    usage_str,
+                    Style::default().fg(usage_color),
+                )])
+                .alignment(Alignment::Right),
+            )
+            .padding(input_padding),
+    );
 
     frame.render_widget(input, area);
 

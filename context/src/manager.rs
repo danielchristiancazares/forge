@@ -185,7 +185,9 @@ impl ContextManager {
     /// Get the effective input budget, respecting configured output limit.
     fn effective_budget(&self) -> u32 {
         match self.configured_output_limit {
-            Some(limit) => self.current_limits.effective_input_budget_with_reserved(limit),
+            Some(limit) => self
+                .current_limits
+                .effective_input_budget_with_reserved(limit),
             None => self.current_limits.effective_input_budget(),
         }
     }
@@ -868,5 +870,144 @@ mod tests {
         let rolled_back = manager.rollback_last_message(id1);
         assert!(rolled_back.is_none());
         assert_eq!(manager.history().len(), 2); // Nothing was removed
+    }
+
+    // ========================================================================
+    // Output Limit Tests
+    // ========================================================================
+
+    #[test]
+    fn test_set_output_limit() {
+        let mut manager = ContextManager::new("claude-opus-4");
+
+        // Get initial budget (without configured output limit)
+        let initial_budget = manager.effective_budget();
+
+        // Set a smaller output limit - should increase effective input budget
+        manager.set_output_limit(4096);
+
+        // The budget should be different (typically higher) when we reserve less for output
+        // This depends on model limits, but setting a limit should have an effect
+        let new_budget = manager.effective_budget();
+
+        // At minimum, setting an output limit should not panic
+        assert!(new_budget > 0);
+
+        // Test that limits are accessible
+        let limits = manager.current_limits();
+        assert!(limits.context_window() > 0);
+    }
+
+    #[test]
+    fn test_current_limits_source() {
+        let manager = ContextManager::new("claude-opus-4");
+
+        // Known model should come from prefix match
+        let source = manager.current_limits_source();
+        assert!(matches!(source, ModelLimitsSource::Prefix(_)));
+    }
+
+    #[test]
+    fn test_current_limits_source_unknown_model() {
+        let manager = ContextManager::new("unknown-model-xyz");
+
+        // Unknown model should use default fallback
+        let source = manager.current_limits_source();
+        assert!(matches!(source, ModelLimitsSource::DefaultFallback));
+    }
+
+    // ========================================================================
+    // Persistence Tests (save/load)
+    // ========================================================================
+
+    #[test]
+    fn test_save_load_roundtrip() {
+        use std::io::Write;
+
+        let mut manager = ContextManager::new("claude-opus-4");
+
+        // Add some messages
+        manager.push_message(Message::try_user("Hello").expect("non-empty"));
+        manager.push_message(Message::try_user("World").expect("non-empty"));
+
+        assert_eq!(manager.history().len(), 2);
+
+        // Create temp file
+        let tmp_dir = std::env::temp_dir();
+        let tmp_path = tmp_dir.join(format!("forge_test_{}.json", std::process::id()));
+
+        // Save
+        manager.save(&tmp_path).expect("save should succeed");
+
+        // Verify file exists
+        assert!(tmp_path.exists());
+
+        // Load into new manager
+        let loaded = ContextManager::load(&tmp_path, "claude-opus-4").expect("load should succeed");
+
+        // Verify content preserved
+        assert_eq!(loaded.history().len(), 2);
+        assert_eq!(loaded.current_model(), "claude-opus-4");
+
+        // Verify message content
+        let entries: Vec<_> = loaded.history().entries().iter().collect();
+        assert_eq!(entries[0].message().content(), "Hello");
+        assert_eq!(entries[1].message().content(), "World");
+
+        // Cleanup
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+
+    #[test]
+    fn test_load_with_different_model() {
+        let mut manager = ContextManager::new("claude-opus-4");
+        manager.push_message(Message::try_user("Test").expect("non-empty"));
+
+        let tmp_dir = std::env::temp_dir();
+        let tmp_path = tmp_dir.join(format!("forge_test_model_{}.json", std::process::id()));
+
+        manager.save(&tmp_path).expect("save");
+
+        // Load with a different model
+        let loaded = ContextManager::load(&tmp_path, "gpt-5.2").expect("load should succeed");
+
+        // History preserved
+        assert_eq!(loaded.history().len(), 1);
+        // But model is the new one
+        assert_eq!(loaded.current_model(), "gpt-5.2");
+
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+
+    #[test]
+    fn test_load_nonexistent_file() {
+        let result = ContextManager::load("/nonexistent/path/file.json", "claude-opus-4");
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // Usage Status Tests
+    // ========================================================================
+
+    #[test]
+    fn test_usage_status_ready_when_empty() {
+        let manager = ContextManager::new("claude-opus-4");
+        let status = manager.usage_status();
+
+        // Empty history should always be ready
+        assert!(matches!(status, ContextUsageStatus::Ready(_)));
+    }
+
+    #[test]
+    fn test_push_message_with_step_id_and_has_step_id() {
+        let mut manager = ContextManager::new("claude-opus-4");
+
+        // Push with step ID
+        let _id = manager
+            .push_message_with_step_id(Message::try_user("Hello").expect("non-empty"), 12345);
+
+        // Check step ID exists
+        assert!(manager.has_step_id(12345));
+        assert!(!manager.has_step_id(99999));
     }
 }

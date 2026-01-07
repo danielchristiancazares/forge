@@ -132,6 +132,23 @@ fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut us
         ),
         Message::User(_) => ("○", "You", styles::user_name()),
         Message::Assistant(m) => ("*", m.provider().display_name(), styles::assistant_name()),
+        Message::ToolUse(_call) => (
+            "⚙",
+            // TODO: Proper tool call rendering in Phase 5
+            "Tool Call",
+            Style::default()
+                .fg(colors::TEXT_MUTED)
+                .add_modifier(Modifier::ITALIC),
+        ),
+        Message::ToolResult(result) => (
+            "→",
+            if result.is_error {
+                "Tool Error"
+            } else {
+                "Tool Result"
+            },
+            Style::default().fg(colors::TEXT_MUTED),
+        ),
     };
 
     let header_line = Line::from(vec![
@@ -145,6 +162,7 @@ fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut us
         Message::System(_) => Style::default().fg(colors::TEXT_MUTED),
         Message::User(_) => Style::default().fg(colors::TEXT_PRIMARY),
         Message::Assistant(_) => Style::default().fg(colors::TEXT_SECONDARY),
+        Message::ToolUse(_) | Message::ToolResult(_) => Style::default().fg(colors::TEXT_MUTED),
     };
 
     for content_line in msg.content().lines() {

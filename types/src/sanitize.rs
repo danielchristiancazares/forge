@@ -105,12 +105,12 @@ fn is_allowed_control(c: char) -> bool {
 
 /// Check if character is a C1 control character (0x80-0x9F).
 fn is_c1_control(c: char) -> bool {
-    ('\x80'..='\x9f').contains(&c)
+    ('\u{0080}'..='\u{009f}').contains(&c)
 }
 
 /// Check if C1 character is the CSI equivalent (0x9B).
 fn is_c1_csi(c: char) -> bool {
-    c == '\x9b'
+    c == '\u{009b}'
 }
 
 /// Skip an escape sequence starting after ESC.
@@ -276,14 +276,14 @@ mod tests {
     #[test]
     fn strips_c1_controls() {
         // C1 control characters
-        let input = "Hello\x80World\x9ATest\x9F";
+        let input = "Hello\u{0080}World\u{009a}Test\u{009f}";
         assert_eq!(sanitize_terminal_text(input), "HelloWorldTest");
     }
 
     #[test]
     fn strips_c1_csi_equivalent() {
         // C1 CSI (0x9B) followed by parameters
-        let input = "Text\x9b31mColored";
+        let input = "Text\u{009b}31mColored";
         assert_eq!(sanitize_terminal_text(input), "TextColored");
     }
 
@@ -309,9 +309,9 @@ mod tests {
 
     #[test]
     fn handles_incomplete_csi() {
-        // CSI without final byte
+        // CSI without final byte - parameter bytes (0x30-0x3F) are consumed
         let input = "Text\x1b[31";
-        assert_eq!(sanitize_terminal_text(input), "Text31");
+        assert_eq!(sanitize_terminal_text(input), "Text");
     }
 
     #[test]

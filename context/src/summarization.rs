@@ -72,6 +72,27 @@ Write the summary as a continuous narrative that captures the essence of the con
             Message::System(_) => "System",
             Message::User(_) => "User",
             Message::Assistant(_) => "Assistant",
+            Message::ToolUse(call) => {
+                // Format tool calls with their name for context
+                conversation_text.push_str(&format!(
+                    "[Message {}] Assistant (Tool Call: {}): {}\n\n",
+                    id.as_u64(),
+                    call.name,
+                    serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string())
+                ));
+                continue;
+            }
+            Message::ToolResult(result) => {
+                // Format tool results with their status
+                let status = if result.is_error { "Error" } else { "Result" };
+                conversation_text.push_str(&format!(
+                    "[Message {}] Tool {}: {}\n\n",
+                    id.as_u64(),
+                    status,
+                    result.content
+                ));
+                continue;
+            }
         };
         conversation_text.push_str(&format!(
             "[Message {}] {}: {}\n\n",
@@ -128,11 +149,12 @@ pub async fn generate_summary(
 
     let (system_instruction, conversation_text) =
         build_summarization_prompt(messages, target_tokens);
-    
+
     // Validate that input doesn't exceed summarizer model's context limit
-    let estimated_input = count_tokens(counter, &system_instruction) + count_tokens(counter, &conversation_text);
+    let estimated_input =
+        count_tokens(counter, &system_instruction) + count_tokens(counter, &conversation_text);
     let input_limit = summarizer_input_limit(config.provider());
-    
+
     if estimated_input > input_limit {
         return Err(anyhow!(
             "Summarization scope too large: ~{} tokens exceeds {} model limit of {} tokens. \
@@ -142,7 +164,7 @@ pub async fn generate_summary(
             input_limit
         ));
     }
-    
+
     let max_tokens = target_tokens.clamp(MIN_SUMMARY_TOKENS, MAX_SUMMARY_TOKENS);
 
     match config.provider() {

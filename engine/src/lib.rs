@@ -80,6 +80,14 @@ impl StreamingMessage {
                 // Silently consume thinking content - not displayed for now
                 None
             }
+            StreamEvent::ToolCallStart { .. } => {
+                // TODO: Track tool call state for Phase 3
+                None
+            }
+            StreamEvent::ToolCallDelta { .. } => {
+                // TODO: Accumulate tool call arguments for Phase 3
+                None
+            }
             StreamEvent::Done => Some(StreamFinishReason::Done),
             StreamEvent::Error(err) => Some(StreamFinishReason::Error(err)),
         }
@@ -967,7 +975,9 @@ impl App {
         message: Message,
         step_id: forge_context::StepId,
     ) -> MessageId {
-        let id = self.context_manager.push_message_with_step_id(message, step_id);
+        let id = self
+            .context_manager
+            .push_message_with_step_id(message, step_id);
         self.display.push(DisplayItem::History(id));
         self.invalidate_usage_cache();
         id
@@ -1087,7 +1097,10 @@ impl App {
         }
 
         // Push recovered partial response with step_id for idempotent future recovery
-        self.push_history_message_with_step_id(Message::assistant(model, recovered_content), step_id);
+        self.push_history_message_with_step_id(
+            Message::assistant(model, recovered_content),
+            step_id,
+        );
         self.autosave_history();
 
         // Seal any unsealed entries, then mark committed and prune
@@ -1479,9 +1492,9 @@ impl App {
 
         // Spawn background task with real API call
         let counter = TokenCounter::new();
-        let handle = tokio::spawn(
-            async move { generate_summary(&config, &counter, &messages, target_tokens).await },
-        );
+        let handle = tokio::spawn(async move {
+            generate_summary(&config, &counter, &messages, target_tokens).await
+        });
 
         let task = SummarizationTask {
             scope,
@@ -1819,6 +1832,7 @@ impl App {
                 &cacheable_messages,
                 limits,
                 system_prompt,
+                None, // TODO: Pass tool definitions in Phase 3
                 move |event| {
                     let _ = tx_events.send(event);
                 },
@@ -1893,6 +1907,14 @@ impl App {
                         .append_text(&mut self.stream_journal, text.clone()),
                     StreamEvent::ThinkingDelta(_) => {
                         // Don't persist thinking content to journal - silently consume
+                        Ok(())
+                    }
+                    StreamEvent::ToolCallStart { .. } => {
+                        // TODO: Persist tool call start in Phase 3
+                        Ok(())
+                    }
+                    StreamEvent::ToolCallDelta { .. } => {
+                        // TODO: Persist tool call delta in Phase 3
                         Ok(())
                     }
                     StreamEvent::Done => active.journal.append_done(&mut self.stream_journal),
@@ -3057,7 +3079,10 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         let streaming = StreamingMessage::new(app.model.clone(), rx);
         let (abort_handle, _abort_registration) = AbortHandle::new_pair();
-        let journal = app.stream_journal.begin_session(app.model.as_str()).expect("journal session");
+        let journal = app
+            .stream_journal
+            .begin_session(app.model.as_str())
+            .expect("journal session");
         app.state = AppState::Enabled(EnabledState::Streaming(ActiveStream {
             message: streaming,
             journal,
@@ -3181,5 +3206,154 @@ mod tests {
 
         assert!(app.draft_text().is_empty());
         assert!(app.pending_user_message.is_none());
+    }
+
+    // ========================================================================
+    // ModalEffect Tests
+    // ========================================================================
+
+    #[test]
+    fn modal_effect_pop_scale_initial_state() {
+        let effect = ModalEffect::pop_scale(Duration::from_millis(200));
+        assert_eq!(effect.kind(), ModalEffectKind::PopScale);
+        assert!(!effect.is_finished());
+        // Initial progress should be close to 0
+        assert!(effect.progress() < 0.1);
+    }
+
+    #[test]
+    fn modal_effect_slide_up_initial_state() {
+        let effect = ModalEffect::slide_up(Duration::from_millis(300));
+        assert_eq!(effect.kind(), ModalEffectKind::SlideUp);
+        assert!(!effect.is_finished());
+    }
+
+    #[test]
+    fn modal_effect_advance_increases_progress() {
+        let mut effect = ModalEffect::pop_scale(Duration::from_millis(200));
+        let initial = effect.progress();
+
+        effect.advance(Duration::from_millis(100));
+        // Note: progress depends on elapsed wall time, not just advance calls
+        // The elapsed tracking is based on Instant, but we can at least verify is_finished
+        assert!(!effect.is_finished()); // Still has 100ms left after 100ms advance
+    }
+
+    #[test]
+    fn modal_effect_finished_after_duration() {
+        let mut effect = ModalEffect::pop_scale(Duration::from_millis(100));
+        effect.advance(Duration::from_millis(150));
+        assert!(effect.is_finished());
+    }
+
+    #[test]
+    fn modal_effect_zero_duration_immediately_finished() {
+        let effect = ModalEffect::pop_scale(Duration::ZERO);
+        assert!(effect.is_finished());
+        assert_eq!(effect.progress(), 1.0);
+    }
+
+    #[test]
+    fn modal_effect_progress_clamped_at_one() {
+        let mut effect = ModalEffect::pop_scale(Duration::from_millis(10));
+        effect.advance(Duration::from_millis(1000)); // Way past duration
+        assert!(effect.progress() <= 1.0);
+    }
+
+    // ========================================================================
+    // StreamingMessage Tests
+    // ========================================================================
+
+    #[test]
+    fn streaming_message_apply_text_delta() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let model = Provider::Claude.default_model();
+        let mut stream = StreamingMessage::new(model, rx);
+
+        assert!(stream.content().is_empty());
+
+        let result = stream.apply_event(StreamEvent::TextDelta("Hello".to_string()));
+        assert!(result.is_none()); // Not finished yet
+
+        assert_eq!(stream.content(), "Hello");
+
+        let result = stream.apply_event(StreamEvent::TextDelta(" World".to_string()));
+        assert!(result.is_none());
+
+        assert_eq!(stream.content(), "Hello World");
+
+        drop(tx); // Suppress unused warning
+    }
+
+    #[test]
+    fn streaming_message_apply_done() {
+        let (_tx, rx) = mpsc::unbounded_channel();
+        let model = Provider::Claude.default_model();
+        let mut stream = StreamingMessage::new(model, rx);
+
+        stream.apply_event(StreamEvent::TextDelta("content".to_string()));
+
+        let result = stream.apply_event(StreamEvent::Done);
+        assert_eq!(result, Some(StreamFinishReason::Done));
+    }
+
+    #[test]
+    fn streaming_message_apply_error() {
+        let (_tx, rx) = mpsc::unbounded_channel();
+        let model = Provider::Claude.default_model();
+        let mut stream = StreamingMessage::new(model, rx);
+
+        let result = stream.apply_event(StreamEvent::Error("API error".to_string()));
+        assert_eq!(
+            result,
+            Some(StreamFinishReason::Error("API error".to_string()))
+        );
+    }
+
+    #[test]
+    fn streaming_message_apply_thinking_delta_ignored() {
+        let (_tx, rx) = mpsc::unbounded_channel();
+        let model = Provider::Claude.default_model();
+        let mut stream = StreamingMessage::new(model, rx);
+
+        stream.apply_event(StreamEvent::TextDelta("visible".to_string()));
+        stream.apply_event(StreamEvent::ThinkingDelta("thinking...".to_string()));
+
+        // Thinking content should not appear in content
+        assert_eq!(stream.content(), "visible");
+    }
+
+    #[test]
+    fn streaming_message_into_message_success() {
+        let (_tx, rx) = mpsc::unbounded_channel();
+        let model = Provider::Claude.default_model();
+        let mut stream = StreamingMessage::new(model.clone(), rx);
+
+        stream.apply_event(StreamEvent::TextDelta("Test content".to_string()));
+
+        let message = stream.into_message().expect("should convert to message");
+        assert_eq!(message.content(), "Test content");
+        assert!(matches!(message, Message::Assistant(_)));
+    }
+
+    #[test]
+    fn streaming_message_into_message_empty_fails() {
+        let (_tx, rx) = mpsc::unbounded_channel();
+        let model = Provider::Claude.default_model();
+        let stream = StreamingMessage::new(model, rx);
+
+        // No content added
+        let result = stream.into_message();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn streaming_message_provider_and_model() {
+        let (_tx, rx) = mpsc::unbounded_channel();
+        let model = ModelName::known(Provider::OpenAI, "gpt-5.2");
+        let stream = StreamingMessage::new(model, rx);
+
+        assert_eq!(stream.provider(), Provider::OpenAI);
+        assert_eq!(stream.model_name().as_str(), "gpt-5.2");
     }
 }

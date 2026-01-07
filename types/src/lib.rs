@@ -530,6 +530,10 @@ pub enum StreamEvent {
     TextDelta(String),
     /// Thinking/reasoning content delta (Claude extended thinking).
     ThinkingDelta(String),
+    /// Tool call started - emitted when a tool_use content block begins.
+    ToolCallStart { id: String, name: String },
+    /// Tool call arguments delta - emitted as JSON arguments stream in.
+    ToolCallDelta { id: String, arguments: String },
     /// Stream completed.
     Done,
     /// Error occurred.
@@ -541,6 +545,98 @@ pub enum StreamEvent {
 pub enum StreamFinishReason {
     Done,
     Error(String),
+}
+
+// ============================================================================
+// Tool Calling Types
+// ============================================================================
+
+/// Definition of a tool that can be called by the LLM.
+///
+/// This follows the standard function calling schema used by Claude and OpenAI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    /// The name of the tool (function name).
+    pub name: String,
+    /// A description of what the tool does.
+    pub description: String,
+    /// JSON Schema describing the tool's parameters.
+    pub parameters: serde_json::Value,
+}
+
+impl ToolDefinition {
+    /// Create a new tool definition.
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: serde_json::Value,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters,
+        }
+    }
+}
+
+/// A tool call requested by the LLM.
+///
+/// Contains the tool ID (for matching with results), the tool name,
+/// and the arguments as a JSON value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// Unique identifier for this tool call (used to match results).
+    pub id: String,
+    /// The name of the tool being called.
+    pub name: String,
+    /// The arguments to pass to the tool, as parsed JSON.
+    pub arguments: serde_json::Value,
+}
+
+impl ToolCall {
+    /// Create a new tool call.
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: serde_json::Value,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+        }
+    }
+}
+
+/// The result of executing a tool call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolResult {
+    /// The ID of the tool call this result is for.
+    pub tool_call_id: String,
+    /// The result content (typically a string or JSON).
+    pub content: String,
+    /// Whether the tool execution resulted in an error.
+    pub is_error: bool,
+}
+
+impl ToolResult {
+    /// Create a successful tool result.
+    pub fn success(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            tool_call_id: tool_call_id.into(),
+            content: content.into(),
+            is_error: false,
+        }
+    }
+
+    /// Create an error tool result.
+    pub fn error(tool_call_id: impl Into<String>, error: impl Into<String>) -> Self {
+        Self {
+            tool_call_id: tool_call_id.into(),
+            content: error.into(),
+            is_error: true,
+        }
+    }
 }
 
 // ============================================================================
@@ -623,6 +719,10 @@ pub enum Message {
     System(SystemMessage),
     User(UserMessage),
     Assistant(AssistantMessage),
+    /// A tool call requested by the assistant.
+    ToolUse(ToolCall),
+    /// The result of a tool call execution.
+    ToolResult(ToolResult),
 }
 
 impl Message {
@@ -642,11 +742,23 @@ impl Message {
         Self::Assistant(AssistantMessage::new(model, content))
     }
 
+    /// Create a tool use message (assistant requesting a tool call).
+    pub fn tool_use(call: ToolCall) -> Self {
+        Self::ToolUse(call)
+    }
+
+    /// Create a tool result message (result of executing a tool).
+    pub fn tool_result(result: ToolResult) -> Self {
+        Self::ToolResult(result)
+    }
+
     pub fn role_str(&self) -> &'static str {
         match self {
             Message::System(_) => "system",
             Message::User(_) => "user",
             Message::Assistant(_) => "assistant",
+            Message::ToolUse(_) => "assistant", // Tool use is from assistant
+            Message::ToolResult(_) => "user",   // Tool result is sent as user role
         }
     }
 
@@ -655,6 +767,8 @@ impl Message {
             Message::System(m) => m.content(),
             Message::User(m) => m.content(),
             Message::Assistant(m) => m.content(),
+            Message::ToolUse(call) => &call.name, // Return tool name as content summary
+            Message::ToolResult(result) => &result.content,
         }
     }
 }
@@ -728,5 +842,209 @@ mod tests {
         assert!(OutputLimits::with_thinking(4096, 512).is_err()); // too small
         assert!(OutputLimits::with_thinking(4096, 5000).is_err()); // too large
         assert!(OutputLimits::with_thinking(8192, 4096).is_ok());
+    }
+
+    // ========================================================================
+    // ApiKey Tests
+    // ========================================================================
+
+    #[test]
+    fn api_key_provider_claude() {
+        let key = ApiKey::Claude("sk-ant-test".to_string());
+        assert_eq!(key.provider(), Provider::Claude);
+        assert_eq!(key.as_str(), "sk-ant-test");
+    }
+
+    #[test]
+    fn api_key_provider_openai() {
+        let key = ApiKey::OpenAI("sk-test-xyz".to_string());
+        assert_eq!(key.provider(), Provider::OpenAI);
+        assert_eq!(key.as_str(), "sk-test-xyz");
+    }
+
+    // ========================================================================
+    // OutputLimits Tests
+    // ========================================================================
+
+    #[test]
+    fn output_limits_new_no_thinking() {
+        let limits = OutputLimits::new(4096);
+        assert_eq!(limits.max_output_tokens(), 4096);
+        assert_eq!(limits.thinking_budget(), None);
+        assert!(!limits.has_thinking());
+    }
+
+    #[test]
+    fn output_limits_with_valid_thinking() {
+        let limits = OutputLimits::with_thinking(16384, 8192).unwrap();
+        assert_eq!(limits.max_output_tokens(), 16384);
+        assert_eq!(limits.thinking_budget(), Some(8192));
+        assert!(limits.has_thinking());
+    }
+
+    #[test]
+    fn output_limits_rejects_budget_too_small() {
+        let result = OutputLimits::with_thinking(4096, 1023);
+        assert!(matches!(
+            result,
+            Err(OutputLimitsError::ThinkingBudgetTooSmall)
+        ));
+    }
+
+    #[test]
+    fn output_limits_accepts_minimum_budget() {
+        let limits = OutputLimits::with_thinking(4096, 1024).unwrap();
+        assert_eq!(limits.thinking_budget(), Some(1024));
+    }
+
+    #[test]
+    fn output_limits_rejects_budget_equal_to_max() {
+        let result = OutputLimits::with_thinking(4096, 4096);
+        assert!(matches!(
+            result,
+            Err(OutputLimitsError::ThinkingBudgetTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn output_limits_rejects_budget_greater_than_max() {
+        let result = OutputLimits::with_thinking(4096, 8000);
+        assert!(matches!(
+            result,
+            Err(OutputLimitsError::ThinkingBudgetTooLarge { .. })
+        ));
+    }
+
+    // ========================================================================
+    // CacheHint Tests
+    // ========================================================================
+
+    #[test]
+    fn cache_hint_default_is_none() {
+        let hint = CacheHint::default();
+        assert_eq!(hint, CacheHint::None);
+    }
+
+    #[test]
+    fn cacheable_message_plain_has_no_hint() {
+        let msg = Message::try_user("test").unwrap();
+        let cacheable = CacheableMessage::plain(msg);
+        assert_eq!(cacheable.cache_hint, CacheHint::None);
+    }
+
+    #[test]
+    fn cacheable_message_cached_has_ephemeral_hint() {
+        let msg = Message::try_user("test").unwrap();
+        let cacheable = CacheableMessage::cached(msg);
+        assert_eq!(cacheable.cache_hint, CacheHint::Ephemeral);
+    }
+
+    // ========================================================================
+    // OpenAI Request Options Tests
+    // ========================================================================
+
+    #[test]
+    fn openai_reasoning_effort_parse() {
+        assert_eq!(
+            OpenAIReasoningEffort::parse("none"),
+            Some(OpenAIReasoningEffort::None)
+        );
+        assert_eq!(
+            OpenAIReasoningEffort::parse("low"),
+            Some(OpenAIReasoningEffort::Low)
+        );
+        assert_eq!(
+            OpenAIReasoningEffort::parse("MEDIUM"),
+            Some(OpenAIReasoningEffort::Medium)
+        );
+        assert_eq!(
+            OpenAIReasoningEffort::parse("High"),
+            Some(OpenAIReasoningEffort::High)
+        );
+        assert_eq!(
+            OpenAIReasoningEffort::parse("xhigh"),
+            Some(OpenAIReasoningEffort::XHigh)
+        );
+        assert_eq!(
+            OpenAIReasoningEffort::parse("x-high"),
+            Some(OpenAIReasoningEffort::XHigh)
+        );
+        assert_eq!(OpenAIReasoningEffort::parse("invalid"), None);
+    }
+
+    #[test]
+    fn openai_reasoning_effort_as_str() {
+        assert_eq!(OpenAIReasoningEffort::None.as_str(), "none");
+        assert_eq!(OpenAIReasoningEffort::Low.as_str(), "low");
+        assert_eq!(OpenAIReasoningEffort::Medium.as_str(), "medium");
+        assert_eq!(OpenAIReasoningEffort::High.as_str(), "high");
+        assert_eq!(OpenAIReasoningEffort::XHigh.as_str(), "xhigh");
+    }
+
+    #[test]
+    fn openai_text_verbosity_parse() {
+        assert_eq!(
+            OpenAITextVerbosity::parse("low"),
+            Some(OpenAITextVerbosity::Low)
+        );
+        assert_eq!(
+            OpenAITextVerbosity::parse("MEDIUM"),
+            Some(OpenAITextVerbosity::Medium)
+        );
+        assert_eq!(
+            OpenAITextVerbosity::parse("High"),
+            Some(OpenAITextVerbosity::High)
+        );
+        assert_eq!(OpenAITextVerbosity::parse("invalid"), None);
+    }
+
+    #[test]
+    fn openai_truncation_parse() {
+        assert_eq!(
+            OpenAITruncation::parse("auto"),
+            Some(OpenAITruncation::Auto)
+        );
+        assert_eq!(
+            OpenAITruncation::parse("DISABLED"),
+            Some(OpenAITruncation::Disabled)
+        );
+        assert_eq!(OpenAITruncation::parse("invalid"), None);
+    }
+
+    #[test]
+    fn openai_request_options_default() {
+        let options = OpenAIRequestOptions::default();
+        assert_eq!(options.reasoning_effort(), OpenAIReasoningEffort::High);
+        assert_eq!(options.verbosity(), OpenAITextVerbosity::High);
+        assert_eq!(options.truncation(), OpenAITruncation::Auto);
+    }
+
+    #[test]
+    fn openai_request_options_custom() {
+        let options = OpenAIRequestOptions::new(
+            OpenAIReasoningEffort::Low,
+            OpenAITextVerbosity::Medium,
+            OpenAITruncation::Disabled,
+        );
+        assert_eq!(options.reasoning_effort(), OpenAIReasoningEffort::Low);
+        assert_eq!(options.verbosity(), OpenAITextVerbosity::Medium);
+        assert_eq!(options.truncation(), OpenAITruncation::Disabled);
+    }
+
+    // ========================================================================
+    // StreamEvent Tests
+    // ========================================================================
+
+    #[test]
+    fn stream_finish_reason_equality() {
+        assert_eq!(StreamFinishReason::Done, StreamFinishReason::Done);
+        assert_ne!(
+            StreamFinishReason::Done,
+            StreamFinishReason::Error("err".to_string())
+        );
+        assert_eq!(
+            StreamFinishReason::Error("test".to_string()),
+            StreamFinishReason::Error("test".to_string())
+        );
     }
 }
