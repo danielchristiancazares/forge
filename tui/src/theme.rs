@@ -25,6 +25,13 @@ pub mod colors {
     pub const YELLOW: Color = Color::Rgb(249, 226, 175); // Warning
     pub const RED: Color = Color::Rgb(243, 139, 168); // Error
     pub const PEACH: Color = Color::Rgb(250, 179, 135); // Accent
+    pub const CYAN: Color = Color::Rgb(137, 220, 235); // Tools/links
+
+    // Semantic aliases for tool rendering
+    pub const ACCENT: Color = CYAN;
+    pub const SUCCESS: Color = GREEN;
+    pub const ERROR: Color = RED;
+    pub const WARNING: Color = YELLOW;
 }
 
 /// Pre-defined styles for common UI elements

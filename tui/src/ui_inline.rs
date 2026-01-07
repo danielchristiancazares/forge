@@ -124,55 +124,99 @@ fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut us
 
     let (icon, name, name_style) = match msg {
         Message::System(_) => (
-            "S",
-            "System",
+            "S".to_string(),
+            "System".to_string(),
             Style::default()
                 .fg(colors::TEXT_MUTED)
                 .add_modifier(Modifier::BOLD),
         ),
-        Message::User(_) => ("○", "You", styles::user_name()),
-        Message::Assistant(m) => ("*", m.provider().display_name(), styles::assistant_name()),
-        Message::ToolUse(_call) => (
-            "⚙",
-            // TODO: Proper tool call rendering in Phase 5
-            "Tool Call",
+        Message::User(_) => ("○".to_string(), "You".to_string(), styles::user_name()),
+        Message::Assistant(m) => (
+            "*".to_string(),
+            m.provider().display_name().to_string(),
+            styles::assistant_name(),
+        ),
+        Message::ToolUse(call) => (
+            "⚙".to_string(),
+            call.name.clone(),
             Style::default()
-                .fg(colors::TEXT_MUTED)
-                .add_modifier(Modifier::ITALIC),
+                .fg(colors::ACCENT)
+                .add_modifier(Modifier::BOLD),
         ),
-        Message::ToolResult(result) => (
-            "→",
-            if result.is_error {
-                "Tool Error"
+        Message::ToolResult(result) => {
+            let (icon, style) = if result.is_error {
+                (
+                    "✗",
+                    Style::default()
+                        .fg(colors::ERROR)
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
-                "Tool Result"
-            },
-            Style::default().fg(colors::TEXT_MUTED),
-        ),
+                (
+                    "✓",
+                    Style::default()
+                        .fg(colors::SUCCESS)
+                        .add_modifier(Modifier::BOLD),
+                )
+            };
+            (icon.to_string(), "Tool Result".to_string(), style)
+        }
     };
 
     let header_line = Line::from(vec![
-        Span::styled(format!(" {icon} "), name_style),
+        Span::styled(format!(" {} ", icon), name_style),
         Span::styled(name, name_style),
     ]);
     lines.push(header_line);
     lines.push(Line::from(""));
 
-    let content_style = match msg {
-        Message::System(_) => Style::default().fg(colors::TEXT_MUTED),
-        Message::User(_) => Style::default().fg(colors::TEXT_PRIMARY),
-        Message::Assistant(_) => Style::default().fg(colors::TEXT_SECONDARY),
-        Message::ToolUse(_) | Message::ToolResult(_) => Style::default().fg(colors::TEXT_MUTED),
-    };
+    // Message content - render based on type
+    match msg {
+        Message::ToolUse(call) => {
+            // Render tool arguments as formatted JSON
+            let args_str =
+                serde_json::to_string_pretty(&call.arguments).unwrap_or_else(|_| "{}".to_string());
+            let args_style = Style::default().fg(colors::TEXT_MUTED);
+            for arg_line in args_str.lines() {
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(arg_line.to_string(), args_style),
+                ]));
+            }
+        }
+        Message::ToolResult(result) => {
+            // Render result content with appropriate styling
+            let content_style = if result.is_error {
+                Style::default().fg(colors::ERROR)
+            } else {
+                Style::default().fg(colors::TEXT_SECONDARY)
+            };
+            for result_line in result.content.lines() {
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(result_line.to_string(), content_style),
+                ]));
+            }
+        }
+        _ => {
+            // Regular messages
+            let content_style = match msg {
+                Message::System(_) => Style::default().fg(colors::TEXT_MUTED),
+                Message::User(_) => Style::default().fg(colors::TEXT_PRIMARY),
+                Message::Assistant(_) => Style::default().fg(colors::TEXT_SECONDARY),
+                _ => Style::default().fg(colors::TEXT_MUTED),
+            };
 
-    for content_line in msg.content().lines() {
-        if content_line.is_empty() {
-            lines.push(Line::from(""));
-        } else {
-            lines.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled(content_line.to_string(), content_style),
-            ]));
+            for content_line in msg.content().lines() {
+                if content_line.is_empty() {
+                    lines.push(Line::from(""));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(content_line.to_string(), content_style),
+                    ]));
+                }
+            }
         }
     }
 }

@@ -110,6 +110,7 @@ enum AppState {
 enum EnabledState {
     Idle,                                    // Ready for new operations
     Streaming(ActiveStream),                 // API response in progress
+    AwaitingToolResults(PendingToolExecution), // Waiting for tool results
     Summarizing(SummarizationState),         // Background summarization
     SummarizingWithQueued(SummarizingWithQueuedState), // Summarizing + pending request
     SummarizationRetry(SummarizationRetryState),       // Retry after failure
@@ -326,6 +327,7 @@ pub struct QueuedUserMessage {
 ```
 
 This type proves:
+
 1. The draft text was validated as non-empty
 2. An API key is available for the current provider
 3. The `ApiConfig` was successfully constructed
@@ -373,6 +375,7 @@ pub struct StreamingMessage {
 ```
 
 The `StreamingMessage` provides:
+
 - Type-level proof that streaming is active (ownership semantics)
 - Event-based content accumulation via channel
 - Conversion to complete `Message` when done
@@ -461,6 +464,8 @@ The engine provides a slash command system for user actions.
 | `:journal` | `:jrnl` | Show journal statistics |
 | `:summarize` | `:sum` | Trigger summarization |
 | `:screen` | - | Toggle fullscreen/inline mode |
+| `:tool <id> <result>` | - | Submit tool result (or `:tool error <id> <msg>`) |
+| `:tools` | - | List configured tools |
 | `:help` | - | List available commands |
 
 ### Command Processing
@@ -572,6 +577,7 @@ pub struct ForgeConfig {
     pub thinking: Option<ThinkingConfig>, // Legacy
     pub anthropic: Option<AnthropicConfig>,
     pub openai: Option<OpenAIConfig>,
+    pub tools: Option<ToolsConfig>,       // Tool/function calling config
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -720,7 +726,7 @@ pub fn process_command(&mut self, command: EnteredCommand) {
 }
 ```
 
-2. **Update help text**:
+1. **Update help text**:
 
 ```rust
 Some("help") => {
@@ -744,7 +750,7 @@ enum InputState {
 }
 ```
 
-2. **Add mode enum variant**:
+1. **Add mode enum variant**:
 
 ```rust
 pub enum InputMode {
@@ -756,7 +762,7 @@ pub enum InputMode {
 }
 ```
 
-3. **Add transition method**:
+1. **Add transition method**:
 
 ```rust
 impl InputState {
@@ -780,7 +786,7 @@ impl App {
 }
 ```
 
-4. **Add proof token pattern** (optional):
+1. **Add proof token pattern** (optional):
 
 ```rust
 pub struct MyModeToken(());
@@ -806,7 +812,7 @@ impl<'a> MyMode<'a> {
 }
 ```
 
-5. **Handle in TUI input handler** (`tui/src/input.rs`):
+1. **Handle in TUI input handler** (`tui/src/input.rs`):
 
 ```rust
 pub async fn handle_events(app: &mut App) -> Result<bool> {
@@ -851,9 +857,9 @@ impl Provider {
 }
 ```
 
-2. **Add API client** (`providers/src/my_provider.rs`)
+1. **Add API client** (`providers/src/my_provider.rs`)
 
-3. **Update config structure** (`engine/src/config.rs`):
+2. **Update config structure** (`engine/src/config.rs`):
 
 ```rust
 pub struct ApiKeys {
@@ -863,7 +869,7 @@ pub struct ApiKeys {
 }
 ```
 
-4. **Update key loading in `App::new()`**
+1. **Update key loading in `App::new()`**
 
 ### Adding a New Async Operation State
 
@@ -879,7 +885,7 @@ enum EnabledState {
 }
 ```
 
-2. **Add state transition guards**:
+1. **Add state transition guards**:
 
 ```rust
 pub fn start_my_operation(&mut self) {
@@ -895,7 +901,7 @@ pub fn start_my_operation(&mut self) {
 }
 ```
 
-3. **Add polling in `tick()`**:
+1. **Add polling in `tick()`**:
 
 ```rust
 pub fn tick(&mut self) {

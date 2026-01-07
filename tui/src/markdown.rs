@@ -162,6 +162,9 @@ impl MarkdownRenderer {
             Event::Code(code) => self.handle_inline_code(&code),
             Event::SoftBreak => self.handle_soft_break(),
             Event::HardBreak => self.flush_line(),
+            // Render HTML/XML-like content as plain text to avoid silent content loss.
+            // LLM responses may contain XML-like tags that pulldown_cmark parses as HTML.
+            Event::Html(html) | Event::InlineHtml(html) => self.handle_text(&html),
             _ => {}
         }
     }
@@ -593,6 +596,29 @@ mod tests {
         assert!(
             span.style.add_modifier.contains(Modifier::BOLD),
             "'still bold' should have BOLD modifier"
+        );
+    }
+
+    #[test]
+    fn test_html_xml_content_rendered() {
+        clear_render_cache();
+
+        // XML-like tags (common in LLM output) should be rendered, not silently dropped
+        let content = "<thinking>This is important</thinking>";
+        let lines = render_markdown(content, Style::default());
+
+        // Should have content, not be empty
+        assert!(!lines.is_empty(), "HTML/XML content should not be silently dropped");
+
+        // The actual text should be present somewhere in the rendered output
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+
+        assert!(
+            all_text.contains("thinking") || all_text.contains("important"),
+            "HTML/XML content should appear in rendered output: {all_text}"
         );
     }
 }

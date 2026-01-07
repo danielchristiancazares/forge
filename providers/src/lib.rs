@@ -316,20 +316,20 @@ pub mod claude {
         }
 
         // Add tool definitions if provided
-        if let Some(tools) = tools {
-            if !tools.is_empty() {
-                let tool_schemas: Vec<serde_json::Value> = tools
-                    .iter()
-                    .map(|t| {
-                        json!({
-                            "name": t.name,
-                            "description": t.description,
-                            "input_schema": t.parameters
-                        })
+        if let Some(tools) = tools
+            && !tools.is_empty()
+        {
+            let tool_schemas: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|t| {
+                    json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.parameters
                     })
-                    .collect();
-                body.insert("tools".into(), json!(tool_schemas));
-            }
+                })
+                .collect();
+            body.insert("tools".into(), json!(tool_schemas));
         }
 
         if let Some(budget) = limits.thinking_budget() {
@@ -386,7 +386,7 @@ pub mod claude {
         use futures_util::StreamExt;
         let mut stream = response.bytes_stream();
         let mut buffer: Vec<u8> = Vec::new();
-        let mut saw_done = false;
+        let saw_done = false;
         // Track current tool call ID for streaming tool arguments
         let mut current_tool_id: Option<String> = None;
 
@@ -419,22 +419,20 @@ pub mod claude {
 
                 if let Some(data) = extract_sse_data(event) {
                     if data == "[DONE]" {
-                        saw_done = true;
                         on_event(StreamEvent::Done);
                         return Ok(());
                     }
 
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
                         // Handle content_block_start for tool_use
-                        if json["type"] == "content_block_start" {
-                            if let Some(block) = json.get("content_block") {
-                                if block["type"] == "tool_use" {
-                                    let id = block["id"].as_str().unwrap_or("").to_string();
-                                    let name = block["name"].as_str().unwrap_or("").to_string();
-                                    current_tool_id = Some(id.clone());
-                                    on_event(StreamEvent::ToolCallStart { id, name });
-                                }
-                            }
+                        if json["type"] == "content_block_start"
+                            && let Some(block) = json.get("content_block")
+                            && block["type"] == "tool_use"
+                        {
+                            let id = block["id"].as_str().unwrap_or("").to_string();
+                            let name = block["name"].as_str().unwrap_or("").to_string();
+                            current_tool_id = Some(id.clone());
+                            on_event(StreamEvent::ToolCallStart { id, name });
                         }
 
                         if json["type"] == "content_block_delta" {
@@ -456,13 +454,12 @@ pub mod claude {
                                         // Tool arguments streaming
                                         if let Some(json_chunk) =
                                             json["delta"]["partial_json"].as_str()
+                                            && let Some(ref id) = current_tool_id
                                         {
-                                            if let Some(ref id) = current_tool_id {
-                                                on_event(StreamEvent::ToolCallDelta {
-                                                    id: id.clone(),
-                                                    arguments: json_chunk.to_string(),
-                                                });
-                                            }
+                                            on_event(StreamEvent::ToolCallDelta {
+                                                id: id.clone(),
+                                                arguments: json_chunk.to_string(),
+                                            });
                                         }
                                     }
                                     _ => {}
@@ -478,7 +475,6 @@ pub mod claude {
                         }
 
                         if json["type"] == "message_stop" {
-                            saw_done = true;
                             on_event(StreamEvent::Done);
                             return Ok(());
                         }
@@ -685,7 +681,7 @@ pub mod openai {
         let mut stream = response.bytes_stream();
         let mut buffer: Vec<u8> = Vec::new();
         let mut saw_delta = false;
-        let mut saw_done = false;
+        let saw_done = false;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
@@ -716,7 +712,6 @@ pub mod openai {
 
                 if let Some(data) = extract_sse_data(event) {
                     if data == "[DONE]" {
-                        saw_done = true;
                         on_event(StreamEvent::Done);
                         return Ok(());
                     }
@@ -741,7 +736,6 @@ pub mod openai {
                                 }
                             }
                             "response.completed" => {
-                                saw_done = true;
                                 on_event(StreamEvent::Done);
                                 return Ok(());
                             }

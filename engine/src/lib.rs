@@ -25,7 +25,7 @@ pub use forge_types::{
     ApiKey, CacheHint, CacheableMessage, EmptyStringError, Message, ModelName, ModelNameKind,
     NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort, OpenAIRequestOptions,
     OpenAITextVerbosity, OpenAITruncation, OutputLimits, Provider, StreamEvent, StreamFinishReason,
-    sanitize_terminal_text,
+    ToolCall, ToolDefinition, ToolResult, sanitize_terminal_text,
 };
 
 // Config types - passed in from caller
@@ -36,6 +36,17 @@ pub use config::{AppConfig, ForgeConfig};
 // StreamingMessage - async message being streamed
 // ============================================================================
 
+/// Accumulator for a single tool call during streaming.
+///
+/// As tool call events arrive, we accumulate the JSON arguments string
+/// until the stream completes, then parse into a complete ToolCall.
+#[derive(Debug, Clone)]
+struct ToolCallAccumulator {
+    id: String,
+    name: String,
+    arguments_json: String,
+}
+
 /// A message being streamed - existence proves streaming is active.
 /// Typestate: consuming this produces a complete assistant `Message`.
 #[derive(Debug)]
@@ -43,6 +54,8 @@ pub struct StreamingMessage {
     model: ModelName,
     content: String,
     receiver: mpsc::UnboundedReceiver<StreamEvent>,
+    /// Accumulated tool calls during streaming.
+    tool_calls: Vec<ToolCallAccumulator>,
 }
 
 impl StreamingMessage {
@@ -51,6 +64,7 @@ impl StreamingMessage {
             model,
             content: String::new(),
             receiver,
+            tool_calls: Vec::new(),
         }
     }
 
@@ -80,17 +94,52 @@ impl StreamingMessage {
                 // Silently consume thinking content - not displayed for now
                 None
             }
-            StreamEvent::ToolCallStart { .. } => {
-                // TODO: Track tool call state for Phase 3
+            StreamEvent::ToolCallStart { id, name } => {
+                self.tool_calls.push(ToolCallAccumulator {
+                    id,
+                    name,
+                    arguments_json: String::new(),
+                });
                 None
             }
-            StreamEvent::ToolCallDelta { .. } => {
-                // TODO: Accumulate tool call arguments for Phase 3
+            StreamEvent::ToolCallDelta { id, arguments } => {
+                if let Some(acc) = self.tool_calls.iter_mut().find(|t| t.id == id) {
+                    acc.arguments_json.push_str(&arguments);
+                }
                 None
             }
             StreamEvent::Done => Some(StreamFinishReason::Done),
             StreamEvent::Error(err) => Some(StreamFinishReason::Error(err)),
         }
+    }
+
+    /// Returns true if any tool calls were received during streaming.
+    pub fn has_tool_calls(&self) -> bool {
+        !self.tool_calls.is_empty()
+    }
+
+    /// Take accumulated tool calls, parsing JSON arguments.
+    ///
+    /// Returns successfully parsed tool calls. Invalid JSON arguments are logged
+    /// and skipped (graceful degradation).
+    pub fn take_tool_calls(&mut self) -> Vec<ToolCall> {
+        self.tool_calls
+            .drain(..)
+            .map(|acc| {
+                match serde_json::from_str(&acc.arguments_json) {
+                    Ok(arguments) => ToolCall::new(acc.id, acc.name, arguments),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse tool call arguments for '{}': {}",
+                            acc.name,
+                            e
+                        );
+                        // Return with empty object as fallback
+                        ToolCall::new(acc.id, acc.name, serde_json::json!({}))
+                    }
+                }
+            })
+            .collect()
     }
 
     /// Consume streaming message and produce a complete message.
@@ -559,10 +608,30 @@ struct SummarizationRetryWithQueuedState {
     queued: ApiConfig,
 }
 
+/// State for when the assistant has made tool calls and we're waiting for results.
+///
+/// This is similar to the Summarizing state - a pause in the conversation flow
+/// while external processing occurs. Once all tool results are submitted,
+/// the conversation resumes with the updated context.
+#[derive(Debug)]
+pub struct PendingToolExecution {
+    /// Text content from assistant before/alongside tool calls (may be empty).
+    pub assistant_text: String,
+    /// Tool calls waiting for results.
+    pub pending_calls: Vec<ToolCall>,
+    /// Results received so far.
+    pub results: Vec<ToolResult>,
+    /// Model that made the tool calls.
+    pub model: ModelName,
+    /// Journal step ID for recovery.
+    pub step_id: forge_context::StepId,
+}
+
 #[derive(Debug)]
 enum EnabledState {
     Idle,
     Streaming(ActiveStream),
+    AwaitingToolResults(PendingToolExecution),
     Summarizing(SummarizationState),
     SummarizingWithQueued(SummarizationWithQueuedState),
     SummarizationRetry(SummarizationRetryState),
@@ -651,6 +720,8 @@ pub struct App {
     /// If the stream fails with no content, we rollback the message from history
     /// and restore this text to the input box for easy retry.
     pending_user_message: Option<(MessageId, String)>,
+    /// Tool definitions to send with each request.
+    tool_definitions: Vec<ToolDefinition>,
 }
 
 impl App {
@@ -833,6 +904,7 @@ impl App {
             system_prompt,
             cached_usage_status: None,
             pending_user_message: None,
+            tool_definitions: Vec::new(), // Loaded below after config processing
         };
 
         app.clamp_output_limits_to_model();
@@ -848,6 +920,21 @@ impl App {
                 "Using fallback data dir: {}",
                 app.data_dir.path.display()
             ));
+        }
+
+        // Load tool definitions from config
+        if let Some(tools_cfg) = config.as_ref().and_then(|cfg| cfg.tools.as_ref()) {
+            for tool_cfg in &tools_cfg.definitions {
+                match tool_cfg.to_tool_definition() {
+                    Ok(tool_def) => {
+                        tracing::debug!("Loaded tool: {}", tool_def.name);
+                        app.tool_definitions.push(tool_def);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to load tool '{}': {}", tool_cfg.name, e);
+                    }
+                }
+            }
         }
 
         Ok(app)
@@ -1066,12 +1153,15 @@ impl App {
 
         // Check if history already has this step_id (idempotent recovery)
         if self.context_manager.has_step_id(step_id) {
-            // Already recovered or committed - just finalize the journal cleanup
-            self.finalize_journal_commit(step_id);
-            self.set_status(format!(
-                "Skipped duplicate recovery for step {} (already in history)",
-                step_id
-            ));
+            // Already recovered or committed - ensure it's persisted before pruning
+            if self.autosave_history() {
+                self.finalize_journal_commit(step_id);
+            } else {
+                self.set_status(format!(
+                    "Recovery already in history, but autosave failed; keeping step {} recoverable",
+                    step_id
+                ));
+            }
             return Some(recovered);
         }
 
@@ -1101,20 +1191,28 @@ impl App {
             Message::assistant(model, recovered_content),
             step_id,
         );
-        self.autosave_history();
+        let history_saved = self.autosave_history();
 
         // Seal any unsealed entries, then mark committed and prune
         if let Err(e) = self.stream_journal.seal_unsealed(step_id) {
             tracing::warn!("Failed to seal recovered journal: {e}");
         }
-        self.finalize_journal_commit(step_id);
-
-        self.set_status(format!(
-            "Recovered {} bytes (step {}, last seq {}) from crashed session",
-            partial_text.len(),
-            step_id,
-            last_seq,
-        ));
+        if history_saved {
+            self.finalize_journal_commit(step_id);
+            self.set_status(format!(
+                "Recovered {} bytes (step {}, last seq {}) from crashed session",
+                partial_text.len(),
+                step_id,
+                last_seq,
+            ));
+        } else {
+            self.set_status(format!(
+                "Recovered {} bytes (step {}, last seq {}) but autosave failed; recovery will retry",
+                partial_text.len(),
+                step_id,
+                last_seq,
+            ));
+        }
 
         Some(recovered)
     }
@@ -1158,6 +1256,24 @@ impl App {
             | AppState::Disabled(DisabledState::Streaming(active)) => Some(&active.message),
             _ => None,
         }
+    }
+
+    /// Get pending tool calls if we're in AwaitingToolResults state.
+    pub fn pending_tool_calls(&self) -> Option<&[ToolCall]> {
+        match &self.state {
+            AppState::Enabled(EnabledState::AwaitingToolResults(pending)) => {
+                Some(&pending.pending_calls)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether we're waiting for tool results.
+    pub fn is_awaiting_tool_results(&self) -> bool {
+        matches!(
+            self.state,
+            AppState::Enabled(EnabledState::AwaitingToolResults(_))
+        )
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1408,6 +1524,10 @@ impl App {
             AppState::Enabled(EnabledState::Streaming(_))
             | AppState::Disabled(DisabledState::Streaming(_)) => {
                 self.set_status("Cannot summarize while streaming");
+                return SummarizationStart::Failed;
+            }
+            AppState::Enabled(EnabledState::AwaitingToolResults(_)) => {
+                self.set_status("Cannot summarize while awaiting tool results");
                 return SummarizationStart::Failed;
             }
             AppState::Enabled(EnabledState::Summarizing(_))
@@ -1725,6 +1845,10 @@ impl App {
                 self.set_status("Already streaming a response");
                 return;
             }
+            AppState::Enabled(EnabledState::AwaitingToolResults(_)) => {
+                self.set_status("Busy: waiting for tool results");
+                return;
+            }
             AppState::Enabled(EnabledState::Summarizing(_))
             | AppState::Enabled(EnabledState::SummarizingWithQueued(_))
             | AppState::Enabled(EnabledState::SummarizationRetry(_))
@@ -1825,14 +1949,23 @@ impl App {
                 .collect()
         };
 
+        // Clone tool definitions for async task
+        let tools = self.tool_definitions.clone();
+
         let task = async move {
             let tx_events = tx.clone();
+            // Convert tools to Option<&[ToolDefinition]>
+            let tools_ref = if tools.is_empty() {
+                None
+            } else {
+                Some(tools.as_slice())
+            };
             let result = forge_providers::send_message(
                 &config,
                 &cacheable_messages,
                 limits,
                 system_prompt,
-                None, // TODO: Pass tool definitions in Phase 3
+                tools_ref,
                 move |event| {
                     let _ = tx_events.send(event);
                 },
@@ -2006,7 +2139,7 @@ impl App {
         };
 
         let ActiveStream {
-            message,
+            mut message,
             journal,
             abort_handle,
         } = active;
@@ -2024,6 +2157,25 @@ impl App {
 
         // Capture metadata before consuming the streaming message.
         let model = message.model_name().clone();
+
+        // Check for tool calls before converting to message
+        if message.has_tool_calls() {
+            let tool_calls = message.take_tool_calls();
+            let assistant_text = message.content().to_string();
+
+            // Transition to AwaitingToolResults state
+            self.pending_user_message = None;
+            let pending = PendingToolExecution {
+                assistant_text,
+                pending_calls: tool_calls,
+                results: Vec::new(),
+                model,
+                step_id,
+            };
+            self.state = AppState::Enabled(EnabledState::AwaitingToolResults(pending));
+            self.set_status("Waiting for tool results...");
+            return;
+        }
 
         // Convert streaming message to completed message (empty content is invalid).
         let message = message.into_message().ok();
@@ -2075,6 +2227,97 @@ impl App {
             self.finalize_journal_commit(step_id);
         }
         // If save failed, leave journal recoverable for next session
+    }
+
+    /// Submit a tool result. When all results are in, commit messages and return to Idle.
+    ///
+    /// Returns `Ok(true)` if all results are now complete and conversation can resume,
+    /// `Ok(false)` if more results are still needed, or an error if not in the right state.
+    pub fn submit_tool_result(&mut self, result: ToolResult) -> Result<bool, String> {
+        // First, validate and add the result to pending state
+        let (results_count, pending_count) = {
+            let pending = match &mut self.state {
+                AppState::Enabled(EnabledState::AwaitingToolResults(pending)) => pending,
+                _ => return Err("Not awaiting tool results".to_string()),
+            };
+
+            // Verify this result matches a pending call
+            let matching_call = pending
+                .pending_calls
+                .iter()
+                .any(|c| c.id == result.tool_call_id);
+            if !matching_call {
+                return Err(format!(
+                    "No pending tool call with ID '{}'",
+                    result.tool_call_id
+                ));
+            }
+
+            // Check for duplicate result
+            if pending
+                .results
+                .iter()
+                .any(|r| r.tool_call_id == result.tool_call_id)
+            {
+                return Err(format!(
+                    "Result for tool call '{}' already submitted",
+                    result.tool_call_id
+                ));
+            }
+
+            pending.results.push(result);
+            (pending.results.len(), pending.pending_calls.len())
+        };
+
+        // Check if all results are in
+        if results_count < pending_count {
+            self.set_status(format!(
+                "Received {}/{} tool results...",
+                results_count, pending_count
+            ));
+            return Ok(false);
+        }
+
+        // All results received - commit to history and return to Idle
+        // Take ownership of the pending state
+        let pending =
+            match std::mem::replace(&mut self.state, AppState::Enabled(EnabledState::Idle)) {
+                AppState::Enabled(EnabledState::AwaitingToolResults(p)) => p,
+                other => {
+                    self.state = other;
+                    return Err("State changed unexpectedly".to_string());
+                }
+            };
+
+        let step_id = pending.step_id;
+
+        // Push assistant text as a message if non-empty
+        if !pending.assistant_text.is_empty()
+            && let Ok(content) = NonEmptyString::new(pending.assistant_text)
+        {
+            let assistant_msg = Message::assistant(pending.model.clone(), content);
+            self.push_history_message_with_step_id(assistant_msg, step_id);
+        }
+
+        // Push tool use messages for each call
+        for call in pending.pending_calls {
+            let tool_use_msg = Message::tool_use(call);
+            self.push_history_message(tool_use_msg);
+        }
+
+        // Push tool result messages
+        for result in pending.results {
+            let tool_result_msg = Message::tool_result(result);
+            self.push_history_message(tool_result_msg);
+        }
+
+        // Persist history and finalize journal
+        if self.autosave_history() {
+            self.finalize_journal_commit(step_id);
+        }
+
+        self.set_status("Tool results processed");
+        Ok(true)
     }
 
     /// Atomically commit and prune a journal step.
@@ -2340,6 +2583,10 @@ impl App {
                         active.abort_handle.abort();
                         let _ = active.journal.discard(&mut self.stream_journal);
                     }
+                    AppState::Enabled(EnabledState::AwaitingToolResults(pending)) => {
+                        // Clear pending tool execution and discard the journal step.
+                        self.discard_journal_step(pending.step_id);
+                    }
                     AppState::Enabled(EnabledState::Summarizing(state)) => {
                         state.task.handle.abort();
                     }
@@ -2533,9 +2780,52 @@ impl App {
             Some("screen") => {
                 self.toggle_screen_mode = true;
             }
+            Some("tool") => {
+                // Syntax: /tool <call_id> <result_content>
+                // Or: /tool error <call_id> <error_message>
+                if parts.len() < 3 {
+                    self.set_status(
+                        "Usage: /tool <call_id> <result> or /tool error <call_id> <message>",
+                    );
+                } else if parts[1] == "error" && parts.len() >= 4 {
+                    let id = parts[2].to_string();
+                    let content = parts[3..].join(" ");
+                    let result = ToolResult::error(id.clone(), content);
+                    match self.submit_tool_result(result) {
+                        Ok(true) => self.set_status("All tool results submitted"),
+                        Ok(false) => {} // Status already set by submit_tool_result
+                        Err(e) => self.set_status(format!("Tool error: {e}")),
+                    }
+                } else {
+                    let id = parts[1].to_string();
+                    let content = parts[2..].join(" ");
+                    let result = ToolResult::success(id.clone(), content);
+                    match self.submit_tool_result(result) {
+                        Ok(true) => self.set_status("All tool results submitted"),
+                        Ok(false) => {} // Status already set by submit_tool_result
+                        Err(e) => self.set_status(format!("Tool error: {e}")),
+                    }
+                }
+            }
+            Some("tools") => {
+                if self.tool_definitions.is_empty() {
+                    self.set_status("No tools configured. Add tools to config.toml");
+                } else {
+                    let tools_list: Vec<&str> = self
+                        .tool_definitions
+                        .iter()
+                        .map(|t| t.name.as_str())
+                        .collect();
+                    self.set_status(format!(
+                        "Tools ({}): {}",
+                        self.tool_definitions.len(),
+                        tools_list.join(", ")
+                    ));
+                }
+            }
             Some("help") => {
                 self.set_status(
-                    "Commands: /q(uit), /clear, /cancel, /model, /p(rovider), /ctx, /jrnl, /sum, /screen",
+                    "Commands: /q(uit), /clear, /cancel, /model, /p(rovider), /ctx, /jrnl, /sum, /screen, /tool, /tools",
                 );
             }
             Some(cmd) => {
@@ -2613,6 +2903,10 @@ impl<'a> InsertMode<'a> {
             AppState::Enabled(EnabledState::Streaming(_))
             | AppState::Disabled(DisabledState::Streaming(_)) => {
                 self.app.set_status("Already streaming a response");
+                return None;
+            }
+            AppState::Enabled(EnabledState::AwaitingToolResults(_)) => {
+                self.app.set_status("Busy: waiting for tool results");
                 return None;
             }
             AppState::Enabled(EnabledState::Summarizing(_))
@@ -2941,6 +3235,7 @@ mod tests {
             system_prompt: None,
             cached_usage_status: None,
             pending_user_message: None,
+            tool_definitions: Vec::new(),
         }
     }
 

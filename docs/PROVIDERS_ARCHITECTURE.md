@@ -162,20 +162,22 @@ pub async fn send_message(
     messages: &[CacheableMessage],
     limits: OutputLimits,
     system_prompt: Option<&str>,
+    tools: Option<&[ToolDefinition]>,  // Tool definitions for function calling
     on_event: impl Fn(StreamEvent) + Send + 'static,
 ) -> Result<()> {
     match config.provider() {
         Provider::Claude => {
-            claude::send_message(config, messages, limits, system_prompt, on_event).await
+            claude::send_message(config, messages, limits, system_prompt, tools, on_event).await
         }
         Provider::OpenAI => {
-            openai::send_message(config, messages, limits, system_prompt, on_event).await
+            openai::send_message(config, messages, limits, system_prompt, tools, on_event).await
         }
     }
 }
 ```
 
 This pattern provides:
+
 - **Unified interface**: Callers use the same function regardless of provider
 - **Provider isolation**: Each provider module handles its own API specifics
 - **Exhaustive matching**: Adding a new provider requires handling all dispatch points
@@ -270,6 +272,7 @@ pub struct OutputLimits {
 ```
 
 Construction enforces invariants:
+
 - If thinking is enabled, `thinking_budget >= 1024`
 - If thinking is enabled, `thinking_budget < max_output_tokens`
 
@@ -299,6 +302,7 @@ pub enum CacheHint {
 ```
 
 Different providers handle caching differently:
+
 - **Claude**: Explicit `cache_control: { type: "ephemeral" }` markers on content blocks
 - **OpenAI**: Automatic server-side prefix caching (hints are ignored)
 
@@ -357,6 +361,7 @@ fn extract_sse_data(event: &str) -> Option<String> {
 ### SSE Event Format
 
 SSE events follow this format:
+
 ```
 event: message_start
 data: {"type":"message_start",...}
@@ -368,6 +373,7 @@ data: [DONE]
 ```
 
 The parsing handles:
+
 - Both `\n\n` and `\r\n\r\n` delimiters
 - Optional `event:` lines (ignored)
 - Multi-line `data:` fields
@@ -379,10 +385,12 @@ Both providers emit events through a unified `StreamEvent` enum:
 
 ```rust
 pub enum StreamEvent {
-    TextDelta(String),      // Text content chunk
-    ThinkingDelta(String),  // Claude extended thinking chunk
-    Done,                   // Stream completed successfully
-    Error(String),          // Stream failed with error
+    TextDelta(String),                           // Text content chunk
+    ThinkingDelta(String),                       // Claude extended thinking chunk
+    ToolCallStart { id: String, name: String },  // Tool call started
+    ToolCallDelta { id: String, arguments: String }, // Tool call arguments chunk
+    Done,                                        // Stream completed successfully
+    Error(String),                               // Stream failed with error
 }
 ```
 
@@ -487,6 +495,17 @@ if json["type"] == "content_block_delta" {
             "thinking_delta" => {
                 if let Some(thinking) = json["delta"]["thinking"].as_str() {
                     on_event(StreamEvent::ThinkingDelta(thinking.to_string()));
+                }
+            }
+            "input_json_delta" => {
+                // Tool arguments streaming
+                if let Some(json_chunk) = json["delta"]["partial_json"].as_str()
+                    && let Some(ref id) = current_tool_id
+                {
+                    on_event(StreamEvent::ToolCallDelta {
+                        id: id.clone(),
+                        arguments: json_chunk.to_string(),
+                    });
                 }
             }
             _ => {}

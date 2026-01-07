@@ -10,6 +10,8 @@ pub struct ForgeConfig {
     pub thinking: Option<ThinkingConfig>,
     pub anthropic: Option<AnthropicConfig>,
     pub openai: Option<OpenAIConfig>,
+    /// Tool configurations for function calling.
+    pub tools: Option<ToolsConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -78,6 +80,72 @@ pub struct OpenAIConfig {
     pub reasoning_effort: Option<String>,
     pub verbosity: Option<String>,
     pub truncation: Option<String>,
+}
+
+/// Tool configurations for function calling.
+///
+/// ```toml
+/// [[tools.definitions]]
+/// name = "get_weather"
+/// description = "Get current weather for a location"
+/// [tools.definitions.parameters]
+/// type = "object"
+/// [tools.definitions.parameters.properties.location]
+/// type = "string"
+/// description = "City name, e.g. 'Seattle, WA'"
+/// ```
+#[derive(Debug, Default, Deserialize)]
+pub struct ToolsConfig {
+    /// List of tool definitions.
+    #[serde(default)]
+    pub definitions: Vec<ToolDefinitionConfig>,
+}
+
+/// Configuration for a single tool definition.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolDefinitionConfig {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema as inline TOML table.
+    pub parameters: toml::Value,
+}
+
+impl ToolDefinitionConfig {
+    /// Convert this config to a ToolDefinition.
+    pub fn to_tool_definition(&self) -> Result<forge_types::ToolDefinition, String> {
+        let params_json = toml_to_json(&self.parameters)?;
+        Ok(forge_types::ToolDefinition::new(
+            self.name.clone(),
+            self.description.clone(),
+            params_json,
+        ))
+    }
+}
+
+/// Convert a TOML value to a JSON value.
+fn toml_to_json(value: &toml::Value) -> Result<serde_json::Value, String> {
+    match value {
+        toml::Value::String(s) => Ok(serde_json::Value::String(s.clone())),
+        toml::Value::Integer(i) => Ok(serde_json::Value::Number((*i).into())),
+        toml::Value::Float(f) => {
+            let n =
+                serde_json::Number::from_f64(*f).ok_or_else(|| format!("Invalid float: {}", f))?;
+            Ok(serde_json::Value::Number(n))
+        }
+        toml::Value::Boolean(b) => Ok(serde_json::Value::Bool(*b)),
+        toml::Value::Array(arr) => {
+            let json_arr: Result<Vec<_>, _> = arr.iter().map(toml_to_json).collect();
+            Ok(serde_json::Value::Array(json_arr?))
+        }
+        toml::Value::Table(table) => {
+            let mut map = serde_json::Map::new();
+            for (k, v) in table {
+                map.insert(k.clone(), toml_to_json(v)?);
+            }
+            Ok(serde_json::Value::Object(map))
+        }
+        toml::Value::Datetime(dt) => Ok(serde_json::Value::String(dt.to_string())),
+    }
 }
 
 pub fn expand_env_vars(value: &str) -> String {

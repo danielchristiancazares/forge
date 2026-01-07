@@ -136,6 +136,7 @@ enum UiMode {
 ```
 
 UI mode is determined by (in order of precedence):
+
 1. Configuration file (`forge.toml` -> `app.tui`)
 2. Environment variable (`FORGE_TUI`)
 3. Default: `Full`
@@ -150,6 +151,7 @@ async fn run_app_inline<B>(terminal: &mut Terminal<B>, app: &mut App) -> Result<
 ```
 
 Both loops follow the same pattern:
+
 1. `app.tick()` - Increment animation counter, poll background tasks
 2. `tokio::task::yield_now().await` - Allow async tasks to progress
 3. `app.process_stream_events()` - Handle streaming response chunks
@@ -261,6 +263,7 @@ enum AppState {
 enum EnabledState {
     Idle,
     Streaming(ActiveStream),
+    AwaitingToolResults(PendingToolExecution),
     Summarizing(SummarizationState),
     SummarizingWithQueued(SummarizationWithQueuedState),
     SummarizationRetry(SummarizationRetryState),
@@ -274,6 +277,7 @@ enum DisabledState {
 ```
 
 This design:
+
 - Makes impossible states unrepresentable
 - Prevents race conditions between streaming and summarization
 - Allows queuing requests while summarization is in progress
@@ -313,6 +317,7 @@ Returns `true` if the application should quit.
 #### Mode-Specific Handlers
 
 **Normal Mode** (`handle_normal_mode`):
+
 | Key | Action |
 |-----|--------|
 | `q` | Quit application |
@@ -327,6 +332,7 @@ Returns `true` if the application should quit.
 | `Down` or `End` | Jump to bottom |
 
 **Insert Mode** (`handle_insert_mode`):
+
 | Key | Action |
 |-----|--------|
 | `Esc` | Return to normal mode |
@@ -340,6 +346,7 @@ Returns `true` if the application should quit.
 | Character | Insert at cursor |
 
 **Command Mode** (`handle_command_mode`):
+
 | Key | Action |
 |-----|--------|
 | `Esc` | Cancel and return to normal mode |
@@ -348,6 +355,7 @@ Returns `true` if the application should quit.
 | Character | Append to command |
 
 **Model Select Mode** (`handle_model_select_mode`):
+
 | Key | Action |
 |-----|--------|
 | `Esc` | Cancel selection |
@@ -405,6 +413,7 @@ pub(crate) fn insert_mode(&mut self, _token: InsertToken) -> InsertMode<'_> {
 ```
 
 **Usage in input.rs:**
+
 ```rust
 fn handle_insert_mode(app: &mut App, key: KeyEvent) {
     match key.code {
@@ -444,6 +453,7 @@ pub struct QueuedUserMessage {
 ```
 
 This type can only be created by `InsertMode::queue_message()`, which:
+
 1. Validates the draft is non-empty
 2. Validates an API key exists
 3. Constructs the API configuration
@@ -483,6 +493,7 @@ pub(crate) struct CommandMode<'a> {
 ```
 
 These wrappers:
+
 1. Borrow `App` mutably, preventing concurrent access
 2. Expose only operations valid for that mode
 3. Are constructed only when the token proves the mode is active
@@ -577,6 +588,7 @@ enum EnabledState {
 ```
 
 Key benefits:
+
 - **Impossible states are unrepresentable**: Cannot be streaming and summarizing simultaneously
 - **State data is co-located**: `ActiveStream` only exists during streaming
 - **Transitions are explicit**: Must match on current state to transition
@@ -640,15 +652,19 @@ fn render_message(msg: &Message, lines: &mut Vec<Line>, msg_count: &mut usize) {
 ```
 
 Role styling:
+
 | Role | Icon | Color |
 |------|------|-------|
 | System | `●` | Muted |
 | User | `○` | Green |
 | Assistant | `◆` | Purple (primary) |
+| Tool Use | `⚙` | Cyan (accent) |
+| Tool Result | `✓`/`✗` | Green (success) / Red (error) |
 
 #### Streaming Indicator
 
 When streaming is active:
+
 - If content is empty: Animated spinner with "Thinking..."
 - If content exists: Render partial content as markdown
 
@@ -662,6 +678,7 @@ if streaming.content().is_empty() {
 #### Scrollbar
 
 A custom scrollbar is rendered on the right edge:
+
 - `↑` at top
 - `█` for thumb position
 - `│` for track
@@ -775,10 +792,13 @@ pub enum Message {
     System(SystemMessage),
     User(UserMessage),
     Assistant(AssistantMessage),
+    ToolUse(ToolCall),
+    ToolResult(ToolResult),
 }
 ```
 
 Each message type contains:
+
 - `content: NonEmptyString` - Guaranteed non-empty content
 - `timestamp: SystemTime` - When the message was created
 - `model: ModelName` (Assistant only) - Which model generated the response
@@ -813,6 +833,7 @@ pub struct StreamingMessage {
 ```
 
 Stream events:
+
 ```rust
 pub enum StreamEvent {
     TextDelta(String),      // Content chunk
@@ -1064,6 +1085,7 @@ struct DraftInput {
 ```
 
 Key methods:
+
 - `enter_char(c)` - Insert character at cursor
 - `delete_char()` - Delete character before cursor
 - `delete_word_backwards()` - Delete to previous word boundary
@@ -1125,6 +1147,7 @@ impl PredefinedModel {
 ```
 
 > **Note:** The `PredefinedModel` options shown in the model selector differ from the provider default models:
+>
 > - **Provider default** (used on startup): `claude-sonnet-4-5-20250929` for Claude, `gpt-5.2` for OpenAI
 > - **PredefinedModel::ClaudeOpus**: `claude-opus-4-5-20251101` (premium option)
 >
@@ -1811,6 +1834,7 @@ The `markdown.rs` module converts markdown to ratatui `Line` and `Span` types.
 ### Unicode Width Handling
 
 The renderer uses the `unicode-width` crate for proper handling of:
+
 - CJK characters (double-width)
 - Emoji
 - Combining characters

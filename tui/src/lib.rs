@@ -101,50 +101,92 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         // Message header with role icon and name
         let (icon, name, name_style) = match msg {
             Message::System(_) => (
-                "●",
-                "System",
+                "●".to_string(),
+                "System".to_string(),
                 Style::default()
                     .fg(colors::TEXT_MUTED)
                     .add_modifier(Modifier::BOLD),
             ),
-            Message::User(_) => ("○", "You", styles::user_name()),
-            Message::Assistant(m) => ("◆", m.provider().display_name(), styles::assistant_name()),
-            Message::ToolUse(_call) => (
-                "⚙",
-                // TODO: Proper tool call rendering in Phase 5
-                "Tool Call",
+            Message::User(_) => ("○".to_string(), "You".to_string(), styles::user_name()),
+            Message::Assistant(m) => (
+                "◆".to_string(),
+                m.provider().display_name().to_string(),
+                styles::assistant_name(),
+            ),
+            Message::ToolUse(call) => (
+                "⚙".to_string(),
+                call.name.clone(),
                 Style::default()
-                    .fg(colors::TEXT_MUTED)
-                    .add_modifier(Modifier::ITALIC),
+                    .fg(colors::ACCENT)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Message::ToolResult(result) => (
-                "→",
-                if result.is_error {
-                    "Tool Error"
+            Message::ToolResult(result) => {
+                let (icon, style) = if result.is_error {
+                    (
+                        "✗",
+                        Style::default()
+                            .fg(colors::ERROR)
+                            .add_modifier(Modifier::BOLD),
+                    )
                 } else {
-                    "Tool Result"
-                },
-                Style::default().fg(colors::TEXT_MUTED),
-            ),
+                    (
+                        "✓",
+                        Style::default()
+                            .fg(colors::SUCCESS)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                };
+                (icon.to_string(), "Tool Result".to_string(), style)
+            }
         };
 
         let header_line = Line::from(vec![
-            Span::styled(format!(" {icon} "), name_style),
+            Span::styled(format!(" {} ", icon), name_style),
             Span::styled(name, name_style),
         ]);
         lines.push(header_line);
         lines.push(Line::from("")); // Space after header
 
-        // Message content - render as markdown
-        let content_style = match msg {
-            Message::System(_) => Style::default().fg(colors::TEXT_MUTED),
-            Message::User(_) => Style::default().fg(colors::TEXT_PRIMARY),
-            Message::Assistant(_) => Style::default().fg(colors::TEXT_SECONDARY),
-            Message::ToolUse(_) | Message::ToolResult(_) => Style::default().fg(colors::TEXT_MUTED),
-        };
-
-        let rendered = render_markdown(msg.content(), content_style);
-        lines.extend(rendered);
+        // Message content - render based on type
+        match msg {
+            Message::ToolUse(call) => {
+                // Render tool arguments as formatted JSON
+                let args_str = serde_json::to_string_pretty(&call.arguments)
+                    .unwrap_or_else(|_| "{}".to_string());
+                let args_style = Style::default().fg(colors::TEXT_MUTED);
+                for arg_line in args_str.lines() {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {}", arg_line),
+                        args_style,
+                    )));
+                }
+            }
+            Message::ToolResult(result) => {
+                // Render result content with appropriate styling
+                let content_style = if result.is_error {
+                    Style::default().fg(colors::ERROR)
+                } else {
+                    Style::default().fg(colors::TEXT_SECONDARY)
+                };
+                for result_line in result.content.lines() {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {}", result_line),
+                        content_style,
+                    )));
+                }
+            }
+            _ => {
+                // Regular messages - render as markdown
+                let content_style = match msg {
+                    Message::System(_) => Style::default().fg(colors::TEXT_MUTED),
+                    Message::User(_) => Style::default().fg(colors::TEXT_PRIMARY),
+                    Message::Assistant(_) => Style::default().fg(colors::TEXT_SECONDARY),
+                    _ => Style::default().fg(colors::TEXT_MUTED),
+                };
+                let rendered = render_markdown(msg.content(), content_style);
+                lines.extend(rendered);
+            }
+        }
     }
 
     // Render complete messages from display items
@@ -188,6 +230,35 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             let content_style = Style::default().fg(colors::TEXT_SECONDARY);
             let rendered = render_markdown(streaming.content(), content_style);
             lines.extend(rendered);
+        }
+    }
+
+    // Render awaiting tool results status if present
+    if let Some(pending_calls) = app.pending_tool_calls() {
+        if msg_count > 0 || app.streaming().is_some() {
+            lines.push(Line::from(""));
+        }
+        let spinner = spinner_frame(app.tick_count());
+        let status_line = Line::from(vec![
+            Span::styled(
+                format!("{} ", spinner),
+                Style::default().fg(colors::WARNING),
+            ),
+            Span::styled(
+                format!("Awaiting {} tool result(s)...", pending_calls.len()),
+                Style::default()
+                    .fg(colors::TEXT_MUTED)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]);
+        lines.push(status_line);
+
+        // List pending tools
+        for call in pending_calls {
+            lines.push(Line::from(Span::styled(
+                format!("  • {} ({})", call.name, call.id),
+                Style::default().fg(colors::TEXT_MUTED),
+            )));
         }
     }
 

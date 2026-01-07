@@ -1010,4 +1010,36 @@ mod tests {
         assert!(manager.has_step_id(12345));
         assert!(!manager.has_step_id(99999));
     }
+
+    #[test]
+    fn test_tool_messages_in_history() {
+        use forge_types::{ToolCall, ToolResult};
+
+        let mut manager = ContextManager::new("claude-opus-4");
+
+        // Add a tool use message
+        let tool_call = ToolCall::new(
+            "call_123".to_string(),
+            "get_weather".to_string(),
+            serde_json::json!({"location": "Seattle"}),
+        );
+        let id1 = manager.push_message(Message::tool_use(tool_call));
+
+        // Add a tool result
+        let result = ToolResult::success("call_123".to_string(), "72°F and sunny".to_string());
+        let id2 = manager.push_message(Message::tool_result(result));
+
+        assert_eq!(manager.history().len(), 2);
+        assert_eq!(id1.as_u64(), 0);
+        assert_eq!(id2.as_u64(), 1);
+
+        // Verify messages are correct type via their roles
+        let entries: Vec<_> = manager.history().entries().iter().collect();
+        assert_eq!(entries[0].message().role_str(), "assistant");
+        assert_eq!(entries[1].message().role_str(), "user");
+
+        // Verify content method works
+        assert!(entries[0].message().content().contains("get_weather"));
+        assert!(entries[1].message().content().contains("72°F"));
+    }
 }
