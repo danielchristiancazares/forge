@@ -25,3 +25,6 @@ Desktop.ini
 
 # Tooling local config
 .claude/settings.local.json
+
+# Bug analysis artifacts
+forge-source.zip
