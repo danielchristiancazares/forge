@@ -11,6 +11,7 @@ use forge_providers::{ApiConfig, http_client_with_timeout};
 use forge_types::{Message, Provider};
 
 use super::MessageId;
+use super::token_counter::TokenCounter;
 
 /// Models used for summarization (cheaper/faster than main models).
 const CLAUDE_SUMMARIZATION_MODEL: &str = "claude-3-haiku-20240307";
@@ -91,15 +92,9 @@ pub fn summarizer_input_limit(provider: Provider) -> u32 {
     }
 }
 
-/// Estimate the token count for a text string.
-///
-/// Uses a simple heuristic of ~4 characters per token (conservative).
-/// This is a rough approximation since we don't want to add tokenizer
-/// dependencies to this module.
-fn estimate_tokens(text: &str) -> u32 {
-    // Conservative estimate: ~4 chars per token for English text.
-    // This may overestimate, which is safer than underestimating.
-    (text.len() as u32 / 4).max(1)
+/// Estimate the token count for a text string using the tokenizer.
+fn count_tokens(counter: &TokenCounter, text: &str) -> u32 {
+    counter.count_str(text)
 }
 
 /// Generate a summary of conversation messages using an LLM.
@@ -109,6 +104,7 @@ fn estimate_tokens(text: &str) -> u32 {
 ///
 /// # Arguments
 /// * `config` - API configuration (provides the API key and determines provider)
+/// * `counter` - Token counter for accurate token estimation
 /// * `messages` - Slice of (MessageId, Message) tuples to summarize
 /// * `target_tokens` - Target token count for the summary
 ///
@@ -122,6 +118,7 @@ fn estimate_tokens(text: &str) -> u32 {
 /// - The response cannot be parsed
 pub async fn generate_summary(
     config: &ApiConfig,
+    counter: &TokenCounter,
     messages: &[(MessageId, Message)],
     target_tokens: u32,
 ) -> Result<String> {
@@ -133,7 +130,7 @@ pub async fn generate_summary(
         build_summarization_prompt(messages, target_tokens);
     
     // Validate that input doesn't exceed summarizer model's context limit
-    let estimated_input = estimate_tokens(&system_instruction) + estimate_tokens(&conversation_text);
+    let estimated_input = count_tokens(counter, &system_instruction) + count_tokens(counter, &conversation_text);
     let input_limit = summarizer_input_limit(config.provider());
     
     if estimated_input > input_limit {
@@ -397,9 +394,10 @@ mod tests {
             .parse_model("claude-sonnet-4-20250514")
             .expect("parse model");
         let config = ApiConfig::new(ApiKey::Claude("fake-key".to_string()), model).expect("config");
+        let counter = TokenCounter::new();
 
         let messages: Vec<(MessageId, Message)> = vec![];
-        let result = generate_summary(&config, &messages, 500).await;
+        let result = generate_summary(&config, &counter, &messages, 500).await;
 
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());

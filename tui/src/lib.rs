@@ -227,10 +227,11 @@ fn wrapped_line_count(lines: &[Line], width: u16) -> u16 {
     total
 }
 
-pub(crate) fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
+pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
     let mode = app.input_mode();
-    let command_line = if mode == InputMode::Command {
-        app.command_text()
+    // Clone command text to avoid borrow conflict with mutable context_usage_status()
+    let command_line: Option<String> = if mode == InputMode::Command {
+        app.command_text().map(str::to_string)
     } else {
         None
     };
@@ -329,35 +330,37 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
 
         if cursor_display_pos >= visible_content_width {
             // Need to scroll: find the byte offset to start from
-            let scroll_chars = cursor_display_pos - visible_content_width + 1;
-            // Find byte index corresponding to scroll_chars display width
+            let scroll_target = cursor_display_pos - visible_content_width + 1;
+            // Find byte index corresponding to scroll_target display width
             let mut byte_offset = 0;
-            let mut width_acc = 0;
+            let mut skipped_width = 0;
             for (idx, grapheme) in draft.grapheme_indices(true) {
-                if width_acc >= scroll_chars {
+                if skipped_width >= scroll_target {
                     byte_offset = idx;
                     break;
                 }
-                width_acc += grapheme.width();
+                skipped_width += grapheme.width();
             }
-            (draft[byte_offset..].to_string(), scroll_chars as u16)
+            // Return actual skipped width, not target (handles wide graphemes correctly)
+            (draft[byte_offset..].to_string(), skipped_width as u16)
         } else {
             (draft.to_string(), 0u16)
         }
     } else if mode == InputMode::Command && let Some(cmd) = &command_line {
         let cursor_display_pos = cmd.width();
         if cursor_display_pos >= visible_content_width {
-            let scroll_chars = cursor_display_pos - visible_content_width + 1;
+            let scroll_target = cursor_display_pos - visible_content_width + 1;
             let mut byte_offset = 0;
-            let mut width_acc = 0;
+            let mut skipped_width = 0;
             for (idx, grapheme) in cmd.grapheme_indices(true) {
-                if width_acc >= scroll_chars {
+                if skipped_width >= scroll_target {
                     byte_offset = idx;
                     break;
                 }
-                width_acc += grapheme.width();
+                skipped_width += grapheme.width();
             }
-            (cmd[byte_offset..].to_string(), scroll_chars as u16)
+            // Return actual skipped width, not target (handles wide graphemes correctly)
+            (cmd[byte_offset..].to_string(), skipped_width as u16)
         } else {
             (cmd.to_string(), 0u16)
         }

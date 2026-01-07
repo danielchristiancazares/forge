@@ -628,6 +628,8 @@ pub struct App {
     modal_effect: Option<ModalEffect>,
     /// System prompt sent to the LLM with each request.
     system_prompt: Option<&'static str>,
+    /// Cached context usage status (invalidated when history/model changes).
+    cached_usage_status: Option<ContextUsageStatus>,
 }
 
 impl App {
@@ -808,6 +810,7 @@ impl App {
             last_frame: Instant::now(),
             modal_effect: None,
             system_prompt,
+            cached_usage_status: None,
         };
 
         app.clamp_output_limits_to_model();
@@ -923,7 +926,7 @@ impl App {
                 ));
             }
             Err(e) => {
-                eprintln!("Failed to load history: {e}");
+                tracing::warn!("Failed to load history: {e}");
             }
         }
     }
@@ -938,6 +941,7 @@ impl App {
     fn push_history_message(&mut self, message: Message) -> MessageId {
         let id = self.context_manager.push_message(message);
         self.display.push(DisplayItem::History(id));
+        self.invalidate_usage_cache();
         id
     }
 
@@ -951,14 +955,20 @@ impl App {
     ) -> MessageId {
         let id = self.context_manager.push_message_with_step_id(message, step_id);
         self.display.push(DisplayItem::History(id));
+        self.invalidate_usage_cache();
         id
     }
 
-    /// Autosave history to disk (best-effort, errors logged but not propagated).
+    /// Save history to disk.
+    /// Returns true if successful, false if save failed (logged but not propagated).
     /// Called after user messages and assistant completions for crash durability.
-    fn autosave_history(&self) {
-        if let Err(e) = self.save_history() {
-            tracing::warn!("Autosave failed: {e}");
+    fn autosave_history(&self) -> bool {
+        match self.save_history() {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!("Autosave failed: {e}");
+                false
+            }
         }
     }
 
@@ -1151,8 +1161,20 @@ impl App {
     }
 
     /// Get context usage statistics for the UI.
-    pub fn context_usage_status(&self) -> ContextUsageStatus {
-        self.context_manager.usage_status()
+    /// Uses cached value when available to avoid recomputing every frame.
+    pub fn context_usage_status(&mut self) -> ContextUsageStatus {
+        if let Some(cached) = &self.cached_usage_status {
+            return cached.clone();
+        }
+        let status = self.context_manager.usage_status();
+        self.cached_usage_status = Some(status.clone());
+        status
+    }
+
+    /// Invalidate cached context usage status.
+    /// Call this when history, model, or output limits change.
+    fn invalidate_usage_cache(&mut self) {
+        self.cached_usage_status = None;
     }
 
     pub fn context_infinity_enabled(&self) -> bool {
@@ -1288,6 +1310,7 @@ impl App {
     /// - If expanding, attempts to restore previously summarized messages
     fn handle_context_adaptation(&mut self) {
         let adaptation = self.context_manager.switch_model(self.model.as_str());
+        self.invalidate_usage_cache();
 
         match adaptation {
             ContextAdaptation::NoChange => {}
@@ -1437,8 +1460,10 @@ impl App {
         let generated_by = summarization_model(config.provider()).to_string();
 
         // Spawn background task with real API call
-        let handle =
-            tokio::spawn(async move { generate_summary(&config, &messages, target_tokens).await });
+        let counter = TokenCounter::new();
+        let handle = tokio::spawn(
+            async move { generate_summary(&config, &counter, &messages, target_tokens).await },
+        );
 
         let task = SummarizationTask {
             scope,
@@ -1534,6 +1559,7 @@ impl App {
                     );
                     return;
                 }
+                self.invalidate_usage_cache();
                 self.set_status("Summarization complete");
                 self.autosave_history(); // Persist summarized history immediately
 
@@ -1873,9 +1899,12 @@ impl App {
 
                 abort_handle.abort();
 
+                let step_id = journal.step_id();
                 if let Err(seal_err) = journal.seal(&mut self.stream_journal) {
-                    eprintln!("Journal seal failed after append error: {seal_err}");
+                    tracing::warn!("Journal seal failed after append error: {seal_err}");
                 }
+                // Discard the step to prevent blocking future sessions
+                self.discard_journal_step(step_id);
 
                 let model = message.model_name().clone();
                 let partial = message.content().to_string();
@@ -1936,7 +1965,7 @@ impl App {
 
         // Seal the journal (marks stream as complete)
         if let Err(e) = journal.seal(&mut self.stream_journal) {
-            eprintln!("Journal seal failed: {e}");
+            tracing::warn!("Journal seal failed: {e}");
             // Continue anyway - we'll try to commit to history
         }
 
@@ -1951,8 +1980,14 @@ impl App {
                 if let Some(message) = message {
                     // Push with step_id for idempotent recovery
                     self.push_history_message_with_step_id(message, step_id);
-                    self.autosave_history();
-                    self.finalize_journal_commit(step_id);
+                    if self.autosave_history() {
+                        // Only commit+prune if history was persisted successfully
+                        self.finalize_journal_commit(step_id);
+                    }
+                    // If save failed, leave journal recoverable for next session
+                } else {
+                    // No message content - discard the step to prevent session brick
+                    self.discard_journal_step(step_id);
                 }
                 // Use stream's model/provider, not current app settings (user may have changed during stream)
                 let ui_error = format_stream_error(model.provider(), model.as_str(), &err);
@@ -1968,29 +2003,33 @@ impl App {
             let empty_msg = Message::assistant(model, NonEmptyString::from(EMPTY_RESPONSE_BADGE));
             self.push_local_message(empty_msg);
             self.set_status("Warning: API returned empty response");
-            // Still finalize the journal even for empty responses
-            self.finalize_journal_commit(step_id);
+            // Empty response - discard the step (nothing to recover)
+            self.discard_journal_step(step_id);
             return;
         };
 
         // Push with step_id for idempotent recovery
         self.push_history_message_with_step_id(message, step_id);
-        self.autosave_history();
-        self.finalize_journal_commit(step_id);
+        if self.autosave_history() {
+            // Only commit+prune if history was persisted successfully
+            self.finalize_journal_commit(step_id);
+        }
+        // If save failed, leave journal recoverable for next session
     }
 
-    /// Mark journal step as committed and prune it.
+    /// Atomically commit and prune a journal step.
     ///
-    /// Called after history has been successfully persisted to disk.
+    /// Called ONLY after history has been successfully persisted to disk.
     fn finalize_journal_commit(&mut self, step_id: forge_context::StepId) {
-        // Mark as committed first
-        if let Err(e) = self.stream_journal.mark_committed(step_id) {
-            tracing::warn!("Failed to mark journal step {} as committed: {e}", step_id);
+        if let Err(e) = self.stream_journal.commit_and_prune_step(step_id) {
+            tracing::warn!("Failed to commit/prune journal step {}: {e}", step_id);
         }
+    }
 
-        // Then prune the step's entries (cleanup)
-        if let Err(e) = self.stream_journal.prune_step(step_id) {
-            tracing::warn!("Failed to prune journal step {}: {e}", step_id);
+    /// Discard a journal step that won't be recovered (error/empty cases).
+    fn discard_journal_step(&mut self, step_id: forge_context::StepId) {
+        if let Err(e) = self.stream_journal.discard_step(step_id) {
+            tracing::warn!("Failed to discard journal step {}: {e}", step_id);
         }
     }
 
@@ -2218,6 +2257,7 @@ impl App {
                 self.context_manager = ContextManager::new(self.model.as_str());
                 self.context_manager
                     .set_output_limit(self.output_limits.max_output_tokens());
+                self.invalidate_usage_cache();
                 self.autosave_history(); // Persist cleared state immediately
                 self.set_status("Conversation cleared");
             }
@@ -2789,6 +2829,7 @@ mod tests {
             last_frame: Instant::now(),
             modal_effect: None,
             system_prompt: None,
+            cached_usage_status: None,
         }
     }
 

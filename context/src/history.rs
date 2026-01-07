@@ -582,8 +582,8 @@ impl FullHistory {
         if !orphaned_summaries.is_empty() {
             // Log but proceed - the old summaries will become orphaned.
             // This indicates either hierarchical summarization or a bug.
-            eprintln!(
-                "Warning: summary {} overlaps with existing summaries {:?}. \
+            tracing::warn!(
+                "Summary {} overlaps with existing summaries {:?}. \
                  Old summaries will become orphaned.",
                 summary.id.0,
                 orphaned_summaries.iter().map(|s| s.0).collect::<Vec<_>>()

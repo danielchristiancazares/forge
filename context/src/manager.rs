@@ -55,7 +55,7 @@ pub enum ContextBuildError {
 }
 
 /// Details about summarization needed to proceed.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SummarizationNeeded {
     pub excess_tokens: u32,
     pub messages_to_summarize: Vec<MessageId>,
@@ -118,7 +118,7 @@ impl<'a> PreparedContext<'a> {
 }
 
 /// Usage state for the current model.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ContextUsageStatus {
     Ready(ContextUsage),
     NeedsSummarization {

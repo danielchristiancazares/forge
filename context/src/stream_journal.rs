@@ -324,30 +324,30 @@ impl StreamJournal {
         Ok(accumulated_text)
     }
 
-    /// Mark a step as committed to history.
+    /// Atomically commit and prune a step.
     ///
     /// This should be called AFTER the history has been successfully persisted to disk.
-    /// Once committed, the step will not be recovered on restart.
-    pub fn mark_committed(&mut self, step_id: StepId) -> Result<()> {
-        self.db
-            .execute(
-                "UPDATE step_metadata SET committed = 1 WHERE step_id = ?1",
-                params![step_id],
-            )
-            .with_context(|| format!("Failed to mark step {} as committed", step_id))?;
-        Ok(())
-    }
-
-    /// Prune a committed step's journal entries and metadata.
+    /// Performs an atomic transaction that:
+    /// 1. Marks the step as committed
+    /// 2. Deletes all journal entries for the step
+    /// 3. Deletes the step metadata
     ///
-    /// This removes all journal entries and metadata for a step that has been
-    /// successfully committed to history. Should be called after `mark_committed`.
-    pub fn prune_step(&mut self, step_id: StepId) -> Result<u64> {
+    /// If any part fails, nothing is changed (transactional safety).
+    /// Once committed, the step will not be recovered on restart.
+    pub fn commit_and_prune_step(&mut self, step_id: StepId) -> Result<u64> {
         let tx = self
             .db
             .transaction()
-            .context("Failed to start prune transaction")?;
+            .context("Failed to start commit-prune transaction")?;
 
+        // Mark as committed
+        tx.execute(
+            "UPDATE step_metadata SET committed = 1 WHERE step_id = ?1",
+            params![step_id],
+        )
+        .with_context(|| format!("Failed to mark step {} as committed", step_id))?;
+
+        // Delete journal entries
         let deleted = tx
             .execute(
                 "DELETE FROM stream_journal WHERE step_id = ?1",
@@ -355,13 +355,45 @@ impl StreamJournal {
             )
             .with_context(|| format!("Failed to delete journal entries for step {}", step_id))?;
 
+        // Delete metadata (now that it's committed)
         tx.execute(
-            "DELETE FROM step_metadata WHERE step_id = ?1 AND committed = 1",
+            "DELETE FROM step_metadata WHERE step_id = ?1",
             params![step_id],
         )
         .with_context(|| format!("Failed to delete metadata for step {}", step_id))?;
 
-        tx.commit().context("Failed to commit prune transaction")?;
+        tx.commit()
+            .context("Failed to commit commit-prune transaction")?;
+
+        Ok(deleted as u64)
+    }
+
+    /// Discard a step that was never committed (error/cancel path).
+    ///
+    /// Use this when a stream fails or is cancelled and should not be recovered.
+    /// Unlike `commit_and_prune_step`, this does NOT require successful history persistence.
+    pub fn discard_step(&mut self, step_id: StepId) -> Result<u64> {
+        let tx = self
+            .db
+            .transaction()
+            .context("Failed to start discard transaction")?;
+
+        // Delete journal entries
+        let deleted = tx
+            .execute(
+                "DELETE FROM stream_journal WHERE step_id = ?1",
+                params![step_id],
+            )
+            .with_context(|| format!("Failed to delete journal entries for step {}", step_id))?;
+
+        // Delete metadata
+        tx.execute(
+            "DELETE FROM step_metadata WHERE step_id = ?1",
+            params![step_id],
+        )
+        .with_context(|| format!("Failed to delete metadata for step {}", step_id))?;
+
+        tx.commit().context("Failed to commit discard transaction")?;
 
         Ok(deleted as u64)
     }
@@ -972,8 +1004,8 @@ mod tests {
             active.append_text(&mut journal, "Test").unwrap();
             let step_id = active.step_id();
             let _text = active.seal(&mut journal).unwrap();
-            // Mark as committed - simulating successful history persistence
-            journal.mark_committed(step_id).unwrap();
+            // Commit and prune - simulating successful history persistence
+            journal.commit_and_prune_step(step_id).unwrap();
         }
 
         let journal = StreamJournal::open(&db_path).unwrap();
@@ -1048,8 +1080,8 @@ mod tests {
         active.append_text(&mut journal, "First").unwrap();
         let step_id = active.step_id();
         let _text = active.seal(&mut journal).unwrap();
-        // Mark first step as committed before starting second
-        journal.mark_committed(step_id).unwrap();
+        // Commit and prune first step before starting second
+        journal.commit_and_prune_step(step_id).unwrap();
 
         let mut active = journal.begin_session("test-model").unwrap();
         active.append_text(&mut journal, "Second").unwrap();
@@ -1067,15 +1099,16 @@ mod tests {
         active.append_text(&mut journal, "B").unwrap();
         let step_id = active.step_id();
         let _text = active.seal(&mut journal).unwrap();
-        // Mark first step as committed before starting second
-        journal.mark_committed(step_id).unwrap();
+        // Commit and prune first step before starting second
+        journal.commit_and_prune_step(step_id).unwrap();
 
         let mut active = journal.begin_session("test-model").unwrap();
         active.append_text(&mut journal, "C").unwrap();
 
         let stats = journal.stats().unwrap();
-        assert_eq!(stats.total_entries, 3);
-        assert_eq!(stats.sealed_entries, 2);
+        // First step was pruned, so only 1 entry from second step
+        assert_eq!(stats.total_entries, 1);
+        assert_eq!(stats.sealed_entries, 0);
         assert_eq!(stats.unsealed_entries, 1);
         assert_eq!(stats.current_step_id, active.step_id());
     }
