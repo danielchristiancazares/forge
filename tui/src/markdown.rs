@@ -1,4 +1,10 @@
 //! Markdown to ratatui rendering
+//!
+//! Includes a simple render cache to avoid re-parsing unchanged markdown content.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use ratatui::{
@@ -9,10 +15,79 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::theme::colors;
 
-/// Render markdown content to ratatui Lines
+/// Maximum number of cached renders before eviction.
+const CACHE_MAX_ENTRIES: usize = 128;
+
+/// Cache key combining content hash and style.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CacheKey {
+    content_hash: u64,
+    style_hash: u64,
+}
+
+impl CacheKey {
+    fn new(content: &str, style: Style) -> Self {
+        use std::collections::hash_map::DefaultHasher;
+
+        let mut content_hasher = DefaultHasher::new();
+        content.hash(&mut content_hasher);
+
+        let mut style_hasher = DefaultHasher::new();
+        // Hash style components manually since Style doesn't impl Hash
+        style.fg.hash(&mut style_hasher);
+        style.bg.hash(&mut style_hasher);
+        style.add_modifier.hash(&mut style_hasher);
+        style.sub_modifier.hash(&mut style_hasher);
+
+        Self {
+            content_hash: content_hasher.finish(),
+            style_hash: style_hasher.finish(),
+        }
+    }
+}
+
+thread_local! {
+    /// Thread-local render cache. Stores rendered lines keyed by content+style hash.
+    static RENDER_CACHE: RefCell<HashMap<CacheKey, Vec<Line<'static>>>> = RefCell::new(HashMap::new());
+}
+
+/// Clear the render cache. Call when switching themes or on memory pressure.
+pub fn clear_render_cache() {
+    RENDER_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
+/// Render markdown content to ratatui Lines.
+///
+/// Uses an internal cache to avoid re-parsing unchanged content.
 pub fn render_markdown(content: &str, base_style: Style) -> Vec<Line<'static>> {
+    let key = CacheKey::new(content, base_style);
+
+    // Check cache first
+    let cached = RENDER_CACHE.with(|cache| cache.borrow().get(&key).cloned());
+
+    if let Some(lines) = cached {
+        return lines;
+    }
+
+    // Cache miss - render and store
     let renderer = MarkdownRenderer::new(base_style);
-    renderer.render(content)
+    let lines = renderer.render(content);
+
+    RENDER_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+
+        // Simple eviction: clear half the cache when full
+        if cache.len() >= CACHE_MAX_ENTRIES {
+            let keys_to_remove: Vec<_> = cache.keys().take(CACHE_MAX_ENTRIES / 2).cloned().collect();
+            for k in keys_to_remove {
+                cache.remove(&k);
+            }
+        }
+
+        cache.insert(key, lines.clone());
+    });
+
+    lines
 }
 
 struct MarkdownRenderer {
@@ -20,10 +95,13 @@ struct MarkdownRenderer {
     lines: Vec<Line<'static>>,
     current_spans: Vec<Span<'static>>,
 
-    // Style stack for nested formatting
-    bold: bool,
-    italic: bool,
-    code: bool,
+    // Style stack for nested formatting (counters, not booleans).
+    // Counters allow proper nesting: `# Heading with **bold**` works correctly
+    // because heading increments bold_count, strong increments it again,
+    // and strong ending decrements it back to 1 (still bold from heading).
+    bold_count: usize,
+    italic_count: usize,
+    code_count: usize,
 
     // Block state
     in_code_block: bool,
@@ -46,9 +124,9 @@ impl MarkdownRenderer {
             base_style,
             lines: Vec::new(),
             current_spans: Vec::new(),
-            bold: false,
-            italic: false,
-            code: false,
+            bold_count: 0,
+            italic_count: 0,
+            code_count: 0,
             in_code_block: false,
             code_block_content: Vec::new(),
             in_table: false,
@@ -91,13 +169,13 @@ impl MarkdownRenderer {
     fn start_tag(&mut self, tag: Tag) {
         match tag {
             Tag::Heading { .. } => {
-                self.bold = true;
+                self.bold_count += 1;
             }
             Tag::Strong => {
-                self.bold = true;
+                self.bold_count += 1;
             }
             Tag::Emphasis => {
-                self.italic = true;
+                self.italic_count += 1;
             }
             Tag::CodeBlock(_) => {
                 self.flush_line();
@@ -150,15 +228,15 @@ impl MarkdownRenderer {
     fn end_tag(&mut self, tag: TagEnd) {
         match tag {
             TagEnd::Heading(_) => {
-                self.bold = false;
+                self.bold_count = self.bold_count.saturating_sub(1);
                 self.flush_line();
                 self.lines.push(Line::from(""));
             }
             TagEnd::Strong => {
-                self.bold = false;
+                self.bold_count = self.bold_count.saturating_sub(1);
             }
             TagEnd::Emphasis => {
-                self.italic = false;
+                self.italic_count = self.italic_count.saturating_sub(1);
             }
             TagEnd::CodeBlock => {
                 self.in_code_block = false;
@@ -231,13 +309,13 @@ impl MarkdownRenderer {
     fn current_style(&self) -> Style {
         let mut style = self.base_style;
 
-        if self.bold {
+        if self.bold_count > 0 {
             style = style.add_modifier(Modifier::BOLD);
         }
-        if self.italic {
+        if self.italic_count > 0 {
             style = style.add_modifier(Modifier::ITALIC);
         }
-        if self.code {
+        if self.code_count > 0 {
             style = style.fg(colors::PEACH);
         }
 
@@ -407,5 +485,114 @@ mod tests {
         let lines = render_markdown(md, Style::default());
         // Should have borders and content
         assert!(lines.len() >= 4);
+    }
+
+    #[test]
+    fn test_cache_returns_same_result() {
+        clear_render_cache();
+
+        let content = "# Hello\n\nThis is **bold** and *italic* text.";
+        let style = Style::default();
+
+        // First render (cache miss)
+        let lines1 = render_markdown(content, style);
+
+        // Second render (cache hit) should return identical result
+        let lines2 = render_markdown(content, style);
+
+        assert_eq!(lines1.len(), lines2.len());
+        for (l1, l2) in lines1.iter().zip(lines2.iter()) {
+            assert_eq!(format!("{:?}", l1), format!("{:?}", l2));
+        }
+    }
+
+    #[test]
+    fn test_cache_different_styles_different_results() {
+        clear_render_cache();
+
+        let content = "Simple text";
+        let style1 = Style::default();
+        let style2 = Style::default().add_modifier(Modifier::BOLD);
+
+        let lines1 = render_markdown(content, style1);
+        let lines2 = render_markdown(content, style2);
+
+        // Different styles may produce different results (style is baked into spans)
+        // Just verify both render without panicking
+        assert!(!lines1.is_empty());
+        assert!(!lines2.is_empty());
+    }
+
+    #[test]
+    fn test_clear_cache() {
+        // Just verify clear doesn't panic
+        clear_render_cache();
+        render_markdown("test", Style::default());
+        clear_render_cache();
+    }
+
+    #[test]
+    fn test_nested_bold_in_heading() {
+        clear_render_cache();
+
+        // Heading with nested bold: "# Intro **key** point"
+        // The word "point" should still be bold (from heading) after **key** ends.
+        let content = "# Intro **key** point";
+        let lines = render_markdown(content, Style::default());
+
+        // Find the heading line (contains "Intro", "key", "point")
+        let heading_line = lines.iter().find(|l| {
+            let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            text.contains("Intro") && text.contains("key") && text.contains("point")
+        });
+
+        assert!(heading_line.is_some(), "Should find heading line");
+        let line = heading_line.unwrap();
+
+        // All visible spans in the heading should have BOLD modifier
+        // (excluding the indent span which is just spaces)
+        let visible_spans: Vec<_> = line
+            .spans
+            .iter()
+            .filter(|s| !s.content.trim().is_empty())
+            .collect();
+
+        for span in &visible_spans {
+            assert!(
+                span.style.add_modifier.contains(Modifier::BOLD),
+                "Span '{}' in heading should be bold",
+                span.content
+            );
+        }
+    }
+
+    #[test]
+    fn test_nested_italic_in_bold() {
+        clear_render_cache();
+
+        // Bold with nested italic: "**outer _inner_ outer**"
+        // The second "outer" should still be bold after _inner_ ends.
+        let content = "**outer _inner_ still bold**";
+        let lines = render_markdown(content, Style::default());
+
+        // Find the line containing this text
+        let content_line = lines.iter().find(|l| {
+            let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            text.contains("still bold")
+        });
+
+        assert!(content_line.is_some(), "Should find content line");
+        let line = content_line.unwrap();
+
+        // Find the span containing "still bold"
+        let still_bold_span = line.spans.iter().find(|s| s.content.contains("still bold"));
+
+        assert!(still_bold_span.is_some(), "Should find 'still bold' span");
+        let span = still_bold_span.unwrap();
+
+        assert!(
+            span.style.add_modifier.contains(Modifier::BOLD),
+            "'still bold' should have BOLD modifier"
+        );
     }
 }

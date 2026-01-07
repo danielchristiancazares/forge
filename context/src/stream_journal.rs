@@ -86,11 +86,17 @@ pub struct ActiveJournal {
     journal_id: u64,
     step_id: StepId,
     next_seq: u64,
+    model_name: String,
 }
 
 impl ActiveJournal {
     pub fn step_id(&self) -> StepId {
         self.step_id
+    }
+
+    /// Get the model name associated with this streaming session.
+    pub fn model_name(&self) -> &str {
+        &self.model_name
     }
 
     pub fn append_text(
@@ -133,6 +139,8 @@ pub enum RecoveredStream {
         partial_text: String,
         /// Last sequence number seen
         last_seq: u64,
+        /// Model name from the original stream (for accurate attribution)
+        model_name: Option<String>,
     },
     /// The stream ended with an error but was not sealed.
     Errored {
@@ -144,6 +152,8 @@ pub enum RecoveredStream {
         last_seq: u64,
         /// Error message captured from the stream
         error: String,
+        /// Model name from the original stream (for accurate attribution)
+        model_name: Option<String>,
     },
     /// The stream ended mid-flight.
     Incomplete {
@@ -153,6 +163,8 @@ pub enum RecoveredStream {
         partial_text: String,
         /// Last sequence number seen
         last_seq: u64,
+        /// Model name from the original stream (for accurate attribution)
+        model_name: Option<String>,
     },
 }
 
@@ -190,6 +202,14 @@ impl StreamJournal {
         );
 
         INSERT OR IGNORE INTO step_counter (id, next_step_id) VALUES (1, 1);
+
+        -- Track which steps have been committed to history (for crash recovery)
+        CREATE TABLE IF NOT EXISTS step_metadata (
+            step_id INTEGER PRIMARY KEY,
+            model_name TEXT,
+            committed INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
     "#;
 
     /// Open or create journal database at the given path
@@ -233,48 +253,67 @@ impl StreamJournal {
         })
     }
 
-    /// Find the most recent unsealed step (if any).
-    fn latest_unsealed_step(&self) -> Result<Option<(StepId, u64)>> {
-        let mut stmt = self
-            .db
-            .prepare(
-                "SELECT step_id, MAX(seq) FROM stream_journal
-                 WHERE sealed = 0
-                 GROUP BY step_id
-                 ORDER BY step_id DESC
-                 LIMIT 1",
-            )
-            .context("Failed to prepare unsealed-step query")?;
-
-        let row = stmt
-            .query_row([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .optional()
-            .context("Failed to query unsealed step")?;
-
-        Ok(row)
-    }
-
     /// Begin a new journal session for streaming.
+    ///
+    /// # Arguments
+    ///
+    /// * `model_name` - The model being used for this stream (stored for crash recovery attribution)
     ///
     /// # Errors
     ///
-    /// Returns an error if a session is already active, unsealed entries exist,
+    /// Returns an error if a session is already active, uncommitted entries exist,
     /// or a new step ID cannot be allocated.
-    pub fn begin_session(&mut self) -> Result<ActiveJournal> {
+    pub fn begin_session(&mut self, model_name: impl Into<String>) -> Result<ActiveJournal> {
         if let Some(step_id) = self.active_step {
             bail!("Cannot begin session: already streaming step {}", step_id);
         }
-        if let Some((step_id, _)) = self.latest_unsealed_step()? {
-            bail!("Cannot begin session: unsealed step {} exists", step_id);
+        // Check for any recoverable steps (unsealed OR uncommitted)
+        if let Some(step_id) = self.latest_recoverable_step_id()? {
+            bail!("Cannot begin session: recoverable step {} exists", step_id);
         }
 
         let step_id = self.next_step_id()?;
+        let model_name = model_name.into();
+
+        // Record step metadata for crash recovery
+        let created_at = system_time_to_iso8601(SystemTime::now());
+        self.db
+            .execute(
+                "INSERT INTO step_metadata (step_id, model_name, committed, created_at)
+                 VALUES (?1, ?2, 0, ?3)",
+                params![step_id, &model_name, created_at],
+            )
+            .context("Failed to insert step metadata")?;
+
         self.active_step = Some(step_id);
         Ok(ActiveJournal {
             journal_id: self.journal_id,
             step_id,
             next_seq: 1,
+            model_name,
         })
+    }
+
+    /// Find the most recent recoverable step (unsealed OR sealed but uncommitted).
+    fn latest_recoverable_step_id(&self) -> Result<Option<StepId>> {
+        // A step is recoverable if:
+        // 1. It has unsealed journal entries, OR
+        // 2. It has metadata with committed=0
+        let step_id: Option<StepId> = self
+            .db
+            .query_row(
+                "SELECT step_id FROM (
+                    SELECT DISTINCT step_id FROM stream_journal WHERE sealed = 0
+                    UNION
+                    SELECT step_id FROM step_metadata WHERE committed = 0
+                 ) ORDER BY step_id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("Failed to query recoverable step")?;
+
+        Ok(step_id)
     }
 
     /// Seal unsealed entries for a step (used for crash recovery).
@@ -283,6 +322,62 @@ impl StreamJournal {
         let accumulated_text = collect_text(&self.db, step_id)?;
         seal_step(&self.db, step_id)?;
         Ok(accumulated_text)
+    }
+
+    /// Mark a step as committed to history.
+    ///
+    /// This should be called AFTER the history has been successfully persisted to disk.
+    /// Once committed, the step will not be recovered on restart.
+    pub fn mark_committed(&mut self, step_id: StepId) -> Result<()> {
+        self.db
+            .execute(
+                "UPDATE step_metadata SET committed = 1 WHERE step_id = ?1",
+                params![step_id],
+            )
+            .with_context(|| format!("Failed to mark step {} as committed", step_id))?;
+        Ok(())
+    }
+
+    /// Prune a committed step's journal entries and metadata.
+    ///
+    /// This removes all journal entries and metadata for a step that has been
+    /// successfully committed to history. Should be called after `mark_committed`.
+    pub fn prune_step(&mut self, step_id: StepId) -> Result<u64> {
+        let tx = self
+            .db
+            .transaction()
+            .context("Failed to start prune transaction")?;
+
+        let deleted = tx
+            .execute(
+                "DELETE FROM stream_journal WHERE step_id = ?1",
+                params![step_id],
+            )
+            .with_context(|| format!("Failed to delete journal entries for step {}", step_id))?;
+
+        tx.execute(
+            "DELETE FROM step_metadata WHERE step_id = ?1 AND committed = 1",
+            params![step_id],
+        )
+        .with_context(|| format!("Failed to delete metadata for step {}", step_id))?;
+
+        tx.commit().context("Failed to commit prune transaction")?;
+
+        Ok(deleted as u64)
+    }
+
+    /// Get the model name for a step from metadata.
+    fn get_step_model_name(&self, step_id: StepId) -> Result<Option<String>> {
+        let model_name: Option<String> = self
+            .db
+            .query_row(
+                "SELECT model_name FROM step_metadata WHERE step_id = ?1",
+                params![step_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("Failed to query step model name")?;
+        Ok(model_name)
     }
 
     /// Delete all unsealed entries for a step (discard recovery data).
@@ -373,24 +468,37 @@ impl StreamJournal {
 
     /// Check for and recover incomplete streams after a crash
     ///
-    /// Looks for unsealed entries in the journal and reconstructs the
-    /// partial stream state.
+    /// Looks for recoverable entries in the journal (unsealed OR sealed but uncommitted)
+    /// and reconstructs the partial stream state.
     ///
     /// # Returns
     ///
-    /// `Some(RecoveredStream)` if there are unsealed entries, `None` otherwise.
+    /// `Some(RecoveredStream)` if there are recoverable entries, `None` otherwise.
     pub fn recover(&self) -> Result<Option<RecoveredStream>> {
         if self.active_step.is_some() {
             return Ok(None);
         }
 
-        // Find the most recent unsealed step
-        let Some((step_id, last_seq)) = self.latest_unsealed_step()? else {
+        // Find the most recent recoverable step (unsealed OR uncommitted)
+        let Some(step_id) = self.latest_recoverable_step_id()? else {
             return Ok(None);
         };
 
-        // Collect partial text
-        let partial_text = collect_text(&self.db, step_id)?;
+        // Get model name from metadata (if available)
+        let model_name = self.get_step_model_name(step_id)?;
+
+        // Get the last sequence number for this step
+        let last_seq: u64 = self
+            .db
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) FROM stream_journal WHERE step_id = ?1",
+                params![step_id],
+                |row| row.get(0),
+            )
+            .context("Failed to query last sequence")?;
+
+        // Collect partial text (from both sealed and unsealed entries)
+        let partial_text = collect_text_all(&self.db, step_id)?;
 
         if let Some(error) = latest_error(&self.db, step_id)? {
             return Ok(Some(RecoveredStream::Errored {
@@ -398,16 +506,16 @@ impl StreamJournal {
                 partial_text,
                 last_seq,
                 error,
+                model_name,
             }));
         }
 
-        // Check if stream has a terminal event (done or error)
+        // Check if stream has a terminal event (done)
         let is_complete: bool = self
             .db
             .query_row(
                 "SELECT 1 FROM stream_journal
-                 WHERE step_id = ?1 AND sealed = 0
-                   AND event_type = 'done'
+                 WHERE step_id = ?1 AND event_type = 'done'
                  LIMIT 1",
                 params![step_id],
                 |_| Ok(true),
@@ -421,12 +529,14 @@ impl StreamJournal {
                 step_id,
                 partial_text,
                 last_seq,
+                model_name,
             }
         } else {
             RecoveredStream::Incomplete {
                 step_id,
                 partial_text,
                 last_seq,
+                model_name,
             }
         };
 
@@ -502,11 +612,18 @@ fn collect_text(db: &Connection, step_id: StepId) -> Result<String> {
     Ok(contents.join(""))
 }
 
+/// Collect text from all entries (both sealed and unsealed) for recovery.
+fn collect_text_all(db: &Connection, step_id: StepId) -> Result<String> {
+    // Same as collect_text - neither filters by sealed status
+    collect_text(db, step_id)
+}
+
 fn latest_error(db: &Connection, step_id: StepId) -> Result<Option<String>> {
+    // Look at all entries (not just unsealed) for recovery scenarios
     let mut stmt = db
         .prepare(
             "SELECT content FROM stream_journal
-             WHERE step_id = ?1 AND event_type = 'error' AND sealed = 0
+             WHERE step_id = ?1 AND event_type = 'error'
              ORDER BY seq DESC
              LIMIT 1",
         )
@@ -537,6 +654,13 @@ fn discard_step(db: &Connection, step_id: StepId) -> Result<u64> {
             params![step_id],
         )
         .with_context(|| format!("Failed to discard unsealed entries for step {}", step_id))?;
+
+    // Also clean up the metadata entry for this discarded step
+    db.execute(
+        "DELETE FROM step_metadata WHERE step_id = ?1",
+        params![step_id],
+    )
+    .with_context(|| format!("Failed to delete metadata for discarded step {}", step_id))?;
 
     Ok(deleted as u64)
 }
@@ -719,7 +843,7 @@ mod tests {
     #[test]
     fn test_begin_session_returns_active_journal() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
-        let active = journal.begin_session().unwrap();
+        let active = journal.begin_session("test-model").unwrap();
         assert_eq!(active.step_id(), 1);
     }
 
@@ -730,13 +854,13 @@ mod tests {
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
-            let mut active = journal.begin_session().unwrap();
+            let mut active = journal.begin_session("test-model").unwrap();
             active.append_text(&mut journal, "Hello").unwrap();
             // Drop without sealing to leave unsealed entries.
         }
 
         let mut journal = StreamJournal::open(&db_path).unwrap();
-        let result = journal.begin_session();
+        let result = journal.begin_session("test-model");
         assert!(result.is_err());
 
         let _ = fs::remove_file(&db_path);
@@ -745,7 +869,7 @@ mod tests {
     #[test]
     fn test_append_delta_succeeds() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
-        let mut active = journal.begin_session().unwrap();
+        let mut active = journal.begin_session("test-model").unwrap();
         active.append_text(&mut journal, "Hello").unwrap();
 
         let stats = journal.stats().unwrap();
@@ -757,7 +881,7 @@ mod tests {
     fn test_seal_returns_accumulated_text() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
 
-        let mut active = journal.begin_session().unwrap();
+        let mut active = journal.begin_session("test-model").unwrap();
         active.append_text(&mut journal, "Hello").unwrap();
         active.append_text(&mut journal, " ").unwrap();
         active.append_text(&mut journal, "World").unwrap();
@@ -771,7 +895,7 @@ mod tests {
     fn test_seal_records_entries() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
 
-        let mut active = journal.begin_session().unwrap();
+        let mut active = journal.begin_session("test-model").unwrap();
         active.append_text(&mut journal, "Test").unwrap();
         let _text = active.seal(&mut journal).unwrap();
 
@@ -787,7 +911,7 @@ mod tests {
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
-            let mut active = journal.begin_session().unwrap();
+            let mut active = journal.begin_session("test-model").unwrap();
             active.append_text(&mut journal, "Partial").unwrap();
             active.append_text(&mut journal, " response").unwrap();
             // Drop without sealing to simulate a crash.
@@ -800,6 +924,7 @@ mod tests {
                 step_id: recovered_step,
                 partial_text,
                 last_seq,
+                ..
             } => {
                 assert_eq!(recovered_step, 1);
                 assert_eq!(partial_text, "Partial response");
@@ -818,7 +943,7 @@ mod tests {
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
-            let mut active = journal.begin_session().unwrap();
+            let mut active = journal.begin_session("test-model").unwrap();
             active.append_text(&mut journal, "Complete").unwrap();
             active.append_done(&mut journal).unwrap();
             // Drop without sealing.
@@ -843,9 +968,12 @@ mod tests {
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
-            let mut active = journal.begin_session().unwrap();
+            let mut active = journal.begin_session("test-model").unwrap();
             active.append_text(&mut journal, "Test").unwrap();
+            let step_id = active.step_id();
             let _text = active.seal(&mut journal).unwrap();
+            // Mark as committed - simulating successful history persistence
+            journal.mark_committed(step_id).unwrap();
         }
 
         let journal = StreamJournal::open(&db_path).unwrap();
@@ -858,7 +986,7 @@ mod tests {
     fn test_prune_removes_old_sealed_entries() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
 
-        let mut active = journal.begin_session().unwrap();
+        let mut active = journal.begin_session("test-model").unwrap();
         active.append_text(&mut journal, "Old").unwrap();
         let _text = active.seal(&mut journal).unwrap();
 
@@ -876,7 +1004,7 @@ mod tests {
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
-            let mut active = journal.begin_session().unwrap();
+            let mut active = journal.begin_session("test-model").unwrap();
             active.append_text(&mut journal, "Unsealed").unwrap();
             // Drop without sealing.
         }
@@ -898,7 +1026,7 @@ mod tests {
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
-            let mut active = journal.begin_session().unwrap();
+            let mut active = journal.begin_session("test-model").unwrap();
             active.append_text(&mut journal, "Discard me").unwrap();
             active.append_text(&mut journal, "!").unwrap();
             // Drop without sealing.
@@ -916,11 +1044,14 @@ mod tests {
     fn test_multiple_steps() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
 
-        let mut active = journal.begin_session().unwrap();
+        let mut active = journal.begin_session("test-model").unwrap();
         active.append_text(&mut journal, "First").unwrap();
+        let step_id = active.step_id();
         let _text = active.seal(&mut journal).unwrap();
+        // Mark first step as committed before starting second
+        journal.mark_committed(step_id).unwrap();
 
-        let mut active = journal.begin_session().unwrap();
+        let mut active = journal.begin_session("test-model").unwrap();
         active.append_text(&mut journal, "Second").unwrap();
         let text = active.seal(&mut journal).unwrap();
 
@@ -931,12 +1062,15 @@ mod tests {
     fn test_stats() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
 
-        let mut active = journal.begin_session().unwrap();
+        let mut active = journal.begin_session("test-model").unwrap();
         active.append_text(&mut journal, "A").unwrap();
         active.append_text(&mut journal, "B").unwrap();
+        let step_id = active.step_id();
         let _text = active.seal(&mut journal).unwrap();
+        // Mark first step as committed before starting second
+        journal.mark_committed(step_id).unwrap();
 
-        let mut active = journal.begin_session().unwrap();
+        let mut active = journal.begin_session("test-model").unwrap();
         active.append_text(&mut journal, "C").unwrap();
 
         let stats = journal.stats().unwrap();
@@ -967,7 +1101,7 @@ mod tests {
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
-            let mut active = journal.begin_session().unwrap();
+            let mut active = journal.begin_session("test-model").unwrap();
             active.append_text(&mut journal, "Persisted").unwrap();
             // Drop without sealing.
         }
@@ -998,7 +1132,7 @@ mod tests {
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
-            let mut active = journal.begin_session().unwrap();
+            let mut active = journal.begin_session("test-model").unwrap();
             active.append_text(&mut journal, "Start").unwrap();
             active.append_error(&mut journal, "API Error").unwrap();
             // Drop without sealing.
@@ -1025,7 +1159,7 @@ mod tests {
     fn test_empty_stream_seals_to_empty_string() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
 
-        let mut active = journal.begin_session().unwrap();
+        let mut active = journal.begin_session("test-model").unwrap();
         active.append_done(&mut journal).unwrap();
 
         let text = active.seal(&mut journal).unwrap();

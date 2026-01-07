@@ -8,9 +8,48 @@ use forge_types::{
     ApiKey, CacheHint, CacheableMessage, Message, ModelName, OpenAIRequestOptions, OutputLimits,
     Provider, StreamEvent,
 };
+use std::sync::OnceLock;
+use std::time::Duration;
 
 // Re-export types that callers need
 pub use forge_types;
+
+// ============================================================================
+// Shared HTTP Client
+// ============================================================================
+
+/// Connection timeout for API requests.
+const CONNECT_TIMEOUT_SECS: u64 = 30;
+
+/// Shared HTTP client for all provider requests.
+///
+/// This client is configured with:
+/// - Connection timeout: 30 seconds
+/// - No read/total timeout (SSE streams can run for extended periods)
+///
+/// For synchronous requests needing a timeout (like summarization),
+/// use [`http_client_with_timeout`] instead.
+pub fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .build()
+            .expect("build shared HTTP client")
+    })
+}
+
+/// HTTP client with a total request timeout for synchronous operations.
+///
+/// Use this for non-streaming requests like summarization where you want
+/// to bound the total request time.
+pub fn http_client_with_timeout(timeout_secs: u64) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(timeout_secs))
+        .build()
+        .expect("build HTTP client with timeout")
+}
 
 fn find_sse_event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
     let lf = buffer.windows(2).position(|w| w == b"\n\n");
@@ -147,7 +186,6 @@ pub async fn send_message(
 /// Claude/Anthropic API implementation.
 pub mod claude {
     use super::*;
-    use reqwest::Client;
     use serde_json::json;
 
     const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -240,7 +278,7 @@ pub mod claude {
         system_prompt: Option<&str>,
         on_event: impl Fn(StreamEvent) + Send + 'static,
     ) -> Result<()> {
-        let client = Client::new();
+        let client = http_client();
 
         let body = build_request_body(config.model().as_str(), messages, limits, system_prompt);
 
@@ -383,7 +421,6 @@ pub mod claude {
 /// OpenAI API implementation.
 pub mod openai {
     use super::*;
-    use reqwest::Client;
     use serde_json::{Value, json};
 
     const API_URL: &str = "https://api.openai.com/v1/responses";
@@ -486,7 +523,7 @@ pub mod openai {
         system_prompt: Option<&str>,
         on_event: impl Fn(StreamEvent) + Send + 'static,
     ) -> Result<()> {
-        let client = Client::new();
+        let client = http_client();
 
         let body = build_request_body(config, messages, limits, system_prompt);
 

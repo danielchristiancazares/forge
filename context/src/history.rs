@@ -57,6 +57,8 @@ pub enum HistoryEntry {
         message: Message,
         token_count: u32,
         created_at: SystemTime,
+        /// Stream journal step ID for crash recovery linkage (assistant messages only)
+        stream_step_id: Option<i64>,
     },
     Summarized {
         id: MessageId,
@@ -64,6 +66,8 @@ pub enum HistoryEntry {
         token_count: u32,
         summary_id: SummaryId,
         created_at: SystemTime,
+        /// Stream journal step ID for crash recovery linkage (assistant messages only)
+        stream_step_id: Option<i64>,
     },
 }
 
@@ -75,6 +79,9 @@ struct HistoryEntrySerde {
     #[serde(default)]
     summary_id: Option<SummaryId>,
     created_at: SystemTime,
+    /// Stream journal step ID for crash recovery linkage
+    #[serde(default)]
+    stream_step_id: Option<i64>,
 }
 
 impl From<&HistoryEntry> for HistoryEntrySerde {
@@ -85,12 +92,14 @@ impl From<&HistoryEntry> for HistoryEntrySerde {
                 message,
                 token_count,
                 created_at,
+                stream_step_id,
             } => Self {
                 id: *id,
                 message: message.clone(),
                 token_count: *token_count,
                 summary_id: None,
                 created_at: *created_at,
+                stream_step_id: *stream_step_id,
             },
             HistoryEntry::Summarized {
                 id,
@@ -98,12 +107,14 @@ impl From<&HistoryEntry> for HistoryEntrySerde {
                 token_count,
                 summary_id,
                 created_at,
+                stream_step_id,
             } => Self {
                 id: *id,
                 message: message.clone(),
                 token_count: *token_count,
                 summary_id: Some(*summary_id),
                 created_at: *created_at,
+                stream_step_id: *stream_step_id,
             },
         }
     }
@@ -117,6 +128,7 @@ impl From<HistoryEntrySerde> for HistoryEntry {
             token_count,
             summary_id,
             created_at,
+            stream_step_id,
         } = entry;
 
         match summary_id {
@@ -126,12 +138,14 @@ impl From<HistoryEntrySerde> for HistoryEntry {
                 token_count,
                 summary_id,
                 created_at,
+                stream_step_id,
             },
             None => HistoryEntry::Original {
                 id,
                 message,
                 token_count,
                 created_at,
+                stream_step_id,
             },
         }
     }
@@ -163,6 +177,26 @@ impl HistoryEntry {
             message,
             token_count,
             created_at: SystemTime::now(),
+            stream_step_id: None,
+        }
+    }
+
+    /// Create a new entry with an associated stream journal step ID.
+    ///
+    /// Used for assistant messages from streaming responses to enable
+    /// idempotent crash recovery.
+    pub fn new_with_step_id(
+        id: MessageId,
+        message: Message,
+        token_count: u32,
+        stream_step_id: i64,
+    ) -> Self {
+        HistoryEntry::Original {
+            id,
+            message,
+            token_count,
+            created_at: SystemTime::now(),
+            stream_step_id: Some(stream_step_id),
         }
     }
 
@@ -194,6 +228,14 @@ impl HistoryEntry {
         }
     }
 
+    /// Get the stream journal step ID if this entry was created from a stream.
+    pub fn stream_step_id(&self) -> Option<i64> {
+        match self {
+            HistoryEntry::Original { stream_step_id, .. }
+            | HistoryEntry::Summarized { stream_step_id, .. } => *stream_step_id,
+        }
+    }
+
     pub fn is_summarized(&self) -> bool {
         matches!(self, HistoryEntry::Summarized { .. })
     }
@@ -205,18 +247,21 @@ impl HistoryEntry {
                 message,
                 token_count,
                 created_at,
+                stream_step_id,
             } => HistoryEntry::Summarized {
                 id: *id,
                 message: message.clone(),
                 token_count: *token_count,
                 summary_id,
                 created_at: *created_at,
+                stream_step_id: *stream_step_id,
             },
             HistoryEntry::Summarized {
                 id,
                 message,
                 token_count,
                 created_at,
+                stream_step_id,
                 ..
             } => HistoryEntry::Summarized {
                 id: *id,
@@ -224,6 +269,7 @@ impl HistoryEntry {
                 token_count: *token_count,
                 summary_id,
                 created_at: *created_at,
+                stream_step_id: *stream_step_id,
             },
         };
 
@@ -454,7 +500,43 @@ impl FullHistory {
         id
     }
 
+    /// Add a message to history with an associated stream step ID.
+    ///
+    /// Used for assistant messages from streaming responses to enable
+    /// idempotent crash recovery.
+    pub fn push_with_step_id(
+        &mut self,
+        message: Message,
+        token_count: u32,
+        stream_step_id: i64,
+    ) -> MessageId {
+        let id = MessageId::new(self.next_message_id);
+        self.next_message_id += 1;
+        self.entries.push(HistoryEntry::new_with_step_id(
+            id,
+            message,
+            token_count,
+            stream_step_id,
+        ));
+        id
+    }
+
+    /// Check if a stream step ID already exists in history.
+    ///
+    /// Used for idempotent crash recovery - if history already contains
+    /// an entry with this step_id, we should not recover it again.
+    pub fn has_step_id(&self, step_id: i64) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.stream_step_id() == Some(step_id))
+    }
+
     /// Add a summary for a range of messages.
+    ///
+    /// Under normal operation, summaries should only cover previously-unsummarized
+    /// messages. If a message is already summarized by another summary, the old
+    /// summary becomes orphaned (no messages reference it). This is detected and
+    /// logged but allowed to proceed.
     pub fn add_summary(&mut self, summary: Summary) -> Result<SummaryId> {
         let expected_id = SummaryId::new(self.summaries.len() as u64);
         if summary.id != expected_id {
@@ -483,7 +565,32 @@ impl FullHistory {
             ));
         }
 
-        // Mark covered messages as summarized.
+        // Check for already-summarized messages in the range.
+        // This shouldn't happen under normal operation but detect it for debugging.
+        let mut orphaned_summaries: Vec<SummaryId> = Vec::new();
+        for entry in self.entries.iter() {
+            let entry_id = entry.id().as_u64();
+            if entry_id >= start
+                && entry_id < end
+                && let Some(old_summary_id) = entry.summary_id()
+                && !orphaned_summaries.contains(&old_summary_id)
+            {
+                orphaned_summaries.push(old_summary_id);
+            }
+        }
+
+        if !orphaned_summaries.is_empty() {
+            // Log but proceed - the old summaries will become orphaned.
+            // This indicates either hierarchical summarization or a bug.
+            eprintln!(
+                "Warning: summary {} overlaps with existing summaries {:?}. \
+                 Old summaries will become orphaned.",
+                summary.id.0,
+                orphaned_summaries.iter().map(|s| s.0).collect::<Vec<_>>()
+            );
+        }
+
+        // Mark covered messages as summarized (overwrites any previous summary_id).
         for entry in &mut self.entries {
             let entry_id = entry.id().as_u64();
             if entry_id >= start && entry_id < end {
@@ -540,6 +647,26 @@ impl FullHistory {
     /// Count of summarized messages.
     pub fn summarized_count(&self) -> usize {
         self.entries.iter().filter(|e| e.is_summarized()).count()
+    }
+
+    /// Find orphaned summaries (summaries with no messages referencing them).
+    ///
+    /// Under normal operation, this should return an empty vector. Non-empty
+    /// results indicate either hierarchical re-summarization occurred or a bug.
+    pub fn orphaned_summaries(&self) -> Vec<SummaryId> {
+        let mut referenced: std::collections::HashSet<SummaryId> = std::collections::HashSet::new();
+
+        for entry in &self.entries {
+            if let Some(summary_id) = entry.summary_id() {
+                referenced.insert(summary_id);
+            }
+        }
+
+        self.summaries
+            .iter()
+            .map(|s| s.id)
+            .filter(|id| !referenced.contains(id))
+            .collect()
     }
 
     #[cfg(test)]
@@ -633,5 +760,85 @@ mod tests {
         assert_eq!(recent.len(), 3);
         assert_eq!(recent[0].message().content(), "Message 7");
         assert_eq!(recent[2].message().content(), "Message 9");
+    }
+
+    #[test]
+    fn test_orphaned_summaries_none_initially() {
+        let mut history = FullHistory::new();
+
+        history.push(make_test_message("First"), 100);
+        history.push(make_test_message("Second"), 100);
+
+        // No summaries yet, so no orphans
+        assert!(history.orphaned_summaries().is_empty());
+
+        // Add a summary
+        let summary_id = history.next_summary_id();
+        let summary = Summary::new(
+            summary_id,
+            MessageId::new(0)..MessageId::new(2),
+            NonEmptyString::new("Summary").expect("non-empty"),
+            30,
+            200,
+            "test-model".to_string(),
+        );
+        history.add_summary(summary).expect("add summary");
+
+        // Summary is referenced, so still no orphans
+        assert!(history.orphaned_summaries().is_empty());
+    }
+
+    #[test]
+    fn test_overlapping_summary_creates_orphan() {
+        let mut history = FullHistory::new();
+
+        // Add 4 messages
+        for i in 0..4 {
+            history.push(make_test_message(&format!("Message {}", i)), 100);
+        }
+
+        // Create first summary covering messages 0-2
+        let summary0_id = history.next_summary_id();
+        let summary0 = Summary::new(
+            summary0_id,
+            MessageId::new(0)..MessageId::new(2),
+            NonEmptyString::new("First summary").expect("non-empty"),
+            30,
+            200,
+            "test-model".to_string(),
+        );
+        history.add_summary(summary0).expect("add summary 0");
+
+        // Verify messages 0-1 point to summary 0
+        assert_eq!(history.get_entry(MessageId::new(0)).summary_id(), Some(summary0_id));
+        assert_eq!(history.get_entry(MessageId::new(1)).summary_id(), Some(summary0_id));
+        assert!(history.orphaned_summaries().is_empty());
+
+        // Create overlapping summary covering messages 0-4 (includes already-summarized 0-1)
+        let summary1_id = history.next_summary_id();
+        let summary1 = Summary::new(
+            summary1_id,
+            MessageId::new(0)..MessageId::new(4),
+            NonEmptyString::new("Bigger summary").expect("non-empty"),
+            50,
+            400,
+            "test-model".to_string(),
+        );
+        history.add_summary(summary1).expect("add summary 1");
+
+        // Now messages 0-3 should point to summary 1
+        for i in 0..4 {
+            assert_eq!(
+                history.get_entry(MessageId::new(i)).summary_id(),
+                Some(summary1_id),
+                "message {} should point to summary 1",
+                i
+            );
+        }
+
+        // Summary 0 should now be orphaned (no messages reference it)
+        let orphans = history.orphaned_summaries();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0], summary0_id);
     }
 }

@@ -5,12 +5,9 @@
 //! decisions, and context while reducing token count.
 
 use anyhow::{Result, anyhow};
-use reqwest::Client;
 use serde_json::json;
-use std::sync::OnceLock;
-use std::time::Duration;
 
-use forge_providers::ApiConfig;
+use forge_providers::{ApiConfig, http_client_with_timeout};
 use forge_types::{Message, Provider};
 
 use super::MessageId;
@@ -19,23 +16,20 @@ use super::MessageId;
 const CLAUDE_SUMMARIZATION_MODEL: &str = "claude-3-haiku-20240307";
 const OPENAI_SUMMARIZATION_MODEL: &str = "gpt-4o-mini";
 
+/// Context limits for summarizer models (conservative to leave room for output + overhead).
+/// Claude 3 Haiku has 200k context, we use 190k to leave room for output and system prompt.
+const CLAUDE_SUMMARIZER_INPUT_LIMIT: u32 = 190_000;
+/// GPT-4o-mini has 128k context, we use 120k to leave room for output and system prompt.
+const OPENAI_SUMMARIZER_INPUT_LIMIT: u32 = 120_000;
+
 const MIN_SUMMARY_TOKENS: u32 = 64;
 const MAX_SUMMARY_TOKENS: u32 = 2048;
 const SUMMARY_TIMEOUT_SECS: u64 = 60;
 
 /// API endpoints.
 const CLAUDE_API_URL: &str = "https://api.anthropic.com/v1/messages";
-const OPENAI_API_URL: &str = "https://api.openai.com/v1/chat/completions";
-
-fn http_client() -> &'static Client {
-    static CLIENT: OnceLock<Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        Client::builder()
-            .timeout(Duration::from_secs(SUMMARY_TIMEOUT_SECS))
-            .build()
-            .expect("build summarization client")
-    })
-}
+/// Using Responses API for consistency with main provider (providers/src/lib.rs).
+const OPENAI_API_URL: &str = "https://api.openai.com/v1/responses";
 
 /// Build a summarization prompt for a slice of messages.
 ///
@@ -89,6 +83,25 @@ Write the summary as a continuous narrative that captures the essence of the con
     (system_instruction, conversation_text)
 }
 
+/// Get the summarizer model's input token limit for a provider.
+pub fn summarizer_input_limit(provider: Provider) -> u32 {
+    match provider {
+        Provider::Claude => CLAUDE_SUMMARIZER_INPUT_LIMIT,
+        Provider::OpenAI => OPENAI_SUMMARIZER_INPUT_LIMIT,
+    }
+}
+
+/// Estimate the token count for a text string.
+///
+/// Uses a simple heuristic of ~4 characters per token (conservative).
+/// This is a rough approximation since we don't want to add tokenizer
+/// dependencies to this module.
+fn estimate_tokens(text: &str) -> u32 {
+    // Conservative estimate: ~4 chars per token for English text.
+    // This may overestimate, which is safer than underestimating.
+    (text.len() as u32 / 4).max(1)
+}
+
 /// Generate a summary of conversation messages using an LLM.
 ///
 /// This function calls a cheaper/faster model to generate the summary,
@@ -103,7 +116,10 @@ Write the summary as a continuous narrative that captures the essence of the con
 /// The generated summary text.
 ///
 /// # Errors
-/// Returns an error if the API call fails or the response cannot be parsed.
+/// Returns an error if:
+/// - The input messages exceed the summarizer model's context limit
+/// - The API call fails
+/// - The response cannot be parsed
 pub async fn generate_summary(
     config: &ApiConfig,
     messages: &[(MessageId, Message)],
@@ -115,6 +131,21 @@ pub async fn generate_summary(
 
     let (system_instruction, conversation_text) =
         build_summarization_prompt(messages, target_tokens);
+    
+    // Validate that input doesn't exceed summarizer model's context limit
+    let estimated_input = estimate_tokens(&system_instruction) + estimate_tokens(&conversation_text);
+    let input_limit = summarizer_input_limit(config.provider());
+    
+    if estimated_input > input_limit {
+        return Err(anyhow!(
+            "Summarization scope too large: ~{} tokens exceeds {} model limit of {} tokens. \
+             Consider summarizing fewer messages at a time.",
+            estimated_input,
+            summarization_model(config.provider()),
+            input_limit
+        ));
+    }
+    
     let max_tokens = target_tokens.clamp(MIN_SUMMARY_TOKENS, MAX_SUMMARY_TOKENS);
 
     match config.provider() {
@@ -146,7 +177,7 @@ async fn generate_summary_claude(
     conversation_text: &str,
     max_tokens: u32,
 ) -> Result<String> {
-    let client = http_client();
+    let client = http_client_with_timeout(SUMMARY_TIMEOUT_SECS);
 
     let body = json!({
         "model": CLAUDE_SUMMARIZATION_MODEL,
@@ -192,24 +223,26 @@ async fn generate_summary_claude(
     Ok(summary.to_string())
 }
 
-/// Generate summary using OpenAI API (non-streaming).
+/// Generate summary using OpenAI Responses API (non-streaming).
+///
+/// Uses the Responses API for consistency with the main provider module.
+/// Request format: `{ model, instructions, input, max_output_tokens, stream: false }`
+/// Response format: `{ output: [{ type: "message", content: [{ type: "output_text", text }] }] }`
 async fn generate_summary_openai(
     api_key: &str,
     system_instruction: &str,
     conversation_text: &str,
     max_tokens: u32,
 ) -> Result<String> {
-    let client = http_client();
+    let client = http_client_with_timeout(SUMMARY_TIMEOUT_SECS);
 
+    // Responses API uses `input` array and `instructions` for system prompt
     let body = json!({
         "model": OPENAI_SUMMARIZATION_MODEL,
         "stream": false,
-        "max_tokens": max_tokens,
-        "messages": [
-            {
-                "role": "system",
-                "content": system_instruction
-            },
+        "max_output_tokens": max_tokens,
+        "instructions": system_instruction,
+        "input": [
             {
                 "role": "user",
                 "content": format!("Please summarize the following conversation:\n\n{}", conversation_text)
@@ -236,12 +269,14 @@ async fn generate_summary_openai(
 
     let json: serde_json::Value = response.json().await?;
 
-    // Extract text from OpenAI's response format:
-    // { "choices": [{ "message": { "content": "..." } }] }
-    let summary = json["choices"]
+    // Extract text from OpenAI Responses API format:
+    // { "output": [{ "type": "message", "content": [{ "type": "output_text", "text": "..." }] }] }
+    let summary = json["output"]
         .as_array()
         .and_then(|arr| arr.first())
-        .and_then(|choice| choice["message"]["content"].as_str())
+        .and_then(|item| item["content"].as_array())
+        .and_then(|content| content.first())
+        .and_then(|block| block["text"].as_str())
         .ok_or_else(|| anyhow!("Failed to extract summary from OpenAI response: {:?}", json))?;
 
     Ok(summary.to_string())

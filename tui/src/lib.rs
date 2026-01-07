@@ -24,6 +24,7 @@ use ratatui::{
         ScrollbarState, Wrap,
     },
 };
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use forge_engine::{
@@ -31,6 +32,7 @@ use forge_engine::{
 };
 
 use self::markdown::render_markdown;
+pub use self::markdown::clear_render_cache;
 
 /// Main draw function
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -254,26 +256,6 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         ),
     };
 
-    // Build input content with prompt
-    let input_content = match mode {
-        InputMode::Insert | InputMode::Normal | InputMode::ModelSelect => vec![
-            Span::styled(
-                format!(" {prompt_char} "),
-                Style::default().fg(colors::PRIMARY),
-            ),
-            Span::styled(app.draft_text(), Style::default().fg(colors::TEXT_PRIMARY)),
-        ],
-        InputMode::Command => {
-            let Some(command_line) = command_line else {
-                return;
-            };
-            vec![
-                Span::styled(" / ", Style::default().fg(colors::YELLOW)),
-                Span::styled(command_line, Style::default().fg(colors::TEXT_PRIMARY)),
-            ]
-        }
-    };
-
     // Key hints based on mode
     let hints = match mode {
         InputMode::Normal => vec![
@@ -333,22 +315,100 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         Padding::vertical(1)
     };
 
+    // Calculate horizontal scroll offset to keep cursor visible.
+    // The visible content width is: area.width - borders (2) - prompt (3) - right padding (1)
+    let visible_content_width = area.width.saturating_sub(6) as usize;
+
+    // Calculate scroll offset and prepare text for display.
+    // We slice the text to show the portion that includes the cursor, keeping the prompt fixed.
+    let (display_text, horizontal_scroll) = if mode == InputMode::Insert {
+        let cursor_index = app.draft_cursor_byte_index();
+        let draft = app.draft_text();
+        let text_before_cursor = &draft[..cursor_index];
+        let cursor_display_pos = text_before_cursor.width();
+
+        if cursor_display_pos >= visible_content_width {
+            // Need to scroll: find the byte offset to start from
+            let scroll_chars = cursor_display_pos - visible_content_width + 1;
+            // Find byte index corresponding to scroll_chars display width
+            let mut byte_offset = 0;
+            let mut width_acc = 0;
+            for (idx, grapheme) in draft.grapheme_indices(true) {
+                if width_acc >= scroll_chars {
+                    byte_offset = idx;
+                    break;
+                }
+                width_acc += grapheme.width();
+            }
+            (draft[byte_offset..].to_string(), scroll_chars as u16)
+        } else {
+            (draft.to_string(), 0u16)
+        }
+    } else if mode == InputMode::Command && let Some(cmd) = &command_line {
+        let cursor_display_pos = cmd.width();
+        if cursor_display_pos >= visible_content_width {
+            let scroll_chars = cursor_display_pos - visible_content_width + 1;
+            let mut byte_offset = 0;
+            let mut width_acc = 0;
+            for (idx, grapheme) in cmd.grapheme_indices(true) {
+                if width_acc >= scroll_chars {
+                    byte_offset = idx;
+                    break;
+                }
+                width_acc += grapheme.width();
+            }
+            (cmd[byte_offset..].to_string(), scroll_chars as u16)
+        } else {
+            (cmd.to_string(), 0u16)
+        }
+    } else {
+        (
+            match mode {
+                InputMode::Insert | InputMode::Normal | InputMode::ModelSelect => {
+                    app.draft_text().to_string()
+                }
+                InputMode::Command => command_line
+                    .as_ref()
+                    .map(|s| s.to_string())
+                    .unwrap_or_default(),
+            },
+            0u16,
+        )
+    };
+
+    // Rebuild input_content with potentially scrolled text
+    let input_content = match mode {
+        InputMode::Insert | InputMode::Normal | InputMode::ModelSelect => vec![
+            Span::styled(
+                format!(" {prompt_char} "),
+                Style::default().fg(colors::PRIMARY),
+            ),
+            Span::styled(display_text, Style::default().fg(colors::TEXT_PRIMARY)),
+        ],
+        InputMode::Command => {
+            vec![
+                Span::styled(" / ", Style::default().fg(colors::YELLOW)),
+                Span::styled(display_text, Style::default().fg(colors::TEXT_PRIMARY)),
+            ]
+        }
+    };
+
     let input = Paragraph::new(Line::from(input_content)).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(border_style)
-            .title_top(Line::from(vec![Span::styled(mode_text, mode_style)]))
-            .title_top(Line::from(hints).alignment(Alignment::Right))
-            .title_bottom(
-                Line::from(vec![Span::styled(
-                    usage_str,
-                    Style::default().fg(usage_color),
-                )])
-                .alignment(Alignment::Right),
-            )
-            .padding(input_padding),
-    );
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(border_style)
+                .title_top(Line::from(vec![Span::styled(mode_text, mode_style)]))
+                .title_top(Line::from(hints).alignment(Alignment::Right))
+                .title_bottom(
+                    Line::from(vec![Span::styled(
+                        usage_str,
+                        Style::default().fg(usage_color),
+                    )])
+                    .alignment(Alignment::Right),
+                )
+                .padding(input_padding),
+        );
 
     frame.render_widget(input, area);
 
@@ -357,14 +417,17 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         // Calculate cursor position using display width (handles Unicode properly)
         let cursor_index = app.draft_cursor_byte_index();
         let text_before_cursor = &app.draft_text()[..cursor_index];
-        let cursor_x = area.x + 4 + text_before_cursor.width() as u16;
+        let cursor_display_pos = text_before_cursor.width() as u16;
+        // Subtract scroll offset to get visible position
+        let cursor_x = area.x + 4 + cursor_display_pos.saturating_sub(horizontal_scroll);
         let cursor_y = area.y + 2;
         frame.set_cursor_position((cursor_x, cursor_y));
     } else if mode == InputMode::Command {
         let Some(command_line) = command_line else {
             return;
         };
-        let cursor_x = area.x + 4 + command_line.width() as u16;
+        let cursor_display_pos = command_line.width() as u16;
+        let cursor_x = area.x + 4 + cursor_display_pos.saturating_sub(horizontal_scroll);
         let cursor_y = area.y + 2;
         frame.set_cursor_position((cursor_x, cursor_y));
     }

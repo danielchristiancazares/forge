@@ -811,6 +811,9 @@ impl App {
         };
 
         app.clamp_output_limits_to_model();
+        // Sync output limit to context manager for accurate budget calculation
+        app.context_manager
+            .set_output_limit(app.output_limits.max_output_tokens());
 
         // Load previous session's history if available
         app.load_history_if_exists();
@@ -909,7 +912,9 @@ impl App {
         }
 
         match forge_context::ContextManager::load(&path, self.model.as_str()) {
-            Ok(loaded_manager) => {
+            Ok(mut loaded_manager) => {
+                // Sync output limit before replacing context manager
+                loaded_manager.set_output_limit(self.output_limits.max_output_tokens());
                 self.context_manager = loaded_manager;
                 self.rebuild_display_from_history();
                 self.set_status(format!(
@@ -936,6 +941,19 @@ impl App {
         id
     }
 
+    /// Push an assistant message with an associated stream step ID.
+    ///
+    /// Used for streaming responses to enable idempotent crash recovery.
+    fn push_history_message_with_step_id(
+        &mut self,
+        message: Message,
+        step_id: forge_context::StepId,
+    ) -> MessageId {
+        let id = self.context_manager.push_message_with_step_id(message, step_id);
+        self.display.push(DisplayItem::History(id));
+        id
+    }
+
     /// Autosave history to disk (best-effort, errors logged but not propagated).
     /// Called after user messages and assistant completions for crash durability.
     fn autosave_history(&self) {
@@ -952,6 +970,12 @@ impl App {
     ///
     /// Returns `Some(RecoveredStream)` if there was an incomplete stream that was recovered.
     /// The recovered partial response is added to the conversation with a warning badge.
+    ///
+    /// # Idempotent recovery
+    ///
+    /// If history already contains an entry with the recovered step_id, we skip
+    /// adding the message (it was already recovered or committed) and just finalize
+    /// the journal cleanup.
     pub fn check_crash_recovery(&mut self) -> Option<RecoveredStream> {
         let recovered = match self.stream_journal.recover() {
             Ok(Some(recovered)) => recovered,
@@ -962,42 +986,65 @@ impl App {
             }
         };
 
-        let (recovery_badge, step_id, last_seq, partial_text, error_text) = match &recovered {
-            RecoveredStream::Complete {
-                step_id,
-                partial_text,
-                last_seq,
-            } => (
-                RECOVERY_COMPLETE_BADGE,
-                *step_id,
-                *last_seq,
-                partial_text.as_str(),
-                None,
-            ),
-            RecoveredStream::Incomplete {
-                step_id,
-                partial_text,
-                last_seq,
-            } => (
-                RECOVERY_INCOMPLETE_BADGE,
-                *step_id,
-                *last_seq,
-                partial_text.as_str(),
-                None,
-            ),
-            RecoveredStream::Errored {
-                step_id,
-                partial_text,
-                last_seq,
-                error,
-            } => (
-                RECOVERY_ERROR_BADGE,
-                *step_id,
-                *last_seq,
-                partial_text.as_str(),
-                Some(error.as_str()),
-            ),
-        };
+        let (recovery_badge, step_id, last_seq, partial_text, error_text, model_name) =
+            match &recovered {
+                RecoveredStream::Complete {
+                    step_id,
+                    partial_text,
+                    last_seq,
+                    model_name,
+                } => (
+                    RECOVERY_COMPLETE_BADGE,
+                    *step_id,
+                    *last_seq,
+                    partial_text.as_str(),
+                    None,
+                    model_name.clone(),
+                ),
+                RecoveredStream::Incomplete {
+                    step_id,
+                    partial_text,
+                    last_seq,
+                    model_name,
+                } => (
+                    RECOVERY_INCOMPLETE_BADGE,
+                    *step_id,
+                    *last_seq,
+                    partial_text.as_str(),
+                    None,
+                    model_name.clone(),
+                ),
+                RecoveredStream::Errored {
+                    step_id,
+                    partial_text,
+                    last_seq,
+                    error,
+                    model_name,
+                } => (
+                    RECOVERY_ERROR_BADGE,
+                    *step_id,
+                    *last_seq,
+                    partial_text.as_str(),
+                    Some(error.as_str()),
+                    model_name.clone(),
+                ),
+            };
+
+        // Check if history already has this step_id (idempotent recovery)
+        if self.context_manager.has_step_id(step_id) {
+            // Already recovered or committed - just finalize the journal cleanup
+            self.finalize_journal_commit(step_id);
+            self.set_status(format!(
+                "Skipped duplicate recovery for step {} (already in history)",
+                step_id
+            ));
+            return Some(recovered);
+        }
+
+        // Use the model from the stream if available, otherwise fall back to current
+        let model = model_name
+            .and_then(|name| parse_model_name_from_string(&name))
+            .unwrap_or_else(|| self.model.clone());
 
         // Add the partial response as an assistant message with recovery badge.
         let mut recovered_content = NonEmptyString::from(recovery_badge);
@@ -1011,16 +1058,15 @@ impl App {
             recovered_content = recovered_content.append("\n\n").append(error_line.as_str());
         }
 
-        // Push recovered partial response as a completed assistant message.
-        self.push_history_message(Message::assistant(self.model.clone(), recovered_content));
-        self.autosave_history(); // Persist recovered message immediately
+        // Push recovered partial response with step_id for idempotent future recovery
+        self.push_history_message_with_step_id(Message::assistant(model, recovered_content), step_id);
+        self.autosave_history();
 
-        // Seal the recovered journal entries
+        // Seal any unsealed entries, then mark committed and prune
         if let Err(e) = self.stream_journal.seal_unsealed(step_id) {
-            eprintln!("Failed to seal recovered journal: {e}");
-            // Try to discard instead
-            let _ = self.stream_journal.discard_unsealed(step_id);
+            tracing::warn!("Failed to seal recovered journal: {e}");
         }
+        self.finalize_journal_commit(step_id);
 
         self.set_status(format!(
             "Recovered {} bytes (step {}, last seq {}) from crashed session",
@@ -1202,6 +1248,9 @@ impl App {
         tracing::warn!("{warning}");
 
         self.output_limits = clamped;
+        // Sync to context manager for accurate budget calculation
+        self.context_manager
+            .set_output_limit(clamped.max_output_tokens());
     }
 
     /// Switch to a different provider
@@ -1662,7 +1711,7 @@ impl App {
             self.build_basic_api_messages()
         };
 
-        let journal = match self.stream_journal.begin_session() {
+        let journal = match self.stream_journal.begin_session(config.model().as_str()) {
             Ok(session) => session,
             Err(e) => {
                 self.set_status(format!("Cannot start stream: journal unavailable ({e})"));
@@ -1850,6 +1899,20 @@ impl App {
     }
 
     /// Finish the current streaming session and commit the message.
+    ///
+    /// # Commit ordering for crash durability
+    ///
+    /// The order of operations is critical for durability:
+    /// 1. Capture step_id before consuming the journal
+    /// 2. Seal the journal (marks stream as complete in SQLite)
+    /// 3. Push message to history WITH step_id (for idempotent recovery)
+    /// 4. Persist history to disk
+    /// 5. Mark journal step as committed (after history is persisted)
+    /// 6. Prune the journal step (cleanup)
+    ///
+    /// This ensures that if we crash after step 2 but before step 5, recovery
+    /// will find the uncommitted step. If history already has that step_id,
+    /// recovery will skip it (idempotent).
     fn finish_streaming(&mut self, finish_reason: StreamFinishReason) {
         let active = match self.replace_with_idle() {
             AppState::Enabled(EnabledState::Streaming(active))
@@ -1868,9 +1931,13 @@ impl App {
 
         abort_handle.abort();
 
-        // Seal the journal
+        // Capture step_id before consuming the journal
+        let step_id = journal.step_id();
+
+        // Seal the journal (marks stream as complete)
         if let Err(e) = journal.seal(&mut self.stream_journal) {
             eprintln!("Journal seal failed: {e}");
+            // Continue anyway - we'll try to commit to history
         }
 
         // Capture metadata before consuming the streaming message.
@@ -1882,8 +1949,10 @@ impl App {
         match finish_reason {
             StreamFinishReason::Error(err) => {
                 if let Some(message) = message {
-                    self.push_history_message(message);
-                    self.autosave_history(); // Persist partial response for crash durability
+                    // Push with step_id for idempotent recovery
+                    self.push_history_message_with_step_id(message, step_id);
+                    self.autosave_history();
+                    self.finalize_journal_commit(step_id);
                 }
                 // Use stream's model/provider, not current app settings (user may have changed during stream)
                 let ui_error = format_stream_error(model.provider(), model.as_str(), &err);
@@ -1899,11 +1968,30 @@ impl App {
             let empty_msg = Message::assistant(model, NonEmptyString::from(EMPTY_RESPONSE_BADGE));
             self.push_local_message(empty_msg);
             self.set_status("Warning: API returned empty response");
+            // Still finalize the journal even for empty responses
+            self.finalize_journal_commit(step_id);
             return;
         };
 
-        self.push_history_message(message);
-        self.autosave_history(); // Persist completed response for crash durability
+        // Push with step_id for idempotent recovery
+        self.push_history_message_with_step_id(message, step_id);
+        self.autosave_history();
+        self.finalize_journal_commit(step_id);
+    }
+
+    /// Mark journal step as committed and prune it.
+    ///
+    /// Called after history has been successfully persisted to disk.
+    fn finalize_journal_commit(&mut self, step_id: forge_context::StepId) {
+        // Mark as committed first
+        if let Err(e) = self.stream_journal.mark_committed(step_id) {
+            tracing::warn!("Failed to mark journal step {} as committed: {e}", step_id);
+        }
+
+        // Then prune the step's entries (cleanup)
+        if let Err(e) = self.stream_journal.prune_step(step_id) {
+            tracing::warn!("Failed to prune journal step {}: {e}", step_id);
+        }
     }
 
     /// Increment animation tick and poll background tasks.
@@ -2128,6 +2216,8 @@ impl App {
 
                 self.display.clear();
                 self.context_manager = ContextManager::new(self.model.as_str());
+                self.context_manager
+                    .set_output_limit(self.output_limits.max_output_tokens());
                 self.autosave_history(); // Persist cleared state immediately
                 self.set_status("Conversation cleared");
             }
@@ -2635,6 +2725,30 @@ fn format_stream_error(provider: Provider, model: &str, err: &str) -> StreamErro
     }
 }
 
+/// Parse a model name string back into a ModelName.
+///
+/// Used for crash recovery when we need to reconstruct the model from stored metadata.
+/// Falls back to None if the model name cannot be parsed.
+fn parse_model_name_from_string(name: &str) -> Option<ModelName> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Detect provider from model name prefix
+    let provider = if trimmed.to_ascii_lowercase().starts_with("claude-") {
+        Provider::Claude
+    } else if trimmed.to_ascii_lowercase().starts_with("gpt-") {
+        Provider::OpenAI
+    } else {
+        // Unknown provider - can't parse
+        return None;
+    };
+
+    // Use the standard parse method
+    ModelName::parse(provider, trimmed).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2650,6 +2764,9 @@ mod tests {
             path: PathBuf::from(".").join("forge-test"),
             source: DataDirSource::Fallback,
         };
+        let output_limits = OutputLimits::new(4096);
+        let mut context_manager = ContextManager::new(model.as_str());
+        context_manager.set_output_limit(output_limits.max_output_tokens());
 
         App {
             input: InputState::default(),
@@ -2663,10 +2780,10 @@ mod tests {
             model: model.clone(),
             tick: 0,
             data_dir,
-            context_manager: ContextManager::new(model.as_str()),
+            context_manager,
             stream_journal,
             state: AppState::Enabled(EnabledState::Idle),
-            output_limits: OutputLimits::new(4096),
+            output_limits,
             cache_enabled: false,
             openai_options: OpenAIRequestOptions::default(),
             last_frame: Instant::now(),
@@ -2810,7 +2927,7 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         let streaming = StreamingMessage::new(app.model.clone(), rx);
         let (abort_handle, _abort_registration) = AbortHandle::new_pair();
-        let journal = app.stream_journal.begin_session().expect("journal session");
+        let journal = app.stream_journal.begin_session(app.model.as_str()).expect("journal session");
         app.state = AppState::Enabled(EnabledState::Streaming(ActiveStream {
             message: streaming,
             journal,

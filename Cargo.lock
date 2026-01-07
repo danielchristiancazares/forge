@@ -731,6 +731,7 @@ dependencies = [
  "pulldown-cmark",
  "ratatui",
  "tokio",
+ "unicode-segmentation",
  "unicode-width 0.2.0",
 ]
 

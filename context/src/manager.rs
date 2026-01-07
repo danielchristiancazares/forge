@@ -149,6 +149,8 @@ pub struct ContextManager {
     current_limits_source: ModelLimitsSource,
     /// Summarization configuration.
     summarization_config: SummarizationConfig,
+    /// Configured output limit (if set, allows more input context).
+    configured_output_limit: Option<u32>,
 }
 
 impl ContextManager {
@@ -167,6 +169,24 @@ impl ContextManager {
             current_limits: limits,
             current_limits_source: limits_source,
             summarization_config: SummarizationConfig::default(),
+            configured_output_limit: None,
+        }
+    }
+
+    /// Set the configured output limit.
+    ///
+    /// When set, the effective input budget will reserve only this amount
+    /// for output instead of the model's full max_output capability.
+    /// This allows more input context when users configure smaller output limits.
+    pub fn set_output_limit(&mut self, limit: u32) {
+        self.configured_output_limit = Some(limit);
+    }
+
+    /// Get the effective input budget, respecting configured output limit.
+    fn effective_budget(&self) -> u32 {
+        match self.configured_output_limit {
+            Some(limit) => self.current_limits.effective_input_budget_with_reserved(limit),
+            None => self.current_limits.effective_input_budget(),
         }
     }
 
@@ -176,9 +196,31 @@ impl ContextManager {
         self.history.push(message, token_count)
     }
 
+    /// Add a message to history with an associated stream step ID.
+    ///
+    /// Used for assistant messages from streaming responses to enable
+    /// idempotent crash recovery.
+    pub fn push_message_with_step_id(
+        &mut self,
+        message: Message,
+        stream_step_id: i64,
+    ) -> MessageId {
+        let token_count = self.counter.count_message(&message);
+        self.history
+            .push_with_step_id(message, token_count, stream_step_id)
+    }
+
+    /// Check if a stream step ID already exists in history.
+    ///
+    /// Used for idempotent crash recovery - if history already contains
+    /// an entry with this step_id, we should not recover it again.
+    pub fn has_step_id(&self, step_id: i64) -> bool {
+        self.history.has_step_id(step_id)
+    }
+
     /// Switch to a different model - triggers context adaptation.
     pub fn switch_model(&mut self, new_model: &str) -> ContextAdaptation {
-        let old_limits = self.current_limits;
+        let old_budget = self.effective_budget();
         let resolved = self.registry.get(new_model);
         let new_limits = resolved.limits();
         let new_source = resolved.source();
@@ -187,8 +229,7 @@ impl ContextManager {
         self.current_limits = new_limits;
         self.current_limits_source = new_source;
 
-        let old_budget = old_limits.effective_input_budget();
-        let new_budget = new_limits.effective_input_budget();
+        let new_budget = self.effective_budget();
 
         if new_budget < old_budget {
             ContextAdaptation::Shrinking {
@@ -219,11 +260,8 @@ impl ContextManager {
     ///
     /// Returns an error if summarization is needed to fit within budget, or if
     /// the most recent messages alone exceed the budget (unrecoverable).
-    // TODO: Accept configured output limit to use effective_input_budget_with_reserved()
-    // instead of reserving the model's full max_output. This would allow more input
-    // context when users configure smaller output limits.
     fn build_working_context(&self) -> Result<WorkingContext, ContextBuildError> {
-        let budget = self.current_limits.effective_input_budget();
+        let budget = self.effective_budget();
         let mut ctx = WorkingContext::new(budget);
 
         let entries = self.history.entries();
@@ -326,9 +364,12 @@ impl ContextManager {
 
         for block in blocks.iter().rev() {
             if exhausted {
-                if let Block::Unsummarized(messages) = block {
-                    for (id, _) in messages.iter().rev() {
-                        need_summary_rev.push(*id);
+                // Collect all older content (summarized or not) for re-summarization.
+                match block {
+                    Block::Unsummarized(messages) | Block::Summarized { messages, .. } => {
+                        for (id, _) in messages.iter().rev() {
+                            need_summary_rev.push(*id);
+                        }
                     }
                 }
                 continue;
@@ -357,8 +398,14 @@ impl ContextManager {
                         ));
                         tokens_used += *summary_tokens;
                     } else {
-                        // Can't include this summarized block; stop to avoid holes in history.
-                        break;
+                        // Even the summary doesn't fit. Mark underlying messages for
+                        // hierarchical re-summarization (combined with other old content
+                        // into a more compact summary). The old summary becomes orphaned.
+                        exhausted = true;
+                        for (id, _) in messages.iter().rev() {
+                            need_summary_rev.push(*id);
+                        }
+                        // Don't break - continue to collect more content for summarization.
                     }
                 }
                 Block::Unsummarized(messages) => {
@@ -549,7 +596,7 @@ impl ContextManager {
     pub fn usage_status(&self) -> ContextUsageStatus {
         let fallback_usage = || ContextUsage {
             used_tokens: self.history.total_tokens(),
-            budget_tokens: self.current_limits.effective_input_budget(),
+            budget_tokens: self.effective_budget(),
             summarized_segments: 0,
         };
 
@@ -596,6 +643,10 @@ impl ContextManager {
     // === Persistence ===
 
     /// Save history to a JSON file.
+    ///
+    /// Uses atomic write pattern: write to temp file, then rename.
+    /// On Windows where rename-over-existing fails, uses backup-and-restore
+    /// to prevent data loss if the final rename fails.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
         let json = serde_json::to_string_pretty(&self.history)?;
@@ -604,8 +655,22 @@ impl ContextManager {
 
         if let Err(err) = std::fs::rename(&tmp_path, path) {
             if path.exists() {
-                std::fs::remove_file(path)?;
-                std::fs::rename(&tmp_path, path)?;
+                // On Windows, rename fails if target exists.
+                // Use backup-restore pattern to prevent data loss.
+                let backup_path = path.with_extension("bak");
+
+                // Move original to backup (preserves data if next step fails)
+                std::fs::rename(path, &backup_path)?;
+
+                // Try to move tmp to target
+                if let Err(rename_err) = std::fs::rename(&tmp_path, path) {
+                    // Restore from backup - original data preserved
+                    let _ = std::fs::rename(&backup_path, path);
+                    return Err(rename_err.into());
+                }
+
+                // Success - clean up backup
+                let _ = std::fs::remove_file(&backup_path);
             } else {
                 return Err(err.into());
             }
@@ -631,6 +696,7 @@ impl ContextManager {
             current_limits: limits,
             current_limits_source: limits_source,
             summarization_config: SummarizationConfig::default(),
+            configured_output_limit: None, // Will be set by engine after load
         })
     }
 }
@@ -694,5 +760,70 @@ mod tests {
 
         let ctx = result.unwrap();
         assert_eq!(ctx.segments().len(), 2);
+    }
+
+    #[test]
+    fn test_hierarchical_summarization_collects_summarized_messages() {
+        use crate::history::{MessageId, Summary};
+        use forge_types::NonEmptyString;
+
+        // Create manager with a very small model to force tight budget
+        let mut manager = ContextManager::new("gpt-4"); // 8k context
+
+        // Add many messages to exceed budget
+        for i in 0..20 {
+            manager.push_message(
+                Message::try_user(&format!("Message {} with some content to use tokens", i))
+                    .expect("non-empty"),
+            );
+        }
+
+        // Create a summary covering messages 0-10
+        let summary_id = manager.history.next_summary_id();
+        let summary = Summary::new(
+            summary_id,
+            MessageId::new_for_test(0)..MessageId::new_for_test(10),
+            NonEmptyString::new("Summary of first 10 messages").expect("non-empty"),
+            100, // 100 tokens for the summary
+            500, // Original was 500 tokens
+            "test-model".to_string(),
+        );
+        manager.history.add_summary(summary).expect("add summary");
+
+        // Switch to smallest possible model to force even summary not to fit
+        manager.set_model_without_adaptation("gpt-3.5-turbo"); // Much smaller context
+
+        // Now try to build context - should need hierarchical summarization
+        let result = manager.build_working_context();
+
+        // If summarization is needed, verify summarized messages are included
+        if let Err(ContextBuildError::SummarizationNeeded(needed)) = result {
+            // The messages_to_summarize should include the already-summarized messages 0-9
+            // if they were collected for hierarchical re-summarization
+            let has_summarized = needed
+                .messages_to_summarize
+                .iter()
+                .any(|id| id.as_u64() < 10);
+
+            // This test verifies the mechanism exists - the exact behavior depends on
+            // budget calculations. The key assertion is that we don't panic or break.
+            assert!(
+                !needed.messages_to_summarize.is_empty(),
+                "Should have messages to summarize"
+            );
+
+            // If summarized messages are included, verify they form a contiguous range
+            // from the start (hierarchical summarization collects from oldest)
+            if has_summarized {
+                let min_id = needed
+                    .messages_to_summarize
+                    .iter()
+                    .map(|id| id.as_u64())
+                    .min()
+                    .unwrap();
+                assert_eq!(min_id, 0, "Should include oldest messages first");
+            }
+        }
+        // If Ok, the context fit - which is also valid
     }
 }

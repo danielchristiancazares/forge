@@ -6,8 +6,8 @@
         "Assistant": {
           "content": "hello",
           "timestamp": {
-            "secs_since_epoch": 1767701439,
-            "nanos_since_epoch": 539950600
+            "secs_since_epoch": 1767743955,
+            "nanos_since_epoch": 481889900
           },
           "provider": "Claude",
           "model": "claude-sonnet-4-5-20250929",
@@ -17,9 +17,10 @@
       "token_count": 6,
       "summary_id": null,
       "created_at": {
-        "secs_since_epoch": 1767701439,
-        "nanos_since_epoch": 540293900
-      }
+        "secs_since_epoch": 1767743955,
+        "nanos_since_epoch": 482334000
+      },
+      "stream_step_id": 1
     }
   ],
   "summaries": [],
