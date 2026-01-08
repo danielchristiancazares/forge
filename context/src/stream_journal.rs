@@ -393,7 +393,8 @@ impl StreamJournal {
         )
         .with_context(|| format!("Failed to delete metadata for step {}", step_id))?;
 
-        tx.commit().context("Failed to commit discard transaction")?;
+        tx.commit()
+            .context("Failed to commit discard transaction")?;
 
         Ok(deleted as u64)
     }

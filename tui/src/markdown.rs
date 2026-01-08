@@ -78,7 +78,8 @@ pub fn render_markdown(content: &str, base_style: Style) -> Vec<Line<'static>> {
 
         // Simple eviction: clear half the cache when full
         if cache.len() >= CACHE_MAX_ENTRIES {
-            let keys_to_remove: Vec<_> = cache.keys().take(CACHE_MAX_ENTRIES / 2).cloned().collect();
+            let keys_to_remove: Vec<_> =
+                cache.keys().take(CACHE_MAX_ENTRIES / 2).cloned().collect();
             for k in keys_to_remove {
                 cache.remove(&k);
             }
@@ -608,7 +609,10 @@ mod tests {
         let lines = render_markdown(content, Style::default());
 
         // Should have content, not be empty
-        assert!(!lines.is_empty(), "HTML/XML content should not be silently dropped");
+        assert!(
+            !lines.is_empty(),
+            "HTML/XML content should not be silently dropped"
+        );
 
         // The actual text should be present somewhere in the rendered output
         let all_text: String = lines

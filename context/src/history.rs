@@ -837,8 +837,14 @@ mod tests {
         history.add_summary(summary0).expect("add summary 0");
 
         // Verify messages 0-1 point to summary 0
-        assert_eq!(history.get_entry(MessageId::new(0)).summary_id(), Some(summary0_id));
-        assert_eq!(history.get_entry(MessageId::new(1)).summary_id(), Some(summary0_id));
+        assert_eq!(
+            history.get_entry(MessageId::new(0)).summary_id(),
+            Some(summary0_id)
+        );
+        assert_eq!(
+            history.get_entry(MessageId::new(1)).summary_id(),
+            Some(summary0_id)
+        );
         assert!(history.orphaned_summaries().is_empty());
 
         // Create overlapping summary covering messages 0-4 (includes already-summarized 0-1)
