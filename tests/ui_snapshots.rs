@@ -8,6 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::{TerminalOptions, Viewport};
 
 use vt100_backend::VT100Backend;
 
@@ -188,4 +189,28 @@ fn snapshot_message_thread() {
         
         frame.render_widget(messages, frame.area());
     });
+}
+
+#[test]
+fn snapshot_inline_viewport_cleared() {
+    let backend = VT100Backend::new(50, 6);
+    let mut terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Inline(3),
+        },
+    )
+    .expect("failed to create terminal with inline viewport");
+
+    terminal
+        .draw(|frame| {
+            let paragraph = Paragraph::new("Inline Panel")
+                .block(Block::default().borders(Borders::ALL).title(" Inline "));
+            frame.render_widget(paragraph, frame.area());
+        })
+        .expect("failed to draw inline panel");
+
+    forge_tui::clear_inline_viewport(&mut terminal).expect("failed to clear viewport");
+
+    assert_snapshot!("inline_viewport_cleared", terminal.backend().to_string());
 }

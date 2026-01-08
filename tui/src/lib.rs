@@ -11,7 +11,7 @@ pub use input::handle_events;
 pub use theme::{colors, spinner_frame, styles};
 pub use ui_inline::{
     INLINE_INPUT_HEIGHT, INLINE_MODEL_SELECTOR_HEIGHT, INLINE_VIEWPORT_HEIGHT, InlineOutput,
-    draw as draw_inline, inline_viewport_height,
+    clear_inline_viewport, draw as draw_inline, inline_viewport_height,
 };
 
 use ratatui::{

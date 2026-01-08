@@ -18,7 +18,8 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use forge_engine::{App, ForgeConfig};
 use forge_tui::{
-    INLINE_VIEWPORT_HEIGHT, InlineOutput, draw, draw_inline, handle_events, inline_viewport_height,
+    INLINE_VIEWPORT_HEIGHT, InlineOutput, clear_inline_viewport, draw, draw_inline,
+    handle_events, inline_viewport_height,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +128,8 @@ impl Drop for TerminalSession {
                 LeaveAlternateScreen,
                 DisableMouseCapture
             );
+        } else {
+            let _ = clear_inline_viewport(&mut self.terminal);
         }
         let _ = self.terminal.show_cursor();
     }
@@ -196,10 +199,12 @@ where
         terminal.draw(|frame| draw(frame, app))?;
 
         if app.take_toggle_screen_mode() {
+            clear_inline_viewport(terminal)?;
             return Ok(RunResult::SwitchMode);
         }
 
         if handle_events(app).await? {
+            clear_inline_viewport(terminal)?;
             return Ok(RunResult::Quit);
         }
     }

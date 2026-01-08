@@ -29,6 +29,17 @@ pub fn inline_viewport_height(mode: InputMode) -> u16 {
     }
 }
 
+pub fn clear_inline_viewport<B>(terminal: &mut Terminal<B>) -> Result<(), B::Error>
+where
+    B: Backend,
+{
+    terminal.draw(|frame| {
+        let area = frame.area();
+        frame.render_widget(Clear, area);
+    })?;
+    Ok(())
+}
+
 #[derive(Default)]
 pub struct InlineOutput {
     next_display_index: usize,

@@ -10,6 +10,10 @@ description = "A custom TUI for interacting with GPT and Claude"
 name = "forge"
 path = "src/main.rs"
 
+[[test]]
+name = "ui_snapshots"
+path = "../tests/ui_snapshots.rs"
+
 [dependencies]
 forge-engine.workspace = true
 forge-tui.workspace = true
