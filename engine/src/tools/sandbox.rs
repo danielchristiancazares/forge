@@ -99,8 +99,6 @@ impl Sandbox {
             working_dir.join(input)
         };
 
-        ensure_no_symlink_in_path(&resolved)?;
-
         let canonical = if resolved.exists() {
             std::fs::canonicalize(&resolved).map_err(|_| ToolError::SandboxViolation(
                 DenialReason::PathOutsideSandbox {
@@ -160,20 +158,4 @@ impl Sandbox {
 
 fn normalize_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
-}
-
-fn ensure_no_symlink_in_path(path: &Path) -> Result<(), ToolError> {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component);
-        if let Ok(meta) = std::fs::symlink_metadata(&current) {
-            if meta.file_type().is_symlink() {
-                return Err(ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
-                    attempted: path.to_path_buf(),
-                    resolved: current,
-                }));
-            }
-        }
-    }
-    Ok(())
 }

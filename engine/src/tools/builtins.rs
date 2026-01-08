@@ -274,7 +274,25 @@ impl ToolExecutor for ApplyPatchTool {
                     });
                 }
 
-                let existed = resolved.exists();
+                let (existed, permissions) = match std::fs::metadata(&resolved) {
+                    Ok(meta) => {
+                        if meta.is_dir() {
+                            return Err(ToolError::PatchFailed {
+                                file: resolved.clone(),
+                                message: "Path is a directory".to_string(),
+                            });
+                        }
+                        (true, Some(meta.permissions()))
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => (false, None),
+                    Err(err) => {
+                        return Err(ToolError::PatchFailed {
+                            file: resolved.clone(),
+                            message: err.to_string(),
+                        });
+                    }
+                };
+
                 let original_bytes = if existed {
                     std::fs::read(&resolved).map_err(|e| ToolError::PatchFailed {
                         file: resolved.clone(),
@@ -317,6 +335,7 @@ impl ToolExecutor for ApplyPatchTool {
                     existed,
                     changed,
                     bytes: new_bytes,
+                    permissions,
                 });
             }
 
@@ -606,6 +625,32 @@ struct StagedFile {
     existed: bool,
     changed: bool,
     bytes: Vec<u8>,
+    permissions: Option<std::fs::Permissions>,
+}
+
+struct PreparedFile {
+    target: PathBuf,
+    temp: PathBuf,
+    backup: Option<PathBuf>,
+    existed: bool,
+}
+
+fn unique_backup_path(target: &Path) -> Result<PathBuf, ToolError> {
+    let stamp = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    for attempt in 0..1000 {
+        let suffix = format!("forge_patch_bak_{}_{}", stamp, attempt);
+        let candidate = target.with_extension(suffix);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(ToolError::PatchFailed {
+        file: target.to_path_buf(),
+        message: "Failed to allocate backup path".to_string(),
+    })
 }
 
 fn apply_staged_files(staged: &[StagedFile]) -> Result<(), ToolError> {
@@ -613,7 +658,7 @@ fn apply_staged_files(staged: &[StagedFile]) -> Result<(), ToolError> {
         return Ok(());
     }
 
-    let mut temps: Vec<(PathBuf, PathBuf, Option<PathBuf>)> = Vec::new();
+    let mut prepared: Vec<PreparedFile> = Vec::new();
     for file in staged.iter().filter(|s| s.changed) {
         let parent = file.path.parent().ok_or_else(|| ToolError::PatchFailed {
             file: file.path.clone(),
@@ -630,50 +675,79 @@ fn apply_staged_files(staged: &[StagedFile]) -> Result<(), ToolError> {
             file: file.path.clone(),
             message: e.to_string(),
         })?;
+        if let Some(perms) = &file.permissions {
+            std::fs::set_permissions(temp.path(), perms.clone()).map_err(|e| {
+                ToolError::PatchFailed {
+                    file: file.path.clone(),
+                    message: e.to_string(),
+                }
+            })?;
+        }
         let temp_path = temp.into_temp_path().keep().map_err(|e| ToolError::PatchFailed {
             file: file.path.clone(),
             message: e.to_string(),
         })?;
         let backup_path = if file.existed {
-            Some(file.path.with_extension("bak"))
+            Some(unique_backup_path(&file.path)?)
         } else {
             None
         };
-        temps.push((file.path.clone(), temp_path, backup_path));
+        prepared.push(PreparedFile {
+            target: file.path.clone(),
+            temp: temp_path,
+            backup: backup_path,
+            existed: file.existed,
+        });
     }
 
-    // Move originals to backups
-    for (target, _temp, backup) in &temps {
-        if let Some(backup) = backup {
-            if target.exists() {
-                std::fs::rename(target, backup).map_err(|e| ToolError::PatchFailed {
-                    file: target.clone(),
-                    message: format!("Failed to backup original: {e}"),
-                })?;
+    let mut backed_up: Vec<&PreparedFile> = Vec::new();
+    for entry in &prepared {
+        let Some(backup) = &entry.backup else {
+            continue;
+        };
+        if let Err(e) = std::fs::rename(&entry.target, backup) {
+            for restored in backed_up {
+                let Some(backup) = &restored.backup else {
+                    continue;
+                };
+                let _ = std::fs::remove_file(&restored.target);
+                let _ = std::fs::rename(backup, &restored.target);
             }
-        }
-    }
-
-    // Replace with temps
-    for (target, temp, backup) in &temps {
-        if let Err(e) = std::fs::rename(temp, target) {
-            // Attempt rollback
-            for (tgt, _tmp, bak) in &temps {
-                if let Some(bak) = bak {
-                    if !tgt.exists() && bak.exists() {
-                        let _ = std::fs::rename(bak, tgt);
-                    }
-                } else if tgt.exists() {
-                    let _ = std::fs::remove_file(tgt);
-                }
+            for cleanup in &prepared {
+                let _ = std::fs::remove_file(&cleanup.temp);
             }
             return Err(ToolError::PatchFailed {
-                file: target.clone(),
+                file: entry.target.clone(),
+                message: format!("Failed to backup original: {e}"),
+            });
+        }
+        backed_up.push(entry);
+    }
+
+    for entry in &prepared {
+        if let Err(e) = std::fs::rename(&entry.temp, &entry.target) {
+            for restore in &prepared {
+                if let Some(backup) = &restore.backup {
+                    if backup.exists() {
+                        let _ = std::fs::remove_file(&restore.target);
+                        let _ = std::fs::rename(backup, &restore.target);
+                    }
+                } else if !restore.existed {
+                    let _ = std::fs::remove_file(&restore.target);
+                }
+            }
+            for cleanup in &prepared {
+                let _ = std::fs::remove_file(&cleanup.temp);
+            }
+            return Err(ToolError::PatchFailed {
+                file: entry.target.clone(),
                 message: format!("Failed to apply patch: {e}"),
             });
         }
+    }
 
-        if let Some(backup) = backup {
+    for entry in &prepared {
+        if let Some(backup) = &entry.backup {
             let _ = std::fs::remove_file(backup);
         }
     }
