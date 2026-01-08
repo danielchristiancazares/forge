@@ -545,6 +545,7 @@ pub mod claude {
 pub mod openai {
     use super::*;
     use serde_json::{Value, json};
+    use std::collections::{HashMap, HashSet};
 
     const API_URL: &str = "https://api.openai.com/v1/responses";
 
@@ -570,6 +571,152 @@ pub mod openai {
             .and_then(|details| details.get("reason"))
             .and_then(|value| value.as_str())
             .map(|s| s.to_string())
+    }
+
+    fn resolve_call_id(
+        item_id: Option<&str>,
+        call_id: Option<&str>,
+        item_to_call: &HashMap<String, String>,
+    ) -> Option<String> {
+        if let Some(call_id) = call_id {
+            return Some(call_id.to_string());
+        }
+        if let Some(item_id) = item_id {
+            if let Some(mapped) = item_to_call.get(item_id) {
+                return Some(mapped.clone());
+            }
+            return Some(item_id.to_string());
+        }
+        None
+    }
+
+    #[derive(Debug, Default)]
+    struct OpenAIStreamState {
+        saw_text_delta: bool,
+        item_to_call: HashMap<String, String>,
+        call_has_delta: HashSet<String>,
+    }
+
+    enum OpenAIStreamAction {
+        Continue,
+        Stop,
+    }
+
+    fn handle_openai_stream_event<F>(
+        json: &Value,
+        state: &mut OpenAIStreamState,
+        on_event: &mut F,
+    ) -> OpenAIStreamAction
+    where
+        F: FnMut(StreamEvent),
+    {
+        match json["type"].as_str().unwrap_or("") {
+            "response.output_item.added" => {
+                let item = json.get("item").or_else(|| json.get("output_item"));
+                if let Some(item) = item
+                    && item.get("type").and_then(|value| value.as_str())
+                        == Some("function_call")
+                {
+                    let item_id = item.get("id").and_then(|v| v.as_str());
+                    let call_id = item
+                        .get("call_id")
+                        .and_then(|v| v.as_str())
+                        .or(item_id);
+                    let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    if let Some(call_id) = call_id {
+                        let call_id = call_id.to_string();
+                        if let Some(item_id) = item_id {
+                            state
+                                .item_to_call
+                                .insert(item_id.to_string(), call_id.clone());
+                        }
+                        on_event(StreamEvent::ToolCallStart {
+                            id: call_id.clone(),
+                            name: name.to_string(),
+                        });
+                        if let Some(arguments) = item.get("arguments").and_then(|v| v.as_str())
+                            && !arguments.is_empty()
+                        {
+                            on_event(StreamEvent::ToolCallDelta {
+                                id: call_id.clone(),
+                                arguments: arguments.to_string(),
+                            });
+                            state.call_has_delta.insert(call_id);
+                        }
+                    }
+                }
+                OpenAIStreamAction::Continue
+            }
+            "response.output_text.delta" => {
+                if let Some(delta) = json["delta"].as_str() {
+                    state.saw_text_delta = true;
+                    on_event(StreamEvent::TextDelta(delta.to_string()));
+                }
+                OpenAIStreamAction::Continue
+            }
+            "response.refusal.delta" => {
+                if let Some(delta) = json["delta"].as_str() {
+                    state.saw_text_delta = true;
+                    on_event(StreamEvent::TextDelta(delta.to_string()));
+                }
+                OpenAIStreamAction::Continue
+            }
+            "response.output_text.done" => {
+                if !state.saw_text_delta && let Some(text) = json["text"].as_str() {
+                    on_event(StreamEvent::TextDelta(text.to_string()));
+                }
+                OpenAIStreamAction::Continue
+            }
+            "response.function_call_arguments.delta" => {
+                let item_id = json.get("item_id").and_then(|v| v.as_str());
+                let call_id = json.get("call_id").and_then(|v| v.as_str());
+                let resolved = resolve_call_id(item_id, call_id, &state.item_to_call);
+                if let Some(delta) = json.get("delta").and_then(|v| v.as_str())
+                    && let Some(call_id) = resolved
+                {
+                    on_event(StreamEvent::ToolCallDelta {
+                        id: call_id.clone(),
+                        arguments: delta.to_string(),
+                    });
+                    state.call_has_delta.insert(call_id);
+                }
+                OpenAIStreamAction::Continue
+            }
+            "response.function_call_arguments.done" => {
+                let item_id = json.get("item_id").and_then(|v| v.as_str());
+                let call_id = json.get("call_id").and_then(|v| v.as_str());
+                let resolved = resolve_call_id(item_id, call_id, &state.item_to_call);
+                if let Some(arguments) = json.get("arguments").and_then(|v| v.as_str())
+                    && let Some(call_id) = resolved
+                {
+                    if !state.call_has_delta.contains(&call_id) && !arguments.is_empty() {
+                        on_event(StreamEvent::ToolCallDelta {
+                            id: call_id.clone(),
+                            arguments: arguments.to_string(),
+                        });
+                    }
+                    state.call_has_delta.insert(call_id);
+                }
+                OpenAIStreamAction::Continue
+            }
+            "response.completed" => {
+                on_event(StreamEvent::Done);
+                OpenAIStreamAction::Stop
+            }
+            "response.incomplete" => {
+                let reason = extract_incomplete_reason(json)
+                    .unwrap_or_else(|| "Response incomplete".to_string());
+                on_event(StreamEvent::Error(reason));
+                OpenAIStreamAction::Stop
+            }
+            "response.failed" | "error" => {
+                let message =
+                    extract_error_message(json).unwrap_or_else(|| "Response failed".to_string());
+                on_event(StreamEvent::Error(message));
+                OpenAIStreamAction::Stop
+            }
+            _ => OpenAIStreamAction::Continue,
+        }
     }
 
     /// Map message role to OpenAI Responses API role.
@@ -600,11 +747,31 @@ pub mod openai {
         let mut input_items: Vec<Value> = Vec::new();
         for cacheable in messages {
             let msg = &cacheable.message;
-            // TODO: Handle ToolUse and ToolResult message variants for OpenAI format
-            input_items.push(json!({
-                "role": openai_role(msg),
-                "content": msg.content(),
-            }));
+            match msg {
+                Message::ToolUse(call) => {
+                    let args_json =
+                        serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string());
+                    input_items.push(json!({
+                        "type": "function_call",
+                        "call_id": call.id,
+                        "name": call.name,
+                        "arguments": args_json,
+                    }));
+                }
+                Message::ToolResult(result) => {
+                    input_items.push(json!({
+                        "type": "function_call_output",
+                        "call_id": result.tool_call_id,
+                        "output": result.content,
+                    }));
+                }
+                _ => {
+                    input_items.push(json!({
+                        "role": openai_role(msg),
+                        "content": msg.content(),
+                    }));
+                }
+            }
         }
 
         let mut body = serde_json::Map::new();
@@ -622,9 +789,22 @@ pub mod openai {
             body.insert("instructions".to_string(), json!(prompt));
         }
 
-        // TODO: Add tool definitions for OpenAI format when tools is Some
-        // OpenAI uses "tools" array with "type": "function" wrapper
-        let _ = tools; // Suppress unused warning for now
+        if let Some(tools) = tools
+            && !tools.is_empty()
+        {
+            let tool_defs: Vec<Value> = tools
+                .iter()
+                .map(|tool| {
+                    json!({
+                        "type": "function",
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    })
+                })
+                .collect();
+            body.insert("tools".to_string(), Value::Array(tool_defs));
+        }
 
         let options = config.openai_options();
         body.insert(
@@ -680,8 +860,9 @@ pub mod openai {
         use futures_util::StreamExt;
         let mut stream = response.bytes_stream();
         let mut buffer: Vec<u8> = Vec::new();
-        let mut saw_delta = false;
         let saw_done = false;
+        let mut state = OpenAIStreamState::default();
+        let mut emit = |event| on_event(event);
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
@@ -717,41 +898,11 @@ pub mod openai {
                     }
 
                     if let Ok(json) = serde_json::from_str::<Value>(&data) {
-                        match json["type"].as_str().unwrap_or("") {
-                            "response.output_text.delta" => {
-                                if let Some(delta) = json["delta"].as_str() {
-                                    saw_delta = true;
-                                    on_event(StreamEvent::TextDelta(delta.to_string()));
-                                }
-                            }
-                            "response.refusal.delta" => {
-                                if let Some(delta) = json["delta"].as_str() {
-                                    saw_delta = true;
-                                    on_event(StreamEvent::TextDelta(delta.to_string()));
-                                }
-                            }
-                            "response.output_text.done" => {
-                                if !saw_delta && let Some(text) = json["text"].as_str() {
-                                    on_event(StreamEvent::TextDelta(text.to_string()));
-                                }
-                            }
-                            "response.completed" => {
-                                on_event(StreamEvent::Done);
-                                return Ok(());
-                            }
-                            "response.incomplete" => {
-                                let reason = extract_incomplete_reason(&json)
-                                    .unwrap_or_else(|| "Response incomplete".to_string());
-                                on_event(StreamEvent::Error(reason));
-                                return Ok(());
-                            }
-                            "response.failed" | "error" => {
-                                let message = extract_error_message(&json)
-                                    .unwrap_or_else(|| "Response failed".to_string());
-                                on_event(StreamEvent::Error(message));
-                                return Ok(());
-                            }
-                            _ => {}
+                        if matches!(
+                            handle_openai_stream_event(&json, &mut state, &mut emit),
+                            OpenAIStreamAction::Stop
+                        ) {
+                            return Ok(());
                         }
                     }
                 }
@@ -771,6 +922,14 @@ pub mod openai {
     mod tests {
         use super::*;
         use forge_types::NonEmptyString;
+        use serde_json::json;
+
+        fn collect_events(json: Value, state: &mut OpenAIStreamState) -> Vec<StreamEvent> {
+            let mut events = Vec::new();
+            let mut emit = |event| events.push(event);
+            let _ = handle_openai_stream_event(&json, state, &mut emit);
+            events
+        }
 
         #[test]
         fn maps_system_message_to_developer_role() {
@@ -812,6 +971,133 @@ pub mod openai {
             );
 
             assert_eq!(body.get("instructions").unwrap().as_str(), Some("prompt"));
+        }
+
+        #[test]
+        fn emits_tool_call_start_and_args_from_output_item() {
+            let mut state = OpenAIStreamState::default();
+            let events = collect_events(
+                json!({
+                    "type": "response.output_item.added",
+                    "item": {
+                        "type": "function_call",
+                        "id": "item_1",
+                        "call_id": "call_1",
+                        "name": "read_file",
+                        "arguments": "{\"path\":\"foo\"}"
+                    }
+                }),
+                &mut state,
+            );
+
+            assert_eq!(events.len(), 2);
+            assert!(matches!(
+                &events[0],
+                StreamEvent::ToolCallStart { id, name }
+                    if id == "call_1" && name == "read_file"
+            ));
+            assert!(matches!(
+                &events[1],
+                StreamEvent::ToolCallDelta { id, arguments }
+                    if id == "call_1" && arguments == "{\"path\":\"foo\"}"
+            ));
+        }
+
+        #[test]
+        fn maps_argument_deltas_to_call_id_from_item() {
+            let mut state = OpenAIStreamState::default();
+            let _ = collect_events(
+                json!({
+                    "type": "response.output_item.added",
+                    "item": {
+                        "type": "function_call",
+                        "id": "item_1",
+                        "call_id": "call_1",
+                        "name": "read_file"
+                    }
+                }),
+                &mut state,
+            );
+
+            let events = collect_events(
+                json!({
+                    "type": "response.function_call_arguments.delta",
+                    "item_id": "item_1",
+                    "delta": "{\"path\":\"bar\"}"
+                }),
+                &mut state,
+            );
+
+            assert_eq!(events.len(), 1);
+            assert!(matches!(
+                &events[0],
+                StreamEvent::ToolCallDelta { id, arguments }
+                    if id == "call_1" && arguments == "{\"path\":\"bar\"}"
+            ));
+        }
+
+        #[test]
+        fn arguments_done_emits_only_when_no_prior_delta() {
+            let mut state = OpenAIStreamState::default();
+            let _ = collect_events(
+                json!({
+                    "type": "response.output_item.added",
+                    "item": {
+                        "type": "function_call",
+                        "id": "item_1",
+                        "call_id": "call_1",
+                        "name": "read_file"
+                    }
+                }),
+                &mut state,
+            );
+
+            let _ = collect_events(
+                json!({
+                    "type": "response.function_call_arguments.delta",
+                    "item_id": "item_1",
+                    "delta": "{\"path\":\"bar\"}"
+                }),
+                &mut state,
+            );
+
+            let events = collect_events(
+                json!({
+                    "type": "response.function_call_arguments.done",
+                    "item_id": "item_1",
+                    "arguments": "{\"path\":\"bar\"}"
+                }),
+                &mut state,
+            );
+            assert!(events.is_empty());
+
+            let mut fresh = OpenAIStreamState::default();
+            let _ = collect_events(
+                json!({
+                    "type": "response.output_item.added",
+                    "item": {
+                        "type": "function_call",
+                        "id": "item_2",
+                        "call_id": "call_2",
+                        "name": "read_file"
+                    }
+                }),
+                &mut fresh,
+            );
+            let events = collect_events(
+                json!({
+                    "type": "response.function_call_arguments.done",
+                    "item_id": "item_2",
+                    "arguments": "{\"path\":\"baz\"}"
+                }),
+                &mut fresh,
+            );
+            assert_eq!(events.len(), 1);
+            assert!(matches!(
+                &events[0],
+                StreamEvent::ToolCallDelta { id, arguments }
+                    if id == "call_2" && arguments == "{\"path\":\"baz\"}"
+            ));
         }
     }
 }

@@ -33,6 +33,11 @@ pub fn inline_viewport_height(mode: InputMode) -> u16 {
 pub struct InlineOutput {
     next_display_index: usize,
     has_output: bool,
+    last_tool_output_len: usize,
+    last_tool_status_signature: Option<String>,
+    last_pending_tool_signature: Option<String>,
+    last_approval_signature: Option<String>,
+    last_recovery_active: bool,
 }
 
 impl InlineOutput {
@@ -40,6 +45,11 @@ impl InlineOutput {
         Self {
             next_display_index: 0,
             has_output: false,
+            last_tool_output_len: 0,
+            last_tool_status_signature: None,
+            last_pending_tool_signature: None,
+            last_approval_signature: None,
+            last_recovery_active: false,
         }
     }
 
@@ -48,23 +58,69 @@ impl InlineOutput {
         B: Backend,
     {
         let items = app.display_items();
-        if self.next_display_index >= items.len() {
-            return Ok(());
-        }
-
         let mut lines: Vec<Line> = Vec::new();
         let mut msg_count = if self.has_output { 1 } else { 0 };
 
-        for item in &items[self.next_display_index..] {
-            let msg = match item {
-                DisplayItem::History(id) => app.history().get_entry(*id).message(),
-                DisplayItem::Local(msg) => msg,
-            };
+        if self.next_display_index < items.len() {
+            for item in &items[self.next_display_index..] {
+                let msg = match item {
+                    DisplayItem::History(id) => app.history().get_entry(*id).message(),
+                    DisplayItem::Local(msg) => msg,
+                };
 
-            append_message_lines(&mut lines, msg, &mut msg_count);
+                append_message_lines(&mut lines, msg, &mut msg_count);
+            }
+
+            self.next_display_index = items.len();
         }
 
-        self.next_display_index = items.len();
+        let tool_signature = tool_status_signature(app);
+        if tool_signature != self.last_tool_status_signature {
+            if tool_signature.is_some() {
+                append_tool_status_lines(&mut lines, app);
+            }
+            self.last_tool_status_signature = tool_signature;
+        }
+
+        let pending_signature = pending_tool_signature(app);
+        if pending_signature != self.last_pending_tool_signature {
+            if pending_signature.is_some() {
+                append_pending_tool_lines(&mut lines, app);
+            }
+            self.last_pending_tool_signature = pending_signature;
+        }
+
+        if let Some(output_lines) = app.tool_loop_output_lines() {
+            if output_lines.len() > self.last_tool_output_len {
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
+                if self.last_tool_output_len == 0 {
+                    lines.push(Line::from("Tool output:"));
+                }
+                for line in &output_lines[self.last_tool_output_len..] {
+                    lines.push(Line::from(format!("  {line}")));
+                }
+                self.last_tool_output_len = output_lines.len();
+            }
+        } else {
+            self.last_tool_output_len = 0;
+        }
+
+        let approval_signature = approval_signature(app);
+        if approval_signature != self.last_approval_signature {
+            if approval_signature.is_some() {
+                append_approval_lines(&mut lines, app);
+            }
+            self.last_approval_signature = approval_signature;
+        }
+
+        let recovery_active = app.tool_recovery_calls().is_some();
+        if recovery_active && !self.last_recovery_active {
+            append_recovery_prompt(&mut lines, app);
+        }
+        self.last_recovery_active = recovery_active;
+
         if lines.is_empty() {
             return Ok(());
         }
@@ -221,6 +277,186 @@ fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut us
     }
 }
 
+fn tool_status_signature(app: &App) -> Option<String> {
+    let calls = app.tool_loop_calls()?;
+    let mut results_map: std::collections::HashMap<&str, &forge_types::ToolResult> =
+        std::collections::HashMap::new();
+    if let Some(results) = app.tool_loop_results() {
+        for result in results {
+            results_map.insert(result.tool_call_id.as_str(), result);
+        }
+    }
+    let execute_ids: std::collections::HashSet<&str> = app
+        .tool_loop_execute_calls()
+        .map(|exec_calls| exec_calls.iter().map(|c| c.id.as_str()).collect())
+        .unwrap_or_default();
+    let current_id = app.tool_loop_current_call_id();
+    let approval_pending = app.tool_approval_requests().is_some();
+
+    let mut parts = Vec::with_capacity(calls.len());
+    for call in calls {
+        let status = if let Some(result) = results_map.get(call.id.as_str()) {
+            if !execute_ids.contains(call.id.as_str()) {
+                "denied"
+            } else if result.is_error {
+                "error"
+            } else {
+                "ok"
+            }
+        } else if current_id == Some(call.id.as_str()) {
+            "running"
+        } else if approval_pending && !execute_ids.contains(call.id.as_str()) {
+            "approval"
+        } else {
+            "pending"
+        };
+        parts.push(format!("{}:{status}", call.id));
+    }
+
+    Some(parts.join("|"))
+}
+
+fn pending_tool_signature(app: &App) -> Option<String> {
+    let calls = app.pending_tool_calls()?;
+    let mut parts = Vec::with_capacity(calls.len());
+    for call in calls {
+        parts.push(call.id.clone());
+    }
+    Some(parts.join("|"))
+}
+
+fn append_tool_status_lines(lines: &mut Vec<Line>, app: &App) {
+    let Some(calls) = app.tool_loop_calls() else {
+        return;
+    };
+    let mut results_map: std::collections::HashMap<&str, &forge_types::ToolResult> =
+        std::collections::HashMap::new();
+    if let Some(results) = app.tool_loop_results() {
+        for result in results {
+            results_map.insert(result.tool_call_id.as_str(), result);
+        }
+    }
+    let execute_ids: std::collections::HashSet<&str> = app
+        .tool_loop_execute_calls()
+        .map(|exec_calls| exec_calls.iter().map(|c| c.id.as_str()).collect())
+        .unwrap_or_default();
+    let current_id = app.tool_loop_current_call_id();
+    let approval_pending = app.tool_approval_requests().is_some();
+
+    if !lines.is_empty() {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from("Tool status:"));
+
+    for call in calls {
+        let mut reason: Option<String> = None;
+        let icon = if let Some(result) = results_map.get(call.id.as_str()) {
+            if !execute_ids.contains(call.id.as_str()) {
+                reason = result
+                    .content
+                    .lines()
+                    .next()
+                    .map(|line| truncate_with_ellipsis(line, 80));
+                "⊘"
+            } else if result.is_error {
+                reason = result
+                    .content
+                    .lines()
+                    .next()
+                    .map(|line| truncate_with_ellipsis(line, 80));
+                "✗"
+            } else {
+                "✓"
+            }
+        } else if current_id == Some(call.id.as_str()) {
+            "▶"
+        } else if approval_pending && !execute_ids.contains(call.id.as_str()) {
+            "⏸"
+        } else {
+            "•"
+        };
+
+        lines.push(Line::from(format!(
+            "  {icon} {} ({})",
+            call.name, call.id
+        )));
+        if let Some(reason) = reason {
+            lines.push(Line::from(format!("     {reason}")));
+        }
+    }
+}
+
+fn append_pending_tool_lines(lines: &mut Vec<Line>, app: &App) {
+    let Some(calls) = app.pending_tool_calls() else {
+        return;
+    };
+    if !lines.is_empty() {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from("Awaiting tool results:"));
+    for call in calls {
+        lines.push(Line::from(format!("  • {} ({})", call.name, call.id)));
+    }
+    lines.push(Line::from(
+        "Use /tool <id> <result> or /tool error <id> <message>",
+    ));
+}
+
+fn approval_signature(app: &App) -> Option<String> {
+    let requests = app.tool_approval_requests()?;
+    let selected = app.tool_approval_selected().unwrap_or(&[]);
+    let cursor = app.tool_approval_cursor().unwrap_or(0);
+    let mut sig = format!("{}|{}|", requests.len(), cursor);
+    for flag in selected {
+        sig.push(if *flag { '1' } else { '0' });
+    }
+    Some(sig)
+}
+
+fn append_approval_lines(lines: &mut Vec<Line>, app: &App) {
+    let Some(requests) = app.tool_approval_requests() else {
+        return;
+    };
+    let selected = app.tool_approval_selected().unwrap_or(&[]);
+    let cursor = app.tool_approval_cursor().unwrap_or(0);
+
+    if !lines.is_empty() {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from("Tool approval required:"));
+
+    for (i, req) in requests.iter().enumerate() {
+        let is_selected = selected.get(i).copied().unwrap_or(false);
+        let pointer = if i == cursor { ">" } else { " " };
+        let checkbox = if is_selected { "[x]" } else { "[ ]" };
+        let risk = format!("{:?}", req.risk_level).to_uppercase();
+        lines.push(Line::from(format!(
+            " {pointer} {checkbox} {} ({risk})",
+            req.tool_name
+        )));
+        if !req.summary.trim().is_empty() {
+            let summary = truncate_with_ellipsis(&req.summary, 80);
+            lines.push(Line::from(format!("     {summary}")));
+        }
+    }
+
+    lines.push(Line::from(
+        "Keys: A approve all, D deny all, Space toggle, Enter confirm",
+    ));
+}
+
+fn append_recovery_prompt(lines: &mut Vec<Line>, app: &App) {
+    if app.tool_recovery_calls().is_none() {
+        return;
+    }
+    if !lines.is_empty() {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(
+        "Tool recovery detected. Press r to resume or d to discard.",
+    ));
+}
+
 fn wrapped_line_count(lines: &[Line], width: u16) -> u16 {
     let width = width.max(1) as usize;
     let mut total: u16 = 0;
@@ -236,4 +472,15 @@ fn wrapped_line_count(lines: &[Line], width: u16) -> u16 {
     }
 
     total
+}
+
+fn truncate_with_ellipsis(raw: &str, max: usize) -> String {
+    let max = max.max(3);
+    let trimmed = raw.trim();
+    if trimmed.chars().count() <= max {
+        trimmed.to_string()
+    } else {
+        let head: String = trimmed.chars().take(max - 3).collect();
+        format!("{head}...")
+    }
 }

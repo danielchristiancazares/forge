@@ -96,9 +96,33 @@ pub struct OpenAIConfig {
 /// ```
 #[derive(Debug, Default, Deserialize)]
 pub struct ToolsConfig {
+    /// Tool loop mode: disabled | parse_only | enabled
+    pub mode: Option<String>,
+    /// Whether parallel tool execution is allowed.
+    pub allow_parallel: Option<bool>,
+    /// Maximum tool calls per batch.
+    pub max_tool_calls_per_batch: Option<usize>,
+    /// Maximum tool iterations per user turn.
+    pub max_tool_iterations_per_user_turn: Option<u32>,
+    /// Maximum serialized tool args size (bytes).
+    pub max_tool_args_bytes: Option<usize>,
     /// List of tool definitions.
     #[serde(default)]
     pub definitions: Vec<ToolDefinitionConfig>,
+    /// Sandbox config.
+    pub sandbox: Option<ToolSandboxConfig>,
+    /// Timeout config.
+    pub timeouts: Option<ToolTimeoutsConfig>,
+    /// Output config.
+    pub output: Option<ToolOutputConfig>,
+    /// Environment sanitization config.
+    pub environment: Option<ToolEnvironmentConfig>,
+    /// Approval policy config.
+    pub approval: Option<ToolApprovalConfig>,
+    /// read_file limits.
+    pub read_file: Option<ReadFileConfig>,
+    /// apply_patch limits.
+    pub apply_patch: Option<ApplyPatchConfig>,
 }
 
 /// Configuration for a single tool definition.
@@ -108,6 +132,63 @@ pub struct ToolDefinitionConfig {
     pub description: String,
     /// JSON Schema as inline TOML table.
     pub parameters: toml::Value,
+}
+
+/// Sandbox configuration for tools.
+#[derive(Debug, Default, Deserialize)]
+pub struct ToolSandboxConfig {
+    #[serde(default)]
+    pub allowed_roots: Vec<String>,
+    #[serde(default)]
+    pub denied_patterns: Vec<String>,
+    pub allow_absolute: Option<bool>,
+    pub include_default_denies: Option<bool>,
+}
+
+/// Timeout configuration for tools.
+#[derive(Debug, Default, Deserialize)]
+pub struct ToolTimeoutsConfig {
+    pub default_seconds: Option<u64>,
+    pub file_operations_seconds: Option<u64>,
+    pub shell_commands_seconds: Option<u64>,
+}
+
+/// Output configuration for tools.
+#[derive(Debug, Default, Deserialize)]
+pub struct ToolOutputConfig {
+    pub max_bytes: Option<usize>,
+}
+
+/// Environment sanitization configuration for tools.
+#[derive(Debug, Default, Deserialize)]
+pub struct ToolEnvironmentConfig {
+    #[serde(default)]
+    pub denylist: Vec<String>,
+}
+
+/// Approval policy configuration for tools.
+#[derive(Debug, Default, Deserialize)]
+pub struct ToolApprovalConfig {
+    pub enabled: Option<bool>,
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub allowlist: Vec<String>,
+    #[serde(default)]
+    pub denylist: Vec<String>,
+    pub prompt_side_effects: Option<bool>,
+}
+
+/// read_file limits configuration.
+#[derive(Debug, Default, Deserialize)]
+pub struct ReadFileConfig {
+    pub max_file_read_bytes: Option<usize>,
+    pub max_scan_bytes: Option<usize>,
+}
+
+/// apply_patch limits configuration.
+#[derive(Debug, Default, Deserialize)]
+pub struct ApplyPatchConfig {
+    pub max_patch_bytes: Option<usize>,
 }
 
 impl ToolDefinitionConfig {

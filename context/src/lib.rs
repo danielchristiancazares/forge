@@ -23,6 +23,7 @@ mod history;
 mod manager;
 mod model_limits;
 mod stream_journal;
+mod tool_journal;
 mod summarization;
 mod token_counter;
 mod working_context;
@@ -34,6 +35,7 @@ pub use manager::{
 };
 pub use model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry, ResolvedModelLimits};
 pub use stream_journal::{ActiveJournal, JournalStats, RecoveredStream, StepId, StreamJournal};
+pub use tool_journal::{RecoveredToolBatch, ToolBatchId, ToolJournal};
 pub use summarization::{generate_summary, summarization_model};
 pub use token_counter::TokenCounter;
 pub use working_context::{ContextSegment, ContextUsage, WorkingContext};

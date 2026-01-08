@@ -30,6 +30,7 @@ use unicode_width::UnicodeWidthStr;
 use forge_engine::{
     App, ContextUsageStatus, DisplayItem, InputMode, Message, PredefinedModel, Provider,
 };
+use forge_types::ToolResult;
 
 pub use self::markdown::clear_render_cache;
 use self::markdown::render_markdown;
@@ -67,6 +68,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Draw model selector if in model select mode
     if app.input_mode() == InputMode::ModelSelect {
         draw_model_selector(frame, app);
+    }
+
+    if app.tool_approval_requests().is_some() {
+        draw_tool_approval_prompt(frame, app);
+    }
+
+    if app.tool_recovery_calls().is_some() {
+        draw_tool_recovery_prompt(frame, app);
     }
 }
 
@@ -260,6 +269,133 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 Style::default().fg(colors::TEXT_MUTED),
             )));
         }
+
+        lines.push(Line::from(Span::styled(
+            "  Use /tool <id> <result> or /tool error <id> <message>",
+            Style::default()
+                .fg(colors::TEXT_MUTED)
+                .add_modifier(Modifier::ITALIC),
+        )));
+    }
+
+    if let Some(calls) = app.tool_loop_calls() {
+        if msg_count > 0 || app.streaming().is_some() || app.pending_tool_calls().is_some() {
+            lines.push(Line::from(""));
+        }
+        let spinner = spinner_frame(app.tick_count());
+        let approval_pending = app.tool_approval_requests().is_some();
+        let header = if approval_pending {
+            format!("{spinner} Tool approval required")
+        } else {
+            format!("{spinner} Tool execution")
+        };
+        lines.push(Line::from(Span::styled(
+            header,
+            Style::default()
+                .fg(colors::WARNING)
+                .add_modifier(Modifier::ITALIC),
+        )));
+
+        let mut results_map: std::collections::HashMap<&str, &ToolResult> =
+            std::collections::HashMap::new();
+        if let Some(results) = app.tool_loop_results() {
+            for result in results {
+                results_map.insert(result.tool_call_id.as_str(), result);
+            }
+        }
+
+        let execute_ids: std::collections::HashSet<&str> = app
+            .tool_loop_execute_calls()
+            .map(|exec_calls| exec_calls.iter().map(|c| c.id.as_str()).collect())
+            .unwrap_or_default();
+
+        let current_id = app.tool_loop_current_call_id();
+
+        for call in calls {
+            let result = results_map.get(call.id.as_str());
+            let mut reason: Option<String> = None;
+            let (icon, style) = if let Some(result) = result {
+                if !execute_ids.contains(call.id.as_str()) {
+                    reason = result
+                        .content
+                        .lines()
+                        .next()
+                        .map(|line| truncate_with_ellipsis(line, 80));
+                    (
+                        "⊘",
+                        Style::default()
+                            .fg(colors::WARNING)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else if result.is_error {
+                    reason = result
+                        .content
+                        .lines()
+                        .next()
+                        .map(|line| truncate_with_ellipsis(line, 80));
+                    (
+                        "✗",
+                        Style::default()
+                            .fg(colors::ERROR)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    (
+                        "✓",
+                        Style::default()
+                            .fg(colors::SUCCESS)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                }
+            } else if current_id == Some(call.id.as_str()) {
+                (
+                    spinner,
+                    Style::default()
+                        .fg(colors::PRIMARY)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else if approval_pending && !execute_ids.contains(call.id.as_str()) {
+                (
+                    "⏸",
+                    Style::default()
+                        .fg(colors::WARNING)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                ("•", Style::default().fg(colors::TEXT_MUTED))
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {icon} "), style),
+                Span::styled(
+                    format!("{} ({})", call.name, call.id),
+                    Style::default().fg(colors::TEXT_MUTED),
+                ),
+            ]));
+
+            if let Some(reason) = reason {
+                lines.push(Line::from(Span::styled(
+                    format!("    ↳ {reason}"),
+                    Style::default().fg(colors::TEXT_MUTED),
+                )));
+            }
+        }
+
+        if let Some(output_lines) = app.tool_loop_output_lines() {
+            if !output_lines.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "  Tool output:",
+                    Style::default().fg(colors::TEXT_MUTED),
+                )));
+                for line in output_lines {
+                    lines.push(Line::from(Span::styled(
+                        format!("    {line}"),
+                        Style::default().fg(colors::TEXT_SECONDARY),
+                    )));
+                }
+            }
+        }
     }
 
     // Calculate content height and visible height for scrolling
@@ -318,6 +454,17 @@ fn wrapped_line_count(lines: &[Line], width: u16) -> u16 {
     }
 
     total
+}
+
+fn truncate_with_ellipsis(raw: &str, max: usize) -> String {
+    let max = max.max(3);
+    let trimmed = raw.trim();
+    if trimmed.chars().count() <= max {
+        trimmed.to_string()
+    } else {
+        let head: String = trimmed.chars().take(max - 3).collect();
+        format!("{head}...")
+    }
 }
 
 pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -782,6 +929,186 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App) {
     let selector = Paragraph::new(lines).block(block);
 
     frame.render_widget(selector, selector_area);
+}
+
+fn draw_tool_approval_prompt(frame: &mut Frame, app: &App) {
+    let Some(requests) = app.tool_approval_requests() else {
+        return;
+    };
+    let selected = app.tool_approval_selected().unwrap_or(&[]);
+    let cursor = app.tool_approval_cursor().unwrap_or(0);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        " Tool approval required ",
+        Style::default()
+            .fg(colors::TEXT_PRIMARY)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+
+    let max_width = frame.area().width.saturating_sub(6).min(80).max(20) as usize;
+
+    for (i, req) in requests.iter().enumerate() {
+        let is_selected = selected.get(i).copied().unwrap_or(false);
+        let pointer = if i == cursor { ">" } else { " " };
+        let checkbox = if is_selected { "[x]" } else { "[ ]" };
+        let risk_label = format!("{:?}", req.risk_level).to_uppercase();
+        let risk_style = match risk_label.as_str() {
+            "HIGH" => Style::default().fg(colors::ERROR).add_modifier(Modifier::BOLD),
+            "MEDIUM" => Style::default().fg(colors::WARNING).add_modifier(Modifier::BOLD),
+            _ => Style::default().fg(colors::SUCCESS).add_modifier(Modifier::BOLD),
+        };
+        let name_style = if i == cursor {
+            Style::default()
+                .fg(colors::TEXT_PRIMARY)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(colors::TEXT_PRIMARY)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{pointer} {checkbox} "),
+                Style::default().fg(colors::TEXT_MUTED),
+            ),
+            Span::styled(req.tool_name.clone(), name_style),
+            Span::raw(" "),
+            Span::styled(risk_label, risk_style),
+        ]));
+
+        if !req.summary.trim().is_empty() {
+            let summary = truncate_with_ellipsis(&req.summary, max_width.saturating_sub(6));
+            lines.push(Line::from(Span::styled(
+                format!("    {summary}"),
+                Style::default().fg(colors::TEXT_MUTED),
+            )));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("A", styles::key_highlight()),
+        Span::styled(" approve all  ", styles::key_hint()),
+        Span::styled("D", styles::key_highlight()),
+        Span::styled(" deny all  ", styles::key_hint()),
+        Span::styled("Space", styles::key_highlight()),
+        Span::styled(" toggle  ", styles::key_hint()),
+        Span::styled("Enter", styles::key_highlight()),
+        Span::styled(" confirm selected", styles::key_hint()),
+    ]));
+
+    let content_width = lines.iter().map(|line| line.width()).max().unwrap_or(10) as u16;
+    let content_width = content_width.min(frame.area().width.saturating_sub(4));
+    let content_height = lines.len() as u16;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(colors::PRIMARY))
+        .style(Style::default().bg(colors::BG_PANEL))
+        .padding(Padding::uniform(1));
+
+    let height = content_height.saturating_add(4);
+    let width = content_width.saturating_add(4);
+    let area = frame.area();
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(width) / 2),
+        y: area.y + (area.height.saturating_sub(height) / 2),
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(lines).block(block), rect);
+}
+
+fn draw_tool_recovery_prompt(frame: &mut Frame, app: &App) {
+    let Some(calls) = app.tool_recovery_calls() else {
+        return;
+    };
+    let results = app.tool_recovery_results().unwrap_or(&[]);
+
+    let mut results_map: std::collections::HashMap<&str, &ToolResult> =
+        std::collections::HashMap::new();
+    for result in results {
+        results_map.insert(result.tool_call_id.as_str(), result);
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        " Tool recovery detected ",
+        Style::default()
+            .fg(colors::TEXT_PRIMARY)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        " Tools will not be re-run.",
+        Style::default().fg(colors::TEXT_MUTED),
+    )));
+    lines.push(Line::from(""));
+
+    for call in calls {
+        let (icon, style) = if let Some(result) = results_map.get(call.id.as_str()) {
+            if result.is_error {
+                (
+                    "✗",
+                    Style::default()
+                        .fg(colors::ERROR)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                (
+                    "✓",
+                    Style::default()
+                        .fg(colors::SUCCESS)
+                        .add_modifier(Modifier::BOLD),
+                )
+            }
+        } else {
+            ("•", Style::default().fg(colors::TEXT_MUTED))
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {icon} "), style),
+            Span::styled(
+                format!("{} ({})", call.name, call.id),
+                Style::default().fg(colors::TEXT_MUTED),
+            ),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("R", styles::key_highlight()),
+        Span::styled(" resume with recovered results  ", styles::key_hint()),
+        Span::styled("D", styles::key_highlight()),
+        Span::styled(" discard results", styles::key_hint()),
+    ]));
+
+    let content_width = lines.iter().map(|line| line.width()).max().unwrap_or(10) as u16;
+    let content_width = content_width.min(frame.area().width.saturating_sub(4));
+    let content_height = lines.len() as u16;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(colors::PRIMARY))
+        .style(Style::default().bg(colors::BG_PANEL))
+        .padding(Padding::uniform(1));
+
+    let height = content_height.saturating_add(4);
+    let width = content_width.saturating_add(4);
+    let area = frame.area();
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(width) / 2),
+        y: area.y + (area.height.saturating_sub(height) / 2),
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
 fn create_welcome_screen(app: &App) -> Paragraph<'static> {

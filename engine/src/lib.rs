@@ -2,7 +2,7 @@
 //!
 //! This crate contains the App state machine without TUI dependencies.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -18,6 +18,7 @@ pub use forge_context::{
     ActiveJournal, ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus,
     FullHistory, MessageId, ModelLimits, ModelLimitsSource, ModelRegistry, PendingSummarization,
     PreparedContext, RecoveredStream, StreamJournal, SummarizationNeeded, SummarizationScope,
+    ToolBatchId, ToolJournal, RecoveredToolBatch,
     TokenCounter, generate_summary, summarization_model,
 };
 pub use forge_providers::{self, ApiConfig};
@@ -31,6 +32,8 @@ pub use forge_types::{
 // Config types - passed in from caller
 mod config;
 pub use config::{AppConfig, ForgeConfig};
+
+mod tools;
 
 // ============================================================================
 // StreamingMessage - async message being streamed
@@ -247,6 +250,38 @@ const MAX_SUMMARIZATION_ATTEMPTS: u8 = 5;
 const SUMMARIZATION_RETRY_BASE_MS: u64 = 500;
 const SUMMARIZATION_RETRY_MAX_MS: u64 = 8000;
 const SUMMARIZATION_RETRY_JITTER_MS: u64 = 200;
+
+const DEFAULT_MAX_TOOL_CALLS_PER_BATCH: usize = 8;
+const DEFAULT_MAX_TOOL_ITERATIONS_PER_TURN: u32 = 4;
+const DEFAULT_MAX_TOOL_ARGS_BYTES: usize = 256 * 1024;
+const DEFAULT_MAX_TOOL_OUTPUT_BYTES: usize = 102_400;
+const DEFAULT_MAX_PATCH_BYTES: usize = 512 * 1024;
+const DEFAULT_MAX_READ_FILE_BYTES: usize = 200 * 1024;
+const DEFAULT_MAX_READ_FILE_SCAN_BYTES: usize = 2 * 1024 * 1024;
+const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_TOOL_FILE_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_TOOL_SHELL_TIMEOUT_SECS: u64 = 300;
+const DEFAULT_TOOL_CAPACITY_BYTES: usize = 64 * 1024;
+const TOOL_OUTPUT_SAFETY_MARGIN_TOKENS: u32 = 256;
+const TOOL_EVENT_CHANNEL_CAPACITY: usize = 64;
+
+const DEFAULT_ENV_DENYLIST: [&str; 7] = [
+    "*_KEY",
+    "*_TOKEN",
+    "*_SECRET",
+    "*_PASSWORD",
+    "AWS_*",
+    "ANTHROPIC_*",
+    "OPENAI_*",
+];
+
+const DEFAULT_SANDBOX_DENIES: [&str; 5] = [
+    "**/.ssh/**",
+    "**/.gnupg/**",
+    "**/id_rsa*",
+    "**/*.pem",
+    "**/*.key",
+];
 
 const RECOVERY_COMPLETE_BADGE: NonEmptyStaticStr =
     NonEmptyStaticStr::new("[Recovered - stream completed but not finalized]");
@@ -584,6 +619,8 @@ struct ActiveStream {
     message: StreamingMessage,
     journal: ActiveJournal,
     abort_handle: AbortHandle,
+    tool_batch_id: Option<ToolBatchId>,
+    tool_call_seq: usize,
 }
 
 #[derive(Debug)]
@@ -625,6 +662,73 @@ pub struct PendingToolExecution {
     pub model: ModelName,
     /// Journal step ID for recovery.
     pub step_id: forge_context::StepId,
+    /// Tool batch journal ID.
+    pub batch_id: ToolBatchId,
+}
+
+#[derive(Debug)]
+struct ToolBatch {
+    assistant_text: String,
+    calls: Vec<ToolCall>,
+    results: Vec<ToolResult>,
+    model: ModelName,
+    step_id: forge_context::StepId,
+    batch_id: ToolBatchId,
+    iteration: u32,
+    execute_now: Vec<ToolCall>,
+    approval_calls: Vec<ToolCall>,
+    approval_requests: Vec<tools::ConfirmationRequest>,
+}
+
+#[derive(Debug)]
+struct ApprovalState {
+    requests: Vec<tools::ConfirmationRequest>,
+    selected: Vec<bool>,
+    cursor: usize,
+}
+
+#[derive(Debug)]
+struct ActiveToolExecution {
+    queue: VecDeque<ToolCall>,
+    current_call: Option<ToolCall>,
+    join_handle: Option<tokio::task::JoinHandle<ToolResult>>,
+    event_rx: Option<mpsc::Receiver<tools::ToolEvent>>,
+    abort_handle: Option<AbortHandle>,
+    output_lines: Vec<String>,
+    remaining_capacity_bytes: usize,
+}
+
+#[derive(Debug)]
+enum ToolLoopPhase {
+    AwaitingApproval(ApprovalState),
+    Executing(ActiveToolExecution),
+}
+
+#[derive(Debug)]
+struct ToolLoopState {
+    batch: ToolBatch,
+    phase: ToolLoopPhase,
+}
+
+#[derive(Debug)]
+struct ToolRecoveryState {
+    batch: RecoveredToolBatch,
+    step_id: forge_context::StepId,
+    model: ModelName,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ToolRecoveryDecision {
+    Resume,
+    Discard,
+}
+
+#[derive(Debug)]
+struct ToolPlan {
+    execute_now: Vec<ToolCall>,
+    approval_calls: Vec<ToolCall>,
+    approval_requests: Vec<tools::ConfirmationRequest>,
+    pre_resolved: Vec<ToolResult>,
 }
 
 #[derive(Debug)]
@@ -632,6 +736,8 @@ enum EnabledState {
     Idle,
     Streaming(ActiveStream),
     AwaitingToolResults(PendingToolExecution),
+    ToolLoop(ToolLoopState),
+    ToolRecovery(ToolRecoveryState),
     Summarizing(SummarizationState),
     SummarizingWithQueued(SummarizationWithQueuedState),
     SummarizationRetry(SummarizationRetryState),
@@ -722,6 +828,18 @@ pub struct App {
     pending_user_message: Option<(MessageId, String)>,
     /// Tool definitions to send with each request.
     tool_definitions: Vec<ToolDefinition>,
+    /// Tool registry for executors.
+    tool_registry: std::sync::Arc<tools::ToolRegistry>,
+    /// Tool loop mode.
+    tools_mode: tools::ToolsMode,
+    /// Tool settings derived from config.
+    tool_settings: tools::ToolSettings,
+    /// Tool journal for crash recovery.
+    tool_journal: ToolJournal,
+    /// File hash cache for tool safety checks.
+    tool_file_cache: std::sync::Arc<tokio::sync::Mutex<tools::ToolFileCache>>,
+    /// Tool iterations used in the current user turn.
+    tool_iterations: u32,
 }
 
 impl App {
@@ -875,6 +993,30 @@ impl App {
         let journal_path = data_dir.join("stream_journal.db");
         let stream_journal = StreamJournal::open(&journal_path)?;
 
+        // Tool settings and registry.
+        let tool_settings = Self::tool_settings_from_config(config.as_ref());
+        let mut tool_registry = tools::ToolRegistry::default();
+        if let Err(e) = tools::builtins::register_builtins(
+            &mut tool_registry,
+            tool_settings.read_limits,
+            tool_settings.patch_limits,
+        ) {
+            tracing::warn!("Failed to register built-in tools: {e}");
+        }
+        let tool_registry = std::sync::Arc::new(tool_registry);
+        let config_tool_definitions = Self::load_tool_definitions_from_config(config.as_ref());
+        let tool_definitions = match tool_settings.mode {
+            tools::ToolsMode::Enabled => tool_registry.definitions(),
+            tools::ToolsMode::ParseOnly => config_tool_definitions,
+            tools::ToolsMode::Disabled => Vec::new(),
+        };
+
+        let tool_journal_path = data_dir.join("tool_journal.db");
+        let tool_journal = ToolJournal::open(&tool_journal_path)?;
+        let tool_file_cache = std::sync::Arc::new(tokio::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        ));
+
         let state = if context_infinity_enabled {
             AppState::Enabled(EnabledState::Idle)
         } else {
@@ -904,7 +1046,13 @@ impl App {
             system_prompt,
             cached_usage_status: None,
             pending_user_message: None,
-            tool_definitions: Vec::new(), // Loaded below after config processing
+            tool_definitions,
+            tool_registry,
+            tools_mode: tool_settings.mode,
+            tool_settings,
+            tool_journal,
+            tool_file_cache,
+            tool_iterations: 0,
         };
 
         app.clamp_output_limits_to_model();
@@ -920,21 +1068,6 @@ impl App {
                 "Using fallback data dir: {}",
                 app.data_dir.path.display()
             ));
-        }
-
-        // Load tool definitions from config
-        if let Some(tools_cfg) = config.as_ref().and_then(|cfg| cfg.tools.as_ref()) {
-            for tool_cfg in &tools_cfg.definitions {
-                match tool_cfg.to_tool_definition() {
-                    Ok(tool_def) => {
-                        tracing::debug!("Loaded tool: {}", tool_def.name);
-                        app.tool_definitions.push(tool_def);
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to load tool '{}': {}", tool_cfg.name, e);
-                    }
-                }
-            }
         }
 
         Ok(app)
@@ -1002,6 +1135,178 @@ impl App {
             .unwrap_or_default();
 
         OpenAIRequestOptions::new(reasoning_effort, verbosity, truncation)
+    }
+
+    fn load_tool_definitions_from_config(config: Option<&ForgeConfig>) -> Vec<ToolDefinition> {
+        let mut defs = Vec::new();
+        if let Some(tools_cfg) = config.and_then(|cfg| cfg.tools.as_ref()) {
+            for tool_cfg in &tools_cfg.definitions {
+                match tool_cfg.to_tool_definition() {
+                    Ok(tool_def) => {
+                        tracing::debug!("Loaded tool: {}", tool_def.name);
+                        defs.push(tool_def);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to load tool '{}': {}", tool_cfg.name, e);
+                    }
+                }
+            }
+        }
+        defs
+    }
+
+    fn tool_settings_from_config(config: Option<&ForgeConfig>) -> tools::ToolSettings {
+        let tools_cfg = config.and_then(|cfg| cfg.tools.as_ref());
+        let has_defs = tools_cfg.map(|cfg| !cfg.definitions.is_empty()).unwrap_or(false);
+        let mode = parse_tools_mode(
+            tools_cfg.and_then(|cfg| cfg.mode.as_deref()),
+            has_defs,
+        );
+        let allow_parallel = tools_cfg
+            .and_then(|cfg| cfg.allow_parallel)
+            .unwrap_or(false);
+
+        let limits = tools::ToolLimits {
+            max_tool_calls_per_batch: tools_cfg
+                .and_then(|cfg| cfg.max_tool_calls_per_batch)
+                .unwrap_or(DEFAULT_MAX_TOOL_CALLS_PER_BATCH),
+            max_tool_iterations_per_user_turn: tools_cfg
+                .and_then(|cfg| cfg.max_tool_iterations_per_user_turn)
+                .unwrap_or(DEFAULT_MAX_TOOL_ITERATIONS_PER_TURN),
+            max_tool_args_bytes: tools_cfg
+                .and_then(|cfg| cfg.max_tool_args_bytes)
+                .unwrap_or(DEFAULT_MAX_TOOL_ARGS_BYTES),
+        };
+
+        let read_limits = tools::ReadFileLimits {
+            max_file_read_bytes: tools_cfg
+                .and_then(|cfg| cfg.read_file.as_ref())
+                .and_then(|cfg| cfg.max_file_read_bytes)
+                .unwrap_or(DEFAULT_MAX_READ_FILE_BYTES),
+            max_scan_bytes: tools_cfg
+                .and_then(|cfg| cfg.read_file.as_ref())
+                .and_then(|cfg| cfg.max_scan_bytes)
+                .unwrap_or(DEFAULT_MAX_READ_FILE_SCAN_BYTES),
+        };
+
+        let patch_limits = tools::PatchLimits {
+            max_patch_bytes: tools_cfg
+                .and_then(|cfg| cfg.apply_patch.as_ref())
+                .and_then(|cfg| cfg.max_patch_bytes)
+                .unwrap_or(DEFAULT_MAX_PATCH_BYTES),
+        };
+
+        let timeouts = tools::ToolTimeouts {
+            default_timeout: Duration::from_secs(
+                tools_cfg
+                    .and_then(|cfg| cfg.timeouts.as_ref())
+                    .and_then(|cfg| cfg.default_seconds)
+                    .unwrap_or(DEFAULT_TOOL_TIMEOUT_SECS),
+            ),
+            file_operations_timeout: Duration::from_secs(
+                tools_cfg
+                    .and_then(|cfg| cfg.timeouts.as_ref())
+                    .and_then(|cfg| cfg.file_operations_seconds)
+                    .unwrap_or(DEFAULT_TOOL_FILE_TIMEOUT_SECS),
+            ),
+            shell_commands_timeout: Duration::from_secs(
+                tools_cfg
+                    .and_then(|cfg| cfg.timeouts.as_ref())
+                    .and_then(|cfg| cfg.shell_commands_seconds)
+                    .unwrap_or(DEFAULT_TOOL_SHELL_TIMEOUT_SECS),
+            ),
+        };
+
+        let max_output_bytes = tools_cfg
+            .and_then(|cfg| cfg.output.as_ref())
+            .and_then(|cfg| cfg.max_bytes)
+            .unwrap_or(DEFAULT_MAX_TOOL_OUTPUT_BYTES);
+
+        let policy_cfg = tools_cfg.and_then(|cfg| cfg.approval.as_ref());
+        let policy = tools::Policy {
+            enabled: policy_cfg.and_then(|cfg| cfg.enabled).unwrap_or(true),
+            mode: parse_approval_mode(policy_cfg.and_then(|cfg| cfg.mode.as_deref())),
+            allowlist: {
+                let list = policy_cfg
+                    .map(|cfg| cfg.allowlist.clone())
+                    .unwrap_or_else(|| vec!["read_file".to_string()]);
+                list.into_iter().collect()
+            },
+            denylist: {
+                let list = if policy_cfg.and_then(|cfg| Some(&cfg.denylist)).is_some() {
+                    policy_cfg
+                        .map(|cfg| cfg.denylist.clone())
+                        .unwrap_or_default()
+                } else {
+                    vec!["run_command".to_string()]
+                };
+                list.into_iter().collect()
+            },
+            prompt_side_effects: policy_cfg
+                .and_then(|cfg| cfg.prompt_side_effects)
+                .unwrap_or(true),
+        };
+
+        let env_patterns: Vec<String> = tools_cfg
+            .and_then(|cfg| cfg.environment.as_ref())
+            .map(|cfg| cfg.denylist.clone())
+            .filter(|list| !list.is_empty())
+            .unwrap_or_else(|| DEFAULT_ENV_DENYLIST.iter().map(|s| s.to_string()).collect());
+        let env_sanitizer = tools::EnvSanitizer::new(&env_patterns).unwrap_or_else(|e| {
+            tracing::warn!("Invalid env denylist: {e}. Using defaults.");
+            tools::EnvSanitizer::new(
+                &DEFAULT_ENV_DENYLIST.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            )
+            .expect("default env sanitizer")
+        });
+
+        let sandbox_cfg = tools_cfg.and_then(|cfg| cfg.sandbox.as_ref());
+        let include_default_denies = sandbox_cfg
+            .and_then(|cfg| cfg.include_default_denies)
+            .unwrap_or(true);
+        let mut denied_patterns = sandbox_cfg
+            .map(|cfg| cfg.denied_patterns.clone())
+            .unwrap_or_default();
+        if include_default_denies {
+            denied_patterns.extend(DEFAULT_SANDBOX_DENIES.iter().map(|s| s.to_string()));
+        }
+
+        let mut allowed_roots: Vec<PathBuf> = sandbox_cfg
+            .map(|cfg| cfg.allowed_roots.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|raw| PathBuf::from(config::expand_env_vars(&raw)))
+            .collect();
+        if allowed_roots.is_empty() {
+            allowed_roots.push(PathBuf::from("."));
+        }
+        let allow_absolute = sandbox_cfg
+            .and_then(|cfg| cfg.allow_absolute)
+            .unwrap_or(false);
+
+        let sandbox = tools::sandbox::Sandbox::new(allowed_roots.clone(), denied_patterns.clone(), allow_absolute)
+            .unwrap_or_else(|e| {
+                tracing::warn!("Invalid sandbox config: {e}. Using defaults.");
+                tools::sandbox::Sandbox::new(
+                    vec![PathBuf::from(".")],
+                    DEFAULT_SANDBOX_DENIES.iter().map(|s| s.to_string()).collect(),
+                    false,
+                )
+                .expect("default sandbox")
+            });
+
+        tools::ToolSettings {
+            mode,
+            allow_parallel,
+            limits,
+            read_limits,
+            patch_limits,
+            timeouts,
+            max_output_bytes,
+            policy,
+            sandbox,
+            env_sanitizer,
+        }
     }
 
     /// Save the conversation history to disk.
@@ -1098,6 +1403,68 @@ impl App {
     /// adding the message (it was already recovered or committed) and just finalize
     /// the journal cleanup.
     pub fn check_crash_recovery(&mut self) -> Option<RecoveredStream> {
+        if let Ok(Some(mut recovered_batch)) = self.tool_journal.recover() {
+            let stream_recovered = match self.stream_journal.recover() {
+                Ok(recovered) => recovered,
+                Err(e) => {
+                    self.set_status(format!("Recovery failed: {e}"));
+                    return None;
+                }
+            };
+
+            let (step_id, partial_text, stream_model_name) = match &stream_recovered {
+                Some(RecoveredStream::Complete {
+                    step_id,
+                    partial_text,
+                    model_name,
+                    ..
+                }) => (Some(*step_id), Some(partial_text.as_str()), model_name.clone()),
+                Some(RecoveredStream::Incomplete {
+                    step_id,
+                    partial_text,
+                    model_name,
+                    ..
+                }) => (Some(*step_id), Some(partial_text.as_str()), model_name.clone()),
+                Some(RecoveredStream::Errored {
+                    step_id,
+                    partial_text,
+                    model_name,
+                    ..
+                }) => (Some(*step_id), Some(partial_text.as_str()), model_name.clone()),
+                None => (None, None, None),
+            };
+
+            if recovered_batch.assistant_text.trim().is_empty()
+                && let Some(text) = partial_text
+                && !text.trim().is_empty()
+            {
+                recovered_batch.assistant_text = text.to_string();
+            }
+
+            let model = parse_model_name_from_string(&recovered_batch.model_name)
+                .or_else(|| {
+                    stream_model_name
+                        .as_ref()
+                        .and_then(|name| parse_model_name_from_string(name))
+                })
+                .unwrap_or_else(|| self.model.clone());
+
+            if let Some(step_id) = step_id {
+                self.state = AppState::Enabled(EnabledState::ToolRecovery(ToolRecoveryState {
+                    batch: recovered_batch,
+                    step_id,
+                    model,
+                }));
+                self.set_status("Recovered tool batch. Press R to resume or D to discard.");
+                return stream_recovered;
+            }
+
+            tracing::warn!("Tool batch recovery found but no stream journal step.");
+            self.set_status("Recovered tool batch but stream journal missing; discarding");
+            let _ = self.tool_journal.discard_batch(recovered_batch.batch_id);
+            return None;
+        }
+
         let recovered = match self.stream_journal.recover() {
             Ok(Some(recovered)) => recovered,
             Ok(None) => return None,
@@ -1276,12 +1643,102 @@ impl App {
         )
     }
 
+    pub fn tool_loop_calls(&self) -> Option<&[ToolCall]> {
+        match &self.state {
+            AppState::Enabled(EnabledState::ToolLoop(state)) => Some(&state.batch.calls),
+            _ => None,
+        }
+    }
+
+    pub fn tool_loop_execute_calls(&self) -> Option<&[ToolCall]> {
+        match &self.state {
+            AppState::Enabled(EnabledState::ToolLoop(state)) => Some(&state.batch.execute_now),
+            _ => None,
+        }
+    }
+
+    pub fn tool_loop_results(&self) -> Option<&[ToolResult]> {
+        match &self.state {
+            AppState::Enabled(EnabledState::ToolLoop(state)) => Some(&state.batch.results),
+            _ => None,
+        }
+    }
+
+    pub fn tool_loop_current_call_id(&self) -> Option<&str> {
+        match &self.state {
+            AppState::Enabled(EnabledState::ToolLoop(state)) => match &state.phase {
+                ToolLoopPhase::Executing(exec) => {
+                    exec.current_call.as_ref().map(|c| c.id.as_str())
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn tool_loop_output_lines(&self) -> Option<&[String]> {
+        match &self.state {
+            AppState::Enabled(EnabledState::ToolLoop(state)) => match &state.phase {
+                ToolLoopPhase::Executing(exec) => Some(&exec.output_lines),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn tool_approval_requests(&self) -> Option<&[tools::ConfirmationRequest]> {
+        match &self.state {
+            AppState::Enabled(EnabledState::ToolLoop(state)) => match &state.phase {
+                ToolLoopPhase::AwaitingApproval(approval) => Some(&approval.requests),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn tool_approval_selected(&self) -> Option<&[bool]> {
+        match &self.state {
+            AppState::Enabled(EnabledState::ToolLoop(state)) => match &state.phase {
+                ToolLoopPhase::AwaitingApproval(approval) => Some(&approval.selected),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn tool_approval_cursor(&self) -> Option<usize> {
+        match &self.state {
+            AppState::Enabled(EnabledState::ToolLoop(state)) => match &state.phase {
+                ToolLoopPhase::AwaitingApproval(approval) => Some(approval.cursor),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn tool_recovery_calls(&self) -> Option<&[ToolCall]> {
+        match &self.state {
+            AppState::Enabled(EnabledState::ToolRecovery(state)) => Some(&state.batch.calls),
+            _ => None,
+        }
+    }
+
+    pub fn tool_recovery_results(&self) -> Option<&[ToolResult]> {
+        match &self.state {
+            AppState::Enabled(EnabledState::ToolRecovery(state)) => Some(&state.batch.results),
+            _ => None,
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.display.is_empty()
             && !matches!(
                 self.state,
                 AppState::Enabled(EnabledState::Streaming(_))
                     | AppState::Disabled(DisabledState::Streaming(_))
+                    | AppState::Enabled(EnabledState::AwaitingToolResults(_))
+                    | AppState::Enabled(EnabledState::ToolLoop(_))
+                    | AppState::Enabled(EnabledState::ToolRecovery(_))
             )
     }
 
@@ -1304,6 +1761,12 @@ impl App {
             self.state,
             AppState::Enabled(EnabledState::Streaming(_))
                 | AppState::Disabled(DisabledState::Streaming(_))
+                | AppState::Enabled(EnabledState::AwaitingToolResults(_))
+                | AppState::Enabled(EnabledState::ToolLoop(_))
+                | AppState::Enabled(EnabledState::Summarizing(_))
+                | AppState::Enabled(EnabledState::SummarizingWithQueued(_))
+                | AppState::Enabled(EnabledState::SummarizationRetry(_))
+                | AppState::Enabled(EnabledState::SummarizationRetryWithQueued(_))
         )
     }
 
@@ -1528,6 +1991,14 @@ impl App {
             }
             AppState::Enabled(EnabledState::AwaitingToolResults(_)) => {
                 self.set_status("Cannot summarize while awaiting tool results");
+                return SummarizationStart::Failed;
+            }
+            AppState::Enabled(EnabledState::ToolLoop(_)) => {
+                self.set_status("Cannot summarize while tool execution runs");
+                return SummarizationStart::Failed;
+            }
+            AppState::Enabled(EnabledState::ToolRecovery(_)) => {
+                self.set_status("Cannot summarize while tool recovery is pending");
                 return SummarizationStart::Failed;
             }
             AppState::Enabled(EnabledState::Summarizing(_))
@@ -1849,6 +2320,14 @@ impl App {
                 self.set_status("Busy: waiting for tool results");
                 return;
             }
+            AppState::Enabled(EnabledState::ToolLoop(_)) => {
+                self.set_status("Busy: tool execution in progress");
+                return;
+            }
+            AppState::Enabled(EnabledState::ToolRecovery(_)) => {
+                self.set_status("Busy: tool recovery pending");
+                return;
+            }
             AppState::Enabled(EnabledState::Summarizing(_))
             | AppState::Enabled(EnabledState::SummarizingWithQueued(_))
             | AppState::Enabled(EnabledState::SummarizationRetry(_))
@@ -1907,6 +2386,8 @@ impl App {
             message: StreamingMessage::new(config.model().clone(), rx),
             journal,
             abort_handle,
+            tool_batch_id: None,
+            tool_call_seq: 0,
         };
 
         self.state = if context_infinity_enabled {
@@ -2026,45 +2507,96 @@ impl App {
 
             let mut journal_error: Option<String> = None;
             let mut finish_reason: Option<StreamFinishReason> = None;
+            let update_assistant_text = matches!(event, StreamEvent::TextDelta(_));
 
-            {
-                let active = match self.state {
-                    AppState::Enabled(EnabledState::Streaming(ref mut active))
-                    | AppState::Disabled(DisabledState::Streaming(ref mut active)) => active,
-                    _ => return,
-                };
-
-                let persist_result = match &event {
-                    StreamEvent::TextDelta(text) => active
-                        .journal
-                        .append_text(&mut self.stream_journal, text.clone()),
-                    StreamEvent::ThinkingDelta(_) => {
-                        // Don't persist thinking content to journal - silently consume
-                        Ok(())
-                    }
-                    StreamEvent::ToolCallStart { .. } => {
-                        // TODO: Persist tool call start in Phase 3
-                        Ok(())
-                    }
-                    StreamEvent::ToolCallDelta { .. } => {
-                        // TODO: Persist tool call delta in Phase 3
-                        Ok(())
-                    }
-                    StreamEvent::Done => active.journal.append_done(&mut self.stream_journal),
-                    StreamEvent::Error(msg) => active
-                        .journal
-                        .append_error(&mut self.stream_journal, msg.clone()),
-                };
-
-                // Persist BEFORE display.
-                if let Err(e) = persist_result {
-                    journal_error = Some(e.to_string());
+            let idle = self.idle_state();
+            let state = std::mem::replace(&mut self.state, idle);
+            let (mut active, context_enabled) = match state {
+                AppState::Enabled(EnabledState::Streaming(active)) => (active, true),
+                AppState::Disabled(DisabledState::Streaming(active)) => (active, false),
+                other => {
+                    self.state = other;
+                    return;
                 }
+            };
 
-                if journal_error.is_none() {
-                    finish_reason = active.message.apply_event(event);
+            let persist_result = match &event {
+                StreamEvent::TextDelta(text) => active
+                    .journal
+                    .append_text(&mut self.stream_journal, text.clone()),
+                StreamEvent::ThinkingDelta(_) => {
+                    // Don't persist thinking content to journal - silently consume
+                    Ok(())
+                }
+                StreamEvent::ToolCallStart { .. } | StreamEvent::ToolCallDelta { .. } => Ok(()),
+                StreamEvent::Done => active.journal.append_done(&mut self.stream_journal),
+                StreamEvent::Error(msg) => active
+                    .journal
+                    .append_error(&mut self.stream_journal, msg.clone()),
+            };
+
+            // Persist BEFORE display.
+            if let Err(e) = persist_result {
+                journal_error = Some(e.to_string());
+            }
+
+            if journal_error.is_none() {
+                match &event {
+                    StreamEvent::ToolCallStart { id, name } => {
+                        if active.tool_batch_id.is_none() {
+                            match self.tool_journal.begin_streaming_batch(
+                                active.journal.model_name(),
+                            ) {
+                                Ok(batch_id) => {
+                                    active.tool_batch_id = Some(batch_id);
+                                }
+                                Err(e) => journal_error = Some(e.to_string()),
+                            }
+                        }
+                        if let Some(batch_id) = active.tool_batch_id {
+                            let seq = active.tool_call_seq;
+                            active.tool_call_seq = active.tool_call_seq.saturating_add(1);
+                            if let Err(e) = self
+                                .tool_journal
+                                .record_call_start(batch_id, seq, id, name)
+                            {
+                                journal_error = Some(e.to_string());
+                            }
+                        }
+                    }
+                    StreamEvent::ToolCallDelta { id, arguments } => {
+                        if let Some(batch_id) = active.tool_batch_id {
+                            if let Err(e) = self
+                                .tool_journal
+                                .append_call_args(batch_id, id, arguments)
+                            {
+                                journal_error = Some(e.to_string());
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
+
+            if journal_error.is_none() {
+                finish_reason = active.message.apply_event(event);
+                if update_assistant_text
+                    && let Some(batch_id) = active.tool_batch_id
+                {
+                    if let Err(e) = self
+                        .tool_journal
+                        .update_assistant_text(batch_id, active.message.content())
+                    {
+                        journal_error = Some(e.to_string());
+                    }
+                }
+            }
+
+            self.state = if context_enabled {
+                AppState::Enabled(EnabledState::Streaming(active))
+            } else {
+                AppState::Disabled(DisabledState::Streaming(active))
+            };
 
             if let Some(err) = journal_error {
                 // Abort streaming without applying the unpersisted event.
@@ -2081,6 +2613,7 @@ impl App {
                     message,
                     journal,
                     abort_handle,
+                    ..
                 } = active;
 
                 abort_handle.abort();
@@ -2142,6 +2675,8 @@ impl App {
             mut message,
             journal,
             abort_handle,
+            tool_batch_id,
+            ..
         } = active;
 
         abort_handle.abort();
@@ -2162,18 +2697,14 @@ impl App {
         if message.has_tool_calls() {
             let tool_calls = message.take_tool_calls();
             let assistant_text = message.content().to_string();
-
-            // Transition to AwaitingToolResults state
             self.pending_user_message = None;
-            let pending = PendingToolExecution {
+            self.handle_tool_calls(
                 assistant_text,
-                pending_calls: tool_calls,
-                results: Vec::new(),
+                tool_calls,
                 model,
                 step_id,
-            };
-            self.state = AppState::Enabled(EnabledState::AwaitingToolResults(pending));
-            self.set_status("Waiting for tool results...");
+                tool_batch_id,
+            );
             return;
         }
 
@@ -2229,13 +2760,690 @@ impl App {
         // If save failed, leave journal recoverable for next session
     }
 
+    fn handle_tool_calls(
+        &mut self,
+        assistant_text: String,
+        tool_calls: Vec<ToolCall>,
+        model: ModelName,
+        step_id: forge_context::StepId,
+        tool_batch_id: Option<ToolBatchId>,
+    ) {
+        if tool_calls.is_empty() {
+            return;
+        }
+
+        let mut batch_id = tool_batch_id.unwrap_or(0);
+        if batch_id != 0 {
+            if let Err(e) = self
+                .tool_journal
+                .update_assistant_text(batch_id, &assistant_text)
+            {
+                tracing::warn!("Tool journal update failed: {e}");
+                self.set_status(format!("Tool journal error: {e}"));
+                batch_id = 0;
+            }
+        }
+        if batch_id == 0 {
+            batch_id = match self
+                .tool_journal
+                .begin_batch(model.as_str(), &assistant_text, &tool_calls)
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!("Tool journal begin failed: {e}");
+                    self.set_status(format!("Tool journal error: {e}"));
+                    0
+                }
+            };
+        }
+
+        match self.tools_mode {
+            tools::ToolsMode::Disabled => {
+                let results: Vec<ToolResult> = tool_calls
+                    .iter()
+                    .map(|call| ToolResult::error(call.id.clone(), "Tool execution disabled"))
+                    .collect();
+                if batch_id != 0 {
+                    for result in &results {
+                        let _ = self.tool_journal.record_result(batch_id, result);
+                    }
+                }
+                self.commit_tool_batch(
+                    assistant_text,
+                    tool_calls,
+                    results,
+                    model,
+                    step_id,
+                    batch_id,
+                    false,
+                );
+            }
+            tools::ToolsMode::ParseOnly => {
+                let pending = PendingToolExecution {
+                    assistant_text,
+                    pending_calls: tool_calls,
+                    results: Vec::new(),
+                    model,
+                    step_id,
+                    batch_id,
+                };
+                self.state = AppState::Enabled(EnabledState::AwaitingToolResults(pending));
+                self.set_status("Waiting for tool results...");
+            }
+            tools::ToolsMode::Enabled => {
+                self.start_tool_loop(assistant_text, tool_calls, model, step_id, batch_id);
+            }
+        }
+    }
+
+    fn start_tool_loop(
+        &mut self,
+        assistant_text: String,
+        tool_calls: Vec<ToolCall>,
+        model: ModelName,
+        step_id: forge_context::StepId,
+        batch_id: ToolBatchId,
+    ) {
+        let next_iteration = self.tool_iterations.saturating_add(1);
+        if next_iteration > self.tool_settings.limits.max_tool_iterations_per_user_turn {
+            let results: Vec<ToolResult> = tool_calls
+                .iter()
+                .map(|call| {
+                    ToolResult::error(call.id.clone(), "Max tool iterations reached")
+                })
+                .collect();
+            if batch_id != 0 {
+                for result in &results {
+                    let _ = self.tool_journal.record_result(batch_id, result);
+                }
+            }
+            self.commit_tool_batch(
+                assistant_text,
+                tool_calls,
+                results,
+                model,
+                step_id,
+                batch_id,
+                true,
+            );
+            return;
+        }
+        self.tool_iterations = next_iteration;
+
+        let plan = self.plan_tool_calls(&tool_calls);
+        if batch_id != 0 {
+            for result in &plan.pre_resolved {
+                let _ = self.tool_journal.record_result(batch_id, result);
+            }
+        }
+
+        let batch = ToolBatch {
+            assistant_text,
+            calls: tool_calls,
+            results: plan.pre_resolved,
+            model,
+            step_id,
+            batch_id,
+            iteration: next_iteration,
+            execute_now: plan.execute_now,
+            approval_calls: plan.approval_calls,
+            approval_requests: plan.approval_requests.clone(),
+        };
+        let iteration = batch.iteration;
+        let max_iterations = self.tool_settings.limits.max_tool_iterations_per_user_turn;
+
+        let remaining_capacity_bytes = self.remaining_tool_capacity(&batch);
+
+        if !plan.approval_requests.is_empty() {
+            let approval = ApprovalState {
+                requests: plan.approval_requests,
+                selected: vec![false; batch.approval_requests.len()],
+                cursor: 0,
+            };
+            self.state = AppState::Enabled(EnabledState::ToolLoop(ToolLoopState {
+                batch,
+                phase: ToolLoopPhase::AwaitingApproval(approval),
+            }));
+            self.set_status(format!(
+                "Tool approval required (iteration {}/{})",
+                iteration, max_iterations
+            ));
+            return;
+        }
+
+        let queue = batch.execute_now.clone();
+        if queue.is_empty() {
+            self.commit_tool_batch(
+                batch.assistant_text,
+                batch.calls,
+                batch.results,
+                batch.model,
+                batch.step_id,
+                batch.batch_id,
+                true,
+            );
+            return;
+        }
+
+        let exec = self.spawn_tool_execution(queue, remaining_capacity_bytes);
+        self.state = AppState::Enabled(EnabledState::ToolLoop(ToolLoopState {
+            batch,
+            phase: ToolLoopPhase::Executing(exec),
+        }));
+        self.set_status(format!(
+            "Running tools (iteration {}/{})",
+            iteration, max_iterations
+        ));
+    }
+
+    fn plan_tool_calls(&self, calls: &[ToolCall]) -> ToolPlan {
+        let mut execute_now = Vec::new();
+        let mut approval_calls = Vec::new();
+        let mut approval_requests = Vec::new();
+        let mut pre_resolved = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
+        let mut accepted = 0usize;
+
+        for call in calls {
+            if !self.tool_settings.policy.enabled {
+                pre_resolved.push(tool_error_result(
+                    call,
+                    tools::ToolError::SandboxViolation(tools::DenialReason::Disabled),
+                ));
+                continue;
+            }
+
+            if self.tool_settings.policy.is_denylisted(&call.name) {
+                pre_resolved.push(tool_error_result(
+                    call,
+                    tools::ToolError::SandboxViolation(tools::DenialReason::Denylisted {
+                        tool: call.name.clone(),
+                    }),
+                ));
+                continue;
+            }
+
+            if !seen_ids.insert(call.id.clone()) {
+                pre_resolved.push(tool_error_result(
+                    call,
+                    tools::ToolError::DuplicateToolCallId {
+                        id: call.id.clone(),
+                    },
+                ));
+                continue;
+            }
+            accepted += 1;
+            if accepted > self.tool_settings.limits.max_tool_calls_per_batch {
+                pre_resolved.push(tool_error_result(
+                    call,
+                    tools::ToolError::SandboxViolation(tools::DenialReason::LimitsExceeded {
+                        message: "Exceeded max tool calls per batch".to_string(),
+                    }),
+                ));
+                continue;
+            }
+
+            let args_size = serde_json::to_vec(&call.arguments)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            if args_size > self.tool_settings.limits.max_tool_args_bytes {
+                pre_resolved.push(tool_error_result(
+                    call,
+                    tools::ToolError::SandboxViolation(tools::DenialReason::LimitsExceeded {
+                        message: "Tool arguments too large".to_string(),
+                    }),
+                ));
+                continue;
+            }
+
+            if call.name == "apply_patch" {
+                if let Some(patch) = call.arguments.get("patch").and_then(|v| v.as_str()) {
+                    if patch.as_bytes().len() > self.tool_settings.patch_limits.max_patch_bytes {
+                        pre_resolved.push(tool_error_result(
+                            call,
+                            tools::ToolError::SandboxViolation(
+                                tools::DenialReason::LimitsExceeded {
+                                    message: "Patch exceeds max_patch_bytes".to_string(),
+                                },
+                            ),
+                        ));
+                        continue;
+                    }
+                }
+            }
+
+            let exec = match self.tool_registry.lookup(&call.name) {
+                Ok(exec) => exec,
+                Err(err) => {
+                    pre_resolved.push(tool_error_result(call, err));
+                    continue;
+                }
+            };
+
+            if let Err(err) = tools::validate_args(&exec.schema(), &call.arguments) {
+                pre_resolved.push(tool_error_result(call, err));
+                continue;
+            }
+
+            if let Err(err) = preflight_sandbox(&self.tool_settings.sandbox, &call) {
+                pre_resolved.push(tool_error_result(call, err));
+                continue;
+            }
+
+            if matches!(self.tool_settings.policy.mode, tools::ApprovalMode::Deny)
+                && !self.tool_settings.policy.is_allowlisted(&call.name)
+            {
+                pre_resolved.push(tool_error_result(
+                    call,
+                    tools::ToolError::SandboxViolation(tools::DenialReason::Denylisted {
+                        tool: call.name.clone(),
+                    }),
+                ));
+                continue;
+            }
+
+            let allowlisted = self.tool_settings.policy.is_allowlisted(&call.name);
+            let needs_confirmation = match self.tool_settings.policy.mode {
+                tools::ApprovalMode::Auto => exec.requires_approval(),
+                tools::ApprovalMode::Prompt => {
+                    exec.requires_approval()
+                        || (self.tool_settings.policy.prompt_side_effects
+                            && exec.is_side_effecting()
+                            && !allowlisted)
+                }
+                tools::ApprovalMode::Deny => exec.requires_approval(),
+            };
+
+            if needs_confirmation {
+                let summary = match exec.approval_summary(&call.arguments) {
+                    Ok(summary) => summary,
+                    Err(err) => {
+                        pre_resolved.push(tool_error_result(call, err));
+                        continue;
+                    }
+                };
+                let summary = truncate_with_ellipsis(&summary, 200);
+                approval_requests.push(tools::ConfirmationRequest {
+                    tool_call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    summary,
+                    risk_level: exec.risk_level(),
+                });
+                approval_calls.push(call.clone());
+            } else {
+                execute_now.push(call.clone());
+            }
+        }
+
+        ToolPlan {
+            execute_now,
+            approval_calls,
+            approval_requests,
+            pre_resolved,
+        }
+    }
+
+    fn tool_capacity_bytes(&mut self) -> usize {
+        let usage = match self.context_usage_status() {
+            ContextUsageStatus::Ready(usage)
+            | ContextUsageStatus::NeedsSummarization { usage, .. }
+            | ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => usage,
+        };
+
+        if usage.budget_tokens == 0 {
+            return DEFAULT_TOOL_CAPACITY_BYTES;
+        }
+
+        let available_tokens = usage
+            .budget_tokens
+            .saturating_sub(usage.used_tokens)
+            .saturating_sub(TOOL_OUTPUT_SAFETY_MARGIN_TOKENS);
+        if available_tokens == 0 {
+            return 0;
+        }
+
+        let available_bytes = (available_tokens as usize).saturating_mul(4);
+        if available_bytes == 0 {
+            DEFAULT_TOOL_CAPACITY_BYTES
+        } else {
+            available_bytes
+        }
+    }
+
+    fn remaining_tool_capacity(&mut self, batch: &ToolBatch) -> usize {
+        let mut remaining = self.tool_capacity_bytes();
+        for result in &batch.results {
+            remaining = remaining.saturating_sub(result.content.len());
+        }
+        remaining
+    }
+
+    fn spawn_tool_execution(
+        &self,
+        queue: Vec<ToolCall>,
+        initial_capacity_bytes: usize,
+    ) -> ActiveToolExecution {
+        let mut exec = ActiveToolExecution {
+            queue: VecDeque::from(queue),
+            current_call: None,
+            join_handle: None,
+            event_rx: None,
+            abort_handle: None,
+            output_lines: Vec::new(),
+            remaining_capacity_bytes: initial_capacity_bytes,
+        };
+        self.start_next_tool_call(&mut exec);
+        exec
+    }
+
+    fn start_next_tool_call(&self, exec: &mut ActiveToolExecution) -> bool {
+        let Some(call) = exec.queue.pop_front() else {
+            return false;
+        };
+
+        exec.output_lines.clear();
+        exec.current_call = Some(call.clone());
+
+        let (event_tx, event_rx) = mpsc::channel(TOOL_EVENT_CHANNEL_CAPACITY);
+        exec.event_rx = Some(event_rx);
+
+        let (abort_handle, abort_registration) = AbortHandle::new_pair();
+        exec.abort_handle = Some(abort_handle.clone());
+
+        let registry = self.tool_registry.clone();
+        let settings = self.tool_settings.clone();
+        let file_cache = self.tool_file_cache.clone();
+        let working_dir = settings.sandbox.working_dir();
+        let remaining_capacity = exec.remaining_capacity_bytes;
+
+        let handle = tokio::spawn(async move {
+            use futures_util::FutureExt;
+            let _ = event_tx
+                .send(tools::ToolEvent::Started {
+                    tool_call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                })
+                .await;
+
+            let exec_ref = match registry.lookup(&call.name) {
+                Ok(exec) => exec,
+                Err(err) => {
+                    let result = tool_error_result(&call, err);
+                    let _ = event_tx
+                        .send(tools::ToolEvent::Completed {
+                            tool_call_id: call.id.clone(),
+                        })
+                        .await;
+                    return result;
+                }
+            };
+
+            let default_timeout = match call.name.as_str() {
+                "read_file" | "apply_patch" => settings.timeouts.file_operations_timeout,
+                "run_command" => settings.timeouts.shell_commands_timeout,
+                _ => settings.timeouts.default_timeout,
+            };
+
+            let mut ctx = tools::ToolCtx {
+                sandbox: settings.sandbox.clone(),
+                abort: abort_handle,
+                output_tx: event_tx.clone(),
+                default_timeout,
+                max_output_bytes: settings.max_output_bytes,
+                available_capacity_bytes: remaining_capacity,
+                tool_call_id: call.id.clone(),
+                allow_truncation: true,
+                working_dir,
+                env_sanitizer: settings.env_sanitizer.clone(),
+                file_cache,
+            };
+
+            let timeout = exec_ref.timeout().unwrap_or(ctx.default_timeout);
+            let exec_future = exec_ref.execute(call.arguments.clone(), &mut ctx);
+            let exec_future = std::panic::AssertUnwindSafe(exec_future).catch_unwind();
+            let exec_future = Abortable::new(exec_future, abort_registration);
+
+            let result = match tokio::time::timeout(timeout, exec_future).await {
+                Err(_) => tool_error_result(
+                    &call,
+                    tools::ToolError::Timeout {
+                        tool: call.name.clone(),
+                        elapsed: timeout,
+                    },
+                ),
+                Ok(Err(_)) => tool_error_result(&call, tools::ToolError::Cancelled),
+                Ok(Ok(Err(panic_payload))) => {
+                    let panic_msg = panic_payload_to_string(&panic_payload);
+                    let message = format!("Tool panicked: {}", panic_msg);
+                    ToolResult::error(call.id.clone(), tools::sanitize_output(&message))
+                }
+                Ok(Ok(Ok(inner))) => match inner {
+                    Ok(output) => {
+                        let sanitized = tools::sanitize_output(&output);
+                        let effective_max =
+                            ctx.max_output_bytes.min(ctx.available_capacity_bytes);
+                        let final_output = if ctx.allow_truncation {
+                            tools::truncate_output(sanitized, effective_max)
+                        } else {
+                            sanitized
+                        };
+                        ToolResult::success(call.id.clone(), final_output)
+                    }
+                    Err(err) => tool_error_result(&call, err),
+                },
+            };
+
+            let _ = event_tx
+                .send(tools::ToolEvent::Completed {
+                    tool_call_id: call.id.clone(),
+                })
+                .await;
+
+            result
+        });
+
+        exec.join_handle = Some(handle);
+        true
+    }
+
+    fn poll_tool_loop(&mut self) {
+        use futures_util::future::FutureExt;
+
+        let idle = self.idle_state();
+        let state = match std::mem::replace(&mut self.state, idle) {
+            AppState::Enabled(EnabledState::ToolLoop(state)) => state,
+            other => {
+                self.state = other;
+                return;
+            }
+        };
+        let mut state = state;
+        let mut completed: Option<ToolResult> = None;
+        let mut should_commit = false;
+
+        match &mut state.phase {
+            ToolLoopPhase::AwaitingApproval(_) => {}
+            ToolLoopPhase::Executing(exec) => {
+                if let Some(rx) = exec.event_rx.as_mut() {
+                    loop {
+                        match rx.try_recv() {
+                            Ok(event) => match event {
+                                tools::ToolEvent::Started {
+                                    tool_call_id,
+                                    tool_name,
+                                } => {
+                                    let is_current = exec
+                                        .current_call
+                                        .as_ref()
+                                        .map(|call| call.id.as_str())
+                                        == Some(tool_call_id.as_str());
+                                    if is_current {
+                                        exec.output_lines.push(format!(
+                                            "▶ {} ({})",
+                                            tools::sanitize_output(&tool_name),
+                                            tool_call_id
+                                        ));
+                                    }
+                                }
+                                tools::ToolEvent::StdoutChunk {
+                                    tool_call_id,
+                                    chunk,
+                                } => {
+                                    let is_current = exec
+                                        .current_call
+                                        .as_ref()
+                                        .map(|call| call.id.as_str())
+                                        == Some(tool_call_id.as_str());
+                                    if !is_current {
+                                        continue;
+                                    }
+                                    append_tool_output_lines(
+                                        &mut exec.output_lines,
+                                        &tools::sanitize_output(&chunk),
+                                        None,
+                                    );
+                                }
+                                tools::ToolEvent::StderrChunk {
+                                    tool_call_id,
+                                    chunk,
+                                } => {
+                                    let is_current = exec
+                                        .current_call
+                                        .as_ref()
+                                        .map(|call| call.id.as_str())
+                                        == Some(tool_call_id.as_str());
+                                    if !is_current {
+                                        continue;
+                                    }
+                                    append_tool_output_lines(
+                                        &mut exec.output_lines,
+                                        &tools::sanitize_output(&chunk),
+                                        Some("[stderr] "),
+                                    );
+                                }
+                                tools::ToolEvent::Completed { tool_call_id } => {
+                                    let is_current = exec
+                                        .current_call
+                                        .as_ref()
+                                        .map(|call| call.id.as_str())
+                                        == Some(tool_call_id.as_str());
+                                    if is_current {
+                                        exec.output_lines.push(format!(
+                                            "✓ Tool completed ({})",
+                                            tool_call_id
+                                        ));
+                                    }
+                                }
+                            },
+                            Err(mpsc::error::TryRecvError::Empty) => break,
+                            Err(mpsc::error::TryRecvError::Disconnected) => {
+                                exec.event_rx = None;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if let Some(handle) = exec.join_handle.as_mut() {
+                    if let Some(joined) = handle.now_or_never() {
+                        exec.join_handle = None;
+                        exec.event_rx = None;
+                        exec.abort_handle = None;
+
+                        let result = match joined {
+                            Ok(result) => result,
+                            Err(err) => {
+                                let call_id = exec
+                                    .current_call
+                                    .as_ref()
+                                    .map(|c| c.id.clone())
+                                    .unwrap_or_else(|| "<unknown>".to_string());
+                                let message = if err.is_cancelled() {
+                                    "Tool execution cancelled"
+                                } else {
+                                    "Tool execution failed"
+                                };
+                                ToolResult::error(call_id, message)
+                            }
+                        };
+                        exec.current_call = None;
+                        completed = Some(result);
+                    }
+                }
+
+                if let Some(result) = completed.take() {
+                    if state.batch.batch_id != 0 {
+                        let _ = self.tool_journal.record_result(state.batch.batch_id, &result);
+                    }
+                    exec.remaining_capacity_bytes = exec
+                        .remaining_capacity_bytes
+                        .saturating_sub(result.content.len());
+                    state.batch.results.push(result);
+
+                    if exec.queue.is_empty() {
+                        should_commit = true;
+                    } else {
+                        self.start_next_tool_call(exec);
+                    }
+                }
+            }
+        }
+
+        if should_commit {
+            self.commit_tool_batch(
+                state.batch.assistant_text,
+                state.batch.calls,
+                state.batch.results,
+                state.batch.model,
+                state.batch.step_id,
+                state.batch.batch_id,
+                true,
+            );
+        } else {
+            self.state = AppState::Enabled(EnabledState::ToolLoop(state));
+        }
+    }
+
+    fn cancel_tool_batch(
+        &mut self,
+        assistant_text: String,
+        calls: Vec<ToolCall>,
+        mut results: Vec<ToolResult>,
+        model: ModelName,
+        step_id: forge_context::StepId,
+        batch_id: ToolBatchId,
+    ) {
+        let existing: std::collections::HashSet<String> =
+            results.iter().map(|r| r.tool_call_id.clone()).collect();
+        for call in &calls {
+            if existing.contains(&call.id) {
+                continue;
+            }
+            let result = ToolResult::error(call.id.clone(), "Cancelled by user");
+            if batch_id != 0 {
+                let _ = self.tool_journal.record_result(batch_id, &result);
+            }
+            results.push(result);
+        }
+
+        self.commit_tool_batch(
+            assistant_text,
+            calls,
+            results,
+            model,
+            step_id,
+            batch_id,
+            false,
+        );
+    }
+
     /// Submit a tool result. When all results are in, commit messages and return to Idle.
     ///
     /// Returns `Ok(true)` if all results are now complete and conversation can resume,
     /// `Ok(false)` if more results are still needed, or an error if not in the right state.
     pub fn submit_tool_result(&mut self, result: ToolResult) -> Result<bool, String> {
         // First, validate and add the result to pending state
-        let (results_count, pending_count) = {
+        let (results_count, pending_count, batch_id) = {
             let pending = match &mut self.state {
                 AppState::Enabled(EnabledState::AwaitingToolResults(pending)) => pending,
                 _ => return Err("Not awaiting tool results".to_string()),
@@ -2266,7 +3474,10 @@ impl App {
             }
 
             pending.results.push(result);
-            (pending.results.len(), pending.pending_calls.len())
+            if pending.batch_id != 0 {
+                let _ = self.tool_journal.record_result(pending.batch_id, pending.results.last().unwrap());
+            }
+            (pending.results.len(), pending.pending_calls.len(), pending.batch_id)
         };
 
         // Check if all results are in
@@ -2289,35 +3500,92 @@ impl App {
                 }
             };
 
-        let step_id = pending.step_id;
+        self.commit_tool_batch(
+            pending.assistant_text,
+            pending.pending_calls,
+            pending.results,
+            pending.model,
+            pending.step_id,
+            batch_id,
+            false,
+        );
+        Ok(true)
+    }
 
-        // Push assistant text as a message if non-empty
-        if !pending.assistant_text.is_empty()
-            && let Ok(content) = NonEmptyString::new(pending.assistant_text)
-        {
-            let assistant_msg = Message::assistant(pending.model.clone(), content);
-            self.push_history_message_with_step_id(assistant_msg, step_id);
+    fn commit_tool_batch(
+        &mut self,
+        assistant_text: String,
+        tool_calls: Vec<ToolCall>,
+        results: Vec<ToolResult>,
+        model: ModelName,
+        step_id: forge_context::StepId,
+        batch_id: ToolBatchId,
+        auto_resume: bool,
+    ) {
+        self.state = self.idle_state();
+
+        if let Ok(content) = NonEmptyString::new(assistant_text.clone()) {
+            let message = Message::assistant(model.clone(), content);
+            self.push_history_message_with_step_id(message, step_id);
         }
 
-        // Push tool use messages for each call
-        for call in pending.pending_calls {
-            let tool_use_msg = Message::tool_use(call);
-            self.push_history_message(tool_use_msg);
+        let mut result_map: std::collections::HashMap<String, ToolResult> =
+            std::collections::HashMap::new();
+        for result in results {
+            result_map.entry(result.tool_call_id.clone()).or_insert(result);
         }
 
-        // Push tool result messages
-        for result in pending.results {
-            let tool_result_msg = Message::tool_result(result);
-            self.push_history_message(tool_result_msg);
+        let mut ordered_results: Vec<ToolResult> = Vec::new();
+        for call in &tool_calls {
+            if let Some(result) = result_map.remove(&call.id) {
+                ordered_results.push(result);
+            } else {
+                ordered_results
+                    .push(ToolResult::error(call.id.clone(), "Missing tool result"));
+            }
         }
 
-        // Persist history and finalize journal
+        for call in &tool_calls {
+            self.push_history_message(Message::tool_use(call.clone()));
+        }
+
+        for result in &ordered_results {
+            self.push_history_message(Message::tool_result(result.clone()));
+        }
+
         if self.autosave_history() {
             self.finalize_journal_commit(step_id);
+            if batch_id != 0 {
+                if let Err(e) = self.tool_journal.commit_batch(batch_id) {
+                    tracing::warn!("Failed to commit tool batch {}: {e}", batch_id);
+                }
+            }
         }
 
-        self.set_status("Tool results processed");
-        Ok(true)
+        if auto_resume {
+            let Some(api_key) = self.api_keys.get(&model.provider()).cloned() else {
+                self.set_status(format!(
+                    "Cannot resume: no API key for {}",
+                    model.provider().display_name()
+                ));
+                return;
+            };
+
+            let api_key = match model.provider() {
+                Provider::Claude => ApiKey::Claude(api_key),
+                Provider::OpenAI => ApiKey::OpenAI(api_key),
+            };
+
+            let config = match ApiConfig::new(api_key, model.clone()) {
+                Ok(config) => config.with_openai_options(self.openai_options),
+                Err(e) => {
+                    self.set_status(format!("Cannot resume after tools: {e}"));
+                    return;
+                }
+            };
+
+            self.start_streaming(QueuedUserMessage { config });
+        }
     }
 
     /// Atomically commit and prune a journal step.
@@ -2380,6 +3648,7 @@ impl App {
         self.tick = self.tick.wrapping_add(1);
         self.poll_summarization();
         self.poll_summarization_retry();
+        self.poll_tool_loop();
     }
 
     /// Get elapsed time since last frame and update timing.
@@ -2498,6 +3767,226 @@ impl App {
         self.enter_normal_mode();
     }
 
+    pub fn tool_approval_move_up(&mut self) {
+        if let AppState::Enabled(EnabledState::ToolLoop(state)) = &mut self.state
+            && let ToolLoopPhase::AwaitingApproval(approval) = &mut state.phase
+            && approval.cursor > 0
+        {
+            approval.cursor -= 1;
+        }
+    }
+
+    pub fn tool_approval_move_down(&mut self) {
+        if let AppState::Enabled(EnabledState::ToolLoop(state)) = &mut self.state
+            && let ToolLoopPhase::AwaitingApproval(approval) = &mut state.phase
+        {
+            if approval.cursor + 1 < approval.requests.len() {
+                approval.cursor += 1;
+            }
+        }
+    }
+
+    pub fn tool_approval_toggle(&mut self) {
+        if let AppState::Enabled(EnabledState::ToolLoop(state)) = &mut self.state
+            && let ToolLoopPhase::AwaitingApproval(approval) = &mut state.phase
+            && approval.cursor < approval.selected.len()
+        {
+            approval.selected[approval.cursor] = !approval.selected[approval.cursor];
+        }
+    }
+
+    pub fn tool_approval_approve_all(&mut self) {
+        self.resolve_tool_approval(tools::ApprovalDecision::ApproveAll);
+    }
+
+    pub fn tool_approval_deny_all(&mut self) {
+        self.resolve_tool_approval(tools::ApprovalDecision::DenyAll);
+    }
+
+    pub fn tool_approval_confirm_selected(&mut self) {
+        let ids = if let AppState::Enabled(EnabledState::ToolLoop(state)) = &self.state
+            && let ToolLoopPhase::AwaitingApproval(approval) = &state.phase
+        {
+            approval
+                .requests
+                .iter()
+                .zip(approval.selected.iter())
+                .filter_map(|(req, selected)| selected.then(|| req.tool_call_id.clone()))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        if ids.is_empty() {
+            self.resolve_tool_approval(tools::ApprovalDecision::DenyAll);
+        } else {
+            self.resolve_tool_approval(tools::ApprovalDecision::ApproveSelected(ids));
+        }
+    }
+
+    pub fn tool_recovery_resume(&mut self) {
+        self.resolve_tool_recovery(ToolRecoveryDecision::Resume);
+    }
+
+    pub fn tool_recovery_discard(&mut self) {
+        self.resolve_tool_recovery(ToolRecoveryDecision::Discard);
+    }
+
+    fn resolve_tool_approval(&mut self, decision: tools::ApprovalDecision) {
+        let idle = self.idle_state();
+        let state = match std::mem::replace(&mut self.state, idle) {
+            AppState::Enabled(EnabledState::ToolLoop(state)) => state,
+            other => {
+                self.state = other;
+                return;
+            }
+        };
+
+        let ToolLoopState { mut batch, phase } = state;
+        let ToolLoopPhase::AwaitingApproval(_approval) = phase else {
+            self.state = AppState::Enabled(EnabledState::ToolLoop(ToolLoopState { batch, phase }));
+            return;
+        };
+
+        let mut approved_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        match &decision {
+            tools::ApprovalDecision::ApproveAll => {
+                approved_ids = batch
+                    .approval_calls
+                    .iter()
+                    .map(|call| call.id.clone())
+                    .collect();
+            }
+            tools::ApprovalDecision::ApproveSelected(ids) => {
+                approved_ids.extend(ids.iter().cloned());
+            }
+            tools::ApprovalDecision::DenyAll => {}
+        }
+
+        let mut approved_calls = Vec::new();
+        let mut denied_results = Vec::new();
+        for call in batch.approval_calls.drain(..) {
+            if approved_ids.contains(&call.id) {
+                approved_calls.push(call);
+            } else {
+                denied_results.push(ToolResult::error(
+                    call.id.clone(),
+                    "Tool call denied by user",
+                ));
+            }
+        }
+
+        if batch.batch_id != 0 {
+            for result in &denied_results {
+                let _ = self.tool_journal.record_result(batch.batch_id, result);
+            }
+        }
+        batch.results.extend(denied_results);
+
+        let mut queue = batch.execute_now.clone();
+        queue.extend(approved_calls);
+        batch.execute_now = queue.clone();
+
+        if queue.is_empty() {
+            self.commit_tool_batch(
+                batch.assistant_text,
+                batch.calls,
+                batch.results,
+                batch.model,
+                batch.step_id,
+                batch.batch_id,
+                true,
+            );
+            return;
+        }
+
+        let remaining_capacity = self.remaining_tool_capacity(&batch);
+        let exec = self.spawn_tool_execution(queue, remaining_capacity);
+        self.state = AppState::Enabled(EnabledState::ToolLoop(ToolLoopState {
+            batch,
+            phase: ToolLoopPhase::Executing(exec),
+        }));
+        self.set_status("Running tools...");
+    }
+
+    fn resolve_tool_recovery(&mut self, decision: ToolRecoveryDecision) {
+        let idle = self.idle_state();
+        let state = match std::mem::replace(&mut self.state, idle) {
+            AppState::Enabled(EnabledState::ToolRecovery(state)) => state,
+            other => {
+                self.state = other;
+                return;
+            }
+        };
+
+        self.commit_recovered_tool_batch(state, decision);
+    }
+
+    fn commit_recovered_tool_batch(
+        &mut self,
+        state: ToolRecoveryState,
+        decision: ToolRecoveryDecision,
+    ) {
+        let ToolRecoveryState {
+            batch,
+            step_id,
+            model,
+        } = state;
+
+        let assistant_text = batch.assistant_text.clone();
+        let results = match decision {
+            ToolRecoveryDecision::Resume => {
+                let mut merged = batch.results;
+                let existing: std::collections::HashSet<String> = merged
+                    .iter()
+                    .map(|r| r.tool_call_id.clone())
+                    .collect();
+                for call in &batch.calls {
+                    if !existing.contains(&call.id) {
+                        merged.push(ToolResult::error(
+                            call.id.clone(),
+                            "Tool result missing after crash",
+                        ));
+                    }
+                }
+                merged
+            }
+            ToolRecoveryDecision::Discard => batch
+                .calls
+                .iter()
+                .map(|call| {
+                    ToolResult::error(call.id.clone(), "Tool results discarded after crash")
+                })
+                .collect(),
+        };
+
+        if batch.batch_id != 0 {
+            for result in &results {
+                let _ = self.tool_journal.record_result(batch.batch_id, result);
+            }
+        }
+
+        let auto_resume = matches!(self.tools_mode, tools::ToolsMode::Enabled);
+        self.commit_tool_batch(
+            assistant_text,
+            batch.calls,
+            results,
+            model,
+            step_id,
+            batch.batch_id,
+            auto_resume,
+        );
+
+        match decision {
+            ToolRecoveryDecision::Resume => {
+                self.set_status("Recovered tool batch resumed");
+            }
+            ToolRecoveryDecision::Discard => {
+                self.set_status("Tool results discarded after crash");
+            }
+        }
+    }
+
     pub fn draft_text(&self) -> &str {
         self.input.draft().text()
     }
@@ -2586,6 +4075,26 @@ impl App {
                     AppState::Enabled(EnabledState::AwaitingToolResults(pending)) => {
                         // Clear pending tool execution and discard the journal step.
                         self.discard_journal_step(pending.step_id);
+                        if pending.batch_id != 0 {
+                            let _ = self.tool_journal.discard_batch(pending.batch_id);
+                        }
+                    }
+                    AppState::Enabled(EnabledState::ToolLoop(state)) => {
+                        if let ToolLoopPhase::Executing(exec) = &state.phase {
+                            if let Some(handle) = &exec.abort_handle {
+                                handle.abort();
+                            }
+                        }
+                        if state.batch.batch_id != 0 {
+                            let _ = self.tool_journal.discard_batch(state.batch.batch_id);
+                        }
+                        self.discard_journal_step(state.batch.step_id);
+                    }
+                    AppState::Enabled(EnabledState::ToolRecovery(state)) => {
+                        if state.batch.batch_id != 0 {
+                            let _ = self.tool_journal.discard_batch(state.batch.batch_id);
+                        }
+                        self.discard_journal_step(state.step_id);
                     }
                     AppState::Enabled(EnabledState::Summarizing(state)) => {
                         state.task.handle.abort();
@@ -2771,6 +4280,36 @@ impl App {
                         let _ = active.journal.discard(&mut self.stream_journal);
                         self.set_status("Streaming cancelled");
                     }
+                    AppState::Enabled(EnabledState::AwaitingToolResults(pending)) => {
+                        self.cancel_tool_batch(
+                            pending.assistant_text,
+                            pending.pending_calls,
+                            pending.results,
+                            pending.model,
+                            pending.step_id,
+                            pending.batch_id,
+                        );
+                        self.set_status("Tool results cancelled");
+                    }
+                    AppState::Enabled(EnabledState::ToolLoop(state)) => {
+                        if let ToolLoopPhase::Executing(exec) = &state.phase {
+                            if let Some(handle) = &exec.abort_handle {
+                                handle.abort();
+                            }
+                        }
+                        self.cancel_tool_batch(
+                            state.batch.assistant_text,
+                            state.batch.calls,
+                            state.batch.results,
+                            state.batch.model,
+                            state.batch.step_id,
+                            state.batch.batch_id,
+                        );
+                        self.set_status("Tool execution cancelled");
+                    }
+                    AppState::Enabled(EnabledState::ToolRecovery(state)) => {
+                        self.commit_recovered_tool_batch(state, ToolRecoveryDecision::Discard);
+                    }
                     other => {
                         self.state = other;
                         self.set_status("No active stream to cancel");
@@ -2833,6 +4372,119 @@ impl App {
             }
             None => {}
         }
+    }
+}
+
+fn parse_tools_mode(raw: Option<&str>, has_definitions: bool) -> tools::ToolsMode {
+    match raw.map(|s| s.trim().to_ascii_lowercase()) {
+        Some(ref s) if s == "disabled" => tools::ToolsMode::Disabled,
+        Some(ref s) if s == "parse_only" => tools::ToolsMode::ParseOnly,
+        Some(ref s) if s == "enabled" => tools::ToolsMode::Enabled,
+        _ => {
+            if has_definitions {
+                tools::ToolsMode::ParseOnly
+            } else {
+                tools::ToolsMode::Disabled
+            }
+        }
+    }
+}
+
+fn parse_approval_mode(raw: Option<&str>) -> tools::ApprovalMode {
+    match raw.map(|s| s.trim().to_ascii_lowercase()) {
+        Some(ref s) if s == "auto" => tools::ApprovalMode::Auto,
+        Some(ref s) if s == "deny" => tools::ApprovalMode::Deny,
+        Some(ref s) if s == "prompt" => tools::ApprovalMode::Prompt,
+        _ => tools::ApprovalMode::Prompt,
+    }
+}
+
+fn preflight_sandbox(
+    sandbox: &tools::sandbox::Sandbox,
+    call: &ToolCall,
+) -> Result<(), tools::ToolError> {
+    let working_dir = sandbox.working_dir();
+    match call.name.as_str() {
+        "read_file" => {
+            let path = call
+                .arguments
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tools::ToolError::BadArgs {
+                    message: "path must be a string".to_string(),
+                })?;
+            let _ = sandbox.resolve_path(path, &working_dir)?;
+        }
+        "apply_patch" => {
+            let patch_str = call
+                .arguments
+                .get("patch")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tools::ToolError::BadArgs {
+                    message: "patch must be a string".to_string(),
+                })?;
+            let patch = tools::lp1::parse_patch(patch_str).map_err(|e| {
+                tools::ToolError::BadArgs {
+                    message: e.to_string(),
+                }
+            })?;
+            for file in patch.files {
+                let _ = sandbox.resolve_path(&file.path, &working_dir)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn tool_error_result(call: &ToolCall, err: tools::ToolError) -> ToolResult {
+    let message = match err {
+        tools::ToolError::BadArgs { message } => format!("Bad args: {message}"),
+        tools::ToolError::Timeout { tool, elapsed } => {
+            format!("Tool '{tool}' timed out after {}s", elapsed.as_secs())
+        }
+        tools::ToolError::SandboxViolation(reason) => reason.to_string(),
+        tools::ToolError::ExecutionFailed { tool, message } => {
+            format!("{tool} failed: {message}")
+        }
+        tools::ToolError::Cancelled => "Cancelled by user".to_string(),
+        tools::ToolError::UnknownTool { name } => format!("Unknown tool: {name}"),
+        tools::ToolError::DuplicateTool { name } => format!("Duplicate tool: {name}"),
+        tools::ToolError::DuplicateToolCallId { id } => {
+            format!("Duplicate tool call id: {id}")
+        }
+        tools::ToolError::PatchFailed { file, message } => {
+            format!("Patch failed for {}: {message}", file.display())
+        }
+        tools::ToolError::StaleFile { file, reason } => {
+            format!("Stale file {}: {reason}", file.display())
+        }
+    };
+
+    ToolResult::error(call.id.clone(), tools::sanitize_output(&message))
+}
+
+fn append_tool_output_lines(lines: &mut Vec<String>, chunk: &str, prefix: Option<&str>) {
+    let prefix = prefix.unwrap_or("");
+    for line in chunk.lines() {
+        let mut entry = String::new();
+        entry.push_str(prefix);
+        entry.push_str(line);
+        lines.push(entry);
+    }
+    if lines.len() > 50 {
+        let overflow = lines.len() - 50;
+        lines.drain(0..overflow);
+    }
+}
+
+fn panic_payload_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
     }
 }
 
@@ -2909,6 +4561,14 @@ impl<'a> InsertMode<'a> {
                 self.app.set_status("Busy: waiting for tool results");
                 return None;
             }
+            AppState::Enabled(EnabledState::ToolLoop(_)) => {
+                self.app.set_status("Busy: tool execution in progress");
+                return None;
+            }
+            AppState::Enabled(EnabledState::ToolRecovery(_)) => {
+                self.app.set_status("Busy: tool recovery pending");
+                return None;
+            }
             AppState::Enabled(EnabledState::Summarizing(_))
             | AppState::Enabled(EnabledState::SummarizingWithQueued(_))
             | AppState::Enabled(EnabledState::SummarizationRetry(_))
@@ -2951,6 +4611,7 @@ impl<'a> InsertMode<'a> {
         self.app.pending_user_message = Some((msg_id, raw_content));
 
         self.app.scroll_to_bottom();
+        self.app.tool_iterations = 0;
 
         let api_key = match self.app.model.provider() {
             Provider::Claude => ApiKey::Claude(api_key),
@@ -3211,6 +4872,21 @@ mod tests {
         let output_limits = OutputLimits::new(4096);
         let mut context_manager = ContextManager::new(model.as_str());
         context_manager.set_output_limit(output_limits.max_output_tokens());
+        let tool_settings = App::tool_settings_from_config(None);
+        let mut tool_registry = tools::ToolRegistry::default();
+        let _ = tools::builtins::register_builtins(
+            &mut tool_registry,
+            tool_settings.read_limits,
+            tool_settings.patch_limits,
+        );
+        let tool_registry = std::sync::Arc::new(tool_registry);
+        let tool_definitions = match tool_settings.mode {
+            tools::ToolsMode::Enabled => tool_registry.definitions(),
+            tools::ToolsMode::ParseOnly => Vec::new(),
+            tools::ToolsMode::Disabled => Vec::new(),
+        };
+        let tool_journal = ToolJournal::open_in_memory().expect("in-memory tool journal");
+        let tool_file_cache = std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
         App {
             input: InputState::default(),
@@ -3235,7 +4911,13 @@ mod tests {
             system_prompt: None,
             cached_usage_status: None,
             pending_user_message: None,
-            tool_definitions: Vec::new(),
+            tool_definitions,
+            tool_registry,
+            tools_mode: tool_settings.mode,
+            tool_settings,
+            tool_journal,
+            tool_file_cache,
+            tool_iterations: 0,
         }
     }
 
@@ -3382,6 +5064,8 @@ mod tests {
             message: streaming,
             journal,
             abort_handle,
+            tool_batch_id: None,
+            tool_call_seq: 0,
         }));
         assert!(app.is_loading());
 
