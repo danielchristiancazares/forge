@@ -40,7 +40,6 @@ cov:
 pre-commit: fmt-check lint test
 
 # Create source zip for bug analysis (excludes build artifacts)
-[windows]
 set shell := ["pwsh", "-NoProfile", "-Command"]
 zip:
     Compress-Archive -Path (Get-ChildItem -Path . -Exclude 'target','.git','*.zip','lcov.info','coverage','.env*','sha256.txt') -DestinationPath forge-source.zip -Force

@@ -1,0 +1,73 @@
+5: ## Table of Contents
+21: ## Overview
+32: ### Key Design Principles
+41: ## Module Structure
+54: ### Dependencies
+64: ## App State Machine
+68: ### AppState Hierarchy
+88: ### State Descriptions
+102: ### ActiveStream Structure
+114: ### State Transition Diagram
+145: ## Input State Machine
+149: ### InputState Enum
+160: ### InputMode (Public View)
+171: ### Mode Transition Diagram
+192: ### DraftInput
+215: ## Proof Token Patterns
+219: ### Token Types
+228: ### Usage Pattern
+253: ### InsertMode Operations
+272: ### CommandMode Operations
+284: ### QueuedUserMessage
+298: ## Streaming Logic
+300: ### StreamingMessage
+313: ### Stream Events
+326: ### Processing Flow
+356: ### Crash Recovery
+373: ## Tool Execution Framework
+375: ### Overview
+385: ### ToolExecutor Trait
+401: ### Built-in Tools
+409: ### ToolCtx (Execution Context)
+427: ### Tool Loop State Machine
+436: ### Tool Execution Flow
+492: ### Sandbox
+519: ### LP1 Patch Format
+547: ### Stale File Protection
+557: ## Command Processing
+561: ### Available Commands
+579: ### Command Flow
+606: ## Configuration
+610: ### ForgeConfig Structure
+625: ### Configuration Sections
+627: #### [app]
+636: #### [api_keys]
+643: #### [context]
+649: #### [anthropic]
+657: #### [openai]
+665: #### [tools]
+709: ### Environment Variable Expansion
+720: ### Configuration Loading
+734: ## Modal Animations
+738: ### ModalEffect
+753: ### Usage
+778: ## Extension Guide
+780: ### Adding a New Command
+802: ### Adding a New Input Mode
+866: ### Adding a New Tool
+918: ### Adding a New App State
+952: ## Public API Summary
+954: ### App Lifecycle
+965: ### State Queries
+981: ### Mode Transitions
+994: ### Streaming
+1001: ### Tool Operations
+1015: ## Re-exported Types
+1019: ### From `forge-context`
+1026: ### From `forge-providers`
+1029: ### From `forge-types`
+1038: ## Error Handling
+1040: ### Stream Errors
+1048: ### Tool Errors
+1065: ### Summarization Retry
+1076: ## Thread Safety

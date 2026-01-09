@@ -1,0 +1,60 @@
+5: ## Table of Contents
+21: ## Overview
+25: ### Key Responsibilities
+36: ### File Structure
+47: ### Dependencies
+59: ## Architecture Diagram
+96: ## State Machine Design
+100: ### AppState - Async Operation State Machine
+145: ### State Transition Diagram
+186: ### Tool Loop State Machine
+227: ### Design Rationale
+242: ## Input Mode System
+246: ### InputState Enum
+259: ### DraftInput - Text Buffer with Cursor
+281: ### Mode Transition Diagram
+305: ### Mode Transition Methods
+318: ## Type-Driven Design Patterns
+322: ### Proof Tokens
+326: #### InsertToken and CommandToken
+362: ### Mode Wrapper Types
+381: ### QueuedUserMessage - Message Validation Proof
+403: ### EnteredCommand - Command Entry Proof
+417: ## Streaming Orchestration
+421: ### ActiveStream - In-Flight Request State
+431: ### StreamingMessage - Accumulating Response
+448: ### Streaming Lifecycle
+466: ### Stream Event Processing
+491: ### Journal-Based Crash Recovery
+515: ## Command System
+519: ### Built-in Commands
+536: ### Command Processing
+566: ## Context Management Integration
+570: ### ContextManager Orchestration
+588: ### Summarization Retry with Backoff
+604: ### Model Switch Adaptation
+629: ## Configuration
+633: ### ForgeConfig Structure
+657: ### Configuration Loading
+669: ### Environment Variable Expansion
+678: ### Configuration Precedence
+689: ## Public API Reference
+691: ### App Lifecycle
+702: ### State Queries
+718: ### Mode Transitions
+733: ### Streaming Operations
+740: ### Model/Provider Management
+751: ### Scrolling
+764: ## Extension Guide
+766: ### Adding a New Command
+804: ### Adding a New Input Mode
+894: ### Adding a New Provider
+939: ### Adding a New Async Operation State
+982: ## Re-exported Types
+986: ### From `forge-context`
+1000: ### From `forge-providers`
+1006: ### From `forge-types`
+1021: ## Error Handling
+1023: ### API Error Formatting
+1045: ### API Key Redaction
+1057: ## Thread Safety

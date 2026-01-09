@@ -743,6 +743,7 @@ let chunk = chunk?; // This propagates network errors
 /// * `messages` - Conversation history with cache hints
 /// * `limits` - Output token limits (with optional thinking budget)
 /// * `system_prompt` - Optional system prompt to inject
+/// * `tools` - Optional tool definitions for function calling
 /// * `on_event` - Callback for streaming events
 ///
 /// # Returns
@@ -753,6 +754,7 @@ pub async fn send_message(
     messages: &[CacheableMessage],
     limits: OutputLimits,
     system_prompt: Option<&str>,
+    tools: Option<&[ToolDefinition]>,
     on_event: impl Fn(StreamEvent) + Send + 'static,
 ) -> Result<()>
 ```

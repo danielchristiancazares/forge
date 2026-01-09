@@ -110,7 +110,9 @@ enum AppState {
 enum EnabledState {
     Idle,                                    // Ready for new operations
     Streaming(ActiveStream),                 // API response in progress
-    AwaitingToolResults(PendingToolExecution), // Waiting for tool results
+    AwaitingToolResults(PendingToolExecution), // Parse-only: awaiting manual results
+    ToolLoop(ToolLoopState),                 // Tool execution in progress
+    ToolRecovery(ToolRecoveryState),         // Crash recovery: pending user decision
     Summarizing(SummarizationState),         // Background summarization
     SummarizingWithQueued(SummarizingWithQueuedState), // Summarizing + pending request
     SummarizationRetry(SummarizationRetryState),       // Retry after failure
@@ -121,11 +123,29 @@ enum DisabledState {
     Idle,                    // Ready for new operations
     Streaming(ActiveStream), // API response in progress
 }
+
+// Tool loop sub-states
+enum ToolLoopPhase {
+    AwaitingApproval(ApprovalState),      // Waiting for user to approve/deny
+    Executing(ActiveToolExecution),       // Tools executing sequentially
+}
+
+struct ToolLoopState {
+    batch: ToolBatch,                     // Calls, results, model info
+    phase: ToolLoopPhase,
+}
+
+struct ToolRecoveryState {
+    batch: RecoveredToolBatch,            // Incomplete batch from crash
+    step_id: StepId,                      // Journal step for recovery
+    model: ModelName,                     // Model that made the calls
+}
 ```
 
 ### State Transition Diagram
 
 ```
+
                               AppState::Enabled
     ┌────────────────────────────────────────────────────────────────────────┐
     │                                                                         │
@@ -138,27 +158,70 @@ enum DisabledState {
     │           v                    v                     │                  │
     │     ┌───────────┐        ┌───────────────┐          │                  │
     │     │ Streaming │        │  Summarizing  │<─────────┘                  │
-    │     └───────────┘        └───────────────┘                             │
+    │     └─────┬─────┘        └───────────────┘                             │
     │           │                    │                                        │
-    │       finish/error         success/failure                              │
-    │           │                    │                                        │
-    │           v                    v                                        │
-    │     ┌───────────┐  success ┌─────────────────────┐  failure             │
-    │     │   Idle    │<─────────│ (poll_summarization │──────────┐           │
-    │     └───────────┘          │  processes result)  │          │           │
-    │                            └─────────────────────┘          v           │
-    │                                                    ┌─────────────────┐  │
-    │                                                    │ SummarizationRetry│ │
-    │                                                    └─────────────────┘  │
-    │                                                             │           │
-    │                                                        ready_at reached │
-    │                                                             │           │
-    │                                                             v           │
-    │                                                    ┌─────────────────┐  │
-    │                                                    │   Summarizing   │  │
-    │                                                    │   (retry)       │  │
-    │                                                    └─────────────────┘  │
+    │      tool_calls?           success/failure                              │
+    │      ┌────┴────┐               │                                        │
+    │      ▼         ▼               v                                        │
+    │  ┌────────┐  finish    ┌─────────────────────┐  failure                 │
+    │  │ToolLoop│   │        │ (poll_summarization │──────────┐               │
+    │  └───┬────┘   │        │  processes result)  │          │               │
+    │      │        │        └─────────────────────┘          v               │
+    │   approve/    │                                 ┌─────────────────┐     │
+    │   deny/done   │                                 │ SummarizationRetry│    │
+    │      │        │                                 └─────────────────┘     │
+    │      v        v                                         │               │
+    │     ┌───────────┐  success                         ready_at reached     │
+    │     │   Idle    │<─────────────────────────────────────┘                │
+    │     └─────┬─────┘                                                       │
+    │           │ or                                                          │
+    │           v                                                             │
+    │     ┌───────────┐                                                       │
+    │     │ Streaming │  (auto-resume after tool results)                     │
+    │     └───────────┘                                                       │
     └────────────────────────────────────────────────────────────────────────┘
+
+```
+
+### Tool Loop State Machine
+
+```
+
+    Streaming (tool_calls detected)
+        │
+        v
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                        ToolLoop                                     │
+    │  ┌──────────────────────────────────────────────────────────────┐  │
+    │  │              AwaitingApproval                                 │  │
+    │  │   - Validation complete                                       │  │
+    │  │   - Confirmation requests built                               │  │
+    │  │   - User reviews tool calls                                   │  │
+    │  └────────────────────────┬─────────────────────────────────────┘  │
+    │                           │                                         │
+    │           ┌───────────────┼───────────────┐                        │
+    │           │ ApproveAll    │ DenyAll       │ ApproveSelected        │
+    │           v               v               v                        │
+    │  ┌────────────────┐  ┌────────────┐  ┌────────────────────┐        │
+    │  │   Executing    │  │   commit   │  │     Executing      │        │
+    │  │ (all approved) │  │ (errors)   │  │ (partial approval) │        │
+    │  └───────┬────────┘  └──────┬─────┘  └─────────┬──────────┘        │
+    │          │                  │                  │                   │
+    │          │ for each call:   │                  │                   │
+    │          │   execute()      │                  │                   │
+    │          │   journal result │                  │                   │
+    │          v                  v                  v                   │
+    │  ┌──────────────────────────────────────────────────────────────┐  │
+    │  │                    commit_tool_batch()                        │  │
+    │  │   - Persist results to history                                │  │
+    │  │   - Commit journal                                            │  │
+    │  │   - Auto-resume streaming                                     │  │
+    │  └──────────────────────────────────────────────────────────────┘  │
+    └─────────────────────────────────────────────────────────────────────┘
+        │
+        v
+    Streaming (LLM continuation with tool results)
+
 ```
 
 ### Design Rationale
@@ -168,8 +231,10 @@ This state machine design provides several guarantees:
 | Guarantee | Implementation |
 |-----------|----------------|
 | **No concurrent streaming** | Only one `Streaming` state can exist |
+| **No concurrent tool execution** | Only one `ToolLoop` state can exist |
 | **No concurrent summarization** | Summarizing/Retry states are mutually exclusive |
 | **Request queueing** | `WithQueued` variants hold a pending request during summarization |
+| **Tool batch atomicity** | All tools in a batch are approved/denied together |
 | **Clean transitions** | `replace_with_idle()` ensures proper state cleanup |
 
 ---

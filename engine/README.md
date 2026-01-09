@@ -419,7 +419,99 @@ Built-in slash commands:
 | `:jrnl` / `:journal` | Show journal statistics |
 | `:sum` / `:summarize` | Trigger summarization |
 | `:screen` | Toggle fullscreen/inline mode |
+| `:tools` | List configured tools and schemas |
+| `:tool <id> <result>` | Submit tool result (parse_only mode) |
+| `:tool error <id> <msg>` | Submit error result |
 | `:help` | List available commands |
+
+## Tool Executor
+
+The engine includes a Tool Executor Framework for agentic tool calling. When enabled, the LLM can request tool execution, and the engine handles validation, approval, and execution.
+
+### Tool Loop State
+
+Tool execution adds a new state to the `EnabledState` machine:
+
+```rust
+enum EnabledState {
+    Idle,
+    Streaming(ActiveStream),
+    ToolLoop(ToolLoopState),           // NEW: Tool execution in progress
+    Summarizing(SummarizationState),
+    // ... other states
+}
+```
+
+The `ToolLoop` state is entered when streaming completes with tool calls.
+
+### Tool Loop Phases
+
+```rust
+enum ToolLoopPhase {
+    AwaitingApproval(ApprovalState),   // User must approve/deny
+    Executing(ExecutionState),          // Tools running sequentially
+}
+```
+
+### Tool-Related Methods
+
+| Method | Description |
+|--------|-------------|
+| `tool_approval_requests()` | Get pending approval requests |
+| `tool_recovery_calls()` | Get recovered tool batch (if any) |
+| `tool_loop_calls()` | Get all tool calls in current batch |
+| `tool_loop_results()` | Get completed tool results |
+| `tool_loop_output_lines()` | Get streaming output lines |
+| `tool_loop_current_call_id()` | Get ID of currently executing tool |
+| `approve_tools(decision)` | Submit approval decision |
+| `resume_recovered_batch()` | Resume execution after recovery |
+| `discard_recovered_batch()` | Discard recovered batch |
+
+### Tool Types (from `tools` module)
+
+| Type | Description |
+|------|-------------|
+| `ToolExecutor` | Trait for implementing tools |
+| `ToolRegistry` | Registry of available tools |
+| `ToolCtx` | Per-call execution context |
+| `Sandbox` | Filesystem access restriction |
+| `ToolError` | Tool execution errors |
+| `ToolEvent` | Streaming output events |
+| `RiskLevel` | Low / Medium / High risk classification |
+| `ApprovalDecision` | ApproveAll / ApproveSelected / DenyAll |
+
+### Tool Execution Flow
+
+```
+Streaming (tool_calls detected)
+    │
+    ▼
+ToolLoop::AwaitingApproval
+    │
+    ├─[approve]─▶ ToolLoop::Executing
+    │                  │
+    │                  ├─▶ Execute tool 1 → Journal result
+    │                  ├─▶ Execute tool 2 → Journal result
+    │                  └─▶ All complete → Commit batch
+    │                                          │
+    │                                          ▼
+    │                                    Streaming (resume)
+    │
+    └─[deny]───▶ Streaming (resume with errors)
+```
+
+### Tool Journaling
+
+Tool execution is journaled to SQLite for crash recovery:
+
+```rust
+// Journal is updated as tools execute
+tool_journal.begin_batch(model_name, assistant_text, calls)?;
+tool_journal.record_result(batch_id, result)?;  // After each tool
+tool_journal.commit_batch(batch_id)?;           // All complete
+```
+
+On recovery, `tool_recovery_calls()` returns the incomplete batch for user disposition.
 
 ## Design Patterns
 

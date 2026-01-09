@@ -701,7 +701,86 @@ When in command mode, a centered overlay displays common commands:
 ╰─────────────────────────────────────────╯
 ```
 
-> **Note:** The palette shows common commands for quick reference. The full command list (including `/ctx`, `/jrnl`, `/sum`, `/cancel`) is documented in the [Command System](#command-system) section.
+> **Note:** The palette shows common commands for quick reference. The full command list (including `/ctx`, `/jrnl`, `/sum`, `/cancel`, `/tools`, `/tool`) is documented in the [Command System](#command-system) section.
+
+#### Tool Approval Overlay
+
+When tools require approval, a centered overlay displays the pending tool batch:
+
+```
+╭──────────────────────────────────────────────────╮
+│  Tool Approval Required                          │
+│                                                  │
+│  ⏸ apply_patch (call_001)            [Medium]   │
+│      Apply patch to 2 file(s): src/main.rs, ... │
+│                                                  │
+│  ⏸ run_command (call_002)            [High]     │
+│      Run command: cargo build                    │
+│                                                  │
+│  ────────────────────────────────────────────── │
+│  [a]pprove all  [d]eny all  [Space] toggle      │
+│  [j/k] navigate  [Enter] confirm selection       │
+╰──────────────────────────────────────────────────╯
+```
+
+**Visual indicators:**
+
+- `⏸` — Pending (not yet approved)
+- `✓` — Approved (selected)
+- `⊘` — Pre-resolved error (invalid args, sandbox violation)
+
+**Risk level badges:**
+
+- `[Low]` — Read-only operations (green)
+- `[Medium]` — File modifications (yellow)
+- `[High]` — Shell commands (red)
+
+#### Tool Execution Progress
+
+During execution, the tool batch shows real-time status:
+
+```
+╭──────────────────────────────────────────────────╮
+│  ⠋ Tool execution                               │
+│                                                  │
+│  ✓ apply_patch (call_001)                       │
+│  ⠋ run_command (call_002)                       │
+│                                                  │
+│  Tool output:                                    │
+│      ▶ run_command                               │
+│      Compiling forge v0.1.0                     │
+│      Finished dev [unoptimized + debuginfo]     │
+╰──────────────────────────────────────────────────╯
+```
+
+**Status indicators:**
+
+- `⠋` (spinner) — Currently executing
+- `✓` — Completed successfully
+- `✗` — Completed with error
+- `•` — Queued (not yet started)
+
+#### Tool Recovery Prompt
+
+If a previous session crashed during tool execution, a recovery prompt appears on startup:
+
+```
+╭──────────────────────────────────────────────────╮
+│  Recovered Tool Batch                            │
+│                                                  │
+│  Previous session crashed during tool execution. │
+│                                                  │
+│  2 of 3 tools completed:                        │
+│  ✓ read_file                                     │
+│  ✓ apply_patch                                   │
+│  • run_command (not started)                     │
+│                                                  │
+│  [r]esume with partial results                   │
+│  [d]iscard and mark failed                       │
+╰──────────────────────────────────────────────────╯
+```
+
+**Important:** Recovery does NOT re-execute tools. The user decides whether to continue the conversation with partial results or discard the batch.
 
 ### Inline Rendering (`ui_inline.rs`)
 
