@@ -82,9 +82,9 @@ The Tool Executor Framework:
 
 | Document                         | Description                                          |
 | -------------------------------- | ---------------------------------------------------- |
-| `docs/ENGINE_ARCHITECTURE.md`    | Engine state machine specification                   |
+| `engine/README.md`    | Engine state machine specification                   |
 | `docs/LP1.md`                    | Line Patch v1 edit format specification              |
-| `docs/PROVIDERS_ARCHITECTURE.md` | LLM provider integration                             |
+| `providers/README.md` | LLM provider integration                             |
 | `docs/CONTEXT_ARCHITECTURE.md`   | Context subsystem and tool-mode configuration intent |
 | RFC 2119                         | Key words for requirement levels                     |
 | RFC 8174                         | Clarification of RFC 2119 (uppercase only)           |
@@ -1104,3 +1104,5 @@ Idle
 ```
 
 **Denied-only batch:** If all calls are pre-resolved (policy/sandbox/invalid), results are persisted and auto-resume occurs (enabled mode) without executing any tool.
+
+

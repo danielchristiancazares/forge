@@ -63,8 +63,8 @@ allow_absolute = false
 
 | Document | Description |
 |----------|-------------|
-| [`docs/ENGINE_ARCHITECTURE.md`](docs/ENGINE_ARCHITECTURE.md) | Core state machine and orchestration |
-| [`docs/TUI_ARCHITECTURE.md`](docs/TUI_ARCHITECTURE.md) | Terminal UI rendering and input handling |
+| [`engine/README.md`](engine/README.md) | Core state machine and orchestration |
+| [`tui/README.md`](tui/README.md) | Terminal UI rendering and input handling |
 | [`docs/CONTEXT_ARCHITECTURE.md`](docs/CONTEXT_ARCHITECTURE.md) | Context Infinity™ specification |
 | [`docs/TOOL_EXECUTOR_SRD.md`](docs/TOOL_EXECUTOR_SRD.md) | Tool Executor Framework requirements |
 | [`docs/TOOLS.md`](docs/TOOLS.md) | User guide for tool configuration |
@@ -94,3 +94,5 @@ Generate `lcov.info`:
 ## License
 
 See the repository root for license information.
+
+

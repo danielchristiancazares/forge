@@ -145,7 +145,7 @@ Adaptive context management with automatic summarization:
 - `model_limits.rs` - per-model token limits
 - `token_counter.rs` - token counting utilities
 
-See `docs/CONTEXT_INFINITY.md` and `docs/CONTEXT_ARCHITECTURE.md` for details.
+See `context/README.md` and `docs/CONTEXT_ARCHITECTURE.md` for details.
 
 ### Key Extension Points
 
@@ -158,14 +158,14 @@ See `docs/CONTEXT_INFINITY.md` and `docs/CONTEXT_ARCHITECTURE.md` for details.
 | Add UI overlay | `draw_*` function in `tui/src/lib.rs` |
 | Add modal animation | `ModalEffect` in `engine/src/lib.rs`, apply in `tui/src/effects.rs` |
 
-See `docs/TUI_ARCHITECTURE.md` Extension Guide for detailed patterns.
+See `tui/README.md` Extension Guide for detailed patterns.
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| `docs/TUI_ARCHITECTURE.md` | Comprehensive TUI system documentation |
-| `docs/CONTEXT_INFINITY.md` | Context management system overview |
+| `tui/README.md` | Comprehensive TUI system documentation |
+| `context/README.md` | Context management system overview |
 | `docs/CONTEXT_ARCHITECTURE.md` | Context subsystem architecture |
 | `docs/DESIGN.md` | Type-driven design patterns |
 | `docs/OPENAI_RESPONSES_GPT52.md` | OpenAI Responses API integration |
@@ -206,3 +206,5 @@ cargo test --test integration_test      # Integration tests only
 Conventional commits: `type(scope): summary`
 
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
+
+

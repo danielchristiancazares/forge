@@ -42,7 +42,7 @@ Out of scope:
 ### 1.4 References
 | Document | Description |
 | --- | --- |
-| `docs/PROVIDERS_ARCHITECTURE.md` | Provider integration |
+| `providers/README.md` | Provider integration |
 | `docs/TOOL_EXECUTOR_SRD.md` | Tool execution framework |
 | `../tools/src/codequery/*` | Reference implementation |
 | RFC 2119 / RFC 8174 | Requirement keywords |
@@ -203,4 +203,5 @@ jitter_ms = 50
 | IT-CQ-E2E-01 | Index + search returns answer |
 | IT-CQ-INC-01 | Delete file removes entry from store |
 | IT-CQ-TMO-01 | Timeout yields error payload |
+
 

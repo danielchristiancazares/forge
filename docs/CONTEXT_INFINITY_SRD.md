@@ -1,6 +1,6 @@
 # ContextInfinity™ Software Requirements Document (SRD)
 
-> Note: This is the authoritative ContextInfinity spec; `docs/CONTEXT_INFINITY.md` is implementation notes and may lag behind.
+> Note: This is the authoritative ContextInfinity spec; `context/README.md` is implementation notes and may lag behind.
 
 **Document version:** 0.31
 **Status:** Draft
@@ -1142,3 +1142,4 @@ disable_parallel_tool_use = true
 3. **Crash recovery post-stream pre-commit**: kill after response finalization but before commit; restart reconciler commits head deterministically.
 4. **Context shrinker determinism**: intentionally exceed limit; retries shrink in defined order; logs show steps.
 5. **Idempotent indexing**: rerun indexing job for same turn; no duplicate chunks/embeddings inserted.
+
