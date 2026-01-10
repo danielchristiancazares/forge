@@ -156,7 +156,7 @@ impl Provider {
                 "claude-haiku-4-5-20251001",
                 "claude-opus-4-5-20251101",
             ],
-            Provider::OpenAI => &["gpt-5.2", "gpt-5.2-2025-12-11", "gpt-5.2-chat-latest"],
+            Provider::OpenAI => &["gpt-5.2", "gpt-5.2-2025-12-11"],
         }
     }
 

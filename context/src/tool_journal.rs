@@ -85,7 +85,6 @@ impl ToolJournal {
     }
 
     /// Open an in-memory journal (for testing).
-    #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
         let db = Connection::open_in_memory().context("Failed to open in-memory tool journal")?;
         Self::initialize(db)
@@ -469,8 +468,14 @@ mod tests {
     #[test]
     fn begins_and_recovers_batch() {
         let mut journal = ToolJournal::open_in_memory().unwrap();
-        let calls = vec![ToolCall::new("1", "read_file", serde_json::json!({"path": "foo"}))];
-        let batch_id = journal.begin_batch("test-model", "assistant", &calls).unwrap();
+        let calls = vec![ToolCall::new(
+            "1",
+            "read_file",
+            serde_json::json!({"path": "foo"}),
+        )];
+        let batch_id = journal
+            .begin_batch("test-model", "assistant", &calls)
+            .unwrap();
 
         let recovered = journal.recover().unwrap().expect("should recover");
         assert_eq!(recovered.batch_id, batch_id);
@@ -481,8 +486,14 @@ mod tests {
     #[test]
     fn records_and_commits_results() {
         let mut journal = ToolJournal::open_in_memory().unwrap();
-        let calls = vec![ToolCall::new("1", "read_file", serde_json::json!({"path": "foo"}))];
-        let batch_id = journal.begin_batch("test-model", "assistant", &calls).unwrap();
+        let calls = vec![ToolCall::new(
+            "1",
+            "read_file",
+            serde_json::json!({"path": "foo"}),
+        )];
+        let batch_id = journal
+            .begin_batch("test-model", "assistant", &calls)
+            .unwrap();
 
         let result = ToolResult::success("1", "ok");
         journal.record_result(batch_id, &result).unwrap();

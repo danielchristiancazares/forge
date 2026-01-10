@@ -14,14 +14,14 @@ use super::MessageId;
 use super::token_counter::TokenCounter;
 
 /// Models used for summarization (cheaper/faster than main models).
-const CLAUDE_SUMMARIZATION_MODEL: &str = "claude-3-haiku-20240307";
-const OPENAI_SUMMARIZATION_MODEL: &str = "gpt-4o-mini";
+const CLAUDE_SUMMARIZATION_MODEL: &str = "claude-haiku-4-5";
+const OPENAI_SUMMARIZATION_MODEL: &str = "gpt-5-nano";
 
 /// Context limits for summarizer models (conservative to leave room for output + overhead).
-/// Claude 3 Haiku has 200k context, we use 190k to leave room for output and system prompt.
+/// Claude Haiku 4.5 has 200k context, we use 190k to leave room for output and system prompt.
 const CLAUDE_SUMMARIZER_INPUT_LIMIT: u32 = 190_000;
-/// GPT-4o-mini has 128k context, we use 120k to leave room for output and system prompt.
-const OPENAI_SUMMARIZER_INPUT_LIMIT: u32 = 120_000;
+/// GPT-5-nano has 400k context, we use 380k to leave room for output and system prompt.
+const OPENAI_SUMMARIZER_INPUT_LIMIT: u32 = 380_000;
 
 const MIN_SUMMARY_TOKENS: u32 = 64;
 const MAX_SUMMARY_TOKENS: u32 = 2048;

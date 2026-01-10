@@ -1,6 +1,6 @@
 # forge-context
 
-> Note: This is an implementation-focused overview of the current summarization system; the authoritative spec is `docs/CONTEXT_ARCHITECTURE.md`.
+> Note: This is an implementation-focused overview of the current summarization system; the authoritative spec is `docs/CONTEXT_INFINITY_SRD.md`.
 
 Context Infinity is Forge's system for managing unlimited conversation context with LLMs. It preserves complete conversation history while automatically summarizing older content to fit within model-specific token limits.
 
@@ -32,6 +32,7 @@ WorkingContext -----> API Messages
 4. **Write-ahead durability**: Stream deltas are persisted to SQLite before display, ensuring recoverability after crashes.
 
 ## Architecture
+
 ### Component Overview
 
 | Component | Purpose |
@@ -146,6 +147,7 @@ effective_budget = context_window - max_output - (5% safety margin)
 ```
 
 Example for Claude Sonnet 4 (200k context, 64k output):
+
 ```
 available = 200,000 - 64,000 = 136,000
 safety_margin = 136,000 / 20 = 6,800
@@ -153,6 +155,7 @@ effective_budget = 136,000 - 6,800 = 129,200 tokens
 ```
 
 The 5% safety margin accounts for:
+
 - Token counting inaccuracies
 - System prompt overhead
 - Tool definitions and formatting
@@ -161,14 +164,10 @@ The 5% safety margin accounts for:
 
 | Model Prefix | Context Window | Max Output |
 |--------------|---------------|------------|
-| `claude-opus-4` | 200,000 | 64,000 |
-| `claude-sonnet-4` | 200,000 | 64,000 |
-| `claude-3-5` | 200,000 | 64,000 |
-| `claude-3` | 200,000 | 64,000 |
-| `gpt-4o` | 128,000 | 16,384 |
-| `gpt-4-turbo` | 128,000 | 4,096 |
-| `gpt-4` | 8,192 | 4,096 |
-| `gpt-3.5` | 16,385 | 4,096 |
+| `claude-opus-4-5` | 200,000 | 64,000 |
+| `claude-sonnet-4-5` | 200,000 | 64,000 |
+| `claude-haiku-4-5` | 200,000 | 64,000 |
+| `gpt-5.2` | 400,000 | 128,000 |
 | Unknown | 8,192 | 4,096 |
 
 Model lookup uses **prefix matching** - `claude-sonnet-4-20250514` matches `claude-sonnet-4`.
@@ -213,13 +212,13 @@ enum Block {
 
 Starting from the most recent older block, include content while staying within budget:
 
-```
+```text
 remaining_budget = effective_budget - tokens_for_recent
 ```
 
 For each block (newest first):
 
-1. **Summarized Block**: 
+1. **Summarized Block**:
    - If original messages fit: include originals (better quality)
    - Else if summary fits: include summary
    - Else: skip (will need re-summarization)
@@ -232,7 +231,7 @@ For each block (newest first):
 
 Selected segments are arranged in chronological order:
 
-```
+```text
 [Older summaries/messages] -> [Recent messages always included]
 ```
 
@@ -241,6 +240,7 @@ Selected segments are arranged in chronological order:
 If all content fits: return `Ok(WorkingContext)`
 
 If unsummarized messages don't fit:
+
 ```rust
 Err(SummarizationNeeded {
     excess_tokens: u32,
@@ -307,10 +307,12 @@ pub fn prepare_summarization(&mut self, message_ids: &[MessageId])
 ### Generate Summary (Async)
 
 Summarization uses cheaper/faster models:
+
 - **Claude**: `claude-3-haiku-20240307`
 - **OpenAI**: `gpt-4o-mini`
 
 The prompt instructs the model to:
+
 - Preserve key facts, decisions, and important context
 - Maintain chronological flow
 - Stay within target token count
@@ -418,6 +420,7 @@ pub enum RecoveredStream {
 ```
 
 The app can then:
+
 - **Complete**: Seal and use the recovered text
 - **Incomplete**: Discard and retry, or seal what was received
 
@@ -434,6 +437,7 @@ pub struct ActiveJournal {
 ```
 
 Methods like `append_text()` require `&mut ActiveJournal`, ensuring:
+
 - Only one stream can be active at a time
 - Events are properly sequenced
 - The journal cannot be used incorrectly
@@ -512,6 +516,7 @@ let manager = ContextManager::load("~/.forge/history.json", "claude-sonnet-4")?;
 ```
 
 The serialization format validates:
+
 - Message IDs are sequential (0, 1, 2, ...)
 - Summary IDs are sequential
 - Summary ranges reference valid messages
@@ -533,6 +538,7 @@ infinity = true  # Enable adaptive context management
 ```
 
 Or environment variable:
+
 ```bash
 FORGE_CONTEXT_INFINITY=1  # Enable
 FORGE_CONTEXT_INFINITY=0  # Disable
@@ -800,15 +806,10 @@ println!("Effective input budget: {}", limits.effective_input_budget());
 
 | Prefix | Context Window | Max Output |
 |--------|---------------|------------|
-| `claude-opus-4` | 200,000 | 64,000 |
-| `claude-sonnet-4` | 200,000 | 64,000 |
-| `claude-3-5` | 200,000 | 64,000 |
-| `claude-3` | 200,000 | 64,000 |
-| `claude` | 200,000 | 64,000 |
-| `gpt-4o` | 128,000 | 16,384 |
-| `gpt-4-turbo` | 128,000 | 4,096 |
-| `gpt-4` | 8,192 | 4,096 |
-| `gpt-3.5` | 16,385 | 4,096 |
+| `claude-opus-4-5` | 200,000 | 64,000 |
+| `claude-sonnet-4-5` | 200,000 | 64,000 |
+| `claude-haiku-4-5` | 200,000 | 64,000 |
+| `gpt-5.2` | 400,000 | 128,000 |
 
 Unknown models fall back to 8,192 context / 4,096 output.
 
@@ -922,6 +923,79 @@ pub enum RecoveredStream {
 }
 ```
 
+### Tool Journal (Tool Batch Durability)
+
+The `ToolJournal` provides durable tracking for tool batches, enabling crash recovery when tool execution is interrupted.
+
+#### `ToolJournal`
+
+SQLite-backed journal for tool batch durability:
+
+```rust
+use forge_context::{ToolJournal, RecoveredToolBatch, ToolBatchId};
+use forge_types::{ToolCall, ToolResult};
+
+// Open or create tool journal
+let mut journal = ToolJournal::open("~/.forge/tool_journal.db")?;
+
+// Check for crash recovery on startup
+if let Some(recovered) = journal.recover()? {
+    println!("Recovered batch {} with {} calls, {} results",
+        recovered.batch_id,
+        recovered.calls.len(),
+        recovered.results.len(),
+    );
+    // User can resume or discard
+    journal.discard_batch(recovered.batch_id)?;
+}
+
+// Begin a new tool batch
+let calls = vec![ToolCall::new("call_1", "read_file", json!({"path": "foo.rs"}))];
+let batch_id: ToolBatchId = journal.begin_batch("claude-sonnet-4", "assistant text", &calls)?;
+
+// Record results as tools execute
+let result = ToolResult::success("call_1", "file contents...");
+journal.record_result(batch_id, &result)?;
+
+// Commit when complete (prunes batch data)
+journal.commit_batch(batch_id)?;
+```
+
+**Key invariant:** Only one uncommitted batch can exist at a time. Tool calls and results are persisted immediately, enabling recovery of partial batches after crashes.
+
+#### `RecoveredToolBatch`
+
+Data recovered from an incomplete tool batch:
+
+```rust
+pub struct RecoveredToolBatch {
+    pub batch_id: ToolBatchId,
+    pub model_name: String,
+    pub assistant_text: String,
+    pub calls: Vec<ToolCall>,
+    pub results: Vec<ToolResult>,
+}
+```
+
+#### Streaming Batch Support
+
+For tool batches created during streaming (before arguments are complete):
+
+```rust
+// Begin streaming batch with empty calls
+let batch_id = journal.begin_streaming_batch("claude-sonnet-4")?;
+
+// Record call start as stream events arrive
+journal.record_call_start(batch_id, 0, "call_1", "read_file")?;
+
+// Append arguments as they stream in
+journal.append_call_args(batch_id, "call_1", r#"{"path":"#)?;
+journal.append_call_args(batch_id, "call_1", r#""foo.rs"}"#)?;
+
+// Update assistant text
+journal.update_assistant_text(batch_id, "I'll read that file...")?;
+```
+
 ### Summarization
 
 #### `generate_summary`
@@ -945,6 +1019,7 @@ let summary_text = generate_summary(
 ```
 
 **Summarization models used:**
+
 - Claude: `claude-3-haiku-20240307`
 - OpenAI: `gpt-4o-mini`
 
@@ -1101,7 +1176,3 @@ cargo test -p forge-context -- --nocapture  # With output
 ```
 
 The crate includes comprehensive unit tests for all modules. Integration tests requiring API keys are marked with `#[ignore]`.
-
-
-
-

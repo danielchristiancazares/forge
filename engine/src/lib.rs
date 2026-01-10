@@ -17,9 +17,9 @@ use config::OpenAIConfig;
 pub use forge_context::{
     ActiveJournal, ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus,
     FullHistory, MessageId, ModelLimits, ModelLimitsSource, ModelRegistry, PendingSummarization,
-    PreparedContext, RecoveredStream, StreamJournal, SummarizationNeeded, SummarizationScope,
-    ToolBatchId, ToolJournal, RecoveredToolBatch,
-    TokenCounter, generate_summary, summarization_model,
+    PreparedContext, RecoveredStream, RecoveredToolBatch, StreamJournal, SummarizationNeeded,
+    SummarizationScope, TokenCounter, ToolBatchId, ToolJournal, generate_summary,
+    summarization_model,
 };
 pub use forge_providers::{self, ApiConfig};
 pub use forge_types::{
@@ -1013,9 +1013,8 @@ impl App {
 
         let tool_journal_path = data_dir.join("tool_journal.db");
         let tool_journal = ToolJournal::open(&tool_journal_path)?;
-        let tool_file_cache = std::sync::Arc::new(tokio::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        ));
+        let tool_file_cache =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
         let state = if context_infinity_enabled {
             AppState::Enabled(EnabledState::Idle)
@@ -1157,11 +1156,10 @@ impl App {
 
     fn tool_settings_from_config(config: Option<&ForgeConfig>) -> tools::ToolSettings {
         let tools_cfg = config.and_then(|cfg| cfg.tools.as_ref());
-        let has_defs = tools_cfg.map(|cfg| !cfg.definitions.is_empty()).unwrap_or(false);
-        let mode = parse_tools_mode(
-            tools_cfg.and_then(|cfg| cfg.mode.as_deref()),
-            has_defs,
-        );
+        let has_defs = tools_cfg
+            .map(|cfg| !cfg.definitions.is_empty())
+            .unwrap_or(false);
+        let mode = parse_tools_mode(tools_cfg.and_then(|cfg| cfg.mode.as_deref()), has_defs);
         let allow_parallel = tools_cfg
             .and_then(|cfg| cfg.allow_parallel)
             .unwrap_or(false);
@@ -1255,7 +1253,10 @@ impl App {
         let env_sanitizer = tools::EnvSanitizer::new(&env_patterns).unwrap_or_else(|e| {
             tracing::warn!("Invalid env denylist: {e}. Using defaults.");
             tools::EnvSanitizer::new(
-                &DEFAULT_ENV_DENYLIST.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                &DEFAULT_ENV_DENYLIST
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>(),
             )
             .expect("default env sanitizer")
         });
@@ -1284,16 +1285,23 @@ impl App {
             .and_then(|cfg| cfg.allow_absolute)
             .unwrap_or(false);
 
-        let sandbox = tools::sandbox::Sandbox::new(allowed_roots.clone(), denied_patterns.clone(), allow_absolute)
-            .unwrap_or_else(|e| {
-                tracing::warn!("Invalid sandbox config: {e}. Using defaults.");
-                tools::sandbox::Sandbox::new(
-                    vec![PathBuf::from(".")],
-                    DEFAULT_SANDBOX_DENIES.iter().map(|s| s.to_string()).collect(),
-                    false,
-                )
-                .expect("default sandbox")
-            });
+        let sandbox = tools::sandbox::Sandbox::new(
+            allowed_roots.clone(),
+            denied_patterns.clone(),
+            allow_absolute,
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!("Invalid sandbox config: {e}. Using defaults.");
+            tools::sandbox::Sandbox::new(
+                vec![PathBuf::from(".")],
+                DEFAULT_SANDBOX_DENIES
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                false,
+            )
+            .expect("default sandbox")
+        });
 
         tools::ToolSettings {
             mode,
@@ -1418,19 +1426,31 @@ impl App {
                     partial_text,
                     model_name,
                     ..
-                }) => (Some(*step_id), Some(partial_text.as_str()), model_name.clone()),
+                }) => (
+                    Some(*step_id),
+                    Some(partial_text.as_str()),
+                    model_name.clone(),
+                ),
                 Some(RecoveredStream::Incomplete {
                     step_id,
                     partial_text,
                     model_name,
                     ..
-                }) => (Some(*step_id), Some(partial_text.as_str()), model_name.clone()),
+                }) => (
+                    Some(*step_id),
+                    Some(partial_text.as_str()),
+                    model_name.clone(),
+                ),
                 Some(RecoveredStream::Errored {
                     step_id,
                     partial_text,
                     model_name,
                     ..
-                }) => (Some(*step_id), Some(partial_text.as_str()), model_name.clone()),
+                }) => (
+                    Some(*step_id),
+                    Some(partial_text.as_str()),
+                    model_name.clone(),
+                ),
                 None => (None, None, None),
             };
 
@@ -1667,9 +1687,7 @@ impl App {
     pub fn tool_loop_current_call_id(&self) -> Option<&str> {
         match &self.state {
             AppState::Enabled(EnabledState::ToolLoop(state)) => match &state.phase {
-                ToolLoopPhase::Executing(exec) => {
-                    exec.current_call.as_ref().map(|c| c.id.as_str())
-                }
+                ToolLoopPhase::Executing(exec) => exec.current_call.as_ref().map(|c| c.id.as_str()),
                 _ => None,
             },
             _ => None,
@@ -2544,9 +2562,10 @@ impl App {
                 match &event {
                     StreamEvent::ToolCallStart { id, name } => {
                         if active.tool_batch_id.is_none() {
-                            match self.tool_journal.begin_streaming_batch(
-                                active.journal.model_name(),
-                            ) {
+                            match self
+                                .tool_journal
+                                .begin_streaming_batch(active.journal.model_name())
+                            {
                                 Ok(batch_id) => {
                                     active.tool_batch_id = Some(batch_id);
                                 }
@@ -2556,9 +2575,8 @@ impl App {
                         if let Some(batch_id) = active.tool_batch_id {
                             let seq = active.tool_call_seq;
                             active.tool_call_seq = active.tool_call_seq.saturating_add(1);
-                            if let Err(e) = self
-                                .tool_journal
-                                .record_call_start(batch_id, seq, id, name)
+                            if let Err(e) =
+                                self.tool_journal.record_call_start(batch_id, seq, id, name)
                             {
                                 journal_error = Some(e.to_string());
                             }
@@ -2566,9 +2584,8 @@ impl App {
                     }
                     StreamEvent::ToolCallDelta { id, arguments } => {
                         if let Some(batch_id) = active.tool_batch_id {
-                            if let Err(e) = self
-                                .tool_journal
-                                .append_call_args(batch_id, id, arguments)
+                            if let Err(e) =
+                                self.tool_journal.append_call_args(batch_id, id, arguments)
                             {
                                 journal_error = Some(e.to_string());
                             }
@@ -2580,9 +2597,7 @@ impl App {
 
             if journal_error.is_none() {
                 finish_reason = active.message.apply_event(event);
-                if update_assistant_text
-                    && let Some(batch_id) = active.tool_batch_id
-                {
+                if update_assistant_text && let Some(batch_id) = active.tool_batch_id {
                     if let Err(e) = self
                         .tool_journal
                         .update_assistant_text(batch_id, active.message.content())
@@ -2698,13 +2713,7 @@ impl App {
             let tool_calls = message.take_tool_calls();
             let assistant_text = message.content().to_string();
             self.pending_user_message = None;
-            self.handle_tool_calls(
-                assistant_text,
-                tool_calls,
-                model,
-                step_id,
-                tool_batch_id,
-            );
+            self.handle_tool_calls(assistant_text, tool_calls, model, step_id, tool_batch_id);
             return;
         }
 
@@ -2784,17 +2793,18 @@ impl App {
             }
         }
         if batch_id == 0 {
-            batch_id = match self
-                .tool_journal
-                .begin_batch(model.as_str(), &assistant_text, &tool_calls)
-            {
-                Ok(id) => id,
-                Err(e) => {
-                    tracing::warn!("Tool journal begin failed: {e}");
-                    self.set_status(format!("Tool journal error: {e}"));
-                    0
-                }
-            };
+            batch_id =
+                match self
+                    .tool_journal
+                    .begin_batch(model.as_str(), &assistant_text, &tool_calls)
+                {
+                    Ok(id) => id,
+                    Err(e) => {
+                        tracing::warn!("Tool journal begin failed: {e}");
+                        self.set_status(format!("Tool journal error: {e}"));
+                        0
+                    }
+                };
         }
 
         match self.tools_mode {
@@ -2848,9 +2858,7 @@ impl App {
         if next_iteration > self.tool_settings.limits.max_tool_iterations_per_user_turn {
             let results: Vec<ToolResult> = tool_calls
                 .iter()
-                .map(|call| {
-                    ToolResult::error(call.id.clone(), "Max tool iterations reached")
-                })
+                .map(|call| ToolResult::error(call.id.clone(), "Max tool iterations reached"))
                 .collect();
             if batch_id != 0 {
                 for result in &results {
@@ -3220,8 +3228,7 @@ impl App {
                 Ok(Ok(Ok(inner))) => match inner {
                     Ok(output) => {
                         let sanitized = tools::sanitize_output(&output);
-                        let effective_max =
-                            ctx.max_output_bytes.min(ctx.available_capacity_bytes);
+                        let effective_max = ctx.max_output_bytes.min(ctx.available_capacity_bytes);
                         let final_output = if ctx.allow_truncation {
                             tools::truncate_output(sanitized, effective_max)
                         } else {
@@ -3272,11 +3279,9 @@ impl App {
                                     tool_call_id,
                                     tool_name,
                                 } => {
-                                    let is_current = exec
-                                        .current_call
-                                        .as_ref()
-                                        .map(|call| call.id.as_str())
-                                        == Some(tool_call_id.as_str());
+                                    let is_current =
+                                        exec.current_call.as_ref().map(|call| call.id.as_str())
+                                            == Some(tool_call_id.as_str());
                                     if is_current {
                                         exec.output_lines.push(format!(
                                             "▶ {} ({})",
@@ -3289,11 +3294,9 @@ impl App {
                                     tool_call_id,
                                     chunk,
                                 } => {
-                                    let is_current = exec
-                                        .current_call
-                                        .as_ref()
-                                        .map(|call| call.id.as_str())
-                                        == Some(tool_call_id.as_str());
+                                    let is_current =
+                                        exec.current_call.as_ref().map(|call| call.id.as_str())
+                                            == Some(tool_call_id.as_str());
                                     if !is_current {
                                         continue;
                                     }
@@ -3307,11 +3310,9 @@ impl App {
                                     tool_call_id,
                                     chunk,
                                 } => {
-                                    let is_current = exec
-                                        .current_call
-                                        .as_ref()
-                                        .map(|call| call.id.as_str())
-                                        == Some(tool_call_id.as_str());
+                                    let is_current =
+                                        exec.current_call.as_ref().map(|call| call.id.as_str())
+                                            == Some(tool_call_id.as_str());
                                     if !is_current {
                                         continue;
                                     }
@@ -3322,16 +3323,12 @@ impl App {
                                     );
                                 }
                                 tools::ToolEvent::Completed { tool_call_id } => {
-                                    let is_current = exec
-                                        .current_call
-                                        .as_ref()
-                                        .map(|call| call.id.as_str())
-                                        == Some(tool_call_id.as_str());
+                                    let is_current =
+                                        exec.current_call.as_ref().map(|call| call.id.as_str())
+                                            == Some(tool_call_id.as_str());
                                     if is_current {
-                                        exec.output_lines.push(format!(
-                                            "✓ Tool completed ({})",
-                                            tool_call_id
-                                        ));
+                                        exec.output_lines
+                                            .push(format!("✓ Tool completed ({})", tool_call_id));
                                     }
                                 }
                             },
@@ -3373,7 +3370,9 @@ impl App {
 
                 if let Some(result) = completed.take() {
                     if state.batch.batch_id != 0 {
-                        let _ = self.tool_journal.record_result(state.batch.batch_id, &result);
+                        let _ = self
+                            .tool_journal
+                            .record_result(state.batch.batch_id, &result);
                     }
                     exec.remaining_capacity_bytes = exec
                         .remaining_capacity_bytes
@@ -3475,9 +3474,15 @@ impl App {
 
             pending.results.push(result);
             if pending.batch_id != 0 {
-                let _ = self.tool_journal.record_result(pending.batch_id, pending.results.last().unwrap());
+                let _ = self
+                    .tool_journal
+                    .record_result(pending.batch_id, pending.results.last().unwrap());
             }
-            (pending.results.len(), pending.pending_calls.len(), pending.batch_id)
+            (
+                pending.results.len(),
+                pending.pending_calls.len(),
+                pending.batch_id,
+            )
         };
 
         // Check if all results are in
@@ -3532,7 +3537,9 @@ impl App {
         let mut result_map: std::collections::HashMap<String, ToolResult> =
             std::collections::HashMap::new();
         for result in results {
-            result_map.entry(result.tool_call_id.clone()).or_insert(result);
+            result_map
+                .entry(result.tool_call_id.clone())
+                .or_insert(result);
         }
 
         let mut ordered_results: Vec<ToolResult> = Vec::new();
@@ -3540,8 +3547,7 @@ impl App {
             if let Some(result) = result_map.remove(&call.id) {
                 ordered_results.push(result);
             } else {
-                ordered_results
-                    .push(ToolResult::error(call.id.clone(), "Missing tool result"));
+                ordered_results.push(ToolResult::error(call.id.clone(), "Missing tool result"));
             }
         }
 
@@ -3937,10 +3943,8 @@ impl App {
         let results = match decision {
             ToolRecoveryDecision::Resume => {
                 let mut merged = batch.results;
-                let existing: std::collections::HashSet<String> = merged
-                    .iter()
-                    .map(|r| r.tool_call_id.clone())
-                    .collect();
+                let existing: std::collections::HashSet<String> =
+                    merged.iter().map(|r| r.tool_call_id.clone()).collect();
                 for call in &batch.calls {
                     if !existing.contains(&call.id) {
                         merged.push(ToolResult::error(
@@ -4423,11 +4427,10 @@ fn preflight_sandbox(
                 .ok_or_else(|| tools::ToolError::BadArgs {
                     message: "patch must be a string".to_string(),
                 })?;
-            let patch = tools::lp1::parse_patch(patch_str).map_err(|e| {
-                tools::ToolError::BadArgs {
+            let patch =
+                tools::lp1::parse_patch(patch_str).map_err(|e| tools::ToolError::BadArgs {
                     message: e.to_string(),
-                }
-            })?;
+                })?;
             for file in patch.files {
                 let _ = sandbox.resolve_path(&file.path, &working_dir)?;
             }
@@ -5210,7 +5213,7 @@ mod tests {
     #[test]
     fn modal_effect_advance_increases_progress() {
         let mut effect = ModalEffect::pop_scale(Duration::from_millis(200));
-        let initial = effect.progress();
+        let _initial = effect.progress();
 
         effect.advance(Duration::from_millis(100));
         // Note: progress depends on elapsed wall time, not just advance calls

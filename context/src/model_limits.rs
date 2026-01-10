@@ -133,18 +133,12 @@ const DEFAULT_LIMITS: ModelLimits = ModelLimits::new(8192, 4096);
 /// Ordered by specificity (more specific prefixes first) to ensure
 /// correct matching when multiple prefixes could match.
 const KNOWN_MODELS: &[(&str, ModelLimits)] = &[
-    // Claude models (most specific first)
-    ("claude-opus-4", ModelLimits::new(200_000, 64_000)),
-    ("claude-sonnet-4", ModelLimits::new(200_000, 64_000)),
-    ("claude-3-5", ModelLimits::new(200_000, 64_000)),
-    ("claude-3", ModelLimits::new(200_000, 64_000)),
-    ("claude", ModelLimits::new(200_000, 64_000)),
-    // GPT models (most specific first)
-    ("gpt-5", ModelLimits::new(400_000, 128_000)),
-    ("gpt-4o", ModelLimits::new(128_000, 16_384)),
-    ("gpt-4-turbo", ModelLimits::new(128_000, 4096)),
-    ("gpt-4", ModelLimits::new(8192, 4096)),
-    ("gpt-3.5", ModelLimits::new(16_385, 4096)),
+    // Claude 4.5 models (most specific first)
+    ("claude-opus-4-5", ModelLimits::new(200_000, 64_000)),
+    ("claude-sonnet-4-5", ModelLimits::new(200_000, 64_000)),
+    ("claude-haiku-4-5", ModelLimits::new(200_000, 64_000)),
+    // GPT 5.2 models
+    ("gpt-5.2", ModelLimits::new(400_000, 128_000)),
 ];
 
 /// Registry of known model limits with support for custom overrides.
@@ -158,7 +152,7 @@ const KNOWN_MODELS: &[(&str, ModelLimits)] = &[
 ///
 /// Model names are matched using prefix comparison. For example:
 /// - `"claude-sonnet-4-20250514"` matches prefix `"claude-sonnet-4"`
-/// - `"gpt-4o-mini"` matches prefix `"gpt-4o"`
+/// - `"gpt-5.2-2025-12-11"` matches prefix `"gpt-5"`
 ///
 /// # Example
 ///
@@ -349,74 +343,60 @@ mod tests {
         }
 
         #[test]
-        fn get_claude_opus_4_models() {
+        fn get_claude_opus_4_5_models() {
             let registry = ModelRegistry::new();
 
-            let limits = registry.get("claude-opus-4").limits();
+            let limits = registry.get("claude-opus-4-5").limits();
             assert_eq!(limits.context_window(), 200_000);
             assert_eq!(limits.max_output(), 64_000);
 
-            let limits = registry.get("claude-opus-4-20250514").limits();
+            let limits = registry.get("claude-opus-4-5-20250514").limits();
             assert_eq!(limits.context_window(), 200_000);
             assert_eq!(limits.max_output(), 64_000);
         }
 
         #[test]
-        fn get_claude_sonnet_4_models() {
+        fn get_claude_sonnet_4_5_models() {
             let registry = ModelRegistry::new();
 
-            let limits = registry.get("claude-sonnet-4").limits();
+            let limits = registry.get("claude-sonnet-4-5").limits();
             assert_eq!(limits.context_window(), 200_000);
             assert_eq!(limits.max_output(), 64_000);
 
-            let limits = registry.get("claude-sonnet-4-20250514").limits();
+            let limits = registry.get("claude-sonnet-4-5-20250514").limits();
             assert_eq!(limits.context_window(), 200_000);
             assert_eq!(limits.max_output(), 64_000);
         }
 
         #[test]
-        fn get_claude_3_5_models() {
-            let registry = ModelRegistry::new();
-
-            let limits = registry.get("claude-3-5-sonnet-20241022").limits();
-            assert_eq!(limits.context_window(), 200_000);
-            assert_eq!(limits.max_output(), 64_000);
-
-            let limits = registry.get("claude-3-5-haiku-20241022").limits();
-            assert_eq!(limits.context_window(), 200_000);
-            assert_eq!(limits.max_output(), 64_000);
-        }
-
-        #[test]
-        fn get_claude_3_models() {
-            let registry = ModelRegistry::new();
-
-            let limits = registry.get("claude-3-opus-20240229").limits();
-            assert_eq!(limits.context_window(), 200_000);
-            assert_eq!(limits.max_output(), 64_000);
-
-            let limits = registry.get("claude-3-sonnet-20240229").limits();
-            assert_eq!(limits.context_window(), 200_000);
-            assert_eq!(limits.max_output(), 64_000);
-        }
-
-        #[test]
-        fn get_claude_family_matches_unlisted_variants() {
+        fn get_claude_haiku_4_5_models() {
             let registry = ModelRegistry::new();
 
             let resolved = registry.get("claude-haiku-4-5-20251001");
-            assert_eq!(resolved.source(), ModelLimitsSource::Prefix("claude"));
+            assert_eq!(
+                resolved.source(),
+                ModelLimitsSource::Prefix("claude-haiku-4-5")
+            );
             let limits = resolved.limits();
             assert_eq!(limits.context_window(), 200_000);
             assert_eq!(limits.max_output(), 64_000);
         }
 
         #[test]
-        fn get_gpt_5_models() {
+        fn unknown_claude_models_use_default_fallback() {
+            let registry = ModelRegistry::new();
+
+            // Unknown claude variant uses default fallback (no generic claude prefix)
+            let resolved = registry.get("claude-experimental-x");
+            assert_eq!(resolved.source(), ModelLimitsSource::DefaultFallback);
+        }
+
+        #[test]
+        fn get_gpt_5_2_models() {
             let registry = ModelRegistry::new();
 
             let resolved = registry.get("gpt-5.2");
-            assert_eq!(resolved.source(), ModelLimitsSource::Prefix("gpt-5"));
+            assert_eq!(resolved.source(), ModelLimitsSource::Prefix("gpt-5.2"));
             let limits = resolved.limits();
             assert_eq!(limits.context_window(), 400_000);
             assert_eq!(limits.max_output(), 128_000);
@@ -427,59 +407,21 @@ mod tests {
         }
 
         #[test]
-        fn get_gpt_4o_models() {
+        fn legacy_gpt_models_use_default_fallback() {
             let registry = ModelRegistry::new();
 
-            let limits = registry.get("gpt-4o").limits();
-            assert_eq!(limits.context_window(), 128_000);
-            assert_eq!(limits.max_output(), 16_384);
+            // Legacy GPT models are not supported, fall back to default
+            let resolved = registry.get("gpt-5");
+            assert_eq!(resolved.source(), ModelLimitsSource::DefaultFallback);
 
-            let limits = registry.get("gpt-4o-mini").limits();
-            assert_eq!(limits.context_window(), 128_000);
-            assert_eq!(limits.max_output(), 16_384);
+            let resolved = registry.get("gpt-4o");
+            assert_eq!(resolved.source(), ModelLimitsSource::DefaultFallback);
 
-            let limits = registry.get("gpt-4o-2024-08-06").limits();
-            assert_eq!(limits.context_window(), 128_000);
-            assert_eq!(limits.max_output(), 16_384);
-        }
+            let resolved = registry.get("gpt-4");
+            assert_eq!(resolved.source(), ModelLimitsSource::DefaultFallback);
 
-        #[test]
-        fn get_gpt_4_turbo_models() {
-            let registry = ModelRegistry::new();
-
-            let limits = registry.get("gpt-4-turbo").limits();
-            assert_eq!(limits.context_window(), 128_000);
-            assert_eq!(limits.max_output(), 4096);
-
-            let limits = registry.get("gpt-4-turbo-preview").limits();
-            assert_eq!(limits.context_window(), 128_000);
-            assert_eq!(limits.max_output(), 4096);
-        }
-
-        #[test]
-        fn get_gpt_4_models() {
-            let registry = ModelRegistry::new();
-
-            let limits = registry.get("gpt-4").limits();
-            assert_eq!(limits.context_window(), 8192);
-            assert_eq!(limits.max_output(), 4096);
-
-            let limits = registry.get("gpt-4-0613").limits();
-            assert_eq!(limits.context_window(), 8192);
-            assert_eq!(limits.max_output(), 4096);
-        }
-
-        #[test]
-        fn get_gpt_3_5_models() {
-            let registry = ModelRegistry::new();
-
-            let limits = registry.get("gpt-3.5-turbo").limits();
-            assert_eq!(limits.context_window(), 16_385);
-            assert_eq!(limits.max_output(), 4096);
-
-            let limits = registry.get("gpt-3.5-turbo-0125").limits();
-            assert_eq!(limits.context_window(), 16_385);
-            assert_eq!(limits.max_output(), 4096);
+            let resolved = registry.get("gpt-3.5-turbo");
+            assert_eq!(resolved.source(), ModelLimitsSource::DefaultFallback);
         }
 
         #[test]
@@ -504,24 +446,24 @@ mod tests {
             let mut registry = ModelRegistry::new();
 
             // Before override, uses prefix matching
-            let limits = registry.get("claude-sonnet-4-custom").limits();
+            let limits = registry.get("claude-sonnet-4-5-custom").limits();
             assert_eq!(limits.context_window(), 200_000);
 
             // Set override
             registry.set_override(
-                "claude-sonnet-4-custom".to_string(),
+                "claude-sonnet-4-5-custom".to_string(),
                 ModelLimits::new(50_000, 8000),
             );
 
             // After override, uses custom limits
-            let resolved = registry.get("claude-sonnet-4-custom");
+            let resolved = registry.get("claude-sonnet-4-5-custom");
             assert_eq!(resolved.source(), ModelLimitsSource::Override);
             let limits = resolved.limits();
             assert_eq!(limits.context_window(), 50_000);
             assert_eq!(limits.max_output(), 8000);
 
-            // Other claude-sonnet-4 models still use defaults
-            let limits = registry.get("claude-sonnet-4-20250514").limits();
+            // Other claude-sonnet-4-5 models still use defaults
+            let limits = registry.get("claude-sonnet-4-5-20250514").limits();
             assert_eq!(limits.context_window(), 200_000);
         }
 
@@ -529,18 +471,18 @@ mod tests {
         fn remove_override_restores_default_behavior() {
             let mut registry = ModelRegistry::new();
 
-            registry.set_override("gpt-4o".to_string(), ModelLimits::new(50_000, 5000));
-            assert!(registry.has_override("gpt-4o"));
+            registry.set_override("gpt-5.2".to_string(), ModelLimits::new(50_000, 5000));
+            assert!(registry.has_override("gpt-5.2"));
 
-            let removed = registry.remove_override("gpt-4o");
+            let removed = registry.remove_override("gpt-5.2");
             assert!(removed.is_some());
-            assert!(!registry.has_override("gpt-4o"));
+            assert!(!registry.has_override("gpt-5.2"));
 
             // Should now use prefix matching
-            let resolved = registry.get("gpt-4o");
-            assert_eq!(resolved.source(), ModelLimitsSource::Prefix("gpt-4o"));
+            let resolved = registry.get("gpt-5.2");
+            assert_eq!(resolved.source(), ModelLimitsSource::Prefix("gpt-5.2"));
             let limits = resolved.limits();
-            assert_eq!(limits.context_window(), 128_000);
+            assert_eq!(limits.context_window(), 400_000);
         }
 
         #[test]
@@ -566,8 +508,8 @@ mod tests {
 
             // Both should return same limits for any model
             assert_eq!(
-                new_registry.get("claude-sonnet-4"),
-                default_registry.get("claude-sonnet-4")
+                new_registry.get("claude-sonnet-4-5"),
+                default_registry.get("claude-sonnet-4-5")
             );
             assert_eq!(new_registry.get("unknown"), default_registry.get("unknown"));
         }

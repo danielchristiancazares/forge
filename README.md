@@ -65,7 +65,11 @@ allow_absolute = false
 |----------|-------------|
 | [`engine/README.md`](engine/README.md) | Core state machine and orchestration |
 | [`tui/README.md`](tui/README.md) | Terminal UI rendering and input handling |
-| [`docs/CONTEXT_ARCHITECTURE.md`](docs/CONTEXT_ARCHITECTURE.md) | Context Infinity™ specification |
+| [`context/README.md`](context/README.md) | Context Infinity™ implementation |
+| [`cli/README.md`](cli/README.md) | CLI entry point and terminal session |
+| [`providers/README.md`](providers/README.md) | LLM API clients (Claude, OpenAI) |
+| [`types/README.md`](types/README.md) | Core domain types |
+| [`docs/CONTEXT_INFINITY_SRD.md`](docs/CONTEXT_INFINITY_SRD.md) | Context Infinity™ specification |
 | [`docs/TOOL_EXECUTOR_SRD.md`](docs/TOOL_EXECUTOR_SRD.md) | Tool Executor Framework requirements |
 | [`docs/TOOLS.md`](docs/TOOLS.md) | User guide for tool configuration |
 | [`docs/LP1.md`](docs/LP1.md) | Line Patch v1 format specification |
@@ -94,5 +98,3 @@ Generate `lcov.info`:
 ## License
 
 See the repository root for license information.
-
-

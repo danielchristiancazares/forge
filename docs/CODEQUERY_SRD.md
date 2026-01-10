@@ -108,7 +108,7 @@ CodeQuery is a networked tool executed via Forge's Tool Executor and uses the Op
 
 **FR-CQ-05:** Discovery MUST skip common non-code directories (e.g., `.git`, `node_modules`, `target`) and exclude binary/media/archive files.
 
-**FR-CQ-06:** Markdown and documentation files SHOULD be excluded by default.
+**FR-CQ-06:** Markdown and documentation files MUST be excluded by default (OpenAI file search does not index `.md` files).
 
 ### 3.3 Vector Store Lifecycle
 **FR-CQ-07:** If `vector_store_id` is provided, it MUST be used directly.
@@ -161,7 +161,7 @@ CodeQuery is a networked tool executed via Forge's Tool Executor and uses the Op
 ## 5. Configuration
 
 ```toml
-[codequery]
+[tools.codequery]
 enabled = false
 cache_path = "${HOME}/.forge/codequery/stores.json"
 default_vector_store_name = ""
@@ -171,14 +171,14 @@ include_results = false
 ```
 
 ```toml
-[codequery.discovery]
+[tools.codequery.discovery]
 respect_gitignore = true
 skip_dirs = [".git", "node_modules", "target", "dist", "build"]
 exclude_extensions = [".md", ".png", ".jpg", ".zip", ".exe"]
 ```
 
 ```toml
-[codequery.retry]
+[tools.codequery.retry]
 max_attempts = 3
 backoff_ms = [200, 500, 1000]
 jitter_ms = 50

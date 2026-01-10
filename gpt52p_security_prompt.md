@@ -17,8 +17,8 @@ Repository structure (key areas to review)
 - Tool execution framework: engine/src/tools/mod.rs, engine/src/tools/builtins.rs, engine/src/tools/sandbox.rs, engine/src/tools/lp1.rs
 - TUI rendering & input: tui/src/lib.rs, tui/src/ui_inline.rs, tui/src/input.rs, tui/src/markdown.rs, tui/src/theme.rs, tui/src/effects.rs
 - Domain types & validations: types/src/lib.rs, types/src/sanitize.rs
-- Docs for reference: docs/ENGINE_ARCHITECTURE.md, docs/PROVIDERS_ARCHITECTURE.md, docs/CONTEXT_INFINITY.md, docs/CONTEXT_ARCHITECTURE.md,
-  docs/TUI_ARCHITECTURE.md, docs/OPENAI_RESPONSES_GPT52.md, docs/TOOL_EXECUTOR_SRD.md, docs/LP1.md, docs/DESIGN.md
+- Docs for reference: docs/DESIGN.md, docs/OPENAI_RESPONSES_GPT52.md, docs/TOOL_EXECUTOR_SRD.md, docs/LP1.md
+- Crate READMEs: cli/README.md, engine/README.md, providers/README.md, tui/README.md, types/README.md, context/README.md
 - Dependencies: Cargo.toml, Cargo.lock
 
 Required output format
@@ -64,3 +64,4 @@ Additional instructions
 - Avoid generic advice; tie everything directly to this codebase and architecture.
 - If something appears safe due to type‑driven design, call it out explicitly.
 - If you need more context or clarity, list out exactly the questions or files you need.
+- Do not invent issues; if you don't find anything, say "No findings."
