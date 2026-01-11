@@ -40,10 +40,10 @@ cov:
 pre-commit: fmt-check lint test
 
 # Create source zip for bug analysis (excludes build artifacts)
-set shell := ["pwsh", "-NoProfile", "-Command"]
+[windows]
 zip:
-    Compress-Archive -Path (Get-ChildItem -Path . -Exclude 'target','.git','*.zip','lcov.info','coverage','.env*','sha256.txt') -DestinationPath forge-source.zip -Force
-    Get-FileHash -Algorithm SHA256 forge-source.zip | ForEach-Object { "{0}  {1}" -f $_.Hash, $_.Path } | Set-Content -NoNewline sha256.txt
+    pwsh -NoProfile -Command "Compress-Archive -Path (Get-ChildItem -Path . -Exclude 'target','.git','*.zip','lcov.info','coverage','.env*','sha256.txt') -DestinationPath forge-source.zip -Force"
+    pwsh -NoProfile -Command "Get-FileHash -Algorithm SHA256 forge-source.zip | ForEach-Object { \"{0}  {1}\" -f $_.Hash, $_.Path } | Set-Content -NoNewline sha256.txt"
 
 [unix]
 zip:
