@@ -20,6 +20,8 @@ globset.workspace = true
 jsonschema.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
+ignore.workspace = true
+unicode-normalization.workspace = true
 
 anyhow.workspace = true
 thiserror.workspace = true

@@ -2,6 +2,7 @@
 
 pub mod builtins;
 pub mod lp1;
+pub mod search;
 pub mod sandbox;
 
 use std::collections::{HashMap, HashSet};
@@ -17,6 +18,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use sandbox::Sandbox;
+pub use search::SearchToolConfig;
 
 /// Tool execution future type alias.
 pub type ToolFut<'a> = Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>>;
@@ -323,6 +325,7 @@ pub struct ToolSettings {
     pub limits: ToolLimits,
     pub read_limits: ReadFileLimits,
     pub patch_limits: PatchLimits,
+    pub search: SearchToolConfig,
     pub timeouts: ToolTimeouts,
     pub max_output_bytes: usize,
     pub policy: Policy,

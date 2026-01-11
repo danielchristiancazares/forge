@@ -230,6 +230,7 @@ impl App {
             &mut tool_registry,
             tool_settings.read_limits,
             tool_settings.patch_limits,
+            tool_settings.search.clone(),
         ) {
             tracing::warn!("Failed to register built-in tools: {e}");
         }
@@ -443,6 +444,32 @@ impl App {
                 .unwrap_or(DEFAULT_MAX_PATCH_BYTES),
         };
 
+        let search_cfg = tools_cfg.and_then(|cfg| cfg.search.as_ref());
+        let search = tools::SearchToolConfig {
+            enabled: search_cfg.and_then(|cfg| cfg.enabled).unwrap_or(false),
+            binary: search_cfg
+                .and_then(|cfg| cfg.binary.clone())
+                .unwrap_or_else(|| "ugrep".to_string()),
+            fallback_binary: search_cfg
+                .and_then(|cfg| cfg.fallback_binary.clone())
+                .unwrap_or_else(|| "rg".to_string()),
+            default_timeout_ms: search_cfg
+                .and_then(|cfg| cfg.default_timeout_ms)
+                .unwrap_or(20_000),
+            default_max_results: search_cfg
+                .and_then(|cfg| cfg.default_max_results)
+                .unwrap_or(200),
+            max_matches_per_file: search_cfg
+                .and_then(|cfg| cfg.max_matches_per_file)
+                .unwrap_or(50),
+            max_files: search_cfg
+                .and_then(|cfg| cfg.max_files)
+                .unwrap_or(10_000),
+            max_file_size_bytes: search_cfg
+                .and_then(|cfg| cfg.max_file_size_bytes)
+                .unwrap_or(2_000_000),
+        };
+
         let timeouts = tools::ToolTimeouts {
             default_timeout: Duration::from_secs(
                 tools_cfg
@@ -558,6 +585,7 @@ impl App {
             limits,
             read_limits,
             patch_limits,
+            search,
             timeouts,
             max_output_bytes,
             policy,

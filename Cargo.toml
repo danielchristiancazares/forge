@@ -48,6 +48,7 @@ globset = "0.4"
 jsonschema = "0.17"
 sha2 = "0.10"
 url = "2.5"
+ignore = "0.4"
 
 # HTML parsing
 scraper = "0.23"
@@ -72,6 +73,7 @@ dirs = "5.0"
 # Unicode handling
 unicode-width = "0.2"
 unicode-segmentation = "1.12"
+unicode-normalization = "0.1"
 
 # Markdown parsing
 pulldown-cmark = "0.12"

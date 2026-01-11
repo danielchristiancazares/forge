@@ -123,6 +123,8 @@ pub struct ToolsConfig {
     pub read_file: Option<ReadFileConfig>,
     /// apply_patch limits.
     pub apply_patch: Option<ApplyPatchConfig>,
+    /// search limits.
+    pub search: Option<SearchConfig>,
 }
 
 /// Configuration for a single tool definition.
@@ -189,6 +191,19 @@ pub struct ReadFileConfig {
 #[derive(Debug, Default, Deserialize)]
 pub struct ApplyPatchConfig {
     pub max_patch_bytes: Option<usize>,
+}
+
+/// search tool limits configuration.
+#[derive(Debug, Default, Deserialize)]
+pub struct SearchConfig {
+    pub enabled: Option<bool>,
+    pub binary: Option<String>,
+    pub fallback_binary: Option<String>,
+    pub default_timeout_ms: Option<u64>,
+    pub default_max_results: Option<usize>,
+    pub max_matches_per_file: Option<usize>,
+    pub max_files: Option<usize>,
+    pub max_file_size_bytes: Option<u64>,
 }
 
 impl ToolDefinitionConfig {

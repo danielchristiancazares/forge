@@ -29,6 +29,7 @@ fn test_app() -> App {
         &mut tool_registry,
         tool_settings.read_limits,
         tool_settings.patch_limits,
+        tool_settings.search.clone(),
     );
     let tool_registry = std::sync::Arc::new(tool_registry);
     let tool_definitions = match tool_settings.mode {

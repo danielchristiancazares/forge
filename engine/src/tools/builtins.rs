@@ -11,10 +11,11 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use super::{
-    FileCacheEntry, PatchLimits, ReadFileLimits, RiskLevel, ToolCtx, ToolError, ToolExecutor,
-    ToolFut, ToolRegistry, redact_summary, sanitize_output,
+    FileCacheEntry, PatchLimits, ReadFileLimits, RiskLevel, SearchToolConfig, ToolCtx, ToolError,
+    ToolExecutor, ToolFut, ToolRegistry, redact_summary, sanitize_output,
 };
 use crate::tools::lp1::{self, FileContent};
+use crate::tools::search::SearchTool;
 
 #[derive(Debug)]
 pub struct ReadFileTool {
@@ -550,10 +551,16 @@ pub fn register_builtins(
     registry: &mut ToolRegistry,
     read_limits: ReadFileLimits,
     patch_limits: PatchLimits,
+    search_config: SearchToolConfig,
 ) -> Result<(), ToolError> {
     registry.register(Box::new(ReadFileTool::new(read_limits)))?;
     registry.register(Box::new(ApplyPatchTool::new(patch_limits)))?;
     registry.register(Box::new(RunCommandTool))?;
+    if search_config.enabled {
+        for name in SearchTool::aliases() {
+            registry.register(Box::new(SearchTool::with_name(name, search_config.clone())))?;
+        }
+    }
     Ok(())
 }
 

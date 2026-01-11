@@ -149,6 +149,36 @@ impl Sandbox {
         Ok(canonical)
     }
 
+    /// Validate a resolved path (absolute) against sandbox rules.
+    pub fn ensure_path_allowed(&self, path: &Path) -> Result<PathBuf, ToolError> {
+        let canonical = std::fs::canonicalize(path).map_err(|_| {
+            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                attempted: path.to_path_buf(),
+                resolved: path.to_path_buf(),
+            })
+        })?;
+
+        if !self.is_within_allowed_roots(&canonical) {
+            return Err(ToolError::SandboxViolation(
+                DenialReason::PathOutsideSandbox {
+                    attempted: path.to_path_buf(),
+                    resolved: canonical,
+                },
+            ));
+        }
+
+        if let Some(pat) = self.matches_denied_pattern(&canonical) {
+            return Err(ToolError::SandboxViolation(
+                DenialReason::DeniedPatternMatched {
+                    attempted: canonical,
+                    pattern: pat,
+                },
+            ));
+        }
+
+        Ok(canonical)
+    }
+
     fn is_within_allowed_roots(&self, path: &Path) -> bool {
         self.allowed_roots.iter().any(|root| path.starts_with(root))
     }
