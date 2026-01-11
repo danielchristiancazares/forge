@@ -2,6 +2,27 @@
 
 This document provides comprehensive documentation for the Text User Interface (TUI) system in the Forge codebase. It is intended for developers who want to understand, maintain, or extend the TUI functionality.
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-68 | Overview: modal interface, file structure, architecture notes |
+| 69-103 | Architecture Diagram: event loop and component relationships |
+| 104-163 | Core Components: main.rs entry point, terminal session, UI modes |
+| 164-296 | Application State Management: InputState enum, AppState async state machine, scroll state |
+| 297-381 | Input Handling System: event processing, mode-specific key handlers |
+| 382-609 | Type-Driven Design Patterns: proof tokens, mode wrappers, NonEmptyString, state patterns |
+| 610-824 | Rendering Pipeline: full-screen layout, message rendering, scrollbar, overlays, tool UI |
+| 825-864 | UI Modes: Full vs Inline - differences and mode switching |
+| 865-1030 | Message and Streaming System: Message types, streaming lifecycle, crash recovery |
+| 1031-1093 | Context Management Integration: ContextManager, usage display, summarization flow |
+| 1094-1149 | Theming and Styling: color palette, styles, spinner animation |
+| 1150-1235 | Key Data Structures: DraftInput, DisplayItem, ActiveStream, PredefinedModel |
+| 1236-1275 | Event Loop and Update Cycle: tick cycle, timing details |
+| 1276-1390 | Command System: available commands, processing flow, model selector |
+| 1391-1810 | Extension Guide: adding input modes, commands, UI components, animations, themes, providers |
+| 1811-1972 | Appendix and Summary: markdown rendering, architectural strengths, key patterns |
+
 ## Table of Contents
 
 1. [Overview](#overview)

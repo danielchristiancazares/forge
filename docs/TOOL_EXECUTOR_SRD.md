@@ -5,7 +5,20 @@
 **Version:** 1.10
 **Date:** 2026-01-08
 **Status:** Final
-**Baseline code reference:** `forge-source.zip` 
+**Baseline code reference:** `forge-source.zip`
+
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-96 | Section 1 - Introduction: purpose, scope, definitions, references, requirement keywords |
+| 97-180 | Section 2 - Overall Description: product perspective, functions, constraints, tool loop modes |
+| 181-260 | Section 3.1 - Tool Executor Trait: trait definition, schema validation, typed parsing |
+| 261-360 | Section 3.2-3.3 - Registry and Context: ToolRegistry, ToolCtx, SharedToolCtx |
+| 361-500 | Section 3.4 - Approval Workflow: outcomes, policy, precedence, planning-time validation |
+| 501-580 | Section 3.5 - Sandbox: Sandbox struct, root policies, symlink/junction defense |
+| 581-680 | Section 3.6 - Execution: sequential execution, timeout, cancellation, child cleanup |
+| 681-761 | Sections 4-6 - NFRs, Verification, Appendices: tool definitions, error codes |
 
 ---
 
@@ -85,7 +98,7 @@ The Tool Executor Framework:
 | `engine/README.md`    | Engine state machine specification                   |
 | `docs/LP1.md`                    | Line Patch v1 edit format specification              |
 | `providers/README.md` | LLM provider integration                             |
-| `docs/CONTEXT_ARCHITECTURE.md`   | Context subsystem and tool-mode configuration intent |
+| `context/README.md`              | Context subsystem and tool-mode configuration intent |
 | RFC 2119                         | Key words for requirement levels                     |
 | RFC 8174                         | Clarification of RFC 2119 (uppercase only)           |
 
@@ -1104,5 +1117,3 @@ Idle
 ```
 
 **Denied-only batch:** If all calls are pre-resolved (policy/sandbox/invalid), results are persisted and auto-resume occurs (enabled mode) without executing any tool.
-
-

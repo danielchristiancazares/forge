@@ -1,6 +1,16 @@
 # Repository Guidelines
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-74 | Project Structure and Configuration: module organization, build commands, config.toml |
+| 75-128 | Type-Driven Design Patterns: proof tokens, validated newtypes, mode wrappers |
+| 129-200 | State Machines: InputState, AppState async operations, transitions |
+| 201-269 | Extension Points, Key Files, TUI/Streaming Patterns |
+
 ## Project Structure & Module Organization
+
 - `Cargo.toml` / `Cargo.lock`: workspace metadata and locked dependencies.
 - `cli/`: binary entrypoint + assets
   - `src/main.rs`: terminal setup + async main loop
@@ -33,6 +43,7 @@
 - `scripts/`: tooling (coverage, etc.)
 
 ## Build, Test, and Development Commands
+
 - `cargo check`: fast compile/type-check during development.
 - `cargo build`: debug build.
 - `cargo test`: run tests.
@@ -69,7 +80,7 @@ truncation = "auto"                    # auto/disabled
 
 Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `FORGE_TUI`, `FORGE_CONTEXT_INFINITY=0`
 
-**Constraint:** OpenAI models must start with `gpt-5` (enforced by `ModelName::new()`).
+**Constraint:** OpenAI models MUST start with `gpt-5` (enforced by `ModelName::new()`).
 
 ---
 
@@ -96,6 +107,7 @@ fn command_mode(&mut self, _token: CommandToken) -> CommandMode<'_>
 ```
 
 **Usage pattern:**
+
 ```rust
 let Some(token) = app.insert_token() else { return; };
 let mut mode = app.insert_mode(token);
@@ -141,6 +153,7 @@ enum InputState {
 ```
 
 **Transitions:**
+
 - `Normal` → `Insert`: `i`, `a`, `o` keys
 - `Insert` → `Normal`: `Esc`, or `Enter` (sends message)
 - `Normal` → `Command`: `:` or `/` keys
@@ -328,6 +341,7 @@ pub enum CacheHint {
 ## Error Handling
 
 API errors are sanitized before display:
+
 - `sanitize_stream_error()` - trims and redacts
 - `redact_api_keys()` - replaces key-like strings with `[REDACTED]`
 

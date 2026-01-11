@@ -1,6 +1,15 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance for Claude Code (claude.ai/code) when working with code in this repository.
+
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-38 | Build Commands and Configuration: cargo commands, config.toml structure |
+| 39-82 | Architecture: workspace structure, key files table |
+| 83-127 | Main Event Loop, Input State Machine, Type-Driven Design patterns |
+| 128-162 | Provider System, Context Infinity, Key Extension Points |
 
 ## Build Commands
 
@@ -97,12 +106,14 @@ The `yield_now()` is essential because crossterm's event polling is blocking.
 ### Input State Machine
 
 Mode transitions are type-safe via `InputState` enum variants:
+
 - `Normal(DraftInput)` → navigation
 - `Insert(DraftInput)` → text editing with cursor
 - `Command { draft, command }` → slash commands
 - `ModelSelect { draft, selected }` → model picker overlay
 
 Mode-specific operations require proof tokens:
+
 ```rust
 // Can only get InsertToken when in Insert mode
 let token = app.insert_token()?;
@@ -128,6 +139,7 @@ The codebase enforces correctness through types (see `docs/DESIGN.md`):
 ### Provider System (`providers/src/lib.rs`)
 
 `Provider` enum (Claude, OpenAI) with:
+
 - `default_model()` → provider's default model
 - `available_models()` → known model list
 - `parse_model(raw)` → validates model name, returns `ModelName`
@@ -137,6 +149,7 @@ Adding a provider: extend `Provider` enum, implement all match arms, add module 
 ### Context Infinity (`context/`)
 
 Adaptive context management with automatic summarization:
+
 - `manager.rs` - orchestrates token counting, triggers summarization
 - `history.rs` - persistent storage with `MessageId`/`SummaryId`
 - `working_context.rs` - builds working context within token budget
@@ -145,7 +158,7 @@ Adaptive context management with automatic summarization:
 - `model_limits.rs` - per-model token limits
 - `token_counter.rs` - token counting utilities
 
-See `context/README.md` and `docs/CONTEXT_ARCHITECTURE.md` for details.
+See `context/README.md` for details.
 
 ### Key Extension Points
 
@@ -166,7 +179,6 @@ See `tui/README.md` Extension Guide for detailed patterns.
 |----------|-------------|
 | `tui/README.md` | Comprehensive TUI system documentation |
 | `context/README.md` | Context management system overview |
-| `docs/CONTEXT_ARCHITECTURE.md` | Context subsystem architecture |
 | `docs/DESIGN.md` | Type-driven design patterns |
 | `docs/OPENAI_RESPONSES_GPT52.md` | OpenAI Responses API integration |
 | `docs/RUST_2024_REFERENCE.md` | Rust 2024 edition features used |
@@ -174,6 +186,7 @@ See `tui/README.md` Extension Guide for detailed patterns.
 ## Testing
 
 Uses wiremock for HTTP mocking, insta for snapshots, tempfile for isolation:
+
 ```bash
 cargo test test_name                    # Single test
 cargo test -- --nocapture               # With stdout
@@ -183,20 +196,24 @@ cargo test --test integration_test      # Integration tests only
 ## Common Pitfalls
 
 ### Claude API Limits
+
 - **Max 4 `cache_control` blocks**: System prompt uses 1 slot, leaving 3 for messages
 - Summaries are `Message::System` and get cache hints - can exceed limit if not capped
 
 ### Platform Differences
+
 - Use `dirs::home_dir()` for config paths, not hardcoded `~/.forge/`
 - Display actual path in error messages via `config::config_path()`
 
 ### TUI Rendering
+
 - **Scrollbar visibility**: Only render when `max_scroll > 0` (content exceeds viewport)
 - **Scrollbar position**: Use `max_scroll` as content_length, not `total_lines`
 - **Cache expensive computations**: `context_usage_status()` should be cached, not recomputed per frame
 - **No eprintln!**: Use `tracing::warn!` to avoid corrupting TUI output
 
 ### Database Transactions
+
 - Journal commit+prune must be atomic (single transaction)
 - Only commit journal if history save succeeds
 - Always discard or commit steps in error paths (prevent session brick)
@@ -206,5 +223,3 @@ cargo test --test integration_test      # Integration tests only
 Conventional commits: `type(scope): summary`
 
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
-
-

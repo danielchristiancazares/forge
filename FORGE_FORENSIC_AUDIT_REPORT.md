@@ -4,6 +4,21 @@
 
 **Revision Note:** Original report corrected for logical inconsistencies. "PARTIALLY PROVEN" is not a valid logical state - a bug either exists (PROVEN) or doesn't (DISPROVEN). B02 reclassified as DISPROVEN (dead code, not functional bug). B06 reclassified as PROVEN for summarization only (streaming/tools are safe).
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-20 | Executive Table: Bug ID, Status, Severity, Likelihood summary |
+| 21-62 | B01 PROVEN: Stream journal blocks UI (sync SQLite), fix: async task |
+| 63-101 | B02 DISPROVEN: Stream disconnection misclassified (dead code, not bug) |
+| 102-142 | B03 PROVEN: Model switch during active stream corrupts context, fix: state check |
+| 143-181 | B04 PROVEN: Terminal left in raw state on panic, fix: panic hook |
+| 182-205 | B05 DISPROVEN: Runtime invariant validation present, no illegal overlaps |
+| 206-277 | B06 PROVEN: Async task leak on panic (summarization only), fix: store handle before spawn |
+| 278-312 | B07 PROVEN: Resource exhaustion from unbounded growth, fix: collection limits |
+| 313-355 | B08 PROVEN: Tool resource cleanup not RAII, fix: cleanup guards |
+| 356-398 | B09 PROVEN: Tool approval UX dead-end, fix: timeout mechanism |
+
 ## Executive Table
 
 | Bug ID | Status | Severity | Likelihood | Proof Artifact Type | Key Files/Functions |

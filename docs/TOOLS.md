@@ -2,6 +2,15 @@
 
 This guide covers configuring and using the Tool Executor Framework in Forge. For the technical specification, see [TOOL_EXECUTOR_SRD.md](TOOL_EXECUTOR_SRD.md).
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-34 | Overview: Tool capabilities, sandboxing, approval, journaling |
+| 35-90 | Quick Start and Tool Modes: enabling tools, testing, mode comparison |
+| 91-200 | Built-in Tools: read_file, apply_patch, run_command with parameters and limits |
+| 201-276 | Configuration Reference, Security Model, Approval Workflow, Crash Recovery, Troubleshooting |
+
 ## Table of Contents
 
 1. [Overview](#overview)
@@ -397,4 +406,4 @@ denylist = ["*_SECRET", "*_PASSWORD"]  # Removed *_KEY
 
 - [TOOL_EXECUTOR_SRD.md](TOOL_EXECUTOR_SRD.md) — Technical requirements specification
 - [LP1.md](LP1.md) — Line Patch v1 format grammar
-- [ENGINE_ARCHITECTURE.md](ENGINE_ARCHITECTURE.md) — Tool loop state machine
+- [engine/README.md](../engine/README.md) — Tool loop state machine

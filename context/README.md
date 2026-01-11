@@ -4,6 +4,24 @@
 
 Context Infinity is Forge's system for managing unlimited conversation context with LLMs. It preserves complete conversation history while automatically summarizing older content to fit within model-specific token limits.
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-59 | Overview: core principle, design principles, architecture diagram |
+| 60-109 | Core Concepts: Full History (append-only), HistoryEntry enum, Summaries |
+| 110-175 | Token Budget Calculation: ModelLimits, effective budget formula, known model limits |
+| 176-282 | Context Building Algorithm: 5 phases - reserve recent, partition, select, assemble, return |
+| 283-370 | Model Switching (Context Adaptation): shrinking vs expanding, ContextAdaptation enum |
+| 371-444 | Stream Journal (Crash Recovery): schema, lifecycle, RAII pattern with ActiveJournal |
+| 445-505 | Token Counting: TokenCounter, singleton pattern, usage statistics |
+| 506-559 | Persistence and Configuration: history serialization, journal location, config options |
+| 560-610 | Type-Driven Design: proof types table, PreparedContext as proof |
+| 611-715 | Public API - Core Types: ContextManager, PreparedContext, ContextAdaptation |
+| 716-925 | Public API - History, Model Limits, Token Counting, Stream Journal, Tool Journal |
+| 926-1030 | Public API - Summarization, Working Context, ContextUsage |
+| 1031-1178 | Complete Workflow Example, Type Relationships, Error Handling, Dependencies, Testing |
+
 ## Overview
 
 The core principle is **never discard, always compress**: messages are never deleted from history. Instead, when the context window fills up, older messages are summarized into compact representations that preserve essential information.
@@ -308,8 +326,8 @@ pub fn prepare_summarization(&mut self, message_ids: &[MessageId])
 
 Summarization uses cheaper/faster models:
 
-- **Claude**: `claude-3-haiku-20240307`
-- **OpenAI**: `gpt-4o-mini`
+- **Claude**: `claude-haiku-4-5`
+- **OpenAI**: `gpt-5-nano`
 
 The prompt instructs the model to:
 
@@ -597,7 +615,7 @@ fn count_message(&self, msg: &Message) -> u32;
 
 ## Limitations
 
-1. **Summarization requires API call**: Summarization uses LLM calls (claude-3-haiku or gpt-4o-mini), adding latency and cost.
+1. **Summarization requires API call**: Summarization uses LLM calls (claude-haiku-4-5 or gpt-5-nano), adding latency and cost.
 
 2. **Contiguous ranges only**: Summaries must cover contiguous message ranges. Selective summarization is not supported.
 
@@ -1008,7 +1026,7 @@ use forge_providers::ApiConfig;
 
 // Get the summarization model for current provider
 let model_name = summarization_model(Provider::Claude);
-// Returns "claude-3-haiku-20240307" (cheaper/faster)
+// Returns "claude-haiku-4-5" (cheaper/faster)
 
 // Generate summary
 let summary_text = generate_summary(
@@ -1020,8 +1038,8 @@ let summary_text = generate_summary(
 
 **Summarization models used:**
 
-- Claude: `claude-3-haiku-20240307`
-- OpenAI: `gpt-4o-mini`
+- Claude: `claude-haiku-4-5`
+- OpenAI: `gpt-5-nano`
 
 ### Working Context
 
@@ -1108,7 +1126,7 @@ let prepared = match manager.prepare() {
             pending.summary_id,
             pending.scope,
             NonEmptyString::new(&summary_text)?,
-            "claude-3-haiku".to_string(),
+            "claude-haiku-4-5".to_string(),
         );
         
         manager.prepare()?  // Should succeed now

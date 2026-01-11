@@ -2,6 +2,18 @@
 
 This document provides a reference for the Anthropic Messages API as used by Forge. It covers the endpoint structure, request/response formats, SSE streaming events, prompt caching, and extended thinking.
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-82 | Overview and Request Structure: endpoint, auth, required/optional fields, message format |
+| 83-180 | Tool Schema: custom tools, built-in tools (bash, text editor versions) |
+| 181-250 | Tool Choice: auto, any, specific tool, disabling tools |
+| 251-320 | Tool Use Response Blocks: tool_use content block format, handling |
+| 321-400 | SSE Streaming: event types (message_start, content_block_delta, message_stop) |
+| 401-450 | Prompt Caching: cache_control blocks, TTL, limitations |
+| 451-486 | Extended Thinking: configuration, thinking blocks, budget constraints |
+
 ## Overview
 
 | Aspect | Details |

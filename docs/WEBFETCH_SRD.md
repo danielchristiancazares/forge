@@ -1,13 +1,51 @@
 # WebFetch Tool
 ## Software Requirements Document
-**Version:** 2.0
+**Version:** 2.1
 **Date:** 2026-01-10
-**Status:** Draft
+**Status:** Implementation-Ready
 **Baseline code reference:** `engine/src/tools/webfetch.rs`, `engine/src/tools/mod.rs`
+
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-90 | Header, Change Log, Section 1 - Introduction: purpose, scope, definitions |
+| 91-130 | Section 2 - Overall Description: product perspective, functions, constraints |
+| 131-200 | Section 3.1 - Tool Interface: request schema, response schema, output enforcement |
+| 201-300 | Section 3.2.1-3.2.4 - SSRF Validation: URL parsing, IP blocklists, port policy, DNS rebinding |
+| 301-380 | Section 3.2.5-3.3 - Redirects and robots.txt: redirect handling, RFC 9309 parsing |
+| 381-500 | Section 3.4 - Fetch and Rendering: HTTP mode, Content-Type, browser mode, CDP/SSRF architecture |
+| 501-660 | Section 3.5 - Extraction and Chunking: HTML algorithm, deterministic extraction, chunking |
+| 661-760 | Section 3.6 - Caching: cache key derivation, LRU tracking, TTL, eviction, entry format |
+| 761-850 | Section 3.7 and 4 - Error Handling and NFRs: error codes, structured JSON passthrough |
+| 851-950 | Section 5 - Configuration: Forge integration, precedence rules, reference |
+| 951-1020 | Section 6 - Verification: SSRF tests, robots.txt tests, extraction tests, browser tests |
+| 1021-1072 | Appendices A-E: URL normalization, state machine, references, glossary, executor integration |
 
 ---
 
 ## 0. Change Log
+
+### 0.3 Implementation-readiness remediation (2026-01-10)
+* **Status:** Upgraded from Draft to Implementation-Ready after GPT-5.2p review
+* **Parameter bounds (A1):** `max_chunk_tokens` now rejects (not clamps) out-of-range values
+* **Output enforcement (B1-B4):** Added canonical algorithm FR-WF-OUT-01; clarified `ctx.allow_truncation` ownership
+* **Notes array (C1-C2):** Changed `note` → `notes` array with defined tokens; added URL field semantics
+* **Error handling (D1-D6):** Added FR-ERR-JSON-01/02 for structured error passthrough; schema validation errors now return JSON envelope
+* **Timeout ownership (E1):** Added FR-WF-TIMEOUT-01 ensuring tool timeout exceeds internal budgets
+* **URL validation (E2-E4):** Added IDNA/punycode, userinfo rejection, IPv6 zone identifier rejection, IP literal test vectors
+* **Port policy (F1):** Clarified allowlist semantics (override, not additive)
+* **DNS pinning (F2):** Added FR-WF-DNS-01 with deterministic connection strategy
+* **Security overrides (F3):** Added FR-WF-SEC-OVR-01 requiring explicit `allow_insecure_overrides`
+* **robots.txt (F4-F7):** Added UA specificity, rule length precedence, query string inclusion, redirect handling
+* **Content-Type (G1-G2):** Added binary magic sniffing, charset fallback handling
+* **Timeout budgeting (G3):** Added FR-WF-TIMEOUT-02 for redirect chain budget
+* **Browser SSRF (G4-G7):** Added FR-WF-BSSR-01 architecture (CDP Fetch.fulfillRequest or proxy); DOM size measurement; resource type matching
+* **Extraction (H1-H4):** Added deterministic class/id token matching, root selection order, table conversion rules, code fence whitespace preservation
+* **Chunking (I1-I3):** Added list block detection, code block atomicity, heading state machine
+* **Caching (J1-J4):** Clarified cache key inputs, LRU tracking mechanism, no_cache write behavior, entry format versioning
+* **Tests (L1-L2):** Added browser SSRF test harness requirements, golden test stability guidance
+* **Appendix E:** Added Tool Executor integration documentation
 
 ### 0.2 Comprehensive specification update (2026-01-10)
 * **Tool naming:** Standardized to `web_fetch` (snake_case), removed alias requirement
@@ -107,13 +145,13 @@ WebFetch runs as a Forge tool through the Tool Executor Framework. It is a netwo
 * `force_browser` (boolean, optional, default false)
 * `additionalProperties` MUST be false
 
-**FR-WF-02a (Parameter bounds):** `max_chunk_tokens` MUST be clamped to `[128, 2048]`. Values outside this range MUST return `bad_args` error.
+**FR-WF-02a (Parameter bounds):** `max_chunk_tokens` MUST be an integer in `[128, 2048]`. Values outside this range MUST return `bad_args` error. The tool MUST NOT clamp out-of-range values—explicit rejection ensures the caller is aware of invalid input.
 
 **FR-WF-02b (URL validation):** Empty or whitespace-only `url` MUST return `bad_args` error.
 
 **FR-WF-03 (Response schema):** Response payload MUST be a valid UTF-8 JSON object containing:
-* `requested_url` (string) — the original input URL
-* `final_url` (string) — the URL after redirect resolution
+* `requested_url` (string) — the original input URL as provided (unchanged)
+* `final_url` (string) — the canonicalized URL (per Appendix A) of the last fetched URL with fragment removed
 * `fetched_at` (ISO-8601 timestamp) — original fetch time (from cache metadata on cache hit)
 * `title` (optional string) — from `<title>` if present, else first `<h1>`, else omitted
 * `language` (optional string) — from `<html lang>` if present and non-empty (BCP-47 tag as-is), else omitted
@@ -121,9 +159,31 @@ WebFetch runs as a Forge tool through the Tool Executor Framework. It is a netwo
 * `rendering_method` ("http" | "browser")
 * `truncated` (boolean) — true if output was limited to fit byte budget
 * `truncation_reason` (optional string) — e.g., `"tool_output_limit"`, `"max_chunks_reached"`
-* `note` (optional string) — e.g., `"cache_hit"`, `"browser_timeout_dom_partial"`, `"robots_unavailable_fail_open"`
+* `notes` (array of strings, default `[]`) — stable tokens indicating conditions that occurred during fetch
 
-**FR-WF-03a (Output size enforcement):** The executor MUST set `ctx.allow_truncation = false` and MUST ensure serialized JSON size is `<= effective_max_bytes`, where `effective_max_bytes = min(ctx.max_output_bytes, ctx.available_capacity_bytes)` per `ToolCtx`. If content exceeds this limit, the tool MUST drop trailing chunks first; if still too large, truncate the final chunk's `text` at a UTF-8 boundary and set `truncated=true`.
+**FR-WF-RESP-URL-01 (URL field semantics):** `requested_url` MUST equal the original `args.url` string exactly as provided by the caller (no normalization). `final_url` MUST be the canonicalized URL (Appendix A) of the last fetched URL **with fragment removed**. If no redirects occurred, `final_url` is the canonicalized form of `requested_url`.
+
+**FR-WF-03c (Notes array):** The `notes` array replaces the singular `note` field. Each condition MUST append a stable token; ordering MUST reflect occurrence order during processing. Defined tokens:
+| Token | Condition |
+|-------|-----------|
+| `cache_hit` | Response served from cache |
+| `cache_write_failed` | Cache write failed (fetch still succeeded) |
+| `robots_unavailable_fail_open` | robots.txt unavailable but `fail_open=true` |
+| `browser_timeout_dom_partial` | Browser render timed out; partial DOM extracted |
+| `browser_dom_truncated` | DOM exceeded `max_rendered_dom_bytes` |
+| `browser_unavailable_used_http` | Browser fallback requested but unavailable |
+| `charset_fallback` | Unknown charset; fell back to UTF-8 with replacement |
+
+**FR-WF-03a (Output size enforcement):** The **WebFetch tool's `execute()` method** MUST set `ctx.allow_truncation = false` before returning output, preventing the framework's generic truncation marker (`"... [output truncated]"`) from invalidating the JSON response. The tool MUST ensure serialized JSON size is `<= effective_max_bytes`, where `effective_max_bytes = min(ctx.max_output_bytes, ctx.available_capacity_bytes)` per `ToolCtx`.
+
+**FR-WF-OUT-01 (Canonical output enforcement algorithm):** The tool MUST enforce `effective_max_bytes` using this deterministic algorithm:
+1. Build all chunks per the chunking algorithm (§3.5.3).
+2. Serialize the full response JSON. If within `effective_max_bytes`, return.
+3. If over limit, drop chunks from the end one-by-one until payload fits OR only one chunk remains. Set `truncated=true` and `truncation_reason="tool_output_limit"`.
+4. If still over limit with exactly one chunk, truncate that chunk's `text` at a UTF-8 boundary until payload fits.
+5. After truncation, `token_count` MUST be recomputed for the final chunk text.
+
+This algorithm supersedes any conflicting descriptions in §3.5.4.
 
 **FR-WF-03b (FetchChunk structure):**
 ```json
@@ -145,7 +205,20 @@ WebFetch runs as a Forge tool through the Tool Executor Framework. It is a netwo
 
 **FR-WF-04a (URL parsing):** URLs MUST be parsed using a standards-compliant parser (Rust `url` crate, WHATWG URL Standard). Malformed URLs MUST return `invalid_url` error.
 
-**FR-WF-04b (IP literal parsing):** Hostnames parsed as IP literals MUST be validated as IPs. Non-canonical numeric forms (octal `0177.0.0.1`, hex `0x7f000001`, integer `2130706433`) MUST be rejected with `invalid_host` error.
+**FR-WF-04b (IP literal parsing):** Hostnames parsed as IP literals MUST be validated as IPs. Non-canonical numeric forms MUST be rejected with `invalid_host` error. Forbidden forms:
+* Single-integer (dword) form: `2130706433`
+* Hex form with `0x` prefix: `0x7f000001`
+* Octal form with leading zeros: `0177.0.0.1`
+* Mixed-base dotted forms: `0x7f.0.0.1`
+
+**Test vectors (all MUST be rejected):**
+| Input | Reason |
+|-------|--------|
+| `http://2130706433/` | Dword IP (127.0.0.1) |
+| `http://0x7f000001/` | Hex IP (127.0.0.1) |
+| `http://0177.0.0.1/` | Octal IP (127.0.0.1) |
+| `http://0x7f.0.0.1/` | Mixed-base IP |
+| `http://017700000001/` | Octal dword |
 
 #### 3.2.2 SSRF IP Range Blocking (Normative)
 
@@ -184,11 +257,23 @@ WebFetch runs as a Forge tool through the Tool Executor Framework. It is a netwo
 
 **FR-WF-05b (Config override guard):** Disabling any SSRF block via config MUST require `tools.webfetch.security.allow_insecure_overrides = true` AND MUST emit a warning log at startup: `"SSRF protection disabled for: {toggle_names}"`.
 
+**FR-WF-SEC-OVR-01 (Invalid override rejection):** If any SSRF block is disabled (e.g., `block_private_ips=false`) while `allow_insecure_overrides != true`, the application MUST refuse to start with a configuration error:
+```
+Configuration error: SSRF protection cannot be disabled without allow_insecure_overrides=true
+Affected settings: block_private_ips=false
+```
+This prevents silent insecurity from misconfiguration.
+
 #### 3.2.3 Port Policy
 
 **FR-WF-05c (Allowed ports):** Only ports 80 and 443 are allowed by default.
 
-**FR-WF-05d (Port allowlist):** Additional ports MAY be allowed via `tools.webfetch.security.allowed_ports = [8080, 8443]`.
+**FR-WF-PORT-01 (Port allowlist semantics):** `allowed_ports` is the **complete allowlist** (override, not additive). Default is `[80, 443]`. If configured to a non-empty list, **only those ports** are permitted—the default ports are NOT implicitly included.
+* Example: `allowed_ports = [8080]` means ONLY port 8080 is allowed; ports 80/443 are blocked
+* Example: `allowed_ports = [80, 443, 8080]` allows all three
+* Empty list (`[]`) means "use default `[80, 443]`"
+
+**FR-WF-05d (Port allowlist config):** Additional ports are allowed by setting the complete list: `tools.webfetch.security.allowed_ports = [80, 443, 8080, 8443]`.
 
 **FR-WF-05e (Port enforcement):** If a URL specifies a port not in the allowlist, the tool MUST return `port_blocked` error.
 
@@ -197,6 +282,14 @@ WebFetch runs as a Forge tool through the Tool Executor Framework. It is a netwo
 **FR-WF-06 (DNS resolution):** Before any HTTP connection, DNS resolution MUST be performed and ALL resolved IPs MUST pass SSRF checks.
 
 **FR-WF-06a (TOCTOU mitigation - HTTP mode):** The implementation MUST use a DNS resolver/connector that pins the resolved IP set during validation. The TCP connection MUST only be made to IPs that passed SSRF validation. This prevents DNS rebinding attacks.
+
+**FR-WF-DNS-01 (Deterministic connection strategy):** The resolver MUST return an ordered list of IPs. Connection behavior:
+1. Attempt connection in resolver-returned order (typically AAAA before A for dual-stack)
+2. Try at most `max_dns_attempts` addresses (default: 2) before failing
+3. Re-resolution during a fetch is **forbidden**—use only the initially resolved set
+4. If all attempted addresses fail, return `network` error with details
+
+This ensures deterministic behavior across implementations when DNS returns multiple addresses.
 
 **FR-WF-06b (Resolver trait):** SSRF validation MUST be implemented behind a trait (e.g., `SsrfValidator`) to enable test stubbing:
 ```rust
@@ -242,22 +335,33 @@ pub trait SsrfValidator: Send + Sync {
 2. If no matching group, use the `*` (wildcard) group
 3. If no `*` group exists, treat as allow-all
 
+**FR-WF-ROBOTS-UA-01 (User-agent specificity):** A group matches if any `User-agent` line contains the UA token as a case-insensitive substring. Among matching groups, choose the group with the **longest** matching `User-agent` value; tie-break by file order (first wins).
+* Example: UA token `forge`, groups `User-agent: forge-webfetch` and `User-agent: forge` → select `forge-webfetch` (longer match)
+
 **FR-WF-08c (Path matching precedence):** For a given request path:
 1. Collect all `Allow` and `Disallow` rules from the selected group
 2. Find the rule with the **longest** matching prefix
 3. If equal length matches exist, `Allow` wins over `Disallow`
 4. If no rule matches, the path is allowed
 
+**FR-WF-ROBOTS-RULE-01 (Rule length with wildcards):** Rule precedence MUST be determined by the length of the rule's pattern string (excluding the directive name), counting all characters including `*` and `$`. Longer length wins; on tie, `Allow` wins.
+* Example: `Disallow: /private/*` (11 chars) vs `Allow: /private/public/` (16 chars) → `Allow` wins for `/private/public/x`
+
 **FR-WF-08d (Wildcard support):** The `*` (match any) and `$` (end anchor) patterns in rules MUST be supported per RFC 9309.
 
+**FR-WF-ROBOTS-PATH-01 (Query string inclusion):** The robots matching input MUST be `path` plus `?query` if present, excluding fragment. This aligns with RFC 9309 which specifies matching against the URL-path.
+* Example: `Disallow: /*?session=` blocks URLs with `?session=` in the query string
+
 **FR-WF-08e (User-agent matching):** User-agent group selection MUST be case-insensitive substring matching of the first token of the configured UA.
+
+**FR-WF-ROBOTS-FETCH-01 (Redirect handling):** robots.txt retrieval MUST follow redirects up to `max_redirects`, applying the same SSRF validation and port policy per hop as document fetching. A redirect from `http://` to `https://` for robots.txt is common and MUST be followed.
 
 #### 3.3.3 Fetch Failure Behavior
 
 **FR-WF-09 (HTTP 404):** If robots.txt returns HTTP 404, treat as allow-all.
 
 **FR-WF-09a (Network/timeout failure):** If robots.txt fetch fails (DNS error, timeout, connection refused, 5xx):
-* If `tools.webfetch.robots.fail_open = true` (default: false): treat as allow-all, set `note="robots_unavailable_fail_open"`
+* If `tools.webfetch.robots.fail_open = true` (default: false): treat as allow-all, append `"robots_unavailable_fail_open"` to `notes`
 * If `tools.webfetch.robots.fail_open = false`: return `robots_unavailable` error
 
 **FR-WF-09b (Malformed robots.txt):** If robots.txt is syntactically invalid, treat as allow-all (permissive parsing).
@@ -277,6 +381,8 @@ pub trait SsrfValidator: Send + Sync {
 **FR-WF-10 (User-agent):** HTTP mode MUST use the configured user-agent string (`tools.webfetch.user_agent`, default: `"forge-webfetch/1.0"`).
 
 **FR-WF-10a (Request timeout):** HTTP mode MUST enforce `timeout_seconds` (default: 20s) as the total request timeout.
+
+**FR-WF-TIMEOUT-02 (Redirect chain budgeting):** `timeout_seconds` is the budget for the **entire HTTP-mode fetch** including all redirect hops, download, and decoding. Each hop shares this single budget—there is no per-hop timeout reset.
 
 **FR-WF-10b (Request headers):** Requests MUST set:
 * `User-Agent: {configured_user_agent}`
@@ -298,13 +404,26 @@ pub trait SsrfValidator: Send + Sync {
 **FR-WF-10g (Unsupported content types):** All other content types (PDF, images, video, `application/json`, etc.) MUST return `unsupported_content_type` error.
 
 **FR-WF-10h (Missing Content-Type):** If `Content-Type` is missing, sniff the first 512 bytes:
-* If begins with `<!DOCTYPE` or `<html` (case-insensitive): treat as `text/html`
-* Otherwise: treat as `text/plain`
+1. If contains NUL byte (`\x00`) or matches known binary magic: return `unsupported_content_type` error
+2. If begins with `<!DOCTYPE` or `<html` (case-insensitive): treat as `text/html`
+3. Otherwise: treat as `text/plain`
+
+**Binary magic signatures to detect:**
+| Bytes | Type |
+|-------|------|
+| `%PDF-` | PDF |
+| `\x89PNG` | PNG image |
+| `GIF87a` or `GIF89a` | GIF image |
+| `\xFF\xD8\xFF` | JPEG image |
+| `PK\x03\x04` | ZIP/Office document |
+| `\x00\x00\x00\x1C ftypmp4` (or similar) | MP4 video |
 
 **FR-WF-10i (Charset handling):** Text MUST be decoded to UTF-8:
 1. Use charset from `Content-Type` header if present (e.g., `charset=iso-8859-1`)
 2. For HTML, check `<meta charset>` or `<meta http-equiv="Content-Type">`
 3. Default to UTF-8 with replacement character (U+FFFD) for invalid sequences
+
+**FR-WF-CHARSET-01 (Charset normalization):** Charset names MUST be matched case-insensitively. Supported charsets: `UTF-8`, `ISO-8859-1` (Latin-1), `Windows-1252`. Unknown charsets MUST fall back to UTF-8 with replacement and append `"charset_fallback"` to `notes`.
 
 #### 3.4.3 Browser Mode
 
@@ -315,14 +434,33 @@ pub trait SsrfValidator: Send + Sync {
 
 **FR-WF-11a (Browser unavailable):** If Chromium is unavailable and browser mode is required (`force_browser=true`), return `browser_unavailable` error.
 
-**FR-WF-11b (Browser SSRF enforcement - BLOCKING):** Browser mode MUST intercept **all** network requests (document, script, XHR/fetch, iframe, websocket initiation, subresources) and MUST apply SSRF validation (DNS + IP range checks) per-request:
-1. Use CDP Network.setRequestInterception or Fetch.enable
-2. For each request, resolve DNS and validate all IPs against FR-WF-05
-3. Requests that fail SSRF validation MUST be blocked and MUST NOT influence returned DOM
+**FR-WF-11b (Browser SSRF enforcement - BLOCKING):** Browser mode MUST intercept **all** network requests (document, script, XHR/fetch, iframe, websocket initiation, subresources) and MUST apply SSRF validation (DNS + IP range checks) per-request.
 
-**FR-WF-11c (Browser redirect counting):** Redirects initiated by the browser MUST be counted toward `max_redirects` and revalidated.
+**FR-WF-BSSR-01 (Browser SSRF architecture):** To prevent TOCTOU/DNS rebinding attacks where the browser's native networking resolves a different IP than validated, the implementation MUST use one of these architectures:
 
-**FR-WF-11d (DOM size limit):** Browser mode MUST enforce `max_rendered_dom_bytes` (default: 5 MiB). If the extracted DOM exceeds this, truncate and set `note="browser_dom_truncated"`.
+**Option A - CDP Fetch.fulfillRequest (Recommended):**
+1. Enable CDP `Fetch.enable` with pattern matching all requests
+2. For each `Fetch.requestPaused` event:
+   a. Resolve DNS using the tool's DNS resolver
+   b. Validate all resolved IPs against FR-WF-05
+   c. If valid: use the tool's HTTP client to fetch the resource with IP pinning, then call `Fetch.fulfillRequest` with the response
+   d. If invalid: call `Fetch.failRequest` with `BlockedByClient`
+3. This ensures the tool controls all DNS resolution and TCP connections
+
+**Option B - Local Proxy:**
+1. Spawn a local HTTP(S) proxy that performs SSRF validation + IP pinning
+2. Configure the browser to use this proxy for all requests via `--proxy-server`
+3. The proxy validates each request before forwarding
+
+"Allowing" a request to proceed via the browser's native networking without IP pinning is **forbidden**—this would permit DNS rebinding attacks.
+
+**FR-WF-11c (Browser redirect counting):** Redirects initiated by the browser for the **main document navigation** MUST be counted toward `max_redirects` and revalidated.
+
+**FR-WF-BREDIR-01 (Redirect scope):** `max_redirects` in browser mode applies only to the **main document navigation chain** (top frame). Subresource redirects (images, scripts, XHR) do NOT count toward this limit but MUST still pass SSRF validation per hop.
+
+**FR-WF-11d (DOM size limit):** Browser mode MUST enforce `max_rendered_dom_bytes` (default: 5 MiB). If the extracted DOM exceeds this, truncate and append `"browser_dom_truncated"` to `notes`.
+
+**FR-WF-DOMSIZE-01 (DOM size measurement):** DOM size is measured as the UTF-8 byte length of `document.documentElement.outerHTML` at extraction time. If over limit, the tool MUST abort further waiting and proceed to extraction immediately.
 
 #### 3.4.4 Wait Behavior (Browser Mode)
 
@@ -331,11 +469,15 @@ pub trait SsrfValidator: Send + Sync {
 2. Cap total render wait at `network_idle_ms` (default: 20000ms)
 3. WebSockets do not count toward "in-flight" for idle detection
 
-**FR-WF-11f (Idle timeout):** If network idle is never reached within `network_idle_ms`, proceed with current DOM and set `note="browser_timeout_dom_partial"`.
+**FR-WF-11f (Idle timeout):** If network idle is never reached within `network_idle_ms`, proceed with current DOM and append `"browser_timeout_dom_partial"` to `notes`. This partial DOM extraction is permitted and does not constitute an error (see FR-WF-19).
 
 #### 3.4.5 Resource Blocking (Browser Mode)
 
 **FR-WF-11g (Resource blocking):** `block_resources` MUST apply to CDP ResourceType values. Default blocked: `Image`, `Media`, `Font`. `Stylesheet` and `Script` MUST NOT be blocked by default.
+
+**FR-WF-BLOCKRES-01 (Resource type matching):** `block_resources` entries MUST be matched **case-insensitively** against CDP resource type names (e.g., `"image"` matches `Image`, `"IMAGE"` matches `Image`). Unknown entries MUST cause `bad_args` error at tool invocation time.
+
+Valid CDP ResourceType values: `Document`, `Stylesheet`, `Image`, `Media`, `Font`, `Script`, `TextTrack`, `XHR`, `Fetch`, `Prefetch`, `EventSource`, `WebSocket`, `Manifest`, `SignedExchange`, `Ping`, `CSPViolationReport`, `Preflight`, `Other`.
 
 **FR-WF-11h (Block timing):** Blocking MUST occur before request is issued (via request interception).
 
@@ -353,7 +495,7 @@ pub trait SsrfValidator: Send + Sync {
 3. HTTP status was 200
 
 **FR-WF-12d (Browser fallback unavailable):** If browser fallback is selected but browser is unavailable:
-* Return HTTP result with `note="browser_unavailable_used_http"`
+* Return HTTP result with `"browser_unavailable_used_http"` appended to `notes`
 
 **FR-WF-12e (Fallback disabled):** SPA fallback MAY be disabled via `tools.webfetch.rendering.spa_fallback_enabled = false`.
 
@@ -364,23 +506,74 @@ pub trait SsrfValidator: Send + Sync {
 **FR-WF-13 (Boilerplate removal):** HTML content MUST be processed as follows:
 1. Remove elements matching tags: `script`, `style`, `noscript`, `nav`, `footer`, `header`, `aside`
 2. Remove elements with `aria-hidden="true"` or `hidden` attribute
-3. Remove elements with class containing: `nav`, `menu`, `sidebar`, `footer`, `header`, `advertisement`, `ad-`
-4. Extract main content using readability heuristics (prefer `<main>`, `<article>`, `role="main"`)
+3. Remove elements with class/id matching boilerplate tokens (see FR-WF-EXT-CLASS-01)
+4. Extract main content using deterministic root selection (see FR-WF-EXT-ROOT-01)
+
+**FR-WF-EXT-CLASS-01 (Class/id matching):** Boilerplate matching MUST use **case-insensitive token matching** (space-separated class tokens or id value), NOT substring matching. Boilerplate tokens:
+| Token | Removes |
+|-------|---------|
+| `nav` | Navigation elements |
+| `menu` | Menu elements |
+| `sidebar` | Sidebar elements |
+| `footer` | Footer elements |
+| `header` | Header elements |
+| `advertisement` | Ad containers |
+| `ad` | Ad containers |
+| `social` | Social sharing widgets |
+| `related` | Related content sections |
+| `comments` | Comment sections |
+
+**Matching rules:**
+* Split `class` attribute on whitespace; match if ANY token equals a boilerplate token (case-insensitive)
+* Match `id` attribute if it equals a boilerplate token (case-insensitive)
+* **Substring matching is forbidden** — `class="navigate"` does NOT match `nav`, but `class="site-nav"` DOES match `nav` only if tokenized (it doesn't—`site-nav` is a single token)
+
+**FR-WF-EXT-ROOT-01 (Extraction root selection):** Choose the extraction root in this deterministic order:
+1. First `<main>` element
+2. Else first `<article>` element
+3. Else first element with `role="main"`
+4. Else first element with `id="content"` (case-insensitive)
+5. Else first element with `class` containing token `content` (case-insensitive)
+6. Else `<body>`
+
+If the chosen root is empty after boilerplate removal, fall back to the next option in order.
 
 **FR-WF-13a (Markdown conversion):** Convert cleaned HTML to Markdown:
 * Headings: `<h1>`-`<h6>` → `#`-`######`
 * Links: `<a href="...">text</a>` → `[text](absolute_url)` — resolve relative URLs per FR-WF-13d
 * Images: `<img src="..." alt="...">` → `![alt](absolute_url)` — only if `alt` is non-empty
-* Lists: `<ul>/<ol>` → markdown lists with proper nesting
-* Code: `<pre><code>` → fenced code blocks; inline `<code>` → backticks
-* Tables: `<table>` → markdown tables (best-effort, may simplify complex tables)
+* Lists: `<ul>/<ol>` → markdown lists with proper nesting (see FR-WF-EXT-LIST-01)
+* Code: `<pre><code>` → fenced code blocks; inline `<code>` → backticks (see FR-WF-EXT-CODE-01)
+* Tables: `<table>` → GitHub-flavored pipe tables (see FR-WF-EXT-TABLE-01)
 * Emphasis: `<em>/<i>` → `*text*`; `<strong>/<b>` → `**text**`
+
+**FR-WF-EXT-TABLE-01 (Table conversion):** Tables MUST be converted to GitHub-flavored Markdown pipe tables:
+1. `rowspan` and `colspan` attributes MUST be ignored — each `<td>/<th>` becomes exactly one cell
+2. Use the first `<tr>` with `<th>` elements (or first `<tr>` if no `<th>`) as the header row
+3. Add separator row with `|---|` pattern matching column count
+4. Cells containing newlines MUST have newlines replaced with `<br>` or space
+5. Pipe characters (`|`) within cell text MUST be escaped as `\|`
+6. If table has no usable header row, synthesize empty headers: `| | | |`
+
+**FR-WF-EXT-LIST-01 (List nesting):** List nesting level MUST be determined by counting ancestor `<ul>` and `<ol>` elements:
+* Level 0: no list ancestors → no indent
+* Level 1: one list ancestor → 2 spaces indent
+* Level N: N list ancestors → N×2 spaces indent
+This ensures deterministic indentation regardless of source HTML whitespace.
+
+**FR-WF-EXT-CODE-01 (Code fence preservation):** Fenced code blocks (`<pre><code>`) MUST preserve internal whitespace exactly:
+1. Detect language hint from `class="language-xxx"` on `<code>` element
+2. Extract text content preserving all whitespace (including leading/trailing)
+3. Output as: ` ``` ` + language + newline + content + newline + ` ``` `
+4. If content contains ` ``` `, use ` ```` ` as fence (increase fence length until unique)
 
 **FR-WF-13b (Whitespace normalization):**
 1. Normalize CRLF to LF
 2. Collapse runs of `>2` blank lines to exactly 2
 3. Trim trailing whitespace from each line
 4. Ensure file ends with exactly one newline
+
+**FR-WF-EXT-WS-01 (Code fence exemption):** Whitespace normalization (steps 2-3 above) MUST NOT modify content between fenced code block delimiters (` ``` `). Only CRLF→LF normalization (step 1) applies inside code fences. This preserves semantically significant whitespace in code samples.
 
 **FR-WF-13c (Text/plain handling):** For `text/plain` content, apply only whitespace normalization (FR-WF-13b).
 
@@ -404,8 +597,21 @@ pub trait SsrfValidator: Send + Sync {
 **FR-WF-15 (Block detection):** The input Markdown MUST be split into "blocks":
 1. ATX headings (`^#{1,6}\s`) start new blocks
 2. Blank-line-separated paragraphs are separate blocks
-3. Fenced code blocks (```` ``` ````) are atomic blocks
-4. List items at the same level are grouped into a single block
+3. Fenced code blocks (` ``` `) are atomic blocks (see FR-WF-CHK-CODE-01)
+4. List blocks: consecutive list items form a single block (see FR-WF-CHK-LIST-01)
+
+**FR-WF-CHK-LIST-01 (List block detection):** A "list block" is a contiguous sequence of lines that:
+1. Start with list markers: `- `, `* `, `+ `, or `1. ` (digits followed by `.` or `)`)
+2. Include continuation lines (indented content belonging to list items)
+3. End at: a blank line followed by non-list content, OR a heading, OR end of document
+
+List items at different nesting levels are part of the SAME list block if contiguous. The entire nested structure forms one atomic block for chunking purposes.
+
+**FR-WF-CHK-CODE-01 (Code block atomicity):** Fenced code blocks are atomic:
+1. A code block starts at ` ``` ` (or longer fence) and ends at the matching closing fence
+2. Code blocks MUST NOT be split mid-block during chunking
+3. If a code block alone exceeds `max_chunk_tokens`, it becomes a single oversized chunk (FR-WF-15b applies for splitting)
+4. When splitting an oversized code block, split at line boundaries only (preserve complete lines)
 
 **FR-WF-15a (Chunk accumulation):** Accumulate blocks into chunks:
 1. Start with empty chunk, track `current_tokens = 0`
@@ -423,6 +629,18 @@ pub trait SsrfValidator: Send + Sync {
 * `heading` = text of the most recent preceding ATX heading (without `#` prefix), trimmed
 * If no heading precedes the chunk, `heading = ""`
 * The heading line itself MUST be included in `text` if it's the first line of the chunk
+
+**FR-WF-CHK-HEAD-01 (Heading state machine):** Heading tracking MUST use a state machine:
+1. Initialize `current_heading = ""`
+2. For each block in document order:
+   a. If block starts with ATX heading (`^#{1,6}\s+(.+)$`), extract heading text (group 1), trim whitespace, set `current_heading`
+   b. When emitting a chunk, record `heading = current_heading` at the moment of emission
+3. Heading level is NOT tracked—only the most recent heading text regardless of level
+
+**FR-WF-CHK-HEAD-02 (Heading in text):** When a chunk's first block is a heading:
+1. The heading line (including `#` prefix) MUST appear as the first line of `chunk.text`
+2. The `heading` field MUST equal the same heading's text (without `#` prefix)
+3. This means the heading appears in both `heading` and `text` for such chunks
 
 **FR-WF-15d (token_count field):** `token_count` MUST equal the token count of `chunk.text` only. It excludes the `heading` field value and JSON serialization overhead.
 
@@ -447,6 +665,16 @@ Where:
 * `canonical_url` = normalized URL per Appendix A (FR-WF-NORM)
 * `rendering_method` = `"http"` or `"browser"`
 
+**FR-WF-CCH-KEY-01 (Cache key inputs):** The cache key computation uses EXACTLY these inputs:
+1. `canonical_url`: The **final** URL after all redirects, normalized per Appendix A (fragment removed)
+2. `rendering_method`: Literal string `"http"` or `"browser"` (not the config value, but the actual method used)
+
+Request parameters (`max_chunk_tokens`, `no_cache`, `force_browser`) are NOT part of the cache key. This means:
+* Same URL fetched with different `max_chunk_tokens` values share a cache entry
+* Chunking is recomputed on cache hit if `max_chunk_tokens` differs from cached result
+
+**FR-WF-CCH-KEY-02 (Hash algorithm):** SHA-256 MUST be used. The hash input is UTF-8 encoded. Output is lowercase hexadecimal (64 characters).
+
 **FR-WF-16a (Path layout):** Cache files MUST be stored as:
 ```
 {cache_dir}/{first2}/{keyhex}.json
@@ -469,11 +697,30 @@ Where `{first2}` is the first two characters of `keyhex` (SHA-256 hex). This pre
 }
 ```
 
+**FR-WF-CCH-VER-01 (Entry format versioning):** The `version` field enables forward compatibility:
+1. Current version: `1`
+2. On read, if `version > SUPPORTED_VERSION`, treat as cache miss (don't attempt to parse)
+3. On read, if `version < CURRENT_VERSION`, migrate or treat as cache miss (implementation choice)
+4. Version increments when `content` schema changes incompatibly
+
+**FR-WF-CCH-CONTENT-01 (Content field):** The `content` field stores the **complete response payload** as returned to the caller, including all `chunks`, `title`, `language`, `rendering_method`, etc. On cache hit, `content` is returned directly (with `fetched_at` from metadata, not from `content`).
+
 #### 3.6.3 TTL and Eviction
 
 **FR-WF-16d (TTL):** Cache entries MUST have a TTL. Default: 7 days, configurable via `cache_ttl_days`. Entries with `expires_at < now` MUST be treated as cache miss.
 
 **FR-WF-16e (Eviction policy):** The cache MUST enforce `max_cache_entries` (default: 10000) with LRU eviction. On write, if limit is reached, evict least-recently-used entries before writing.
+
+**FR-WF-CCH-LRU-01 (LRU tracking):** "Recently used" is determined by the `last_accessed` timestamp in cache metadata:
+1. On cache **read** (hit): update `last_accessed` to current time (touch the file or update metadata)
+2. On cache **write**: set `last_accessed` to current time
+3. Eviction selects entries with the oldest `last_accessed` timestamp
+
+Implementation options:
+* **File mtime**: Use filesystem modification time as `last_accessed` (update on read via `touch`)
+* **Metadata field**: Store `last_accessed` in the JSON entry and rewrite on access
+
+The file mtime approach is RECOMMENDED for simplicity and atomicity.
 
 **FR-WF-16f (Size limit):** Optionally enforce `max_cache_bytes` (default: 1 GiB). If set, evict LRU entries until under budget.
 
@@ -486,18 +733,23 @@ Where `{first2}` is the first two characters of `keyhex` (SHA-256 hex). This pre
 
 **FR-WF-16h (Write failures):** Cache write failures MUST NOT fail the fetch. On write failure:
 * Log warning: `"cache_write_failed: {reason}"`
-* Set `note` to include `"cache_write_failed"` if no other note is set
+* Append `"cache_write_failed"` to `notes`
 
 #### 3.6.5 Cache Bypass
 
 **FR-WF-17 (no_cache behavior):** When `no_cache=true`:
 1. MUST bypass cache read (treat as cache miss)
-2. SHOULD still write fresh result to cache
+2. MUST still write fresh result to cache (overwriting any existing entry)
 3. MUST NOT bypass robots.txt enforcement (robots cache is independent)
+
+**FR-WF-CCH-NOCACHE-01 (no_cache write behavior):** `no_cache=true` means "don't read from cache" but DOES write:
+* The fresh fetch result overwrites any existing cache entry for the same key
+* This allows `no_cache` to be used for cache refresh/warming
+* To completely avoid cache interaction, implementers must disable caching at config level
 
 **FR-WF-17a (Cache hit response):** On cache hit:
 * `fetched_at` = original fetch time from cache metadata (not current time)
-* `note` includes `"cache_hit"`
+* Append `"cache_hit"` to `notes`
 * If needed, add `served_at` field with current time
 
 #### 3.6.6 Cache Invalidation
@@ -508,7 +760,23 @@ Where `{first2}` is the first two characters of `keyhex` (SHA-256 hex). This pre
 
 #### 3.7.1 Error Encoding
 
-**FR-WF-18 (Error format):** Errors MUST be returned via `ToolError::ExecutionFailed { tool: "web_fetch", message: <json> }`, where `<json>` is a JSON-encoded object:
+**FR-WF-18 (Error format):** Errors MUST be returned via `ToolError::ExecutionFailed { tool: "web_fetch", message: <json> }`, where `<json>` is a JSON-encoded object.
+
+**FR-ERR-JSON-01 (JSON passthrough requirement - Tool Executor integration):** The Tool Executor framework (see Appendix E) MUST detect when `ToolError::ExecutionFailed.message` begins with `{` and parses as a valid JSON object. In this case, the engine MUST pass the JSON through to `ToolResult::error` **without prefixing** (i.e., no `"{tool} failed: "` wrapper). This preserves structured error codes for model consumption.
+
+**FR-ERR-JSON-02 (Schema validation errors):** When argument schema validation fails for tool `"web_fetch"` (via `tools::validate_args` or equivalent), the engine MUST emit `ToolResult::error` with the JSON envelope:
+```json
+{ "code": "bad_args", "message": "<schema error description>", "retryable": false, "details": { "validation": "<optional details>" } }
+```
+This ensures schema validation failures are also returned in the structured format rather than a plain string.
+
+**FR-WF-TIMEOUT-01 (Timeout ownership):** WebFetch MUST implement `ToolExecutor::timeout()` and return a duration that exceeds all internal operation budgets:
+```
+executor_timeout = timeout_seconds + (network_idle_ms / 1000) + page_load_buffer_s + 2s
+```
+Where `page_load_buffer_s` defaults to 5s. This ensures the tool's internal timeout fires first, allowing the tool to return a structured `timeout` error rather than the engine's generic `ToolError::Timeout`.
+
+Error envelope structure:
 ```json
 {
   "code": "ssrf_blocked",
@@ -556,9 +824,16 @@ Where `{first2}` is the first two characters of `keyhex` (SHA-256 hex). This pre
 
 #### 3.7.3 Partial Failure Policy
 
-**FR-WF-19 (No partial results):** Partial downloads/renders MUST NOT be returned. On timeout or error mid-fetch, return the appropriate error code.
+**FR-WF-19 (No partial HTTP downloads):** Partial **HTTP downloads** (incomplete body due to connection drop or timeout) MUST NOT be returned. On timeout or error mid-fetch in HTTP mode, return the appropriate error code.
 
-**FR-WF-19a (Cache write independence):** Cache write failures MUST NOT fail the fetch — return successful response with `note` indicating cache issue.
+**FR-WF-19-BROWSER (Browser partial DOM permitted):** For **browser rendering**, returning a DOM snapshot before `network_idle_ms` is **permitted** and constitutes a successful response. The tool MUST:
+1. Set `truncated=true` if the DOM was extracted before network idle
+2. Append `"browser_timeout_dom_partial"` to `notes`
+3. Return the extracted content (not an error)
+
+This distinction exists because browser-rendered SPAs often never reach true network idle, yet the DOM is usable.
+
+**FR-WF-19a (Cache write independence):** Cache write failures MUST NOT fail the fetch — return successful response with `"cache_write_failed"` appended to `notes`.
 
 #### 3.7.4 Logging
 
@@ -609,8 +884,15 @@ Where `{first2}` is the first two characters of `keyhex` (SHA-256 hex). This pre
 | Requirement | Specification |
 |-------------|---------------|
 | NFR-WF-OP-01 | `is_side_effecting()` MUST return `true` (network egress) |
-| NFR-WF-OP-02 | `requires_approval()` MUST return `true` unless `tools.webfetch.allow_auto_execution = true` |
+| NFR-WF-OP-02 | `requires_approval()` behavior — see FR-WF-OP-02 below |
 | NFR-WF-OP-03 | `approval_summary()` MUST show scheme/host/path only (redact query strings) and rendering method |
+
+**FR-WF-OP-02 (Auto-execution mapping):** If `tools.webfetch.allow_auto_execution=true`, the engine MUST treat `"web_fetch"` as **allowlisted for approval purposes** (equivalent to adding it to `tools.approval.allowlist`). This means:
+1. `requires_approval()` returns `false`
+2. The tool bypasses approval prompts even though `is_side_effecting()=true`
+3. Global deny mode (`tools.approval.mode=deny`) still overrides this setting
+
+This ensures `allow_auto_execution` produces predictable "no prompt" behavior across implementations.
 
 ---
 
@@ -652,7 +934,12 @@ pub struct WebFetchConfig {
 
 **FR-WF-CFG-PREC-02:** If `tools.mode=enabled` and `tools.webfetch.enabled=true`, WebFetch MUST be registered in `ToolRegistry`.
 
-**FR-WF-CFG-PREC-03:** If `tools.mode=parse_only`, WebFetch MUST NOT execute but tool definition MAY be advertised.
+**FR-WF-CFG-PREC-03 (Parse-only behavior):** If `tools.mode=parse_only`:
+1. WebFetch MUST NOT execute (execution attempts return error)
+2. WebFetch tool definition is advertised to the model **only if** explicitly included in `[[tools.definitions]]` config
+3. If not in `[[tools.definitions]]`, WebFetch is not advertised (consistent with Forge's parse-only design where tools come from config, not registry)
+
+This aligns with Forge's current behavior where `parse_only` mode uses config-defined tools exclusively.
 
 ### 5.3 Configuration Reference
 
@@ -810,6 +1097,24 @@ fail_open = false                    # Allow fetch if robots.txt unavailable (de
 
 **T-WF-INFRA-04:** Browser SSRF test MUST serve a page via wiremock that includes JS attempting to fetch internal IP, then verify the internal content is NOT in returned DOM.
 
+**T-WF-INFRA-05 (Browser SSRF test harness):** The browser SSRF test (IT-WF-BR-03, IT-WF-BR-04) MUST:
+1. Start wiremock on a random port (avoid port conflicts)
+2. Serve a page containing: `<script>fetch('http://127.0.0.1:{internal_port}/secret').then(r=>r.text()).then(t=>document.body.innerHTML+=t)</script>`
+3. Start a second wiremock on `{internal_port}` serving `/secret` → `"LEAKED_INTERNAL_DATA"`
+4. Invoke WebFetch with browser mode on the first page
+5. Assert: returned markdown does NOT contain `LEAKED_INTERNAL_DATA`
+6. Assert: test logs show SSRF block event for `127.0.0.1`
+
+This proves the browser's JS-initiated requests are intercepted and blocked.
+
+**T-WF-INFRA-06 (Golden test stability):** Extraction and chunking tests SHOULD use golden file comparisons:
+1. Store expected output as `tests/golden/{test_name}.md`
+2. On test run, compare actual output byte-for-byte with golden file
+3. Update goldens via `UPDATE_GOLDENS=1 cargo test` (or similar flag)
+4. Golden files MUST be committed to version control
+
+Golden tests ensure extraction/chunking changes are intentional and reviewed.
+
 ### 6.9 Determinism Tests
 
 | Test ID | Description | Requirement |
@@ -845,6 +1150,13 @@ This appendix defines the canonical URL normalization used for cache keys, robot
 * Uppercase hex digits (`%2f` → `%2F`)
 * Decode unreserved characters (A-Z, a-z, 0-9, `-`, `.`, `_`, `~`)
 * Do NOT decode reserved characters
+
+**FR-WF-NORM-07 (IDNA/Punycode):** Hosts containing non-ASCII Unicode characters MUST be normalized to ASCII using IDNA (punycode) prior to canonicalization and cache key derivation. Canonical URLs MUST use the ASCII form.
+* Example: `https://münich.example/` → `https://xn--mnich-kva.example/`
+
+**FR-WF-URL-USERINFO-01 (Userinfo rejection):** URLs containing a username or password component (e.g., `https://user:pass@example.com/`) MUST be rejected with `invalid_url` error. This prevents credential leakage into logs, caches, and approval summaries.
+
+**FR-WF-IPV6-ZONE-01 (IPv6 zone identifiers):** IPv6 literals containing a zone identifier (percent-encoded `%25`, e.g., `http://[fe80::1%25lo0]/`) MUST be rejected with `invalid_url` error. Zone identifiers are ambiguous across hosts and can bypass naïve IP parsing.
 
 ### A.2 Canonical URL String
 
@@ -1000,4 +1312,89 @@ HTTP Mode ───────► Extract ───────► check extrac
 | TOCTOU | Time-of-Check to Time-of-Use — race condition vulnerability |
 | TTL | Time To Live — cache entry expiration duration |
 | UA | User-Agent — HTTP header identifying the client |
+
+---
+
+## Appendix E: Tool Executor Integration
+
+This appendix documents how WebFetch integrates with Forge's Tool Executor framework (`docs/TOOL_EXECUTOR_SRD.md`).
+
+### E.1 ToolExecutor Trait Implementation
+
+WebFetch MUST implement the `ToolExecutor` trait:
+
+```rust
+impl ToolExecutor for WebFetchTool {
+    fn name(&self) -> &'static str { "web_fetch" }
+    
+    fn is_side_effecting(&self) -> bool { true }  // Network egress
+    
+    fn requires_approval(&self, ctx: &ToolCtx) -> bool {
+        // Returns false if allow_auto_execution=true AND not in deny mode
+        !self.config.allow_auto_execution || ctx.approval_mode == ApprovalMode::Deny
+    }
+    
+    fn timeout(&self) -> Duration {
+        // Must exceed internal timeouts (FR-WF-TIMEOUT-01)
+        Duration::from_secs(self.timeout_seconds + self.network_idle_ms/1000 + 7)
+    }
+    
+    async fn execute(&self, args: Value, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+        // Set allow_truncation=false before returning (FR-WF-03a)
+        ctx.allow_truncation = false;
+        // ... implementation
+    }
+}
+```
+
+### E.2 Error Passthrough Contract
+
+Per FR-ERR-JSON-01, the Tool Executor MUST detect JSON error messages and pass them through without prefixing:
+
+```rust
+// In tool_executor.rs or equivalent
+fn format_error(tool: &str, error: ToolError) -> ToolResult {
+    match error {
+        ToolError::ExecutionFailed { message, .. } => {
+            // Detect structured JSON error
+            if message.starts_with('{') && serde_json::from_str::<Value>(&message).is_ok() {
+                // Pass through without prefix
+                ToolResult::error(message)
+            } else {
+                // Legacy: prefix with tool name
+                ToolResult::error(format!("{tool} failed: {message}"))
+            }
+        }
+        // ... other error types
+    }
+}
+```
+
+### E.3 Output Size Contract
+
+The Tool Executor provides `ctx.max_output_bytes` and `ctx.available_capacity_bytes`. WebFetch MUST:
+
+1. Compute `effective_max_bytes = min(ctx.max_output_bytes, ctx.available_capacity_bytes)`
+2. Ensure serialized JSON response ≤ `effective_max_bytes`
+3. Set `ctx.allow_truncation = false` to prevent framework truncation marker
+
+### E.4 Approval Summary
+
+`approval_summary()` MUST return a redacted summary for user approval:
+
+```
+web_fetch https://example.com/path (http mode)
+```
+
+Query strings MUST be omitted to prevent credential leakage in approval prompts.
+
+### E.5 Configuration Binding
+
+WebFetch config (`tools.webfetch.*`) is loaded during tool registration:
+
+1. `ForgeConfig::tools.webfetch` → `WebFetchConfig`
+2. `WebFetchConfig` → `WebFetchTool::new(config)`
+3. Tool registered in `ToolRegistry` if `enabled=true` and `tools.mode != disabled`
+
+See §5.2 for precedence rules between global and tool-specific config.
 

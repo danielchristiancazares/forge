@@ -5,6 +5,15 @@
 **Status:** Draft  
 **Baseline code reference:** `forge-source.zip`
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-52 | Introduction: purpose, scope, definitions, references |
+| 53-77 | Overall Description: product perspective, functions, constraints |
+| 78-136 | Functional Requirements: tool interface, file discovery, vector store, reindexing, query |
+| 137-160 | Non-Functional Requirements: security, performance, reliability |
+
 ---
 
 ## 0. Change Log

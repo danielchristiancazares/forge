@@ -5,6 +5,20 @@
 **Document version:** 0.31
 **Status:** Draft
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-56 | Section 1 - Overview: purpose, core principles, goals, non-goals |
+| 57-109 | Section 2 - Normative Language: definitions (Session, Branch, Turn, Chunk, etc.), system invariants |
+| 110-175 | Section 3 - Architecture: component diagram, Orchestrator, Provider Adapter, Librarian, Storage |
+| 176-216 | Section 4 - Identifiers: ID types (SessionId, BranchId, etc.), sequences, content hashes |
+| 217-478 | Section 5 - Data Model: ContentBlock, Message, TranscriptItem, Session, Branch, State, Turn, Step, Chunk |
+| 479-560 | Section 6 - Turn Lifecycle: state machine, input gating, atomicity, recovery |
+| 561-650 | Section 7 - Context Assembly: components, budgeting, shrinker algorithm |
+| 651-720 | Section 8 - State Updates: Librarian, triggers, state update constraints |
+| 721-816 | Sections 9-13 - Retrieval, Streaming, Provider Adapter, Configuration, NFRs |
+
 ---
 
 ## 1. Overview

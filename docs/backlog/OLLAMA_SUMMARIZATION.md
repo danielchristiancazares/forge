@@ -2,7 +2,17 @@
 
 **Status:** Backlog  
 **Priority:** Medium  
-**Type:** Feature  
+**Type:** Feature
+
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-6 | Header & Status |
+| 7-20 | Summary & Motivation: Offline, Zero Cost |
+| 21-42 | Requirements: 8B+ Q4+ based on empirical (Passes Monkey) |
+| 43-61 | Configuration & Implementation Plan |
+| 62-81 | API Reference, Questions, Related |  
 
 ## Summary
 
@@ -10,7 +20,7 @@ Add Ollama as a summarization provider for The Librarian, enabling local LLM sum
 
 ## Motivation
 
-Currently, summarization requires either an Anthropic or OpenAI API key (using Haiku or GPT-4o-mini). Adding Ollama support would:
+Currently, summarization requires either an Anthropic or OpenAI API key (using Claude 4.5 Haiku or GPT-5 Nano). Adding Ollama support would:
 
 1. Eliminate API key requirement for summarization
 2. Enable offline operation
@@ -62,6 +72,7 @@ model = "deepseek-r1:8b"      # Must be ≥8B, ≥Q4
 ## API Reference
 
 Ollama endpoints:
+
 - `POST /api/generate` - Raw completion
 - `POST /api/chat` - Chat completion (OpenAI-compatible structure)
 - `POST /api/show` - Model metadata (for validation)
@@ -74,6 +85,6 @@ Ollama endpoints:
 
 ## Related
 
-- `docs/CONTEXT_ARCHITECTURE.md` - The Librarian design
+- `context/README.md` - The Librarian design
 - `context/src/summarization.rs` - Current implementation
 - `../passes-monkey/passes_monkey_paper_draft.md` - Empirical research

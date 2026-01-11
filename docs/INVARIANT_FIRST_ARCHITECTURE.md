@@ -1,5 +1,16 @@
 # Invariant-First Architecture (IFA)
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-35 | Pattern Summary: intent, context, problem, forces, solution, consequences |
+| 36-80 | Definitions: core terms (invariant, invalid state, representable), system topology |
+| 81-111 | Primary Rule: invalid states must not be representable, compilation as evidence |
+| 112-180 | Typestate Transitions, Call-Site Rejection, Error Handling |
+| 181-250 | Boundary vs Core, Mechanism vs Policy, Assertion Policy |
+| 251-302 | Concurrency, Testing Strategy, Anti-Patterns, Examples |
+
 ## Pattern Summary
 
 **Intent:** Prevent invalid states from being usable by core logic by encoding invariants and temporal constraints in representations and interfaces, such that misuse is structurally rejected.

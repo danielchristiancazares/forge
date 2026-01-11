@@ -2,7 +2,17 @@
 
 **Status:** Backlog  
 **Priority:** Medium  
-**Type:** Bug/Architecture  
+**Type:** Bug/Architecture
+
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-10 | Header & Summary |
+| 11-23 | Problem: Token divergence (OpenAI vs Claude) |
+| 24-39 | Impact & Current Behavior |
+| 40-75 | Proposed Solutions: Enum, Margin, API |
+| 76-108 | Affected Components, Questions, Related |  
 
 ## Summary
 
@@ -17,9 +27,9 @@ The codebase currently uses OpenAI's `cl100k_base` tokenizer (via `tiktoken-rs`)
 
 When the active provider is Claude (or another non-OpenAI model), the actual token consumption differs from the estimated count:
 
-- Claude uses a different tokenizer (not publicly documented as of 2025)
-- Same text produces different token counts across providers
-- A "600 token" chunk for OpenAI may be 550 or 650 tokens for Claude
+- Same text produces different token counts across providers.
+- **Intra-provider divergence**: Even within OpenAI, newer models (GPT-4o, GPT-5) use `o200k_base`, which is ~20-40% more efficient than GPT-4's `cl100k_base`.
+- A "600 token" chunk for OpenAI `cl100k_base` may be 450 tokens for GPT-5 (`o200k_base`) or 650 tokens for Claude.
 
 ## Impact
 
@@ -43,15 +53,17 @@ static CL100K_BASE: OnceLock<Result<CoreBPE, String>> = OnceLock::new();
 
 ```rust
 enum Tokenizer {
-    OpenAI(CoreBPE),      // cl100k_base
-    Claude(ClaudeTokenizer), // If/when available
+    OpenAI(CoreBPE),      // cl100k_base (GPT-4) or o200k_base (GPT-5)
+    Claude(ClaudeTokenizer), // Community crate like claude-tokenizer
     Approximate(f32),     // Fallback: chars * ratio
 }
 
-fn get_tokenizer(provider: Provider) -> Tokenizer {
-    match provider {
-        Provider::OpenAI => Tokenizer::OpenAI(cl100k_base()),
-        Provider::Claude => Tokenizer::Claude(...), // or fallback
+fn get_tokenizer(model: ModelName) -> Tokenizer {
+    match model {
+        m if m.starts_with("gpt-5") => Tokenizer::OpenAI(o200k_base()),
+        m if m.starts_with("gpt-4") => Tokenizer::OpenAI(cl100k_base()),
+        m if m.starts_with("claude-") => Tokenizer::Claude(...),
+        _ => Tokenizer::Approximate(0.25),
     }
 }
 ```
@@ -75,8 +87,9 @@ fn effective_max_tokens(max: usize, provider: Provider) -> usize {
 
 Use provider APIs for accurate counts (latency cost):
 
-- Anthropic: `POST /v1/messages/count_tokens`
-- OpenAI: `tiktoken` (local, already used)
+- **Anthropic**: Use the official `POST /v1/messages/count_tokens` endpoint.
+- **OpenAI**: Continue using `tiktoken` (local, already used).
+- **Offline Alternative**: Community-maintained Rust libraries (e.g., `claude-tokenizer`) embed the tokenizer data for local execution.
 
 ## Affected Components
 
@@ -89,10 +102,13 @@ Use provider APIs for accurate counts (latency cost):
 
 ## Open Questions
 
-1. Does Anthropic publish their tokenizer or provide a local library?
+1. ~Does Anthropic publish their tokenizer or provide a local library?~
+   - **Answer**: Yes. Anthropic provides an official **Token Count API**, official Python/TS SDK methods, and an official beta npm package (`@anthropic-ai/tokenizer`). Additionally, community crates like `claude-tokenizer` enable local tokenization in Rust by embedding the tokenizer data.
 2. What's the empirical divergence between `cl100k_base` and Claude's tokenizer?
+   - **Note**: Research shows `o200k_base` is significantly more efficient for multilingual and code content compared to `cl100k_base`.
 3. Should we cache API-based token counts to reduce latency?
-4. Is 15% safety margin sufficient, or do we need per-model calibration?
+4. ~Is 15% safety margin sufficient, or do we need per-model calibration?~
+   - **Answer**: 15% is a safe "blind" default (covering Claude's historic ~5-10% undercount risk), but it is wasteful for GPT-5 (`o200k`), where `cl100k` already overestimates by ~20%. **Per-model calibration** (or per-tokenizer awareness) is the robust solution to avoid compounding inefficiencies.
 
 ## Related
 

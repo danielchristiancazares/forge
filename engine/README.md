@@ -2,6 +2,23 @@
 
 This document provides comprehensive documentation for the `forge-engine` crate - the core state machine and orchestration layer for the Forge LLM client. It is intended for developers who want to understand, maintain, or extend the engine functionality.
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-57 | Overview: responsibilities, file structure, dependencies |
+| 58-93 | Architecture Diagram: App structure with InputState, AppState, components |
+| 94-240 | State Machine Design: AppState enum, EnabledState, ToolLoop states, transition diagrams |
+| 241-316 | Input Mode System: InputState enum, DraftInput, mode transitions |
+| 317-415 | Type-Driven Design Patterns: proof tokens, InsertToken, CommandToken, mode wrappers |
+| 416-513 | Streaming Orchestration: ActiveStream, StreamingMessage, lifecycle, journal recovery |
+| 514-565 | Command System: built-in commands table, processing flow |
+| 566-627 | Context Management Integration: ContextManager, summarization retry, model switch adaptation |
+| 628-777 | Configuration: ForgeConfig structure, loading, env expansion, config sections |
+| 778-988 | Public API Reference: App lifecycle, state queries, mode transitions, streaming ops |
+| 989-1165 | Extension Guide: adding commands, input modes, providers, async operation states |
+| 1166-1318 | Re-exported Types, Error Handling, Thread Safety |
+
 ## Table of Contents
 
 1. [Overview](#overview)

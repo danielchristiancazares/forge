@@ -2,7 +2,7 @@
 
 ## Software Requirements Document
 
-**Version:** 1.7
+**Version:** 1.8
 **Date:** 2026-01-10
 **Status:** Implementation-Ready
 **Baseline code reference:** `forge-source.zip`
@@ -42,6 +42,7 @@
 | 1.5     | 2026-01-10 | **Implementation-readiness remediation (40+ findings)**: Split path normalization (Appendix C) for key vs order with NFC/UTF-8 bytewise comparison; fixed partial-index exclusion contradiction (§4.2 vs §11.1); clarified Index Root selection and subpath reuse (§5.2); added truncation detection mechanism (§3.2); added backend ordering control (FR-LSI-ORD-04); added fuzzy fallback total timeout budget (§9.3); fixed uncertain_reason assignments for DISABLED causes; added SQLite concurrency requirements (WAL, read-only connections); added Appendix F (tokenizer/Bloom algorithm spec); added Appendix G (backend file-list ingestion); added P4 precedence rule for multi-trigger uncertain_reason; expanded verification tests (§15) |
 | 1.6     | 2026-01-10 | **Specification hardening (28 findings remediated)**: Fixed Event definition formatting (§1.3); resolved truncation semantics inconsistency (FR-LSI-TRUNC-01 vs FR-LSI-CTX-02); added determinism mandate (FR-LSI-ORD-05); added order_root selection algorithm (§3.4); aligned build budget transition BUILDING→UNCERTAIN (§4.2.2); added MAINT_BUDGET_EXCEEDED and WATCHER_OVERFLOW_DURING_BUILD transitions; added Index Key scheduling policy (§5.2.3) with query-time filters (glob[], case, fixed_strings, word_regexp removed from key); added cache_root selection algorithm (§5.3.1); clarified storage fallback policy (§5.3.2, §12.2); aligned Appendix C with Tool Executor sandbox; fixed Appendix E schema (removed glob_hash); fully specified Appendix F Bloom algorithm (xxHash64, bit layout, n determination, rounding); specified newline-in-path rejection policy (Appendix G); resolved §18.2 eligible file set (Forge standardizes eligibility); added tokenizer/Bloom verification tests (§15.6); added path edge case tests (§15.7); expanded stats field definitions with fallback_reason enum (§10.2) |
 | 1.7     | 2026-01-10 | **Implementation-readiness final review (20 findings remediated)**: CRITICAL: Removed NFC/CRLF normalization from tokenizer (FR-LSI-TOK-02/03) to preserve Bloom superset guarantee; added tool-terminated backend classification precedence (FR-LSI-EXIT-04); distinguished persistence hard vs soft failure in transition table (§4.2.2); added DIRTY_BACKLOG vs RENAME_UNCERTAIN distinction (FR-LSI-TRK-09); clarified atomic commit language in build phases (§4.3.3); extended key reuse lattice for follow/no_ignore options (FR-LSI-IDX-SCHED-04); specified index_path as directory path (§5.2); reduced index_max_tokenized_bytes default to 128 KiB (§13); added index_key_hash computation (§5.2.1); added timestamp resolution mitigation (FR-LSI-FPRI-03a/03b); specified casefold strategy enumeration (Appendix F.1); added ASCII-only smartcase detection (Appendix F.2); added FR-LSI-BE-PATH-01 for absolute canonical paths; added FR-LSI-EXE-05 backend ordering optimization; split stats fields into index_bypass_reason, fuzzy_fallback_reason, maintenance_action (§10.2, §11.3); added candidates_total nullable for non-enumerated paths (FR-LSI-STAT-02a); clarified sandbox scope exception for cache root (§12.2); added Bloom/tokenizer config parameters (§13); added test cases for newline-path + COMPLETE and tool-terminated classification (§15.6, §15.8); clarified §18.2 execution-path-dependent semantics with null stats |
+| 1.8     | 2026-01-10 | **GPT-5.2 Pro specification review remediation (30+ findings)**: §2: Added stats_version=1 for v1.x (FR-LSI-SCHEMA-RESP-03a), defined open schema forward compatibility (FR-LSI-SCHEMA-RESP-03b); §3: Added deterministic tie-break for same file/line events (FR-LSI-ORD-03), fixed order_root cross-reference; §5: Enhanced index_key_hash with RFC 8785 canonical JSON, added all key components, clarified unique identity role (FR-LSI-IDX-RM-02a), specified subtree prefix matching algorithm (FR-LSI-IDX-SCOPE-01); §6: Added xxHash64 seed specification for fingerprint hashing (FR-LSI-TRK-03a-HASH), clarified coarse granularity detection algorithm (FR-LSI-TRK-03b), added watcher events during validation handling (FR-LSI-TRK-08a); Appendix F: Clarified n-grams use codepoints not bytes (FR-LSI-TOK-05/05a), added overflow protection for Bloom sizing (FR-LSI-BLOOM-01a), added Unicode version pinning requirement (FR-LSI-TOK-UNICODE); §8: Added backend_id format specification (FR-LSI-BE-02a), added decoding algorithm with surrogate handling (FR-LSI-ENC-01a), added event path normalization (FR-LSI-ENC-01b), added chunking algorithm specification (FR-LSI-EXE-04a); §10: Added fallback_passes_skipped to stats table, fixed candidates_searched→candidates_scanned inconsistency; §11: Added budget rounding specification (FR-LSI-BUD-MAINT-01a), added cooldown duration and bypass rules (FR-LSI-BUD-04a/04b); §13: Added index_chunk_size, index_cooldown_base_ms, index_cooldown_max_ms to config validation; Appendix C: Aligned '..' handling with Tool Executor FR-VAL-04, added cross-reference |
 
 ---
 
@@ -133,6 +134,10 @@ Baseline response fields (per `docs/LOCAL_SEARCH_SRD.md` **FR-LS-05**) include:
 
 **FR-LSI-SCHEMA-RESP-03:** If `stats` is present, it MUST include `stats_version` (integer) and MUST be documented as forward-compatible and strictly optional.
 
+**FR-LSI-SCHEMA-RESP-03a (stats_version value):** For SRD versions 1.x, `stats_version` MUST be `1`. The value SHALL be incremented when breaking changes are made to stats field semantics, types, or required fields. Additive fields do not require a version bump.
+
+**FR-LSI-SCHEMA-RESP-03b (Forward compatibility):** The `stats` object uses an **open schema**: consumers MUST ignore unknown fields. Producers MAY add new fields in future versions without incrementing `stats_version`. This enables gradual rollout of diagnostic enhancements.
+
 **FR-LSI-SCHEMA-RESP-04:** No other additional top-level keys are permitted.
 
 ---
@@ -149,9 +154,13 @@ This section is normative because indexing and chunking can otherwise create sub
 
 **FR-LSI-ORD-03 (Event ordering rule):** Events MUST be ordered by:
 
-1. `path_sort_key` computed via `NormalizeRelPathForOrder(path, index_root)` (see Appendix C) — bytewise lexicographic comparison
+1. `path_sort_key` computed via `NormalizeRelPathForOrder(path, order_root)` (see Appendix C, §3.4) — bytewise lexicographic comparison
 2. `line_number` ascending (numeric)
-3. Within the same file and line number, preserve backend-emitted ordering between `"context"` and `"match"` events **as parsed**.
+3. Within the same file and line number, apply **deterministic tie-break**:
+   a. `"context"` events sort before `"match"` events (type ordering)
+   b. If types are equal, preserve **parse order** (first-parsed sorts first) — this maintains backend-native grouping while ensuring reproducibility
+
+> **Note:** Parse order is deterministic because the backend's output stream order is preserved during parsing. The tool MUST NOT reorder events from the same file/line/type.
 
 **FR-LSI-ORD-04 (Backend ordering control):** If the backend emits results out-of-order (common with parallel search), the tool MUST either:
 * Run the backend in an ordered output mode (e.g., single-threaded, backend sort flags), OR
@@ -538,7 +547,13 @@ index_default_no_ignore = false
 
 #### 5.2.4 Scope and Multi-Root Handling
 
-**FR-LSI-IDX-SCOPE-01 (Subpath support):** If request `path` is a subtree of an Index Root, the tool MUST apply a deterministic subtree filter to reuse the index (no rebuild required). The filter operates on `path_sort_key` prefix matching.
+**FR-LSI-IDX-SCOPE-01 (Subpath support):** If request `path` is a subtree of an Index Root, the tool MUST apply a deterministic subtree filter to reuse the index (no rebuild required). The filter operates on `path_sort_key` prefix matching:
+
+1. Compute `filter_prefix = NormalizeRelPathForOrder(request_path, order_root)`.
+2. A file matches the subtree filter if its `path_sort_key` starts with `filter_prefix + "/"` OR equals `filter_prefix` exactly.
+3. The filter MUST be applied during catalog enumeration, not after loading all entries.
+
+> **Edge case:** If `filter_prefix` is empty (request path equals order root), all catalog entries match.
 
 **FR-LSI-IDX-SCOPE-02 (Multi-root):** If a request path cannot be unambiguously resolved within exactly one sandbox root (or resolves outside sandbox), the tool MUST reject the request per sandbox rules; indexing MUST NOT attempt to "span" roots implicitly.
 
@@ -609,24 +624,40 @@ This section defines how the **cache root** is determined for persisted indexes 
 2. Tie-break by largest size
 3. Tie-break by lexicographic Index Key hash (see FR-LSI-IDX-RM-02a)
 
-**FR-LSI-IDX-RM-02a (Index Key hash computation):** The `index_key_hash` used for deterministic eviction tie-break MUST be computed as:
+**FR-LSI-IDX-RM-02a (Index Key hash computation):** The `index_key_hash` serves as the **unique identity** of an index. It is used for:
+* Storage key (SQLite primary key)
+* Eviction tie-break
+* Key mismatch detection (triggers rebuild per §4.2.2)
+
+The hash MUST be computed as:
 
 ```
 index_key_hash = lowercase_hex( SHA-256( canonical_json( index_key_components ) ) )
 ```
 
-Where `index_key_components` is a JSON object containing:
+Where `index_key_components` is a JSON object containing ALL key components from FR-LSI-IDX-KEY-01:
 ```json
 {
-  "index_root": "<canonicalized absolute path>",
-  "hidden": <boolean>,
+  "backend_id": "<backend name and version, e.g., ugrep@3.9.0>",
+  "casefold_strategy": "<ASCII or UNICODE_SIMPLE>",
   "follow": <boolean>,
+  "hidden": <boolean>,
+  "index_root": "<canonicalized absolute path via NormalizePathForKey>",
   "no_ignore": <boolean>,
-  "backend_id": "<backend name and version>"
+  "schema_version": <integer>,
+  "tokenizer_id": "<algorithm identifier, e.g., ngram-3-xxhash64>",
+  "unicode_normalization": "<NONE, NFC, or NFD>"
 }
 ```
 
-The JSON MUST be serialized in canonical form: keys sorted alphabetically, no whitespace, UTF-8 encoding. The hash output is 64 lowercase hexadecimal characters.
+**Canonical JSON serialization (per RFC 8785 JCS):**
+1. Object keys MUST be sorted lexicographically by UTF-16 code units (ASCII order for ASCII keys)
+2. No whitespace between tokens
+3. String values use minimal escape sequences (no unnecessary `\uXXXX`)
+4. Numbers use shortest decimal representation (no trailing zeros, no leading zeros except for "0.x")
+5. UTF-8 encoding for the final byte stream
+
+The hash output is 64 lowercase hexadecimal characters (256 bits).
 
 **FR-LSI-IDX-RM-03:** Eviction MUST be concurrency-safe (no partial deletion while another process is reading). If necessary, use tombstoning and deferred cleanup.
 
@@ -650,20 +681,33 @@ The JSON MUST be serialized in canonical form: keys sorted alphabetically, no wh
 
 **FR-LSI-TRK-03:** If timestamp resolution is insufficient to reliably detect rapid edits, the system SHOULD mitigate by hashing small files or using additional metadata, while preserving budgets and privacy constraints.
 
-**FR-LSI-TRK-03a (Timestamp resolution mitigation defaults):** When mtime granularity is coarse (≥1 second, common on FAT32, network filesystems):
+**FR-LSI-TRK-03a (Timestamp resolution mitigation defaults):** When mtime granularity is coarse (resolution ≥ 1000ms, common on FAT32, network filesystems, some NFS/SMB mounts):
 
 | File Size | Mitigation Strategy |
 | --------- | ------------------- |
-| ≤ 64 KiB | Compute content hash (xxHash64) and store with fingerprint; re-hash on validation |
-| > 64 KiB | Use size+mtime only; accept potential missed rapid edits as acceptable false negative risk |
+| ≤ `index_fingerprint_hash_max_bytes` (default 65536) | Compute content hash (xxHash64 with seed 0) and store with fingerprint; re-hash on validation |
+| > threshold | Use size+mtime only; accept potential missed rapid edits as acceptable false negative risk |
+
+**FR-LSI-TRK-03a-HASH (Content hash algorithm):** Content hashing for fingerprint mitigation MUST use:
+* Algorithm: xxHash64
+* Seed: `0` (zero)
+* Input: raw file bytes (no decoding)
+* Output: 64-bit hash stored as 8 bytes (little-endian) or 16-character lowercase hex string
 
 The threshold (`index_fingerprint_hash_max_bytes`, default 65536) MAY be configured. Setting to 0 disables content hashing entirely.
 
-**FR-LSI-TRK-03b (Granularity detection):** The implementation SHOULD detect coarse mtime granularity at startup by:
-1. Creating a temp file, writing, reading mtime, sleeping 10ms, modifying, reading mtime again
-2. If both mtimes are identical (sub-second change not reflected): assume coarse granularity and enable hashing mitigation
+> **False negative risk:** Files larger than the threshold on coarse-granularity filesystems may not detect rapid sub-second edits. This is an acceptable trade-off; full-file hashing of large files would violate budget constraints.
 
-If detection cannot be performed (e.g., read-only filesystem), assume coarse granularity conservatively.
+**FR-LSI-TRK-03b (Granularity detection):** The implementation SHOULD detect coarse mtime granularity at startup by:
+1. Create a temp file in the cache root or temp directory
+2. Write initial content, sync, read mtime as `t1`
+3. Sleep 10ms
+4. Modify content (append 1 byte), sync, read mtime as `t2`
+5. If `t1 == t2` (sub-10ms change not reflected): filesystem has coarse granularity
+6. If `t2 > t1` but `(t2 - t1) >= 1000ms`: filesystem rounded up, still coarse
+7. If `t2 > t1` and `(t2 - t1) < 1000ms`: filesystem has fine granularity; hashing mitigation MAY be skipped
+
+If detection cannot be performed (e.g., read-only filesystem, temp file creation fails), assume coarse granularity conservatively and enable hashing.
 
 ### 6.3 Watchers and Dirty Sets
 
@@ -692,6 +736,12 @@ This distinction ensures `RENAME_UNCERTAIN` signals ambiguity requiring reconcil
 ### 6.5 Watcher Overflow / Failure
 
 **FR-LSI-TRK-08:** On watcher overflow, dropped events, or watcher failure, the system MUST transition to `UNCERTAIN` for the affected scope.
+
+**FR-LSI-TRK-08a (Watcher events during validation):** When the index is in `UNCERTAIN` state with `uncertain_reason='OPEN_REQUIRES_VALIDATION'`:
+1. Watcher events MUST still be collected and queued in the dirty set
+2. The validation/reconcile scan MUST incorporate these events
+3. If watcher overflow occurs during validation, the reconcile MUST restart or extend scope
+4. Validation completes successfully only when both the reconcile scan AND dirty queue processing succeed
 
 ### 6.6 Reconcile Scan (Bounded)
 
@@ -763,6 +813,19 @@ Baseline requires `ugrep` preferred and `rg` fallback.
 
 **FR-LSI-BE-02:** If indexing requires backend capabilities (e.g., file-list mode), the system MUST detect capability availability deterministically and MUST disable index-based exclusion when unavailable.
 
+**FR-LSI-BE-02a (backend_id format):** The `backend_id` stored in the Index Key MUST use the format:
+
+```
+<backend_name>@<major>.<minor>.<patch>
+```
+
+Where:
+* `backend_name` is lowercase (`ugrep` or `rg`)
+* Version components are decimal integers
+* Examples: `ugrep@3.9.0`, `rg@14.1.0`, `rg@13.0.0`
+
+If patch version is unavailable from `--version` output, use `0`. This format enables semantic version comparison for capability detection.
+
 ### 8.2 Large Candidate Lists (Command-Line Limits)
 
 **FR-LSI-EXE-01:** Candidate file lists MUST be passed to the backend using a scalable mechanism safe for large lists (e.g., stdin, a temp file list option, or equivalent backend-supported feature). The implementation MUST NOT rely solely on passing all paths as command-line arguments.
@@ -774,6 +837,16 @@ Baseline requires `ugrep` preferred and `rg` fallback.
 **FR-LSI-EXE-03:** If chunked backend invocations are required, chunks MUST be processed in deterministic file order, and outputs MUST be merged deterministically to match the tool’s ordering model (Section 3).
 
 **FR-LSI-EXE-04:** Chunking MUST NOT change the truncation boundary relative to the deterministic event order. If it would, chunking MUST be adjusted (smaller chunks) or index exclusion MUST be bypassed.
+
+**FR-LSI-EXE-04a (Chunking algorithm):** When candidate list exceeds the chunk threshold:
+1. **Chunk size:** Default `index_chunk_size = 1000` files per chunk (configurable)
+2. **Ordering:** Files MUST be chunked in deterministic `path_sort_key` order
+3. **No overlap:** Chunks are disjoint; no file appears in multiple chunks
+4. **Sequential processing:** Chunks MUST be processed in order for truncation correctness
+5. **Early termination:** After each chunk, check if `max_results` is reached; stop if so
+6. **Merge strategy:** Concatenate events from each chunk (already sorted within chunk); final sort only if backend emits out-of-order
+
+> **Rationale:** Processing in `path_sort_key` order ensures that truncation at any point produces the same result as non-chunked execution.
 
 **FR-LSI-EXE-05 (Backend ordering optimization):** To minimize buffering/sorting overhead while maintaining determinism:
 
@@ -808,6 +881,18 @@ This precedence ensures deterministic classification regardless of how the OS re
 ### 8.5 Output Decoding and Sanitization
 
 **FR-LSI-ENC-01:** Backend stdout/stderr decoding MUST be deterministic. If bytes are not valid UTF-8, decoding MUST follow a documented policy (e.g., replacement character) that is stable across platforms.
+
+**FR-LSI-ENC-01a (Decoding algorithm):**
+1. Attempt UTF-8 decoding of backend output
+2. Replace invalid byte sequences with U+FFFD (replacement character) using "substitution of maximal subparts" per W3C/WHATWG Encoding Standard
+3. Do NOT use platform-specific lossy conversion (e.g., Windows code pages)
+4. Lone surrogates (U+D800–U+DFFF) in output MUST be replaced with U+FFFD
+
+**FR-LSI-ENC-01b (Event path normalization):** Paths in backend output MUST be normalized before ordering:
+1. Parse the path from backend JSON output (already decoded per FR-LSI-ENC-01a)
+2. If the path is absolute, verify it starts with the expected search root; reject if not
+3. Apply `NormalizeRelPathForOrder(path, order_root)` to compute `path_sort_key`
+4. The normalized path is used for ordering; the original path is preserved in the event output
 
 **FR-LSI-ENC-02:** Output sanitization MUST comply with Tool Executor requirements (e.g., terminal control injection prevention) and MUST NOT alter structured data semantics.
 
@@ -901,6 +986,7 @@ Baseline structured record format:
 | `fuzzy_fallback_used` | boolean | deterministic | Whether fuzzy fallback was attempted |
 | `fuzzy_fallback_reason` | enum/null | deterministic | Why fuzzy fallback triggered (see below); `null` if not used |
 | `fuzzy_levels_tried` | array[int] | deterministic | Fuzzy levels attempted (e.g., `[1, 2]`); empty if no fallback |
+| `fallback_passes_skipped` | integer | deterministic | Number of fuzzy fallback passes skipped due to timeout budget (per FR-LSI-FUZ-G-03); `0` if none skipped |
 | `maintenance_action` | enum/null | deterministic | Budget action taken (see §11.3); `null` if none |
 | `elapsed_ms` | integer | best_effort | Wall-clock time for this search (may vary due to system load) |
 | `candidates_total` | integer/null | deterministic | Total eligible files before exclusion; `null` if not enumerated |
@@ -975,6 +1061,11 @@ Incremental maintenance (dirty queue processing, reconcile scans) occurs inline 
 
 **FR-LSI-BUD-MAINT-01:** Incremental maintenance during a search request MUST NOT consume more than `index_maint_budget_fraction * timeout_ms` (default: 0.25 = 25% of request timeout).
 
+**FR-LSI-BUD-MAINT-01a (Budget rounding):** When computing the maintenance budget in milliseconds:
+1. Use `floor()` rounding: `maint_budget_ms = floor(timeout_ms * index_maint_budget_fraction)`
+2. If `maint_budget_ms < 10`, skip maintenance entirely for this request (minimum viable budget)
+3. This ensures the search portion always gets at least `ceil(timeout_ms * (1 - fraction))` milliseconds
+
 **FR-LSI-BUD-MAINT-02:** Maintenance budget applies to:
 * Processing dirty queue entries accumulated since last search
 * Validating fingerprints for files accessed in the query path
@@ -996,6 +1087,17 @@ Incremental maintenance (dirty queue processing, reconcile scans) occurs inline 
 **FR-LSI-BUD-03:** The chosen action MUST be recorded in `stats.maintenance_action` when `stats` is enabled. See §10.2 for the `maintenance_action` enum values.
 
 **FR-LSI-BUD-04:** If cooldown is enabled and the `DISABLED` state is entered due to resource exhaustion, the implementation MAY set a `disabled_until_ms` timestamp. The index MUST remain `DISABLED` until this timestamp expires, at which point it MUST transition to `ABSENT` and attempt re-initialization per Section 4.2.2.
+
+**FR-LSI-BUD-04a (Cooldown duration):** The cooldown duration MUST be computed deterministically:
+1. Base cooldown: `index_cooldown_base_ms` (default: 60000 = 1 minute)
+2. Exponential backoff: On repeated resource exhaustion, multiply by 2 up to `index_cooldown_max_ms` (default: 3600000 = 1 hour)
+3. Reset: After successful index build/reconcile, reset backoff multiplier to 1
+4. Persistence: Cooldown state (`disabled_until_ms`, backoff multiplier) MUST be persisted if storage is available
+
+**FR-LSI-BUD-04b (Cooldown bypass):** Cooldown MAY be bypassed by:
+1. Explicit user action (e.g., `/index rebuild` command)
+2. Configuration change that affects Index Key (triggers fresh build)
+3. Setting `index_cooldown_base_ms = 0` to disable cooldown entirely
 
 ### 11.4 Budget Interaction with Throttling
 
@@ -1106,6 +1208,11 @@ index_default_no_ignore = false
 reconcile_max_files = 50000
 reconcile_max_ms = 2000
 index_maint_budget_fraction = 0.25  # max 25% of request timeout for inline maintenance
+index_cooldown_base_ms = 60000      # 1 minute base cooldown on resource exhaustion
+index_cooldown_max_ms = 3600000     # 1 hour max cooldown with exponential backoff
+
+# Indexing - Chunking (§8.3)
+index_chunk_size = 1000             # files per backend invocation when chunking
 
 # Diagnostics
 emit_stats = false                  # if true, include `stats` block in response
@@ -1134,9 +1241,13 @@ fuzzy_min_pattern_len = 4
 | `index_storage` | enum | `memory`, `sqlite` |
 | `bloom_ngram_k` | integer | 2-8 (default 3) |
 | `bloom_target_fp_rate` | float | 0.001-0.1 (default 0.01) |
-| `index_max_tokenized_bytes` | integer | 1024-10485760 (1 KiB to 10 MiB) |
-| `index_fingerprint_hash_max_bytes` | integer | 0-1048576 (0 disables) |
-| `fuzzy_fallback_levels` | array[int] | each element 1-4 |
+| `index_max_tokenized_bytes` | integer | 1024-10485760 (1 KiB to 10 MiB, default 131072) |
+| `index_fingerprint_hash_max_bytes` | integer | 0-1048576 (0 disables, default 65536) |
+| `index_chunk_size` | integer | 100-100000 (default 1000) |
+| `index_maint_budget_fraction` | float | 0.0-0.5 (default 0.25) |
+| `index_cooldown_base_ms` | integer | 0-3600000 (0 disables, default 60000) |
+| `index_cooldown_max_ms` | integer | 0-86400000 (default 3600000) |
+| `fuzzy_fallback_levels` | array[int] | each element 1-4, non-empty if fuzzy_fallback=true |
 | `index_default_hidden/follow/no_ignore` | boolean | — |
 
 **CFG-LSI-VAL-02 (Index Key identity):** Changes to `bloom_ngram_k`, `bloom_target_fp_rate`, `index_max_tokenized_bytes`, or `index_default_*` options change the Index Key identity and require a full rebuild. The implementation MUST detect mismatches and trigger rebuild per §4.2.2.
@@ -1312,7 +1423,7 @@ fuzzy_min_pattern_len = 4
 2. **Backend invocation:** When candidate exclusion is active, Forge passes the eligible file list explicitly to the backend via `--include-from` or equivalent (Appendix G). The backend's own ignore semantics are overridden.
 3. **Direct invocation (no exclusion):** When index is `DISABLED`, `ABSENT`, or exclusion is bypassed, the backend is invoked directly (without file list), and its native ignore semantics apply. **This creates execution-path-dependent semantics:**
    - **Correctness is preserved:** No exclusion occurs, so there is no risk of false negatives. The superset safety guarantee is vacuously satisfied.
-   - **Stats are affected:** When enumeration is bypassed, `candidates_total`, `candidates_searched`, and `candidates_excluded` MUST be `null` (see FR-LSI-STAT-02a). This clearly signals that Forge's enumeration did not occur.
+   - **Stats are affected:** When enumeration is bypassed, `candidates_total`, `candidates_scanned`, and `candidates_excluded` MUST be `null` (see FR-LSI-STAT-02a). This clearly signals that Forge's enumeration did not occur.
    - **Acceptable divergence:** The eligible file set in direct-invocation mode is determined by the backend, not Forge. This is explicitly documented and does not violate safety guarantees because no index-based exclusion is performed.
 
 **FR-LSI-ELIG-02 (Consistency requirement):** The enumeration engine used for indexing MUST be the same engine used for non-indexed searches when candidate exclusion is active. If divergence is unavoidable, candidate exclusion MUST be disabled for affected configurations.
@@ -1352,13 +1463,20 @@ Used for: Index Key identity, sandbox validation, file identity within catalog.
 **Algorithm:**
 
 1. If `path` is relative: resolve to absolute using sandbox working directory as base.
-2. Validate against sandbox rules (deny `..` traversal outside allowed roots, enforce root containment, apply deny patterns).
-3. Resolve to canonical absolute path using symlink-safe canonicalization (no symlink escape).
-4. Normalize path separators to `/` (forward slash).
-5. Remove redundant `.` segments; preserve meaningful `..` rejection outcome.
-6. On Windows: normalize drive letter casing consistently (uppercase `C:`, etc.).
-7. Remove trailing `/` except for root paths (e.g., `C:/` or `/`).
-8. Return the canonical absolute path.
+2. **Handle `..` segments (aligned with Tool Executor FR-VAL-04):**
+   - If `..` would traverse above the sandbox root: **reject the path** (return error, not a normalized result)
+   - If `..` resolves within sandbox boundaries: apply it logically (do not follow symlinks when resolving `..`)
+   - Example: `/sandbox/foo/../bar` → `/sandbox/bar` (valid, within sandbox)
+   - Example: `/sandbox/../outside` → **rejected** (escapes sandbox)
+3. Validate against sandbox rules (root containment, deny patterns).
+4. Resolve to canonical absolute path using symlink-safe canonicalization (no symlink escape).
+5. Normalize path separators to `/` (forward slash).
+6. Remove redundant `.` segments.
+7. On Windows: normalize drive letter casing consistently (uppercase `C:`, etc.).
+8. Remove trailing `/` except for root paths (e.g., `C:/` or `/`).
+9. Return the canonical absolute path.
+
+> **Cross-reference:** This algorithm aligns with `docs/TOOL_EXECUTOR_SRD.md` FR-VAL-04 (path validation) and FR-VAL-06 (symlink-safe resolution). The key difference is that index paths are internal infrastructure and do not require `allow_absolute=true` for cache operations.
 
 ### NormalizeRelPathForOrder(path, order_root)
 
@@ -1708,10 +1826,25 @@ casefold_ascii(c) = if c in 'A'..'Z' then c + 32 else c
 **Casefolding algorithm for `UNICODE_SIMPLE`:**
 Apply Unicode simple casefolding mapping table (Unicode Character Database, CaseFolding.txt, type 'C' and 'S' mappings).
 
+**FR-LSI-TOK-UNICODE (Unicode version pinning):** The implementation MUST document which Unicode version is used for casefolding:
+1. Store the Unicode version in `tokenizer_id` (e.g., `ngram-3-xxhash64-unicode15.1`)
+2. If the Unicode version changes between index builds (due to library updates), this changes the Index Key identity and triggers rebuild per §4.2.2
+3. Recommended: Use a stable Unicode casefolding library and pin to a specific version (e.g., Unicode 15.1.0 as of this SRD)
+
+> **Rationale:** Unicode casefolding tables change between Unicode versions. A file containing a newly-added character may casefold differently after a Unicode update, causing Bloom filter mismatches if not detected.
+
 **FR-LSI-TOK-05 (N-gram extraction):**
-1. Extract all contiguous k-character n-grams from the normalized text.
-2. If `len(text) < k`: no n-grams are extracted; `token_complete=0`.
-3. Number of n-grams: `max(0, len(text) - k + 1)`.
+1. N-grams are extracted from **Unicode scalar values** (codepoints), NOT bytes.
+2. Extract all contiguous k-codepoint n-grams using a sliding window.
+3. If `len(text_in_codepoints) < k`: no n-grams are extracted; set `token_complete=0`.
+4. Number of n-grams: `max(0, len(text_in_codepoints) - k + 1)`.
+
+**FR-LSI-TOK-05a (N-gram byte representation for hashing):** When hashing an n-gram for Bloom filter insertion:
+1. Encode the k-codepoint sequence as UTF-8 bytes
+2. Pass the UTF-8 byte slice to xxHash64
+3. This ensures multi-byte characters are hashed correctly
+
+> **Example:** For k=3 and text "café", codepoints are ['c', 'a', 'f', 'é']. N-grams are "caf" and "afé". The n-gram "afé" is hashed as UTF-8 bytes `[0x61, 0x66, 0xC3, 0xA9]` (4 bytes for 3 codepoints).
 
 ### F.3 Bloom Filter Construction
 
@@ -1722,6 +1855,12 @@ m = ceil(-n * ln(p) / (ln(2)^2))        # bit count
 k_raw = (m / n) * ln(2)                   # optimal hash count (floating point)
 k_hashes = max(1, floor(k_raw + 0.5))     # round to nearest integer, minimum 1
 ```
+
+**FR-LSI-BLOOM-01a (Overflow protection):** Implementations MUST guard against arithmetic overflow:
+1. Use 64-bit integers for all intermediate calculations
+2. Clamp `m` to `max_bloom_bits = 2^31 - 1` (≈256 MiB per filter) if the formula would exceed this
+3. If clamping occurs, the effective false positive rate increases; log a warning
+4. Clamp `k_hashes` to range `[1, 32]` — values >32 provide diminishing returns and increase computation
 
 **Determining `n` (expected unique n-grams):** For index-wide Bloom filter parameters, `n` MUST be computed deterministically from configuration:
 

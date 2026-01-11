@@ -4,6 +4,15 @@
 **Version:** 1.0
 **Date:** 2026-01-09
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-13 | Overview: Kanagawa Wave inspiration |
+| 14-90 | Kanagawa Wave Palette: background (Sumi Ink), foreground (Fuji), accents, diagnostics, wave colors |
+| 91-160 | Semantic Role Mapping: Core UI, brand/accent, status, input modes, search, diff |
+| 161-210 | Implementation: theme.rs constants, style functions, usage examples |
+
 ---
 
 ## 1. Overview

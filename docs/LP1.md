@@ -2,6 +2,14 @@
 
 LP1 is a line-oriented patch DSL for applying structured edits across one or more files. It uses dot-terminated blocks with dot-stuffing, and applies operations sequentially within each file section.
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-52 | Patch Structure, Commands (R/I/P/E/T/B/N), Blocks and dot-stuffing |
+| 53-112 | Normative Semantics: newline boundaries, greedy scan, canonical representation |
+| 113-140 | Grammar (EBNF) for LP1 syntax |
+
 ## Patch structure
 
 - Header: `LP1` on its own line (leading/trailing whitespace allowed).

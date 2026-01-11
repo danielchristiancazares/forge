@@ -1,6 +1,14 @@
 # Forge Architecture
 
-Forge is a vim-modal TUI for LLMs built with ratatui/crossterm.
+Forge is a Vim-inspired modal TUI for LLMs built with ratatui/crossterm.
+
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-53 | Build Commands, Workspace Structure, Key Files table |
+| 54-98 | Main Event Loop, Input State Machine, Type-Driven Design patterns |
+| 99-134 | Provider System, Context Infinity, Key Extension Points, Documentation |
 
 ## Build Commands
 
@@ -68,12 +76,14 @@ The `yield_now()` is essential because crossterm's event polling is blocking.
 ## Input State Machine
 
 Mode transitions are type-safe via `InputState` enum variants:
+
 - `Normal(DraftInput)` → navigation
 - `Insert(DraftInput)` → text editing with cursor
 - `Command { draft, command }` → slash commands
 - `ModelSelect { draft, selected }` → model picker overlay
 
 Mode-specific operations require proof tokens:
+
 ```rust
 // Can only get InsertToken when in Insert mode
 let token = app.insert_token()?;
@@ -99,6 +109,7 @@ The codebase enforces correctness through types (see `docs/DESIGN.md`):
 ## Provider System (`providers/src/lib.rs`)
 
 `Provider` enum (Claude, OpenAI) with:
+
 - `default_model()` → provider's default model
 - `available_models()` → known model list
 - `parse_model(raw)` → validates model name, returns `ModelName`
@@ -108,6 +119,7 @@ Adding a provider: extend `Provider` enum, implement all match arms, add module 
 ## Context Infinity (`context/`)
 
 Adaptive context management with automatic summarization:
+
 - `manager.rs` - orchestrates token counting, triggers summarization
 - `history.rs` - persistent storage with `MessageId`/`SummaryId`
 - `working_context.rs` - builds working context within token budget
@@ -116,7 +128,7 @@ Adaptive context management with automatic summarization:
 - `model_limits.rs` - per-model token limits
 - `token_counter.rs` - token counting utilities
 
-See `context/README.md` and `docs/CONTEXT_ARCHITECTURE.md` for details.
+See `context/README.md` for details.
 
 ## Key Extension Points
 
@@ -139,7 +151,6 @@ See `tui/README.md` Extension Guide for detailed patterns.
 | `engine/README.md` | Engine state machine and orchestration |
 | `providers/README.md` | LLM API clients and SSE streaming |
 | `context/README.md` | Context management system overview |
-| `docs/CONTEXT_ARCHITECTURE.md` | Context subsystem architecture |
 | `docs/DESIGN.md` | Type-driven design patterns |
 | `docs/OPENAI_RESPONSES_GPT52.md` | OpenAI Responses API integration |
 
@@ -166,7 +177,3 @@ thinking_enabled = false
 ```
 
 Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `FORGE_TUI`, `FORGE_CONTEXT_INFINITY=0`
-
-
-
-

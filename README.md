@@ -2,18 +2,27 @@
 
 A powerful TUI for interacting with GPT and Claude, featuring an agentic tool execution framework.
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-35 | Overview & Features: TUI, Context Infinity, Tool Executor |
+| 36-65 | Getting Started: Quick Start, Installation |
+| 66-95 | Configuration: Config.toml reference |
+| 96-101 | Documentation Index & Dev Guide |
+
 ## Features
 
 ### Core Capabilities
 
 - **Vim-style Modal Interface**: Normal, Insert, Command, and ModelSelect modes
 - **Multi-Provider Support**: Seamless switching between Claude (Anthropic) and GPT (OpenAI)
-- **Full/Inline Display Modes**: Full-screen alternate screen or inline terminal mode
-- **Rich Markdown Rendering**: Tables, code blocks, syntax highlighting
+- **Full/Inline Display Modes**: Full-screen (alternate buffer) or inline terminal mode
+- **Rich Markdown Rendering**: Tables, code blocks, and syntax highlighting
 
 ### Context Infinity™
 
-- **Adaptive Context Management**: Automatically summarizes older messages to stay within model limits
+- **Adaptive Context Management**: Summarizes older messages as needed to stay within model token limits
 - **Crash Recovery**: Streaming responses are journaled and recoverable
 - **History Persistence**: Conversations are saved and restored across sessions
 
@@ -21,7 +30,7 @@ A powerful TUI for interacting with GPT and Claude, featuring an agentic tool ex
 
 - **Agentic Tool Calling**: LLM can read files, apply patches, and run shell commands
 - **Sandboxed Execution**: Path-based tools are restricted to allowed directories
-- **Interactive Approval**: User can review and approve/deny tool calls before execution
+- **Interactive Approval**: User can review and approve or deny tool calls before tool execution
 - **Crash Recovery**: Tool batches are journaled for durability
 
 ## Quick Start
@@ -77,6 +86,8 @@ allow_absolute = false
 
 ## Development
 
+Development commands (debug mode):
+
 - Build: `cargo build`
 - Run: `cargo run`
 - Test: `cargo test`
@@ -94,7 +105,3 @@ Generate `lcov.info`:
 
 - `cargo cov`
 - or `./scripts/coverage.ps1`
-
-## License
-
-See the repository root for license information.

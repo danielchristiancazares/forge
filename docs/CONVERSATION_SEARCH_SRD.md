@@ -4,6 +4,16 @@
 **Date:** 2026-01-09
 **Status:** Draft
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-50 | Introduction: purpose, scope, definitions, references |
+| 51-88 | Overall Description: product perspective, functions, constraints, inline mode decision |
+| 89-180 | Functional Requirements: search mode entry, input, matching, navigation |
+| 181-250 | Highlighting and Rendering: match styling, scroll behavior |
+| 251-302 | State Management, NFRs, Verification Requirements |
+
 ---
 
 ## 0. Change Log

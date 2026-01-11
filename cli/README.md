@@ -2,6 +2,20 @@
 
 This document provides comprehensive documentation for the `forge` CLI crate - the binary entry point and terminal session management layer for the Forge LLM client. It is intended for developers who want to understand, maintain, or extend the CLI functionality.
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-58 | Overview: responsibilities, file structure, dependencies |
+| 59-99 | Architecture Diagram: main() flow, mode switching, terminal session lifecycle |
+| 100-148 | Module Structure: main.rs types and functions, assets.rs constants and statics |
+| 149-240 | Terminal Session Management: TerminalSession, init/cleanup sequences, error handling |
+| 241-320 | UI Mode System: UiMode enum, resolution logic, mode characteristics |
+| 321-420 | Main Event Loops: tick cycle, run_app_full, run_app_inline, yield_now importance |
+| 421-480 | Asset Management: compile-time embedding, OnceLock initialization |
+| 481-520 | Startup and Shutdown Sequence: initialization order, cleanup guarantees |
+| 521-561 | Configuration Resolution, Error Handling, Extension Guide |
+
 ## Table of Contents
 
 1. [Overview](#overview)
@@ -245,12 +259,14 @@ enum UiMode {
 UI mode is determined at startup with the following precedence:
 
 1. **Configuration file** (`~/.forge/config.toml`):
+
    ```toml
    [app]
    tui = "inline"  # or "full" / "fullscreen"
    ```
 
 2. **Environment variable** (`FORGE_TUI`):
+
    ```bash
    FORGE_TUI=inline forge
    ```
@@ -299,6 +315,7 @@ if app.take_toggle_screen_mode() {
 ```
 
 The main loop then:
+
 1. Drops the current `TerminalSession` (restoring terminal)
 2. Toggles `ui_mode`
 3. Creates a new `TerminalSession` with the new mode
@@ -394,6 +411,7 @@ where
 ### Inline Event Loop
 
 The inline loop has additional complexity for:
+
 - Flushing output above the viewport (`InlineOutput::flush`)
 - Dynamic viewport resizing for overlays (e.g., model selector)
 
@@ -461,6 +479,7 @@ const SYSTEM_PROMPT_RAW: &str =
 ```
 
 This ensures:
+
 - The prompt is always available (no runtime file I/O)
 - The binary is self-contained
 - Changes to `prompt.md` require recompilation
@@ -637,6 +656,7 @@ async fn main() -> Result<()> {
 ### Adding a New UI Mode
 
 1. Add variant to `UiMode` enum:
+
    ```rust
    enum UiMode {
        Full,
@@ -660,12 +680,14 @@ async fn main() -> Result<()> {
 1. Place the asset file in `cli/assets/`
 
 2. Add a constant in `assets.rs`:
+
    ```rust
    const MY_ASSET_RAW: &str =
        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/my_asset.txt"));
    ```
 
 3. Add a `OnceLock` and accessor function:
+
    ```rust
    static MY_ASSET: OnceLock<String> = OnceLock::new();
    
@@ -683,6 +705,7 @@ To add command-line argument parsing:
 1. Add `clap` to dependencies in `Cargo.toml`
 
 2. Define argument struct:
+
    ```rust
    #[derive(Parser)]
    struct Args {
@@ -692,6 +715,7 @@ To add command-line argument parsing:
    ```
 
 3. Parse before config resolution:
+
    ```rust
    let args = Args::parse();
    let ui_mode = if args.inline {
@@ -721,5 +745,3 @@ When modifying the event loop, preserve these invariants:
 | `tui/README.md` | Comprehensive TUI rendering documentation |
 | `engine/README.md` | Engine state machine and App API |
 | `context/README.md` | Context management system |
-| `engine/README.md` | Engine crate public API reference |
-

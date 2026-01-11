@@ -2,6 +2,15 @@
 
 This project uses **Rust 1.92.0** with **Edition 2024**. This document covers key differences from earlier Rust versions that may affect code review.
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-48 | Lifetime Capture, Temporary Scope Changes in impl Trait and if-let |
+| 49-92 | Unsafe Changes: extern blocks, unsafe attributes, static mut, match ergonomics |
+| 93-138 | Macro Changes, Reserved Syntax, Prelude Additions, Box IntoIterator |
+| 139-157 | Unsafe Environment Functions, Cargo Resolver 3 |
+
 ## Edition 2024 Key Changes (from 2021)
 
 ### Lifetime Capture in `impl Trait`

@@ -5,6 +5,16 @@
 **Status:** Draft  
 **Baseline code reference:** `forge-source.zip`
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-48 | Introduction: purpose, scope (11 tools), references |
+| 49-92 | GitStatus, GitDiff, GitRestore, GitAdd, GitCommit, GitLog parameters |
+| 93-145 | GitBranch, GitCheckout, GitStash, GitShow, GitBlame parameters |
+| 146-167 | Common Behavior, NFRs (sandboxing, approval) |
+| 168-198 | Configuration, Verification Tests |
+
 ---
 
 ## 0. Change Log

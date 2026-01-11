@@ -5,6 +5,17 @@
 **Status:** Draft  
 **Baseline code reference:** `forge-source.zip`
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-49 | Introduction: purpose, scope (newline-preserving edits), definitions, references |
+| 50-73 | Overall Description: product perspective, functions, constraints |
+| 74-107 | FR 3.1: Tool interface, snippet mode, line-range mode, response schema |
+| 108-130 | FR 3.2-3.5: Canonical LF processing, newline preservation, staleness/match handling, atomicity |
+| 131-159 | NFRs (security, reliability), Configuration |
+| 160-176 | Verification Requirements: unit and integration tests |
+
 ---
 
 ## 0. Change Log

@@ -1,5 +1,16 @@
 # Type-Driven Design: The Philosophy
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-17 | Core Idea: Make invalid states unrepresentable, correctness by construction |
+| 18-48 | Typestate (ShuffledDeck Pattern): temporal coupling, transitions, proof of history |
+| 49-71 | Parametricity: enforced agnosticism, structural blindness |
+| 72-105 | Constrained Generics and Shared Foundation: call-site rejection, pattern table |
+| 106-138 | Ownership and Data Providers: coordination, mechanism vs policy |
+| 139-165 | State as Location and Capability Tokens: existence as state, phase validity |
+
 ## How to Read This Document
 
 **Absorb the principle, not the syntax.**

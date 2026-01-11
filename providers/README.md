@@ -2,7 +2,26 @@
 
 This document provides comprehensive documentation for the `forge-providers` crate - the LLM API client layer for the Forge application. It is intended for developers who want to understand, maintain, or extend the provider functionality.
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-59 | Overview: responsibilities, crate structure, dependencies |
+| 60-124 | Architecture Diagram: send_message dispatch, SSE streaming flow |
+| 125-186 | Provider System: Provider enum, dispatch pattern |
+| 187-310 | Type-Driven Design: ApiConfig, ApiKey, ModelName, OutputLimits, CacheHint |
+| 311-398 | SSE Streaming Infrastructure: event parsing, boundary detection, StreamEvent enum |
+| 399-517 | Claude API Client: endpoint, auth, request building, content blocks, response parsing |
+| 518-670 | OpenAI API Client: Responses API, role mapping, GPT-5.2 options, response parsing |
+| 671-732 | Error Handling: ApiConfigError, HTTP errors, stream recovery, propagation pattern |
+| 733-781 | Public API Reference: send_message signature, ApiConfig methods, re-exports |
+| 782-915 | Usage Examples: basic streaming, OpenAI reasoning, Claude thinking, caching |
+| 916-957 | Error Handling summary, Dependencies, Thread Safety, Testing |
+| 958-1200 | Extension Guide: adding new provider (6 steps), provider-specific features |
+| 1201-1434 | Additional Usage Examples and Summary: architectural strengths, patterns, quick reference |
+
 ## Table of Contents
+
 1. [Overview](#overview)
 2. [Architecture Diagram](#architecture-diagram)
 3. [Provider System](#provider-system)
@@ -17,7 +36,9 @@ This document provides comprehensive documentation for the `forge-providers` cra
 12. [Thread Safety](#thread-safety)
 13. [Testing](#testing)
 14. [Extension Guide](#extension-guide)
+
 ---
+
 ## Overview
 
 The `forge-providers` crate is responsible for all HTTP communication with LLM APIs. It provides a unified streaming interface that abstracts away the differences between provider-specific APIs while preserving provider-specific features like Claude's extended thinking and OpenAI's reasoning controls.
@@ -951,9 +972,9 @@ cargo test -p forge-providers
 ```
 
 Tests verify:
+
 - `ApiConfig` rejects mismatched provider/key combinations
 - `ApiConfig` accepts matching provider/key combinations
-
 
 ---
 
@@ -1430,5 +1451,3 @@ The `forge-providers` crate provides a robust, type-safe interface for LLM API c
 |----------|--------------|-------------|-----------------|
 | Claude | `api.anthropic.com/v1/messages` | `x-api-key` | `content_block_delta`, `message_stop` |
 | OpenAI | `api.openai.com/v1/responses` | `Authorization: Bearer` | `response.output_text.delta`, `response.completed` |
-
-

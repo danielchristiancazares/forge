@@ -4,6 +4,21 @@ Core domain types for Forge with **no IO, no async, and minimal dependencies**.
 
 This crate provides the foundational type system that enforces correctness at compile time. Every type can be safely used from any layer of the application without pulling in runtime complexity.
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-108 | Design Philosophy: invariants at construction, provider scoping, sum types, compile-time vs runtime |
+| 109-215 | NonEmpty String Types: NonEmptyString, NonEmptyStaticStr, EmptyStringError |
+| 216-357 | Provider and Model Types: Provider enum, ModelName, ModelNameKind, ModelParseError |
+| 358-398 | API Key Types: ApiKey enum, provider scoping |
+| 399-493 | OpenAI Request Options: ReasoningEffort, TextVerbosity, Truncation, OpenAIRequestOptions |
+| 494-570 | Caching and Output Limits: CacheHint, OutputLimits, OutputLimitsError |
+| 571-650 | Streaming Events: StreamEvent enum, StreamFinishReason, FinishReason details |
+| 651-720 | Tool Calling Types: ToolDefinition, ToolCall, ToolResult, ToolError |
+| 721-784 | Message Types: Message enum, SystemMessage, UserMessage, AssistantMessage, CacheableMessage |
+| 785-830 | Terminal Sanitization, Type Relationships diagram, Error Types Summary, Testing |
+
 ## Table of Contents
 
 - [Design Philosophy](#design-philosophy)
