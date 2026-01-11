@@ -13,11 +13,11 @@
 | 1-31 | Header and change log summary |
 | 33-83 | Section 1 - Introduction |
 | 85-106 | Section 2 - Overall Description |
-| 108-282 | Section 3 - Functional Requirements |
-| 285-304 | Section 4 - Non-Functional Requirements |
-| 307-325 | Section 5 - Configuration |
-| 328-351 | Section 6 - Verification Requirements |
-| 354-386 | Appendix A - Path Normalization (Normative) |
+| 109-314 | Section 3 - Functional Requirements |
+| 317-336 | Section 4 - Non-Functional Requirements |
+| 339-364 | Section 5 - Configuration |
+| 367-399 | Section 6 - Verification Requirements |
+| 402-434 | Appendix A - Path Normalization (Normative) |
 
 ---
 
@@ -175,8 +175,12 @@ Local Search is a non-networked tool executed through Forge's tool subsystem. It
 - **FR-LS-VAL-03:** `path` MUST be validated with the sandbox rules in `docs/TOOL_EXECUTOR_SRD.md` (FR-VAL-04). Relative paths resolve against the sandbox working directory.
 - **FR-LS-VAL-04:** If `path` resolves to a file, only that file is searched. If it resolves to a directory, the search is recursive (subject to traversal options).
 - **FR-LS-VAL-05:** If `path` does not exist or is not readable, return `ToolError::ExecutionFailed` with a clear message.
-- **FR-LS-VAL-06:** `glob` entries MUST be non-empty strings; invalid glob syntax MUST return `ToolError::BadArgs`.
+- **FR-LS-VAL-06:** `include_glob` and `exclude_glob` entries MUST be non-empty strings; invalid glob syntax MUST return `ToolError::BadArgs`.
 - **FR-LS-VAL-07:** If `fuzzy` is provided but the selected backend does not support fuzzy matching, return `ToolError::BadArgs`.
+- **FR-LS-VAL-08:** `max_matches_per_file`, `max_files`, and `max_file_size_bytes` MUST be <= configured hard caps; otherwise return `ToolError::BadArgs`.
+- **FR-LS-VAL-09:** If `recursive=false`, the search MUST scan only direct children of the target directory (depth 1). If `path` resolves to a file, `recursive` is ignored.
+- **FR-LS-VAL-10:** `exclude_glob` patterns are applied after `include_glob`. A file must match at least one include pattern (if any specified) AND match zero exclude patterns to be eligible.
+- **FR-LS-VAL-11 (Compatibility):** If `include_glob` is absent and `glob` is present, treat `glob` as `include_glob`. If both are present, `include_glob` is authoritative and `glob` is ignored.
 
 ### 3.3 Search Semantics
 
@@ -188,13 +192,16 @@ Local Search is a non-networked tool executed through Forge's tool subsystem. It
   - `case="insensitive"`: case-insensitive match using ASCII-only casefolding.
   - `case="smart"`: ASCII smartcase (if the pattern contains any ASCII uppercase A-Z, use sensitive; otherwise insensitive).
   - The implementation MUST configure the backend to match these semantics. If the backend cannot be configured to comply, the tool MUST fail with `ToolError::ExecutionFailed`.
-- **FR-LS-SRC-05:** `glob` patterns restrict the eligible file set to paths matching at least one glob. If `glob` is empty or omitted, no glob filter is applied.
+- **FR-LS-SRC-05:** `include_glob` patterns restrict the eligible file set to paths matching at least one include glob. If `include_glob` is empty or omitted, no include filter is applied. `exclude_glob` patterns are applied after include filtering to remove matching paths.
 - **FR-LS-SRC-06:** `hidden`, `follow`, and `no_ignore` MUST map to their standard backend meanings:
   - `hidden`: include dotfiles.
   - `follow`: follow symlinked directories.
   - `no_ignore`: disable ignore files and global excludes.
 - **FR-LS-SRC-07:** `context` emits up to N lines before and after each match as `context` events. Context events count toward `max_results` (see FR-LS-06b).
-- **FR-LS-SRC-08 (Fuzzy):** If `fuzzy` is provided, the backend MUST run in fuzzy mode with the specified level. Level 1 is the strictest and level 4 is the loosest; higher levels MUST be supersets of lower levels. Exact scoring is backend-defined but MUST be deterministic.
+- **FR-LS-SRC-08:** Files larger than `max_file_size_bytes` (or config default if not specified) MUST be skipped without error.
+- **FR-LS-SRC-09:** Once `max_files` files have been scanned, traversal MUST stop. Files are counted regardless of whether they contain matches.
+- **FR-LS-SRC-10:** Once `max_matches_per_file` matches are found in a single file, the tool MUST stop searching that file and proceed to the next. Context events do not count toward this limit.
+- **FR-LS-SRC-11 (Fuzzy):** If `fuzzy` is provided, the backend MUST run in fuzzy mode with the specified level. Level 1 is the strictest and level 4 is the loosest; higher levels MUST be supersets of lower levels. Exact scoring is backend-defined but MUST be deterministic.
 
 ### 3.4 Execution and Backend Requirements
 
@@ -245,16 +252,20 @@ Local Search is a non-networked tool executed through Forge's tool subsystem. It
 
 ```json
 {
-  "type": "match" | "context",
+  "type": "match",
   "data": {
     "path": { "text": "<path>" },
     "line_number": <u64>,
-    "lines": { "text": "<line text>" }
+    "column": <u64>,
+    "lines": { "text": "<line text>" },
+    "match_text": "<matched substring>"
   }
 }
 ```
 
 **FR-LS-04a:** `line_number` MUST be 1-based. `lines.text` MUST NOT include trailing newline characters. `path.text` MUST use forward slashes.
+**FR-LS-04b:** `column` MUST be 1-based, indicating the byte offset of the match start within the line.
+**FR-LS-04c:** `match_text` MUST contain the matched substring. For regex mode, this is the full match (group 0). For exact/fuzzy modes, this is the matched literal. Context events MUST omit `column` and `match_text`.
 
 **FR-LS-05:** Response payload MUST include:
 
@@ -264,6 +275,8 @@ Local Search is a non-networked tool executed through Forge's tool subsystem. It
 - `matches` (array of structured records)
 - `truncated` (boolean)
 - `timed_out` (boolean)
+- `files_scanned` (integer)
+- `errors` (array of error objects; may be empty)
 - `exit_code` (optional integer)
 - `stderr` (optional string)
 - `content` text view for human readability
@@ -275,6 +288,8 @@ Local Search is a non-networked tool executed through Forge's tool subsystem. It
 **FR-LS-05c:** `content` MUST be a UTF-8 string and SHOULD represent a human-readable view of results in the same order as `matches`. If `truncated` or `timed_out`, `content` SHOULD include a short trailing note.
 
 **FR-LS-05d (Extensions):** Additional top-level fields MAY be included only if documented by an extension SRD (e.g., `stats` in `docs/SEARCH_INDEXING_SRD.md`). Consumers MUST ignore unknown fields.
+
+**FR-LS-05e:** `files_scanned` MUST be the number of eligible files examined (post include/exclude filtering), including files skipped due to size or per-file match limits.
 
 **FR-LS-ENC-01:** Backend stdout and stderr MUST be decoded as UTF-8 with deterministic lossy conversion (invalid byte sequences replaced with U+FFFD). JSON parse failures after decoding MUST be treated as backend errors.
 
@@ -293,6 +308,9 @@ Local Search is a non-networked tool executed through Forge's tool subsystem. It
 - **FR-LS-ERR-02:** Backend spawn failures or unsupported backend versions MUST return `ToolError::ExecutionFailed`.
 - **FR-LS-ERR-03:** Backend exit codes MUST be classified per the table above. Exit code 1 MUST NOT be treated as an error.
 - **FR-LS-ERR-04:** If a backend error occurs after some events were parsed, the tool MAY return partial results with `exit_code` and `stderr` set. If parsing cannot be trusted, return `ToolError::ExecutionFailed`.
+- **FR-LS-ERR-05:** Per-file I/O errors (permission denied, file deleted mid-scan, encoding failures) MUST NOT fail the overall tool call.
+- **FR-LS-ERR-06:** Per-file errors MUST be recorded in an `errors` array in the response: `{ "path": "<relative path>", "error": "<message>" }`.
+- **FR-LS-ERR-07:** The `errors` array MUST be included in the response even if empty.
 
 ---
 
@@ -329,6 +347,9 @@ binary = "ugrep"
 fallback_binary = "rg"
 default_timeout_ms = 20000
 default_max_results = 200
+max_matches_per_file = 50
+max_files = 10000
+max_file_size_bytes = 2000000
 ```
 
 **CFG-LS-01:** `binary` and `fallback_binary` MUST be resolved at startup. If a configured binary is missing or below minimum version, it MUST be ignored (and fallback attempted).
@@ -336,6 +357,10 @@ default_max_results = 200
 **CFG-LS-02:** `default_timeout_ms` and `default_max_results` MUST be positive integers.
 
 **CFG-LS-03:** Per-request `timeout_ms` and `max_results` override defaults when provided, subject to validation rules in Section 3.2.
+
+**CFG-LS-04:** `max_matches_per_file`, `max_files`, and `max_file_size_bytes` are hard caps. Requests exceeding them MUST return `ToolError::BadArgs`.
+
+**CFG-LS-05:** If `max_file_size_bytes` is not specified in the request, the config default applies.
 
 ---
 
@@ -351,6 +376,15 @@ default_max_results = 200
 | T-LS-TRUNC-02 | `truncated=false` when exactly max_results exist |
 | T-LS-CASE-01 | Smartcase ASCII detection |
 | T-LS-ENC-01 | Invalid UTF-8 decoded with U+FFFD deterministically |
+| T-LS-MPF-01 | `max_matches_per_file` stops after N matches in single file |
+| T-LS-MF-01 | `max_files` stops traversal after N files scanned |
+| T-LS-SIZE-01 | Files exceeding `max_file_size_bytes` are skipped |
+| T-LS-EXCL-01 | `exclude_glob` filters out matching files |
+| T-LS-INCL-01 | `include_glob` + `exclude_glob` interaction |
+| T-LS-REC-01 | `recursive=false` scans only direct children |
+| T-LS-COL-01 | `column` is accurate for match position |
+| T-LS-MTXT-01 | `match_text` extracts correct substring |
+| T-LS-ERR-01 | Permission-denied file recorded in `errors`, search continues |
 
 ### 6.2 Integration Tests
 

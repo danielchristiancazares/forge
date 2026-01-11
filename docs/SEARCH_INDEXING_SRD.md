@@ -2,31 +2,32 @@
 
 ## Software Requirements Document
 
-**Version:** 1.8
-**Date:** 2026-01-10
+**Version:** 1.9
+**Date:** 2026-01-11
 **Status:** Implementation-Ready
 **Baseline code reference:** `forge-source.zip`
-**Normative baseline spec:** `docs/LOCAL_SEARCH_SRD.md` (v1.0, 2026-01-08)
+**Normative baseline spec:** `docs/LOCAL_SEARCH_SRD.md` (v1.2, 2026-01-11)
 
 ## LLM-TOC
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-26 | Header: version, status, change log summary |
-| 27-88 | Section 1 - Introduction: purpose, scope, definitions, references |
-| 89-117 | Section 2 - Tool Identity and Contract: aliasing, schema compatibility |
-| 118-184 | Section 3 - Determinism and Ordering: event ordering model, truncation, order root |
-| 185-226 | Section 4.1-4.2 - Indexing Overview: goals, safety state machine |
-| 227-293 | Section 4.2.1-4.2.2 - State Transitions: precedence rules, transition table (normative) |
-| 294-409 | Section 4.3 - Background Indexer: startup, non-blocking, build phases, throttling, shutdown |
-| 410-577 | Section 5 - Index Modes and Storage: modes, root selection, key definition, storage backends |
-| 578-674 | Section 6-7 - Coverage and Candidate Filtering: COMPLETE criteria, fingerprints, watchers, superset safety |
-| 675-744 | Section 8 - Backend Execution: selection, large lists, chunking, exit classification, parsing |
-| 745-830 | Section 9-10 - Fuzzy Fallback and Output: opt-in triggers, levels, guardrails, stats policy |
-| 831-890 | Section 11 - Budget Enforcement: initial build vs maintenance budgets, deterministic actions |
-| 891-995 | Section 12-13 - Security and Configuration: sandbox, permissions, stale-file, config example |
-| 996-1103 | Section 14-15 - NFRs and Verification: correctness, performance, portability, test matrix |
-| 1104-1130 | Section 16-18 - Threat Model, Rollout, Resolved Questions |
+| 1-32 | Header: version, status, change log summary |
+| 50-112 | Section 1 - Introduction: purpose, scope, definitions, references |
+| 113-145 | Section 2 - Tool Identity and Contract: aliasing, schema compatibility |
+| 146-219 | Section 3 - Determinism and Ordering: event ordering model, truncation, order root |
+| 220-447 | Section 4.1-4.2 - Indexing Overview: goals, safety state machine |
+| 448-672 | Section 5 - Index Modes and Storage: modes, root selection, key definition, storage backends |
+| 673-763 | Section 6 - Coverage, Change Tracking, and Reconcile |
+| 764-807 | Section 7 - Candidate Filtering and Superset Safety |
+| 808-930 | Section 8 - Backend Execution: selection, large lists, chunking, exit classification, parsing |
+| 931-969 | Section 9 - Fuzzy Fallback: opt-in triggers, levels, guardrails |
+| 970-1044 | Section 10 - Output Fields, `count` Semantics, and Optional `stats` |
+| 1045-1118 | Section 11 - Budget Enforcement: initial build vs maintenance budgets, deterministic actions |
+| 1119-1155 | Section 12 - Security, Privacy, and Edit-Safety Interaction |
+| 1156-1266 | Section 13 - Configuration |
+| 1267-1389 | Section 14-15 - NFRs and Verification: correctness, performance, portability, test matrix |
+| 1390-1456 | Section 16-18 - Threat Model, Rollout, Resolved Questions |
 
 ---
 
@@ -43,6 +44,7 @@
 | 1.6     | 2026-01-10 | **Specification hardening (28 findings remediated)**: Fixed Event definition formatting (§1.3); resolved truncation semantics inconsistency (FR-LSI-TRUNC-01 vs FR-LSI-CTX-02); added determinism mandate (FR-LSI-ORD-05); added order_root selection algorithm (§3.4); aligned build budget transition BUILDING→UNCERTAIN (§4.2.2); added MAINT_BUDGET_EXCEEDED and WATCHER_OVERFLOW_DURING_BUILD transitions; added Index Key scheduling policy (§5.2.3) with query-time filters (glob[], case, fixed_strings, word_regexp removed from key); added cache_root selection algorithm (§5.3.1); clarified storage fallback policy (§5.3.2, §12.2); aligned Appendix C with Tool Executor sandbox; fixed Appendix E schema (removed glob_hash); fully specified Appendix F Bloom algorithm (xxHash64, bit layout, n determination, rounding); specified newline-in-path rejection policy (Appendix G); resolved §18.2 eligible file set (Forge standardizes eligibility); added tokenizer/Bloom verification tests (§15.6); added path edge case tests (§15.7); expanded stats field definitions with fallback_reason enum (§10.2) |
 | 1.7     | 2026-01-10 | **Implementation-readiness final review (20 findings remediated)**: CRITICAL: Removed NFC/CRLF normalization from tokenizer (FR-LSI-TOK-02/03) to preserve Bloom superset guarantee; added tool-terminated backend classification precedence (FR-LSI-EXIT-04); distinguished persistence hard vs soft failure in transition table (§4.2.2); added DIRTY_BACKLOG vs RENAME_UNCERTAIN distinction (FR-LSI-TRK-09); clarified atomic commit language in build phases (§4.3.3); extended key reuse lattice for follow/no_ignore options (FR-LSI-IDX-SCHED-04); specified index_path as directory path (§5.2); reduced index_max_tokenized_bytes default to 128 KiB (§13); added index_key_hash computation (§5.2.1); added timestamp resolution mitigation (FR-LSI-FPRI-03a/03b); specified casefold strategy enumeration (Appendix F.1); added ASCII-only smartcase detection (Appendix F.2); added FR-LSI-BE-PATH-01 for absolute canonical paths; added FR-LSI-EXE-05 backend ordering optimization; split stats fields into index_bypass_reason, fuzzy_fallback_reason, maintenance_action (§10.2, §11.3); added candidates_total nullable for non-enumerated paths (FR-LSI-STAT-02a); clarified sandbox scope exception for cache root (§12.2); added Bloom/tokenizer config parameters (§13); added test cases for newline-path + COMPLETE and tool-terminated classification (§15.6, §15.8); clarified §18.2 execution-path-dependent semantics with null stats |
 | 1.8     | 2026-01-10 | **GPT-5.2 Pro specification review remediation (30+ findings)**: §2: Added stats_version=1 for v1.x (FR-LSI-SCHEMA-RESP-03a), defined open schema forward compatibility (FR-LSI-SCHEMA-RESP-03b); §3: Added deterministic tie-break for same file/line events (FR-LSI-ORD-03), fixed order_root cross-reference; §5: Enhanced index_key_hash with RFC 8785 canonical JSON, added all key components, clarified unique identity role (FR-LSI-IDX-RM-02a), specified subtree prefix matching algorithm (FR-LSI-IDX-SCOPE-01); §6: Added xxHash64 seed specification for fingerprint hashing (FR-LSI-TRK-03a-HASH), clarified coarse granularity detection algorithm (FR-LSI-TRK-03b), added watcher events during validation handling (FR-LSI-TRK-08a); Appendix F: Clarified n-grams use codepoints not bytes (FR-LSI-TOK-05/05a), added overflow protection for Bloom sizing (FR-LSI-BLOOM-01a), added Unicode version pinning requirement (FR-LSI-TOK-UNICODE); §8: Added backend_id format specification (FR-LSI-BE-02a), added decoding algorithm with surrogate handling (FR-LSI-ENC-01a), added event path normalization (FR-LSI-ENC-01b), added chunking algorithm specification (FR-LSI-EXE-04a); §10: Added fallback_passes_skipped to stats table, fixed candidates_searched→candidates_scanned inconsistency; §11: Added budget rounding specification (FR-LSI-BUD-MAINT-01a), added cooldown duration and bypass rules (FR-LSI-BUD-04a/04b); §13: Added index_chunk_size, index_cooldown_base_ms, index_cooldown_max_ms to config validation; Appendix C: Aligned '..' handling with Tool Executor FR-VAL-04, added cross-reference |
+| 1.9     | 2026-01-11 | Sync with `docs/LOCAL_SEARCH_SRD.md` v1.2: include/exclude globs, non-recursive mode, per-file caps, max_files, max_file_size_bytes, match columns/substrings, and errors/files_scanned response fields |
 
 ---
 
@@ -126,7 +128,7 @@ RFC 2119 / RFC 8174 keywords apply when capitalized (MUST, SHOULD, etc.).
 ### 2.3 Response Schema Compatibility and Extension Policy
 
 Baseline response fields (per `docs/LOCAL_SEARCH_SRD.md` **FR-LS-05**) include:
-`pattern`, `path`, `count`, `matches[]`, `truncated`, `timed_out`, optional `exit_code`, optional `stderr`, and `content`.
+`pattern`, `path`, `count`, `matches[]`, `truncated`, `timed_out`, `files_scanned`, `errors`, optional `exit_code`, optional `stderr`, and `content`.
 
 **FR-LSI-SCHEMA-RESP-01:** The response payload MUST include all required baseline fields and preserve their types.
 
@@ -193,6 +195,8 @@ Baseline: **FR-LS-06:** stop after `max_results` match/context events and mark `
 **FR-LSI-STABLE-01 (Stable filter):** If the index is used to exclude files from scanning, it MUST behave as a **stable filter** over the baseline per-file processing order implied by **FR-LSI-ORD-03**. It MUST NOT reorder files in a way that changes which events fall before the truncation boundary.
 
 **FR-LSI-STABLE-02:** If stable-filter equivalence cannot be guaranteed for a given request (due to backend constraints, query type, or budget limits), the tool MUST bypass index-based exclusion for that call.
+
+**FR-LSI-STABLE-03 (max_files equivalence):** When `max_files` is set, the tool MUST apply the limit to the ordered eligible file list before candidate exclusion. Files excluded by the index still count toward `max_files` and `files_scanned` to preserve equivalence with non-indexed execution.
 
 ### 3.4 Order Root Selection (Normative)
 
@@ -489,11 +493,13 @@ If thresholds are now exceeded, transition from `DISABLED` to `ABSENT`, then ini
 
 **FR-LSI-IDX-KEY-01a (Query-time filters — NOT part of key):** The following request options are applied as **query-time filters** against the index catalog and Bloom filters, NOT as Index Key components:
 
-* `glob[]` — Applied as a path filter to the candidate set. Files not matching globs are excluded at query time.
+* `include_glob` / `exclude_glob` — Applied as a path filter to the candidate set. Files not matching include globs or matching exclude globs are excluded at query time.
+* `recursive` — Applied as a depth filter against the request root (depth 1 when `false`).
+* `max_files`, `max_matches_per_file`, `max_file_size_bytes` — Request-time limits; do not change index identity.
 * `fixed_strings`, `word_regexp` — Affect pattern interpretation. Bloom filter lookup normalizes the pattern accordingly.
 * `case` — Selects the appropriate Bloom filter variant (`SENSITIVE` or `INSENSITIVE`) at query time.
 
-> **Rationale:** Treating these as query-time filters prevents "index explosion" where varying `glob[]` patterns cause excessive distinct keys and cache churn. The index stores both case-sensitivity variants (per FR-LSI-BLOOM-04) to support any `case` value without rebuild.
+> **Rationale:** Treating these as query-time filters prevents "index explosion" where varying include/exclude globs or limits cause excessive distinct keys and cache churn. The index stores both case-sensitivity variants (per FR-LSI-BLOOM-04) to support any `case` value without rebuild.
 
 **FR-LSI-IDX-KEY-02:** Index Key components MUST be stored explicitly (not as opaque blobs) to enable deterministic key comparison and mismatch detection. A key mismatch MUST trigger rebuild under the new key.
 
@@ -543,7 +549,7 @@ index_default_no_ignore = false
 | `hidden=false, follow=false, no_ignore=false` | `true, true, true` | Yes | Request is subset of indexed files |
 | `hidden=false, follow=true, no_ignore=false` | `false, false, false` | No | Request follows symlinks not in index |
 
-> **Note:** When the request is more restrictive, the index catalog is a superset of the eligible files, which is safe for candidate exclusion but may result in extra files being scanned. The request's `glob[]` filter further narrows the candidates at query time.
+> **Note:** When the request is more restrictive, the index catalog is a superset of the eligible files, which is safe for candidate exclusion but may result in extra files being scanned. The request's include/exclude globs and `recursive` depth filter further narrow the candidates at query time.
 
 #### 5.2.4 Scope and Multi-Root Handling
 
@@ -906,14 +912,16 @@ Baseline structured record format:
   "data": {
     "path": { "text": "<path>" },
     "line_number": <u64>,
-    "lines": { "text": "<line text>" }
+    "column": <u64>,
+    "lines": { "text": "<line text>" },
+    "match_text": "<matched substring>"
   }
 }
 ```
 
 **FR-LSI-PARSE-01:** Parsing MUST produce structured events exactly as in `docs/LOCAL_SEARCH_SRD.md` (FR-LS-04).
 
-**FR-LSI-CTX-01:** When `context > 0`, the tool MUST preserve backend context emission semantics for that backend and MUST represent them as `"context"` events.
+**FR-LSI-CTX-01:** When `context > 0`, the tool MUST preserve backend context emission semantics for that backend and MUST represent them as `"context"` events. Context events MUST omit `column` and `match_text`.
 
 **FR-LSI-CTX-02:** `max_results` MUST count both `"match"` and `"context"` events. When the limit is reached, the tool MUST stop emitting further events and MUST compute `truncated` per **FR-LSI-TRUNC-01** (attempt to observe one additional event where feasible to determine if more exist).
 
@@ -947,7 +955,7 @@ Baseline structured record format:
 
 **FR-LSI-FUZ-G-01:** Fuzzy fallback MUST be skipped if `pattern` length is below `fuzzy_min_pattern_len` (configurable), and this decision SHOULD be reported in `stats` when enabled.
 
-**FR-LSI-FUZ-G-02:** Fuzzy fallback passes MUST honor the same request options (`case`, `glob`, `hidden`, `follow`, `no_ignore`, `context`, `timeout_ms`, `max_results`) unless a specific option is documented as incompatible with fuzzy mode.
+**FR-LSI-FUZ-G-02:** Fuzzy fallback passes MUST honor the same request options (`case`, `include_glob`, `exclude_glob`, `recursive`, `hidden`, `follow`, `no_ignore`, `context`, `timeout_ms`, `max_results`, `max_files`, `max_matches_per_file`, `max_file_size_bytes`) unless a specific option is documented as incompatible with fuzzy mode.
 
 **FR-LSI-FUZ-G-03 (Total timeout budget):** The total wall-clock time for the initial search plus all fallback passes MUST NOT exceed the request's `timeout_ms`:
 
@@ -1159,6 +1167,9 @@ binary = "ugrep"
 fallback_binary = "rg"
 default_timeout_ms = 20000
 default_max_results = 200
+max_matches_per_file = 50
+max_files = 10000
+max_file_size_bytes = 2000000
 
 # Indexing - Mode and Storage
 index_mode = "auto"                 # off | auto | on
@@ -1419,7 +1430,7 @@ fuzzy_min_pattern_len = 4
 
 **FR-LSI-ELIG-01 (Canonical eligibility definition):** The eligible file set for a request is determined by Forge's enumeration engine, NOT by the backend's ignore semantics:
 
-1. **Enumeration:** Forge enumerates files using its own ignore engine (`.gitignore`, `.ignore`, global excludes, sandbox deny patterns) with the request's traversal options (`hidden`, `follow`, `no_ignore`).
+1. **Enumeration:** Forge enumerates files using its own ignore engine (`.gitignore`, `.ignore`, global excludes, sandbox deny patterns) with the request's traversal options (`hidden`, `follow`, `no_ignore`, `recursive`) and path filters (`include_glob`, `exclude_glob`).
 2. **Backend invocation:** When candidate exclusion is active, Forge passes the eligible file list explicitly to the backend via `--include-from` or equivalent (Appendix G). The backend's own ignore semantics are overridden.
 3. **Direct invocation (no exclusion):** When index is `DISABLED`, `ABSENT`, or exclusion is bypassed, the backend is invoked directly (without file list), and its native ignore semantics apply. **This creates execution-path-dependent semantics:**
    - **Correctness is preserved:** No exclusion occurs, so there is no risk of false negatives. The superset safety guarantee is vacuously satisfied.
@@ -1562,8 +1573,10 @@ Bloom filters have false positives but no false negatives, so this exclusion rul
 PRAGMA foreign_keys = ON;
 
 -- One row per Index Key.
--- Note: Per §5.2.2, glob[], case, fixed_strings, and word_regexp are query-time
--- filters and NOT part of the Index Key. They are applied at lookup time.
+-- Note: Per §5.2.2, include_glob/exclude_glob, recursive, max_files,
+-- max_matches_per_file, max_file_size_bytes, case, fixed_strings, and
+-- word_regexp are query-time filters and NOT part of the Index Key. They
+-- are applied at lookup time.
 CREATE TABLE index_meta (
   index_key_hash          TEXT PRIMARY KEY,
   schema_version          INTEGER NOT NULL,
@@ -1571,7 +1584,7 @@ CREATE TABLE index_meta (
   root_path_canon         TEXT NOT NULL,
 
   -- Explicit key components (FR-LSI-IDX-KEY-02)
-  -- Only traversal-affecting options are part of the key
+  -- Only traversal-affecting options in the key are hidden/follow/no_ignore (recursive is query-time)
   signature_hidden        INTEGER NOT NULL,
   signature_follow        INTEGER NOT NULL,
   signature_no_ignore     INTEGER NOT NULL,
