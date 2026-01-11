@@ -124,10 +124,7 @@ impl StreamingMessage {
                     if acc.args_exceeded {
                         return None;
                     }
-                    let new_len = acc
-                        .arguments_json
-                        .len()
-                        .saturating_add(arguments.len());
+                    let new_len = acc.arguments_json.len().saturating_add(arguments.len());
                     if new_len > self.max_tool_args_bytes {
                         acc.args_exceeded = true;
                         return None;
@@ -180,7 +177,10 @@ impl StreamingMessage {
             }
         }
 
-        ParsedToolCalls { calls, pre_resolved }
+        ParsedToolCalls {
+            calls,
+            pre_resolved,
+        }
     }
 
     /// Consume streaming message and produce a complete message.
@@ -849,6 +849,8 @@ pub struct App {
     should_quit: bool,
     /// Request to toggle between fullscreen and inline UI modes.
     toggle_screen_mode: bool,
+    /// Request to clear the visible transcript (handled by the UI).
+    clear_transcript: bool,
     status_message: Option<String>,
     api_keys: HashMap<Provider, String>,
     model: ModelName,
@@ -1083,6 +1085,7 @@ impl App {
             scroll_max: 0,
             should_quit: false,
             toggle_screen_mode: false,
+            clear_transcript: false,
             status_message: None,
             api_keys,
             model,
@@ -1303,7 +1306,7 @@ impl App {
                 list.into_iter().collect()
             },
             denylist: {
-                let list = if policy_cfg.and_then(|cfg| Some(&cfg.denylist)).is_some() {
+                let list = if policy_cfg.map(|cfg| &cfg.denylist).is_some() {
                     policy_cfg
                         .map(|cfg| cfg.denylist.clone())
                         .unwrap_or_default()
@@ -1687,6 +1690,11 @@ impl App {
     /// Check if screen mode toggle was requested and clear the flag.
     pub fn take_toggle_screen_mode(&mut self) -> bool {
         std::mem::take(&mut self.toggle_screen_mode)
+    }
+
+    /// Check if a transcript clear was requested and clear the flag.
+    pub fn take_clear_transcript(&mut self) -> bool {
+        std::mem::take(&mut self.clear_transcript)
     }
 
     pub fn status_message(&self) -> Option<&str> {
@@ -2659,12 +2667,11 @@ impl App {
                         }
                     }
                     StreamEvent::ToolCallDelta { id, arguments } => {
-                        if let Some(batch_id) = active.tool_batch_id {
-                            if let Err(e) =
+                        if let Some(batch_id) = active.tool_batch_id
+                            && let Err(e) =
                                 self.tool_journal.append_call_args(batch_id, id, arguments)
-                            {
-                                journal_error = Some(e.to_string());
-                            }
+                        {
+                            journal_error = Some(e.to_string());
                         }
                     }
                     _ => {}
@@ -2673,13 +2680,13 @@ impl App {
 
             if journal_error.is_none() {
                 finish_reason = active.message.apply_event(event);
-                if update_assistant_text && let Some(batch_id) = active.tool_batch_id {
-                    if let Err(e) = self
+                if update_assistant_text
+                    && let Some(batch_id) = active.tool_batch_id
+                    && let Err(e) = self
                         .tool_journal
                         .update_assistant_text(batch_id, active.message.content())
-                    {
-                        journal_error = Some(e.to_string());
-                    }
+                {
+                    journal_error = Some(e.to_string());
                 }
             }
 
@@ -2866,15 +2873,14 @@ impl App {
         }
 
         let mut batch_id = tool_batch_id.unwrap_or(0);
-        if batch_id != 0 {
-            if let Err(e) = self
+        if batch_id != 0
+            && let Err(e) = self
                 .tool_journal
                 .update_assistant_text(batch_id, &assistant_text)
-            {
-                tracing::warn!("Tool journal update failed: {e}");
-                self.set_status(format!("Tool journal error: {e}"));
-                batch_id = 0;
-            }
+        {
+            tracing::warn!("Tool journal update failed: {e}");
+            self.set_status(format!("Tool journal error: {e}"));
+            batch_id = 0;
         }
         if batch_id == 0 {
             batch_id =
@@ -2951,9 +2957,11 @@ impl App {
         let next_iteration = self.tool_iterations.saturating_add(1);
         if next_iteration > self.tool_settings.limits.max_tool_iterations_per_user_turn {
             let mut results = pre_resolved;
-            results.extend(tool_calls.iter().map(|call| {
-                ToolResult::error(call.id.clone(), "Max tool iterations reached")
-            }));
+            results.extend(
+                tool_calls
+                    .iter()
+                    .map(|call| ToolResult::error(call.id.clone(), "Max tool iterations reached")),
+            );
             if batch_id != 0 {
                 for result in &results {
                     let _ = self.tool_journal.record_result(batch_id, result);
@@ -3109,21 +3117,18 @@ impl App {
                 continue;
             }
 
-            if call.name == "apply_patch" {
-                if let Some(patch) = call.arguments.get("patch").and_then(|v| v.as_str()) {
-                    if patch.as_bytes().len() > self.tool_settings.patch_limits.max_patch_bytes {
-                        pre_resolved.push(tool_error_result(
-                            call,
-                            tools::ToolError::SandboxViolation(
-                                tools::DenialReason::LimitsExceeded {
-                                    message: "Patch exceeds max_patch_bytes".to_string(),
-                                },
-                            ),
-                        ));
-                        pre_resolved_ids.insert(call.id.clone());
-                        continue;
-                    }
-                }
+            if call.name == "apply_patch"
+                && let Some(patch) = call.arguments.get("patch").and_then(|v| v.as_str())
+                && patch.len() > self.tool_settings.patch_limits.max_patch_bytes
+            {
+                pre_resolved.push(tool_error_result(
+                    call,
+                    tools::ToolError::SandboxViolation(tools::DenialReason::LimitsExceeded {
+                        message: "Patch exceeds max_patch_bytes".to_string(),
+                    }),
+                ));
+                pre_resolved_ids.insert(call.id.clone());
+                continue;
             }
 
             let exec = match self.tool_registry.lookup(&call.name) {
@@ -3141,7 +3146,7 @@ impl App {
                 continue;
             }
 
-            if let Err(err) = preflight_sandbox(&self.tool_settings.sandbox, &call) {
+            if let Err(err) = preflight_sandbox(&self.tool_settings.sandbox, call) {
                 pre_resolved.push(tool_error_result(call, err));
                 pre_resolved_ids.insert(call.id.clone());
                 continue;
@@ -3452,31 +3457,31 @@ impl App {
                     }
                 }
 
-                if let Some(handle) = exec.join_handle.as_mut() {
-                    if let Some(joined) = handle.now_or_never() {
-                        exec.join_handle = None;
-                        exec.event_rx = None;
-                        exec.abort_handle = None;
+                if let Some(handle) = exec.join_handle.as_mut()
+                    && let Some(joined) = handle.now_or_never()
+                {
+                    exec.join_handle = None;
+                    exec.event_rx = None;
+                    exec.abort_handle = None;
 
-                        let result = match joined {
-                            Ok(result) => result,
-                            Err(err) => {
-                                let call_id = exec
-                                    .current_call
-                                    .as_ref()
-                                    .map(|c| c.id.clone())
-                                    .unwrap_or_else(|| "<unknown>".to_string());
-                                let message = if err.is_cancelled() {
-                                    "Tool execution cancelled"
-                                } else {
-                                    "Tool execution failed"
-                                };
-                                ToolResult::error(call_id, message)
-                            }
-                        };
-                        exec.current_call = None;
-                        completed = Some(result);
-                    }
+                    let result = match joined {
+                        Ok(result) => result,
+                        Err(err) => {
+                            let call_id = exec
+                                .current_call
+                                .as_ref()
+                                .map(|c| c.id.clone())
+                                .unwrap_or_else(|| "<unknown>".to_string());
+                            let message = if err.is_cancelled() {
+                                "Tool execution cancelled"
+                            } else {
+                                "Tool execution failed"
+                            };
+                            ToolResult::error(call_id, message)
+                        }
+                    };
+                    exec.current_call = None;
+                    completed = Some(result);
                 }
 
                 if let Some(result) = completed.take() {
@@ -3628,6 +3633,7 @@ impl App {
         Ok(true)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn commit_tool_batch(
         &mut self,
         assistant_text: String,
@@ -3672,10 +3678,10 @@ impl App {
 
         if self.autosave_history() {
             self.finalize_journal_commit(step_id);
-            if batch_id != 0 {
-                if let Err(e) = self.tool_journal.commit_batch(batch_id) {
-                    tracing::warn!("Failed to commit tool batch {}: {e}", batch_id);
-                }
+            if batch_id != 0
+                && let Err(e) = self.tool_journal.commit_batch(batch_id)
+            {
+                tracing::warn!("Failed to commit tool batch {}: {e}", batch_id);
             }
         }
 
@@ -3896,10 +3902,9 @@ impl App {
     pub fn tool_approval_move_down(&mut self) {
         if let AppState::Enabled(EnabledState::ToolLoop(state)) = &mut self.state
             && let ToolLoopPhase::AwaitingApproval(approval) = &mut state.phase
+            && approval.cursor + 1 < approval.requests.len()
         {
-            if approval.cursor + 1 < approval.requests.len() {
-                approval.cursor += 1;
-            }
+            approval.cursor += 1;
         }
     }
 
@@ -3928,7 +3933,8 @@ impl App {
                 .requests
                 .iter()
                 .zip(approval.selected.iter())
-                .filter_map(|(req, selected)| selected.then(|| req.tool_call_id.clone()))
+                .filter(|(_, selected)| **selected)
+                .map(|(req, _)| req.tool_call_id.clone())
                 .collect::<Vec<_>>()
         } else {
             Vec::new()
@@ -4195,10 +4201,10 @@ impl App {
                         }
                     }
                     AppState::Enabled(EnabledState::ToolLoop(state)) => {
-                        if let ToolLoopPhase::Executing(exec) = &state.phase {
-                            if let Some(handle) = &exec.abort_handle {
-                                handle.abort();
-                            }
+                        if let ToolLoopPhase::Executing(exec) = &state.phase
+                            && let Some(handle) = &exec.abort_handle
+                        {
+                            handle.abort();
                         }
                         if state.batch.batch_id != 0 {
                             let _ = self.tool_journal.discard_batch(state.batch.batch_id);
@@ -4230,6 +4236,7 @@ impl App {
                 self.invalidate_usage_cache();
                 self.autosave_history(); // Persist cleared state immediately
                 self.set_status("Conversation cleared");
+                self.clear_transcript = true;
             }
             Some("model") => {
                 if let Some(model_name) = parts.get(1) {
@@ -4407,10 +4414,10 @@ impl App {
                         self.set_status("Tool results cancelled");
                     }
                     AppState::Enabled(EnabledState::ToolLoop(state)) => {
-                        if let ToolLoopPhase::Executing(exec) = &state.phase {
-                            if let Some(handle) = &exec.abort_handle {
-                                handle.abort();
-                            }
+                        if let ToolLoopPhase::Executing(exec) = &state.phase
+                            && let Some(handle) = &exec.abort_handle
+                        {
+                            handle.abort();
                         }
                         self.cancel_tool_batch(
                             state.batch.assistant_text,
@@ -5009,6 +5016,7 @@ mod tests {
             scroll_max: 0,
             should_quit: false,
             toggle_screen_mode: false,
+            clear_transcript: false,
             status_message: None,
             api_keys,
             model: model.clone(),
@@ -5135,6 +5143,26 @@ mod tests {
         assert!(app.is_empty());
         assert_eq!(app.status_message(), Some("Conversation cleared"));
         assert_eq!(app.input_mode(), InputMode::Normal);
+    }
+
+    #[test]
+    fn process_command_clear_requests_transcript_clear() {
+        let mut app = test_app();
+        app.enter_command_mode();
+
+        let command = {
+            let token = app.command_token().expect("command mode");
+            let mut command_mode = app.command_mode(token);
+            for c in "clear".chars() {
+                command_mode.push_char(c);
+            }
+            command_mode.take_command().expect("take command")
+        };
+
+        app.process_command(command);
+
+        assert!(app.take_clear_transcript());
+        assert!(!app.take_clear_transcript());
     }
 
     #[test]

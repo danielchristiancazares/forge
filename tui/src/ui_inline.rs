@@ -65,6 +65,16 @@ impl InlineOutput {
         }
     }
 
+    pub fn reset(&mut self) {
+        self.next_display_index = 0;
+        self.has_output = false;
+        self.last_tool_output_len = 0;
+        self.last_tool_status_signature = None;
+        self.last_pending_tool_signature = None;
+        self.last_approval_signature = None;
+        self.last_recovery_active = false;
+    }
+
     pub fn flush<B>(&mut self, terminal: &mut Terminal<B>, app: &mut App) -> Result<(), B::Error>
     where
         B: Backend,

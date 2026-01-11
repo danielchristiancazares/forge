@@ -2,24 +2,25 @@ mod assets;
 
 use anyhow::Result;
 use crossterm::{
+    cursor::MoveTo,
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{
-        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-        size as terminal_size,
+        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode, size as terminal_size,
     },
 };
 use ratatui::{TerminalOptions, Viewport, prelude::*};
 use std::{
     env,
-    io::{Stdout, stdout},
+    io::{Stdout, Write, stdout},
 };
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use forge_engine::{App, ForgeConfig};
 use forge_tui::{
-    INLINE_VIEWPORT_HEIGHT, InlineOutput, clear_inline_viewport, draw, draw_inline,
-    handle_events, inline_viewport_height,
+    INLINE_VIEWPORT_HEIGHT, InlineOutput, clear_inline_viewport, draw, draw_inline, handle_events,
+    inline_viewport_height,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,7 +184,7 @@ async fn main() -> Result<()> {
 
 async fn run_app_full<B>(terminal: &mut Terminal<B>, app: &mut App) -> Result<RunResult>
 where
-    B: Backend,
+    B: Backend + Write,
     B::Error: Send + Sync + 'static,
 {
     loop {
@@ -195,6 +196,10 @@ where
         tokio::task::yield_now().await;
 
         app.process_stream_events();
+
+        if app.take_clear_transcript() {
+            terminal.clear()?;
+        }
 
         terminal.draw(|frame| draw(frame, app))?;
 
@@ -212,7 +217,7 @@ where
 
 async fn run_app_inline<B>(terminal: &mut Terminal<B>, app: &mut App) -> Result<RunResult>
 where
-    B: Backend,
+    B: Backend + Write,
     B::Error: Send + Sync + 'static,
 {
     let mut output = InlineOutput::new();
@@ -227,6 +232,12 @@ where
         tokio::task::yield_now().await;
 
         app.process_stream_events();
+
+        if app.take_clear_transcript() {
+            clear_inline_transcript(terminal)?;
+            output.reset();
+        }
+
         output.flush(terminal, app)?;
 
         // Dynamically resize viewport for overlays (e.g., model selector needs more height)
@@ -250,4 +261,19 @@ where
             return Ok(RunResult::Quit);
         }
     }
+}
+
+fn clear_inline_transcript<B>(terminal: &mut Terminal<B>) -> Result<()>
+where
+    B: Backend + Write,
+    B::Error: Send + Sync + 'static,
+{
+    execute!(
+        terminal.backend_mut(),
+        Clear(ClearType::Purge),
+        Clear(ClearType::All),
+        MoveTo(0, 0)
+    )?;
+    terminal.clear()?;
+    Ok(())
 }
