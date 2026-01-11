@@ -312,16 +312,25 @@ impl App {
         std::fs::create_dir_all(path)?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
             let metadata = std::fs::metadata(path)?;
+
+            // Only modify permissions if we own the directory
+            let our_uid = unsafe { libc::getuid() };
+            if metadata.uid() != our_uid {
+                // Not our directory - skip silently (e.g., /tmp)
+                return Ok(());
+            }
+
+            // Check if permissions are already secure (0o700 or stricter)
             let mode = metadata.permissions().mode() & 0o777;
             if mode & 0o077 != 0 {
                 tracing::warn!(
                     "Data dir permissions are too open ({:o}); tightening to 0700",
                     mode
                 );
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
             }
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
         }
         Ok(())
     }

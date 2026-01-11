@@ -456,9 +456,24 @@ fn ensure_secure_dir(path: &Path) -> Result<()> {
         .with_context(|| format!("Failed to create directory: {:?}", path))?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("Failed to set directory permissions: {:?}", path))?;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let metadata = std::fs::metadata(path)
+            .with_context(|| format!("Failed to read directory metadata: {:?}", path))?;
+
+        // Only modify permissions if we own the directory
+        let our_uid = unsafe { libc::getuid() };
+        if metadata.uid() != our_uid {
+            // Not our directory - skip silently (e.g., /tmp)
+            return Ok(());
+        }
+
+        // Check if permissions are already secure (0o700 or stricter)
+        let current_mode = metadata.permissions().mode() & 0o777;
+        if current_mode & 0o077 != 0 {
+            // Group or other has some access - tighten to 0o700
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("Failed to set directory permissions: {:?}", path))?;
+        }
     }
     Ok(())
 }
