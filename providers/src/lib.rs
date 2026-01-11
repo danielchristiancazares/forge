@@ -20,6 +20,8 @@ pub use forge_types;
 
 /// Connection timeout for API requests.
 const CONNECT_TIMEOUT_SECS: u64 = 30;
+/// Max idle time between SSE chunks before aborting.
+const STREAM_IDLE_TIMEOUT_SECS: u64 = 60;
 
 /// Maximum bytes for SSE buffer before aborting (4 MiB).
 /// Prevents memory exhaustion from malicious/misbehaving servers.
@@ -59,6 +61,8 @@ pub fn http_client_with_timeout(timeout_secs: u64) -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .timeout(Duration::from_secs(timeout_secs))
+        .redirect(reqwest::redirect::Policy::none())
+        .https_only(true)
         .build()
         .expect("build HTTP client with timeout")
 }
@@ -390,7 +394,20 @@ pub mod claude {
         // Track current tool call ID for streaming tool arguments
         let mut current_tool_id: Option<String> = None;
 
-        while let Some(chunk) = stream.next().await {
+        loop {
+            let next = match tokio::time::timeout(
+                Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS),
+                stream.next(),
+            )
+            .await
+            {
+                Ok(next) => next,
+                Err(_) => {
+                    on_event(StreamEvent::Error("Stream idle timeout".to_string()));
+                    return Ok(());
+                }
+            };
+            let Some(chunk) = next else { break };
             let chunk = chunk?;
             buffer.extend_from_slice(&chunk);
 
@@ -864,7 +881,20 @@ pub mod openai {
         let mut state = OpenAIStreamState::default();
         let mut emit = |event| on_event(event);
 
-        while let Some(chunk) = stream.next().await {
+        loop {
+            let next = match tokio::time::timeout(
+                Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS),
+                stream.next(),
+            )
+            .await
+            {
+                Ok(next) => next,
+                Err(_) => {
+                    on_event(StreamEvent::Error("Stream idle timeout".to_string()));
+                    return Ok(());
+                }
+            };
+            let Some(chunk) = next else { break };
             let chunk = chunk?;
             buffer.extend_from_slice(&chunk);
 
@@ -897,13 +927,13 @@ pub mod openai {
                         return Ok(());
                     }
 
-                    if let Ok(json) = serde_json::from_str::<Value>(&data) {
-                        if matches!(
+                    if let Ok(json) = serde_json::from_str::<Value>(&data)
+                        && matches!(
                             handle_openai_stream_event(&json, &mut state, &mut emit),
                             OpenAIStreamAction::Stop
-                        ) {
-                            return Ok(());
-                        }
+                        )
+                    {
+                        return Ok(());
                     }
                 }
             }

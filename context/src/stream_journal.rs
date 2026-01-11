@@ -22,6 +22,7 @@
 use anyhow::anyhow;
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
+use std::fs::OpenOptions;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -223,6 +224,10 @@ impl StreamJournal {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create directory: {:?}", parent))?;
         }
+        if let Some(parent) = path.parent() {
+            ensure_secure_dir(parent)?;
+        }
+        ensure_secure_db_files(path)?;
 
         let db = Connection::open(path)
             .with_context(|| format!("Failed to open database at {:?}", path))?;
@@ -775,6 +780,54 @@ fn chrono_lite_format(secs: u64, millis: u32) -> String {
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
         year, month, day, hours, minutes, seconds, millis
     )
+}
+
+fn ensure_secure_dir(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path)
+        .with_context(|| format!("Failed to create directory: {:?}", path))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("Failed to set directory permissions: {:?}", path))?;
+    }
+    Ok(())
+}
+
+fn ensure_secure_db_files(path: &Path) -> Result<()> {
+    if !path.exists() {
+        let _file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)
+            .with_context(|| format!("Failed to create database file: {:?}", path))?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("Failed to set database permissions: {:?}", path))?;
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = sqlite_sidecar_path(path, suffix);
+            if sidecar.exists() {
+                let _ = std::fs::set_permissions(
+                    &sidecar,
+                    std::fs::Permissions::from_mode(0o600),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn sqlite_sidecar_path(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let file_name = path.file_name().map(|name| name.to_string_lossy());
+    match file_name {
+        Some(name) => path.with_file_name(format!("{}{}", name, suffix)),
+        None => std::path::PathBuf::from(format!("{}{}", path.display(), suffix)),
+    }
 }
 
 /// Convert days since Unix epoch to (year, month, day)

@@ -11,8 +11,8 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use super::{
-    FileCacheEntry, PatchLimits, ReadFileLimits, ToolCtx, ToolError, ToolExecutor, ToolFut,
-    redact_summary, sanitize_output, ToolRegistry,
+    FileCacheEntry, PatchLimits, ReadFileLimits, RiskLevel, ToolCtx, ToolError, ToolExecutor,
+    ToolFut, redact_summary, sanitize_output, ToolRegistry,
 };
 use crate::tools::lp1::{self, FileContent};
 
@@ -81,6 +81,14 @@ impl ToolExecutor for ReadFileTool {
 
     fn is_side_effecting(&self) -> bool {
         false
+    }
+
+    fn requires_approval(&self) -> bool {
+        true
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Medium
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {

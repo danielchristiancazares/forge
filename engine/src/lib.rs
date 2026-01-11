@@ -3,7 +3,7 @@
 //! This crate contains the App state machine without TUI dependencies.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::future::{AbortHandle, Abortable};
@@ -48,6 +48,13 @@ struct ToolCallAccumulator {
     id: String,
     name: String,
     arguments_json: String,
+    args_exceeded: bool,
+}
+
+#[derive(Debug)]
+struct ParsedToolCalls {
+    calls: Vec<ToolCall>,
+    pre_resolved: Vec<ToolResult>,
 }
 
 /// A message being streamed - existence proves streaming is active.
@@ -59,15 +66,21 @@ pub struct StreamingMessage {
     receiver: mpsc::UnboundedReceiver<StreamEvent>,
     /// Accumulated tool calls during streaming.
     tool_calls: Vec<ToolCallAccumulator>,
+    max_tool_args_bytes: usize,
 }
 
 impl StreamingMessage {
-    pub fn new(model: ModelName, receiver: mpsc::UnboundedReceiver<StreamEvent>) -> Self {
+    pub fn new(
+        model: ModelName,
+        receiver: mpsc::UnboundedReceiver<StreamEvent>,
+        max_tool_args_bytes: usize,
+    ) -> Self {
         Self {
             model,
             content: String::new(),
             receiver,
             tool_calls: Vec::new(),
+            max_tool_args_bytes,
         }
     }
 
@@ -102,11 +115,23 @@ impl StreamingMessage {
                     id,
                     name,
                     arguments_json: String::new(),
+                    args_exceeded: false,
                 });
                 None
             }
             StreamEvent::ToolCallDelta { id, arguments } => {
                 if let Some(acc) = self.tool_calls.iter_mut().find(|t| t.id == id) {
+                    if acc.args_exceeded {
+                        return None;
+                    }
+                    let new_len = acc
+                        .arguments_json
+                        .len()
+                        .saturating_add(arguments.len());
+                    if new_len > self.max_tool_args_bytes {
+                        acc.args_exceeded = true;
+                        return None;
+                    }
                     acc.arguments_json.push_str(&arguments);
                 }
                 None
@@ -123,26 +148,39 @@ impl StreamingMessage {
 
     /// Take accumulated tool calls, parsing JSON arguments.
     ///
-    /// Returns successfully parsed tool calls. Invalid JSON arguments are logged
-    /// and skipped (graceful degradation).
-    pub fn take_tool_calls(&mut self) -> Vec<ToolCall> {
-        self.tool_calls
-            .drain(..)
-            .map(|acc| {
-                match serde_json::from_str(&acc.arguments_json) {
-                    Ok(arguments) => ToolCall::new(acc.id, acc.name, arguments),
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to parse tool call arguments for '{}': {}",
-                            acc.name,
-                            e
-                        );
-                        // Return with empty object as fallback
-                        ToolCall::new(acc.id, acc.name, serde_json::json!({}))
-                    }
+    /// Returns parsed tool calls plus pre-resolved errors for invalid JSON.
+    pub(crate) fn take_tool_calls(&mut self) -> ParsedToolCalls {
+        let mut calls = Vec::new();
+        let mut pre_resolved = Vec::new();
+
+        for acc in self.tool_calls.drain(..) {
+            if acc.args_exceeded {
+                pre_resolved.push(ToolResult::error(
+                    acc.id.clone(),
+                    "Tool arguments exceeded maximum size",
+                ));
+                calls.push(ToolCall::new(acc.id, acc.name, serde_json::Value::Null));
+                continue;
+            }
+
+            match serde_json::from_str(&acc.arguments_json) {
+                Ok(arguments) => calls.push(ToolCall::new(acc.id, acc.name, arguments)),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse tool call arguments for '{}': {}",
+                        acc.name,
+                        e
+                    );
+                    pre_resolved.push(ToolResult::error(
+                        acc.id.clone(),
+                        "Invalid tool arguments JSON",
+                    ));
+                    calls.push(ToolCall::new(acc.id, acc.name, serde_json::Value::Null));
                 }
-            })
-            .collect()
+            }
+        }
+
+        ParsedToolCalls { calls, pre_resolved }
     }
 
     /// Consume streaming message and produce a complete message.
@@ -275,12 +313,28 @@ const DEFAULT_ENV_DENYLIST: [&str; 7] = [
     "OPENAI_*",
 ];
 
-const DEFAULT_SANDBOX_DENIES: [&str; 5] = [
+const DEFAULT_SANDBOX_DENIES: [&str; 21] = [
     "**/.ssh/**",
     "**/.gnupg/**",
+    "**/.aws/**",
+    "**/.azure/**",
+    "**/.config/gcloud/**",
+    "**/.git/**",
+    "**/.git-credentials",
+    "**/.npmrc",
+    "**/.pypirc",
+    "**/.netrc",
+    "**/.env",
+    "**/.env.*",
+    "**/*.env",
     "**/id_rsa*",
+    "**/id_ed25519*",
+    "**/id_ecdsa*",
     "**/*.pem",
     "**/*.key",
+    "**/*.p12",
+    "**/*.pfx",
+    "**/*.der",
 ];
 
 const RECOVERY_COMPLETE_BADGE: NonEmptyStaticStr =
@@ -987,7 +1041,7 @@ impl App {
 
         let data_dir = Self::data_dir();
 
-        std::fs::create_dir_all(&data_dir.path)?;
+        Self::ensure_secure_dir(&data_dir.path)?;
 
         // Initialize stream journal (required for streaming durability).
         let journal_path = data_dir.join("stream_journal.db");
@@ -1084,6 +1138,24 @@ impl App {
                 source: DataDirSource::Fallback,
             },
         }
+    }
+
+    fn ensure_secure_dir(path: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = std::fs::metadata(path)?;
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                tracing::warn!(
+                    "Data dir permissions are too open ({:o}); tightening to 0700",
+                    mode
+                );
+            }
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
     }
 
     /// Get the path to the history file.
@@ -1323,7 +1395,7 @@ impl App {
 
         // Ensure directory exists
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            Self::ensure_secure_dir(parent)?;
         }
 
         self.context_manager.save(&path)
@@ -2401,7 +2473,11 @@ impl App {
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
         let active = ActiveStream {
-            message: StreamingMessage::new(config.model().clone(), rx),
+            message: StreamingMessage::new(
+                config.model().clone(),
+                rx,
+                self.tool_settings.limits.max_tool_args_bytes,
+            ),
             journal,
             abort_handle,
             tool_batch_id: None,
@@ -2710,10 +2786,17 @@ impl App {
 
         // Check for tool calls before converting to message
         if message.has_tool_calls() {
-            let tool_calls = message.take_tool_calls();
+            let parsed = message.take_tool_calls();
             let assistant_text = message.content().to_string();
             self.pending_user_message = None;
-            self.handle_tool_calls(assistant_text, tool_calls, model, step_id, tool_batch_id);
+            self.handle_tool_calls(
+                assistant_text,
+                parsed.calls,
+                parsed.pre_resolved,
+                model,
+                step_id,
+                tool_batch_id,
+            );
             return;
         }
 
@@ -2773,6 +2856,7 @@ impl App {
         &mut self,
         assistant_text: String,
         tool_calls: Vec<ToolCall>,
+        pre_resolved: Vec<ToolResult>,
         model: ModelName,
         step_id: forge_context::StepId,
         tool_batch_id: Option<ToolBatchId>,
@@ -2809,10 +2893,12 @@ impl App {
 
         match self.tools_mode {
             tools::ToolsMode::Disabled => {
-                let results: Vec<ToolResult> = tool_calls
-                    .iter()
-                    .map(|call| ToolResult::error(call.id.clone(), "Tool execution disabled"))
-                    .collect();
+                let mut results = pre_resolved;
+                results.extend(
+                    tool_calls
+                        .iter()
+                        .map(|call| ToolResult::error(call.id.clone(), "Tool execution disabled")),
+                );
                 if batch_id != 0 {
                     for result in &results {
                         let _ = self.tool_journal.record_result(batch_id, result);
@@ -2832,7 +2918,7 @@ impl App {
                 let pending = PendingToolExecution {
                     assistant_text,
                     pending_calls: tool_calls,
-                    results: Vec::new(),
+                    results: pre_resolved,
                     model,
                     step_id,
                     batch_id,
@@ -2841,7 +2927,14 @@ impl App {
                 self.set_status("Waiting for tool results...");
             }
             tools::ToolsMode::Enabled => {
-                self.start_tool_loop(assistant_text, tool_calls, model, step_id, batch_id);
+                self.start_tool_loop(
+                    assistant_text,
+                    tool_calls,
+                    pre_resolved,
+                    model,
+                    step_id,
+                    batch_id,
+                );
             }
         }
     }
@@ -2850,16 +2943,17 @@ impl App {
         &mut self,
         assistant_text: String,
         tool_calls: Vec<ToolCall>,
+        pre_resolved: Vec<ToolResult>,
         model: ModelName,
         step_id: forge_context::StepId,
         batch_id: ToolBatchId,
     ) {
         let next_iteration = self.tool_iterations.saturating_add(1);
         if next_iteration > self.tool_settings.limits.max_tool_iterations_per_user_turn {
-            let results: Vec<ToolResult> = tool_calls
-                .iter()
-                .map(|call| ToolResult::error(call.id.clone(), "Max tool iterations reached"))
-                .collect();
+            let mut results = pre_resolved;
+            results.extend(tool_calls.iter().map(|call| {
+                ToolResult::error(call.id.clone(), "Max tool iterations reached")
+            }));
             if batch_id != 0 {
                 for result in &results {
                     let _ = self.tool_journal.record_result(batch_id, result);
@@ -2878,7 +2972,7 @@ impl App {
         }
         self.tool_iterations = next_iteration;
 
-        let plan = self.plan_tool_calls(&tool_calls);
+        let plan = self.plan_tool_calls(&tool_calls, pre_resolved);
         if batch_id != 0 {
             for result in &plan.pre_resolved {
                 let _ = self.tool_journal.record_result(batch_id, result);
@@ -2944,33 +3038,18 @@ impl App {
         ));
     }
 
-    fn plan_tool_calls(&self, calls: &[ToolCall]) -> ToolPlan {
+    fn plan_tool_calls(&self, calls: &[ToolCall], mut pre_resolved: Vec<ToolResult>) -> ToolPlan {
         let mut execute_now = Vec::new();
         let mut approval_calls = Vec::new();
         let mut approval_requests = Vec::new();
-        let mut pre_resolved = Vec::new();
+        let mut pre_resolved_ids: std::collections::HashSet<String> = pre_resolved
+            .iter()
+            .map(|result| result.tool_call_id.clone())
+            .collect();
         let mut seen_ids = std::collections::HashSet::new();
         let mut accepted = 0usize;
 
         for call in calls {
-            if !self.tool_settings.policy.enabled {
-                pre_resolved.push(tool_error_result(
-                    call,
-                    tools::ToolError::SandboxViolation(tools::DenialReason::Disabled),
-                ));
-                continue;
-            }
-
-            if self.tool_settings.policy.is_denylisted(&call.name) {
-                pre_resolved.push(tool_error_result(
-                    call,
-                    tools::ToolError::SandboxViolation(tools::DenialReason::Denylisted {
-                        tool: call.name.clone(),
-                    }),
-                ));
-                continue;
-            }
-
             if !seen_ids.insert(call.id.clone()) {
                 pre_resolved.push(tool_error_result(
                     call,
@@ -2978,6 +3057,7 @@ impl App {
                         id: call.id.clone(),
                     },
                 ));
+                pre_resolved_ids.insert(call.id.clone());
                 continue;
             }
             accepted += 1;
@@ -2988,6 +3068,30 @@ impl App {
                         message: "Exceeded max tool calls per batch".to_string(),
                     }),
                 ));
+                pre_resolved_ids.insert(call.id.clone());
+                continue;
+            }
+            if pre_resolved_ids.contains(&call.id) {
+                continue;
+            }
+
+            if !self.tool_settings.policy.enabled {
+                pre_resolved.push(tool_error_result(
+                    call,
+                    tools::ToolError::SandboxViolation(tools::DenialReason::Disabled),
+                ));
+                pre_resolved_ids.insert(call.id.clone());
+                continue;
+            }
+
+            if self.tool_settings.policy.is_denylisted(&call.name) {
+                pre_resolved.push(tool_error_result(
+                    call,
+                    tools::ToolError::SandboxViolation(tools::DenialReason::Denylisted {
+                        tool: call.name.clone(),
+                    }),
+                ));
+                pre_resolved_ids.insert(call.id.clone());
                 continue;
             }
 
@@ -3001,6 +3105,7 @@ impl App {
                         message: "Tool arguments too large".to_string(),
                     }),
                 ));
+                pre_resolved_ids.insert(call.id.clone());
                 continue;
             }
 
@@ -3015,6 +3120,7 @@ impl App {
                                 },
                             ),
                         ));
+                        pre_resolved_ids.insert(call.id.clone());
                         continue;
                     }
                 }
@@ -3024,17 +3130,20 @@ impl App {
                 Ok(exec) => exec,
                 Err(err) => {
                     pre_resolved.push(tool_error_result(call, err));
+                    pre_resolved_ids.insert(call.id.clone());
                     continue;
                 }
             };
 
             if let Err(err) = tools::validate_args(&exec.schema(), &call.arguments) {
                 pre_resolved.push(tool_error_result(call, err));
+                pre_resolved_ids.insert(call.id.clone());
                 continue;
             }
 
             if let Err(err) = preflight_sandbox(&self.tool_settings.sandbox, &call) {
                 pre_resolved.push(tool_error_result(call, err));
+                pre_resolved_ids.insert(call.id.clone());
                 continue;
             }
 
@@ -3047,6 +3156,7 @@ impl App {
                         tool: call.name.clone(),
                     }),
                 ));
+                pre_resolved_ids.insert(call.id.clone());
                 continue;
             }
 
@@ -3070,6 +3180,7 @@ impl App {
                         continue;
                     }
                 };
+                let summary = sanitize_terminal_text(&summary).into_owned();
                 let summary = truncate_with_ellipsis(&summary, 200);
                 approval_requests.push(tools::ConfirmationRequest {
                     tool_call_id: call.id.clone(),
@@ -5057,7 +5168,11 @@ mod tests {
 
         // Start streaming using the new architecture
         let (tx, rx) = mpsc::unbounded_channel();
-        let streaming = StreamingMessage::new(app.model.clone(), rx);
+        let streaming = StreamingMessage::new(
+            app.model.clone(),
+            rx,
+            app.tool_settings.limits.max_tool_args_bytes,
+        );
         let (abort_handle, _abort_registration) = AbortHandle::new_pair();
         let journal = app
             .stream_journal
@@ -5250,7 +5365,7 @@ mod tests {
     fn streaming_message_apply_text_delta() {
         let (tx, rx) = mpsc::unbounded_channel();
         let model = Provider::Claude.default_model();
-        let mut stream = StreamingMessage::new(model, rx);
+        let mut stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
         assert!(stream.content().is_empty());
 
@@ -5271,7 +5386,7 @@ mod tests {
     fn streaming_message_apply_done() {
         let (_tx, rx) = mpsc::unbounded_channel();
         let model = Provider::Claude.default_model();
-        let mut stream = StreamingMessage::new(model, rx);
+        let mut stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
         stream.apply_event(StreamEvent::TextDelta("content".to_string()));
 
@@ -5283,7 +5398,7 @@ mod tests {
     fn streaming_message_apply_error() {
         let (_tx, rx) = mpsc::unbounded_channel();
         let model = Provider::Claude.default_model();
-        let mut stream = StreamingMessage::new(model, rx);
+        let mut stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
         let result = stream.apply_event(StreamEvent::Error("API error".to_string()));
         assert_eq!(
@@ -5296,7 +5411,7 @@ mod tests {
     fn streaming_message_apply_thinking_delta_ignored() {
         let (_tx, rx) = mpsc::unbounded_channel();
         let model = Provider::Claude.default_model();
-        let mut stream = StreamingMessage::new(model, rx);
+        let mut stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
         stream.apply_event(StreamEvent::TextDelta("visible".to_string()));
         stream.apply_event(StreamEvent::ThinkingDelta("thinking...".to_string()));
@@ -5309,7 +5424,7 @@ mod tests {
     fn streaming_message_into_message_success() {
         let (_tx, rx) = mpsc::unbounded_channel();
         let model = Provider::Claude.default_model();
-        let mut stream = StreamingMessage::new(model.clone(), rx);
+        let mut stream = StreamingMessage::new(model.clone(), rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
         stream.apply_event(StreamEvent::TextDelta("Test content".to_string()));
 
@@ -5322,7 +5437,7 @@ mod tests {
     fn streaming_message_into_message_empty_fails() {
         let (_tx, rx) = mpsc::unbounded_channel();
         let model = Provider::Claude.default_model();
-        let stream = StreamingMessage::new(model, rx);
+        let stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
         // No content added
         let result = stream.into_message();
@@ -5333,7 +5448,7 @@ mod tests {
     fn streaming_message_provider_and_model() {
         let (_tx, rx) = mpsc::unbounded_channel();
         let model = ModelName::known(Provider::OpenAI, "gpt-5.2");
-        let stream = StreamingMessage::new(model, rx);
+        let stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
         assert_eq!(stream.provider(), Provider::OpenAI);
         assert_eq!(stream.model_name().as_str(), "gpt-5.2");

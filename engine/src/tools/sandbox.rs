@@ -75,6 +75,11 @@ impl Sandbox {
 
     /// Validate and resolve a path within the sandbox.
     pub fn resolve_path(&self, path: &str, working_dir: &Path) -> Result<PathBuf, ToolError> {
+        if contains_unsafe_path_chars(path) {
+            return Err(ToolError::BadArgs {
+                message: "path contains invalid control characters".to_string(),
+            });
+        }
         let input = PathBuf::from(path);
         if input
             .components()
@@ -158,4 +163,22 @@ impl Sandbox {
 
 fn normalize_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn contains_unsafe_path_chars(input: &str) -> bool {
+    input.chars().any(is_unsafe_path_char)
+}
+
+fn is_unsafe_path_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0000}'..='\u{001f}'
+            | '\u{007f}'
+            | '\u{0080}'..='\u{009f}'
+            | '\u{061c}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+    )
 }

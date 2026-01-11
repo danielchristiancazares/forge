@@ -30,7 +30,7 @@ use unicode_width::UnicodeWidthStr;
 use forge_engine::{
     App, ContextUsageStatus, DisplayItem, InputMode, Message, PredefinedModel, Provider,
 };
-use forge_types::ToolResult;
+use forge_types::{ToolResult, sanitize_terminal_text};
 
 pub use self::markdown::clear_render_cache;
 use self::markdown::render_markdown;
@@ -122,13 +122,16 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 m.provider().display_name().to_string(),
                 styles::assistant_name(),
             ),
-            Message::ToolUse(call) => (
-                "⚙".to_string(),
-                call.name.clone(),
-                Style::default()
-                    .fg(colors::ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Message::ToolUse(call) => {
+                let name = sanitize_terminal_text(&call.name).into_owned();
+                (
+                    "⚙".to_string(),
+                    name,
+                    Style::default()
+                        .fg(colors::ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                )
+            }
             Message::ToolResult(result) => {
                 let (icon, style) = if result.is_error {
                     (
@@ -162,6 +165,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 // Render tool arguments as formatted JSON
                 let args_str = serde_json::to_string_pretty(&call.arguments)
                     .unwrap_or_else(|_| "{}".to_string());
+                let args_str = sanitize_terminal_text(&args_str);
                 let args_style = Style::default().fg(colors::TEXT_MUTED);
                 for arg_line in args_str.lines() {
                     lines.push(Line::from(Span::styled(
@@ -177,7 +181,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 } else {
                     Style::default().fg(colors::TEXT_SECONDARY)
                 };
-                for result_line in result.content.lines() {
+                let content = sanitize_terminal_text(&result.content);
+                for result_line in content.lines() {
                     lines.push(Line::from(Span::styled(
                         format!("  {}", result_line),
                         content_style,
@@ -192,7 +197,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                     Message::Assistant(_) => Style::default().fg(colors::TEXT_SECONDARY),
                     _ => Style::default().fg(colors::TEXT_MUTED),
                 };
-                let rendered = render_markdown(msg.content(), content_style);
+                let content = sanitize_terminal_text(msg.content());
+                let rendered = render_markdown(content.as_ref(), content_style);
                 lines.extend(rendered);
             }
         }
@@ -237,7 +243,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             ]));
         } else {
             let content_style = Style::default().fg(colors::TEXT_SECONDARY);
-            let rendered = render_markdown(streaming.content(), content_style);
+            let content = sanitize_terminal_text(streaming.content());
+            let rendered = render_markdown(content.as_ref(), content_style);
             lines.extend(rendered);
         }
     }
@@ -264,8 +271,10 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 
         // List pending tools
         for call in pending_calls {
+            let name = sanitize_terminal_text(&call.name);
+            let id = sanitize_terminal_text(&call.id);
             lines.push(Line::from(Span::styled(
-                format!("  • {} ({})", call.name, call.id),
+                format!("  • {} ({})", name.as_ref(), id.as_ref()),
                 Style::default().fg(colors::TEXT_MUTED),
             )));
         }
@@ -316,8 +325,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             let mut reason: Option<String> = None;
             let (icon, style) = if let Some(result) = result {
                 if !execute_ids.contains(call.id.as_str()) {
-                    reason = result
-                        .content
+                    let content = sanitize_terminal_text(&result.content);
+                    reason = content
                         .lines()
                         .next()
                         .map(|line| truncate_with_ellipsis(line, 80));
@@ -328,8 +337,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                             .add_modifier(Modifier::BOLD),
                     )
                 } else if result.is_error {
-                    reason = result
-                        .content
+                    let content = sanitize_terminal_text(&result.content);
+                    reason = content
                         .lines()
                         .next()
                         .map(|line| truncate_with_ellipsis(line, 80));
@@ -365,10 +374,12 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 ("•", Style::default().fg(colors::TEXT_MUTED))
             };
 
+            let name = sanitize_terminal_text(&call.name);
+            let id = sanitize_terminal_text(&call.id);
             lines.push(Line::from(vec![
                 Span::styled(format!("  {icon} "), style),
                 Span::styled(
-                    format!("{} ({})", call.name, call.id),
+                    format!("{} ({})", name.as_ref(), id.as_ref()),
                     Style::default().fg(colors::TEXT_MUTED),
                 ),
             ]));
@@ -389,8 +400,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                     Style::default().fg(colors::TEXT_MUTED),
                 )));
                 for line in output_lines {
+                    let safe_line = sanitize_terminal_text(line);
                     lines.push(Line::from(Span::styled(
-                        format!("    {line}"),
+                        format!("    {}", safe_line.as_ref()),
                         Style::default().fg(colors::TEXT_SECONDARY),
                     )));
                 }
@@ -967,18 +979,20 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App) {
             Style::default().fg(colors::TEXT_PRIMARY)
         };
 
+        let tool_name = sanitize_terminal_text(&req.tool_name).into_owned();
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{pointer} {checkbox} "),
                 Style::default().fg(colors::TEXT_MUTED),
             ),
-            Span::styled(req.tool_name.clone(), name_style),
+            Span::styled(tool_name, name_style),
             Span::raw(" "),
             Span::styled(risk_label, risk_style),
         ]));
 
         if !req.summary.trim().is_empty() {
-            let summary = truncate_with_ellipsis(&req.summary, max_width.saturating_sub(6));
+            let summary = sanitize_terminal_text(&req.summary);
+            let summary = truncate_with_ellipsis(summary.as_ref(), max_width.saturating_sub(6));
             lines.push(Line::from(Span::styled(
                 format!("    {summary}"),
                 Style::default().fg(colors::TEXT_MUTED),

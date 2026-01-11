@@ -8,9 +8,11 @@
 //! - Persistence
 
 use anyhow::Result;
+use std::io::Write;
 use std::path::Path;
 
 use forge_types::{Message, NonEmptyString};
+use tempfile::NamedTempFile;
 
 use super::history::{FullHistory, MessageId, Summary, SummaryId};
 use super::model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry};
@@ -660,30 +662,44 @@ impl ContextManager {
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
         let json = serde_json::to_string_pretty(&self.history)?;
-        let tmp_path = path.with_extension("tmp");
-        std::fs::write(&tmp_path, json)?;
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let mut tmp = NamedTempFile::new_in(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o600))?;
+        }
+        tmp.write_all(json.as_bytes())?;
+        tmp.as_file().sync_all()?;
 
-        if let Err(err) = std::fs::rename(&tmp_path, path) {
+        if let Err(err) = tmp.persist(path) {
             if path.exists() {
                 // On Windows, rename fails if target exists.
                 // Use backup-restore pattern to prevent data loss.
                 let backup_path = path.with_extension("bak");
+                let _ = std::fs::remove_file(&backup_path);
 
                 // Move original to backup (preserves data if next step fails)
                 std::fs::rename(path, &backup_path)?;
 
                 // Try to move tmp to target
-                if let Err(rename_err) = std::fs::rename(&tmp_path, path) {
+                if let Err(rename_err) = err.file.persist(path) {
                     // Restore from backup - original data preserved
                     let _ = std::fs::rename(&backup_path, path);
-                    return Err(rename_err.into());
+                    return Err(rename_err.error.into());
                 }
 
                 // Success - clean up backup
                 let _ = std::fs::remove_file(&backup_path);
             } else {
-                return Err(err.into());
+                return Err(err.error.into());
             }
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         }
         Ok(())
     }

@@ -10,6 +10,7 @@ use ratatui::{
 };
 
 use forge_engine::{App, DisplayItem, InputMode, Message};
+use forge_types::sanitize_terminal_text;
 
 use crate::theme::{colors, styles};
 use crate::{draw_input, draw_model_selector, draw_status_bar};
@@ -110,7 +111,8 @@ impl InlineOutput {
                     lines.push(Line::from("Tool output:"));
                 }
                 for line in &output_lines[self.last_tool_output_len..] {
-                    lines.push(Line::from(format!("  {line}")));
+                    let safe_line = sanitize_terminal_text(line);
+                    lines.push(Line::from(format!("  {}", safe_line.as_ref())));
                 }
                 self.last_tool_output_len = output_lines.len();
             }
@@ -203,13 +205,16 @@ fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut us
             m.provider().display_name().to_string(),
             styles::assistant_name(),
         ),
-        Message::ToolUse(call) => (
-            "⚙".to_string(),
-            call.name.clone(),
-            Style::default()
-                .fg(colors::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Message::ToolUse(call) => {
+            let name = sanitize_terminal_text(&call.name).into_owned();
+            (
+                "⚙".to_string(),
+                name,
+                Style::default()
+                    .fg(colors::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            )
+        }
         Message::ToolResult(result) => {
             let (icon, style) = if result.is_error {
                 (
@@ -243,6 +248,7 @@ fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut us
             // Render tool arguments as formatted JSON
             let args_str =
                 serde_json::to_string_pretty(&call.arguments).unwrap_or_else(|_| "{}".to_string());
+            let args_str = sanitize_terminal_text(&args_str);
             let args_style = Style::default().fg(colors::TEXT_MUTED);
             for arg_line in args_str.lines() {
                 lines.push(Line::from(vec![
@@ -258,7 +264,8 @@ fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut us
             } else {
                 Style::default().fg(colors::TEXT_SECONDARY)
             };
-            for result_line in result.content.lines() {
+            let content = sanitize_terminal_text(&result.content);
+            for result_line in content.lines() {
                 lines.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled(result_line.to_string(), content_style),
@@ -274,7 +281,8 @@ fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut us
                 _ => Style::default().fg(colors::TEXT_MUTED),
             };
 
-            for content_line in msg.content().lines() {
+            let content = sanitize_terminal_text(msg.content());
+            for content_line in content.lines() {
                 if content_line.is_empty() {
                     lines.push(Line::from(""));
                 } else {
@@ -363,15 +371,15 @@ fn append_tool_status_lines(lines: &mut Vec<Line>, app: &App) {
         let mut reason: Option<String> = None;
         let icon = if let Some(result) = results_map.get(call.id.as_str()) {
             if !execute_ids.contains(call.id.as_str()) {
-                reason = result
-                    .content
+                let content = sanitize_terminal_text(&result.content);
+                reason = content
                     .lines()
                     .next()
                     .map(|line| truncate_with_ellipsis(line, 80));
                 "⊘"
             } else if result.is_error {
-                reason = result
-                    .content
+                let content = sanitize_terminal_text(&result.content);
+                reason = content
                     .lines()
                     .next()
                     .map(|line| truncate_with_ellipsis(line, 80));
@@ -387,9 +395,12 @@ fn append_tool_status_lines(lines: &mut Vec<Line>, app: &App) {
             "•"
         };
 
+        let name = sanitize_terminal_text(&call.name);
+        let id = sanitize_terminal_text(&call.id);
         lines.push(Line::from(format!(
             "  {icon} {} ({})",
-            call.name, call.id
+            name.as_ref(),
+            id.as_ref()
         )));
         if let Some(reason) = reason {
             lines.push(Line::from(format!("     {reason}")));
@@ -406,7 +417,13 @@ fn append_pending_tool_lines(lines: &mut Vec<Line>, app: &App) {
     }
     lines.push(Line::from("Awaiting tool results:"));
     for call in calls {
-        lines.push(Line::from(format!("  • {} ({})", call.name, call.id)));
+        let name = sanitize_terminal_text(&call.name);
+        let id = sanitize_terminal_text(&call.id);
+        lines.push(Line::from(format!(
+            "  • {} ({})",
+            name.as_ref(),
+            id.as_ref()
+        )));
     }
     lines.push(Line::from(
         "Use /tool <id> <result> or /tool error <id> <message>",
@@ -441,12 +458,14 @@ fn append_approval_lines(lines: &mut Vec<Line>, app: &App) {
         let pointer = if i == cursor { ">" } else { " " };
         let checkbox = if is_selected { "[x]" } else { "[ ]" };
         let risk = format!("{:?}", req.risk_level).to_uppercase();
+        let tool_name = sanitize_terminal_text(&req.tool_name);
         lines.push(Line::from(format!(
             " {pointer} {checkbox} {} ({risk})",
-            req.tool_name
+            tool_name.as_ref()
         )));
         if !req.summary.trim().is_empty() {
-            let summary = truncate_with_ellipsis(&req.summary, 80);
+            let summary = sanitize_terminal_text(&req.summary);
+            let summary = truncate_with_ellipsis(summary.as_ref(), 80);
             lines.push(Line::from(format!("     {summary}")));
         }
     }
