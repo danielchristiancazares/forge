@@ -66,9 +66,9 @@ impl Backend for VT100Backend {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
-        use crossterm::{cursor, style, Command};
+        use crossterm::{Command, cursor, style};
         use std::fmt::Write as FmtWrite;
-        
+
         let mut buf = String::new();
         let mut last_pos: Option<(u16, u16)> = None;
         let mut last_style: Option<ratatui::style::Style> = None;
@@ -78,27 +78,27 @@ impl Backend for VT100Backend {
             if last_pos != Some((x, y)) {
                 let _ = cursor::MoveTo(x, y).write_ansi(&mut buf);
             }
-            
+
             // Apply style if changed
             let cell_style = cell.style();
             if last_style != Some(cell_style) {
                 let _ = style::SetAttribute(style::Attribute::Reset).write_ansi(&mut buf);
-                
+
                 if let Some(fg) = to_crossterm_color(cell_style.fg) {
                     let _ = style::SetForegroundColor(fg).write_ansi(&mut buf);
                 }
                 if let Some(bg) = to_crossterm_color(cell_style.bg) {
                     let _ = style::SetBackgroundColor(bg).write_ansi(&mut buf);
                 }
-                
+
                 last_style = Some(cell_style);
             }
-            
+
             // Write cell content
             let _ = write!(buf, "{}", cell.symbol());
             last_pos = Some((x + 1, y));
         }
-        
+
         self.parser.process(buf.as_bytes());
         Ok(())
     }
@@ -117,7 +117,7 @@ impl Backend for VT100Backend {
     }
 
     fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
-        use crossterm::{cursor, Command};
+        use crossterm::{Command, cursor};
         let pos = position.into();
         let mut buf = String::new();
         let _ = cursor::MoveTo(pos.x, pos.y).write_ansi(&mut buf);
@@ -126,7 +126,7 @@ impl Backend for VT100Backend {
     }
 
     fn clear(&mut self) -> io::Result<()> {
-        use crossterm::{terminal, Command};
+        use crossterm::{Command, terminal};
         let mut buf = String::new();
         let _ = terminal::Clear(terminal::ClearType::All).write_ansi(&mut buf);
         self.parser.process(buf.as_bytes());
@@ -157,7 +157,7 @@ impl Backend for VT100Backend {
 fn to_crossterm_color(color: Option<ratatui::style::Color>) -> Option<crossterm::style::Color> {
     use crossterm::style::Color as CColor;
     use ratatui::style::Color as RColor;
-    
+
     match color? {
         RColor::Reset => None,
         RColor::Black => Some(CColor::Black),

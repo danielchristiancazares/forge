@@ -24,13 +24,12 @@ impl Sandbox {
     ) -> Result<Self, ToolError> {
         let mut roots = Vec::new();
         for root in allowed_roots {
-            let canonical =
-                std::fs::canonicalize(&root).map_err(|_e| ToolError::SandboxViolation(
-                DenialReason::PathOutsideSandbox {
+            let canonical = std::fs::canonicalize(&root).map_err(|_e| {
+                ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
                     attempted: root.clone(),
                     resolved: root.clone(),
-                },
-            ))?;
+                })
+            })?;
             roots.push(canonical);
         }
 
@@ -94,10 +93,12 @@ impl Sandbox {
         }
         let resolved = if input.is_absolute() {
             if !self.allow_absolute {
-                return Err(ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
-                    attempted: input.clone(),
-                    resolved: input.clone(),
-                }));
+                return Err(ToolError::SandboxViolation(
+                    DenialReason::PathOutsideSandbox {
+                        attempted: input.clone(),
+                        resolved: input.clone(),
+                    },
+                ));
             }
             input
         } else {
@@ -105,12 +106,12 @@ impl Sandbox {
         };
 
         let canonical = if resolved.exists() {
-            std::fs::canonicalize(&resolved).map_err(|_| ToolError::SandboxViolation(
-                DenialReason::PathOutsideSandbox {
+            std::fs::canonicalize(&resolved).map_err(|_| {
+                ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
                     attempted: resolved.clone(),
                     resolved: resolved.clone(),
-                },
-            ))?
+                })
+            })?
         } else {
             let parent = resolved.parent().ok_or_else(|| {
                 ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
@@ -128,26 +129,28 @@ impl Sandbox {
         };
 
         if !self.is_within_allowed_roots(&canonical) {
-            return Err(ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
-                attempted: resolved,
-                resolved: canonical,
-            }));
+            return Err(ToolError::SandboxViolation(
+                DenialReason::PathOutsideSandbox {
+                    attempted: resolved,
+                    resolved: canonical,
+                },
+            ));
         }
 
         if let Some(pat) = self.matches_denied_pattern(&canonical) {
-            return Err(ToolError::SandboxViolation(DenialReason::DeniedPatternMatched {
-                attempted: canonical,
-                pattern: pat,
-            }));
+            return Err(ToolError::SandboxViolation(
+                DenialReason::DeniedPatternMatched {
+                    attempted: canonical,
+                    pattern: pat,
+                },
+            ));
         }
 
         Ok(canonical)
     }
 
     fn is_within_allowed_roots(&self, path: &Path) -> bool {
-        self.allowed_roots
-            .iter()
-            .any(|root| path.starts_with(root))
+        self.allowed_roots.iter().any(|root| path.starts_with(root))
     }
 
     fn matches_denied_pattern(&self, path: &Path) -> Option<String> {

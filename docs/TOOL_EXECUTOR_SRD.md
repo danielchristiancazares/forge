@@ -11,14 +11,16 @@
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-96 | Section 1 - Introduction: purpose, scope, definitions, references, requirement keywords |
-| 97-180 | Section 2 - Overall Description: product perspective, functions, constraints, tool loop modes |
-| 181-260 | Section 3.1 - Tool Executor Trait: trait definition, schema validation, typed parsing |
-| 261-360 | Section 3.2-3.3 - Registry and Context: ToolRegistry, ToolCtx, SharedToolCtx |
-| 361-500 | Section 3.4 - Approval Workflow: outcomes, policy, precedence, planning-time validation |
-| 501-580 | Section 3.5 - Sandbox: Sandbox struct, root policies, symlink/junction defense |
-| 581-680 | Section 3.6 - Execution: sequential execution, timeout, cancellation, child cleanup |
-| 681-761 | Sections 4-6 - NFRs, Verification, Appendices: tool definitions, error codes |
+| 1-46 | Header, Change Log (ref) |
+| 47-110 | Section 1 - Introduction: purpose, scope, definitions, references |
+| 111-195 | Section 2 - Overall Description: product perspective, functions, constraints |
+| 196-274 | Section 3.1 - Tool Executor Trait: trait definition, schema validation, typed parsing |
+| 275-375 | Section 3.2-3.3 - Registry and Context: ToolRegistry, ToolCtx, SharedToolCtx |
+| 376-489 | Section 3.4 - Approval Workflow: outcomes, policy, precedence, planning-time validation |
+| 490-546 | Section 3.5 - Sandbox: Sandbox struct, root policies, symlink/junction defense |
+| 547-751 | Section 3.6 - Execution: sequential execution, timeout, cancellation, child cleanup |
+| 752-909 | Section 3.7-3.9 - Output, Resume, TUI: persistence, crash recovery, UI display |
+| 910-1132 | Sections 4-8 - Errors, NFRs, Config, Verification, Appendices |
 
 ---
 
@@ -602,6 +604,18 @@ Timeout MUST yield `ToolError::Timeout` and an error ToolResult.
 | env               | Inherit then sanitize via `EnvSanitizer`       |
 | shell             | Windows: `cmd.exe /C`; Unix: `sh -c`           |
 | encoding          | UTF-8 for text outputs; binary uses base64     |
+
+---
+
+#### 3.6.7a Error Passthrough (FR-ERR-JSON-TOOL-01)
+
+**Requirement:** If `ToolError::ExecutionFailed.message` is a valid JSON object string,
+the framework MUST pass it verbatim to `ToolResult::error` without prefixing or
+wrapping. If parsing fails, the framework MUST prefix with `"{tool} failed: "`.
+
+**FR-ERR-JSON-TOOL-02 (Sanitization order):** When JSON passthrough applies, the
+framework MUST NOT insert truncation markers or prefixes. Sanitization MAY still
+be applied, but MUST NOT alter valid JSON bytes (no added/removed characters).
 
 ---
 

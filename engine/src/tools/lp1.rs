@@ -248,9 +248,9 @@ fn parse_block(lines: &[String], mut i: usize) -> Result<(Vec<String>, usize), P
         if is_terminator(raw) {
             return Ok((block, i + 1));
         }
-        if raw.starts_with('.') {
-            if raw.starts_with("..") {
-                block.push(raw[1..].to_string());
+        if let Some(stripped) = raw.strip_prefix('.') {
+            if stripped.starts_with('.') {
+                block.push(stripped.to_string());
             } else {
                 return Err(err("Dot-stuffed line must start with '..'"));
             }
@@ -393,8 +393,7 @@ pub fn apply_ops(content: &mut FileContent, ops: &[Op]) -> Result<(), PatchError
 }
 
 fn push_line(lines: &mut Vec<String>, buf: &mut Vec<u8>) -> Result<(), PatchError> {
-    let line = String::from_utf8(buf.clone())
-        .map_err(|_| err("Invalid UTF-8 in file"))?;
+    let line = String::from_utf8(buf.clone()).map_err(|_| err("Invalid UTF-8 in file"))?;
     lines.push(line);
     buf.clear();
     Ok(())

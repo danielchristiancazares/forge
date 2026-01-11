@@ -733,14 +733,14 @@ mod tests {
 
     #[test]
     fn test_new_manager() {
-        let manager = ContextManager::new("claude-opus-4");
-        assert_eq!(manager.current_model(), "claude-opus-4");
+        let manager = ContextManager::new("claude-opus-4-5-20251101");
+        assert_eq!(manager.current_model(), "claude-opus-4-5-20251101");
         assert_eq!(manager.history().len(), 0);
     }
 
     #[test]
     fn test_push_message() {
-        let mut manager = ContextManager::new("claude-opus-4");
+        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
 
         let id1 = manager.push_message(Message::try_user("Hello").expect("non-empty test message"));
         let id2 = manager.push_message(Message::try_user("World").expect("non-empty test message"));
@@ -752,7 +752,7 @@ mod tests {
 
     #[test]
     fn test_switch_model_shrinking() {
-        let mut manager = ContextManager::new("claude-opus-4"); // 200k context
+        let mut manager = ContextManager::new("claude-opus-4-5-20251101"); // 200k context
 
         // Unknown model falls back to 8k context (default limits)
         let result = manager.switch_model("unknown-small-model");
@@ -768,7 +768,7 @@ mod tests {
         // Unknown model falls back to 8k context (default limits)
         let mut manager = ContextManager::new("unknown-small-model");
 
-        let result = manager.switch_model("claude-opus-4"); // 200k context
+        let result = manager.switch_model("claude-opus-4-5-20251101"); // 200k context
 
         match result {
             ContextAdaptation::Expanding { .. } => (),
@@ -778,7 +778,7 @@ mod tests {
 
     #[test]
     fn test_build_context_simple() {
-        let mut manager = ContextManager::new("claude-opus-4");
+        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
 
         manager.push_message(Message::try_user("Hello").expect("non-empty test message"));
         manager.push_message(Message::try_user("World").expect("non-empty test message"));
@@ -859,7 +859,7 @@ mod tests {
 
     #[test]
     fn test_rollback_last_message_success() {
-        let mut manager = ContextManager::new("claude-opus-4");
+        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
 
         let id1 = manager.push_message(Message::try_user("Hello").expect("non-empty"));
         let id2 = manager.push_message(Message::try_user("World").expect("non-empty"));
@@ -881,7 +881,7 @@ mod tests {
 
     #[test]
     fn test_rollback_last_message_wrong_id() {
-        let mut manager = ContextManager::new("claude-opus-4");
+        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
 
         let id1 = manager.push_message(Message::try_user("Hello").expect("non-empty"));
         let _id2 = manager.push_message(Message::try_user("World").expect("non-empty"));
@@ -898,10 +898,10 @@ mod tests {
 
     #[test]
     fn test_set_output_limit() {
-        let mut manager = ContextManager::new("claude-opus-4");
+        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
 
         // Get initial budget (without configured output limit)
-        let initial_budget = manager.effective_budget();
+        let _initial_budget = manager.effective_budget();
 
         // Set a smaller output limit - should increase effective input budget
         manager.set_output_limit(4096);
@@ -920,7 +920,7 @@ mod tests {
 
     #[test]
     fn test_current_limits_source() {
-        let manager = ContextManager::new("claude-opus-4");
+        let manager = ContextManager::new("claude-opus-4-5-20251101");
 
         // Known model should come from prefix match
         let source = manager.current_limits_source();
@@ -942,9 +942,7 @@ mod tests {
 
     #[test]
     fn test_save_load_roundtrip() {
-        use std::io::Write;
-
-        let mut manager = ContextManager::new("claude-opus-4");
+        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
 
         // Add some messages
         manager.push_message(Message::try_user("Hello").expect("non-empty"));
@@ -963,11 +961,12 @@ mod tests {
         assert!(tmp_path.exists());
 
         // Load into new manager
-        let loaded = ContextManager::load(&tmp_path, "claude-opus-4").expect("load should succeed");
+        let loaded = ContextManager::load(&tmp_path, "claude-opus-4-5-20251101")
+            .expect("load should succeed");
 
         // Verify content preserved
         assert_eq!(loaded.history().len(), 2);
-        assert_eq!(loaded.current_model(), "claude-opus-4");
+        assert_eq!(loaded.current_model(), "claude-opus-4-5-20251101");
 
         // Verify message content
         let entries: Vec<_> = loaded.history().entries().iter().collect();
@@ -980,7 +979,7 @@ mod tests {
 
     #[test]
     fn test_load_with_different_model() {
-        let mut manager = ContextManager::new("claude-opus-4");
+        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
         manager.push_message(Message::try_user("Test").expect("non-empty"));
 
         let tmp_dir = std::env::temp_dir();
@@ -1001,7 +1000,8 @@ mod tests {
 
     #[test]
     fn test_load_nonexistent_file() {
-        let result = ContextManager::load("/nonexistent/path/file.json", "claude-opus-4");
+        let result =
+            ContextManager::load("/nonexistent/path/file.json", "claude-opus-4-5-20251101");
         assert!(result.is_err());
     }
 
@@ -1011,7 +1011,7 @@ mod tests {
 
     #[test]
     fn test_usage_status_ready_when_empty() {
-        let manager = ContextManager::new("claude-opus-4");
+        let manager = ContextManager::new("claude-opus-4-5-20251101");
         let status = manager.usage_status();
 
         // Empty history should always be ready
@@ -1020,7 +1020,7 @@ mod tests {
 
     #[test]
     fn test_push_message_with_step_id_and_has_step_id() {
-        let mut manager = ContextManager::new("claude-opus-4");
+        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
 
         // Push with step ID
         let _id = manager
@@ -1035,7 +1035,7 @@ mod tests {
     fn test_tool_messages_in_history() {
         use forge_types::{ToolCall, ToolResult};
 
-        let mut manager = ContextManager::new("claude-opus-4");
+        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
 
         // Add a tool use message
         let tool_call = ToolCall::new(

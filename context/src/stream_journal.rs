@@ -812,16 +812,14 @@ fn ensure_secure_db_files(path: &Path) -> Result<()> {
         for suffix in ["-wal", "-shm"] {
             let sidecar = sqlite_sidecar_path(path, suffix);
             if sidecar.exists() {
-                let _ = std::fs::set_permissions(
-                    &sidecar,
-                    std::fs::Permissions::from_mode(0o600),
-                );
+                let _ = std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o600));
             }
         }
     }
     Ok(())
 }
 
+#[cfg(unix)]
 fn sqlite_sidecar_path(path: &Path, suffix: &str) -> std::path::PathBuf {
     let file_name = path.file_name().map(|name| name.to_string_lossy());
     match file_name {

@@ -1,6 +1,6 @@
 //! Built-in tool executors.
 
-use std::io::{Read, BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -12,7 +12,7 @@ use tokio::process::Command;
 
 use super::{
     FileCacheEntry, PatchLimits, ReadFileLimits, RiskLevel, ToolCtx, ToolError, ToolExecutor,
-    ToolFut, redact_summary, sanitize_output, ToolRegistry,
+    ToolFut, ToolRegistry, redact_summary, sanitize_output,
 };
 use crate::tools::lp1::{self, FileContent};
 
@@ -92,9 +92,10 @@ impl ToolExecutor for ReadFileTool {
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
-        let typed: ReadFileArgs = serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
-            message: e.to_string(),
-        })?;
+        let typed: ReadFileArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
+                message: e.to_string(),
+            })?;
         let mut summary = format!("Read {}", typed.path);
         if let Some(start) = typed.start_line {
             if let Some(end) = typed.end_line {
@@ -108,34 +109,36 @@ impl ToolExecutor for ReadFileTool {
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
-            let typed: ReadFileArgs = serde_json::from_value(args)
-                .map_err(|e| ToolError::BadArgs { message: e.to_string() })?;
+            let typed: ReadFileArgs =
+                serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
+                    message: e.to_string(),
+                })?;
             if typed.path.trim().is_empty() {
                 return Err(ToolError::BadArgs {
                     message: "path must not be empty".to_string(),
                 });
             }
 
-            if let Some(start) = typed.start_line {
-                if start == 0 {
-                    return Err(ToolError::BadArgs {
-                        message: "start_line must be >= 1".to_string(),
-                    });
-                }
+            if let Some(start) = typed.start_line
+                && start == 0
+            {
+                return Err(ToolError::BadArgs {
+                    message: "start_line must be >= 1".to_string(),
+                });
             }
-            if let Some(end) = typed.end_line {
-                if end == 0 {
-                    return Err(ToolError::BadArgs {
-                        message: "end_line must be >= 1".to_string(),
-                    });
-                }
+            if let Some(end) = typed.end_line
+                && end == 0
+            {
+                return Err(ToolError::BadArgs {
+                    message: "end_line must be >= 1".to_string(),
+                });
             }
-            if let (Some(start), Some(end)) = (typed.start_line, typed.end_line) {
-                if start > end {
-                    return Err(ToolError::BadArgs {
-                        message: "start_line must be <= end_line".to_string(),
-                    });
-                }
+            if let (Some(start), Some(end)) = (typed.start_line, typed.end_line)
+                && start > end
+            {
+                return Err(ToolError::BadArgs {
+                    message: "start_line must be <= end_line".to_string(),
+                });
             }
 
             let resolved = ctx.sandbox.resolve_path(&typed.path, &ctx.working_dir)?;
@@ -151,7 +154,10 @@ impl ToolExecutor for ReadFileTool {
             }
 
             let output_limit = ctx.max_output_bytes.min(ctx.available_capacity_bytes);
-            let read_limit = self.limits.max_file_read_bytes.min(ctx.available_capacity_bytes);
+            let read_limit = self
+                .limits
+                .max_file_read_bytes
+                .min(ctx.available_capacity_bytes);
 
             let is_binary = sniff_binary(&resolved).map_err(|e| ToolError::ExecutionFailed {
                 tool: "read_file".to_string(),
@@ -166,23 +172,21 @@ impl ToolExecutor for ReadFileTool {
                 }
                 ctx.allow_truncation = false;
                 read_binary(&resolved, output_limit)?
-            } else {
-                if typed.start_line.is_none() && typed.end_line.is_none() {
-                    if meta.len() as usize > read_limit {
-                        return Err(ToolError::ExecutionFailed {
-                            tool: "read_file".to_string(),
-                            message: "File too large; use start_line/end_line".to_string(),
-                        });
-                    }
-                    std::fs::read_to_string(&resolved).map_err(|e| ToolError::ExecutionFailed {
+            } else if typed.start_line.is_none() && typed.end_line.is_none() {
+                if meta.len() as usize > read_limit {
+                    return Err(ToolError::ExecutionFailed {
                         tool: "read_file".to_string(),
-                        message: e.to_string(),
-                    })?
-                } else {
-                    let start = typed.start_line.unwrap_or(1) as usize;
-                    let end = typed.end_line.unwrap_or(u32::MAX) as usize;
-                    read_text_range(&resolved, start, end, self.limits.max_scan_bytes)?
+                        message: "File too large; use start_line/end_line".to_string(),
+                    });
                 }
+                std::fs::read_to_string(&resolved).map_err(|e| ToolError::ExecutionFailed {
+                    tool: "read_file".to_string(),
+                    message: e.to_string(),
+                })?
+            } else {
+                let start = typed.start_line.unwrap_or(1) as usize;
+                let end = typed.end_line.unwrap_or(u32::MAX) as usize;
+                read_text_range(&resolved, start, end, self.limits.max_scan_bytes)?
             };
 
             // Update file cache with SHA-256 of full content.
@@ -226,39 +230,48 @@ impl ToolExecutor for ApplyPatchTool {
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
-        let typed: ApplyPatchArgs = serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
+        let typed: ApplyPatchArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
+                message: e.to_string(),
+            })?;
+        let patch = lp1::parse_patch(&typed.patch).map_err(|e| ToolError::BadArgs {
             message: e.to_string(),
         })?;
-        let patch = lp1::parse_patch(&typed.patch)
-            .map_err(|e| ToolError::BadArgs { message: e.to_string() })?;
         let files: Vec<String> = patch.files.iter().map(|f| f.path.clone()).collect();
         let summary = if files.is_empty() {
             "Apply patch (no files)".to_string()
         } else {
-            format!("Apply patch to {} file(s): {}", files.len(), files.join(", "))
+            format!(
+                "Apply patch to {} file(s): {}",
+                files.len(),
+                files.join(", ")
+            )
         };
         Ok(redact_summary(&summary))
     }
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
-            let typed: ApplyPatchArgs = serde_json::from_value(args)
-                .map_err(|e| ToolError::BadArgs { message: e.to_string() })?;
-            if typed.patch.as_bytes().len() > self.limits.max_patch_bytes {
+            let typed: ApplyPatchArgs =
+                serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
+                    message: e.to_string(),
+                })?;
+            if typed.patch.len() > self.limits.max_patch_bytes {
                 return Err(ToolError::BadArgs {
                     message: "Patch exceeds max_patch_bytes".to_string(),
                 });
             }
 
-            let patch = lp1::parse_patch(&typed.patch)
-                .map_err(|e| ToolError::PatchFailed {
-                    file: PathBuf::from("<patch>"),
-                    message: e.to_string(),
-                })?;
+            let patch = lp1::parse_patch(&typed.patch).map_err(|e| ToolError::PatchFailed {
+                file: PathBuf::from("<patch>"),
+                message: e.to_string(),
+            })?;
 
             let mut staged: Vec<StagedFile> = Vec::new();
             for file_patch in &patch.files {
-                let resolved = ctx.sandbox.resolve_path(&file_patch.path, &ctx.working_dir)?;
+                let resolved = ctx
+                    .sandbox
+                    .resolve_path(&file_patch.path, &ctx.working_dir)?;
                 // Stale file protection
                 let entry = {
                     let cache = ctx.file_cache.lock().await;
@@ -323,16 +336,28 @@ impl ToolExecutor for ApplyPatchTool {
                     }
                 };
 
-                if !existed && file_patch.ops.iter().any(|op| matches!(op, lp1::Op::Replace { .. } | lp1::Op::InsertAfter { .. } | lp1::Op::InsertBefore { .. } | lp1::Op::Erase { .. })) {
+                if !existed
+                    && file_patch.ops.iter().any(|op| {
+                        matches!(
+                            op,
+                            lp1::Op::Replace { .. }
+                                | lp1::Op::InsertAfter { .. }
+                                | lp1::Op::InsertBefore { .. }
+                                | lp1::Op::Erase { .. }
+                        )
+                    })
+                {
                     return Err(ToolError::PatchFailed {
                         file: resolved.clone(),
                         message: "File does not exist for match-based operation".to_string(),
                     });
                 }
 
-                lp1::apply_ops(&mut content, &file_patch.ops).map_err(|e| ToolError::PatchFailed {
-                    file: resolved.clone(),
-                    message: e.to_string(),
+                lp1::apply_ops(&mut content, &file_patch.ops).map_err(|e| {
+                    ToolError::PatchFailed {
+                        file: resolved.clone(),
+                        message: e.to_string(),
+                    }
                 })?;
 
                 let new_bytes = lp1::emit_file(&content);
@@ -403,17 +428,20 @@ impl ToolExecutor for RunCommandTool {
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
-        let typed: RunCommandArgs = serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
-            message: e.to_string(),
-        })?;
+        let typed: RunCommandArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
+                message: e.to_string(),
+            })?;
         let summary = format!("Run command: {}", typed.command);
         Ok(redact_summary(&summary))
     }
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
-            let typed: RunCommandArgs = serde_json::from_value(args)
-                .map_err(|e| ToolError::BadArgs { message: e.to_string() })?;
+            let typed: RunCommandArgs =
+                serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
+                    message: e.to_string(),
+                })?;
             if typed.command.trim().is_empty() {
                 return Err(ToolError::BadArgs {
                     message: "command must not be empty".to_string(),
@@ -450,14 +478,24 @@ impl ToolExecutor for RunCommandTool {
 
             let mut guard = ChildGuard::new(child);
 
-            let stdout = guard.child_mut().stdout.take().ok_or_else(|| ToolError::ExecutionFailed {
-                tool: "run_command".to_string(),
-                message: "Failed to capture stdout".to_string(),
-            })?;
-            let stderr = guard.child_mut().stderr.take().ok_or_else(|| ToolError::ExecutionFailed {
-                tool: "run_command".to_string(),
-                message: "Failed to capture stderr".to_string(),
-            })?;
+            let stdout =
+                guard
+                    .child_mut()
+                    .stdout
+                    .take()
+                    .ok_or_else(|| ToolError::ExecutionFailed {
+                        tool: "run_command".to_string(),
+                        message: "Failed to capture stdout".to_string(),
+                    })?;
+            let stderr =
+                guard
+                    .child_mut()
+                    .stderr
+                    .take()
+                    .ok_or_else(|| ToolError::ExecutionFailed {
+                        tool: "run_command".to_string(),
+                        message: "Failed to capture stderr".to_string(),
+                    })?;
 
             let max_collect = ctx.max_output_bytes.min(ctx.available_capacity_bytes);
             let stdout_task = tokio::spawn(read_stream(
@@ -475,10 +513,15 @@ impl ToolExecutor for RunCommandTool {
                 max_collect,
             ));
 
-            let status = guard.child_mut().wait().await.map_err(|e| ToolError::ExecutionFailed {
-                tool: "run_command".to_string(),
-                message: e.to_string(),
-            })?;
+            let status =
+                guard
+                    .child_mut()
+                    .wait()
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed {
+                        tool: "run_command".to_string(),
+                        message: e.to_string(),
+                    })?;
             guard.disarm();
 
             let stdout_content = stdout_task.await.unwrap_or_default();
@@ -510,7 +553,7 @@ pub fn register_builtins(
 ) -> Result<(), ToolError> {
     registry.register(Box::new(ReadFileTool::new(read_limits)))?;
     registry.register(Box::new(ApplyPatchTool::new(patch_limits)))?;
-    registry.register(Box::new(RunCommandTool::default()))?;
+    registry.register(Box::new(RunCommandTool))?;
     Ok(())
 }
 
@@ -521,7 +564,7 @@ fn sniff_binary(path: &Path) -> Result<bool, std::io::Error> {
     if n == 0 {
         return Ok(false);
     }
-    if buf[..n].iter().any(|b| *b == 0) {
+    if buf[..n].contains(&0) {
         return Ok(true);
     }
     Ok(std::str::from_utf8(&buf[..n]).is_err())
@@ -556,10 +599,12 @@ fn read_binary(path: &Path, output_limit: usize) -> Result<String, ToolError> {
         message: e.to_string(),
     })?;
     let mut buf = vec![0u8; max_raw];
-    let n = file.read(&mut buf).map_err(|e| ToolError::ExecutionFailed {
-        tool: "read_file".to_string(),
-        message: e.to_string(),
-    })?;
+    let n = file
+        .read(&mut buf)
+        .map_err(|e| ToolError::ExecutionFailed {
+            tool: "read_file".to_string(),
+            message: e.to_string(),
+        })?;
     buf.truncate(n);
 
     let encoded = base64::engine::general_purpose::STANDARD.encode(&buf);
@@ -588,10 +633,12 @@ fn read_text_range(
 
     loop {
         line.clear();
-        let bytes = reader.read_line(&mut line).map_err(|e| ToolError::ExecutionFailed {
-            tool: "read_file".to_string(),
-            message: e.to_string(),
-        })?;
+        let bytes = reader
+            .read_line(&mut line)
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: "read_file".to_string(),
+                message: e.to_string(),
+            })?;
         if bytes == 0 {
             break;
         }
@@ -691,10 +738,13 @@ fn apply_staged_files(staged: &[StagedFile]) -> Result<(), ToolError> {
                 }
             })?;
         }
-        let temp_path = temp.into_temp_path().keep().map_err(|e| ToolError::PatchFailed {
-            file: file.path.clone(),
-            message: e.to_string(),
-        })?;
+        let temp_path = temp
+            .into_temp_path()
+            .keep()
+            .map_err(|e| ToolError::PatchFailed {
+                file: file.path.clone(),
+                message: e.to_string(),
+            })?;
         let backup_path = if file.existed {
             Some(unique_backup_path(&file.path)?)
         } else {

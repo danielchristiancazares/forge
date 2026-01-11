@@ -631,14 +631,10 @@ pub mod openai {
             "response.output_item.added" => {
                 let item = json.get("item").or_else(|| json.get("output_item"));
                 if let Some(item) = item
-                    && item.get("type").and_then(|value| value.as_str())
-                        == Some("function_call")
+                    && item.get("type").and_then(|value| value.as_str()) == Some("function_call")
                 {
                     let item_id = item.get("id").and_then(|v| v.as_str());
-                    let call_id = item
-                        .get("call_id")
-                        .and_then(|v| v.as_str())
-                        .or(item_id);
+                    let call_id = item.get("call_id").and_then(|v| v.as_str()).or(item_id);
                     let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
                     if let Some(call_id) = call_id {
                         let call_id = call_id.to_string();
@@ -679,7 +675,9 @@ pub mod openai {
                 OpenAIStreamAction::Continue
             }
             "response.output_text.done" => {
-                if !state.saw_text_delta && let Some(text) = json["text"].as_str() {
+                if !state.saw_text_delta
+                    && let Some(text) = json["text"].as_str()
+                {
                     on_event(StreamEvent::TextDelta(text.to_string()));
                 }
                 OpenAIStreamAction::Continue

@@ -3,24 +3,21 @@
     {
       "id": 0,
       "message": {
-        "Assistant": {
-          "content": "hello",
+        "User": {
+          "content": "test message",
           "timestamp": {
-            "secs_since_epoch": 1767759474,
-            "nanos_since_epoch": 876148400
-          },
-          "provider": "Claude",
-          "model": "claude-sonnet-4-5-20250929",
-          "kind": "Known"
+            "secs_since_epoch": 1768171230,
+            "nanos_since_epoch": 52552300
+          }
         }
       },
-      "token_count": 6,
+      "token_count": 7,
       "summary_id": null,
       "created_at": {
-        "secs_since_epoch": 1767759474,
-        "nanos_since_epoch": 876502200
+        "secs_since_epoch": 1768171230,
+        "nanos_since_epoch": 52820600
       },
-      "stream_step_id": 1
+      "stream_step_id": null
     }
   ],
   "summaries": [],

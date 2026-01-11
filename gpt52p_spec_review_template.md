@@ -32,8 +32,7 @@ Read the changelog (Section 0) before flagging anything.
 
 ```markdown
 You are a senior engineer preparing to implement the {{SPEC_DESCRIPTION}} specification.
-Your task is to identify ambiguities, gaps, and underspecifications—then propose concrete
-improvements that would allow two independent engineers to produce compatible implementations.
+Your task is to make the specification implementation ready and airtight.
 
 {{VERSION_CONTEXT}}
 

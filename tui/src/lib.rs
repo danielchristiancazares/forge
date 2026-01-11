@@ -392,20 +392,20 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
 
-        if let Some(output_lines) = app.tool_loop_output_lines() {
-            if !output_lines.is_empty() {
-                lines.push(Line::from(""));
+        if let Some(output_lines) = app.tool_loop_output_lines()
+            && !output_lines.is_empty()
+        {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  Tool output:",
+                Style::default().fg(colors::TEXT_MUTED),
+            )));
+            for line in output_lines {
+                let safe_line = sanitize_terminal_text(line);
                 lines.push(Line::from(Span::styled(
-                    "  Tool output:",
-                    Style::default().fg(colors::TEXT_MUTED),
+                    format!("    {}", safe_line.as_ref()),
+                    Style::default().fg(colors::TEXT_SECONDARY),
                 )));
-                for line in output_lines {
-                    let safe_line = sanitize_terminal_text(line);
-                    lines.push(Line::from(Span::styled(
-                        format!("    {}", safe_line.as_ref()),
-                        Style::default().fg(colors::TEXT_SECONDARY),
-                    )));
-                }
             }
         }
     }
@@ -959,7 +959,7 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App) {
     )));
     lines.push(Line::from(""));
 
-    let max_width = frame.area().width.saturating_sub(6).min(80).max(20) as usize;
+    let max_width = frame.area().width.saturating_sub(6).clamp(20, 80) as usize;
 
     for (i, req) in requests.iter().enumerate() {
         let is_selected = selected.get(i).copied().unwrap_or(false);
@@ -967,9 +967,15 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App) {
         let checkbox = if is_selected { "[x]" } else { "[ ]" };
         let risk_label = format!("{:?}", req.risk_level).to_uppercase();
         let risk_style = match risk_label.as_str() {
-            "HIGH" => Style::default().fg(colors::ERROR).add_modifier(Modifier::BOLD),
-            "MEDIUM" => Style::default().fg(colors::WARNING).add_modifier(Modifier::BOLD),
-            _ => Style::default().fg(colors::SUCCESS).add_modifier(Modifier::BOLD),
+            "HIGH" => Style::default()
+                .fg(colors::ERROR)
+                .add_modifier(Modifier::BOLD),
+            "MEDIUM" => Style::default()
+                .fg(colors::WARNING)
+                .add_modifier(Modifier::BOLD),
+            _ => Style::default()
+                .fg(colors::SUCCESS)
+                .add_modifier(Modifier::BOLD),
         };
         let name_style = if i == cursor {
             Style::default()

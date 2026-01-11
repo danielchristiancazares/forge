@@ -19,8 +19,7 @@ use tokio::sync::mpsc;
 use sandbox::Sandbox;
 
 /// Tool execution future type alias.
-pub type ToolFut<'a> =
-    Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>>;
+pub type ToolFut<'a> = Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>>;
 
 /// Risk level for approval prompts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,10 +94,21 @@ pub enum ToolsMode {
 /// Tool events for streaming output.
 #[derive(Debug, Clone)]
 pub enum ToolEvent {
-    Started { tool_call_id: String, tool_name: String },
-    StdoutChunk { tool_call_id: String, chunk: String },
-    StderrChunk { tool_call_id: String, chunk: String },
-    Completed { tool_call_id: String },
+    Started {
+        tool_call_id: String,
+        tool_name: String,
+    },
+    StdoutChunk {
+        tool_call_id: String,
+        chunk: String,
+    },
+    StderrChunk {
+        tool_call_id: String,
+        chunk: String,
+    },
+    Completed {
+        tool_call_id: String,
+    },
 }
 
 /// Error types for tool execution.
@@ -129,11 +139,21 @@ pub enum ToolError {
 /// Denial reason for sandbox or policy.
 #[derive(Debug, Clone)]
 pub enum DenialReason {
-    Denylisted { tool: String },
+    Denylisted {
+        tool: String,
+    },
     Disabled,
-    PathOutsideSandbox { attempted: PathBuf, resolved: PathBuf },
-    DeniedPatternMatched { attempted: PathBuf, pattern: String },
-    LimitsExceeded { message: String },
+    PathOutsideSandbox {
+        attempted: PathBuf,
+        resolved: PathBuf,
+    },
+    DeniedPatternMatched {
+        attempted: PathBuf,
+        pattern: String,
+    },
+    LimitsExceeded {
+        message: String,
+    },
 }
 
 impl std::fmt::Display for DenialReason {
@@ -141,7 +161,10 @@ impl std::fmt::Display for DenialReason {
         match self {
             DenialReason::Denylisted { tool } => write!(f, "Tool '{}' is denylisted", tool),
             DenialReason::Disabled => write!(f, "Tool execution disabled by policy"),
-            DenialReason::PathOutsideSandbox { attempted, resolved } => write!(
+            DenialReason::PathOutsideSandbox {
+                attempted,
+                resolved,
+            } => write!(
                 f,
                 "Path outside sandbox (attempted: {}, resolved: {})",
                 attempted.display(),
@@ -201,7 +224,9 @@ impl ToolRegistry {
         self.executors
             .get(name)
             .map(|b| b.as_ref())
-            .ok_or_else(|| ToolError::UnknownTool { name: name.to_string() })
+            .ok_or_else(|| ToolError::UnknownTool {
+                name: name.to_string(),
+            })
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {

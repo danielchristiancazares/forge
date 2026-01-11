@@ -19,9 +19,9 @@ where
 {
     let backend = VT100Backend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("failed to create terminal");
-    
+
     terminal.draw(render_fn).expect("failed to draw");
-    
+
     assert_snapshot!(name, terminal.backend().to_string());
 }
 
@@ -52,13 +52,14 @@ fn snapshot_styled_text() {
             ]),
             Line::from("Plain text line"),
         ];
-        
-        let paragraph = Paragraph::new(lines)
-            .block(Block::default()
+
+        let paragraph = Paragraph::new(lines).block(
+            Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .title(" Styled "));
-        
+                .title(" Styled "),
+        );
+
         frame.render_widget(paragraph, frame.area());
     });
 }
@@ -67,24 +68,32 @@ fn snapshot_styled_text() {
 fn snapshot_model_selector_layout() {
     snapshot_widget("model_selector_layout", 60, 15, |frame| {
         let area = frame.area();
-        
+
         // Simulate the model selector modal positioning
         let selector_width = 40.min(area.width.saturating_sub(4));
         let selector_height = 6;
-        
+
         let selector_area = Rect {
             x: (area.width - selector_width) / 2,
             y: area.height.saturating_sub(8),
             width: selector_width,
             height: selector_height,
         };
-        
+
         let lines = vec![
             Line::from(""),
             Line::from(vec![
-                Span::styled("▸ ", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "▸ ",
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled("1 ", Style::default().fg(Color::DarkGray)),
-                Span::styled("Claude Sonnet", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Claude Sonnet",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
             ]),
             Line::from(vec![
                 Span::raw("  "),
@@ -99,14 +108,15 @@ fn snapshot_model_selector_layout() {
                 Span::raw(" confirm"),
             ]),
         ];
-        
-        let selector = Paragraph::new(lines)
-            .block(Block::default()
+
+        let selector = Paragraph::new(lines).block(
+            Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Magenta))
-                .title(" Select Model "));
-        
+                .title(" Select Model "),
+        );
+
         frame.render_widget(selector, selector_area);
     });
 }
@@ -115,18 +125,21 @@ fn snapshot_model_selector_layout() {
 fn snapshot_status_bar() {
     snapshot_widget("status_bar", 80, 3, |frame| {
         let area = frame.area();
-        
+
         let status = Line::from(vec![
-            Span::styled(" NORMAL ", Style::default()
-                .bg(Color::DarkGray)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " NORMAL ",
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" "),
             Span::styled("claude-sonnet-4", Style::default().fg(Color::Cyan)),
             Span::raw(" │ "),
             Span::styled("142 / 128k (0%)", Style::default().fg(Color::Green)),
         ]);
-        
+
         let paragraph = Paragraph::new(status);
         frame.render_widget(paragraph, Rect::new(0, area.height - 1, area.width, 1));
     });
@@ -137,21 +150,23 @@ fn snapshot_input_box_insert_mode() {
     snapshot_widget("input_box_insert", 60, 5, |frame| {
         let input_text = "Hello, how can you help me today?";
         let cursor_pos = input_text.len();
-        
-        let input = Paragraph::new(input_text)
-            .block(Block::default()
+
+        let input = Paragraph::new(input_text).block(
+            Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Green))
-                .title(Line::from(vec![
-                    Span::styled(" INSERT ", Style::default()
+                .title(Line::from(vec![Span::styled(
+                    " INSERT ",
+                    Style::default()
                         .bg(Color::Green)
                         .fg(Color::Black)
-                        .add_modifier(Modifier::BOLD)),
-                ])));
-        
+                        .add_modifier(Modifier::BOLD),
+                )])),
+        );
+
         frame.render_widget(input, frame.area());
-        
+
         // Position cursor (though we can't really show it in snapshot)
         frame.set_cursor_position((cursor_pos as u16 + 1, 1));
     });
@@ -163,16 +178,36 @@ fn snapshot_message_thread() {
         let lines = vec![
             Line::from(""),
             Line::from(vec![
-                Span::styled(" ○ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                Span::styled("You", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    " ○ ",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "You",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]),
             Line::from(""),
             Line::from("    What is Rust?"),
             Line::from(""),
             Line::from(""),
             Line::from(vec![
-                Span::styled(" ◆ ", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
-                Span::styled("Claude", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    " ◆ ",
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "Claude",
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]),
             Line::from(""),
             Line::from("    Rust is a systems programming language focused on"),
@@ -180,13 +215,14 @@ fn snapshot_message_thread() {
             Line::from("    safety without garbage collection."),
             Line::from(""),
         ];
-        
-        let messages = Paragraph::new(lines)
-            .block(Block::default()
+
+        let messages = Paragraph::new(lines).block(
+            Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::DarkGray)));
-        
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
+
         frame.render_widget(messages, frame.area());
     });
 }

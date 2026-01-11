@@ -1,6 +1,5 @@
 You are a senior systems architect preparing to implement the WebFetch tool specification.
-Your task is to identify ambiguities, gaps, and underspecifications—then propose concrete
-improvements that would allow two independent engineers to produce compatible implementations.
+Your task is to make the specification implementation ready and airtight.
 
 ## Constraints / Environment
 
