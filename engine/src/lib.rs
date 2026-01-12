@@ -9,10 +9,10 @@ use tokio::sync::mpsc;
 
 // UI types - separated for clarity
 mod ui;
+use ui::InputState;
 pub use ui::{
     DisplayItem, InputMode, ModalEffect, ModalEffectKind, PredefinedModel, ScrollState, ViewState,
 };
-use ui::InputState;
 
 // Re-export from crates for public API
 pub use forge_context::{
@@ -290,8 +290,6 @@ pub struct App {
 }
 
 impl App {
-
-
     pub fn should_quit(&self) -> bool {
         self.should_quit
     }
@@ -669,7 +667,6 @@ impl App {
             }
         }
     }
-
 
     /// Increment animation tick and poll background tasks.
     pub fn tick(&mut self) {

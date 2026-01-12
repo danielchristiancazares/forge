@@ -3,8 +3,8 @@
 //! This module provides proof-token types and mode wrappers that ensure
 //! operations are only performed when the app is in the correct mode.
 
-use super::{ApiConfig, ApiKey, App, Message, NonEmptyString, OperationState, Provider};
 use super::ui::{DraftInput, InputState};
+use super::{ApiConfig, ApiKey, App, Message, NonEmptyString, OperationState, Provider};
 
 /// Proof that a user message was validated and queued for sending.
 #[derive(Debug)]

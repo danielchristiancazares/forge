@@ -462,9 +462,7 @@ impl App {
             max_matches_per_file: search_cfg
                 .and_then(|cfg| cfg.max_matches_per_file)
                 .unwrap_or(50),
-            max_files: search_cfg
-                .and_then(|cfg| cfg.max_files)
-                .unwrap_or(10_000),
+            max_files: search_cfg.and_then(|cfg| cfg.max_files).unwrap_or(10_000),
             max_file_size_bytes: search_cfg
                 .and_then(|cfg| cfg.max_file_size_bytes)
                 .unwrap_or(2_000_000),

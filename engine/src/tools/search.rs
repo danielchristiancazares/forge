@@ -11,7 +11,9 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
 use unicode_normalization::UnicodeNormalization;
 
-use super::{redact_summary, sanitize_output, RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut};
+use super::{
+    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, redact_summary, sanitize_output,
+};
 
 const SEARCH_TOOL_NAME: &str = "Search";
 const SEARCH_TOOL_ALIASES: &[&str] = &["Search", "search", "rg", "ripgrep", "ugrep", "ug"];
@@ -58,7 +60,11 @@ impl SearchTool {
         SEARCH_TOOL_ALIASES
     }
 
-    async fn select_backend(&self, need_fuzzy: bool, need_context: bool) -> Result<BackendInfo, ToolError> {
+    async fn select_backend(
+        &self,
+        need_fuzzy: bool,
+        need_context: bool,
+    ) -> Result<BackendInfo, ToolError> {
         let primary = probe_backend(&self.config.binary).await;
         let fallback = probe_backend(&self.config.fallback_binary).await;
 
@@ -66,10 +72,10 @@ impl SearchTool {
         if let Some(info) = primary {
             candidates.push(info);
         }
-        if let Some(info) = fallback {
-            if !candidates.iter().any(|c| c.binary == info.binary) {
-                candidates.push(info);
-            }
+        if let Some(info) = fallback
+            && !candidates.iter().any(|c| c.binary == info.binary)
+        {
+            candidates.push(info);
         }
 
         if candidates.is_empty() {
@@ -111,7 +117,6 @@ impl SearchTool {
             .find(|c| matches!(c.kind, BackendKind::Ripgrep))
             .expect("at least one candidate"))
     }
-
 }
 
 impl ToolExecutor for SearchTool {
@@ -165,9 +170,10 @@ impl ToolExecutor for SearchTool {
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
-        let typed: SearchArgs = serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
-            message: e.to_string(),
-        })?;
+        let typed: SearchArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
+                message: e.to_string(),
+            })?;
         let path = typed.path.unwrap_or_else(|| ".".to_string());
         let summary = format!("Search '{}' in {}", typed.pattern, path);
         Ok(redact_summary(&summary))
@@ -176,9 +182,10 @@ impl ToolExecutor for SearchTool {
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
             ctx.allow_truncation = false;
-            let typed: SearchArgs = serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
-                message: e.to_string(),
-            })?;
+            let typed: SearchArgs =
+                serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
+                    message: e.to_string(),
+                })?;
 
             let pattern = typed.pattern.trim().to_string();
             if pattern.is_empty() {
@@ -189,10 +196,11 @@ impl ToolExecutor for SearchTool {
 
             let path_raw = typed.path.unwrap_or_else(|| ".".to_string());
             let resolved = ctx.sandbox.resolve_path(&path_raw, &ctx.working_dir)?;
-            let metadata = std::fs::metadata(&resolved).map_err(|e| ToolError::ExecutionFailed {
-                tool: SEARCH_TOOL_NAME.to_string(),
-                message: e.to_string(),
-            })?;
+            let metadata =
+                std::fs::metadata(&resolved).map_err(|e| ToolError::ExecutionFailed {
+                    tool: SEARCH_TOOL_NAME.to_string(),
+                    message: e.to_string(),
+                })?;
             if !metadata.is_dir() && !metadata.is_file() {
                 return Err(ToolError::ExecutionFailed {
                     tool: SEARCH_TOOL_NAME.to_string(),
@@ -208,20 +216,16 @@ impl ToolExecutor for SearchTool {
             let follow = typed.follow.unwrap_or(false);
             let no_ignore = typed.no_ignore.unwrap_or(false);
             let context = typed.context.unwrap_or(0) as usize;
-            let max_results = typed
-                .max_results
-                .unwrap_or(self.config.default_max_results);
-            let timeout_ms = typed
-                .timeout_ms
-                .unwrap_or(self.config.default_timeout_ms);
+            let max_results = typed.max_results.unwrap_or(self.config.default_max_results);
+            let timeout_ms = typed.timeout_ms.unwrap_or(self.config.default_timeout_ms);
             let fuzzy = typed.fuzzy;
 
-            if let Some(level) = fuzzy {
-                if !(1..=4).contains(&level) {
-                    return Err(ToolError::BadArgs {
-                        message: "fuzzy must be in range 1-4".to_string(),
-                    });
-                }
+            if let Some(level) = fuzzy
+                && !(1..=4).contains(&level)
+            {
+                return Err(ToolError::BadArgs {
+                    message: "fuzzy must be in range 1-4".to_string(),
+                });
             }
             if fuzzy.is_some() && context > 0 {
                 return Err(ToolError::BadArgs {
@@ -232,52 +236,51 @@ impl ToolExecutor for SearchTool {
             let max_matches_per_file = typed
                 .max_matches_per_file
                 .unwrap_or(self.config.max_matches_per_file);
-            if let Some(val) = typed.max_matches_per_file {
-                if val > self.config.max_matches_per_file {
-                    return Err(ToolError::BadArgs {
-                        message: format!(
-                            "max_matches_per_file exceeds configured cap ({})",
-                            self.config.max_matches_per_file
-                        ),
-                    });
-                }
+            if let Some(val) = typed.max_matches_per_file
+                && val > self.config.max_matches_per_file
+            {
+                return Err(ToolError::BadArgs {
+                    message: format!(
+                        "max_matches_per_file exceeds configured cap ({})",
+                        self.config.max_matches_per_file
+                    ),
+                });
             }
 
             let max_files = typed.max_files.unwrap_or(self.config.max_files);
-            if let Some(val) = typed.max_files {
-                if val > self.config.max_files {
-                    return Err(ToolError::BadArgs {
-                        message: format!(
-                            "max_files exceeds configured cap ({})",
-                            self.config.max_files
-                        ),
-                    });
-                }
+            if let Some(val) = typed.max_files
+                && val > self.config.max_files
+            {
+                return Err(ToolError::BadArgs {
+                    message: format!(
+                        "max_files exceeds configured cap ({})",
+                        self.config.max_files
+                    ),
+                });
             }
 
             let max_file_size_bytes = typed
                 .max_file_size_bytes
                 .unwrap_or(self.config.max_file_size_bytes);
-            if let Some(val) = typed.max_file_size_bytes {
-                if val > self.config.max_file_size_bytes {
-                    return Err(ToolError::BadArgs {
-                        message: format!(
-                            "max_file_size_bytes exceeds configured cap ({})",
-                            self.config.max_file_size_bytes
-                        ),
-                    });
-                }
+            if let Some(val) = typed.max_file_size_bytes
+                && val > self.config.max_file_size_bytes
+            {
+                return Err(ToolError::BadArgs {
+                    message: format!(
+                        "max_file_size_bytes exceeds configured cap ({})",
+                        self.config.max_file_size_bytes
+                    ),
+                });
             }
 
             let include_glob = resolve_include_glob(typed.include_glob, typed.glob)?;
             let exclude_glob = resolve_glob_list(typed.exclude_glob)?;
 
-            let backend = self
-                .select_backend(fuzzy.is_some(), context > 0)
-                .await?;
+            let backend = self.select_backend(fuzzy.is_some(), context > 0).await?;
 
-            let order_root = determine_order_root(&resolved, &ctx.working_dir, Path::new(&path_raw))
-                .unwrap_or_else(|| ctx.working_dir.clone());
+            let order_root =
+                determine_order_root(&resolved, &ctx.working_dir, Path::new(&path_raw))
+                    .unwrap_or_else(|| ctx.working_dir.clone());
             let search_root_dir = if metadata.is_dir() {
                 resolved.clone()
             } else {
@@ -297,30 +300,30 @@ impl ToolExecutor for SearchTool {
             if metadata.is_file() {
                 if Instant::now() >= deadline {
                     timed_out = true;
-                } else {
-                    if let Some(rel) = relativize_path(&resolved, &search_root_dir) {
-                        if include_glob
-                            .as_ref()
-                            .map(|set| set.is_match(&rel))
-                            .unwrap_or(true)
-                            && exclude_glob
-                                .as_ref()
-                                .map(|set| set.is_match(&rel))
-                                .unwrap_or(false)
-                                == false
-                        {
-                            files_scanned = 1;
-                            match ctx.sandbox.ensure_path_allowed(&resolved) {
-                                Ok(_canon) => {
-                                    let size = metadata.len();
-                                    if size <= max_file_size_bytes {
-                                        files.push(FileCandidate { rel_path: rel });
-                                    }
-                                }
-                                Err(err) => {
-                                    errors.push(SearchFileError::from_tool_error(&resolved, err, &search_root_dir));
-                                }
+                } else if let Some(rel) = relativize_path(&resolved, &search_root_dir)
+                    && include_glob
+                        .as_ref()
+                        .map(|set| set.is_match(&rel))
+                        .unwrap_or(true)
+                    && !exclude_glob
+                        .as_ref()
+                        .map(|set| set.is_match(&rel))
+                        .unwrap_or(false)
+                {
+                    files_scanned = 1;
+                    match ctx.sandbox.ensure_path_allowed(&resolved) {
+                        Ok(_canon) => {
+                            let size = metadata.len();
+                            if size <= max_file_size_bytes {
+                                files.push(FileCandidate { rel_path: rel });
                             }
+                        }
+                        Err(err) => {
+                            errors.push(SearchFileError::from_tool_error(
+                                &resolved,
+                                err,
+                                &search_root_dir,
+                            ));
                         }
                     }
                 }
@@ -340,7 +343,8 @@ impl ToolExecutor for SearchTool {
                 if !recursive {
                     builder.max_depth(Some(1));
                 }
-                builder.sort_by_file_path(|a, b| normalize_walk_path(a).cmp(&normalize_walk_path(b)));
+                builder
+                    .sort_by_file_path(|a, b| normalize_walk_path(a).cmp(&normalize_walk_path(b)));
 
                 for entry in builder.build() {
                     if Instant::now() >= deadline {
@@ -368,15 +372,15 @@ impl ToolExecutor for SearchTool {
                                 }
                             };
 
-                            if let Some(include) = include_glob {
-                                if !include.is_match(&rel) {
-                                    continue;
-                                }
+                            if let Some(include) = include_glob
+                                && !include.is_match(&rel)
+                            {
+                                continue;
                             }
-                            if let Some(exclude) = exclude_glob {
-                                if exclude.is_match(&rel) {
-                                    continue;
-                                }
+                            if let Some(exclude) = exclude_glob
+                                && exclude.is_match(&rel)
+                            {
+                                continue;
                             }
 
                             if files_scanned >= max_files {
@@ -387,7 +391,11 @@ impl ToolExecutor for SearchTool {
                             let _canonical = match ctx.sandbox.ensure_path_allowed(path) {
                                 Ok(canon) => canon,
                                 Err(err) => {
-                                    errors.push(SearchFileError::from_tool_error(path, err, &search_root_dir));
+                                    errors.push(SearchFileError::from_tool_error(
+                                        path,
+                                        err,
+                                        &search_root_dir,
+                                    ));
                                     continue;
                                 }
                             };
@@ -439,45 +447,50 @@ impl ToolExecutor for SearchTool {
                     stderr: None,
                     content: String::new(),
                 };
-                response.content = render_content(&response.matches, response.truncated, response.timed_out);
-                return Ok(finalize_output(response, ctx)?);
+                response.content =
+                    render_content(&response.matches, response.truncated, response.timed_out);
+                return finalize_output(response, ctx);
             }
 
             let mut accumulator = SearchAccumulator::new(max_matches_per_file);
             let run = match backend.kind {
                 BackendKind::Ripgrep => {
-                    run_ripgrep(
-                        &backend,
-                        &pattern,
-                        &files,
-                        &search_root_dir,
-                        &order_root,
-                        &case_mode,
-                        fixed_strings,
-                        word_regexp,
+                    let run = RipgrepRun {
+                        base: RunBase {
+                            backend: &backend,
+                            pattern: &pattern,
+                            files: &files,
+                            search_root: &search_root_dir,
+                            order_root: &order_root,
+                            case_mode: &case_mode,
+                            fixed_strings,
+                            word_regexp,
+                            deadline,
+                            accumulator: &mut accumulator,
+                        },
                         context,
                         no_ignore,
-                        deadline,
-                        &mut accumulator,
-                        &mut errors,
-                    )
-                    .await?
+                        errors: &mut errors,
+                    };
+                    run_ripgrep(run).await?
                 }
                 BackendKind::Ugrep => {
-                    run_ugrep(
-                        &backend,
-                        &pattern,
-                        &files,
-                        &search_root_dir,
-                        &order_root,
-                        &case_mode,
-                        fixed_strings,
-                        word_regexp,
+                    let run = UgrepRun {
+                        base: RunBase {
+                            backend: &backend,
+                            pattern: &pattern,
+                            files: &files,
+                            search_root: &search_root_dir,
+                            order_root: &order_root,
+                            case_mode: &case_mode,
+                            fixed_strings,
+                            word_regexp,
+                            deadline,
+                            accumulator: &mut accumulator,
+                        },
                         fuzzy,
-                        deadline,
-                        &mut accumulator,
-                    )
-                    .await?
+                    };
+                    run_ugrep(run).await?
                 }
             };
 
@@ -485,20 +498,19 @@ impl ToolExecutor for SearchTool {
             let stderr = run.stderr;
             let exit_code = run.exit_code;
 
-            if let Some(code) = exit_code {
-                if code >= 2 {
-                    if let Some(stderr_text) = stderr.as_ref() {
-                        if looks_like_regex_error(stderr_text) {
-                            return Err(ToolError::BadArgs {
-                                message: stderr_text.trim().to_string(),
-                            });
-                        }
-                        if fuzzy.is_some() && looks_like_option_error(stderr_text) {
-                            return Err(ToolError::BadArgs {
-                                message: stderr_text.trim().to_string(),
-                            });
-                        }
-                    }
+            if let Some(code) = exit_code
+                && code >= 2
+                && let Some(stderr_text) = stderr.as_ref()
+            {
+                if looks_like_regex_error(stderr_text) {
+                    return Err(ToolError::BadArgs {
+                        message: stderr_text.trim().to_string(),
+                    });
+                }
+                if fuzzy.is_some() && looks_like_option_error(stderr_text) {
+                    return Err(ToolError::BadArgs {
+                        message: stderr_text.trim().to_string(),
+                    });
                 }
             }
 
@@ -524,9 +536,10 @@ impl ToolExecutor for SearchTool {
                 stderr,
                 content: String::new(),
             };
-            response.content = render_content(&response.matches, response.truncated, response.timed_out);
+            response.content =
+                render_content(&response.matches, response.truncated, response.timed_out);
 
-            Ok(finalize_output(response, ctx)?)
+            finalize_output(response, ctx)
         })
     }
 }
@@ -785,6 +798,31 @@ struct BackendRun {
     stderr: Option<String>,
 }
 
+struct RunBase<'a> {
+    backend: &'a BackendInfo,
+    pattern: &'a str,
+    files: &'a [FileCandidate],
+    search_root: &'a Path,
+    order_root: &'a Path,
+    case_mode: &'a CaseMode,
+    fixed_strings: bool,
+    word_regexp: bool,
+    deadline: Instant,
+    accumulator: &'a mut SearchAccumulator,
+}
+
+struct RipgrepRun<'a> {
+    base: RunBase<'a>,
+    context: usize,
+    no_ignore: bool,
+    errors: &'a mut Vec<SearchFileError>,
+}
+
+struct UgrepRun<'a> {
+    base: RunBase<'a>,
+    fuzzy: Option<u8>,
+}
+
 #[derive(Debug, Clone)]
 struct BackendInfo {
     kind: BackendKind,
@@ -806,21 +844,17 @@ async fn probe_backend(binary: &str) -> Option<BackendInfo> {
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let first_line = stdout.lines().next().unwrap_or("");
-    if first_line.to_ascii_lowercase().contains("ripgrep") {
-        if version_ok(first_line, 13) {
-            return Some(BackendInfo {
-                kind: BackendKind::Ripgrep,
-                binary: binary.to_string(),
-            });
-        }
+    if first_line.to_ascii_lowercase().contains("ripgrep") && version_ok(first_line, 13) {
+        return Some(BackendInfo {
+            kind: BackendKind::Ripgrep,
+            binary: binary.to_string(),
+        });
     }
-    if first_line.to_ascii_lowercase().contains("ugrep") {
-        if version_ok(first_line, 3) {
-            return Some(BackendInfo {
-                kind: BackendKind::Ugrep,
-                binary: binary.to_string(),
-            });
-        }
+    if first_line.to_ascii_lowercase().contains("ugrep") && version_ok(first_line, 3) {
+        return Some(BackendInfo {
+            kind: BackendKind::Ugrep,
+            binary: binary.to_string(),
+        });
     }
     None
 }
@@ -890,19 +924,21 @@ fn determine_order_root(resolved: &Path, working_dir: &Path, raw_path: &Path) ->
         if resolved.is_dir() {
             return std::fs::canonicalize(resolved).ok();
         }
-        return resolved.parent().and_then(|p| std::fs::canonicalize(p).ok());
+        return resolved
+            .parent()
+            .and_then(|p| std::fs::canonicalize(p).ok());
     }
     std::fs::canonicalize(working_dir).ok()
 }
 
 fn normalize_walk_path(path: &Path) -> String {
     let mut s = path.to_string_lossy().replace('\\', "/");
-    if cfg!(windows) {
-        if let Some(colon) = s.find(':') {
-            let (drive, rest) = s.split_at(colon);
-            if drive.len() == 1 {
-                s = format!("{}{}", drive.to_ascii_uppercase(), rest);
-            }
+    if cfg!(windows)
+        && let Some(colon) = s.find(':')
+    {
+        let (drive, rest) = s.split_at(colon);
+        if drive.len() == 1 {
+            s = format!("{}{}", drive.to_ascii_uppercase(), rest);
         }
     }
     s
@@ -910,10 +946,7 @@ fn normalize_walk_path(path: &Path) -> String {
 
 fn normalize_display_path(path: &Path) -> String {
     let mut s = path.to_string_lossy().replace('\\', "/");
-    if s.ends_with('/')
-        && s.len() > 1
-        && !(cfg!(windows) && s.ends_with(":/"))
-    {
+    if s.ends_with('/') && s.len() > 1 && !(cfg!(windows) && s.ends_with(":/")) {
         s = s.trim_end_matches('/').to_string();
     }
     s
@@ -929,12 +962,12 @@ fn path_sort_key(path: &Path, order_root: &Path) -> Vec<u8> {
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let rel = canonical.strip_prefix(order_root).unwrap_or(&canonical);
     let mut s = rel.to_string_lossy().replace('\\', "/");
-    if cfg!(windows) {
-        if let Some(colon) = s.find(':') {
-            let (drive, rest) = s.split_at(colon);
-            if drive.len() == 1 {
-                s = format!("{}{}", drive.to_ascii_uppercase(), rest);
-            }
+    if cfg!(windows)
+        && let Some(colon) = s.find(':')
+    {
+        let (drive, rest) = s.split_at(colon);
+        if drive.len() == 1 {
+            s = format!("{}{}", drive.to_ascii_uppercase(), rest);
         }
     }
     let s = s.trim_end_matches('/');
@@ -985,25 +1018,30 @@ fn finalize_output(response: SearchResponse, ctx: &ToolCtx) -> Result<String, To
         response.truncated = true;
         response.matches.pop();
         response.count = response.matches.len();
-        response.content = render_content(&response.matches, response.truncated, response.timed_out);
+        response.content =
+            render_content(&response.matches, response.truncated, response.timed_out);
     }
 }
 
-async fn run_ripgrep(
-    backend: &BackendInfo,
-    pattern: &str,
-    files: &[FileCandidate],
-    search_root: &Path,
-    order_root: &Path,
-    case_mode: &CaseMode,
-    fixed_strings: bool,
-    word_regexp: bool,
-    context: usize,
-    no_ignore: bool,
-    deadline: Instant,
-    accumulator: &mut SearchAccumulator,
-    errors: &mut Vec<SearchFileError>,
-) -> Result<BackendRun, ToolError> {
+async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
+    let RipgrepRun {
+        base,
+        context,
+        no_ignore,
+        errors,
+    } = run;
+    let RunBase {
+        backend,
+        pattern,
+        files,
+        search_root,
+        order_root,
+        case_mode,
+        fixed_strings,
+        word_regexp,
+        deadline,
+        accumulator,
+    } = base;
     let mut file_list = String::new();
     for file in files {
         file_list.push_str(&file.rel_path);
@@ -1066,14 +1104,20 @@ async fn run_ripgrep(
             message: e.to_string(),
         })?;
 
-    let stdout = child.stdout.take().ok_or_else(|| ToolError::ExecutionFailed {
-        tool: SEARCH_TOOL_NAME.to_string(),
-        message: "failed to capture stdout".to_string(),
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| ToolError::ExecutionFailed {
-        tool: SEARCH_TOOL_NAME.to_string(),
-        message: "failed to capture stderr".to_string(),
-    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ToolError::ExecutionFailed {
+            tool: SEARCH_TOOL_NAME.to_string(),
+            message: "failed to capture stdout".to_string(),
+        })?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| ToolError::ExecutionFailed {
+            tool: SEARCH_TOOL_NAME.to_string(),
+            message: "failed to capture stderr".to_string(),
+        })?;
 
     let mut stderr_reader = BufReader::new(stderr);
     let stderr_task = tokio::spawn(async move {
@@ -1098,7 +1142,7 @@ async fn run_ripgrep(
                 return Err(ToolError::ExecutionFailed {
                     tool: SEARCH_TOOL_NAME.to_string(),
                     message: err.to_string(),
-                })
+                });
             }
             Err(_) => {
                 timed_out = true;
@@ -1112,12 +1156,11 @@ async fn run_ripgrep(
         if line.trim().is_empty() {
             continue;
         }
-        let value: serde_json::Value = serde_json::from_str(&line).map_err(|e| {
-            ToolError::ExecutionFailed {
+        let value: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| ToolError::ExecutionFailed {
                 tool: SEARCH_TOOL_NAME.to_string(),
                 message: format!("invalid JSON from ripgrep: {e}"),
-            }
-        })?;
+            })?;
         let Some(kind) = value.get("type").and_then(|v| v.as_str()) else {
             continue;
         };
@@ -1172,19 +1215,20 @@ async fn run_ripgrep(
     })
 }
 
-async fn run_ugrep(
-    backend: &BackendInfo,
-    pattern: &str,
-    files: &[FileCandidate],
-    search_root: &Path,
-    order_root: &Path,
-    case_mode: &CaseMode,
-    fixed_strings: bool,
-    word_regexp: bool,
-    fuzzy: Option<u8>,
-    deadline: Instant,
-    accumulator: &mut SearchAccumulator,
-) -> Result<BackendRun, ToolError> {
+async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
+    let UgrepRun { base, fuzzy } = run;
+    let RunBase {
+        backend,
+        pattern,
+        files,
+        search_root,
+        order_root,
+        case_mode,
+        fixed_strings,
+        word_regexp,
+        deadline,
+        accumulator,
+    } = base;
     // ugrep formatted output does not support context. Only run when context == 0.
     let mut timed_out = false;
     let mut exit_code = None;
@@ -1246,14 +1290,20 @@ async fn run_ugrep(
                 message: e.to_string(),
             })?;
 
-        let stdout = child.stdout.take().ok_or_else(|| ToolError::ExecutionFailed {
-            tool: SEARCH_TOOL_NAME.to_string(),
-            message: "failed to capture stdout".to_string(),
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| ToolError::ExecutionFailed {
-            tool: SEARCH_TOOL_NAME.to_string(),
-            message: "failed to capture stderr".to_string(),
-        })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ToolError::ExecutionFailed {
+                tool: SEARCH_TOOL_NAME.to_string(),
+                message: "failed to capture stdout".to_string(),
+            })?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| ToolError::ExecutionFailed {
+                tool: SEARCH_TOOL_NAME.to_string(),
+                message: "failed to capture stderr".to_string(),
+            })?;
 
         let mut stderr_reader = BufReader::new(stderr);
         let stderr_task = tokio::spawn(async move {
@@ -1276,7 +1326,7 @@ async fn run_ugrep(
                     return Err(ToolError::ExecutionFailed {
                         tool: SEARCH_TOOL_NAME.to_string(),
                         message: err.to_string(),
-                    })
+                    });
                 }
                 Err(_) => {
                     timed_out = true;
@@ -1290,12 +1340,11 @@ async fn run_ugrep(
             if line.trim().is_empty() {
                 continue;
             }
-            let value: serde_json::Value = serde_json::from_str(&line).map_err(|e| {
-                ToolError::ExecutionFailed {
+            let value: serde_json::Value =
+                serde_json::from_str(&line).map_err(|e| ToolError::ExecutionFailed {
                     tool: SEARCH_TOOL_NAME.to_string(),
                     message: format!("invalid JSON from ugrep: {e}"),
-                }
-            })?;
+                })?;
             if let Some(event) = parse_ugrep_match(&value, order_root, search_root) {
                 accumulator.push_match(
                     event.path,
@@ -1341,7 +1390,7 @@ fn parse_rg_match(
     let lines_text = data.get("lines")?.get("text")?.as_str()?;
     let line_text = trim_line_endings(lines_text);
 
-    let submatch = data.get("submatches")?.as_array()?.get(0)?;
+    let submatch = data.get("submatches")?.as_array()?.first()?;
     let start = submatch.get("start")?.as_u64()? as usize;
     let end = submatch.get("end")?.as_u64()? as usize;
 
@@ -1397,9 +1446,12 @@ fn parse_rg_error(value: &serde_json::Value) -> Option<SearchFileError> {
         .get("path")
         .and_then(|p| p.get("text"))
         .and_then(|p| p.as_str())
-        .map(|p| normalize_path_text(p))
+        .map(normalize_path_text)
         .unwrap_or_else(|| "<unknown>".to_string());
-    Some(SearchFileError { path, error: message })
+    Some(SearchFileError {
+        path,
+        error: message,
+    })
 }
 
 fn parse_ugrep_match(
@@ -1463,7 +1515,7 @@ fn trim_line_endings(line: &str) -> String {
 }
 
 fn pattern_has_ascii_uppercase(pattern: &str) -> bool {
-    pattern.chars().any(|c| matches!(c, 'A'..='Z'))
+    pattern.chars().any(|c| c.is_ascii_uppercase())
 }
 
 fn looks_like_regex_error(stderr: &str) -> bool {

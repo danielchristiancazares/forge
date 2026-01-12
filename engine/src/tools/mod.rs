@@ -2,8 +2,8 @@
 
 pub mod builtins;
 pub mod lp1;
-pub mod search;
 pub mod sandbox;
+pub mod search;
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
