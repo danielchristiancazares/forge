@@ -273,10 +273,7 @@ pub mod claude {
                 }
                 Message::Assistant(_) => {
                     // Assistant messages sent as strings, not content blocks.
-                    // This means cache_control can't be applied to them - Anthropic's
-                    // API only supports cache hints on content blocks. This is acceptable
-                    // because caching is most valuable for system prompts and early user
-                    // messages that remain stable across turns.
+                    // cache_control can't be applied to assistant messages anyway.
                     api_messages.push(json!({
                         "role": "assistant",
                         "content": msg.content()
@@ -309,6 +306,14 @@ pub mod claude {
             }
         }
 
+        // Check if history contains Assistant or ToolUse messages.
+        // When thinking is enabled, the API requires assistant messages to start with
+        // thinking/redacted_thinking blocks. Since we don't store thinking content,
+        // we must disable thinking when replaying conversations with assistant messages.
+        let has_assistant_history = messages
+            .iter()
+            .any(|m| matches!(m.message, Message::Assistant(_) | Message::ToolUse(_)));
+
         let mut body = serde_json::Map::new();
         body.insert("model".into(), json!(model));
         body.insert("max_tokens".into(), json!(limits.max_output_tokens()));
@@ -336,7 +341,11 @@ pub mod claude {
             body.insert("tools".into(), json!(tool_schemas));
         }
 
-        if let Some(budget) = limits.thinking_budget() {
+        // Only enable thinking for fresh conversations without assistant history.
+        // Conversations with tool use require consistent thinking blocks which we don't store.
+        if let Some(budget) = limits.thinking_budget()
+            && !has_assistant_history
+        {
             body.insert(
                 "thinking".into(),
                 json!({

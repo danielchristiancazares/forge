@@ -176,7 +176,7 @@ impl App {
         if !plan.approval_requests.is_empty() {
             let approval = ApprovalState {
                 requests: plan.approval_requests,
-                selected: vec![false; batch.approval_requests.len()],
+                selected: vec![true; batch.approval_requests.len()],
                 cursor: 0,
             };
             self.state = OperationState::ToolLoop(ToolLoopState {
@@ -1064,6 +1064,16 @@ fn preflight_sandbox(
             for file in patch.files {
                 let _ = sandbox.resolve_path(&file.path, &working_dir)?;
             }
+        }
+        "write_file" => {
+            let path = call
+                .arguments
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tools::ToolError::BadArgs {
+                    message: "path must be a string".to_string(),
+                })?;
+            let _ = sandbox.resolve_path(path, &working_dir)?;
         }
         _ => {}
     }

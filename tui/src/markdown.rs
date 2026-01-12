@@ -301,7 +301,7 @@ impl MarkdownRenderer {
             .fg(colors::PEACH)
             .add_modifier(Modifier::BOLD);
         self.current_spans
-            .push(Span::styled(format!("`{}`", code), style));
+            .push(Span::styled(code.to_string(), style));
     }
 
     fn handle_soft_break(&mut self) {

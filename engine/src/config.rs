@@ -125,6 +125,8 @@ pub struct ToolsConfig {
     pub apply_patch: Option<ApplyPatchConfig>,
     /// search limits.
     pub search: Option<SearchConfig>,
+    /// webfetch limits.
+    pub webfetch: Option<WebFetchConfig>,
 }
 
 /// Configuration for a single tool definition.
@@ -204,6 +206,19 @@ pub struct SearchConfig {
     pub max_matches_per_file: Option<usize>,
     pub max_files: Option<usize>,
     pub max_file_size_bytes: Option<u64>,
+}
+
+/// webfetch tool configuration.
+#[derive(Debug, Default, Deserialize)]
+pub struct WebFetchConfig {
+    pub enabled: Option<bool>,
+    pub user_agent: Option<String>,
+    pub timeout_seconds: Option<u32>,
+    pub max_redirects: Option<u32>,
+    pub default_max_chunk_tokens: Option<u32>,
+    pub max_download_bytes: Option<u64>,
+    pub cache_dir: Option<String>,
+    pub cache_ttl_days: Option<u32>,
 }
 
 impl ToolDefinitionConfig {

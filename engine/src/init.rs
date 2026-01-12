@@ -231,6 +231,7 @@ impl App {
             tool_settings.read_limits,
             tool_settings.patch_limits,
             tool_settings.search.clone(),
+            tool_settings.webfetch.clone(),
         ) {
             tracing::warn!("Failed to register built-in tools: {e}");
         }
@@ -468,6 +469,26 @@ impl App {
                 .unwrap_or(2_000_000),
         };
 
+        let webfetch_cfg = tools_cfg.and_then(|cfg| cfg.webfetch.as_ref());
+        let webfetch = tools::WebFetchToolConfig {
+            enabled: webfetch_cfg.and_then(|cfg| cfg.enabled).unwrap_or(false),
+            user_agent: webfetch_cfg.and_then(|cfg| cfg.user_agent.clone()),
+            timeout_seconds: webfetch_cfg
+                .and_then(|cfg| cfg.timeout_seconds)
+                .unwrap_or(20),
+            max_redirects: webfetch_cfg.and_then(|cfg| cfg.max_redirects).unwrap_or(5),
+            default_max_chunk_tokens: webfetch_cfg
+                .and_then(|cfg| cfg.default_max_chunk_tokens)
+                .unwrap_or(600),
+            max_download_bytes: webfetch_cfg
+                .and_then(|cfg| cfg.max_download_bytes)
+                .unwrap_or(10 * 1024 * 1024),
+            cache_dir: webfetch_cfg
+                .and_then(|cfg| cfg.cache_dir.as_ref())
+                .map(|s| PathBuf::from(config::expand_env_vars(s))),
+            cache_ttl_days: webfetch_cfg.and_then(|cfg| cfg.cache_ttl_days).unwrap_or(7),
+        };
+
         let timeouts = tools::ToolTimeouts {
             default_timeout: Duration::from_secs(
                 tools_cfg
@@ -501,7 +522,16 @@ impl App {
             allowlist: {
                 let list = policy_cfg
                     .map(|cfg| cfg.allowlist.clone())
-                    .unwrap_or_else(|| vec!["read_file".to_string()]);
+                    .unwrap_or_else(|| {
+                        vec![
+                            "read_file".to_string(),
+                            "git_status".to_string(),
+                            "git_diff".to_string(),
+                            "git_log".to_string(),
+                            "git_show".to_string(),
+                            "git_blame".to_string(),
+                        ]
+                    });
                 list.into_iter().collect()
             },
             denylist: {
@@ -584,6 +614,7 @@ impl App {
             read_limits,
             patch_limits,
             search,
+            webfetch,
             timeouts,
             max_output_bytes,
             policy,

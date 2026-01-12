@@ -1,25 +1,19 @@
-You are a senior systems architect preparing to implement the local search indexing subsystem specification.
+You are a senior systems architect preparing to implement the list directory subsystem specification.
 Your task is to identify ambiguities, gaps, and underspecifications—then propose concrete
 improvements that would allow two independent engineers to produce compatible implementations.
-
-## Version Context
-
-The SRD is at v1.7 (2026-01-10) after 6 revision cycles addressing 100+ findings.
-Your task: find issues that remain—not issues already remediated.
-Read the changelog (Section 0) before flagging anything.
 
 ## Constraints / Environment
 
 - Source documents are in forge-source.zip. Extract and read them.
 - You are reviewing specifications, not implementing code.
 - docs/DESIGN.md defines type-driven design patterns implementations must respect.
-- Use concrete section/requirement IDs (e.g., FR-LSI-TOK-02, §4.2.2) wherever possible.
+- Use concrete section/requirement IDs (e.g., FR-LD-VAL-02, §3.3) wherever possible.
 
 ## Documents to Review
 
-- Primary: docs/SEARCH_INDEXING_SRD.md
-- Dependencies: docs/LOCAL_SEARCH_SRD.md (the search subsystem this indexes for)
-- Cross-references: docs/TOOL_EXECUTOR_SRD.md, docs/GLOB_SRD.md
+- Primary: docs/LIST_DIRECTORY_SRD.md
+- Dependencies: docs/TOOL_EXECUTOR_SRD.md (tool execution + sandboxing)
+- Cross-references: docs/FILEOPS_SRD.md, engine/README.md
 - Patterns: docs/INVARIANT_FIRST_ARCHITECTURE.md (type-driven design criteria)
 - Philosophy: docs/DESIGN.md (illustrative examples)
 

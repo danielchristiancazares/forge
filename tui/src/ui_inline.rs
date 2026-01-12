@@ -13,6 +13,7 @@ use forge_engine::{App, DisplayItem, InputMode, Message};
 use forge_types::sanitize_terminal_text;
 
 use crate::theme::{colors, styles};
+use crate::tool_display;
 use crate::{draw_input, draw_model_selector, draw_status_bar};
 
 pub const INLINE_INPUT_HEIGHT: u16 = 5;
@@ -216,10 +217,11 @@ fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut us
             styles::assistant_name(),
         ),
         Message::ToolUse(call) => {
-            let name = sanitize_terminal_text(&call.name).into_owned();
+            let compact = tool_display::format_tool_call_compact(&call.name, &call.arguments);
+            let compact = sanitize_terminal_text(&compact).into_owned();
             (
                 "⚙".to_string(),
-                name,
+                compact,
                 Style::default()
                     .fg(colors::ACCENT)
                     .add_modifier(Modifier::BOLD),
@@ -254,18 +256,8 @@ fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut us
 
     // Message content - render based on type
     match msg {
-        Message::ToolUse(call) => {
-            // Render tool arguments as formatted JSON
-            let args_str =
-                serde_json::to_string_pretty(&call.arguments).unwrap_or_else(|_| "{}".to_string());
-            let args_str = sanitize_terminal_text(&args_str);
-            let args_style = Style::default().fg(colors::TEXT_MUTED);
-            for arg_line in args_str.lines() {
-                lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(arg_line.to_string(), args_style),
-                ]));
-            }
+        Message::ToolUse(_) => {
+            // Compact format: args are in the header line, no body needed
         }
         Message::ToolResult(result) => {
             // Render result content with appropriate styling
@@ -480,9 +472,16 @@ fn append_approval_lines(lines: &mut Vec<Line>, app: &App) {
         }
     }
 
-    lines.push(Line::from(
-        "Keys: A approve all, D deny all, Space toggle, Enter confirm",
-    ));
+    // Submit and Deny buttons
+    let submit_cursor = requests.len();
+    let deny_cursor = requests.len() + 1;
+    let submit_pointer = if cursor == submit_cursor { ">" } else { " " };
+    let deny_pointer = if cursor == deny_cursor { ">" } else { " " };
+    lines.push(Line::from(format!(
+        " {submit_pointer} [ Submit ]    {deny_pointer} [ Deny All ]"
+    )));
+
+    lines.push(Line::from("Keys: Space toggle, j/k navigate, Enter select"));
 }
 
 fn append_recovery_prompt(lines: &mut Vec<Line>, app: &App) {

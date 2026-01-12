@@ -49,7 +49,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
             KeyCode::Char(' ') => app.tool_approval_toggle(),
             KeyCode::Char('a') => app.tool_approval_approve_all(),
             KeyCode::Char('d') => app.tool_approval_deny_all(),
-            KeyCode::Enter => app.tool_approval_confirm_selected(),
+            KeyCode::Enter => app.tool_approval_activate(),
             KeyCode::Esc => app.tool_approval_deny_all(),
             _ => {}
         }
@@ -115,6 +115,32 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_insert_mode(app: &mut App, key: KeyEvent) {
+    // Tool approval modal takes priority over insert mode
+    if app.tool_approval_requests().is_some() {
+        match key.code {
+            KeyCode::Char('k') | KeyCode::Up => app.tool_approval_move_up(),
+            KeyCode::Char('j') | KeyCode::Down => app.tool_approval_move_down(),
+            KeyCode::Char(' ') => app.tool_approval_toggle(),
+            KeyCode::Char('a') => app.tool_approval_approve_all(),
+            KeyCode::Char('d') => app.tool_approval_deny_all(),
+            KeyCode::Enter => app.tool_approval_activate(),
+            KeyCode::Esc => app.tool_approval_deny_all(),
+            _ => {}
+        }
+        return;
+    }
+
+    // Tool recovery modal takes priority over insert mode
+    if app.tool_recovery_calls().is_some() {
+        match key.code {
+            KeyCode::Char('r') => app.tool_recovery_resume(),
+            KeyCode::Char('d') => app.tool_recovery_discard(),
+            KeyCode::Esc => app.tool_recovery_discard(),
+            _ => {}
+        }
+        return;
+    }
+
     match key.code {
         // Exit insert mode
         KeyCode::Esc => {
@@ -180,6 +206,32 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_command_mode(app: &mut App, key: KeyEvent) {
+    // Tool approval modal takes priority over command mode
+    if app.tool_approval_requests().is_some() {
+        match key.code {
+            KeyCode::Char('k') | KeyCode::Up => app.tool_approval_move_up(),
+            KeyCode::Char('j') | KeyCode::Down => app.tool_approval_move_down(),
+            KeyCode::Char(' ') => app.tool_approval_toggle(),
+            KeyCode::Char('a') => app.tool_approval_approve_all(),
+            KeyCode::Char('d') => app.tool_approval_deny_all(),
+            KeyCode::Enter => app.tool_approval_activate(),
+            KeyCode::Esc => app.tool_approval_deny_all(),
+            _ => {}
+        }
+        return;
+    }
+
+    // Tool recovery modal takes priority over command mode
+    if app.tool_recovery_calls().is_some() {
+        match key.code {
+            KeyCode::Char('r') => app.tool_recovery_resume(),
+            KeyCode::Char('d') => app.tool_recovery_discard(),
+            KeyCode::Esc => app.tool_recovery_discard(),
+            _ => {}
+        }
+        return;
+    }
+
     match key.code {
         // Exit command mode
         KeyCode::Esc => {

@@ -1,6 +1,26 @@
 {
-  "entries": [],
+  "entries": [
+    {
+      "id": 0,
+      "message": {
+        "User": {
+          "content": "hello",
+          "timestamp": {
+            "secs_since_epoch": 1768198872,
+            "nanos_since_epoch": 588536900
+          }
+        }
+      },
+      "token_count": 6,
+      "summary_id": null,
+      "created_at": {
+        "secs_since_epoch": 1768198872,
+        "nanos_since_epoch": 588764400
+      },
+      "stream_step_id": null
+    }
+  ],
   "summaries": [],
-  "next_message_id": 0,
+  "next_message_id": 1,
   "next_summary_id": 0
 }

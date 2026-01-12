@@ -12,7 +12,7 @@ forge-types = { workspace = true }
 forge-context = { workspace = true }
 
 # Async
-tokio = { workspace = true, features = ["rt", "time", "sync", "net", "process", "io-util"] }
+tokio = { workspace = true, features = ["rt", "time", "sync", "net", "process", "io-util", "macros"] }
 futures-util = { workspace = true }
 
 # HTTP

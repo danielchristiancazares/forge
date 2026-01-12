@@ -133,25 +133,105 @@ impl ToolExecutor for SearchTool {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "pattern": { "type": "string", "minLength": 1 },
-                "path": { "type": "string" },
-                "case": { "type": "string", "enum": ["smart", "sensitive", "insensitive"], "default": "smart" },
-                "fixed_strings": { "type": "boolean", "default": false },
-                "word_regexp": { "type": "boolean", "default": false },
-                "include_glob": { "type": "array", "items": { "type": "string" } },
-                "exclude_glob": { "type": "array", "items": { "type": "string" } },
-                "glob": { "type": "array", "items": { "type": "string" } },
-                "recursive": { "type": "boolean", "default": true },
-                "hidden": { "type": "boolean", "default": false },
-                "follow": { "type": "boolean", "default": false },
-                "no_ignore": { "type": "boolean", "default": false },
-                "context": { "type": "integer", "minimum": 0, "default": 0 },
-                "max_results": { "type": "integer", "minimum": 1, "default": 200 },
-                "max_matches_per_file": { "type": "integer", "minimum": 1 },
-                "max_files": { "type": "integer", "minimum": 1 },
-                "max_file_size_bytes": { "type": "integer", "minimum": 1 },
-                "timeout_ms": { "type": "integer", "minimum": 1, "default": 20000 },
-                "fuzzy": { "type": "integer", "minimum": 1, "maximum": 4 }
+                "pattern": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Regex pattern to search for in file contents. Use the Glob tool to find files by name."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory to search in. Defaults to current working directory."
+                },
+                "case": {
+                    "type": "string",
+                    "enum": ["smart", "sensitive", "insensitive"],
+                    "default": "smart",
+                    "description": "Case sensitivity: 'smart' (case-sensitive if pattern has uppercase), 'sensitive', or 'insensitive'."
+                },
+                "fixed_strings": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Treat pattern as literal string, not regex."
+                },
+                "word_regexp": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Match whole words only."
+                },
+                "include_glob": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Filter: only search files matching these patterns (e.g. ['*.rs', '*.toml']). Does NOT find files — use Glob tool for that."
+                },
+                "exclude_glob": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Filter: skip files matching these patterns."
+                },
+                "glob": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Filter: only search files matching these patterns. Alias for include_glob. To find files by name, use the Glob tool instead."
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Search subdirectories recursively."
+                },
+                "hidden": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Include hidden files and directories."
+                },
+                "follow": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Follow symbolic links."
+                },
+                "no_ignore": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Don't respect .gitignore and other ignore files."
+                },
+                "context": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": "Number of lines of context to show before and after each match."
+                },
+                "max_results": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 200,
+                    "description": "Maximum total matches to return."
+                },
+                "max_matches_per_file": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum matches per file."
+                },
+                "max_files": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum number of files to search."
+                },
+                "max_file_size_bytes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Skip files larger than this size."
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 20000,
+                    "description": "Search timeout in milliseconds."
+                },
+                "fuzzy": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 4,
+                    "description": "Enable fuzzy matching with 1-4 allowed edits (insertions, deletions, substitutions)."
+                }
             },
             "required": ["pattern"]
         })
@@ -343,6 +423,8 @@ impl ToolExecutor for SearchTool {
                 if !recursive {
                     builder.max_depth(Some(1));
                 }
+                // Skip .git directory entirely to avoid sandbox violation noise
+                builder.filter_entry(|entry| entry.file_name() != ".git");
                 builder
                     .sort_by_file_path(|a, b| normalize_walk_path(a).cmp(&normalize_walk_path(b)));
 
@@ -1247,11 +1329,11 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
 
         let mut cmd = Command::new(&backend.binary);
         cmd.current_dir(search_root);
-        cmd.arg("--format");
-        cmd.arg(r#"{"path": %H, "line": %N, "column": %K, "size": %d, "line_text": %J}%~"#);
-        cmd.arg("-H");
-        cmd.arg("-n");
-        cmd.arg("-k");
+        // Use --format=VALUE syntax to avoid Windows command-line argument parsing issues.
+        // %h yields a quoted pathname and %J yields a JSON-escaped line.
+        cmd.arg(
+            r#"--format={"path": %h, "line": %n, "column": %k, "size": %d, "line_text": %J}%~"#,
+        );
         if fixed_strings {
             cmd.arg("-F");
         }

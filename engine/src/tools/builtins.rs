@@ -5,17 +5,22 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use base64::Engine;
+use globset::GlobBuilder;
+use ignore::WalkBuilder;
 use serde::Deserialize;
+use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 use super::{
     FileCacheEntry, PatchLimits, ReadFileLimits, RiskLevel, SearchToolConfig, ToolCtx, ToolError,
-    ToolExecutor, ToolFut, ToolRegistry, redact_summary, sanitize_output,
+    ToolExecutor, ToolFut, ToolRegistry, WebFetchToolConfig, redact_summary, sanitize_output,
 };
+use crate::tools::git;
 use crate::tools::lp1::{self, FileContent};
 use crate::tools::search::SearchTool;
+use crate::tools::webfetch::WebFetchTool;
 
 #[derive(Debug)]
 pub struct ReadFileTool {
@@ -28,7 +33,13 @@ pub struct ApplyPatchTool {
 }
 
 #[derive(Debug, Default)]
+pub struct WriteFileTool;
+
+#[derive(Debug, Default)]
 pub struct RunCommandTool;
+
+#[derive(Debug, Default)]
+pub struct GlobTool;
 
 impl ReadFileTool {
     pub fn new(limits: ReadFileLimits) -> Self {
@@ -55,8 +66,253 @@ struct ApplyPatchArgs {
 }
 
 #[derive(Debug, Deserialize)]
+struct WriteFileArgs {
+    path: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct RunCommandArgs {
     command: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GlobArgs {
+    pattern: String,
+    path: Option<String>,
+    hidden: Option<bool>,
+    limit: Option<usize>,
+}
+
+const DEFAULT_GLOB_LIMIT: usize = 1000;
+const MAX_GLOB_LIMIT: usize = 10_000;
+
+impl ToolExecutor for GlobTool {
+    fn name(&self) -> &'static str {
+        "Glob"
+    }
+
+    fn description(&self) -> &'static str {
+        "Find files matching a glob pattern"
+    }
+
+    fn schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern to match filenames (e.g., '**/*.rs', 'src/**/*.{ts,tsx}'). Supports brace expansion."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Base directory to search from. Defaults to working directory."
+                },
+                "hidden": {
+                    "type": "boolean",
+                    "description": "Include hidden files (starting with '.'). Defaults to false."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of matches to return. Defaults to 1000, max 10000."
+                }
+            },
+            "required": ["pattern"]
+        })
+    }
+
+    fn is_side_effecting(&self) -> bool {
+        false
+    }
+
+    fn requires_approval(&self) -> bool {
+        false
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
+
+    fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
+        let typed: GlobArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
+                message: e.to_string(),
+            })?;
+        let base = typed.path.as_deref().unwrap_or(".");
+        Ok(redact_summary(&format!(
+            "Glob {} in {}",
+            typed.pattern, base
+        )))
+    }
+
+    fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
+        Box::pin(async move {
+            let typed: GlobArgs = serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
+                message: e.to_string(),
+            })?;
+
+            if typed.pattern.trim().is_empty() {
+                return Err(ToolError::BadArgs {
+                    message: "pattern must not be empty".to_string(),
+                });
+            }
+
+            let base_path = typed.path.as_deref().unwrap_or(".");
+            let include_hidden = typed.hidden.unwrap_or(false);
+            let limit = typed
+                .limit
+                .unwrap_or(DEFAULT_GLOB_LIMIT)
+                .clamp(1, MAX_GLOB_LIMIT);
+
+            // Resolve base path through sandbox
+            let base = ctx.sandbox.resolve_path(base_path, &ctx.working_dir)?;
+
+            if !base.exists() {
+                return Err(ToolError::ExecutionFailed {
+                    tool: "Glob".to_string(),
+                    message: format!("base path does not exist: {}", base.display()),
+                });
+            }
+            if !base.is_dir() {
+                return Err(ToolError::ExecutionFailed {
+                    tool: "Glob".to_string(),
+                    message: format!("base path is not a directory: {}", base.display()),
+                });
+            }
+
+            // Build glob matcher - expand braces and compile patterns
+            let expanded = expand_braces(&typed.pattern);
+            let mut builder = globset::GlobSetBuilder::new();
+            for pat in &expanded {
+                let glob = GlobBuilder::new(pat)
+                    .literal_separator(true)
+                    .build()
+                    .map_err(|e| ToolError::BadArgs {
+                        message: format!("invalid glob pattern '{}': {}", pat, e),
+                    })?;
+                builder.add(glob);
+            }
+            let glob_set = builder.build().map_err(|e| ToolError::BadArgs {
+                message: format!("failed to compile glob patterns: {}", e),
+            })?;
+
+            // Walk directory tree, respecting .gitignore
+            let walker = WalkBuilder::new(&base)
+                .hidden(!include_hidden)
+                .git_ignore(true)
+                .git_global(true)
+                .git_exclude(true)
+                .filter_entry(|entry| entry.file_name() != ".git")
+                .build();
+
+            let mut files: Vec<String> = Vec::new();
+            let mut truncated = false;
+
+            for entry in walker {
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(_) => continue, // Skip unreadable entries
+                };
+
+                // Skip directories
+                if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                    continue;
+                }
+
+                let path = entry.path();
+                let rel_path = path.strip_prefix(&base).unwrap_or(path);
+
+                // Check if path matches any pattern
+                if !glob_set.is_match(rel_path) {
+                    continue;
+                }
+
+                files.push(path.display().to_string());
+
+                if files.len() >= limit {
+                    truncated = true;
+                    break;
+                }
+            }
+
+            // Sort for consistent output
+            files.sort();
+
+            let output = if files.is_empty() {
+                format!("No files match pattern: {}", typed.pattern)
+            } else {
+                let mut out = files.join("\n");
+                if truncated {
+                    out.push_str(&format!("\n\n[truncated at {} matches]", limit));
+                }
+                out
+            };
+
+            Ok(sanitize_output(&output))
+        })
+    }
+}
+
+/// Expands brace patterns like `{a,b,c}` into multiple alternatives.
+/// Handles nested braces and multiple brace groups.
+/// Example: `**/*.{cpp,h}` -> `["**/*.cpp", "**/*.h"]`
+fn expand_braces(pattern: &str) -> Vec<String> {
+    let mut results = vec![pattern.to_string()];
+
+    loop {
+        let mut expanded = false;
+        let mut new_results = Vec::new();
+
+        for pat in &results {
+            if let Some(expansion) = expand_single_brace(pat) {
+                new_results.extend(expansion);
+                expanded = true;
+            } else {
+                new_results.push(pat.clone());
+            }
+        }
+
+        results = new_results;
+        if !expanded {
+            break;
+        }
+    }
+
+    results
+}
+
+/// Expands the first (innermost) brace group found in the pattern.
+/// Returns None if no braces found.
+fn expand_single_brace(pattern: &str) -> Option<Vec<String>> {
+    let bytes = pattern.as_bytes();
+    let mut brace_start = None;
+
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'{' {
+            brace_start = Some(i);
+        } else if b == b'}'
+            && let Some(start) = brace_start
+        {
+            let prefix = &pattern[..start];
+            let suffix = &pattern[i + 1..];
+            let alternatives = &pattern[start + 1..i];
+
+            let parts: Vec<&str> = alternatives.split(',').collect();
+
+            if parts.len() > 1 {
+                return Some(
+                    parts
+                        .into_iter()
+                        .map(|p| format!("{prefix}{p}{suffix}"))
+                        .collect(),
+                );
+            }
+            // Single item in braces, just remove the braces
+            return Some(vec![format!("{prefix}{}{suffix}", &pattern[start + 1..i])]);
+        }
+    }
+
+    None
 }
 
 impl ToolExecutor for ReadFileTool {
@@ -397,6 +653,122 @@ impl ToolExecutor for ApplyPatchTool {
     }
 }
 
+impl ToolExecutor for WriteFileTool {
+    fn name(&self) -> &'static str {
+        "write_file"
+    }
+
+    fn description(&self) -> &'static str {
+        "Write content to a new file, creating directories as needed"
+    }
+
+    fn schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "content": { "type": "string" }
+            },
+            "required": ["path", "content"],
+            "additionalProperties": false
+        })
+    }
+
+    fn is_side_effecting(&self) -> bool {
+        true
+    }
+
+    fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
+        let typed: WriteFileArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
+                message: e.to_string(),
+            })?;
+        let summary = format!(
+            "Write new file: {} ({} bytes)",
+            typed.path,
+            typed.content.len()
+        );
+        Ok(redact_summary(&summary))
+    }
+
+    fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
+        Box::pin(async move {
+            let typed: WriteFileArgs =
+                serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
+                    message: e.to_string(),
+                })?;
+
+            if typed.path.trim().is_empty() {
+                return Err(ToolError::BadArgs {
+                    message: "path must not be empty".to_string(),
+                });
+            }
+
+            let resolved = ctx.sandbox.resolve_path(&typed.path, &ctx.working_dir)?;
+            if let Some(parent) = resolved.parent()
+                && !parent.as_os_str().is_empty()
+                && !parent.exists()
+            {
+                tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                    ToolError::ExecutionFailed {
+                        tool: "write_file".to_string(),
+                        message: format!(
+                            "failed to create parent directories for {}: {e}",
+                            resolved.display()
+                        ),
+                    }
+                })?;
+            }
+
+            let bytes = typed.content.as_bytes();
+            let mut file = match tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&resolved)
+                .await
+            {
+                Ok(f) => f,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(ToolError::ExecutionFailed {
+                        tool: "write_file".to_string(),
+                        message: format!(
+                            "file already exists: {}. Use apply_patch to modify existing files.",
+                            resolved.display()
+                        ),
+                    });
+                }
+                Err(err) => {
+                    return Err(ToolError::ExecutionFailed {
+                        tool: "write_file".to_string(),
+                        message: format!("failed to create {}: {err}", resolved.display()),
+                    });
+                }
+            };
+
+            file.write_all(bytes)
+                .await
+                .map_err(|e| ToolError::ExecutionFailed {
+                    tool: "write_file".to_string(),
+                    message: format!("failed to write {}: {e}", resolved.display()),
+                })?;
+
+            if let Ok(sha) = compute_sha256(&resolved) {
+                let mut cache = ctx.file_cache.lock().await;
+                cache.insert(
+                    resolved.clone(),
+                    FileCacheEntry {
+                        sha256: sha,
+                        read_at: SystemTime::now(),
+                    },
+                );
+            }
+
+            let output = format!("Created {} ({} bytes)", resolved.display(), bytes.len());
+            Ok(sanitize_output(&output))
+        })
+    }
+}
+
 impl ToolExecutor for RunCommandTool {
     fn name(&self) -> &'static str {
         "run_command"
@@ -552,14 +924,21 @@ pub fn register_builtins(
     read_limits: ReadFileLimits,
     patch_limits: PatchLimits,
     search_config: SearchToolConfig,
+    webfetch_config: WebFetchToolConfig,
 ) -> Result<(), ToolError> {
     registry.register(Box::new(ReadFileTool::new(read_limits)))?;
     registry.register(Box::new(ApplyPatchTool::new(patch_limits)))?;
+    registry.register(Box::new(WriteFileTool))?;
     registry.register(Box::new(RunCommandTool))?;
+    registry.register(Box::new(GlobTool))?;
+    git::register_git_tools(registry)?;
     if search_config.enabled {
         for name in SearchTool::aliases() {
             registry.register(Box::new(SearchTool::with_name(name, search_config.clone())))?;
         }
+    }
+    if webfetch_config.enabled {
+        registry.register(Box::new(WebFetchTool::new(webfetch_config)))?;
     }
     Ok(())
 }
@@ -911,5 +1290,119 @@ impl Drop for ChildGuard {
         {
             let _ = child.start_kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_braces_no_braces() {
+        assert_eq!(expand_braces("**/*.rs"), vec!["**/*.rs"]);
+    }
+
+    #[test]
+    fn expand_braces_single_group() {
+        let mut result = expand_braces("**/*.{rs,toml}");
+        result.sort();
+        assert_eq!(result, vec!["**/*.rs", "**/*.toml"]);
+    }
+
+    #[test]
+    fn expand_braces_multiple_alternatives() {
+        let mut result = expand_braces("src/*.{ts,tsx,js,jsx}");
+        result.sort();
+        assert_eq!(
+            result,
+            vec!["src/*.js", "src/*.jsx", "src/*.ts", "src/*.tsx"]
+        );
+    }
+
+    #[test]
+    fn expand_braces_single_item_removes_braces() {
+        assert_eq!(expand_braces("**/*.{rs}"), vec!["**/*.rs"]);
+    }
+
+    #[test]
+    fn expand_braces_nested() {
+        // Nested braces expand innermost first
+        let result = expand_braces("{a{b,c}}");
+        // {a{b,c}} -> {ab}, {ac} -> ab, ac
+        assert!(result.contains(&"ab".to_string()));
+        assert!(result.contains(&"ac".to_string()));
+    }
+
+    #[test]
+    fn expand_braces_empty_pattern() {
+        assert_eq!(expand_braces(""), vec![""]);
+    }
+
+    #[test]
+    fn expand_single_brace_no_braces() {
+        assert_eq!(expand_single_brace("**/*.rs"), None);
+    }
+
+    #[test]
+    fn expand_single_brace_simple() {
+        let result = expand_single_brace("{a,b}").unwrap();
+        assert_eq!(result, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn expand_single_brace_with_prefix_suffix() {
+        let result = expand_single_brace("pre{a,b}post").unwrap();
+        assert_eq!(result, vec!["preapost", "prebpost"]);
+    }
+
+    #[test]
+    fn glob_args_deserialize() {
+        let json = serde_json::json!({
+            "pattern": "**/*.rs",
+            "path": "src",
+            "hidden": true,
+            "limit": 500
+        });
+        let args: GlobArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.pattern, "**/*.rs");
+        assert_eq!(args.path, Some("src".to_string()));
+        assert_eq!(args.hidden, Some(true));
+        assert_eq!(args.limit, Some(500));
+    }
+
+    #[test]
+    fn glob_args_deserialize_minimal() {
+        let json = serde_json::json!({ "pattern": "*.txt" });
+        let args: GlobArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.pattern, "*.txt");
+        assert_eq!(args.path, None);
+        assert_eq!(args.hidden, None);
+        assert_eq!(args.limit, None);
+    }
+
+    #[test]
+    fn glob_tool_schema_has_required_pattern() {
+        let tool = GlobTool;
+        let schema = tool.schema();
+        let required = schema.get("required").unwrap().as_array().unwrap();
+        assert!(required.iter().any(|v| v.as_str() == Some("pattern")));
+    }
+
+    #[test]
+    fn glob_tool_is_not_side_effecting() {
+        let tool = GlobTool;
+        assert!(!tool.is_side_effecting());
+    }
+
+    #[test]
+    fn glob_tool_does_not_require_approval() {
+        let tool = GlobTool;
+        assert!(!tool.requires_approval());
+    }
+
+    #[test]
+    fn glob_tool_risk_level_is_low() {
+        let tool = GlobTool;
+        assert_eq!(tool.risk_level(), RiskLevel::Low);
     }
 }

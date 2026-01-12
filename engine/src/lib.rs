@@ -788,9 +788,12 @@ impl App {
     pub fn tool_approval_move_down(&mut self) {
         if let OperationState::ToolLoop(state) = &mut self.state
             && let ToolLoopPhase::AwaitingApproval(approval) = &mut state.phase
-            && approval.cursor + 1 < approval.requests.len()
         {
-            approval.cursor += 1;
+            // Allow cursor to move to Submit (N) and Deny (N+1) buttons
+            let max_cursor = approval.requests.len() + 1;
+            if approval.cursor < max_cursor {
+                approval.cursor += 1;
+            }
         }
     }
 
@@ -809,6 +812,29 @@ impl App {
 
     pub fn tool_approval_deny_all(&mut self) {
         self.resolve_tool_approval(tools::ApprovalDecision::DenyAll);
+    }
+
+    /// Handle Enter key on approval prompt - action depends on cursor position:
+    /// - On tool item: toggle selection
+    /// - On Submit button: confirm selected
+    /// - On Deny All button: deny all
+    pub fn tool_approval_activate(&mut self) {
+        // Determine cursor position relative to tool count
+        let (cursor, num_tools) = if let OperationState::ToolLoop(state) = &self.state
+            && let ToolLoopPhase::AwaitingApproval(approval) = &state.phase
+        {
+            (approval.cursor, approval.requests.len())
+        } else {
+            return;
+        };
+
+        if cursor < num_tools {
+            self.tool_approval_toggle();
+        } else if cursor == num_tools {
+            self.tool_approval_confirm_selected();
+        } else {
+            self.tool_approval_deny_all();
+        }
     }
 
     pub fn tool_approval_confirm_selected(&mut self) {

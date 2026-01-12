@@ -1,9 +1,9 @@
-# File Operations Tools (Move/Copy/ListDir)
+# File Operations Tools (Move/Copy/List Directory)
 
 ## Software Requirements Document
 
-**Version:** 1.0  
-**Date:** 2026-01-08  
+**Version:** 1.1  
+**Date:** 2026-01-12  
 **Status:** Draft  
 **Baseline code reference:** `forge-source.zip`
 
@@ -12,8 +12,8 @@
 | Lines | Section |
 |-------|---------|
 | 1-15 | Header & Change Log |
-| 16-38 | Introduction: Move, Copy, ListDir scope |
-| 39-80 | Functional Requirements: Interface, Move, Copy, ListDir logic |
+| 16-38 | Introduction: Move, Copy, list_directory scope |
+| 39-80 | Functional Requirements: Interface, Move, Copy, list_directory logic |
 | 81-110 | NFRs, Configuration, Verification |
 
 ---
@@ -22,7 +22,11 @@
 
 ### 0.1 Initial draft
 
-* Requirements for Move, Copy, and ListDir tools based on `../tools` fileops.
+* Requirements for Move, Copy, and list_directory tools based on `../tools` fileops.
+
+### 0.2 Alignment update
+
+* list_directory is specified in `docs/LIST_DIRECTORY_SRD.md`; updated naming and config references.
 
 ---
 
@@ -38,7 +42,7 @@ Tools included:
 
 * Move (rename)
 * Copy
-* ListDir
+* list_directory (alias: listdir/ls/dir)
 
 Out of scope:
 
@@ -58,11 +62,11 @@ Out of scope:
 
 ### 2.1 Tool Interface
 
-**FR-FOPS-01:** Tools MUST be named `Move`, `Copy`, and `ListDir` with aliases:
+**FR-FOPS-01:** Tools MUST be named `move`, `copy`, and `list_directory` with aliases:
 
 * Move: `move`, `rename`, `mv`
 * Copy: `copy`, `cp`
-* ListDir: `listdir`, `ls`, `dir`
+* list_directory: `list_directory`, `listdir`, `ls`, `dir`
 
 ### 2.2 Move
 
@@ -90,17 +94,9 @@ Out of scope:
 
 **FR-FOPS-CP-03:** If `overwrite=false` and destination exists, the tool MUST return an error.
 
-### 2.4 ListDir
+### 2.4 list_directory
 
-**FR-FOPS-LS-01:** Request schema MUST include:
-
-* `path` (string, required)
-* `all` (boolean, optional, default false)
-* `long` (boolean, optional, default false)
-
-**FR-FOPS-LS-02:** If `long=true`, entries MUST include size, modified time, and type.
-
-**FR-FOPS-LS-03:** Entries MUST be sorted lexicographically.
+**FR-FOPS-LS-01:** The list_directory tool behavior and schema are specified in `docs/LIST_DIRECTORY_SRD.md`. This document does not add additional requirements.
 
 ---
 
@@ -122,6 +118,8 @@ Out of scope:
 allow_overwrite = false
 ```
 
+Note: list_directory configuration is under `[tools.list_directory]` (see `docs/LIST_DIRECTORY_SRD.md`).
+
 ---
 
 ## 5. Verification Requirements
@@ -133,4 +131,4 @@ allow_overwrite = false
 | T-FOPS-MV-01 | Move file to directory |
 | T-FOPS-MV-02 | Overwrite blocked |
 | T-FOPS-CP-01 | Copy file to directory |
-| T-FOPS-LS-01 | ListDir returns sorted entries |
+| T-FOPS-LS-01 | list_directory returns sorted entries |

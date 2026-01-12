@@ -31,6 +31,7 @@ The Tool Executor Framework enables the LLM to interact with your local filesyst
 
 - **Read files** to understand your codebase
 - **Apply patches** to edit files using the LP1 format
+- **Write new files** when creating code or assets
 - **Run shell commands** to build, test, and execute tasks
 
 All tools are:
@@ -143,6 +144,28 @@ Applies LP1 patches to files within the sandbox. See [LP1.md](LP1.md) for the pa
 - **SHA validation**: File content must not have changed since last read
 - **Atomic writes**: Uses temp file + rename to prevent partial writes
 - **Auto-backup**: Original files are backed up before modification
+
+---
+
+### `write_file`
+
+Creates a new file within the sandbox.
+
+| Property | Value |
+|----------|-------|
+| Side-effecting | Yes |
+| Requires approval | Yes (unless allowlisted) |
+| Risk level | Medium |
+
+**Parameters:**
+
+- `path` (string, required) — Path to new file
+- `content` (string, required) — File contents
+
+**Notes:**
+
+- Fails if the file already exists (create-new only).
+- Use `apply_patch` to modify existing files.
 
 ---
 

@@ -2,8 +2,8 @@
 
 ## Software Requirements Document
 
-**Version:** 1.0
-**Date:** 2026-01-08
+**Version:** 1.1
+**Date:** 2026-01-12
 **Status:** Draft
 **Baseline code reference:** `forge-source.zip`
 
@@ -14,6 +14,12 @@
 ### 0.1 Initial version
 
 * Initial SRD for the built-in `list_directory` tool.
+
+### 0.2 Clarifications and alignment
+
+* Clarified traversal order, truncation behavior, defaults, and output canonicalization.
+* Added error_code semantics and read_dir failure handling.
+* Aligned references and configuration defaults.
 
 ---
 
@@ -56,7 +62,7 @@ This document specifies requirements for the `list_directory` tool, a built-in t
 | Document                      | Description                                  |
 | ----------------------------- | -------------------------------------------- |
 | `docs/TOOL_EXECUTOR_SRD.md`   | Tool execution framework requirements        |
-| `docs/ENGINE_ARCHITECTURE.md` | Engine state machine constraints             |
+| `engine/README.md`            | Engine state machine constraints             |
 | `docs/DESIGN.md`             | Type-driven design patterns and invariants   |
 | RFC 2119 / RFC 8174           | Requirement level keywords                   |
 
@@ -150,19 +156,27 @@ The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **
 * **FR-LD-VAL-04:** `max_entries` MUST be <= configured limit (CFG-LD-02); otherwise return `ToolError::BadArgs`.
 * **FR-LD-VAL-05:** At least one of `include_files`, `include_dirs`, or `include_symlinks` MUST be true; otherwise return `ToolError::BadArgs`.
 * **FR-LD-VAL-06:** `include_other` only applies to non-regular, non-directory, non-symlink entries and defaults to false.
+* **FR-LD-VAL-06a:** Omitted arguments MUST resolve using defaults in `[tools.list_directory]` (CFG-LD-01). If no config is present, use built-in defaults (CFG-LD-05). Precedence: explicit args > config defaults > built-in defaults.
+* **FR-LD-VAL-06b:** If `recursive` is true and the requested `max_depth` exceeds the configured cap (CFG-LD-03), return `ToolError::BadArgs`.
 
 ### 3.3 Sandbox and Path Handling (FR-LD-VAL)
 
 * **FR-LD-VAL-07:** The tool MUST validate `path` using the sandbox before any filesystem access.
 * **FR-LD-VAL-08:** The resolved path MUST exist and be a directory; otherwise return `ToolError::ExecutionFailed` with a clear message.
 * **FR-LD-VAL-09:** The tool MUST NOT follow symlinks when traversing directories (even when recursive).
+* **FR-LD-VAL-10:** The `path` field in output MUST be a normalized form of the requested path: trim whitespace; convert all separators to `/`; remove redundant `./` segments; collapse repeated `/` to a single `/`; remove trailing `/` unless the path is exactly `/` or a drive root (`X:/`). Case MUST be preserved.
 
 ### 3.4 Traversal Semantics (FR-LD-LST)
 
 * **FR-LD-LST-01:** If `recursive` is false, only immediate children (depth=1) MUST be returned.
-* **FR-LD-LST-02:** If `recursive` is true, entries MUST be returned for all descendants with depth <= effective max depth.
+* **FR-LD-LST-02:** If `recursive` is true, entries MUST be returned for all descendants with depth <= effective max depth, subject to `max_entries` and output-size limits.
 * **FR-LD-LST-03:** The tool MUST ignore `.` and `..` entries if present.
-* **FR-LD-LST-04:** For entries where metadata retrieval fails, the tool MUST still include an entry with `type="unknown"` and an `error` field, and MUST NOT abort the entire listing.
+* **FR-LD-LST-04:** For entries where metadata retrieval fails, the tool MUST still include an entry with `type="unknown"`, `error_code`, and `error`, and MUST NOT abort the entire listing.
+* **FR-LD-LST-05:** Traversal order MUST be deterministic: depth-first pre-order. Within each directory, entries MUST be enumerated in ascending lexical order by entry name using the lossy UTF-8 string for that name (see NFR-LD-REL-02). Directories are descended in that same order.
+* **FR-LD-LST-06:** Filtering is applied before counting toward `max_entries`. When `include_hidden=false`, hidden entries (name starts with `.`) MUST be omitted and hidden directories MUST NOT be traversed.
+* **FR-LD-LST-06a:** Hidden determination is based solely on a leading `.` in the entry name; platform-specific hidden attributes MUST be ignored.
+* **FR-LD-LST-07:** When `max_entries` is reached during traversal, the tool MUST stop traversal, set `truncated=true`, and set `truncated_reason="max_entries"` (unless later overridden by output-size truncation per FR-LD-OUT-07).
+* **FR-LD-LST-08:** If a directory cannot be read during traversal (e.g., permission denied, removed), the tool MUST include an entry with `type="unknown"` and `error_code="read_dir_failed"`, MUST NOT recurse into it, and MUST continue.
 
 ### 3.5 Output Format (FR-LD-OUT)
 
@@ -170,7 +184,7 @@ The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **
 
 | Field                | Type                | Description                                          |
 | -------------------- | ------------------- | ---------------------------------------------------- |
-| `path`               | string              | Normalized requested path (forward slashes)          |
+| `path`               | string              | Normalized requested path (forward slashes; see FR-LD-VAL-10) |
 | `entries`            | array               | List of entry objects                                |
 | `returned`           | integer             | Number of entries in `entries`                       |
 | `max_entries`        | integer             | Effective max entries                                |
@@ -188,18 +202,31 @@ The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **
 | `size_bytes`       | integer or null| File size for regular files, null otherwise               |
 | `modified_epoch_ms`| integer or null| Last-modified time in epoch milliseconds, null if unknown |
 | `is_hidden`        | boolean        | True if name starts with `.`                              |
-| `error`            | string or null | Per-entry error (only for type `unknown`)                 |
+| `error_code`       | string or null | Per-entry error code (only for type `unknown`)            |
+| `error`            | string or null | Per-entry error message (only for type `unknown`)         |
+
+**Entry field rules**
+
+* `type` MUST be determined using no-follow metadata (lstat or equivalent). Symlinks MUST be reported as `type="symlink"` even if they target directories. Symlink targets MUST NOT be traversed (FR-LD-VAL-09).
+* `size_bytes` MUST be `null` for non-regular files (dirs, symlinks, other, unknown).
+* `modified_epoch_ms` MUST be derived from the entry's own metadata (no-follow). If unavailable or out of range, use `null`.
+* `error_code` MUST be one of: `metadata_unavailable`, `permission_denied`, `read_dir_failed`, `io_error`, `unknown`. `error` SHOULD be a short, non-localized message.
 
 **Ordering**
 
-* **FR-LD-OUT-01:** Entries MUST be sorted by `path` using ascending lexical order on the UTF-8 string.
-* **FR-LD-OUT-02:** The output MUST be deterministic for the same filesystem state and inputs.
+* **FR-LD-OUT-01:** After traversal (and any `max_entries` truncation), entries MUST be sorted by `path` using ascending lexical order on the UTF-8 string produced after lossy conversion. Sorting is for output ordering only.
+* **FR-LD-OUT-02:** The output MUST be deterministic for the same filesystem state and inputs, including error_code mapping and lossy conversion.
+* **FR-LD-OUT-02a:** JSON serialization MUST be canonical: object keys in the exact order shown in §3.5, no insignificant whitespace, and standard JSON escaping.
+* **FR-LD-OUT-02b:** `returned` MUST equal `entries.length`. If `truncated=false`, `truncated_reason` MUST be `null`; otherwise it MUST be `max_entries` or `max_output_bytes`.
 
 ### 3.6 Output Size Control (FR-LD-OUT)
 
 * **FR-LD-OUT-03:** The tool MUST ensure the final JSON output length is <= `effective_max = min(ctx.max_output_bytes, ctx.available_capacity_bytes)`.
 * **FR-LD-OUT-04:** The tool MUST set `ctx.allow_truncation=false` to prevent framework truncation that would corrupt JSON.
 * **FR-LD-OUT-05:** If output would exceed `effective_max`, the tool MUST reduce entries and set `truncated=true` with `truncated_reason="max_output_bytes"`.
+* **FR-LD-OUT-06:** Output size accounting MUST use UTF-8 byte length of the final JSON string.
+* **FR-LD-OUT-07:** Output-size truncation MUST remove entries from the end of the sorted list until the JSON output fits within `effective_max`. When this occurs, `truncated_reason` MUST be `"max_output_bytes"` (overriding `"max_entries"` if previously set).
+* **FR-LD-OUT-08:** If the minimal valid JSON (with zero entries) exceeds `effective_max`, the tool MUST return `ToolError::ExecutionFailed` with a clear message (e.g., "output budget too small") instead of returning invalid JSON.
 
 ### 3.7 Error Handling (FR-LD-ERR)
 
@@ -230,7 +257,7 @@ The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **
 ### 4.3 Reliability (NFR-LD-REL)
 
 * **NFR-LD-REL-01:** Output MUST be valid JSON even under size constraints.
-* **NFR-LD-REL-02:** Non-UTF8 filenames MUST be converted to valid UTF-8 via a lossy conversion.
+* **NFR-LD-REL-02:** Non-UTF8 filenames MUST be converted to valid UTF-8 via a lossy conversion using the Unicode replacement character. The resulting string MUST be used for ordering and output.
 
 ### 4.4 Portability (NFR-LD-PORT)
 
@@ -252,6 +279,7 @@ include_hidden_default = false
 include_symlinks_default = true
 include_files_default = true
 include_dirs_default = true
+include_other_default = false
 ```
 
 **CFG-LD-02:** `max_entries` is a hard cap; requested `max_entries` above this value MUST return `ToolError::BadArgs`.
@@ -259,6 +287,8 @@ include_dirs_default = true
 **CFG-LD-03:** `max_depth` is the default and the hard cap for recursive listings. Requested depths above this value MUST return `ToolError::BadArgs`.
 
 **CFG-LD-04:** `*_default` values are used when corresponding arguments are omitted.
+
+**CFG-LD-05:** If `[tools.list_directory]` is absent, the built-in defaults are: `max_entries=200`, `max_depth=4`, `include_hidden_default=false`, `include_symlinks_default=true`, `include_files_default=true`, `include_dirs_default=true`, `include_other_default=false`.
 
 ---
 
@@ -270,12 +300,16 @@ include_dirs_default = true
 | T-LD-02    | Path is file                                                  | ExecutionFailed with "path is not a directory"      |
 | T-LD-03    | Path outside sandbox                                         | SandboxViolation                                    |
 | T-LD-04    | Recursive with max_depth                                     | Entries limited to depth <= max_depth               |
-| T-LD-05    | max_entries exceeded by directory size                       | Truncated=true, returned=max_entries               |
-| T-LD-06    | Output size would exceed effective_max                       | Fewer entries returned, truncated_reason set        |
+| T-LD-05    | max_entries exceeded by directory size                       | Truncated=true, returned=max_entries, reason=max_entries |
+| T-LD-06    | Output size would exceed effective_max                       | Fewer entries returned, truncated_reason=max_output_bytes |
 | T-LD-07    | Hidden files present, include_hidden=false                   | Hidden entries omitted                              |
 | T-LD-08    | Symlink entries present, recursion enabled                   | Symlinks listed (if enabled) but not traversed      |
 | T-LD-09    | Non-UTF8 filename                                            | Output remains valid UTF-8 with lossy conversion    |
-| T-LD-10    | Per-entry metadata error                                     | Entry included with type=unknown and error field    |
+| T-LD-10    | Per-entry metadata error                                     | Entry included with type=unknown, error_code, and error |
+| T-LD-11    | Hidden directory with include_hidden=false + recursive       | Hidden dir omitted and not traversed                |
+| T-LD-12    | Directory read failure during recursion                      | Entry with type=unknown and error_code=read_dir_failed |
+| T-LD-13    | Output budget too small for minimal JSON                      | ExecutionFailed with clear message                  |
+| T-LD-14    | max_entries hit, then output size truncation                 | reason=max_output_bytes (override)                  |
 
 ---
 

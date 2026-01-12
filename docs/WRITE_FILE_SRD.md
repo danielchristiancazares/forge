@@ -2,8 +2,8 @@
 
 ## Software Requirements Document
 
-**Version:** 1.0  
-**Date:** 2026-01-08  
+**Version:** 1.1  
+**Date:** 2026-01-12  
 **Status:** Draft  
 **Baseline code reference:** `forge-source.zip`
 
@@ -25,20 +25,24 @@
 
 * Requirements for a write tool based on `../tools` Write handler.
 
+### 0.2 Alignment update
+
+* Updated tool name and behavior to match Forge `write_file` implementation (create-new only, no overwrite/base64).
+
 ---
 
 ## 1. Introduction
 
 ### 1.1 Purpose
 
-Define requirements for a tool that creates new files (or overwrites existing ones) within the sandbox.
+Define requirements for a tool that creates new files within the sandbox.
 
 ### 1.2 Scope
 
-The Write tool will:
+The write_file tool will:
 
-* Create or overwrite files
-* Support text or base64 binary content
+* Create new files only (no overwrite)
+* Write text content
 * Provide safe path validation
 
 Out of scope:
@@ -49,14 +53,14 @@ Out of scope:
 
 | Term | Definition |
 | --- | --- |
-| Overwrite | Replace existing file contents |
+| Create-new | Create file only if it does not already exist |
 
 ### 1.4 References
 
 | Document | Description |
 | --- | --- |
 | `docs/TOOL_EXECUTOR_SRD.md` | Tool execution framework |
-| `../tools/src/tools/write.rs` | Tool schema |
+| `../tools/src/tools/write.rs` | Reference handler |
 
 ---
 
@@ -64,15 +68,14 @@ Out of scope:
 
 ### 2.1 Product Perspective
 
-Write is a mutating file tool subject to approval policy and sandbox rules.
+write_file is a mutating file tool subject to approval policy and sandbox rules.
 
 ### 2.2 Product Functions
 
 | Function | Description |
 | --- | --- |
 | FR-WR-REQ | Accept path + content |
-| FR-WR-ENC | Support text and base64 payloads |
-| FR-WR-OVR | Optional overwrite behavior |
+| FR-WR-NEW | Create-new only (no overwrite) |
 
 ---
 
@@ -80,18 +83,13 @@ Write is a mutating file tool subject to approval policy and sandbox rules.
 
 ### 3.1 Tool Interface
 
-**FR-WR-01:** Tool name MUST be `Write` with alias `write`.
+**FR-WR-01:** Tool name MUST be `write_file`.
 
 **FR-WR-02:** Request schema MUST include:
 
 * `path` (string, required)
 * `content` (string, required)
-* `base64` (boolean, optional, default false)
-* `overwrite` (boolean, optional, default false)
-
-**FR-WR-03:** If `overwrite=false` and the file exists, the tool MUST return an error.
-
-**FR-WR-04:** If `base64=true`, `content` MUST be decoded from base64 bytes before writing.
+**FR-WR-03:** If the file already exists, the tool MUST return an error.
 
 ### 3.2 Output
 
@@ -112,11 +110,7 @@ Write is a mutating file tool subject to approval policy and sandbox rules.
 
 ## 5. Configuration
 
-```toml
-[tools.write]
-max_write_bytes = 1048576
-allow_overwrite = false
-```
+No write_file-specific configuration is defined in this version.
 
 ---
 
@@ -127,5 +121,4 @@ allow_overwrite = false
 | Test ID | Description |
 | --- | --- |
 | T-WR-01 | Create new file |
-| T-WR-02 | Overwrite blocked when not allowed |
-| T-WR-03 | Base64 write produces correct bytes |
+| T-WR-02 | Existing file returns error |

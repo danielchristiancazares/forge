@@ -1,9 +1,11 @@
 //! Tool Executor Framework - core types and helpers.
 
 pub mod builtins;
+pub mod git;
 pub mod lp1;
 pub mod sandbox;
 pub mod search;
+pub mod webfetch;
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -19,6 +21,7 @@ use tokio::sync::mpsc;
 
 use sandbox::Sandbox;
 pub use search::SearchToolConfig;
+pub use webfetch::WebFetchToolConfig;
 
 /// Tool execution future type alias.
 pub type ToolFut<'a> = Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>>;
@@ -326,6 +329,7 @@ pub struct ToolSettings {
     pub read_limits: ReadFileLimits,
     pub patch_limits: PatchLimits,
     pub search: SearchToolConfig,
+    pub webfetch: WebFetchToolConfig,
     pub timeouts: ToolTimeouts,
     pub max_output_bytes: usize,
     pub policy: Policy,

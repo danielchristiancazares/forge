@@ -4,6 +4,7 @@ mod effects;
 mod input;
 pub mod markdown;
 mod theme;
+mod tool_display;
 mod ui_inline;
 
 pub use effects::apply_modal_effect;
@@ -123,10 +124,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 styles::assistant_name(),
             ),
             Message::ToolUse(call) => {
-                let name = sanitize_terminal_text(&call.name).into_owned();
+                let compact = tool_display::format_tool_call_compact(&call.name, &call.arguments);
+                let compact = sanitize_terminal_text(&compact).into_owned();
                 (
                     "⚙".to_string(),
-                    name,
+                    compact,
                     Style::default()
                         .fg(colors::ACCENT)
                         .add_modifier(Modifier::BOLD),
@@ -161,18 +163,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 
         // Message content - render based on type
         match msg {
-            Message::ToolUse(call) => {
-                // Render tool arguments as formatted JSON
-                let args_str = serde_json::to_string_pretty(&call.arguments)
-                    .unwrap_or_else(|_| "{}".to_string());
-                let args_str = sanitize_terminal_text(&args_str);
-                let args_style = Style::default().fg(colors::TEXT_MUTED);
-                for arg_line in args_str.lines() {
-                    lines.push(Line::from(Span::styled(
-                        format!("  {}", arg_line),
-                        args_style,
-                    )));
-                }
+            Message::ToolUse(_) => {
+                // Compact format: args are in the header line, no body needed
             }
             Message::ToolResult(result) => {
                 // Render result content with appropriate styling
@@ -1006,16 +998,51 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App) {
         }
     }
 
+    // Render Submit and Deny buttons
+    lines.push(Line::from(""));
+    let submit_cursor = requests.len();
+    let deny_cursor = requests.len() + 1;
+
+    let submit_pointer = if cursor == submit_cursor { ">" } else { " " };
+    let deny_pointer = if cursor == deny_cursor { ">" } else { " " };
+
+    let submit_style = if cursor == submit_cursor {
+        Style::default()
+            .fg(colors::SUCCESS)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(colors::TEXT_MUTED)
+    };
+    let deny_style = if cursor == deny_cursor {
+        Style::default()
+            .fg(colors::ERROR)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(colors::TEXT_MUTED)
+    };
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{submit_pointer} "),
+            Style::default().fg(colors::TEXT_MUTED),
+        ),
+        Span::styled("[ Submit ]", submit_style),
+        Span::raw("    "),
+        Span::styled(
+            format!("{deny_pointer} "),
+            Style::default().fg(colors::TEXT_MUTED),
+        ),
+        Span::styled("[ Deny All ]", deny_style),
+    ]));
+
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled("A", styles::key_highlight()),
-        Span::styled(" approve all  ", styles::key_hint()),
-        Span::styled("D", styles::key_highlight()),
-        Span::styled(" deny all  ", styles::key_hint()),
         Span::styled("Space", styles::key_highlight()),
         Span::styled(" toggle  ", styles::key_hint()),
+        Span::styled("j/k", styles::key_highlight()),
+        Span::styled(" navigate  ", styles::key_hint()),
         Span::styled("Enter", styles::key_highlight()),
-        Span::styled(" confirm selected", styles::key_hint()),
+        Span::styled(" select", styles::key_hint()),
     ]));
 
     let content_width = lines.iter().map(|line| line.width()).max().unwrap_or(10) as u16;

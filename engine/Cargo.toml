@@ -9,6 +9,7 @@ description = "Core state machine and orchestration for Forge"
 forge-types.workspace = true
 forge-providers.workspace = true
 forge-context.workspace = true
+forge-webfetch.workspace = true
 
 tokio = { workspace = true, features = ["sync", "rt", "time", "process", "io-util", "fs"] }
 
@@ -22,6 +23,7 @@ sha2.workspace = true
 tempfile.workspace = true
 ignore.workspace = true
 unicode-normalization.workspace = true
+chrono.workspace = true
 
 anyhow.workspace = true
 thiserror.workspace = true

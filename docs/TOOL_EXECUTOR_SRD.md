@@ -2,8 +2,8 @@
 
 ## Software Requirements Document
 
-**Version:** 1.10
-**Date:** 2026-01-08
+**Version:** 1.12
+**Date:** 2026-01-12
 **Status:** Final
 **Baseline code reference:** `forge-source.zip`
 
@@ -44,6 +44,14 @@
 * Added explicit **sanitization** requirements for tool outputs and streaming chunks to prevent terminal injection.
 * Clarified **multi-tool ordering** requirements for persistence and provider adapters.
 
+### 0.3 Changes since v1.10
+
+* Added `list_directory` to the initial built-in tool set and sandbox applicability notes.
+
+### 0.4 Changes since v1.11
+
+* Added `write_file` to the initial built-in tool set and sandbox applicability notes.
+
 ---
 
 ## 1. Introduction
@@ -65,11 +73,11 @@ The Tool Executor Framework:
 * Tool registration, discovery, and schema generation
 * Tool loop modes: disabled / parse-only / enabled
 * Approval workflow (auto-approve, prompt, deny)
-* Filesystem sandboxing for path-based tools (`read_file`, `apply_patch`)
+* Filesystem sandboxing for path-based tools (`read_file`, `apply_patch`, `write_file`, `list_directory`)
 * Sequential execution with timeout and cancellation
 * Streaming output for long-running tools (`run_command`)
 * Durability / crash recovery integration for tool batches (calls + results)
-* Initial tool set: `read_file` and `apply_patch` (LP1); `run_command` is specified but MUST be denylisted by default
+* Initial tool set: `read_file`, `apply_patch`, `write_file`, and `list_directory`; `run_command` is specified but MUST be denylisted by default
 
 **Out of Scope**
 
@@ -486,6 +494,7 @@ If `approval_summary()` errors, the call MUST be pre-resolved as error and MUST 
 * `read_file`: `Read <path> [lines X-Y]` → Low
 * `apply_patch`: `Apply patch to <n> file(s): <file1>, <file2>...` → Medium
 * `run_command`: `Run command: <command>` → High (with explicit warning banner in UI)
+* `list_directory`: `List <path> [depth N]` → Low
 
 ---
 
@@ -540,7 +549,7 @@ Additionally, on Unix-like platforms, it SHOULD deny system credential files whe
 
 #### 3.5.5 Tool Applicability (FR-VAL-07)
 
-Sandbox validation SHALL apply to file-based tools (`read_file`, `apply_patch`) and any future tools operating on paths.
+Sandbox validation SHALL apply to file-based tools (`read_file`, `apply_patch`, `list_directory`) and any future tools operating on paths.
 
 `run_command` is NOT subject to filesystem sandboxing and MUST be treated as unsandboxed.
 
@@ -750,6 +759,10 @@ be applied, but MUST NOT alter valid JSON bytes (no added/removed characters).
 * MUST require approval (tool-level)
 
 ---
+
+### 3.6.11 Built-in Tool: `list_directory` (FR-TOOL-LIST-01)
+
+**Requirement:** `list_directory` SHALL list directory contents within the sandbox and return a JSON object string. Full behavior, schema, and limits are specified in `docs/LIST_DIRECTORY_SRD.md`.
 
 ### 3.7 Output Handling
 

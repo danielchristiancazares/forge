@@ -30,6 +30,7 @@ fn test_app() -> App {
         tool_settings.read_limits,
         tool_settings.patch_limits,
         tool_settings.search.clone(),
+        tool_settings.webfetch.clone(),
     );
     let tool_registry = std::sync::Arc::new(tool_registry);
     let tool_definitions = match tool_settings.mode {
