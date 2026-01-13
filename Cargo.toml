@@ -82,6 +82,9 @@ pulldown-cmark = "0.12"
 # Clipboard
 arboard = "3.4"
 
+# Unix libc bindings (for getuid)
+libc = "0.2"
+
 # Testing
 tokio-test = "0.4"
 wiremock = "0.6"

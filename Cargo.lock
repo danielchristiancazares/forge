@@ -1319,6 +1319,7 @@ dependencies = [
  "dirs",
  "forge-providers",
  "forge-types",
+ "libc",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
