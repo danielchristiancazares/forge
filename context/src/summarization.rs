@@ -307,7 +307,7 @@ async fn generate_summary_openai(
 }
 
 /// Get the summarization model name for a given provider.
-#[must_use] 
+#[must_use]
 pub fn summarization_model(provider: Provider) -> &'static str {
     match provider {
         Provider::Claude => CLAUDE_SUMMARIZATION_MODEL,

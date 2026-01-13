@@ -253,7 +253,9 @@ impl InputState {
             InputState::Normal(draft)
             | InputState::Insert(draft)
             | InputState::Command { draft, .. }
-            | InputState::ModelSelect { draft, .. } => InputState::ModelSelect { draft, selected: 0 },
+            | InputState::ModelSelect { draft, .. } => {
+                InputState::ModelSelect { draft, selected: 0 }
+            }
         }
     }
 }

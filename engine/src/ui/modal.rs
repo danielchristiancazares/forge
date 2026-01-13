@@ -19,7 +19,7 @@ pub struct ModalEffect {
 
 impl ModalEffect {
     /// Create a pop-scale effect (used when entering model select).
-    #[must_use] 
+    #[must_use]
     pub fn pop_scale(duration: Duration) -> Self {
         Self {
             kind: ModalEffectKind::PopScale,
@@ -29,7 +29,7 @@ impl ModalEffect {
     }
 
     /// Create a slide-up effect.
-    #[must_use] 
+    #[must_use]
     pub fn slide_up(duration: Duration) -> Self {
         Self {
             kind: ModalEffectKind::SlideUp,
@@ -44,7 +44,7 @@ impl ModalEffect {
     }
 
     /// Get the animation progress (0.0 to 1.0).
-    #[must_use] 
+    #[must_use]
     pub fn progress(&self) -> f32 {
         if self.duration.is_zero() {
             return 1.0;
@@ -55,13 +55,13 @@ impl ModalEffect {
     }
 
     /// Check if the animation is finished.
-    #[must_use] 
+    #[must_use]
     pub fn is_finished(&self) -> bool {
         self.elapsed >= self.duration
     }
 
     /// Get the effect kind.
-    #[must_use] 
+    #[must_use]
     pub fn kind(&self) -> ModalEffectKind {
         self.kind
     }

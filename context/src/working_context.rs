@@ -31,13 +31,13 @@ pub enum ContextSegment {
 
 impl ContextSegment {
     /// Create an original message segment.
-    #[must_use] 
+    #[must_use]
     pub fn original(id: MessageId, tokens: u32) -> Self {
         Self::Original { id, tokens }
     }
 
     /// Create a summarized segment.
-    #[must_use] 
+    #[must_use]
     pub fn summarized(summary_id: SummaryId, replaces: Vec<MessageId>, tokens: u32) -> Self {
         Self::Summarized {
             summary_id,
@@ -53,13 +53,13 @@ impl ContextSegment {
     }
 
     /// Returns true if this is a summary.
-    #[must_use] 
+    #[must_use]
     pub fn is_summarized(&self) -> bool {
         matches!(self, Self::Summarized { .. })
     }
 
     /// Tokens attributed to this segment.
-    #[must_use] 
+    #[must_use]
     pub fn tokens(&self) -> u32 {
         match self {
             ContextSegment::Original { tokens, .. } | ContextSegment::Summarized { tokens, .. } => {
@@ -80,7 +80,7 @@ pub struct WorkingContext {
 
 impl WorkingContext {
     /// Create a new empty working context with a budget.
-    #[must_use] 
+    #[must_use]
     pub fn new(token_budget: u32) -> Self {
         Self {
             segments: Vec::new(),
@@ -100,7 +100,7 @@ impl WorkingContext {
     }
 
     /// Get all segments.
-    #[must_use] 
+    #[must_use]
     pub fn segments(&self) -> &[ContextSegment] {
         &self.segments
     }
@@ -111,7 +111,7 @@ impl WorkingContext {
     }
 
     /// Get the token budget.
-    #[must_use] 
+    #[must_use]
     pub fn token_budget(&self) -> u32 {
         self.token_budget
     }
@@ -135,7 +135,7 @@ impl WorkingContext {
     }
 
     /// Count of summary segments.
-    #[must_use] 
+    #[must_use]
     pub fn summary_count(&self) -> usize {
         self.segments.iter().filter(|s| s.is_summarized()).count()
     }
@@ -144,7 +144,7 @@ impl WorkingContext {
     ///
     /// Summaries are injected as system messages with a prefix.
     /// Empty assistant messages are filtered out (API rejects them).
-    #[must_use] 
+    #[must_use]
     pub fn materialize(&self, history: &FullHistory) -> Vec<Message> {
         let mut messages = Vec::new();
 
@@ -182,7 +182,7 @@ pub struct ContextUsage {
 
 impl ContextUsage {
     /// Create usage stats from working context.
-    #[must_use] 
+    #[must_use]
     pub fn from_context(ctx: &WorkingContext) -> Self {
         Self {
             used_tokens: ctx.total_tokens(),
@@ -192,7 +192,7 @@ impl ContextUsage {
     }
 
     /// Usage as a percentage (0.0 - 100.0).
-    #[must_use] 
+    #[must_use]
     pub fn percentage(&self) -> f32 {
         if self.budget_tokens == 0 {
             0.0
@@ -202,7 +202,7 @@ impl ContextUsage {
     }
 
     /// Format for status bar: "2.1k / 200k (1%)"
-    #[must_use] 
+    #[must_use]
     pub fn format_compact(&self) -> String {
         fn format_k(n: u32) -> String {
             if n >= 1_000_000 {
@@ -236,12 +236,10 @@ impl ContextUsage {
 
     /// Returns a severity level for UI coloring.
     /// 0 = green (< 70%), 1 = yellow (70-90%), 2 = red (> 90%)
-    #[must_use] 
+    #[must_use]
     pub fn severity(&self) -> u8 {
         let pct = self.percentage();
-        if pct > 90.0 {
-            2
-        } else { u8::from(pct > 70.0) }
+        if pct > 90.0 { 2 } else { u8::from(pct > 70.0) }
     }
 }
 

@@ -211,7 +211,10 @@ impl super::App {
                                 ModelNameKind::Known => "",
                                 ModelNameKind::Unverified => " (unverified; limits may fallback)",
                             };
-                            self.set_status_success(format!("Model set to: {}{}", self.model, suffix));
+                            self.set_status_success(format!(
+                                "Model set to: {}{}",
+                                self.model, suffix
+                            ));
                         }
                         Err(e) => {
                             self.set_status_error(format!("Invalid model: {e}"));
@@ -246,7 +249,10 @@ impl super::App {
                     }
                 } else {
                     let provider = self.provider();
-                    let providers: Vec<&str> = Provider::all().iter().map(forge_types::Provider::as_str).collect();
+                    let providers: Vec<&str> = Provider::all()
+                        .iter()
+                        .map(forge_types::Provider::as_str)
+                        .collect();
                     self.set_status(format!(
                         "Current: {} ({}) │ Providers: {} │ Models: {}",
                         provider.display_name(),
@@ -281,9 +287,7 @@ impl super::App {
                     "off"
                 };
                 let status_suffix = if let Some((required, budget)) = recent_too_large {
-                    format!(
-                        " │ ERROR: recent msgs ({required} tokens) > budget ({budget} tokens)"
-                    )
+                    format!(" │ ERROR: recent msgs ({required} tokens) > budget ({budget} tokens)")
                 } else {
                     needs_summary.map_or(String::new(), |needed| {
                         format!(

@@ -637,7 +637,8 @@ impl App {
                         Err(err) => {
                             let call_id = exec
                                 .current_call
-                                .as_ref().map_or_else(|| "<unknown>".to_string(), |c| c.id.clone());
+                                .as_ref()
+                                .map_or_else(|| "<unknown>".to_string(), |c| c.id.clone());
                             let message = if err.is_cancelled() {
                                 "Tool execution cancelled"
                             } else {

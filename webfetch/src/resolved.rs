@@ -117,8 +117,7 @@ impl ResolvedSecurityConfig {
             blocked_cidrs,
             allowed_ports,
             allow_insecure_tls: security.is_some_and(|s| s.allow_insecure_tls),
-            allow_insecure_overrides: security
-                .is_some_and(|s| s.allow_insecure_overrides),
+            allow_insecure_overrides: security.is_some_and(|s| s.allow_insecure_overrides),
         }
     }
 }
@@ -138,10 +137,14 @@ impl ResolvedHttpConfig {
         let use_system_proxy = http.is_some_and(|h| h.use_system_proxy);
         let connect_timeout = http
             .and_then(|h| h.connect_timeout_seconds)
-            .map_or(TimeoutSetting::Disabled, |s| TimeoutSetting::Enabled(Duration::from_secs(u64::from(s))));
+            .map_or(TimeoutSetting::Disabled, |s| {
+                TimeoutSetting::Enabled(Duration::from_secs(u64::from(s)))
+            });
         let read_timeout = http
             .and_then(|h| h.read_timeout_seconds)
-            .map_or(TimeoutSetting::Disabled, |s| TimeoutSetting::Enabled(Duration::from_secs(u64::from(s))));
+            .map_or(TimeoutSetting::Disabled, |s| {
+                TimeoutSetting::Enabled(Duration::from_secs(u64::from(s)))
+            });
 
         Self {
             headers,

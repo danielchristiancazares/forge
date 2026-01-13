@@ -8,8 +8,7 @@ use std::time::Instant;
 use super::{ModalEffect, ScrollState};
 
 /// Severity for status messages shown in the UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StatusKind {
     #[default]
     Info,
@@ -18,16 +17,13 @@ pub enum StatusKind {
     Error,
 }
 
-
 /// UI configuration options derived from config/environment.
-#[derive(Debug, Clone, Copy)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct UiOptions {
     pub ascii_only: bool,
     pub high_contrast: bool,
     pub reduced_motion: bool,
 }
-
 
 /// State related to rendering and UI display.
 ///
@@ -74,7 +70,7 @@ impl Default for ViewState {
 
 impl ViewState {
     /// Create a new `ViewState` with default values.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

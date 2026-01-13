@@ -5,7 +5,7 @@ use ratatui::layout::Rect;
 use forge_engine::{ModalEffect, ModalEffectKind};
 
 /// Apply a modal effect to transform the base rectangle.
-#[must_use] 
+#[must_use]
 pub fn apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> Rect {
     match effect.kind() {
         ModalEffectKind::PopScale => {

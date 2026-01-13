@@ -109,13 +109,13 @@ pub struct PreparedContext<'a> {
 
 impl PreparedContext<'_> {
     /// Materialize messages for an API call.
-    #[must_use] 
+    #[must_use]
     pub fn api_messages(&self) -> Vec<Message> {
         self.working_context.materialize(&self.manager.history)
     }
 
     /// Usage stats for UI.
-    #[must_use] 
+    #[must_use]
     pub fn usage(&self) -> ContextUsage {
         ContextUsage::from_context(&self.working_context)
     }
@@ -159,7 +159,7 @@ pub struct ContextManager {
 
 impl ContextManager {
     /// Create a new context manager for the given model.
-    #[must_use] 
+    #[must_use]
     pub fn new(initial_model: &str) -> Self {
         let registry = ModelRegistry::new();
         let resolved = registry.get(initial_model);
@@ -221,7 +221,7 @@ impl ContextManager {
     ///
     /// Used for idempotent crash recovery - if history already contains
     /// an entry with this `step_id`, we should not recover it again.
-    #[must_use] 
+    #[must_use]
     pub fn has_step_id(&self, step_id: i64) -> bool {
         self.history.has_step_id(step_id)
     }
@@ -576,7 +576,7 @@ impl ContextManager {
     ///
     /// This does not mutate history. If the current model's budget can fit original messages for
     /// previously-summarized segments, `build_working_context()` will choose originals.
-    #[must_use] 
+    #[must_use]
     pub fn try_restore_messages(&self) -> usize {
         let Ok(ctx) = self.build_working_context() else {
             return 0;
@@ -604,7 +604,7 @@ impl ContextManager {
     }
 
     /// Get current usage statistics with explicit summarization status.
-    #[must_use] 
+    #[must_use]
     pub fn usage_status(&self) -> ContextUsageStatus {
         let fallback_usage = || ContextUsage {
             used_tokens: self.history.total_tokens(),
@@ -633,25 +633,25 @@ impl ContextManager {
     }
 
     /// Access to full history.
-    #[must_use] 
+    #[must_use]
     pub fn history(&self) -> &FullHistory {
         &self.history
     }
 
     /// Current model name.
-    #[must_use] 
+    #[must_use]
     pub fn current_model(&self) -> &str {
         &self.current_model
     }
 
     /// Current model limits.
-    #[must_use] 
+    #[must_use]
     pub fn current_limits(&self) -> ModelLimits {
         self.current_limits
     }
 
     /// Where the current model limits came from.
-    #[must_use] 
+    #[must_use]
     pub fn current_limits_source(&self) -> ModelLimitsSource {
         self.current_limits_source
     }

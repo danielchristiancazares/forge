@@ -12,7 +12,7 @@ use ratatui::{
 use forge_engine::{App, DisplayItem, InputMode, Message};
 use forge_types::sanitize_terminal_text;
 
-use crate::theme::{glyphs, palette, styles, Glyphs, Palette};
+use crate::theme::{Glyphs, Palette, glyphs, palette, styles};
 use crate::tool_display;
 use crate::{draw_input, draw_model_selector, draw_status_bar};
 
@@ -24,7 +24,7 @@ pub const INLINE_VIEWPORT_HEIGHT: u16 = INLINE_INPUT_HEIGHT + 1;
 pub const INLINE_MODEL_SELECTOR_HEIGHT: u16 = 18;
 
 /// Returns the viewport height needed for inline mode based on current input mode.
-#[must_use] 
+#[must_use]
 pub fn inline_viewport_height(mode: InputMode) -> u16 {
     match mode {
         InputMode::ModelSelect => INLINE_MODEL_SELECTOR_HEIGHT,
@@ -55,7 +55,7 @@ pub struct InlineOutput {
 }
 
 impl InlineOutput {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             next_display_index: 0,
@@ -501,12 +501,13 @@ fn append_approval_lines(lines: &mut Vec<Line>, app: &App, palette: &Palette) {
         }
 
         if expanded == Some(i)
-            && let Ok(details) = serde_json::to_string_pretty(&req.arguments) {
-                for line in details.lines() {
-                    let truncated = truncate_with_ellipsis(line, 80);
-                    lines.push(Line::from(format!("       {truncated}")));
-                }
+            && let Ok(details) = serde_json::to_string_pretty(&req.arguments)
+        {
+            for line in details.lines() {
+                let truncated = truncate_with_ellipsis(line, 80);
+                lines.push(Line::from(format!("       {truncated}")));
             }
+        }
     }
 
     // Submit and Deny buttons
@@ -542,7 +543,9 @@ fn append_recovery_prompt(lines: &mut Vec<Line>, app: &App, palette: &Palette) {
     if !lines.is_empty() {
         lines.push(Line::from(""));
     }
-    lines.push(Line::from("Tool recovery detected. Tools will not be re-run."));
+    lines.push(Line::from(
+        "Tool recovery detected. Tools will not be re-run.",
+    ));
     lines.push(Line::from(Span::styled(
         "Resume keeps recovered results; discard drops them.",
         Style::default().fg(palette.text_muted),

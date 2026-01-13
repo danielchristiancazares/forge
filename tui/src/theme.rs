@@ -67,7 +67,7 @@ pub struct Palette {
 }
 
 impl Palette {
-    #[must_use] 
+    #[must_use]
     pub fn standard() -> Self {
         Self {
             bg_dark: colors::BG_DARK,
@@ -92,7 +92,7 @@ impl Palette {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn high_contrast() -> Self {
         Self {
             bg_dark: Color::Black,
@@ -118,7 +118,7 @@ impl Palette {
     }
 }
 
-#[must_use] 
+#[must_use]
 pub fn palette(options: UiOptions) -> Palette {
     if options.high_contrast {
         Palette::high_contrast()
@@ -154,7 +154,7 @@ pub struct Glyphs {
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_FRAMES_ASCII: &[&str] = &["|", "/", "-", "\\"];
 
-#[must_use] 
+#[must_use]
 pub fn glyphs(options: UiOptions) -> Glyphs {
     if options.ascii_only {
         Glyphs {
@@ -204,7 +204,7 @@ pub fn glyphs(options: UiOptions) -> Glyphs {
 }
 
 /// Get spinner frame based on tick count and UI options.
-#[must_use] 
+#[must_use]
 pub fn spinner_frame(tick: usize, options: UiOptions) -> &'static str {
     let frames = glyphs(options).spinner_frames;
     frames[tick % frames.len()]
@@ -212,23 +212,23 @@ pub fn spinner_frame(tick: usize, options: UiOptions) -> &'static str {
 
 /// Pre-defined styles for common UI elements.
 pub mod styles {
-    use super::{Palette, Style, Modifier};
+    use super::{Modifier, Palette, Style};
 
-    #[must_use] 
+    #[must_use]
     pub fn user_name(palette: &Palette) -> Style {
         Style::default()
             .fg(palette.green)
             .add_modifier(Modifier::BOLD)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn assistant_name(palette: &Palette) -> Style {
         Style::default()
             .fg(palette.primary)
             .add_modifier(Modifier::BOLD)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn mode_normal(palette: &Palette) -> Style {
         Style::default()
             .fg(palette.bg_dark)
@@ -236,7 +236,7 @@ pub mod styles {
             .add_modifier(Modifier::BOLD)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn mode_insert(palette: &Palette) -> Style {
         Style::default()
             .fg(palette.bg_dark)
@@ -244,7 +244,7 @@ pub mod styles {
             .add_modifier(Modifier::BOLD)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn mode_command(palette: &Palette) -> Style {
         Style::default()
             .fg(palette.bg_dark)
@@ -252,12 +252,12 @@ pub mod styles {
             .add_modifier(Modifier::BOLD)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn key_hint(palette: &Palette) -> Style {
         Style::default().fg(palette.text_muted)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn key_highlight(palette: &Palette) -> Style {
         Style::default()
             .fg(palette.peach)

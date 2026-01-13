@@ -112,27 +112,27 @@ impl WebFetchInput {
     }
 
     /// Set the `no_cache` flag.
-    #[must_use] 
+    #[must_use]
     pub fn with_no_cache(mut self, no_cache: bool) -> Self {
         self.no_cache = no_cache;
         self
     }
 
     /// Set the `force_browser` flag.
-    #[must_use] 
+    #[must_use]
     pub fn with_force_browser(mut self, force_browser: bool) -> Self {
         self.force_browser = force_browser;
         self
     }
 
     /// Get the parsed URL.
-    #[must_use] 
+    #[must_use]
     pub fn url(&self) -> &Url {
         &self.url
     }
 
     /// Get the original URL string as provided by the caller.
-    #[must_use] 
+    #[must_use]
     pub fn original_url(&self) -> &str {
         &self.original_url
     }
@@ -247,7 +247,7 @@ pub enum Note {
 
 impl Note {
     /// Get the canonical ordering for notes (FR-WF-NOTES-ORDER-01).
-    #[must_use] 
+    #[must_use]
     pub fn order(&self) -> u8 {
         match self {
             Note::CacheHit => 1,
@@ -364,27 +364,27 @@ impl WebFetchConfig {
     pub const DEFAULT_ROBOTS_CACHE_TTL_HOURS: u32 = 24;
 
     /// Get the effective timeout.
-    #[must_use] 
+    #[must_use]
     pub fn timeout_seconds(&self) -> u32 {
         self.timeout_seconds
             .unwrap_or(Self::DEFAULT_TIMEOUT_SECONDS)
     }
 
     /// Get the effective max redirects.
-    #[must_use] 
+    #[must_use]
     pub fn max_redirects(&self) -> u32 {
         self.max_redirects.unwrap_or(Self::DEFAULT_MAX_REDIRECTS)
     }
 
     /// Get the effective default max chunk tokens.
-    #[must_use] 
+    #[must_use]
     pub fn default_max_chunk_tokens(&self) -> u32 {
         self.default_max_chunk_tokens
             .unwrap_or(Self::DEFAULT_MAX_CHUNK_TOKENS)
     }
 
     /// Get the effective max download bytes.
-    #[must_use] 
+    #[must_use]
     pub fn max_download_bytes(&self) -> u64 {
         self.max_download_bytes
             .unwrap_or(Self::DEFAULT_MAX_DOWNLOAD_BYTES)
@@ -505,7 +505,7 @@ impl WebFetchError {
     }
 
     /// Serialize to JSON for tool output.
-    #[must_use] 
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         let mut obj = serde_json::json!({
             "error": true,
@@ -587,7 +587,7 @@ impl ErrorCode {
     /// Check if this error code is retryable by default.
     ///
     /// Note: Some codes have conditional retryability (e.g., `http_4xx` for 408/429).
-    #[must_use] 
+    #[must_use]
     pub fn default_retryable(&self) -> bool {
         matches!(
             self,

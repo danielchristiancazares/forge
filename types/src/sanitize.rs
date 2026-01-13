@@ -51,7 +51,7 @@ const BEL: char = '\x07';
 /// let dirty = "Hello\x1b[2JWorld";
 /// assert_eq!(sanitize_terminal_text(dirty), "HelloWorld");
 /// ```
-#[must_use] 
+#[must_use]
 pub fn sanitize_terminal_text(input: &str) -> Cow<'_, str> {
     // Fast path: check if any sanitization is needed
     if !needs_sanitization(input) {

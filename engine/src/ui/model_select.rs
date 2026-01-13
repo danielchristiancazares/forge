@@ -10,12 +10,12 @@ pub enum PredefinedModel {
 }
 
 impl PredefinedModel {
-    #[must_use] 
+    #[must_use]
     pub const fn all() -> &'static [PredefinedModel] {
         &[PredefinedModel::ClaudeOpus, PredefinedModel::Gpt52]
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn display_name(&self) -> &'static str {
         match self {
             PredefinedModel::ClaudeOpus => "Anthropic Claude Opus 4.5",
@@ -23,7 +23,7 @@ impl PredefinedModel {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn to_model_name(&self) -> ModelName {
         match self {
             PredefinedModel::ClaudeOpus => {
@@ -33,7 +33,7 @@ impl PredefinedModel {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn provider(&self) -> Provider {
         match self {
             PredefinedModel::ClaudeOpus => Provider::Claude,

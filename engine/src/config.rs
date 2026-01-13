@@ -356,7 +356,7 @@ impl ForgeConfig {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn path() -> Option<PathBuf> {
         config_path()
     }

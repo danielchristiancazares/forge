@@ -455,7 +455,9 @@ async fn handle_request(
     let is_doc = is_document(&resource_type);
     let is_main = if is_doc {
         let mut guard = state.main_frame_id.lock().await;
-        if let Some(frame_id) = guard.as_ref() { frame_id == &event.frame_id } else {
+        if let Some(frame_id) = guard.as_ref() {
+            frame_id == &event.frame_id
+        } else {
             *guard = Some(event.frame_id.clone());
             true
         }

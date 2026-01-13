@@ -99,8 +99,7 @@ pub async fn check(url: &Url, config: &ResolvedConfig) -> Result<RobotsResult, W
             } else {
                 // Malformed robots.txt → allow-all, cache it
                 if cache_entries > 0 {
-                    cache_robots(&origin, CachedRobots::AllowAll, cache_ttl, cache_entries)
-                        .await;
+                    cache_robots(&origin, CachedRobots::AllowAll, cache_ttl, cache_entries).await;
                 }
                 Ok(RobotsResult::Allowed)
             }

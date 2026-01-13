@@ -449,9 +449,7 @@ fn chrono_lite_format(secs: u64, millis: u32) -> String {
 
     let (year, month, day) = days_to_ymd(days);
 
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z")
 }
 
 fn ensure_secure_dir(path: &Path) -> Result<()> {
@@ -474,8 +472,9 @@ fn ensure_secure_dir(path: &Path) -> Result<()> {
         let current_mode = metadata.permissions().mode() & 0o777;
         if current_mode & 0o077 != 0 {
             // Group or other has some access - tighten to 0o700
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-                .with_context(|| format!("Failed to set directory permissions: {}", path.display()))?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).with_context(
+                || format!("Failed to set directory permissions: {}", path.display()),
+            )?;
         }
     }
     Ok(())

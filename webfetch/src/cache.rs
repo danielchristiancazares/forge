@@ -95,8 +95,7 @@ impl CacheEntry {
 
     /// Check if entry is expired.
     pub fn is_expired(&self) -> bool {
-        parse_rfc3339(&self.expires_at)
-            .is_none_or(|exp| SystemTime::now() > exp)
+        parse_rfc3339(&self.expires_at).is_none_or(|exp| SystemTime::now() > exp)
     }
 
     /// Update last accessed time (does NOT slide TTL).
@@ -199,7 +198,9 @@ impl Cache {
             }
         };
 
-        let mut entry: CacheEntry = if let Ok(e) = serde_json::from_str(&content) { e } else {
+        let mut entry: CacheEntry = if let Ok(e) = serde_json::from_str(&content) {
+            e
+        } else {
             // Corrupted entry - delete and miss
             let _ = fs::remove_file(&path);
             self.lru.remove(&key);
@@ -451,9 +452,7 @@ pub fn format_rfc3339(time: SystemTime) -> String {
     // Simple date calculation (good enough for our purposes)
     let (year, month, day) = days_to_ymd(days);
 
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
 /// Parse RFC3339 timestamp to `SystemTime`.

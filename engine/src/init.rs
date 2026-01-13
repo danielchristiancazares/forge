@@ -445,8 +445,7 @@ impl App {
 
     pub(crate) fn tool_settings_from_config(config: Option<&ForgeConfig>) -> tools::ToolSettings {
         let tools_cfg = config.and_then(|cfg| cfg.tools.as_ref());
-        let has_defs = tools_cfg
-            .is_some_and(|cfg| !cfg.definitions.is_empty());
+        let has_defs = tools_cfg.is_some_and(|cfg| !cfg.definitions.is_empty());
         let mode = parse_tools_mode(tools_cfg.and_then(|cfg| cfg.mode.as_deref()), has_defs);
         let allow_parallel = tools_cfg
             .and_then(|cfg| cfg.allow_parallel)
@@ -594,7 +593,12 @@ impl App {
             .and_then(|cfg| cfg.environment.as_ref())
             .map(|cfg| cfg.denylist.clone())
             .filter(|list| !list.is_empty())
-            .unwrap_or_else(|| DEFAULT_ENV_DENYLIST.iter().map(std::string::ToString::to_string).collect());
+            .unwrap_or_else(|| {
+                DEFAULT_ENV_DENYLIST
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect()
+            });
         let env_sanitizer = tools::EnvSanitizer::new(&env_patterns).unwrap_or_else(|e| {
             tracing::warn!("Invalid env denylist: {e}. Using defaults.");
             tools::EnvSanitizer::new(
@@ -614,7 +618,11 @@ impl App {
             .map(|cfg| cfg.denied_patterns.clone())
             .unwrap_or_default();
         if include_default_denies {
-            denied_patterns.extend(DEFAULT_SANDBOX_DENIES.iter().map(std::string::ToString::to_string));
+            denied_patterns.extend(
+                DEFAULT_SANDBOX_DENIES
+                    .iter()
+                    .map(std::string::ToString::to_string),
+            );
         }
 
         let mut allowed_roots: Vec<PathBuf> = sandbox_cfg

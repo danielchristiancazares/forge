@@ -61,7 +61,7 @@ pub fn http_client() -> &'static reqwest::Client {
 ///
 /// Use this for non-streaming requests like summarization where you want
 /// to bound the total request time.
-#[must_use] 
+#[must_use]
 pub fn http_client_with_timeout(timeout_secs: u64) -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
@@ -167,33 +167,33 @@ impl ApiConfig {
         })
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn with_openai_options(mut self, options: OpenAIRequestOptions) -> Self {
         self.openai_options = options;
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn provider(&self) -> Provider {
         self.api_key.provider()
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn api_key(&self) -> &str {
         self.api_key.as_str()
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn api_key_owned(&self) -> ApiKey {
         self.api_key.clone()
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn model(&self) -> &ModelName {
         &self.model
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn openai_options(&self) -> OpenAIRequestOptions {
         self.openai_options
     }
@@ -232,7 +232,11 @@ pub async fn send_message(
 
 /// Claude/Anthropic API implementation.
 pub mod claude {
-    use super::{CacheHint, CacheableMessage, OutputLimits, ToolDefinition, Message, ApiConfig, StreamEvent, Result, http_client, read_capped_error_body, Duration, STREAM_IDLE_TIMEOUT_SECS, MAX_SSE_BUFFER_BYTES, drain_next_sse_event, extract_sse_data};
+    use super::{
+        ApiConfig, CacheHint, CacheableMessage, Duration, MAX_SSE_BUFFER_BYTES, Message,
+        OutputLimits, Result, STREAM_IDLE_TIMEOUT_SECS, StreamEvent, ToolDefinition,
+        drain_next_sse_event, extract_sse_data, http_client, read_capped_error_body,
+    };
     use serde_json::json;
 
     const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -415,11 +419,9 @@ pub mod claude {
         let mut current_tool_id: Option<String> = None;
 
         loop {
-            let Ok(next) = tokio::time::timeout(
-                Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS),
-                stream.next(),
-            )
-            .await
+            let Ok(next) =
+                tokio::time::timeout(Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS), stream.next())
+                    .await
             else {
                 on_event(StreamEvent::Error("Stream idle timeout".to_string()));
                 return Ok(());
@@ -526,8 +528,8 @@ pub mod claude {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use forge_types::Provider;
         use forge_types::NonEmptyString;
+        use forge_types::Provider;
 
         #[test]
         fn hoists_system_messages_into_system_blocks() {
@@ -575,7 +577,11 @@ pub mod claude {
 
 /// `OpenAI` API implementation.
 pub mod openai {
-    use super::{StreamEvent, Message, ApiConfig, CacheableMessage, OutputLimits, ToolDefinition, Result, http_client, read_capped_error_body, Duration, STREAM_IDLE_TIMEOUT_SECS, MAX_SSE_BUFFER_BYTES, drain_next_sse_event, extract_sse_data};
+    use super::{
+        ApiConfig, CacheableMessage, Duration, MAX_SSE_BUFFER_BYTES, Message, OutputLimits, Result,
+        STREAM_IDLE_TIMEOUT_SECS, StreamEvent, ToolDefinition, drain_next_sse_event,
+        extract_sse_data, http_client, read_capped_error_body,
+    };
     use serde_json::{Value, json};
     use std::collections::{HashMap, HashSet};
 
@@ -886,11 +892,9 @@ pub mod openai {
         let mut emit = |event| on_event(event);
 
         loop {
-            let Ok(next) = tokio::time::timeout(
-                Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS),
-                stream.next(),
-            )
-            .await
+            let Ok(next) =
+                tokio::time::timeout(Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS), stream.next())
+                    .await
             else {
                 on_event(StreamEvent::Error("Stream idle timeout".to_string()));
                 return Ok(());
@@ -949,8 +953,8 @@ pub mod openai {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use forge_types::{ApiKey, Provider};
         use forge_types::NonEmptyString;
+        use forge_types::{ApiKey, Provider};
         use serde_json::json;
 
         fn collect_events(json: Value, state: &mut OpenAIStreamState) -> Vec<StreamEvent> {

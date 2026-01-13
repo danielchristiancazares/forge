@@ -119,7 +119,7 @@ impl InsertMode<'_> {
     ///
     /// Returns a token proving that a non-empty user message was queued, and that it is valid to
     /// begin a new stream.
-    #[must_use] 
+    #[must_use]
     pub fn queue_message(self) -> Option<QueuedUserMessage> {
         match &self.app.state {
             OperationState::Streaming(_) => {
@@ -127,11 +127,13 @@ impl InsertMode<'_> {
                 return None;
             }
             OperationState::AwaitingToolResults(_) => {
-                self.app.set_status_warning("Busy: waiting for tool results");
+                self.app
+                    .set_status_warning("Busy: waiting for tool results");
                 return None;
             }
             OperationState::ToolLoop(_) => {
-                self.app.set_status_warning("Busy: tool execution in progress");
+                self.app
+                    .set_status_warning("Busy: tool execution in progress");
                 return None;
             }
             OperationState::ToolRecovery(_) => {
@@ -142,7 +144,8 @@ impl InsertMode<'_> {
             | OperationState::SummarizingWithQueued(_)
             | OperationState::SummarizationRetry(_)
             | OperationState::SummarizationRetryWithQueued(_) => {
-                self.app.set_status_warning("Busy: summarization in progress");
+                self.app
+                    .set_status_warning("Busy: summarization in progress");
                 return None;
             }
             OperationState::Idle => {}
@@ -156,7 +159,9 @@ impl InsertMode<'_> {
             return None;
         }
 
-        let api_key = if let Some(key) = self.app.current_api_key().cloned() { key } else {
+        let api_key = if let Some(key) = self.app.current_api_key().cloned() {
+            key
+        } else {
             self.app.set_status_warning(format!(
                 "No API key configured. Set {} environment variable.",
                 self.app.provider().env_var()
@@ -165,7 +170,9 @@ impl InsertMode<'_> {
         };
 
         let raw_content = self.app.input.draft_mut().take_text();
-        let content = if let Ok(content) = NonEmptyString::new(raw_content.clone()) { content } else {
+        let content = if let Ok(content) = NonEmptyString::new(raw_content.clone()) {
+            content
+        } else {
             self.app.set_status_warning("Cannot send empty message");
             return None;
         };
@@ -188,7 +195,8 @@ impl InsertMode<'_> {
         let config = match ApiConfig::new(api_key, self.app.model.clone()) {
             Ok(config) => config.with_openai_options(self.app.openai_options),
             Err(e) => {
-                self.app.set_status_error(format!("Cannot queue request: {e}"));
+                self.app
+                    .set_status_error(format!("Cannot queue request: {e}"));
                 return None;
             }
         };
@@ -222,7 +230,7 @@ impl CommandMode<'_> {
         command.pop();
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn take_command(self) -> Option<EnteredCommand> {
         let input = std::mem::take(&mut self.app.input);
         let InputState::Command { draft, command } = input else {

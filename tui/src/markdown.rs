@@ -106,7 +106,7 @@ pub fn clear_render_cache() {
 /// Render markdown content to ratatui Lines.
 ///
 /// Uses an internal cache to avoid re-parsing unchanged content.
-#[must_use] 
+#[must_use]
 pub fn render_markdown(content: &str, base_style: Style, palette: &Palette) -> Vec<Line<'static>> {
     let key = CacheKey::new(content, base_style, palette);
 
@@ -410,7 +410,12 @@ impl MarkdownRenderer {
         }
 
         // Calculate column widths
-        let num_cols = self.table_rows.iter().map(std::vec::Vec::len).max().unwrap_or(0);
+        let num_cols = self
+            .table_rows
+            .iter()
+            .map(std::vec::Vec::len)
+            .max()
+            .unwrap_or(0);
         let mut col_widths: Vec<usize> = vec![0; num_cols];
 
         for row in &self.table_rows {

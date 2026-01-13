@@ -108,7 +108,7 @@ pub struct StreamingMessage {
 }
 
 impl StreamingMessage {
-    #[must_use] 
+    #[must_use]
     pub fn new(
         model: ModelName,
         receiver: mpsc::UnboundedReceiver<StreamEvent>,
@@ -123,17 +123,17 @@ impl StreamingMessage {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn provider(&self) -> Provider {
         self.model.provider()
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn model_name(&self) -> &ModelName {
         &self.model
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn content(&self) -> &str {
         &self.content
     }
@@ -181,7 +181,7 @@ impl StreamingMessage {
     }
 
     /// Returns true if any tool calls were received during streaming.
-    #[must_use] 
+    #[must_use]
     pub fn has_tool_calls(&self) -> bool {
         !self.tool_calls.is_empty()
     }
@@ -598,7 +598,9 @@ impl App {
         }
 
         if truncated {
-            self.set_status_warning("ContextInfinity disabled: truncating history to fit model budget");
+            self.set_status_warning(
+                "ContextInfinity disabled: truncating history to fit model budget",
+            );
         } else if oversize {
             self.set_status_error("ContextInfinity disabled: last message exceeds model budget");
         }

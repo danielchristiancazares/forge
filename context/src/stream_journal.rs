@@ -91,13 +91,13 @@ pub struct ActiveJournal {
 }
 
 impl ActiveJournal {
-    #[must_use] 
+    #[must_use]
     pub fn step_id(&self) -> StepId {
         self.step_id
     }
 
     /// Get the model name associated with this streaming session.
-    #[must_use] 
+    #[must_use]
     pub fn model_name(&self) -> &str {
         &self.model_name
     }
@@ -778,9 +778,7 @@ fn chrono_lite_format(secs: u64, millis: u32) -> String {
     // Calculate year, month, day from days since epoch (1970-01-01)
     let (year, month, day) = days_to_ymd(days);
 
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z")
 }
 
 fn ensure_secure_dir(path: &Path) -> Result<()> {
@@ -803,8 +801,9 @@ fn ensure_secure_dir(path: &Path) -> Result<()> {
         let current_mode = metadata.permissions().mode() & 0o777;
         if current_mode & 0o077 != 0 {
             // Group or other has some access - tighten to 0o700
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-                .with_context(|| format!("Failed to set directory permissions: {}", path.display()))?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).with_context(
+                || format!("Failed to set directory permissions: {}", path.display()),
+            )?;
         }
     }
     Ok(())
@@ -883,7 +882,8 @@ fn iso8601_to_system_time(s: &str) -> Option<SystemTime> {
     };
 
     let days = ymd_to_days(year, month, day)?;
-    let secs = days as u64 * 86400 + u64::from(hour) * 3600 + u64::from(minute) * 60 + u64::from(second);
+    let secs =
+        days as u64 * 86400 + u64::from(hour) * 3600 + u64::from(minute) * 60 + u64::from(second);
     let duration = Duration::from_secs(secs) + Duration::from_millis(u64::from(millis));
 
     UNIX_EPOCH.checked_add(duration)

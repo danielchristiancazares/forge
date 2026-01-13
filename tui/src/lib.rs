@@ -9,7 +9,7 @@ mod ui_inline;
 
 pub use effects::apply_modal_effect;
 pub use input::handle_events;
-pub use theme::{glyphs, palette, spinner_frame, styles, Glyphs, Palette};
+pub use theme::{Glyphs, Palette, glyphs, palette, spinner_frame, styles};
 pub use ui_inline::{
     INLINE_INPUT_HEIGHT, INLINE_MODEL_SELECTOR_HEIGHT, INLINE_VIEWPORT_HEIGHT, InlineOutput,
     clear_inline_viewport, draw as draw_inline, inline_viewport_height,
@@ -83,13 +83,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 }
 
-fn draw_messages(
-    frame: &mut Frame,
-    app: &mut App,
-    area: Rect,
-    palette: &Palette,
-    glyphs: &Glyphs,
-) {
+fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, glyphs: &Glyphs) {
     // Helper to render a single message (defined at function start to satisfy clippy)
     fn render_message(
         msg: &Message,
@@ -268,10 +262,7 @@ fn draw_messages(
         }
         let spinner = spinner_frame(app.tick_count(), app.ui_options());
         let status_line = Line::from(vec![
-            Span::styled(
-                format!("{spinner} "),
-                Style::default().fg(palette.warning),
-            ),
+            Span::styled(format!("{spinner} "), Style::default().fg(palette.warning)),
             Span::styled(
                 format!("Awaiting {} tool result(s)...", pending_calls.len()),
                 Style::default()
@@ -605,7 +596,10 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: 
         _ => 1,
     };
     let input_padding = Padding::vertical(padding_v);
-    let inner_height = area.height.saturating_sub(2 + padding_v.saturating_mul(2)).max(1);
+    let inner_height = area
+        .height
+        .saturating_sub(2 + padding_v.saturating_mul(2))
+        .max(1);
 
     let prefix = match mode {
         InputMode::Command => " / ".to_string(),
@@ -729,8 +723,7 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: 
                     InputMode::Insert | InputMode::Normal | InputMode::ModelSelect => {
                         app.draft_text().to_string()
                     }
-                    InputMode::Command => command_line.clone()
-                        .unwrap_or_default(),
+                    InputMode::Command => command_line.clone().unwrap_or_default(),
                 },
                 0u16,
             )
@@ -758,16 +751,17 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: 
             let cursor_y = area.y.saturating_add(1 + padding_v);
             cursor_pos = Some((cursor_x, cursor_y));
         } else if mode == InputMode::Command
-            && let Some(command_line) = command_line.as_ref() {
-                let cursor_display_pos = command_line.width() as u16;
-                let cursor_x = area
-                    .x
-                    .saturating_add(1 + prefix_width)
-                    .saturating_add(cursor_display_pos)
-                    .saturating_sub(horizontal_scroll);
-                let cursor_y = area.y.saturating_add(1 + padding_v);
-                cursor_pos = Some((cursor_x, cursor_y));
-            }
+            && let Some(command_line) = command_line.as_ref()
+        {
+            let cursor_display_pos = command_line.width() as u16;
+            let cursor_x = area
+                .x
+                .saturating_add(1 + prefix_width)
+                .saturating_add(cursor_display_pos)
+                .saturating_sub(horizontal_scroll);
+            let cursor_y = area.y.saturating_add(1 + padding_v);
+            cursor_pos = Some((cursor_x, cursor_y));
+        }
 
         vec![Line::from(spans)]
     };
@@ -820,7 +814,12 @@ pub(crate) fn draw_status_bar(
         )
     } else if app.current_api_key().is_some() {
         (
-            format!("{} {} │ {}", glyphs.status_ready, app.provider().display_name(), app.model()),
+            format!(
+                "{} {} │ {}",
+                glyphs.status_ready,
+                app.provider().display_name(),
+                app.model()
+            ),
             Style::default().fg(palette.success),
         )
     } else {
@@ -1161,15 +1160,16 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
         }
 
         if expanded == Some(i)
-            && let Ok(details) = serde_json::to_string_pretty(&req.arguments) {
-                for line in details.lines() {
-                    let truncated = truncate_with_ellipsis(line, max_width.saturating_sub(6));
-                    lines.push(Line::from(Span::styled(
-                        format!("      {truncated}"),
-                        Style::default().fg(palette.text_muted),
-                    )));
-                }
+            && let Ok(details) = serde_json::to_string_pretty(&req.arguments)
+        {
+            for line in details.lines() {
+                let truncated = truncate_with_ellipsis(line, max_width.saturating_sub(6));
+                lines.push(Line::from(Span::styled(
+                    format!("      {truncated}"),
+                    Style::default().fg(palette.text_muted),
+                )));
             }
+        }
     }
 
     if confirm_deny {
@@ -1242,7 +1242,11 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
         Span::styled(" deny", styles::key_hint(palette)),
     ]));
 
-    let content_width = lines.iter().map(ratatui::prelude::Line::width).max().unwrap_or(10) as u16;
+    let content_width = lines
+        .iter()
+        .map(ratatui::prelude::Line::width)
+        .max()
+        .unwrap_or(10) as u16;
     let content_width = content_width.min(frame.area().width.saturating_sub(4));
     let content_height = lines.len() as u16;
 
@@ -1267,12 +1271,7 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
     frame.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
-fn draw_tool_recovery_prompt(
-    frame: &mut Frame,
-    app: &App,
-    palette: &Palette,
-    glyphs: &Glyphs,
-) {
+fn draw_tool_recovery_prompt(frame: &mut Frame, app: &App, palette: &Palette, glyphs: &Glyphs) {
     let Some(calls) = app.tool_recovery_calls() else {
         return;
     };
@@ -1339,12 +1338,19 @@ fn draw_tool_recovery_prompt(
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("r", styles::key_highlight(palette)),
-        Span::styled(" resume with recovered results  ", styles::key_hint(palette)),
+        Span::styled(
+            " resume with recovered results  ",
+            styles::key_hint(palette),
+        ),
         Span::styled("d", styles::key_highlight(palette)),
         Span::styled(" discard results", styles::key_hint(palette)),
     ]));
 
-    let content_width = lines.iter().map(ratatui::prelude::Line::width).max().unwrap_or(10) as u16;
+    let content_width = lines
+        .iter()
+        .map(ratatui::prelude::Line::width)
+        .max()
+        .unwrap_or(10) as u16;
     let content_width = content_width.min(frame.area().width.saturating_sub(4));
     let content_height = lines.len() as u16;
 

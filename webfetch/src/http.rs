@@ -144,9 +144,7 @@ fn validate_scheme(url: &Url) -> Result<(), WebFetchError> {
         "http" | "https" => Ok(()),
         scheme => Err(WebFetchError::new(
             ErrorCode::InvalidScheme,
-            format!(
-                "scheme '{scheme}' not allowed; only http and https are supported"
-            ),
+            format!("scheme '{scheme}' not allowed; only http and https are supported"),
             false,
         )
         .with_detail("scheme", scheme)),

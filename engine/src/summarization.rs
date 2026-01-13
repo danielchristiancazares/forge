@@ -76,9 +76,7 @@ impl super::App {
                 "Summarizing ~{original_tokens} tokens → ~{target_tokens} tokens (attempt {attempt}/{MAX_SUMMARIZATION_ATTEMPTS})..."
             )
         } else {
-            format!(
-                "Summarizing ~{original_tokens} tokens → ~{target_tokens} tokens..."
-            )
+            format!("Summarizing ~{original_tokens} tokens → ~{target_tokens} tokens...")
         };
         self.set_status(status);
 
@@ -88,10 +86,12 @@ impl super::App {
         let (api_key, model) = if let Some(config) = queued_request.as_ref() {
             (config.api_key_owned(), config.model().clone())
         } else {
-            let key = if let Some(key) = self.current_api_key().cloned() { match self.model.provider() {
-                Provider::Claude => ApiKey::Claude(key),
-                Provider::OpenAI => ApiKey::OpenAI(key),
-            } } else {
+            let key = if let Some(key) = self.current_api_key().cloned() {
+                match self.model.provider() {
+                    Provider::Claude => ApiKey::Claude(key),
+                    Provider::OpenAI => ApiKey::OpenAI(key),
+                }
+            } else {
                 self.set_status_warning("Cannot summarize: no API key configured");
                 return SummarizationStart::Failed;
             };
@@ -178,7 +178,9 @@ impl super::App {
 
         match result {
             Some(Ok(Ok(summary_text))) => {
-                let summary_text = if let Ok(text) = NonEmptyString::new(summary_text) { text } else {
+                let summary_text = if let Ok(text) = NonEmptyString::new(summary_text) {
+                    text
+                } else {
                     self.handle_summarization_failure(
                         attempt,
                         "summary was empty".to_string(),
@@ -325,10 +327,12 @@ fn summarization_retry_delay(attempt: u8) -> Duration {
     let base = SUMMARIZATION_RETRY_BASE_MS.saturating_mul(1u64 << exponent);
     let capped = base.min(SUMMARIZATION_RETRY_MAX_MS);
 
-    let nanos = u64::from(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos());
+    let nanos = u64::from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos(),
+    );
     let jitter = nanos % (SUMMARIZATION_RETRY_JITTER_MS + 1);
 
     let delay_ms = capped

@@ -78,7 +78,10 @@ pub(crate) fn format_stream_error(provider: Provider, model: &str, err: &str) ->
         );
         content.push_str("\n\nFix:\n- Set ");
         content.push_str(env_var);
-        let config_hint = config::config_path().map_or_else(|| "~/.forge/config.toml".to_string(), |p| p.display().to_string());
+        let config_hint = config::config_path().map_or_else(
+            || "~/.forge/config.toml".to_string(),
+            |p| p.display().to_string(),
+        );
         let _ = write!(
             content,
             " (env) or add it to {config_hint} under [api_keys].\n- Then retry your message."

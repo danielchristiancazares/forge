@@ -31,10 +31,7 @@ pub fn detect_shell(config: Option<&ShellConfig>) -> DetectedShell {
     if let Some(cfg) = config
         && let Some(binary) = &cfg.binary
     {
-        let args = cfg
-            .args
-            .clone()
-            .unwrap_or_else(|| default_args_for(binary));
+        let args = cfg.args.clone().unwrap_or_else(|| default_args_for(binary));
         return DetectedShell {
             binary: PathBuf::from(binary),
             args,
@@ -138,15 +135,15 @@ mod tests {
     fn test_default_args_for_cmd() {
         assert_eq!(default_args_for("cmd"), vec!["/C"]);
         assert_eq!(default_args_for("cmd.exe"), vec!["/C"]);
-        assert_eq!(default_args_for("C:\\Windows\\System32\\cmd.exe"), vec!["/C"]);
+        assert_eq!(
+            default_args_for("C:\\Windows\\System32\\cmd.exe"),
+            vec!["/C"]
+        );
     }
 
     #[test]
     fn test_default_args_for_powershell() {
-        assert_eq!(
-            default_args_for("pwsh"),
-            vec!["-NoProfile", "-Command"]
-        );
+        assert_eq!(default_args_for("pwsh"), vec!["-NoProfile", "-Command"]);
         assert_eq!(
             default_args_for("powershell"),
             vec!["-NoProfile", "-Command"]
