@@ -12,7 +12,7 @@ use ratatui::{
 use forge_engine::{App, DisplayItem, InputMode, Message};
 use forge_types::sanitize_terminal_text;
 
-use crate::theme::{colors, styles};
+use crate::theme::{glyphs, palette, styles, Glyphs, Palette};
 use crate::tool_display;
 use crate::{draw_input, draw_model_selector, draw_status_bar};
 
@@ -80,9 +80,13 @@ impl InlineOutput {
     where
         B: Backend,
     {
+        let options = app.ui_options();
+        let palette = palette(options);
+        let glyphs = glyphs(options);
+
         let items = app.display_items();
         let mut lines: Vec<Line> = Vec::new();
-        let mut msg_count = if self.has_output { 1 } else { 0 };
+        let mut msg_count = usize::from(self.has_output);
 
         if self.next_display_index < items.len() {
             for item in &items[self.next_display_index..] {
@@ -91,7 +95,7 @@ impl InlineOutput {
                     DisplayItem::Local(msg) => msg,
                 };
 
-                append_message_lines(&mut lines, msg, &mut msg_count);
+                append_message_lines(&mut lines, msg, &mut msg_count, &palette, &glyphs);
             }
 
             self.next_display_index = items.len();
@@ -100,7 +104,7 @@ impl InlineOutput {
         let tool_signature = tool_status_signature(app);
         if tool_signature != self.last_tool_status_signature {
             if tool_signature.is_some() {
-                append_tool_status_lines(&mut lines, app);
+                append_tool_status_lines(&mut lines, app, &glyphs);
             }
             self.last_tool_status_signature = tool_signature;
         }
@@ -108,7 +112,7 @@ impl InlineOutput {
         let pending_signature = pending_tool_signature(app);
         if pending_signature != self.last_pending_tool_signature {
             if pending_signature.is_some() {
-                append_pending_tool_lines(&mut lines, app);
+                append_pending_tool_lines(&mut lines, app, &glyphs);
             }
             self.last_pending_tool_signature = pending_signature;
         }
@@ -134,14 +138,14 @@ impl InlineOutput {
         let approval_signature = approval_signature(app);
         if approval_signature != self.last_approval_signature {
             if approval_signature.is_some() {
-                append_approval_lines(&mut lines, app);
+                append_approval_lines(&mut lines, app, &palette);
             }
             self.last_approval_signature = approval_signature;
         }
 
         let recovery_active = app.tool_recovery_calls().is_some();
         if recovery_active && !self.last_recovery_active {
-            append_recovery_prompt(&mut lines, app);
+            append_recovery_prompt(&mut lines, app, &palette);
         }
         self.last_recovery_active = recovery_active;
 
@@ -167,6 +171,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     frame.render_widget(Clear, area);
 
+    let options = app.ui_options();
+    let palette = palette(options);
+    let glyphs = glyphs(options);
+
     let input_height = match app.input_mode() {
         InputMode::Normal => 3,
         _ => INLINE_INPUT_HEIGHT,
@@ -185,17 +193,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Length(input_height), Constraint::Length(1)])
         .split(content_area);
 
-    draw_input(frame, app, chunks[0]);
-    draw_status_bar(frame, app, chunks[1]);
+    draw_input(frame, app, chunks[0], &palette);
+    draw_status_bar(frame, app, chunks[1], &palette, &glyphs);
 
     // TODO: Inline model picker needs a compact layout (bug report: pretty modal is cramped).
     // Draw model selector overlay if in model select mode
     if app.input_mode() == InputMode::ModelSelect {
-        draw_model_selector(frame, app);
+        draw_model_selector(frame, app, &palette, &glyphs);
     }
 }
 
-fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut usize) {
+fn append_message_lines(
+    lines: &mut Vec<Line>,
+    msg: &Message,
+    msg_count: &mut usize,
+    palette: &Palette,
+    glyphs: &Glyphs,
+) {
     if *msg_count > 0 {
         lines.push(Line::from(""));
         lines.push(Line::from(""));
@@ -204,51 +218,57 @@ fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut us
 
     let (icon, name, name_style) = match msg {
         Message::System(_) => (
-            "S".to_string(),
+            glyphs.system.to_string(),
             "System".to_string(),
             Style::default()
-                .fg(colors::TEXT_MUTED)
+                .fg(palette.text_muted)
                 .add_modifier(Modifier::BOLD),
         ),
-        Message::User(_) => ("○".to_string(), "You".to_string(), styles::user_name()),
+        Message::User(_) => (
+            glyphs.user.to_string(),
+            "You".to_string(),
+            styles::user_name(palette),
+        ),
         Message::Assistant(m) => (
-            "*".to_string(),
+            glyphs.assistant.to_string(),
             m.provider().display_name().to_string(),
-            styles::assistant_name(),
+            styles::assistant_name(palette),
         ),
         Message::ToolUse(call) => {
             let compact = tool_display::format_tool_call_compact(&call.name, &call.arguments);
             let compact = sanitize_terminal_text(&compact).into_owned();
             (
-                "⚙".to_string(),
+                glyphs.tool.to_string(),
                 compact,
                 Style::default()
-                    .fg(colors::ACCENT)
+                    .fg(palette.accent)
                     .add_modifier(Modifier::BOLD),
             )
         }
         Message::ToolResult(result) => {
-            let (icon, style) = if result.is_error {
+            let (icon, style, label) = if result.is_error {
                 (
-                    "✗",
+                    glyphs.tool_result_err,
                     Style::default()
-                        .fg(colors::ERROR)
+                        .fg(palette.error)
                         .add_modifier(Modifier::BOLD),
+                    "Tool Result (error)",
                 )
             } else {
                 (
-                    "✓",
+                    glyphs.tool_result_ok,
                     Style::default()
-                        .fg(colors::SUCCESS)
+                        .fg(palette.success)
                         .add_modifier(Modifier::BOLD),
+                    "Tool Result (ok)",
                 )
             };
-            (icon.to_string(), "Tool Result".to_string(), style)
+            (icon.to_string(), label.to_string(), style)
         }
     };
 
     let header_line = Line::from(vec![
-        Span::styled(format!(" {} ", icon), name_style),
+        Span::styled(format!(" {icon} "), name_style),
         Span::styled(name, name_style),
     ]);
     lines.push(header_line);
@@ -262,9 +282,9 @@ fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut us
         Message::ToolResult(result) => {
             // Render result content with appropriate styling
             let content_style = if result.is_error {
-                Style::default().fg(colors::ERROR)
+                Style::default().fg(palette.error)
             } else {
-                Style::default().fg(colors::TEXT_SECONDARY)
+                Style::default().fg(palette.text_secondary)
             };
             let content = sanitize_terminal_text(&result.content);
             for result_line in content.lines() {
@@ -277,10 +297,10 @@ fn append_message_lines(lines: &mut Vec<Line>, msg: &Message, msg_count: &mut us
         _ => {
             // Regular messages
             let content_style = match msg {
-                Message::System(_) => Style::default().fg(colors::TEXT_MUTED),
-                Message::User(_) => Style::default().fg(colors::TEXT_PRIMARY),
-                Message::Assistant(_) => Style::default().fg(colors::TEXT_SECONDARY),
-                _ => Style::default().fg(colors::TEXT_MUTED),
+                Message::System(_) => Style::default().fg(palette.text_muted),
+                Message::User(_) => Style::default().fg(palette.text_primary),
+                Message::Assistant(_) => Style::default().fg(palette.text_secondary),
+                _ => Style::default().fg(palette.text_muted),
             };
 
             let content = sanitize_terminal_text(msg.content());
@@ -346,7 +366,7 @@ fn pending_tool_signature(app: &App) -> Option<String> {
     Some(parts.join("|"))
 }
 
-fn append_tool_status_lines(lines: &mut Vec<Line>, app: &App) {
+fn append_tool_status_lines(lines: &mut Vec<Line>, app: &App, glyphs: &Glyphs) {
     let Some(calls) = app.tool_loop_calls() else {
         return;
     };
@@ -378,23 +398,23 @@ fn append_tool_status_lines(lines: &mut Vec<Line>, app: &App) {
                     .lines()
                     .next()
                     .map(|line| truncate_with_ellipsis(line, 80));
-                "⊘"
+                glyphs.denied
             } else if result.is_error {
                 let content = sanitize_terminal_text(&result.content);
                 reason = content
                     .lines()
                     .next()
                     .map(|line| truncate_with_ellipsis(line, 80));
-                "✗"
+                glyphs.tool_result_err
             } else {
-                "✓"
+                glyphs.tool_result_ok
             }
         } else if current_id == Some(call.id.as_str()) {
-            "▶"
+            glyphs.running
         } else if approval_pending && !execute_ids.contains(call.id.as_str()) {
-            "⏸"
+            glyphs.paused
         } else {
-            "•"
+            glyphs.bullet
         };
 
         let name = sanitize_terminal_text(&call.name);
@@ -410,7 +430,7 @@ fn append_tool_status_lines(lines: &mut Vec<Line>, app: &App) {
     }
 }
 
-fn append_pending_tool_lines(lines: &mut Vec<Line>, app: &App) {
+fn append_pending_tool_lines(lines: &mut Vec<Line>, app: &App, glyphs: &Glyphs) {
     let Some(calls) = app.pending_tool_calls() else {
         return;
     };
@@ -422,7 +442,8 @@ fn append_pending_tool_lines(lines: &mut Vec<Line>, app: &App) {
         let name = sanitize_terminal_text(&call.name);
         let id = sanitize_terminal_text(&call.id);
         lines.push(Line::from(format!(
-            "  • {} ({})",
+            "  {} {} ({})",
+            glyphs.bullet,
             name.as_ref(),
             id.as_ref()
         )));
@@ -443,7 +464,7 @@ fn approval_signature(app: &App) -> Option<String> {
     Some(sig)
 }
 
-fn append_approval_lines(lines: &mut Vec<Line>, app: &App) {
+fn append_approval_lines(lines: &mut Vec<Line>, app: &App, palette: &Palette) {
     let Some(requests) = app.tool_approval_requests() else {
         return;
     };
@@ -481,19 +502,28 @@ fn append_approval_lines(lines: &mut Vec<Line>, app: &App) {
         " {submit_pointer} [ Submit ]    {deny_pointer} [ Deny All ]"
     )));
 
+    if app.tool_approval_deny_confirm() {
+        lines.push(Line::from(Span::styled(
+            "Confirm Deny All: press Enter again",
+            Style::default().fg(palette.error),
+        )));
+    }
     lines.push(Line::from("Keys: Space toggle, j/k navigate, Enter select"));
 }
 
-fn append_recovery_prompt(lines: &mut Vec<Line>, app: &App) {
+fn append_recovery_prompt(lines: &mut Vec<Line>, app: &App, palette: &Palette) {
     if app.tool_recovery_calls().is_none() {
         return;
     }
     if !lines.is_empty() {
         lines.push(Line::from(""));
     }
-    lines.push(Line::from(
-        "Tool recovery detected. Press r to resume or d to discard.",
-    ));
+    lines.push(Line::from("Tool recovery detected. Tools will not be re-run."));
+    lines.push(Line::from(Span::styled(
+        "Resume keeps recovered results; discard drops them.",
+        Style::default().fg(palette.text_muted),
+    )));
+    lines.push(Line::from("Press r to resume or d to discard."));
 }
 
 fn wrapped_line_count(lines: &[Line], width: u16) -> u16 {

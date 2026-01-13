@@ -1,12 +1,13 @@
-//! Color theme using Kanagawa Wave palette.
+//! Color theme and glyphs for Forge TUI.
 //!
-//! Kanagawa is inspired by the famous painting "The Great Wave off Kanagawa"
-//! by Katsushika Hokusai. See docs/COLOR_SCHEME.md for full palette reference.
+//! Uses Kanagawa Wave palette by default with an optional high-contrast override.
 
 use ratatui::style::{Color, Modifier, Style};
 
-/// Kanagawa Wave color palette
-pub mod colors {
+use forge_engine::UiOptions;
+
+/// Kanagawa Wave color palette constants.
+mod colors {
     use super::Color;
 
     // === Backgrounds (Sumi Ink) ===
@@ -27,14 +28,11 @@ pub mod colors {
     pub const PRIMARY_DIM: Color = Color::Rgb(147, 138, 169); // springViolet1
 
     // === Accent Colors ===
-    pub const BLUE: Color = Color::Rgb(126, 156, 216); // crystalBlue
     pub const CYAN: Color = Color::Rgb(127, 180, 202); // springBlue
     pub const GREEN: Color = Color::Rgb(152, 187, 108); // springGreen
     pub const YELLOW: Color = Color::Rgb(230, 195, 132); // carpYellow
     pub const ORANGE: Color = Color::Rgb(255, 160, 102); // surimiOrange
-    pub const PINK: Color = Color::Rgb(210, 126, 153); // sakuraPink
     pub const RED: Color = Color::Rgb(255, 93, 98); // peachRed
-    pub const SOFT_RED: Color = Color::Rgb(228, 104, 118); // waveRed
 
     // === Semantic Aliases ===
     pub const ACCENT: Color = CYAN;
@@ -42,76 +40,215 @@ pub mod colors {
     pub const WARNING: Color = YELLOW;
     pub const ERROR: Color = RED;
     pub const PEACH: Color = ORANGE;
-
-    // === Search ===
-    pub const SEARCH_MATCH_BG: Color = Color::Rgb(34, 50, 73); // waveBlue1
-    pub const SEARCH_ACTIVE_BG: Color = Color::Rgb(45, 79, 103); // waveBlue2
-
-    // === Diff ===
-    pub const DIFF_ADD_BG: Color = Color::Rgb(43, 51, 40); // winterGreen
-    pub const DIFF_ADD_FG: Color = Color::Rgb(118, 148, 106); // autumnGreen
-    pub const DIFF_DEL_BG: Color = Color::Rgb(67, 36, 43); // winterRed
-    pub const DIFF_DEL_FG: Color = Color::Rgb(195, 64, 67); // autumnRed
-    pub const DIFF_CHG_BG: Color = Color::Rgb(73, 68, 60); // winterYellow
-    pub const DIFF_CHG_FG: Color = Color::Rgb(220, 165, 97); // autumnYellow
-
-    // === Diagnostic ===
-    pub const CRITICAL: Color = Color::Rgb(232, 36, 36); // samuraiRed
-    pub const FLASH: Color = Color::Rgb(255, 158, 59); // roninYellow
 }
 
-/// Pre-defined styles for common UI elements
+/// Resolved theme palette used by the UI.
+#[derive(Debug, Clone, Copy)]
+pub struct Palette {
+    pub bg_dark: Color,
+    pub bg_panel: Color,
+    pub bg_highlight: Color,
+    pub bg_popup: Color,
+    pub bg_border: Color,
+    pub text_primary: Color,
+    pub text_secondary: Color,
+    pub text_muted: Color,
+    pub text_disabled: Color,
+    pub primary: Color,
+    pub primary_dim: Color,
+    pub accent: Color,
+    pub success: Color,
+    pub warning: Color,
+    pub error: Color,
+    pub peach: Color,
+    pub green: Color,
+    pub yellow: Color,
+    pub red: Color,
+}
+
+impl Palette {
+    pub fn standard() -> Self {
+        Self {
+            bg_dark: colors::BG_DARK,
+            bg_panel: colors::BG_PANEL,
+            bg_highlight: colors::BG_HIGHLIGHT,
+            bg_popup: colors::BG_POPUP,
+            bg_border: colors::BG_BORDER,
+            text_primary: colors::TEXT_PRIMARY,
+            text_secondary: colors::TEXT_SECONDARY,
+            text_muted: colors::TEXT_MUTED,
+            text_disabled: colors::TEXT_DISABLED,
+            primary: colors::PRIMARY,
+            primary_dim: colors::PRIMARY_DIM,
+            accent: colors::ACCENT,
+            success: colors::SUCCESS,
+            warning: colors::WARNING,
+            error: colors::ERROR,
+            peach: colors::PEACH,
+            green: colors::GREEN,
+            yellow: colors::YELLOW,
+            red: colors::RED,
+        }
+    }
+
+    pub fn high_contrast() -> Self {
+        Self {
+            bg_dark: Color::Black,
+            bg_panel: Color::Black,
+            bg_highlight: Color::DarkGray,
+            bg_popup: Color::Black,
+            bg_border: Color::Gray,
+            text_primary: Color::White,
+            text_secondary: Color::Gray,
+            text_muted: Color::DarkGray,
+            text_disabled: Color::DarkGray,
+            primary: Color::White,
+            primary_dim: Color::Gray,
+            accent: Color::Cyan,
+            success: Color::Green,
+            warning: Color::Yellow,
+            error: Color::Red,
+            peach: Color::Yellow,
+            green: Color::Green,
+            yellow: Color::Yellow,
+            red: Color::Red,
+        }
+    }
+}
+
+pub fn palette(options: UiOptions) -> Palette {
+    if options.high_contrast {
+        Palette::high_contrast()
+    } else {
+        Palette::standard()
+    }
+}
+
+/// ASCII/Unicode glyphs for icons and spinners.
+#[derive(Debug, Clone, Copy)]
+pub struct Glyphs {
+    pub system: &'static str,
+    pub user: &'static str,
+    pub assistant: &'static str,
+    pub tool: &'static str,
+    pub tool_result_ok: &'static str,
+    pub tool_result_err: &'static str,
+    pub status_ready: &'static str,
+    pub status_missing: &'static str,
+    pub pending: &'static str,
+    pub denied: &'static str,
+    pub paused: &'static str,
+    pub running: &'static str,
+    pub bullet: &'static str,
+    pub arrow_up: &'static str,
+    pub arrow_down: &'static str,
+    pub track: &'static str,
+    pub thumb: &'static str,
+    pub selected: &'static str,
+    pub spinner_frames: &'static [&'static str],
+}
+
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_FRAMES_ASCII: &[&str] = &["|", "/", "-", "\\"];
+
+pub fn glyphs(options: UiOptions) -> Glyphs {
+    if options.ascii_only {
+        Glyphs {
+            system: "S",
+            user: "U",
+            assistant: "A",
+            tool: "T",
+            tool_result_ok: "OK",
+            tool_result_err: "ERR",
+            status_ready: "*",
+            status_missing: "o",
+            pending: "*",
+            denied: "X",
+            paused: "||",
+            running: ">",
+            bullet: "*",
+            arrow_up: "^",
+            arrow_down: "v",
+            track: "|",
+            thumb: "#",
+            selected: ">",
+            spinner_frames: SPINNER_FRAMES_ASCII,
+        }
+    } else {
+        Glyphs {
+            system: "●",
+            user: "○",
+            assistant: "◆",
+            tool: "⚙",
+            tool_result_ok: "✓",
+            tool_result_err: "✗",
+            status_ready: "●",
+            status_missing: "○",
+            pending: "•",
+            denied: "⊘",
+            paused: "⏸",
+            running: "▶",
+            bullet: "•",
+            arrow_up: "↑",
+            arrow_down: "↓",
+            track: "│",
+            thumb: "█",
+            selected: "▸",
+            spinner_frames: SPINNER_FRAMES,
+        }
+    }
+}
+
+/// Get spinner frame based on tick count and UI options.
+pub fn spinner_frame(tick: usize, options: UiOptions) -> &'static str {
+    let frames = glyphs(options).spinner_frames;
+    frames[tick % frames.len()]
+}
+
+/// Pre-defined styles for common UI elements.
 pub mod styles {
     use super::*;
 
-    pub fn user_name() -> Style {
+    pub fn user_name(palette: &Palette) -> Style {
         Style::default()
-            .fg(colors::GREEN)
+            .fg(palette.green)
             .add_modifier(Modifier::BOLD)
     }
 
-    pub fn assistant_name() -> Style {
+    pub fn assistant_name(palette: &Palette) -> Style {
         Style::default()
-            .fg(colors::PRIMARY)
+            .fg(palette.primary)
             .add_modifier(Modifier::BOLD)
     }
 
-    pub fn mode_normal() -> Style {
+    pub fn mode_normal(palette: &Palette) -> Style {
         Style::default()
-            .fg(colors::BG_DARK)
-            .bg(colors::TEXT_SECONDARY)
+            .fg(palette.bg_dark)
+            .bg(palette.text_secondary)
             .add_modifier(Modifier::BOLD)
     }
 
-    pub fn mode_insert() -> Style {
+    pub fn mode_insert(palette: &Palette) -> Style {
         Style::default()
-            .fg(colors::BG_DARK)
-            .bg(colors::GREEN)
+            .fg(palette.bg_dark)
+            .bg(palette.green)
             .add_modifier(Modifier::BOLD)
     }
 
-    pub fn mode_command() -> Style {
+    pub fn mode_command(palette: &Palette) -> Style {
         Style::default()
-            .fg(colors::BG_DARK)
-            .bg(colors::YELLOW)
+            .fg(palette.bg_dark)
+            .bg(palette.yellow)
             .add_modifier(Modifier::BOLD)
     }
 
-    pub fn key_hint() -> Style {
-        Style::default().fg(colors::TEXT_MUTED)
+    pub fn key_hint(palette: &Palette) -> Style {
+        Style::default().fg(palette.text_muted)
     }
 
-    pub fn key_highlight() -> Style {
+    pub fn key_highlight(palette: &Palette) -> Style {
         Style::default()
-            .fg(colors::PEACH)
+            .fg(palette.peach)
             .add_modifier(Modifier::BOLD)
     }
-}
-
-/// Spinner frames for loading animation
-pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-/// Get spinner frame based on tick count
-pub fn spinner_frame(tick: usize) -> &'static str {
-    SPINNER_FRAMES[tick % SPINNER_FRAMES.len()]
 }

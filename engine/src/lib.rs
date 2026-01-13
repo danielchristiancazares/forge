@@ -11,7 +11,8 @@ use tokio::sync::mpsc;
 mod ui;
 use ui::InputState;
 pub use ui::{
-    DisplayItem, InputMode, ModalEffect, ModalEffectKind, PredefinedModel, ScrollState, ViewState,
+    DisplayItem, InputMode, ModalEffect, ModalEffectKind, PredefinedModel, ScrollState, StatusKind,
+    UiOptions, ViewState,
 };
 
 // Re-export from crates for public API
@@ -312,6 +313,14 @@ impl App {
         self.view.status_message.as_deref()
     }
 
+    pub fn status_kind(&self) -> StatusKind {
+        self.view.status_kind
+    }
+
+    pub fn ui_options(&self) -> UiOptions {
+        self.view.ui_options
+    }
+
     pub fn provider(&self) -> Provider {
         self.model.provider()
     }
@@ -373,7 +382,7 @@ impl App {
         match &self.state {
             OperationState::ToolLoop(state) => match &state.phase {
                 ToolLoopPhase::Executing(exec) => exec.current_call.as_ref().map(|c| c.id.as_str()),
-                _ => None,
+                ToolLoopPhase::AwaitingApproval(_) => None,
             },
             _ => None,
         }
@@ -383,7 +392,7 @@ impl App {
         match &self.state {
             OperationState::ToolLoop(state) => match &state.phase {
                 ToolLoopPhase::Executing(exec) => Some(&exec.output_lines),
-                _ => None,
+                ToolLoopPhase::AwaitingApproval(_) => None,
             },
             _ => None,
         }
@@ -393,7 +402,7 @@ impl App {
         match &self.state {
             OperationState::ToolLoop(state) => match &state.phase {
                 ToolLoopPhase::AwaitingApproval(approval) => Some(&approval.requests),
-                _ => None,
+                ToolLoopPhase::Executing(_) => None,
             },
             _ => None,
         }
@@ -403,7 +412,7 @@ impl App {
         match &self.state {
             OperationState::ToolLoop(state) => match &state.phase {
                 ToolLoopPhase::AwaitingApproval(approval) => Some(&approval.selected),
-                _ => None,
+                ToolLoopPhase::Executing(_) => None,
             },
             _ => None,
         }
@@ -413,9 +422,19 @@ impl App {
         match &self.state {
             OperationState::ToolLoop(state) => match &state.phase {
                 ToolLoopPhase::AwaitingApproval(approval) => Some(approval.cursor),
-                _ => None,
+                ToolLoopPhase::Executing(_) => None,
             },
             _ => None,
+        }
+    }
+
+    pub fn tool_approval_deny_confirm(&self) -> bool {
+        match &self.state {
+            OperationState::ToolLoop(state) => match &state.phase {
+                ToolLoopPhase::AwaitingApproval(approval) => approval.deny_confirm,
+                ToolLoopPhase::Executing(_) => false,
+            },
+            _ => false,
         }
     }
 
@@ -501,6 +520,7 @@ impl App {
         self.context_infinity
     }
 
+    #[allow(clippy::unused_self)] // Kept as method for API consistency
     fn idle_state(&self) -> OperationState {
         OperationState::Idle
     }
@@ -540,9 +560,9 @@ impl App {
         }
 
         if truncated {
-            self.set_status("ContextInfinity disabled: truncating history to fit model budget");
+            self.set_status_warning("ContextInfinity disabled: truncating history to fit model budget");
         } else if oversize {
-            self.set_status("ContextInfinity disabled: last message exceeds model budget");
+            self.set_status_error("ContextInfinity disabled: last message exceeds model budget");
         }
 
         selected_rev.reverse();
@@ -635,7 +655,7 @@ impl App {
                 new_budget,
                 needs_summarization: true,
             } => {
-                self.set_status(format!(
+                self.set_status_warning(format!(
                     "Context budget shrank {}k → {}k; summarizing...",
                     old_budget / 1000,
                     new_budget / 1000
@@ -656,7 +676,7 @@ impl App {
                 if can_restore > 0 {
                     let restored = self.context_manager.try_restore_messages();
                     if restored > 0 {
-                        self.set_status(format!(
+                        self.set_status_success(format!(
                             "Context budget expanded {}k → {}k; restored {} messages",
                             old_budget / 1000,
                             new_budget / 1000,
@@ -694,11 +714,29 @@ impl App {
     }
 
     pub fn set_status(&mut self, message: impl Into<String>) {
-        self.view.status_message = Some(message.into());
+        self.set_status_kind(StatusKind::Info, message);
     }
 
     pub fn clear_status(&mut self) {
         self.view.status_message = None;
+        self.view.status_kind = StatusKind::Info;
+    }
+
+    pub fn set_status_kind(&mut self, kind: StatusKind, message: impl Into<String>) {
+        self.view.status_message = Some(message.into());
+        self.view.status_kind = kind;
+    }
+
+    pub fn set_status_success(&mut self, message: impl Into<String>) {
+        self.set_status_kind(StatusKind::Success, message);
+    }
+
+    pub fn set_status_warning(&mut self, message: impl Into<String>) {
+        self.set_status_kind(StatusKind::Warning, message);
+    }
+
+    pub fn set_status_error(&mut self, message: impl Into<String>) {
+        self.set_status_kind(StatusKind::Error, message);
     }
 
     pub fn input_mode(&self) -> InputMode {
@@ -730,8 +768,12 @@ impl App {
 
     pub fn enter_model_select_mode(&mut self) {
         self.input = std::mem::take(&mut self.input).into_model_select();
-        self.view.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
-        self.view.last_frame = Instant::now();
+        if self.view.ui_options.reduced_motion {
+            self.view.modal_effect = None;
+        } else {
+            self.view.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
+            self.view.last_frame = Instant::now();
+        }
     }
 
     pub fn model_select_index(&self) -> Option<usize> {
@@ -771,7 +813,7 @@ impl App {
         if let Some(predefined) = models.get(index) {
             let model = predefined.to_model_name();
             self.set_model(model);
-            self.set_status(format!("Model set to: {}", predefined.display_name()));
+            self.set_status_success(format!("Model set to: {}", predefined.display_name()));
         }
         self.enter_normal_mode();
     }
@@ -782,6 +824,7 @@ impl App {
             && approval.cursor > 0
         {
             approval.cursor -= 1;
+            approval.deny_confirm = false;
         }
     }
 
@@ -794,6 +837,7 @@ impl App {
             if approval.cursor < max_cursor {
                 approval.cursor += 1;
             }
+            approval.deny_confirm = false;
         }
     }
 
@@ -803,6 +847,7 @@ impl App {
             && approval.cursor < approval.selected.len()
         {
             approval.selected[approval.cursor] = !approval.selected[approval.cursor];
+            approval.deny_confirm = false;
         }
     }
 
@@ -811,7 +856,7 @@ impl App {
     }
 
     pub fn tool_approval_deny_all(&mut self) {
-        self.resolve_tool_approval(tools::ApprovalDecision::DenyAll);
+        self.tool_approval_request_deny_all();
     }
 
     /// Handle Enter key on approval prompt - action depends on cursor position:
@@ -828,12 +873,10 @@ impl App {
             return;
         };
 
-        if cursor < num_tools {
-            self.tool_approval_toggle();
-        } else if cursor == num_tools {
-            self.tool_approval_confirm_selected();
-        } else {
-            self.tool_approval_deny_all();
+        match cursor.cmp(&num_tools) {
+            std::cmp::Ordering::Less => self.tool_approval_toggle(),
+            std::cmp::Ordering::Equal => self.tool_approval_confirm_selected(),
+            std::cmp::Ordering::Greater => self.tool_approval_request_deny_all(),
         }
     }
 
@@ -856,6 +899,25 @@ impl App {
             self.resolve_tool_approval(tools::ApprovalDecision::DenyAll);
         } else {
             self.resolve_tool_approval(tools::ApprovalDecision::ApproveSelected(ids));
+        }
+    }
+
+    pub fn tool_approval_request_deny_all(&mut self) {
+        let mut should_deny = false;
+        if let OperationState::ToolLoop(state) = &mut self.state
+            && let ToolLoopPhase::AwaitingApproval(approval) = &mut state.phase
+        {
+            let deny_cursor = approval.requests.len() + 1;
+            approval.cursor = deny_cursor;
+            if approval.deny_confirm {
+                should_deny = true;
+            } else {
+                approval.deny_confirm = true;
+            }
+        }
+
+        if should_deny {
+            self.resolve_tool_approval(tools::ApprovalDecision::DenyAll);
         }
     }
 
@@ -912,6 +974,19 @@ impl App {
         };
     }
 
+    /// Scroll up by a page.
+    pub fn scroll_page_up(&mut self) {
+        let delta = 10;
+        self.view.scroll = match self.view.scroll {
+            ScrollState::AutoBottom => ScrollState::Manual {
+                offset_from_top: self.view.scroll_max.saturating_sub(delta),
+            },
+            ScrollState::Manual { offset_from_top } => ScrollState::Manual {
+                offset_from_top: offset_from_top.saturating_sub(delta),
+            },
+        };
+    }
+
     /// Scroll down in message view.
     pub fn scroll_down(&mut self) {
         let ScrollState::Manual { offset_from_top } = self.view.scroll else {
@@ -919,6 +994,23 @@ impl App {
         };
 
         let new_offset = offset_from_top.saturating_add(3);
+        if new_offset >= self.view.scroll_max {
+            self.view.scroll = ScrollState::AutoBottom;
+        } else {
+            self.view.scroll = ScrollState::Manual {
+                offset_from_top: new_offset,
+            };
+        }
+    }
+
+    /// Scroll down by a page.
+    pub fn scroll_page_down(&mut self) {
+        let ScrollState::Manual { offset_from_top } = self.view.scroll else {
+            return;
+        };
+
+        let delta = 10;
+        let new_offset = offset_from_top.saturating_add(delta);
         if new_offset >= self.view.scroll_max {
             self.view.scroll = ScrollState::AutoBottom;
         } else {

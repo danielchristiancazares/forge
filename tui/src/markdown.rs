@@ -8,12 +8,12 @@ use std::hash::{Hash, Hasher};
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use ratatui::{
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::theme::colors;
+use crate::theme::Palette;
 
 /// Maximum number of cached renders before eviction.
 const CACHE_MAX_ENTRIES: usize = 128;
@@ -23,10 +23,11 @@ const CACHE_MAX_ENTRIES: usize = 128;
 struct CacheKey {
     content_hash: u64,
     style_hash: u64,
+    palette_hash: u64,
 }
 
 impl CacheKey {
-    fn new(content: &str, style: Style) -> Self {
+    fn new(content: &str, style: Style, palette: &Palette) -> Self {
         use std::collections::hash_map::DefaultHasher;
 
         let mut content_hasher = DefaultHasher::new();
@@ -39,9 +40,55 @@ impl CacheKey {
         style.add_modifier.hash(&mut style_hasher);
         style.sub_modifier.hash(&mut style_hasher);
 
+        let mut palette_hasher = DefaultHasher::new();
+        hash_color(palette.bg_dark, &mut palette_hasher);
+        hash_color(palette.bg_panel, &mut palette_hasher);
+        hash_color(palette.bg_highlight, &mut palette_hasher);
+        hash_color(palette.text_primary, &mut palette_hasher);
+        hash_color(palette.text_secondary, &mut palette_hasher);
+        hash_color(palette.text_muted, &mut palette_hasher);
+        hash_color(palette.primary, &mut palette_hasher);
+        hash_color(palette.primary_dim, &mut palette_hasher);
+        hash_color(palette.peach, &mut palette_hasher);
+
         Self {
             content_hash: content_hasher.finish(),
             style_hash: style_hasher.finish(),
+            palette_hash: palette_hasher.finish(),
+        }
+    }
+}
+
+fn hash_color(color: Color, hasher: &mut impl Hasher) {
+    match color {
+        Color::Reset => {
+            0u8.hash(hasher);
+        }
+        Color::Black => 1u8.hash(hasher),
+        Color::Red => 2u8.hash(hasher),
+        Color::Green => 3u8.hash(hasher),
+        Color::Yellow => 4u8.hash(hasher),
+        Color::Blue => 5u8.hash(hasher),
+        Color::Magenta => 6u8.hash(hasher),
+        Color::Cyan => 7u8.hash(hasher),
+        Color::Gray => 8u8.hash(hasher),
+        Color::DarkGray => 9u8.hash(hasher),
+        Color::LightRed => 10u8.hash(hasher),
+        Color::LightGreen => 11u8.hash(hasher),
+        Color::LightYellow => 12u8.hash(hasher),
+        Color::LightBlue => 13u8.hash(hasher),
+        Color::LightMagenta => 14u8.hash(hasher),
+        Color::LightCyan => 15u8.hash(hasher),
+        Color::White => 16u8.hash(hasher),
+        Color::Rgb(r, g, b) => {
+            17u8.hash(hasher);
+            r.hash(hasher);
+            g.hash(hasher);
+            b.hash(hasher);
+        }
+        Color::Indexed(idx) => {
+            18u8.hash(hasher);
+            idx.hash(hasher);
         }
     }
 }
@@ -59,8 +106,8 @@ pub fn clear_render_cache() {
 /// Render markdown content to ratatui Lines.
 ///
 /// Uses an internal cache to avoid re-parsing unchanged content.
-pub fn render_markdown(content: &str, base_style: Style) -> Vec<Line<'static>> {
-    let key = CacheKey::new(content, base_style);
+pub fn render_markdown(content: &str, base_style: Style, palette: &Palette) -> Vec<Line<'static>> {
+    let key = CacheKey::new(content, base_style, palette);
 
     // Check cache first
     let cached = RENDER_CACHE.with(|cache| cache.borrow().get(&key).cloned());
@@ -70,7 +117,7 @@ pub fn render_markdown(content: &str, base_style: Style) -> Vec<Line<'static>> {
     }
 
     // Cache miss - render and store
-    let renderer = MarkdownRenderer::new(base_style);
+    let renderer = MarkdownRenderer::new(base_style, *palette);
     let lines = renderer.render(content);
 
     RENDER_CACHE.with(|cache| {
@@ -93,6 +140,7 @@ pub fn render_markdown(content: &str, base_style: Style) -> Vec<Line<'static>> {
 
 struct MarkdownRenderer {
     base_style: Style,
+    palette: Palette,
     lines: Vec<Line<'static>>,
     current_spans: Vec<Span<'static>>,
 
@@ -120,9 +168,10 @@ struct MarkdownRenderer {
 }
 
 impl MarkdownRenderer {
-    fn new(base_style: Style) -> Self {
+    fn new(base_style: Style, palette: Palette) -> Self {
         Self {
             base_style,
+            palette,
             lines: Vec::new(),
             current_spans: Vec::new(),
             bold_count: 0,
@@ -195,11 +244,11 @@ impl MarkdownRenderer {
                 let indent = "    ".repeat(self.list_stack.len().saturating_sub(1));
                 let marker = match self.list_stack.last_mut() {
                     Some(Some(idx)) => {
-                        let m = format!("{}{}. ", indent, idx);
+                        let m = format!("{indent}{idx}. ");
                         *idx += 1;
                         m
                     }
-                    _ => format!("{}• ", indent),
+                    _ => format!("{indent}• "),
                 };
                 self.current_spans
                     .push(Span::styled(marker, self.base_style));
@@ -298,7 +347,7 @@ impl MarkdownRenderer {
         }
 
         let style = Style::default()
-            .fg(colors::PEACH)
+            .fg(self.palette.peach)
             .add_modifier(Modifier::BOLD);
         self.current_spans
             .push(Span::styled(code.to_string(), style));
@@ -320,7 +369,7 @@ impl MarkdownRenderer {
             style = style.add_modifier(Modifier::ITALIC);
         }
         if self.code_count > 0 {
-            style = style.fg(colors::PEACH);
+            style = style.fg(self.palette.peach);
         }
 
         style
@@ -335,12 +384,12 @@ impl MarkdownRenderer {
     }
 
     fn render_code_block(&mut self) {
-        let code_style = Style::default().fg(colors::TEXT_MUTED);
+        let code_style = Style::default().fg(self.palette.text_muted);
 
         // Opening fence
         self.lines.push(Line::from(vec![
             Span::raw("    "),
-            Span::styled("```", Style::default().fg(colors::TEXT_MUTED)),
+            Span::styled("```", Style::default().fg(self.palette.text_muted)),
         ]));
 
         // Code content
@@ -354,7 +403,7 @@ impl MarkdownRenderer {
         // Closing fence
         self.lines.push(Line::from(vec![
             Span::raw("    "),
-            Span::styled("```", Style::default().fg(colors::TEXT_MUTED)),
+            Span::styled("```", Style::default().fg(self.palette.text_muted)),
         ]));
 
         self.code_block_content.clear();
@@ -366,7 +415,7 @@ impl MarkdownRenderer {
         }
 
         // Calculate column widths
-        let num_cols = self.table_rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let num_cols = self.table_rows.iter().map(std::vec::Vec::len).max().unwrap_or(0);
         let mut col_widths: Vec<usize> = vec![0; num_cols];
 
         for row in &self.table_rows {
@@ -383,9 +432,9 @@ impl MarkdownRenderer {
             *w = (*w).max(3);
         }
 
-        let table_style = Style::default().fg(colors::TEXT_MUTED);
+        let table_style = Style::default().fg(self.palette.text_muted);
         let header_style = Style::default()
-            .fg(colors::TEXT_PRIMARY)
+            .fg(self.palette.text_primary)
             .add_modifier(Modifier::BOLD);
         let cell_style = self.base_style;
 
@@ -427,6 +476,7 @@ impl MarkdownRenderer {
         self.table_rows.clear();
     }
 
+    #[allow(clippy::unused_self)] // Kept as method for API consistency
     fn make_table_border(
         &self,
         widths: &[usize],
@@ -449,6 +499,7 @@ impl MarkdownRenderer {
         s
     }
 
+    #[allow(clippy::unused_self)] // Kept as method for API consistency
     fn make_table_row(
         &self,
         row: &[String],
@@ -460,7 +511,7 @@ impl MarkdownRenderer {
         spans.push(Span::styled("│", border_style));
 
         for (i, width) in widths.iter().enumerate() {
-            let cell = row.get(i).map(|s| s.trim()).unwrap_or("");
+            let cell = row.get(i).map_or("", |s| s.trim());
             // Use unicode width for padding calculation (handles emojis)
             let cell_width = cell.width();
             let padding = width.saturating_sub(cell_width);
@@ -476,17 +527,20 @@ impl MarkdownRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Palette;
 
     #[test]
     fn test_simple_text() {
-        let lines = render_markdown("Hello world", Style::default());
+        let palette = Palette::standard();
+        let lines = render_markdown("Hello world", Style::default(), &palette);
         assert!(!lines.is_empty());
     }
 
     #[test]
     fn test_table() {
         let md = "| A | B |\n|---|---|\n| 1 | 2 |";
-        let lines = render_markdown(md, Style::default());
+        let palette = Palette::standard();
+        let lines = render_markdown(md, Style::default(), &palette);
         // Should have borders and content
         assert!(lines.len() >= 4);
     }
@@ -497,12 +551,13 @@ mod tests {
 
         let content = "# Hello\n\nThis is **bold** and *italic* text.";
         let style = Style::default();
+        let palette = Palette::standard();
 
         // First render (cache miss)
-        let lines1 = render_markdown(content, style);
+        let lines1 = render_markdown(content, style, &palette);
 
         // Second render (cache hit) should return identical result
-        let lines2 = render_markdown(content, style);
+        let lines2 = render_markdown(content, style, &palette);
 
         assert_eq!(lines1.len(), lines2.len());
         for (l1, l2) in lines1.iter().zip(lines2.iter()) {
@@ -517,9 +572,10 @@ mod tests {
         let content = "Simple text";
         let style1 = Style::default();
         let style2 = Style::default().add_modifier(Modifier::BOLD);
+        let palette = Palette::standard();
 
-        let lines1 = render_markdown(content, style1);
-        let lines2 = render_markdown(content, style2);
+        let lines1 = render_markdown(content, style1, &palette);
+        let lines2 = render_markdown(content, style2, &palette);
 
         // Different styles may produce different results (style is baked into spans)
         // Just verify both render without panicking
@@ -531,7 +587,8 @@ mod tests {
     fn test_clear_cache() {
         // Just verify clear doesn't panic
         clear_render_cache();
-        render_markdown("test", Style::default());
+        let palette = Palette::standard();
+        render_markdown("test", Style::default(), &palette);
         clear_render_cache();
     }
 
@@ -542,7 +599,8 @@ mod tests {
         // Heading with nested bold: "# Intro **key** point"
         // The word "point" should still be bold (from heading) after **key** ends.
         let content = "# Intro **key** point";
-        let lines = render_markdown(content, Style::default());
+        let palette = Palette::standard();
+        let lines = render_markdown(content, Style::default(), &palette);
 
         // Find the heading line (contains "Intro", "key", "point")
         let heading_line = lines.iter().find(|l| {
@@ -577,7 +635,8 @@ mod tests {
         // Bold with nested italic: "**outer _inner_ outer**"
         // The second "outer" should still be bold after _inner_ ends.
         let content = "**outer _inner_ still bold**";
-        let lines = render_markdown(content, Style::default());
+        let palette = Palette::standard();
+        let lines = render_markdown(content, Style::default(), &palette);
 
         // Find the line containing this text
         let content_line = lines.iter().find(|l| {
@@ -606,7 +665,8 @@ mod tests {
 
         // XML-like tags (common in LLM output) should be rendered, not silently dropped
         let content = "<thinking>This is important</thinking>";
-        let lines = render_markdown(content, Style::default());
+        let palette = Palette::standard();
+        let lines = render_markdown(content, Style::default(), &palette);
 
         // Should have content, not be empty
         assert!(

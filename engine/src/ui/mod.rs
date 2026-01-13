@@ -15,4 +15,4 @@ pub use input::{DraftInput, InputMode, InputState};
 pub use modal::{ModalEffect, ModalEffectKind};
 pub use model_select::PredefinedModel;
 pub use scroll::ScrollState;
-pub use view_state::ViewState;
+pub use view_state::{StatusKind, UiOptions, ViewState};

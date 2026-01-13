@@ -31,7 +31,7 @@ impl super::App {
         attempt: u8,
     ) -> SummarizationStart {
         if !self.context_infinity_enabled() {
-            self.set_status("ContextInfinity disabled: summarization unavailable");
+            self.set_status_warning("ContextInfinity disabled: summarization unavailable");
             return SummarizationStart::Failed;
         }
         if attempt > MAX_SUMMARIZATION_ATTEMPTS {
@@ -39,7 +39,7 @@ impl super::App {
         }
 
         if let Some(reason) = self.busy_reason() {
-            self.set_status(format!("Cannot summarize: {reason}"));
+            self.set_status_warning(format!("Cannot summarize: {reason}"));
             return SummarizationStart::Failed;
         }
 
@@ -52,9 +52,8 @@ impl super::App {
                 budget_tokens,
                 message_count,
             }) => {
-                self.set_status(format!(
-                    "Recent {} messages ({} tokens) exceed budget ({} tokens). Reduce input or use larger model.",
-                    message_count, required_tokens, budget_tokens
+                self.set_status_error(format!(
+                    "Recent {message_count} messages ({required_tokens} tokens) exceed budget ({budget_tokens} tokens). Reduce input or use larger model."
                 ));
                 return SummarizationStart::Failed;
             }
@@ -74,13 +73,11 @@ impl super::App {
 
         let status = if attempt > 1 {
             format!(
-                "Summarizing ~{} tokens → ~{} tokens (attempt {}/{})...",
-                original_tokens, target_tokens, attempt, MAX_SUMMARIZATION_ATTEMPTS
+                "Summarizing ~{original_tokens} tokens → ~{target_tokens} tokens (attempt {attempt}/{MAX_SUMMARIZATION_ATTEMPTS})..."
             )
         } else {
             format!(
-                "Summarizing ~{} tokens → ~{} tokens...",
-                original_tokens, target_tokens
+                "Summarizing ~{original_tokens} tokens → ~{target_tokens} tokens..."
             )
         };
         self.set_status(status);
@@ -91,15 +88,12 @@ impl super::App {
         let (api_key, model) = if let Some(config) = queued_request.as_ref() {
             (config.api_key_owned(), config.model().clone())
         } else {
-            let key = match self.current_api_key().cloned() {
-                Some(key) => match self.model.provider() {
-                    Provider::Claude => ApiKey::Claude(key),
-                    Provider::OpenAI => ApiKey::OpenAI(key),
-                },
-                None => {
-                    self.set_status("Cannot summarize: no API key configured");
-                    return SummarizationStart::Failed;
-                }
+            let key = if let Some(key) = self.current_api_key().cloned() { match self.model.provider() {
+                Provider::Claude => ApiKey::Claude(key),
+                Provider::OpenAI => ApiKey::OpenAI(key),
+            } } else {
+                self.set_status_warning("Cannot summarize: no API key configured");
+                return SummarizationStart::Failed;
             };
             (key, self.model.clone())
         };
@@ -107,7 +101,7 @@ impl super::App {
         let config = match ApiConfig::new(api_key, model) {
             Ok(config) => config,
             Err(e) => {
-                self.set_status(format!("Cannot summarize: {e}"));
+                self.set_status_error(format!("Cannot summarize: {e}"));
                 return SummarizationStart::Failed;
             }
         };
@@ -184,16 +178,13 @@ impl super::App {
 
         match result {
             Some(Ok(Ok(summary_text))) => {
-                let summary_text = match NonEmptyString::new(summary_text) {
-                    Ok(text) => text,
-                    Err(_) => {
-                        self.handle_summarization_failure(
-                            attempt,
-                            "summary was empty".to_string(),
-                            queued_request,
-                        );
-                        return;
-                    }
+                let summary_text = if let Ok(text) = NonEmptyString::new(summary_text) { text } else {
+                    self.handle_summarization_failure(
+                        attempt,
+                        "summary was empty".to_string(),
+                        queued_request,
+                    );
+                    return;
                 };
 
                 // Apply the summarization result
@@ -209,7 +200,7 @@ impl super::App {
                     return;
                 }
                 self.invalidate_usage_cache();
-                self.set_status("Summarization complete");
+                self.set_status_success("Summarization complete");
                 self.autosave_history(); // Persist summarized history immediately
 
                 // If a request was queued waiting for summarization, start it now.
@@ -262,7 +253,7 @@ impl super::App {
             } else {
                 OperationState::SummarizationRetry(SummarizationRetryState { retry })
             };
-            self.set_status(format!(
+            self.set_status_warning(format!(
                 "Summarization failed (attempt {}/{}): {}. Retrying in {}ms...",
                 attempt,
                 MAX_SUMMARIZATION_ATTEMPTS,
@@ -277,9 +268,8 @@ impl super::App {
         } else {
             ""
         };
-        self.set_status(format!(
-            "Summarization failed after {} attempts: {}.{}",
-            MAX_SUMMARIZATION_ATTEMPTS, error, suffix
+        self.set_status_error(format!(
+            "Summarization failed after {MAX_SUMMARIZATION_ATTEMPTS} attempts: {error}.{suffix}"
         ));
     }
 
@@ -322,9 +312,8 @@ impl super::App {
             } else {
                 ""
             };
-            self.set_status(format!(
-                "Summarization retry could not start (attempt {}/{}).{}",
-                attempt, MAX_SUMMARIZATION_ATTEMPTS, suffix
+            self.set_status_error(format!(
+                "Summarization retry could not start (attempt {attempt}/{MAX_SUMMARIZATION_ATTEMPTS}).{suffix}"
             ));
         }
     }

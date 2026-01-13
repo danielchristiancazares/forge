@@ -66,7 +66,7 @@ impl App {
 // InsertMode operations
 // ============================================================================
 
-impl<'a> InsertMode<'a> {
+impl InsertMode<'_> {
     fn draft_mut(&mut self) -> &mut DraftInput {
         self.app.input.draft_mut()
     }
@@ -81,6 +81,10 @@ impl<'a> InsertMode<'a> {
 
     pub fn enter_char(&mut self, new_char: char) {
         self.draft_mut().enter_char(new_char);
+    }
+
+    pub fn enter_newline(&mut self) {
+        self.draft_mut().enter_newline();
     }
 
     pub fn delete_char(&mut self) {
@@ -114,26 +118,26 @@ impl<'a> InsertMode<'a> {
     pub fn queue_message(self) -> Option<QueuedUserMessage> {
         match &self.app.state {
             OperationState::Streaming(_) => {
-                self.app.set_status("Already streaming a response");
+                self.app.set_status_warning("Already streaming a response");
                 return None;
             }
             OperationState::AwaitingToolResults(_) => {
-                self.app.set_status("Busy: waiting for tool results");
+                self.app.set_status_warning("Busy: waiting for tool results");
                 return None;
             }
             OperationState::ToolLoop(_) => {
-                self.app.set_status("Busy: tool execution in progress");
+                self.app.set_status_warning("Busy: tool execution in progress");
                 return None;
             }
             OperationState::ToolRecovery(_) => {
-                self.app.set_status("Busy: tool recovery pending");
+                self.app.set_status_warning("Busy: tool recovery pending");
                 return None;
             }
             OperationState::Summarizing(_)
             | OperationState::SummarizingWithQueued(_)
             | OperationState::SummarizationRetry(_)
             | OperationState::SummarizationRetryWithQueued(_) => {
-                self.app.set_status("Busy: summarization in progress");
+                self.app.set_status_warning("Busy: summarization in progress");
                 return None;
             }
             OperationState::Idle => {}
@@ -143,24 +147,18 @@ impl<'a> InsertMode<'a> {
             return None;
         }
 
-        let api_key = match self.app.current_api_key().cloned() {
-            Some(key) => key,
-            None => {
-                self.app.set_status(format!(
-                    "No API key configured. Set {} environment variable.",
-                    self.app.provider().env_var()
-                ));
-                return None;
-            }
+        let api_key = if let Some(key) = self.app.current_api_key().cloned() { key } else {
+            self.app.set_status_warning(format!(
+                "No API key configured. Set {} environment variable.",
+                self.app.provider().env_var()
+            ));
+            return None;
         };
 
         let raw_content = self.app.input.draft_mut().take_text();
-        let content = match NonEmptyString::new(raw_content.clone()) {
-            Ok(content) => content,
-            Err(_) => {
-                self.app.set_status("Cannot send empty message");
-                return None;
-            }
+        let content = if let Ok(content) = NonEmptyString::new(raw_content.clone()) { content } else {
+            self.app.set_status_warning("Cannot send empty message");
+            return None;
         };
 
         // Track user message in context manager (also adds to display)
@@ -181,7 +179,7 @@ impl<'a> InsertMode<'a> {
         let config = match ApiConfig::new(api_key, self.app.model.clone()) {
             Ok(config) => config.with_openai_options(self.app.openai_options),
             Err(e) => {
-                self.app.set_status(format!("Cannot queue request: {e}"));
+                self.app.set_status_error(format!("Cannot queue request: {e}"));
                 return None;
             }
         };
@@ -194,7 +192,7 @@ impl<'a> InsertMode<'a> {
 // CommandMode operations
 // ============================================================================
 
-impl<'a> CommandMode<'a> {
+impl CommandMode<'_> {
     fn command_mut(&mut self) -> Option<&mut String> {
         self.app.input.command_mut()
     }

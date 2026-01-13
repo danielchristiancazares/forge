@@ -18,7 +18,7 @@ use crate::tools::{self, builtins};
 use crate::ui::InputState;
 use crate::{
     App, ContextManager, OpenAIReasoningEffort, OpenAIRequestOptions, OpenAITextVerbosity,
-    OpenAITruncation, StreamJournal, ToolJournal, ViewState,
+    OpenAITruncation, StreamJournal, ToolJournal, UiOptions, ViewState,
 };
 
 // Tool limit defaults
@@ -232,6 +232,7 @@ impl App {
             tool_settings.patch_limits,
             tool_settings.search.clone(),
             tool_settings.webfetch.clone(),
+            tool_settings.shell.clone(),
         ) {
             tracing::warn!("Failed to register built-in tools: {e}");
         }
@@ -248,11 +249,15 @@ impl App {
         let tool_file_cache =
             std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
+        let ui_options = Self::ui_options_from_config(config.as_ref());
+        let mut view = ViewState::default();
+        view.ui_options = ui_options;
+
         let mut app = Self {
             input: InputState::default(),
             display: Vec::new(),
             should_quit: false,
-            view: ViewState::default(),
+            view,
             api_keys,
             model,
             tick: 0,
@@ -284,16 +289,29 @@ impl App {
         // Load previous session's history if available
         app.load_history_if_exists();
         app.check_crash_recovery();
+        if app.view.status_message.is_none() && app.current_api_key().is_some() {
+            let provider = app.provider().display_name();
+            app.set_status_success(format!("API key detected for {provider}"));
+        }
         if app.view.status_message.is_none()
             && matches!(app.data_dir.source, DataDirSource::Fallback)
         {
-            app.set_status(format!(
+            app.set_status_warning(format!(
                 "Using fallback data dir: {}",
                 app.data_dir.path.display()
             ));
         }
 
         Ok(app)
+    }
+
+    fn ui_options_from_config(config: Option<&ForgeConfig>) -> UiOptions {
+        let app = config.and_then(|cfg| cfg.app.as_ref());
+        UiOptions {
+            ascii_only: app.and_then(|cfg| cfg.ascii_only).unwrap_or(false),
+            high_contrast: app.and_then(|cfg| cfg.high_contrast).unwrap_or(false),
+            reduced_motion: app.and_then(|cfg| cfg.reduced_motion).unwrap_or(false),
+        }
     }
 
     /// Get the base data directory for forge.
@@ -408,8 +426,7 @@ impl App {
     pub(crate) fn tool_settings_from_config(config: Option<&ForgeConfig>) -> tools::ToolSettings {
         let tools_cfg = config.and_then(|cfg| cfg.tools.as_ref());
         let has_defs = tools_cfg
-            .map(|cfg| !cfg.definitions.is_empty())
-            .unwrap_or(false);
+            .is_some_and(|cfg| !cfg.definitions.is_empty());
         let mode = parse_tools_mode(tools_cfg.and_then(|cfg| cfg.mode.as_deref()), has_defs);
         let allow_parallel = tools_cfg
             .and_then(|cfg| cfg.allow_parallel)
@@ -489,6 +506,10 @@ impl App {
             cache_ttl_days: webfetch_cfg.and_then(|cfg| cfg.cache_ttl_days).unwrap_or(7),
         };
 
+        let shell_cfg = tools_cfg.and_then(|cfg| cfg.shell.as_ref());
+        let shell = tools::shell::detect_shell(shell_cfg);
+        tracing::info!(shell = %shell.name, binary = ?shell.binary, "Detected shell");
+
         let timeouts = tools::ToolTimeouts {
             default_timeout: Duration::from_secs(
                 tools_cfg
@@ -553,13 +574,13 @@ impl App {
             .and_then(|cfg| cfg.environment.as_ref())
             .map(|cfg| cfg.denylist.clone())
             .filter(|list| !list.is_empty())
-            .unwrap_or_else(|| DEFAULT_ENV_DENYLIST.iter().map(|s| s.to_string()).collect());
+            .unwrap_or_else(|| DEFAULT_ENV_DENYLIST.iter().map(std::string::ToString::to_string).collect());
         let env_sanitizer = tools::EnvSanitizer::new(&env_patterns).unwrap_or_else(|e| {
             tracing::warn!("Invalid env denylist: {e}. Using defaults.");
             tools::EnvSanitizer::new(
                 &DEFAULT_ENV_DENYLIST
                     .iter()
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .collect::<Vec<_>>(),
             )
             .expect("default env sanitizer")
@@ -573,7 +594,7 @@ impl App {
             .map(|cfg| cfg.denied_patterns.clone())
             .unwrap_or_default();
         if include_default_denies {
-            denied_patterns.extend(DEFAULT_SANDBOX_DENIES.iter().map(|s| s.to_string()));
+            denied_patterns.extend(DEFAULT_SANDBOX_DENIES.iter().map(std::string::ToString::to_string));
         }
 
         let mut allowed_roots: Vec<PathBuf> = sandbox_cfg
@@ -600,7 +621,7 @@ impl App {
                 vec![PathBuf::from(".")],
                 DEFAULT_SANDBOX_DENIES
                     .iter()
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .collect(),
                 false,
             )
@@ -615,6 +636,7 @@ impl App {
             patch_limits,
             search,
             webfetch,
+            shell,
             timeouts,
             max_output_bytes,
             policy,

@@ -52,7 +52,7 @@ impl App {
                 loaded_manager.set_output_limit(self.output_limits.max_output_tokens());
                 self.context_manager = loaded_manager;
                 self.rebuild_display_from_history();
-                self.set_status(format!(
+                self.set_status_success(format!(
                     "Loaded {} messages from previous session",
                     self.context_manager.history().len()
                 ));
@@ -125,7 +125,7 @@ impl App {
             let stream_recovered = match self.stream_journal.recover() {
                 Ok(recovered) => recovered,
                 Err(e) => {
-                    self.set_status(format!("Recovery failed: {e}"));
+                    self.set_status_error(format!("Recovery failed: {e}"));
                     return None;
                 }
             };
@@ -185,12 +185,12 @@ impl App {
                     step_id,
                     model,
                 });
-                self.set_status("Recovered tool batch. Press R to resume or D to discard.");
+                self.set_status_warning("Recovered tool batch. Press R to resume or D to discard.");
                 return stream_recovered;
             }
 
             tracing::warn!("Tool batch recovery found but no stream journal step.");
-            self.set_status("Recovered tool batch but stream journal missing; discarding");
+            self.set_status_warning("Recovered tool batch but stream journal missing; discarding");
             let _ = self.tool_journal.discard_batch(recovered_batch.batch_id);
             return None;
         }
@@ -199,7 +199,7 @@ impl App {
             Ok(Some(recovered)) => recovered,
             Ok(None) => return None,
             Err(e) => {
-                self.set_status(format!("Recovery failed: {e}"));
+                self.set_status_error(format!("Recovery failed: {e}"));
                 return None;
             }
         };
@@ -254,9 +254,8 @@ impl App {
             if self.autosave_history() {
                 self.finalize_journal_commit(step_id);
             } else {
-                self.set_status(format!(
-                    "Recovery already in history, but autosave failed; keeping step {} recoverable",
-                    step_id
+                self.set_status_warning(format!(
+                    "Recovery already in history, but autosave failed; keeping step {step_id} recoverable"
                 ));
             }
             return Some(recovered);
@@ -296,14 +295,14 @@ impl App {
         }
         if history_saved {
             self.finalize_journal_commit(step_id);
-            self.set_status(format!(
+            self.set_status_success(format!(
                 "Recovered {} bytes (step {}, last seq {}) from crashed session",
                 partial_text.len(),
                 step_id,
                 last_seq,
             ));
         } else {
-            self.set_status(format!(
+            self.set_status_warning(format!(
                 "Recovered {} bytes (step {}, last seq {}) but autosave failed; recovery will retry",
                 partial_text.len(),
                 step_id,

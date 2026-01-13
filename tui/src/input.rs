@@ -48,9 +48,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
             KeyCode::Char('j') | KeyCode::Down => app.tool_approval_move_down(),
             KeyCode::Char(' ') => app.tool_approval_toggle(),
             KeyCode::Char('a') => app.tool_approval_approve_all(),
-            KeyCode::Char('d') => app.tool_approval_deny_all(),
+            KeyCode::Char('d') => app.tool_approval_request_deny_all(),
             KeyCode::Enter => app.tool_approval_activate(),
-            KeyCode::Esc => app.tool_approval_deny_all(),
+            KeyCode::Esc => app.tool_approval_request_deny_all(),
             _ => {}
         }
         return;
@@ -87,12 +87,28 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
             app.clear_status();
         }
         // Enter command mode
-        KeyCode::Char(':') | KeyCode::Char('/') => {
+        KeyCode::Char(':' | '/') => {
             app.enter_command_mode();
         }
         // Scroll up
         KeyCode::Char('k') | KeyCode::Up => {
             app.scroll_up();
+        }
+        // Page up
+        KeyCode::PageUp => {
+            app.scroll_page_up();
+        }
+        // Page down
+        KeyCode::PageDown => {
+            app.scroll_page_down();
+        }
+        // Page up (Ctrl+U)
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.scroll_page_up();
+        }
+        // Page down (Ctrl+D)
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.scroll_page_down();
         }
         // Scroll down
         KeyCode::Char('j') => {
@@ -122,9 +138,9 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) {
             KeyCode::Char('j') | KeyCode::Down => app.tool_approval_move_down(),
             KeyCode::Char(' ') => app.tool_approval_toggle(),
             KeyCode::Char('a') => app.tool_approval_approve_all(),
-            KeyCode::Char('d') => app.tool_approval_deny_all(),
+            KeyCode::Char('d') => app.tool_approval_request_deny_all(),
             KeyCode::Enter => app.tool_approval_activate(),
-            KeyCode::Esc => app.tool_approval_deny_all(),
+            KeyCode::Esc => app.tool_approval_request_deny_all(),
             _ => {}
         }
         return;
@@ -145,6 +161,20 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) {
         // Exit insert mode
         KeyCode::Esc => {
             app.enter_normal_mode();
+        }
+        // Insert newline
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            let Some(token) = app.insert_token() else {
+                return;
+            };
+            app.insert_mode(token).enter_newline();
+        }
+        // Insert newline (Ctrl+J)
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            let Some(token) = app.insert_token() else {
+                return;
+            };
+            app.insert_mode(token).enter_newline();
         }
         // Submit message
         KeyCode::Enter => {
@@ -213,9 +243,9 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
             KeyCode::Char('j') | KeyCode::Down => app.tool_approval_move_down(),
             KeyCode::Char(' ') => app.tool_approval_toggle(),
             KeyCode::Char('a') => app.tool_approval_approve_all(),
-            KeyCode::Char('d') => app.tool_approval_deny_all(),
+            KeyCode::Char('d') => app.tool_approval_request_deny_all(),
             KeyCode::Enter => app.tool_approval_activate(),
-            KeyCode::Esc => app.tool_approval_deny_all(),
+            KeyCode::Esc => app.tool_approval_request_deny_all(),
             _ => {}
         }
         return;
@@ -289,13 +319,13 @@ fn handle_model_select_mode(app: &mut App, key: KeyEvent) {
             app.model_select_move_down();
         }
         // Direct selection with number keys
-        KeyCode::Char('1') => {
-            app.model_select_set_index(0);
-            app.model_select_confirm();
-        }
-        KeyCode::Char('2') => {
-            app.model_select_set_index(1);
-            app.model_select_confirm();
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            let digit = c.to_digit(10).unwrap_or(0);
+            if digit > 0 {
+                let index = (digit - 1) as usize;
+                app.model_select_set_index(index);
+                app.model_select_confirm();
+            }
         }
         _ => {}
     }

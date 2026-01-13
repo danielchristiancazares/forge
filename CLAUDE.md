@@ -32,6 +32,9 @@ Config: `~/.forge/config.toml` (supports `${ENV_VAR}` expansion)
 provider = "claude"        # or "openai"
 model = "claude-sonnet-4-5-20250929"
 tui = "full"               # or "inline"
+ascii_only = false         # ASCII-only glyphs for icons/spinners
+high_contrast = false      # High-contrast color palette
+reduced_motion = false     # Disable modal animations
 
 [api_keys]
 anthropic = "${ANTHROPIC_API_KEY}"

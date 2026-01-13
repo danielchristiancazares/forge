@@ -9,7 +9,7 @@ mod ui_inline;
 
 pub use effects::apply_modal_effect;
 pub use input::handle_events;
-pub use theme::{colors, spinner_frame, styles};
+pub use theme::{glyphs, palette, spinner_frame, styles, Glyphs, Palette};
 pub use ui_inline::{
     INLINE_INPUT_HEIGHT, INLINE_MODEL_SELECTOR_HEIGHT, INLINE_VIEWPORT_HEIGHT, InlineOutput,
     clear_inline_viewport, draw as draw_inline, inline_viewport_height,
@@ -38,8 +38,11 @@ use self::markdown::render_markdown;
 
 /// Main draw function
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    let options = app.ui_options();
+    let palette = palette(options);
+    let glyphs = glyphs(options);
     // Clear with background color
-    let bg_block = Block::default().style(Style::default().bg(colors::BG_DARK));
+    let bg_block = Block::default().style(Style::default().bg(palette.bg_dark));
     frame.render_widget(bg_block, frame.area());
 
     let input_height = match app.input_mode() {
@@ -57,50 +60,44 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ])
         .split(frame.area());
 
-    draw_messages(frame, app, chunks[0]);
-    draw_input(frame, app, chunks[1]);
-    draw_status_bar(frame, app, chunks[2]);
+    draw_messages(frame, app, chunks[0], &palette, &glyphs);
+    draw_input(frame, app, chunks[1], &palette);
+    draw_status_bar(frame, app, chunks[2], &palette, &glyphs);
 
     // Draw command palette if in command mode
     if app.input_mode() == InputMode::Command {
-        draw_command_palette(frame, app);
+        draw_command_palette(frame, app, &palette);
     }
 
     // Draw model selector if in model select mode
     if app.input_mode() == InputMode::ModelSelect {
-        draw_model_selector(frame, app);
+        draw_model_selector(frame, app, &palette, &glyphs);
     }
 
     if app.tool_approval_requests().is_some() {
-        draw_tool_approval_prompt(frame, app);
+        draw_tool_approval_prompt(frame, app, &palette);
     }
 
     if app.tool_recovery_calls().is_some() {
-        draw_tool_recovery_prompt(frame, app);
+        draw_tool_recovery_prompt(frame, app, &palette, &glyphs);
     }
 }
 
-fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
-    let messages_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(colors::TEXT_MUTED))
-        .padding(Padding::horizontal(1));
-
-    // Show welcome screen if no messages
-    if app.is_empty() {
-        app.update_scroll_max(0);
-        let welcome = create_welcome_screen(app);
-        frame.render_widget(welcome.block(messages_block), area);
-        return;
-    }
-
-    // Build message content
-    let mut lines: Vec<Line> = Vec::new();
-    let mut msg_count = 0;
-
-    // Helper to render a single message
-    fn render_message(msg: &Message, lines: &mut Vec<Line>, msg_count: &mut usize) {
+fn draw_messages(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    palette: &Palette,
+    glyphs: &Glyphs,
+) {
+    // Helper to render a single message (defined at function start to satisfy clippy)
+    fn render_message(
+        msg: &Message,
+        lines: &mut Vec<Line>,
+        msg_count: &mut usize,
+        palette: &Palette,
+        glyphs: &Glyphs,
+    ) {
         // Add spacing between messages (except first)
         if *msg_count > 0 {
             lines.push(Line::from(""));
@@ -111,51 +108,57 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         // Message header with role icon and name
         let (icon, name, name_style) = match msg {
             Message::System(_) => (
-                "●".to_string(),
+                glyphs.system.to_string(),
                 "System".to_string(),
                 Style::default()
-                    .fg(colors::TEXT_MUTED)
+                    .fg(palette.text_muted)
                     .add_modifier(Modifier::BOLD),
             ),
-            Message::User(_) => ("○".to_string(), "You".to_string(), styles::user_name()),
+            Message::User(_) => (
+                glyphs.user.to_string(),
+                "You".to_string(),
+                styles::user_name(palette),
+            ),
             Message::Assistant(m) => (
-                "◆".to_string(),
+                glyphs.assistant.to_string(),
                 m.provider().display_name().to_string(),
-                styles::assistant_name(),
+                styles::assistant_name(palette),
             ),
             Message::ToolUse(call) => {
                 let compact = tool_display::format_tool_call_compact(&call.name, &call.arguments);
                 let compact = sanitize_terminal_text(&compact).into_owned();
                 (
-                    "⚙".to_string(),
+                    glyphs.tool.to_string(),
                     compact,
                     Style::default()
-                        .fg(colors::ACCENT)
+                        .fg(palette.accent)
                         .add_modifier(Modifier::BOLD),
                 )
             }
             Message::ToolResult(result) => {
-                let (icon, style) = if result.is_error {
+                let (icon, style, label) = if result.is_error {
                     (
-                        "✗",
+                        glyphs.tool_result_err,
                         Style::default()
-                            .fg(colors::ERROR)
+                            .fg(palette.error)
                             .add_modifier(Modifier::BOLD),
+                        "Tool Result (error)",
                     )
                 } else {
                     (
-                        "✓",
+                        glyphs.tool_result_ok,
                         Style::default()
-                            .fg(colors::SUCCESS)
+                            .fg(palette.success)
                             .add_modifier(Modifier::BOLD),
+                        "Tool Result (ok)",
                     )
                 };
-                (icon.to_string(), "Tool Result".to_string(), style)
+                (icon.to_string(), label.to_string(), style)
             }
         };
 
         let header_line = Line::from(vec![
-            Span::styled(format!(" {} ", icon), name_style),
+            Span::styled(format!(" {icon} "), name_style),
             Span::styled(name, name_style),
         ]);
         lines.push(header_line);
@@ -169,14 +172,14 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             Message::ToolResult(result) => {
                 // Render result content with appropriate styling
                 let content_style = if result.is_error {
-                    Style::default().fg(colors::ERROR)
+                    Style::default().fg(palette.error)
                 } else {
-                    Style::default().fg(colors::TEXT_SECONDARY)
+                    Style::default().fg(palette.text_secondary)
                 };
                 let content = sanitize_terminal_text(&result.content);
                 for result_line in content.lines() {
                     lines.push(Line::from(Span::styled(
-                        format!("  {}", result_line),
+                        format!("  {result_line}"),
                         content_style,
                     )));
                 }
@@ -184,17 +187,35 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             _ => {
                 // Regular messages - render as markdown
                 let content_style = match msg {
-                    Message::System(_) => Style::default().fg(colors::TEXT_MUTED),
-                    Message::User(_) => Style::default().fg(colors::TEXT_PRIMARY),
-                    Message::Assistant(_) => Style::default().fg(colors::TEXT_SECONDARY),
-                    _ => Style::default().fg(colors::TEXT_MUTED),
+                    Message::System(_) => Style::default().fg(palette.text_muted),
+                    Message::User(_) => Style::default().fg(palette.text_primary),
+                    Message::Assistant(_) => Style::default().fg(palette.text_secondary),
+                    _ => Style::default().fg(palette.text_muted),
                 };
                 let content = sanitize_terminal_text(msg.content());
-                let rendered = render_markdown(content.as_ref(), content_style);
+                let rendered = render_markdown(content.as_ref(), content_style, palette);
                 lines.extend(rendered);
             }
         }
     }
+
+    let messages_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette.text_muted))
+        .padding(Padding::horizontal(1));
+
+    // Show welcome screen if no messages
+    if app.is_empty() {
+        app.update_scroll_max(0);
+        let welcome = create_welcome_screen(app, palette, glyphs);
+        frame.render_widget(welcome.block(messages_block), area);
+        return;
+    }
+
+    // Build message content
+    let mut lines: Vec<Line> = Vec::new();
+    let mut msg_count = 0;
 
     // Render complete messages from display items
     for item in app.display_items() {
@@ -202,7 +223,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             DisplayItem::History(id) => app.history().get_entry(*id).message(),
             DisplayItem::Local(msg) => msg,
         };
-        render_message(msg, &mut lines, &mut msg_count);
+        render_message(msg, &mut lines, &mut msg_count, palette, glyphs);
     }
 
     // Render streaming message if present (State as Location)
@@ -213,9 +234,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         }
 
         let (icon, name, name_style) = (
-            "◆",
+            glyphs.assistant,
             streaming.provider().display_name(),
-            styles::assistant_name(),
+            styles::assistant_name(palette),
         );
 
         let header_line = Line::from(vec![
@@ -227,16 +248,16 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 
         if streaming.content().is_empty() {
             // Show animated spinner for loading
-            let spinner = spinner_frame(app.tick_count());
+            let spinner = spinner_frame(app.tick_count(), app.ui_options());
             lines.push(Line::from(vec![
                 Span::raw("    "),
-                Span::styled(spinner, Style::default().fg(colors::PRIMARY)),
-                Span::styled(" Thinking...", Style::default().fg(colors::TEXT_MUTED)),
+                Span::styled(spinner, Style::default().fg(palette.primary)),
+                Span::styled(" Thinking...", Style::default().fg(palette.text_muted)),
             ]));
         } else {
-            let content_style = Style::default().fg(colors::TEXT_SECONDARY);
+            let content_style = Style::default().fg(palette.text_secondary);
             let content = sanitize_terminal_text(streaming.content());
-            let rendered = render_markdown(content.as_ref(), content_style);
+            let rendered = render_markdown(content.as_ref(), content_style, palette);
             lines.extend(rendered);
         }
     }
@@ -246,16 +267,16 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         if msg_count > 0 || app.streaming().is_some() {
             lines.push(Line::from(""));
         }
-        let spinner = spinner_frame(app.tick_count());
+        let spinner = spinner_frame(app.tick_count(), app.ui_options());
         let status_line = Line::from(vec![
             Span::styled(
-                format!("{} ", spinner),
-                Style::default().fg(colors::WARNING),
+                format!("{spinner} "),
+                Style::default().fg(palette.warning),
             ),
             Span::styled(
                 format!("Awaiting {} tool result(s)...", pending_calls.len()),
                 Style::default()
-                    .fg(colors::TEXT_MUTED)
+                    .fg(palette.text_muted)
                     .add_modifier(Modifier::ITALIC),
             ),
         ]);
@@ -266,15 +287,15 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             let name = sanitize_terminal_text(&call.name);
             let id = sanitize_terminal_text(&call.id);
             lines.push(Line::from(Span::styled(
-                format!("  • {} ({})", name.as_ref(), id.as_ref()),
-                Style::default().fg(colors::TEXT_MUTED),
+                format!("  {} {} ({})", glyphs.bullet, name.as_ref(), id.as_ref()),
+                Style::default().fg(palette.text_muted),
             )));
         }
 
         lines.push(Line::from(Span::styled(
             "  Use /tool <id> <result> or /tool error <id> <message>",
             Style::default()
-                .fg(colors::TEXT_MUTED)
+                .fg(palette.text_muted)
                 .add_modifier(Modifier::ITALIC),
         )));
     }
@@ -283,7 +304,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         if msg_count > 0 || app.streaming().is_some() || app.pending_tool_calls().is_some() {
             lines.push(Line::from(""));
         }
-        let spinner = spinner_frame(app.tick_count());
+        let spinner = spinner_frame(app.tick_count(), app.ui_options());
         let approval_pending = app.tool_approval_requests().is_some();
         let header = if approval_pending {
             format!("{spinner} Tool approval required")
@@ -293,7 +314,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         lines.push(Line::from(Span::styled(
             header,
             Style::default()
-                .fg(colors::WARNING)
+                .fg(palette.warning)
                 .add_modifier(Modifier::ITALIC),
         )));
 
@@ -315,7 +336,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         for call in calls {
             let result = results_map.get(call.id.as_str());
             let mut reason: Option<String> = None;
-            let (icon, style) = if let Some(result) = result {
+            let (icon, style, label) = if let Some(result) = result {
                 if !execute_ids.contains(call.id.as_str()) {
                     let content = sanitize_terminal_text(&result.content);
                     reason = content
@@ -323,10 +344,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                         .next()
                         .map(|line| truncate_with_ellipsis(line, 80));
                     (
-                        "⊘",
+                        glyphs.denied,
                         Style::default()
-                            .fg(colors::WARNING)
+                            .fg(palette.warning)
                             .add_modifier(Modifier::BOLD),
+                        "denied",
                     )
                 } else if result.is_error {
                     let content = sanitize_terminal_text(&result.content);
@@ -335,35 +357,43 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                         .next()
                         .map(|line| truncate_with_ellipsis(line, 80));
                     (
-                        "✗",
+                        glyphs.tool_result_err,
                         Style::default()
-                            .fg(colors::ERROR)
+                            .fg(palette.error)
                             .add_modifier(Modifier::BOLD),
+                        "error",
                     )
                 } else {
                     (
-                        "✓",
+                        glyphs.tool_result_ok,
                         Style::default()
-                            .fg(colors::SUCCESS)
+                            .fg(palette.success)
                             .add_modifier(Modifier::BOLD),
+                        "ok",
                     )
                 }
             } else if current_id == Some(call.id.as_str()) {
                 (
                     spinner,
                     Style::default()
-                        .fg(colors::PRIMARY)
+                        .fg(palette.primary)
                         .add_modifier(Modifier::BOLD),
+                    "running",
                 )
             } else if approval_pending && !execute_ids.contains(call.id.as_str()) {
                 (
-                    "⏸",
+                    glyphs.paused,
                     Style::default()
-                        .fg(colors::WARNING)
+                        .fg(palette.warning)
                         .add_modifier(Modifier::BOLD),
+                    "paused",
                 )
             } else {
-                ("•", Style::default().fg(colors::TEXT_MUTED))
+                (
+                    glyphs.bullet,
+                    Style::default().fg(palette.text_muted),
+                    "pending",
+                )
             };
 
             let name = sanitize_terminal_text(&call.name);
@@ -371,15 +401,15 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(vec![
                 Span::styled(format!("  {icon} "), style),
                 Span::styled(
-                    format!("{} ({})", name.as_ref(), id.as_ref()),
-                    Style::default().fg(colors::TEXT_MUTED),
+                    format!("{} ({}) [{label}]", name.as_ref(), id.as_ref()),
+                    Style::default().fg(palette.text_muted),
                 ),
             ]));
 
             if let Some(reason) = reason {
                 lines.push(Line::from(Span::styled(
                     format!("    ↳ {reason}"),
-                    Style::default().fg(colors::TEXT_MUTED),
+                    Style::default().fg(palette.text_muted),
                 )));
             }
         }
@@ -390,13 +420,13 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "  Tool output:",
-                Style::default().fg(colors::TEXT_MUTED),
+                Style::default().fg(palette.text_muted),
             )));
             for line in output_lines {
                 let safe_line = sanitize_terminal_text(line);
                 lines.push(Line::from(Span::styled(
                     format!("    {}", safe_line.as_ref()),
-                    Style::default().fg(colors::TEXT_SECONDARY),
+                    Style::default().fg(palette.text_secondary),
                 )));
             }
         }
@@ -421,11 +451,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     // Only render scrollbar when content exceeds viewport
     if max_scroll > 0 {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(Some("↑"))
-            .end_symbol(Some("↓"))
-            .track_symbol(Some("│"))
-            .thumb_symbol("█")
-            .style(Style::default().fg(colors::TEXT_MUTED));
+            .begin_symbol(Some(glyphs.arrow_up))
+            .end_symbol(Some(glyphs.arrow_down))
+            .track_symbol(Some(glyphs.track))
+            .thumb_symbol(glyphs.thumb)
+            .style(Style::default().fg(palette.text_muted));
 
         // content_length = scrollable range (max_scroll), not total_lines
         // This ensures thumb is at bottom when scroll_offset == max_scroll
@@ -471,8 +501,9 @@ fn truncate_with_ellipsis(raw: &str, max: usize) -> String {
     }
 }
 
-pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
+pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette) {
     let mode = app.input_mode();
+    let options = app.ui_options();
     // Clone command text to avoid borrow conflict with mutable context_usage_status()
     let command_line: Option<String> = if mode == InputMode::Command {
         app.command_text().map(str::to_string)
@@ -480,56 +511,71 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
         None
     };
 
-    let (mode_text, mode_style, border_style, prompt_char) = match mode {
+    let multiline = mode == InputMode::Insert && app.draft_text().contains('\n');
+    let prompt_char = if mode == InputMode::Insert {
+        if options.ascii_only { ">" } else { "❯" }
+    } else {
+        ""
+    };
+
+    let (mode_label, mode_style, border_style) = match mode {
         InputMode::Normal | InputMode::ModelSelect => (
-            " NORMAL ",
-            styles::mode_normal(),
-            Style::default().fg(colors::TEXT_MUTED),
-            "",
+            "NORMAL",
+            styles::mode_normal(palette),
+            Style::default().fg(palette.text_muted),
         ),
         InputMode::Insert => (
-            " INSERT ",
-            styles::mode_insert(),
-            Style::default().fg(colors::GREEN),
-            "❯",
+            "INSERT",
+            styles::mode_insert(palette),
+            Style::default().fg(palette.green),
         ),
         InputMode::Command => (
-            " COMMAND ",
-            styles::mode_command(),
-            Style::default().fg(colors::YELLOW),
-            "/",
+            "COMMAND",
+            styles::mode_command(palette),
+            Style::default().fg(palette.yellow),
         ),
+    };
+    let mode_text = if multiline {
+        format!(" {mode_label} · MULTI ")
+    } else {
+        format!(" {mode_label} ")
     };
 
     // Key hints based on mode
     let hints = match mode {
         InputMode::Normal => vec![
-            Span::styled("i", styles::key_highlight()),
-            Span::styled(" insert  ", styles::key_hint()),
-            Span::styled("/", styles::key_highlight()),
-            Span::styled(" command  ", styles::key_hint()),
-            Span::styled("q", styles::key_highlight()),
-            Span::styled(" quit ", styles::key_hint()),
+            Span::styled("i", styles::key_highlight(palette)),
+            Span::styled(" insert  ", styles::key_hint(palette)),
+            Span::styled("/", styles::key_highlight(palette)),
+            Span::styled(" command  ", styles::key_hint(palette)),
+            Span::styled("PgUp/PgDn", styles::key_highlight(palette)),
+            Span::styled(" scroll  ", styles::key_hint(palette)),
+            Span::styled("q", styles::key_highlight(palette)),
+            Span::styled(" quit ", styles::key_hint(palette)),
         ],
         InputMode::Insert => vec![
-            Span::styled("Enter", styles::key_highlight()),
-            Span::styled(" send  ", styles::key_hint()),
-            Span::styled("Esc", styles::key_highlight()),
-            Span::styled(" normal ", styles::key_hint()),
+            Span::styled("Enter", styles::key_highlight(palette)),
+            Span::styled(" send  ", styles::key_hint(palette)),
+            Span::styled("Shift+Enter", styles::key_highlight(palette)),
+            Span::styled(" newline  ", styles::key_hint(palette)),
+            Span::styled("Esc", styles::key_highlight(palette)),
+            Span::styled(" normal ", styles::key_hint(palette)),
         ],
         InputMode::Command => vec![
-            Span::styled("Enter", styles::key_highlight()),
-            Span::styled(" execute  ", styles::key_hint()),
-            Span::styled("Esc", styles::key_highlight()),
-            Span::styled(" cancel ", styles::key_hint()),
+            Span::styled("Enter", styles::key_highlight(palette)),
+            Span::styled(" execute  ", styles::key_hint(palette)),
+            Span::styled("Esc", styles::key_highlight(palette)),
+            Span::styled(" cancel ", styles::key_hint(palette)),
         ],
         InputMode::ModelSelect => vec![
-            Span::styled("↑↓", styles::key_highlight()),
-            Span::styled(" select  ", styles::key_hint()),
-            Span::styled("Enter", styles::key_highlight()),
-            Span::styled(" confirm  ", styles::key_hint()),
-            Span::styled("Esc", styles::key_highlight()),
-            Span::styled(" cancel ", styles::key_hint()),
+            Span::styled("↑↓", styles::key_highlight(palette)),
+            Span::styled(" select  ", styles::key_hint(palette)),
+            Span::styled("1-9", styles::key_highlight(palette)),
+            Span::styled(" quick pick  ", styles::key_hint(palette)),
+            Span::styled("Enter", styles::key_highlight(palette)),
+            Span::styled(" confirm  ", styles::key_hint(palette)),
+            Span::styled("Esc", styles::key_highlight(palette)),
+            Span::styled(" cancel ", styles::key_hint(palette)),
         ],
     };
 
@@ -546,103 +592,195 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
         _ => usage.format_compact(),
     };
     let usage_color = match severity_override {
-        1 | 2 => colors::RED,
+        1 | 2 => palette.red,
         _ => match usage.severity() {
-            0 => colors::GREEN,  // < 70%
-            1 => colors::YELLOW, // 70-90%
-            _ => colors::RED,    // > 90%
+            0 => palette.green,  // < 70%
+            1 => palette.yellow, // 70-90%
+            _ => palette.red,    // > 90%
         },
     };
 
-    let input_padding = if mode == InputMode::Normal {
-        Padding::vertical(0)
-    } else {
-        Padding::vertical(1)
+    let padding_v: u16 = match mode {
+        InputMode::Normal | InputMode::ModelSelect => 0,
+        InputMode::Insert if multiline => 0,
+        _ => 1,
     };
+    let input_padding = Padding::vertical(padding_v);
+    let inner_height = area.height.saturating_sub(2 + padding_v.saturating_mul(2)).max(1);
 
-    // Calculate horizontal scroll offset to keep cursor visible.
-    // The visible content width is: area.width - borders (2) - prompt (3) - right padding (1)
-    let visible_content_width = area.width.saturating_sub(6) as usize;
+    let prefix = match mode {
+        InputMode::Command => " / ".to_string(),
+        _ => format!(" {prompt_char} "),
+    };
+    let prefix_width = prefix.width() as u16;
+    let content_width = area
+        .width
+        .saturating_sub(2)
+        .saturating_sub(prefix_width)
+        .max(1) as usize;
 
-    // Calculate scroll offset and prepare text for display.
-    // We slice the text to show the portion that includes the cursor, keeping the prompt fixed.
-    let (display_text, horizontal_scroll) = if mode == InputMode::Insert {
-        let cursor_index = app.draft_cursor_byte_index();
+    let mut cursor_pos: Option<(u16, u16)> = None;
+    let input_lines: Vec<Line> = if mode == InputMode::Insert && multiline {
         let draft = app.draft_text();
-        let text_before_cursor = &draft[..cursor_index];
-        let cursor_display_pos = text_before_cursor.width();
+        let cursor_index = app.draft_cursor_byte_index();
+        let before_cursor = &draft[..cursor_index];
+        let cursor_line_index = before_cursor.matches('\n').count();
+        let cursor_line_start = before_cursor.rsplit('\n').next().unwrap_or("");
+        let cursor_display_pos = cursor_line_start.width();
 
-        if cursor_display_pos >= visible_content_width {
-            // Need to scroll: find the byte offset to start from
-            let scroll_target = cursor_display_pos - visible_content_width + 1;
-            // Find byte index corresponding to scroll_target display width
-            let mut byte_offset = 0;
-            let mut skipped_width = 0;
-            for (idx, grapheme) in draft.grapheme_indices(true) {
-                if skipped_width >= scroll_target {
-                    byte_offset = idx;
-                    break;
-                }
-                skipped_width += grapheme.width();
-            }
-            // Return actual skipped width, not target (handles wide graphemes correctly)
-            (draft[byte_offset..].to_string(), skipped_width as u16)
+        let raw_lines: Vec<&str> = draft.split('\n').collect();
+        let visible_lines = inner_height as usize;
+        let start_line = if cursor_line_index + 1 > visible_lines {
+            cursor_line_index + 1 - visible_lines
         } else {
-            (draft.to_string(), 0u16)
-        }
-    } else if mode == InputMode::Command
-        && let Some(cmd) = &command_line
-    {
-        let cursor_display_pos = cmd.width();
-        if cursor_display_pos >= visible_content_width {
-            let scroll_target = cursor_display_pos - visible_content_width + 1;
-            let mut byte_offset = 0;
-            let mut skipped_width = 0;
-            for (idx, grapheme) in cmd.grapheme_indices(true) {
-                if skipped_width >= scroll_target {
-                    byte_offset = idx;
-                    break;
+            0
+        };
+        let end_line = (start_line + visible_lines).min(raw_lines.len());
+
+        let mut display_lines = Vec::new();
+        let mut horizontal_scroll: u16 = 0;
+
+        for (idx, line) in raw_lines[start_line..end_line].iter().enumerate() {
+            let is_cursor_line = start_line + idx == cursor_line_index;
+            let mut line_text = (*line).to_string();
+            if is_cursor_line && cursor_display_pos >= content_width {
+                let scroll_target = cursor_display_pos - content_width + 1;
+                let mut byte_offset = 0;
+                let mut skipped_width = 0;
+                for (i, grapheme) in line.grapheme_indices(true) {
+                    if skipped_width >= scroll_target {
+                        byte_offset = i;
+                        break;
+                    }
+                    skipped_width += grapheme.width();
                 }
-                skipped_width += grapheme.width();
+                line_text = line[byte_offset..].to_string();
+                horizontal_scroll = skipped_width as u16;
             }
-            // Return actual skipped width, not target (handles wide graphemes correctly)
-            (cmd[byte_offset..].to_string(), skipped_width as u16)
-        } else {
-            (cmd.to_string(), 0u16)
+
+            let prefix_text = if idx == 0 {
+                prefix.clone()
+            } else {
+                " ".repeat(prefix_width as usize)
+            };
+            let prefix_style = if mode == InputMode::Command {
+                Style::default().fg(palette.yellow)
+            } else {
+                Style::default().fg(palette.primary)
+            };
+            display_lines.push(Line::from(vec![
+                Span::styled(prefix_text, prefix_style),
+                Span::styled(line_text, Style::default().fg(palette.text_primary)),
+            ]));
         }
+
+        let cursor_row = cursor_line_index.saturating_sub(start_line) as u16;
+        let cursor_x = area
+            .x
+            .saturating_add(1 + prefix_width)
+            .saturating_add(cursor_display_pos as u16)
+            .saturating_sub(horizontal_scroll);
+        let cursor_y = area
+            .y
+            .saturating_add(1 + padding_v)
+            .saturating_add(cursor_row);
+        cursor_pos = Some((cursor_x, cursor_y));
+
+        display_lines
     } else {
-        (
-            match mode {
-                InputMode::Insert | InputMode::Normal | InputMode::ModelSelect => {
-                    app.draft_text().to_string()
+        let (display_text, horizontal_scroll) = if mode == InputMode::Insert {
+            let cursor_index = app.draft_cursor_byte_index();
+            let draft = app.draft_text();
+            let text_before_cursor = &draft[..cursor_index];
+            let cursor_display_pos = text_before_cursor.width();
+
+            if cursor_display_pos >= content_width {
+                let scroll_target = cursor_display_pos - content_width + 1;
+                let mut byte_offset = 0;
+                let mut skipped_width = 0;
+                for (idx, grapheme) in draft.grapheme_indices(true) {
+                    if skipped_width >= scroll_target {
+                        byte_offset = idx;
+                        break;
+                    }
+                    skipped_width += grapheme.width();
                 }
-                InputMode::Command => command_line
-                    .as_ref()
-                    .map(|s| s.to_string())
-                    .unwrap_or_default(),
-            },
-            0u16,
-        )
-    };
+                (draft[byte_offset..].to_string(), skipped_width as u16)
+            } else {
+                (draft.to_string(), 0u16)
+            }
+        } else if mode == InputMode::Command
+            && let Some(cmd) = &command_line
+        {
+            let cursor_display_pos = cmd.width();
+            if cursor_display_pos >= content_width {
+                let scroll_target = cursor_display_pos - content_width + 1;
+                let mut byte_offset = 0;
+                let mut skipped_width = 0;
+                for (idx, grapheme) in cmd.grapheme_indices(true) {
+                    if skipped_width >= scroll_target {
+                        byte_offset = idx;
+                        break;
+                    }
+                    skipped_width += grapheme.width();
+                }
+                (cmd[byte_offset..].to_string(), skipped_width as u16)
+            } else {
+                (cmd.to_string(), 0u16)
+            }
+        } else {
+            (
+                match mode {
+                    InputMode::Insert | InputMode::Normal | InputMode::ModelSelect => {
+                        app.draft_text().to_string()
+                    }
+                    InputMode::Command => command_line
+                        .as_ref()
+                        .map(|s| s.to_string())
+                        .unwrap_or_default(),
+                },
+                0u16,
+            )
+        };
 
-    // Rebuild input_content with potentially scrolled text
-    let input_content = match mode {
-        InputMode::Insert | InputMode::Normal | InputMode::ModelSelect => vec![
-            Span::styled(
-                format!(" {prompt_char} "),
-                Style::default().fg(colors::PRIMARY),
-            ),
-            Span::styled(display_text, Style::default().fg(colors::TEXT_PRIMARY)),
-        ],
-        InputMode::Command => {
-            vec![
-                Span::styled(" / ", Style::default().fg(colors::YELLOW)),
-                Span::styled(display_text, Style::default().fg(colors::TEXT_PRIMARY)),
-            ]
+        let prefix_style = if mode == InputMode::Command {
+            Style::default().fg(palette.yellow)
+        } else {
+            Style::default().fg(palette.primary)
+        };
+        let spans = vec![
+            Span::styled(prefix, prefix_style),
+            Span::styled(display_text, Style::default().fg(palette.text_primary)),
+        ];
+
+        if mode == InputMode::Insert {
+            let cursor_index = app.draft_cursor_byte_index();
+            let text_before_cursor = &app.draft_text()[..cursor_index];
+            let cursor_display_pos = text_before_cursor.width() as u16;
+            let cursor_x = area
+                .x
+                .saturating_add(1 + prefix_width)
+                .saturating_add(cursor_display_pos)
+                .saturating_sub(horizontal_scroll);
+            let cursor_y = area.y.saturating_add(1 + padding_v);
+            cursor_pos = Some((cursor_x, cursor_y));
+        } else if mode == InputMode::Command {
+            if let Some(command_line) = command_line.as_ref() {
+                let cursor_display_pos = command_line.width() as u16;
+                let cursor_x = area
+                    .x
+                    .saturating_add(1 + prefix_width)
+                    .saturating_add(cursor_display_pos)
+                    .saturating_sub(horizontal_scroll);
+                let cursor_y = area.y.saturating_add(1 + padding_v);
+                cursor_pos = Some((cursor_x, cursor_y));
+            }
         }
+
+        vec![Line::from(spans)]
     };
 
-    let input = Paragraph::new(Line::from(input_content)).block(
+    let input = Paragraph::new(input_lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -661,58 +799,46 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
 
     frame.render_widget(input, area);
 
-    // Show cursor in insert mode
-    if mode == InputMode::Insert {
-        // Calculate cursor position using display width (handles Unicode properly)
-        let cursor_index = app.draft_cursor_byte_index();
-        let text_before_cursor = &app.draft_text()[..cursor_index];
-        let cursor_display_pos = text_before_cursor.width() as u16;
-        // Subtract scroll offset to get visible position
-        let cursor_x = area.x + 4 + cursor_display_pos.saturating_sub(horizontal_scroll);
-        let cursor_y = area.y + 2;
-        frame.set_cursor_position((cursor_x, cursor_y));
-    } else if mode == InputMode::Command {
-        let Some(command_line) = command_line else {
-            return;
-        };
-        let cursor_display_pos = command_line.width() as u16;
-        let cursor_x = area.x + 4 + cursor_display_pos.saturating_sub(horizontal_scroll);
-        let cursor_y = area.y + 2;
+    if let Some((cursor_x, cursor_y)) = cursor_pos {
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 }
 
-pub(crate) fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+pub(crate) fn draw_status_bar(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    palette: &Palette,
+    glyphs: &Glyphs,
+) {
     let (status_text, status_style) = if let Some(msg) = app.status_message() {
-        let lower = msg.to_ascii_lowercase();
-        let is_error = lower.contains("error")
-            || lower.contains("failed")
-            || lower.contains("no api key")
-            || lower.contains("cannot")
-            || lower.contains("invalid")
-            || lower.contains("unauthorized")
-            || lower.contains("auth ");
-        let style = if is_error {
-            Style::default().fg(colors::RED)
-        } else {
-            Style::default().fg(colors::YELLOW)
+        let kind = app.status_kind();
+        let (prefix, color) = match kind {
+            forge_engine::StatusKind::Error => ("Error: ", palette.error),
+            forge_engine::StatusKind::Warning => ("Warning: ", palette.warning),
+            forge_engine::StatusKind::Success => ("Success: ", palette.success),
+            forge_engine::StatusKind::Info => ("", palette.text_secondary),
         };
-        (msg.to_string(), style)
+        (format!("{prefix}{msg}"), Style::default().fg(color))
     } else if app.is_loading() {
-        let spinner = spinner_frame(app.tick_count());
+        let spinner = spinner_frame(app.tick_count(), app.ui_options());
         (
             format!("{spinner} Processing request..."),
-            Style::default().fg(colors::PRIMARY),
+            Style::default().fg(palette.primary),
         )
     } else if app.current_api_key().is_some() {
         (
-            format!("● {} │ {}", app.provider().display_name(), app.model()),
-            Style::default().fg(colors::GREEN),
+            format!("{} {} │ {}", glyphs.status_ready, app.provider().display_name(), app.model()),
+            Style::default().fg(palette.success),
         )
     } else {
         (
-            format!("○ No API key │ Set {}", app.provider().env_var()),
-            Style::default().fg(colors::RED),
+            format!(
+                "{} No API key │ Set {}",
+                glyphs.status_missing,
+                app.provider().env_var()
+            ),
+            Style::default().fg(palette.error),
         )
     };
 
@@ -730,7 +856,7 @@ pub(crate) fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(status, area);
 }
 
-fn draw_command_palette(frame: &mut Frame, _app: &App) {
+fn draw_command_palette(frame: &mut Frame, app: &App, palette: &Palette) {
     let area = frame.area();
 
     // Center the palette
@@ -747,6 +873,9 @@ fn draw_command_palette(frame: &mut Frame, _app: &App) {
     // Clear background
     frame.render_widget(Clear, palette_area);
 
+    let filter_raw = app.command_text().unwrap_or("").trim();
+    let filter = filter_raw.trim_start_matches('/').to_ascii_lowercase();
+
     let commands = vec![
         ("q, quit", "Exit the application"),
         ("clear", "Clear conversation history"),
@@ -756,25 +885,56 @@ fn draw_command_palette(frame: &mut Frame, _app: &App) {
         ("help", "Show available commands"),
     ];
 
-    let mut lines: Vec<Line> = vec![Line::from("")];
+    let filtered: Vec<_> = if filter.is_empty() {
+        commands
+    } else {
+        commands
+            .into_iter()
+            .filter(|(cmd, desc)| {
+                cmd.to_ascii_lowercase().contains(&filter)
+                    || desc.to_ascii_lowercase().contains(&filter)
+            })
+            .collect()
+    };
 
-    for (cmd, desc) in commands {
-        lines.push(Line::from(vec![
-            Span::styled(format!("  /{cmd}"), Style::default().fg(colors::PEACH)),
-            Span::styled(format!("  {desc}"), Style::default().fg(colors::TEXT_MUTED)),
-        ]));
+    let mut lines: Vec<Line> = vec![Line::from("")];
+    let filter_line = if filter.is_empty() {
+        "  Type to filter commands..."
+    } else {
+        "  Filter active"
+    };
+    lines.push(Line::from(Span::styled(
+        filter_line,
+        Style::default()
+            .fg(palette.text_muted)
+            .add_modifier(Modifier::ITALIC),
+    )));
+    lines.push(Line::from(""));
+
+    if filtered.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No matching commands",
+            Style::default().fg(palette.text_muted),
+        )));
+    } else {
+        for (cmd, desc) in filtered {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  /{cmd}"), Style::default().fg(palette.peach)),
+                Span::styled(format!("  {desc}"), Style::default().fg(palette.text_muted)),
+            ]));
+        }
     }
 
     let palette = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(colors::PRIMARY))
-            .style(Style::default().bg(colors::BG_PANEL))
+            .border_style(Style::default().fg(palette.primary))
+            .style(Style::default().bg(palette.bg_panel))
             .title(Line::from(vec![Span::styled(
                 " Commands ",
                 Style::default()
-                    .fg(colors::TEXT_PRIMARY)
+                    .fg(palette.text_primary)
                     .add_modifier(Modifier::BOLD),
             )])),
     );
@@ -782,7 +942,7 @@ fn draw_command_palette(frame: &mut Frame, _app: &App) {
     frame.render_widget(palette, palette_area);
 }
 
-pub fn draw_model_selector(frame: &mut Frame, app: &mut App) {
+pub fn draw_model_selector(frame: &mut Frame, app: &mut App, palette: &Palette, glyphs: &Glyphs) {
     let area = frame.area();
     let selected_index = app.model_select_index().unwrap_or(0);
 
@@ -792,7 +952,7 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App) {
 
     let divider = Line::from(Span::styled(
         "─".repeat(content_width),
-        Style::default().fg(colors::PRIMARY_DIM),
+        Style::default().fg(palette.primary_dim),
     ));
 
     let mut lines: Vec<Line> = Vec::new();
@@ -803,8 +963,8 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App) {
     let mut row_index = 0usize;
     let mut push_row = |label: &str, selected: bool, muted: bool, tag: Option<(&str, Style)>| {
         row_index += 1;
-        let prefix = if selected { "▸" } else { " " };
-        let left = format!(" {} {:>2}  {}", prefix, row_index, label);
+        let prefix = if selected { glyphs.selected } else { " " };
+        let left = format!(" {prefix} {row_index:>2}  {label}");
         let left_width = left.width();
         let (right_text, right_style) = tag.unwrap_or(("", Style::default()));
         let right_width = right_text.width();
@@ -812,18 +972,18 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App) {
         let filler = content_width.saturating_sub(left_width + right_width + gap);
 
         let bg = if selected {
-            Some(colors::BG_HIGHLIGHT)
+            Some(palette.bg_highlight)
         } else {
             None
         };
         let mut left_style = if selected {
             Style::default()
-                .fg(colors::TEXT_PRIMARY)
+                .fg(palette.text_primary)
                 .add_modifier(Modifier::BOLD)
         } else if muted {
-            Style::default().fg(colors::TEXT_MUTED)
+            Style::default().fg(palette.text_muted)
         } else {
-            Style::default().fg(colors::TEXT_SECONDARY)
+            Style::default().fg(palette.text_secondary)
         };
         if let Some(bg) = bg {
             left_style = left_style.bg(bg);
@@ -864,7 +1024,7 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App) {
         Some((
             "preview",
             Style::default()
-                .fg(colors::PEACH)
+                .fg(palette.peach)
                 .add_modifier(Modifier::BOLD),
         )),
     );
@@ -875,15 +1035,17 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App) {
 
     lines.push(Line::from(Span::styled(
         "─".repeat(content_width),
-        Style::default().fg(colors::PRIMARY_DIM),
+        Style::default().fg(palette.primary_dim),
     )));
     lines.push(Line::from(vec![
-        Span::styled("  ↑↓", styles::key_highlight()),
-        Span::styled(" select  ", styles::key_hint()),
-        Span::styled("Enter", styles::key_highlight()),
-        Span::styled(" confirm  ", styles::key_hint()),
-        Span::styled("Esc", styles::key_highlight()),
-        Span::styled(" cancel", styles::key_hint()),
+        Span::styled("  ↑↓", styles::key_highlight(palette)),
+        Span::styled(" select  ", styles::key_hint(palette)),
+        Span::styled("1-9", styles::key_highlight(palette)),
+        Span::styled(" quick pick  ", styles::key_hint(palette)),
+        Span::styled("Enter", styles::key_highlight(palette)),
+        Span::styled(" confirm  ", styles::key_hint(palette)),
+        Span::styled("Esc", styles::key_highlight(palette)),
+        Span::styled(" cancel", styles::key_hint(palette)),
     ]));
 
     let inner_height = lines.len() as u16;
@@ -920,13 +1082,13 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(colors::PRIMARY))
-        .style(Style::default().bg(colors::BG_PANEL))
+        .border_style(Style::default().fg(palette.primary))
+        .style(Style::default().bg(palette.bg_panel))
         .padding(Padding::uniform(1))
         .title(Line::from(vec![Span::styled(
             " Select Model ",
             Style::default()
-                .fg(colors::TEXT_PRIMARY)
+                .fg(palette.text_primary)
                 .add_modifier(Modifier::BOLD),
         )]));
 
@@ -935,18 +1097,19 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App) {
     frame.render_widget(selector, selector_area);
 }
 
-fn draw_tool_approval_prompt(frame: &mut Frame, app: &App) {
+fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
     let Some(requests) = app.tool_approval_requests() else {
         return;
     };
     let selected = app.tool_approval_selected().unwrap_or(&[]);
     let cursor = app.tool_approval_cursor().unwrap_or(0);
+    let confirm_deny = app.tool_approval_deny_confirm();
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
         " Tool approval required ",
         Style::default()
-            .fg(colors::TEXT_PRIMARY)
+            .fg(palette.text_primary)
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(""));
@@ -960,28 +1123,28 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App) {
         let risk_label = format!("{:?}", req.risk_level).to_uppercase();
         let risk_style = match risk_label.as_str() {
             "HIGH" => Style::default()
-                .fg(colors::ERROR)
+                .fg(palette.error)
                 .add_modifier(Modifier::BOLD),
             "MEDIUM" => Style::default()
-                .fg(colors::WARNING)
+                .fg(palette.warning)
                 .add_modifier(Modifier::BOLD),
             _ => Style::default()
-                .fg(colors::SUCCESS)
+                .fg(palette.success)
                 .add_modifier(Modifier::BOLD),
         };
         let name_style = if i == cursor {
             Style::default()
-                .fg(colors::TEXT_PRIMARY)
+                .fg(palette.text_primary)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(colors::TEXT_PRIMARY)
+            Style::default().fg(palette.text_primary)
         };
 
         let tool_name = sanitize_terminal_text(&req.tool_name).into_owned();
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{pointer} {checkbox} "),
-                Style::default().fg(colors::TEXT_MUTED),
+                Style::default().fg(palette.text_muted),
             ),
             Span::styled(tool_name, name_style),
             Span::raw(" "),
@@ -993,9 +1156,19 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App) {
             let summary = truncate_with_ellipsis(summary.as_ref(), max_width.saturating_sub(6));
             lines.push(Line::from(Span::styled(
                 format!("    {summary}"),
-                Style::default().fg(colors::TEXT_MUTED),
+                Style::default().fg(palette.text_muted),
             )));
         }
+    }
+
+    if confirm_deny {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " Confirm Deny All: press Enter again",
+            Style::default()
+                .fg(palette.error)
+                .add_modifier(Modifier::BOLD),
+        )));
     }
 
     // Render Submit and Deny buttons
@@ -1008,52 +1181,52 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App) {
 
     let submit_style = if cursor == submit_cursor {
         Style::default()
-            .fg(colors::SUCCESS)
+            .fg(palette.success)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(colors::TEXT_MUTED)
+        Style::default().fg(palette.text_muted)
     };
     let deny_style = if cursor == deny_cursor {
         Style::default()
-            .fg(colors::ERROR)
+            .fg(palette.error)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(colors::TEXT_MUTED)
+        Style::default().fg(palette.text_muted)
     };
 
     lines.push(Line::from(vec![
         Span::styled(
             format!("{submit_pointer} "),
-            Style::default().fg(colors::TEXT_MUTED),
+            Style::default().fg(palette.text_muted),
         ),
         Span::styled("[ Submit ]", submit_style),
         Span::raw("    "),
         Span::styled(
             format!("{deny_pointer} "),
-            Style::default().fg(colors::TEXT_MUTED),
+            Style::default().fg(palette.text_muted),
         ),
         Span::styled("[ Deny All ]", deny_style),
     ]));
 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled("Space", styles::key_highlight()),
-        Span::styled(" toggle  ", styles::key_hint()),
-        Span::styled("j/k", styles::key_highlight()),
-        Span::styled(" navigate  ", styles::key_hint()),
-        Span::styled("Enter", styles::key_highlight()),
-        Span::styled(" select", styles::key_hint()),
+        Span::styled("Space", styles::key_highlight(palette)),
+        Span::styled(" toggle  ", styles::key_hint(palette)),
+        Span::styled("j/k", styles::key_highlight(palette)),
+        Span::styled(" navigate  ", styles::key_hint(palette)),
+        Span::styled("Enter", styles::key_highlight(palette)),
+        Span::styled(" select", styles::key_hint(palette)),
     ]));
 
-    let content_width = lines.iter().map(|line| line.width()).max().unwrap_or(10) as u16;
+    let content_width = lines.iter().map(ratatui::prelude::Line::width).max().unwrap_or(10) as u16;
     let content_width = content_width.min(frame.area().width.saturating_sub(4));
     let content_height = lines.len() as u16;
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(colors::PRIMARY))
-        .style(Style::default().bg(colors::BG_PANEL))
+        .border_style(Style::default().fg(palette.primary))
+        .style(Style::default().bg(palette.bg_panel))
         .padding(Padding::uniform(1));
 
     let height = content_height.saturating_add(4);
@@ -1070,7 +1243,12 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
-fn draw_tool_recovery_prompt(frame: &mut Frame, app: &App) {
+fn draw_tool_recovery_prompt(
+    frame: &mut Frame,
+    app: &App,
+    palette: &Palette,
+    glyphs: &Glyphs,
+) {
     let Some(calls) = app.tool_recovery_calls() else {
         return;
     };
@@ -1086,12 +1264,20 @@ fn draw_tool_recovery_prompt(frame: &mut Frame, app: &App) {
     lines.push(Line::from(Span::styled(
         " Tool recovery detected ",
         Style::default()
-            .fg(colors::TEXT_PRIMARY)
+            .fg(palette.text_primary)
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
         " Tools will not be re-run.",
-        Style::default().fg(colors::TEXT_MUTED),
+        Style::default().fg(palette.text_muted),
+    )));
+    lines.push(Line::from(Span::styled(
+        " Resume keeps recovered results and continues.",
+        Style::default().fg(palette.text_muted),
+    )));
+    lines.push(Line::from(Span::styled(
+        " Discard drops recovered results and continues.",
+        Style::default().fg(palette.text_muted),
     )));
     lines.push(Line::from(""));
 
@@ -1099,49 +1285,49 @@ fn draw_tool_recovery_prompt(frame: &mut Frame, app: &App) {
         let (icon, style) = if let Some(result) = results_map.get(call.id.as_str()) {
             if result.is_error {
                 (
-                    "✗",
+                    glyphs.tool_result_err,
                     Style::default()
-                        .fg(colors::ERROR)
+                        .fg(palette.error)
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
                 (
-                    "✓",
+                    glyphs.tool_result_ok,
                     Style::default()
-                        .fg(colors::SUCCESS)
+                        .fg(palette.success)
                         .add_modifier(Modifier::BOLD),
                 )
             }
         } else {
-            ("•", Style::default().fg(colors::TEXT_MUTED))
+            (glyphs.bullet, Style::default().fg(palette.text_muted))
         };
 
         lines.push(Line::from(vec![
             Span::styled(format!("  {icon} "), style),
             Span::styled(
                 format!("{} ({})", call.name, call.id),
-                Style::default().fg(colors::TEXT_MUTED),
+                Style::default().fg(palette.text_muted),
             ),
         ]));
     }
 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled("R", styles::key_highlight()),
-        Span::styled(" resume with recovered results  ", styles::key_hint()),
-        Span::styled("D", styles::key_highlight()),
-        Span::styled(" discard results", styles::key_hint()),
+        Span::styled("R", styles::key_highlight(palette)),
+        Span::styled(" resume with recovered results  ", styles::key_hint(palette)),
+        Span::styled("D", styles::key_highlight(palette)),
+        Span::styled(" discard results", styles::key_hint(palette)),
     ]));
 
-    let content_width = lines.iter().map(|line| line.width()).max().unwrap_or(10) as u16;
+    let content_width = lines.iter().map(ratatui::prelude::Line::width).max().unwrap_or(10) as u16;
     let content_width = content_width.min(frame.area().width.saturating_sub(4));
     let content_height = lines.len() as u16;
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(colors::PRIMARY))
-        .style(Style::default().bg(colors::BG_PANEL))
+        .border_style(Style::default().fg(palette.primary))
+        .style(Style::default().bg(palette.bg_panel))
         .padding(Padding::uniform(1));
 
     let height = content_height.saturating_add(4);
@@ -1158,41 +1344,41 @@ fn draw_tool_recovery_prompt(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
-fn create_welcome_screen(app: &App) -> Paragraph<'static> {
+fn create_welcome_screen(app: &App, palette: &Palette, glyphs: &Glyphs) -> Paragraph<'static> {
     let logo = vec![
         Line::from(""),
         Line::from(vec![Span::styled(
             "  ╭─────────────────────────────────────╮",
-            Style::default().fg(colors::PRIMARY_DIM),
+            Style::default().fg(palette.primary_dim),
         )]),
         Line::from(vec![
-            Span::styled("  │", Style::default().fg(colors::PRIMARY_DIM)),
+            Span::styled("  │", Style::default().fg(palette.primary_dim)),
             Span::styled(
                 "     ✨ LLM API Harness ✨              ",
                 Style::default()
-                    .fg(colors::PRIMARY)
+                    .fg(palette.primary)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("│", Style::default().fg(colors::PRIMARY_DIM)),
+            Span::styled("│", Style::default().fg(palette.primary_dim)),
         ]),
         Line::from(vec![
-            Span::styled("  │", Style::default().fg(colors::PRIMARY_DIM)),
+            Span::styled("  │", Style::default().fg(palette.primary_dim)),
             Span::styled(
                 "     Your AI Assistant Interface       ",
-                Style::default().fg(colors::TEXT_SECONDARY),
+                Style::default().fg(palette.text_secondary),
             ),
-            Span::styled("│", Style::default().fg(colors::PRIMARY_DIM)),
+            Span::styled("│", Style::default().fg(palette.primary_dim)),
         ]),
         Line::from(vec![Span::styled(
             "  ╰─────────────────────────────────────╯",
-            Style::default().fg(colors::PRIMARY_DIM),
+            Style::default().fg(palette.primary_dim),
         )]),
         Line::from(""),
         Line::from(""),
         Line::from(vec![Span::styled(
             "  Quick Start:",
             Style::default()
-                .fg(colors::TEXT_PRIMARY)
+                .fg(palette.text_primary)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
@@ -1200,58 +1386,58 @@ fn create_welcome_screen(app: &App) -> Paragraph<'static> {
             Span::styled(
                 "    i",
                 Style::default()
-                    .fg(colors::GREEN)
+                    .fg(palette.green)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "  Enter insert mode to type",
-                Style::default().fg(colors::TEXT_SECONDARY),
+                Style::default().fg(palette.text_secondary),
             ),
         ]),
         Line::from(vec![
             Span::styled(
                 "    Enter",
                 Style::default()
-                    .fg(colors::GREEN)
+                    .fg(palette.green)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "  Send your message",
-                Style::default().fg(colors::TEXT_SECONDARY),
+                Style::default().fg(palette.text_secondary),
             ),
         ]),
         Line::from(vec![
             Span::styled(
                 "    Esc",
                 Style::default()
-                    .fg(colors::YELLOW)
+                    .fg(palette.yellow)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "  Return to normal mode",
-                Style::default().fg(colors::TEXT_SECONDARY),
+                Style::default().fg(palette.text_secondary),
             ),
         ]),
         Line::from(vec![
             Span::styled(
                 "    /",
                 Style::default()
-                    .fg(colors::PEACH)
+                    .fg(palette.peach)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "  Open command palette",
-                Style::default().fg(colors::TEXT_SECONDARY),
+                Style::default().fg(palette.text_secondary),
             ),
         ]),
         Line::from(vec![
             Span::styled(
                 "    q",
                 Style::default()
-                    .fg(colors::RED)
+                    .fg(palette.red)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("  Quit", Style::default().fg(colors::TEXT_SECONDARY)),
+            Span::styled("  Quit", Style::default().fg(palette.text_secondary)),
         ]),
         Line::from(""),
         Line::from(""),
@@ -1267,51 +1453,72 @@ fn create_welcome_screen(app: &App) -> Paragraph<'static> {
         let status_line = if has_key {
             Line::from(vec![
                 Span::styled(
-                    if is_current { "  ● " } else { "  ○ " },
-                    Style::default().fg(if is_current {
-                        colors::GREEN
+                    if is_current {
+                        format!("  {} ", glyphs.status_ready)
                     } else {
-                        colors::TEXT_MUTED
+                        format!("  {} ", glyphs.status_missing)
+                    },
+                    Style::default().fg(if is_current {
+                        palette.success
+                    } else {
+                        palette.text_muted
                     }),
                 ),
                 Span::styled(
                     provider.display_name(),
                     Style::default().fg(if is_current {
-                        colors::GREEN
+                        palette.success
                     } else {
-                        colors::TEXT_SECONDARY
+                        palette.text_secondary
                     }),
                 ),
-                Span::styled(" - Ready", Style::default().fg(colors::TEXT_MUTED)),
+                Span::styled(" - Ready", Style::default().fg(palette.text_muted)),
                 if is_current {
-                    Span::styled(" (active)", Style::default().fg(colors::GREEN))
+                    Span::styled(" (active)", Style::default().fg(palette.success))
                 } else {
                     Span::styled("", Style::default())
                 },
             ])
         } else {
             Line::from(vec![
-                Span::styled("  ○ ", Style::default().fg(colors::TEXT_MUTED)),
+                Span::styled(
+                    format!("  {} ", glyphs.status_missing),
+                    Style::default().fg(palette.text_muted),
+                ),
                 Span::styled(
                     provider.display_name(),
-                    Style::default().fg(colors::TEXT_MUTED),
+                    Style::default().fg(palette.text_muted),
                 ),
-                Span::styled(" - Set ", Style::default().fg(colors::TEXT_MUTED)),
-                Span::styled(provider.env_var(), Style::default().fg(colors::PEACH)),
+                Span::styled(" - Set ", Style::default().fg(palette.text_muted)),
+                Span::styled(provider.env_var(), Style::default().fg(palette.peach)),
             ])
         };
         lines.push(status_line);
     }
 
+    if app.current_api_key().is_none() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  Next: ", Style::default().fg(palette.text_muted)),
+            Span::styled(
+                format!(
+                    "Set {} and restart to begin chatting.",
+                    app.provider().env_var()
+                ),
+                Style::default().fg(palette.peach),
+            ),
+        ]));
+    }
+
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled("  Tip: ", Style::default().fg(colors::TEXT_MUTED)),
-        Span::styled("/p claude", Style::default().fg(colors::PEACH)),
-        Span::styled(" or ", Style::default().fg(colors::TEXT_MUTED)),
-        Span::styled("/p gpt", Style::default().fg(colors::PEACH)),
+        Span::styled("  Tip: ", Style::default().fg(palette.text_muted)),
+        Span::styled("/p claude", Style::default().fg(palette.peach)),
+        Span::styled(" or ", Style::default().fg(palette.text_muted)),
+        Span::styled("/p gpt", Style::default().fg(palette.peach)),
         Span::styled(
             " to switch providers",
-            Style::default().fg(colors::TEXT_MUTED),
+            Style::default().fg(palette.text_muted),
         ),
     ]));
 

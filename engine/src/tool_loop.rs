@@ -178,14 +178,14 @@ impl App {
                 requests: plan.approval_requests,
                 selected: vec![true; batch.approval_requests.len()],
                 cursor: 0,
+                deny_confirm: false,
             };
             self.state = OperationState::ToolLoop(ToolLoopState {
                 batch,
                 phase: ToolLoopPhase::AwaitingApproval(approval),
             });
-            self.set_status(format!(
-                "Tool approval required (iteration {}/{})",
-                iteration, max_iterations
+            self.set_status_warning(format!(
+                "Tool approval required (iteration {iteration}/{max_iterations})"
             ));
             return;
         }
@@ -210,8 +210,7 @@ impl App {
             phase: ToolLoopPhase::Executing(exec),
         });
         self.set_status(format!(
-            "Running tools (iteration {}/{})",
-            iteration, max_iterations
+            "Running tools (iteration {iteration}/{max_iterations})"
         ));
     }
 
@@ -507,7 +506,7 @@ impl App {
                 Ok(Err(_)) => tool_error_result(&call, tools::ToolError::Cancelled),
                 Ok(Ok(Err(panic_payload))) => {
                     let panic_msg = panic_payload_to_string(&panic_payload);
-                    let message = format!("Tool panicked: {}", panic_msg);
+                    let message = format!("Tool panicked: {panic_msg}");
                     ToolResult::error(call.id.clone(), tools::sanitize_output(&message))
                 }
                 Ok(Ok(Ok(inner))) => match inner {
@@ -612,7 +611,7 @@ impl App {
                                             == Some(tool_call_id.as_str());
                                     if is_current {
                                         exec.output_lines
-                                            .push(format!("✓ Tool completed ({})", tool_call_id));
+                                            .push(format!("✓ Tool completed ({tool_call_id})"));
                                     }
                                 }
                             },
@@ -637,9 +636,7 @@ impl App {
                         Err(err) => {
                             let call_id = exec
                                 .current_call
-                                .as_ref()
-                                .map(|c| c.id.clone())
-                                .unwrap_or_else(|| "<unknown>".to_string());
+                                .as_ref().map_or_else(|| "<unknown>".to_string(), |c| c.id.clone());
                             let message = if err.is_cancelled() {
                                 "Tool execution cancelled"
                             } else {
@@ -771,8 +768,7 @@ impl App {
         // Check if all results are in
         if results_count < pending_count {
             self.set_status(format!(
-                "Received {}/{} tool results...",
-                results_count, pending_count
+                "Received {results_count}/{pending_count} tool results..."
             ));
             return Ok(false);
         }

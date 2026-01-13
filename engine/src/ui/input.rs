@@ -50,6 +50,10 @@ impl DraftInput {
         self.move_cursor_right();
     }
 
+    pub fn enter_newline(&mut self) {
+        self.enter_char('\n');
+    }
+
     pub fn delete_char(&mut self) {
         if self.cursor == 0 {
             return;
@@ -103,11 +107,10 @@ impl DraftInput {
 
         while self.cursor > 0 {
             let idx = self.cursor - 1;
-            if !self.grapheme_is_whitespace(idx) {
-                self.delete_char();
-            } else {
+            if self.grapheme_is_whitespace(idx) {
                 break;
             }
+            self.delete_char();
         }
     }
 
@@ -119,7 +122,7 @@ impl DraftInput {
         self.text
             .graphemes(true)
             .nth(index)
-            .is_some_and(|grapheme| grapheme.chars().all(|c| c.is_whitespace()))
+            .is_some_and(|grapheme| grapheme.chars().all(char::is_whitespace))
     }
 
     pub fn byte_index(&self) -> usize {
@@ -130,8 +133,7 @@ impl DraftInput {
         self.text
             .grapheme_indices(true)
             .nth(grapheme_index)
-            .map(|(i, _)| i)
-            .unwrap_or(self.text.len())
+            .map_or(self.text.len(), |(i, _)| i)
     }
 
     fn clamp_cursor(&self, new_cursor_pos: usize) -> usize {

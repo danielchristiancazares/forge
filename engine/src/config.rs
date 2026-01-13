@@ -21,6 +21,12 @@ pub struct AppConfig {
     pub tui: Option<String>,
     /// Maximum output tokens for responses. Overrides model default.
     pub max_output_tokens: Option<u32>,
+    /// Use ASCII-only glyphs for icons and spinners.
+    pub ascii_only: Option<bool>,
+    /// Enable a high-contrast color palette.
+    pub high_contrast: Option<bool>,
+    /// Disable modal animations and motion effects.
+    pub reduced_motion: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -127,6 +133,8 @@ pub struct ToolsConfig {
     pub search: Option<SearchConfig>,
     /// webfetch limits.
     pub webfetch: Option<WebFetchConfig>,
+    /// Shell configuration for run_command.
+    pub shell: Option<ShellConfig>,
 }
 
 /// Configuration for a single tool definition.
@@ -221,6 +229,21 @@ pub struct WebFetchConfig {
     pub cache_ttl_days: Option<u32>,
 }
 
+/// Shell configuration for run_command tool.
+///
+/// ```toml
+/// [tools.shell]
+/// binary = "pwsh"
+/// args = ["-NoProfile", "-Command"]
+/// ```
+#[derive(Debug, Default, Deserialize)]
+pub struct ShellConfig {
+    /// Override shell binary (e.g., "pwsh", "bash", "/usr/local/bin/fish").
+    pub binary: Option<String>,
+    /// Override shell args (e.g., ["-c"] or ["/C"]).
+    pub args: Option<Vec<String>>,
+}
+
 impl ToolDefinitionConfig {
     /// Convert this config to a ToolDefinition.
     pub fn to_tool_definition(&self) -> Result<forge_types::ToolDefinition, String> {
@@ -240,7 +263,7 @@ fn toml_to_json(value: &toml::Value) -> Result<serde_json::Value, String> {
         toml::Value::Integer(i) => Ok(serde_json::Value::Number((*i).into())),
         toml::Value::Float(f) => {
             let n =
-                serde_json::Number::from_f64(*f).ok_or_else(|| format!("Invalid float: {}", f))?;
+                serde_json::Number::from_f64(*f).ok_or_else(|| format!("Invalid float: {f}"))?;
             Ok(serde_json::Value::Number(n))
         }
         toml::Value::Boolean(b) => Ok(serde_json::Value::Bool(*b)),

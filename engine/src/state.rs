@@ -150,6 +150,7 @@ pub(crate) struct ApprovalState {
     pub(crate) requests: Vec<ConfirmationRequest>,
     pub(crate) selected: Vec<bool>,
     pub(crate) cursor: usize,
+    pub(crate) deny_confirm: bool,
 }
 
 #[derive(Debug)]
