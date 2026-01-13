@@ -53,7 +53,7 @@ impl ModelLimits {
     ///
     /// The 5% safety margin accounts for token counting inaccuracies and
     /// overhead from system prompts, formatting, and tool definitions.
-    /// Note: This reserves the model's max_output, which may be overly conservative
+    /// Note: This reserves the model's `max_output`, which may be overly conservative
     /// if the user has configured a smaller output limit. Consider using
     /// `effective_input_budget_with_reserved()` when the configured limit is known.
     #[must_use]
@@ -65,7 +65,7 @@ impl ModelLimits {
     ///
     /// Use this when you have a configured output limit that's lower than
     /// the model's maximum output capability. The reserved amount is clamped
-    /// to the model's max_output.
+    /// to the model's `max_output`.
     #[must_use]
     pub fn effective_input_budget_with_reserved(&self, reserved_output: u32) -> u32 {
         let reserved = reserved_output.min(self.max_output);

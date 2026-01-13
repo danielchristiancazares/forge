@@ -59,6 +59,10 @@ impl App {
             }
             Err(e) => {
                 tracing::warn!("Failed to load history: {e}");
+                if !self.history_load_warning_shown {
+                    self.set_status_warning("Failed to load history.json — starting fresh.");
+                    self.history_load_warning_shown = true;
+                }
             }
         }
     }
@@ -96,11 +100,15 @@ impl App {
     /// Save history to disk.
     /// Returns true if successful, false if save failed (logged but not propagated).
     /// Called after user messages and assistant completions for crash durability.
-    pub(crate) fn autosave_history(&self) -> bool {
+    pub(crate) fn autosave_history(&mut self) -> bool {
         match self.save_history() {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!("Autosave failed: {e}");
+                if !self.autosave_warning_shown {
+                    self.set_status_warning("Autosave failed — changes may not persist.");
+                    self.autosave_warning_shown = true;
+                }
                 false
             }
         }
@@ -117,7 +125,7 @@ impl App {
     ///
     /// # Idempotent recovery
     ///
-    /// If history already contains an entry with the recovered step_id, we skip
+    /// If history already contains an entry with the recovered `step_id`, we skip
     /// adding the message (it was already recovered or committed) and just finalize
     /// the journal cleanup.
     pub fn check_crash_recovery(&mut self) -> Option<RecoveredStream> {
@@ -131,32 +139,26 @@ impl App {
             };
 
             let (step_id, partial_text, stream_model_name) = match &stream_recovered {
-                Some(RecoveredStream::Complete {
-                    step_id,
-                    partial_text,
-                    model_name,
-                    ..
-                }) => (
-                    Some(*step_id),
-                    Some(partial_text.as_str()),
-                    model_name.clone(),
-                ),
-                Some(RecoveredStream::Incomplete {
-                    step_id,
-                    partial_text,
-                    model_name,
-                    ..
-                }) => (
-                    Some(*step_id),
-                    Some(partial_text.as_str()),
-                    model_name.clone(),
-                ),
-                Some(RecoveredStream::Errored {
-                    step_id,
-                    partial_text,
-                    model_name,
-                    ..
-                }) => (
+                Some(
+                    RecoveredStream::Complete {
+                        step_id,
+                        partial_text,
+                        model_name,
+                        ..
+                    }
+                    | RecoveredStream::Incomplete {
+                        step_id,
+                        partial_text,
+                        model_name,
+                        ..
+                    }
+                    | RecoveredStream::Errored {
+                        step_id,
+                        partial_text,
+                        model_name,
+                        ..
+                    },
+                ) => (
                     Some(*step_id),
                     Some(partial_text.as_str()),
                     model_name.clone(),
@@ -332,7 +334,7 @@ impl App {
     /// Commit a message to history with journal durability.
     ///
     /// This encapsulates the critical commit ordering for crash recovery:
-    /// 1. Push message to history WITH step_id (for idempotent recovery)
+    /// 1. Push message to history WITH `step_id` (for idempotent recovery)
     /// 2. Persist history to disk
     /// 3. Mark journal step as committed and prune (only if history persisted)
     ///

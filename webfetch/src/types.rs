@@ -1,7 +1,7 @@
-//! Domain types for WebFetch.
+//! Domain types for `WebFetch`.
 //!
 //! This module contains all input, output, configuration, and error types
-//! as specified in WEBFETCH_SRD.md v2.4.
+//! as specified in `WEBFETCH_SRD.md` v2.4.
 
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -13,7 +13,7 @@ use url::Url;
 // Input Types
 // ============================================================================
 
-/// Input parameters for a WebFetch request.
+/// Input parameters for a `WebFetch` request.
 ///
 /// Per FR-WF-02, the request schema includes:
 /// - `url` (required): The URL to fetch
@@ -46,7 +46,7 @@ impl WebFetchInput {
     /// Maximum allowed value for `max_chunk_tokens` (FR-WF-02a).
     pub const MAX_CHUNK_TOKENS: u32 = 2048;
 
-    /// Create a new WebFetchInput from a URL string.
+    /// Create a new `WebFetchInput` from a URL string.
     ///
     /// # Errors
     ///
@@ -111,24 +111,28 @@ impl WebFetchInput {
         Ok(self)
     }
 
-    /// Set the no_cache flag.
+    /// Set the `no_cache` flag.
+    #[must_use] 
     pub fn with_no_cache(mut self, no_cache: bool) -> Self {
         self.no_cache = no_cache;
         self
     }
 
-    /// Set the force_browser flag.
+    /// Set the `force_browser` flag.
+    #[must_use] 
     pub fn with_force_browser(mut self, force_browser: bool) -> Self {
         self.force_browser = force_browser;
         self
     }
 
     /// Get the parsed URL.
+    #[must_use] 
     pub fn url(&self) -> &Url {
         &self.url
     }
 
     /// Get the original URL string as provided by the caller.
+    #[must_use] 
     pub fn original_url(&self) -> &str {
         &self.original_url
     }
@@ -138,7 +142,7 @@ impl WebFetchInput {
 // Output Types
 // ============================================================================
 
-/// Successful response from WebFetch.
+/// Successful response from `WebFetch`.
 ///
 /// Per FR-WF-03, contains fetched content as structured chunks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -225,11 +229,11 @@ pub enum TruncationReason {
 pub enum Note {
     /// Response served from cache.
     CacheHit,
-    /// robots.txt unavailable but fail_open=true.
+    /// robots.txt unavailable but `fail_open=true`.
     RobotsUnavailableFailOpen,
     /// Browser fallback requested but unavailable.
     BrowserUnavailableUsedHttp,
-    /// DOM exceeded max_rendered_dom_bytes.
+    /// DOM exceeded `max_rendered_dom_bytes`.
     BrowserDomTruncated,
     /// Browser blocked non-GET/HEAD subrequests.
     BrowserBlockedNonGet,
@@ -243,6 +247,7 @@ pub enum Note {
 
 impl Note {
     /// Get the canonical ordering for notes (FR-WF-NOTES-ORDER-01).
+    #[must_use] 
     pub fn order(&self) -> u8 {
         match self {
             Note::CacheHit => 1,
@@ -261,7 +266,7 @@ impl Note {
 // Configuration Types
 // ============================================================================
 
-/// WebFetch tool configuration.
+/// `WebFetch` tool configuration.
 ///
 /// Per FR-WF-CFG-01. Maps to `[tools.webfetch]` in config.toml.
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -359,23 +364,27 @@ impl WebFetchConfig {
     pub const DEFAULT_ROBOTS_CACHE_TTL_HOURS: u32 = 24;
 
     /// Get the effective timeout.
+    #[must_use] 
     pub fn timeout_seconds(&self) -> u32 {
         self.timeout_seconds
             .unwrap_or(Self::DEFAULT_TIMEOUT_SECONDS)
     }
 
     /// Get the effective max redirects.
+    #[must_use] 
     pub fn max_redirects(&self) -> u32 {
         self.max_redirects.unwrap_or(Self::DEFAULT_MAX_REDIRECTS)
     }
 
     /// Get the effective default max chunk tokens.
+    #[must_use] 
     pub fn default_max_chunk_tokens(&self) -> u32 {
         self.default_max_chunk_tokens
             .unwrap_or(Self::DEFAULT_MAX_CHUNK_TOKENS)
     }
 
     /// Get the effective max download bytes.
+    #[must_use] 
     pub fn max_download_bytes(&self) -> u64 {
         self.max_download_bytes
             .unwrap_or(Self::DEFAULT_MAX_DOWNLOAD_BYTES)
@@ -429,7 +438,7 @@ pub struct HttpConfig {
     /// Additional request headers.
     pub headers: Option<Vec<(String, String)>>,
 
-    /// Use system proxy settings (HTTP_PROXY/HTTPS_PROXY).
+    /// Use system proxy settings (`HTTP_PROXY/HTTPS_PROXY`).
     #[serde(default)]
     pub use_system_proxy: bool,
 
@@ -455,7 +464,7 @@ pub struct RobotsConfig {
 // Error Types
 // ============================================================================
 
-/// WebFetch error with structured details.
+/// `WebFetch` error with structured details.
 ///
 /// Per FR-WF-18 and FR-WF-18a, errors contain:
 /// - `code`: Stable error code from registry
@@ -496,6 +505,7 @@ impl WebFetchError {
     }
 
     /// Serialize to JSON for tool output.
+    #[must_use] 
     pub fn to_json(&self) -> serde_json::Value {
         let mut obj = serde_json::json!({
             "error": true,
@@ -576,7 +586,8 @@ pub enum ErrorCode {
 impl ErrorCode {
     /// Check if this error code is retryable by default.
     ///
-    /// Note: Some codes have conditional retryability (e.g., http_4xx for 408/429).
+    /// Note: Some codes have conditional retryability (e.g., `http_4xx` for 408/429).
+    #[must_use] 
     pub fn default_retryable(&self) -> bool {
         matches!(
             self,

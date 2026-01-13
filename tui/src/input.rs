@@ -19,22 +19,42 @@ pub async fn handle_events(app: &mut App) -> Result<bool> {
     })
     .await??;
 
-    if let Some(Event::Key(key)) = event {
-        // Only handle key press events (not release) - important for Windows
-        if key.kind != KeyEventKind::Press {
-            return Ok(app.should_quit());
-        }
+    if let Some(event) = event {
+        match event {
+            Event::Key(key) => {
+                // Handle press + repeat events (ignore releases)
+                if matches!(key.kind, KeyEventKind::Release) {
+                    return Ok(app.should_quit());
+                }
 
-        // Handle Ctrl+C globally
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            return Ok(true);
-        }
+                // Handle Ctrl+C globally
+                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                    if app.is_loading() {
+                        app.cancel_active_operation();
+                        return Ok(app.should_quit());
+                    }
+                    return Ok(true);
+                }
 
-        match app.input_mode() {
-            InputMode::Normal => handle_normal_mode(app, key),
-            InputMode::Insert => handle_insert_mode(app, key),
-            InputMode::Command => handle_command_mode(app, key),
-            InputMode::ModelSelect => handle_model_select_mode(app, key),
+                match app.input_mode() {
+                    InputMode::Normal => handle_normal_mode(app, key),
+                    InputMode::Insert => handle_insert_mode(app, key),
+                    InputMode::Command => handle_command_mode(app, key),
+                    InputMode::ModelSelect => handle_model_select_mode(app, key),
+                }
+            }
+            Event::Paste(text) => {
+                if app.tool_approval_requests().is_some() || app.tool_recovery_calls().is_some() {
+                    return Ok(app.should_quit());
+                }
+                if app.input_mode() == InputMode::Insert {
+                    let Some(token) = app.insert_token() else {
+                        return Ok(app.should_quit());
+                    };
+                    app.insert_mode(token).enter_text(&text);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -47,10 +67,10 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
             KeyCode::Char('k') | KeyCode::Up => app.tool_approval_move_up(),
             KeyCode::Char('j') | KeyCode::Down => app.tool_approval_move_down(),
             KeyCode::Char(' ') => app.tool_approval_toggle(),
+            KeyCode::Tab => app.tool_approval_toggle_details(),
             KeyCode::Char('a') => app.tool_approval_approve_all(),
-            KeyCode::Char('d') => app.tool_approval_request_deny_all(),
+            KeyCode::Char('d') | KeyCode::Esc => app.tool_approval_request_deny_all(),
             KeyCode::Enter => app.tool_approval_activate(),
-            KeyCode::Esc => app.tool_approval_request_deny_all(),
             _ => {}
         }
         return;
@@ -58,9 +78,8 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
 
     if app.tool_recovery_calls().is_some() {
         match key.code {
-            KeyCode::Char('r') => app.tool_recovery_resume(),
-            KeyCode::Char('d') => app.tool_recovery_discard(),
-            KeyCode::Esc => app.tool_recovery_discard(),
+            KeyCode::Char('r' | 'R') => app.tool_recovery_resume(),
+            KeyCode::Char('d' | 'D') | KeyCode::Esc => app.tool_recovery_discard(),
             _ => {}
         }
         return;
@@ -111,19 +130,15 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
             app.scroll_page_down();
         }
         // Scroll down
-        KeyCode::Char('j') => {
+        KeyCode::Char('j') | KeyCode::Down => {
             app.scroll_down();
-        }
-        // Jump to bottom
-        KeyCode::Down | KeyCode::End => {
-            app.scroll_to_bottom();
         }
         // Go to top
         KeyCode::Char('g') => {
             app.scroll_to_top();
         }
-        // Go to bottom
-        KeyCode::Char('G') => {
+        // Jump to bottom (End or G)
+        KeyCode::End | KeyCode::Char('G') => {
             app.scroll_to_bottom();
         }
         _ => {}
@@ -137,10 +152,10 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) {
             KeyCode::Char('k') | KeyCode::Up => app.tool_approval_move_up(),
             KeyCode::Char('j') | KeyCode::Down => app.tool_approval_move_down(),
             KeyCode::Char(' ') => app.tool_approval_toggle(),
+            KeyCode::Tab => app.tool_approval_toggle_details(),
             KeyCode::Char('a') => app.tool_approval_approve_all(),
-            KeyCode::Char('d') => app.tool_approval_request_deny_all(),
+            KeyCode::Char('d') | KeyCode::Esc => app.tool_approval_request_deny_all(),
             KeyCode::Enter => app.tool_approval_activate(),
-            KeyCode::Esc => app.tool_approval_request_deny_all(),
             _ => {}
         }
         return;
@@ -149,11 +164,24 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) {
     // Tool recovery modal takes priority over insert mode
     if app.tool_recovery_calls().is_some() {
         match key.code {
-            KeyCode::Char('r') => app.tool_recovery_resume(),
-            KeyCode::Char('d') => app.tool_recovery_discard(),
-            KeyCode::Esc => app.tool_recovery_discard(),
+            KeyCode::Char('r' | 'R') => app.tool_recovery_resume(),
+            KeyCode::Char('d' | 'D') | KeyCode::Esc => app.tool_recovery_discard(),
             _ => {}
         }
+        return;
+    }
+
+    // Handle newline insertion (Ctrl+Enter, Shift+Enter, Ctrl+J)
+    let is_newline = matches!(
+        (key.code, key.modifiers),
+        (KeyCode::Enter, m) if m.contains(KeyModifiers::CONTROL) || m.contains(KeyModifiers::SHIFT)
+    ) || matches!(key, KeyEvent { code: KeyCode::Char('j'), modifiers: m, .. } if m.contains(KeyModifiers::CONTROL));
+
+    if is_newline {
+        let Some(token) = app.insert_token() else {
+            return;
+        };
+        app.insert_mode(token).enter_newline();
         return;
     }
 
@@ -161,20 +189,6 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) {
         // Exit insert mode
         KeyCode::Esc => {
             app.enter_normal_mode();
-        }
-        // Insert newline
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-            let Some(token) = app.insert_token() else {
-                return;
-            };
-            app.insert_mode(token).enter_newline();
-        }
-        // Insert newline (Ctrl+J)
-        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            let Some(token) = app.insert_token() else {
-                return;
-            };
-            app.insert_mode(token).enter_newline();
         }
         // Submit message
         KeyCode::Enter => {
@@ -242,10 +256,10 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
             KeyCode::Char('k') | KeyCode::Up => app.tool_approval_move_up(),
             KeyCode::Char('j') | KeyCode::Down => app.tool_approval_move_down(),
             KeyCode::Char(' ') => app.tool_approval_toggle(),
+            KeyCode::Tab => app.tool_approval_toggle_details(),
             KeyCode::Char('a') => app.tool_approval_approve_all(),
-            KeyCode::Char('d') => app.tool_approval_request_deny_all(),
+            KeyCode::Char('d') | KeyCode::Esc => app.tool_approval_request_deny_all(),
             KeyCode::Enter => app.tool_approval_activate(),
-            KeyCode::Esc => app.tool_approval_request_deny_all(),
             _ => {}
         }
         return;
@@ -254,9 +268,8 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
     // Tool recovery modal takes priority over command mode
     if app.tool_recovery_calls().is_some() {
         match key.code {
-            KeyCode::Char('r') => app.tool_recovery_resume(),
-            KeyCode::Char('d') => app.tool_recovery_discard(),
-            KeyCode::Esc => app.tool_recovery_discard(),
+            KeyCode::Char('r' | 'R') => app.tool_recovery_resume(),
+            KeyCode::Char('d' | 'D') | KeyCode::Esc => app.tool_recovery_discard(),
             _ => {}
         }
         return;

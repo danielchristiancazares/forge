@@ -11,10 +11,13 @@
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-15 | Header & Change Log |
-| 16-39 | Introduction: Purpose, Scope (C++ parsing) |
-| 40-56 | Functional Requirements: Interface, Behavior |
-| 57-82 | NFRs, Configuration, Verification |
+| 1-20 | Header & TOC |
+| 21-27 | 0. Change Log |
+| 28-56 | 1. Introduction |
+| 57-77 | 2. Functional Requirements |
+| 78-87 | 3. Non-Functional Requirements |
+| 88-96 | 4. Configuration |
+| 97-105 | 5. Verification Requirements |
 
 ---
 

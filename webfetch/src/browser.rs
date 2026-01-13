@@ -1,6 +1,6 @@
 //! Headless Chromium rendering with CDP request interception.
 //!
-//! This module implements browser-mode rendering per WEBFETCH_SRD.md:
+//! This module implements browser-mode rendering per `WEBFETCH_SRD.md`:
 //! - Chromium launch with isolated user-data-dir (FR-WF-BROWSER-ISO-01)
 //! - CDP Fetch interception for SSRF validation and IP pinning (FR-WF-11b)
 //! - Resource blocking and method restrictions (FR-WF-11g, FR-WF-BROWSER-METHOD-01)
@@ -455,12 +455,9 @@ async fn handle_request(
     let is_doc = is_document(&resource_type);
     let is_main = if is_doc {
         let mut guard = state.main_frame_id.lock().await;
-        match guard.as_ref() {
-            Some(frame_id) => frame_id == &event.frame_id,
-            None => {
-                *guard = Some(event.frame_id.clone());
-                true
-            }
+        if let Some(frame_id) = guard.as_ref() { frame_id == &event.frame_id } else {
+            *guard = Some(event.frame_id.clone());
+            true
         }
     } else {
         false
@@ -486,10 +483,6 @@ async fn handle_request(
     // Scheme enforcement
     match request_url.scheme() {
         "http" | "https" => {}
-        "ws" | "wss" => {
-            fail_request(page, event).await;
-            return Ok(());
-        }
         _ => {
             fail_request(page, event).await;
             return Ok(());
@@ -652,7 +645,7 @@ async fn fulfill_request(
     let _ = page
         .execute(fetch::FulfillRequestParams {
             request_id: event.request_id.clone(),
-            response_code: response.status as i64,
+            response_code: i64::from(response.status),
             response_headers: Some(response_headers),
             binary_response_headers: None,
             body: Some(body.into()),

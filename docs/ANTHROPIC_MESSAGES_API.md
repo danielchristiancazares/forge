@@ -6,13 +6,15 @@ This document provides a reference for the Anthropic Messages API as used by For
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-82 | Overview and Request Structure: endpoint, auth, required/optional fields, message format |
-| 83-180 | Tool Schema: custom tools, built-in tools (bash, text editor versions) |
-| 181-250 | Tool Choice: auto, any, specific tool, disabling tools |
-| 251-320 | Tool Use Response Blocks: tool_use content block format, handling |
-| 321-400 | SSE Streaming: event types (message_start, content_block_delta, message_stop) |
-| 401-450 | Prompt Caching: cache_control blocks, TTL, limitations |
-| 451-486 | Extended Thinking: configuration, thinking blocks, budget constraints |
+| 1-21 | Header & TOC |
+| 22-30 | Overview |
+| 31-99 | Request Structure |
+| 100-209 | Tool Schema |
+| 210-245 | Response Structure |
+| 246-370 | SSE Streaming |
+| 371-464 | Prompt Caching |
+| 465-542 | Extended Thinking |
+| 543-639 | Error Handling & Examples |
 
 ## Overview
 
@@ -130,6 +132,7 @@ Tools define functions the model can call. The `tools` array accepts custom tool
 Anthropic provides built-in tools with fixed names and versioned types:
 
 #### Bash Tool
+
 ```json
 {
   "type": "bash_20250124",
@@ -139,6 +142,7 @@ Anthropic provides built-in tools with fixed names and versioned types:
 ```
 
 #### Text Editor Tools
+
 ```json
 // Version 1 (January 2025)
 {
@@ -161,6 +165,7 @@ Anthropic provides built-in tools with fixed names and versioned types:
 ```
 
 #### Web Search Tool
+
 ```json
 {
   "type": "web_search_20250305",
@@ -253,6 +258,7 @@ Enable with `"stream": true`. Events are sent as Server-Sent Events.
 ### Event Types
 
 #### message_start
+
 ```json
 event: message_start
 data: {
@@ -270,6 +276,7 @@ data: {
 ```
 
 #### content_block_start
+
 ```json
 event: content_block_start
 data: {
@@ -280,6 +287,7 @@ data: {
 ```
 
 #### content_block_delta (text)
+
 ```json
 event: content_block_delta
 data: {
@@ -290,6 +298,7 @@ data: {
 ```
 
 #### content_block_delta (thinking)
+
 ```json
 event: content_block_delta
 data: {
@@ -300,12 +309,14 @@ data: {
 ```
 
 #### content_block_stop
+
 ```json
 event: content_block_stop
 data: {"type": "content_block_stop", "index": 0}
 ```
 
 #### message_delta
+
 ```json
 event: message_delta
 data: {
@@ -316,18 +327,21 @@ data: {
 ```
 
 #### message_stop
+
 ```json
 event: message_stop
 data: {"type": "message_stop"}
 ```
 
 #### ping
+
 ```json
 event: ping
 data: {"type": "ping"}
 ```
 
 #### error
+
 ```json
 event: error
 data: {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
@@ -345,6 +359,7 @@ fn extract_sse_data(event: &str) -> Option<String>
 ```
 
 Events are mapped to `StreamEvent`:
+
 - `content_block_delta` with `text_delta` → `StreamEvent::TextDelta`
 - `content_block_delta` with `thinking_delta` → `StreamEvent::ThinkingDelta`
 - `message_stop` → `StreamEvent::Done`
@@ -460,6 +475,7 @@ Extended thinking allows Claude to show its reasoning process.
 ```
 
 Requirements:
+
 - `budget_tokens` must be ≥ 1024
 - `budget_tokens` must be < `max_tokens`
 
@@ -476,6 +492,7 @@ Requirements:
 ### Thinking Response
 
 Non-streaming:
+
 ```json
 {
   "content": [
@@ -493,6 +510,7 @@ Non-streaming:
 ```
 
 Streaming events:
+
 ```json
 event: content_block_start
 data: {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}
@@ -604,6 +622,7 @@ This means cache control cannot be applied to assistant messages, which is accep
 ### Headers
 
 Forge sends these headers:
+
 - `x-api-key`: API key (not `Authorization: Bearer`)
 - `anthropic-version`: `2023-06-01`
 - `content-type`: `application/json`

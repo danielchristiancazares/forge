@@ -10,17 +10,6 @@
 ## LLM-TOC
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
-| ------- | --------- |
-| 1-34 | Header, Change Log (ref) |
-| 35-73 | Section 1 - Introduction: purpose, scope, definitions, references |
-| 74-138 | Section 2 - Overall Description: product perspective, functions, constraints |
-| 139-250 | Section 3.1 - Tool Interface: request schema, response schema, output enforcement |
-| 251-471 | Section 3.2 - SSRF Validation: URL parsing, IP blocklists, port policy, DNS rebinding |
-| 472-587 | Section 3.3 - Robots.txt: redirect handling, RFC 9309 parsing |
-| 588-855 | Section 3.4 - Fetch and Rendering: HTTP mode, Content-Type, browser mode, CDP/SSRF architecture |
-| 856-1077 | Section 3.5 - Extraction and Chunking: HTML algorithm, deterministic extraction, chunking |
-| 1078-1242 | Section 3.6 - Caching: cache key derivation, LRU tracking, TTL, eviction, entry format |
-| 1243-1366 | Section 3.7 - Error Handling: error codes, structured JSON passthrough |
 | 1367-1415 | Section 4 - Non-Functional Requirements: security, performance, reliability, approval |
 | 1416-1584 | Section 5 - Configuration: Forge integration, precedence rules, reference |
 | 1585-1783 | Section 6 - Verification: SSRF tests, robots.txt tests, extraction tests, browser tests |

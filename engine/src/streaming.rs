@@ -45,8 +45,7 @@ impl super::App {
                     message_count,
                 }) => {
                     self.set_status(format!(
-                        "Recent {} messages ({} tokens) exceed budget ({} tokens). Reduce input or use larger model.",
-                        message_count, required_tokens, budget_tokens
+                        "Recent {message_count} messages ({required_tokens} tokens) exceed budget ({budget_tokens} tokens). Reduce input or use larger model."
                     ));
                     return;
                 }
@@ -320,15 +319,15 @@ impl super::App {
     /// # Commit ordering for crash durability
     ///
     /// The order of operations is critical for durability:
-    /// 1. Capture step_id before consuming the journal
-    /// 2. Seal the journal (marks stream as complete in SQLite)
-    /// 3. Push message to history WITH step_id (for idempotent recovery)
+    /// 1. Capture `step_id` before consuming the journal
+    /// 2. Seal the journal (marks stream as complete in `SQLite`)
+    /// 3. Push message to history WITH `step_id` (for idempotent recovery)
     /// 4. Persist history to disk
     /// 5. Mark journal step as committed (after history is persisted)
     /// 6. Prune the journal step (cleanup)
     ///
     /// This ensures that if we crash after step 2 but before step 5, recovery
-    /// will find the uncommitted step. If history already has that step_id,
+    /// will find the uncommitted step. If history already has that `step_id`,
     /// recovery will skip it (idempotent).
     pub(crate) fn finish_streaming(&mut self, finish_reason: StreamFinishReason) {
         let active = match self.replace_with_idle() {

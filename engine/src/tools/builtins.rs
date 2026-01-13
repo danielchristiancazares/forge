@@ -35,8 +35,16 @@ pub struct ApplyPatchTool {
 #[derive(Debug, Default)]
 pub struct WriteFileTool;
 
-#[derive(Debug, Default)]
-pub struct RunCommandTool;
+#[derive(Debug, Clone)]
+pub struct RunCommandTool {
+    shell: super::DetectedShell,
+}
+
+impl RunCommandTool {
+    pub fn new(shell: super::DetectedShell) -> Self {
+        Self { shell }
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct GlobTool;
@@ -188,12 +196,12 @@ impl ToolExecutor for GlobTool {
                     .literal_separator(true)
                     .build()
                     .map_err(|e| ToolError::BadArgs {
-                        message: format!("invalid glob pattern '{}': {}", pat, e),
+                        message: format!("invalid glob pattern '{pat}': {e}"),
                     })?;
                 builder.add(glob);
             }
             let glob_set = builder.build().map_err(|e| ToolError::BadArgs {
-                message: format!("failed to compile glob patterns: {}", e),
+                message: format!("failed to compile glob patterns: {e}"),
             })?;
 
             // Walk directory tree, respecting .gitignore
@@ -243,7 +251,7 @@ impl ToolExecutor for GlobTool {
             } else {
                 let mut out = files.join("\n");
                 if truncated {
-                    out.push_str(&format!("\n\n[truncated at {} matches]", limit));
+                    out.push_str(&format!("\n\n[truncated at {limit} matches]"));
                 }
                 out
             };
@@ -356,9 +364,9 @@ impl ToolExecutor for ReadFileTool {
         let mut summary = format!("Read {}", typed.path);
         if let Some(start) = typed.start_line {
             if let Some(end) = typed.end_line {
-                summary.push_str(&format!(" lines {}-{}", start, end));
+                summary.push_str(&format!(" lines {start}-{end}"));
             } else {
-                summary.push_str(&format!(" lines {}-", start));
+                summary.push_str(&format!(" lines {start}-"));
             }
         }
         Ok(redact_summary(&summary))
@@ -821,7 +829,11 @@ impl ToolExecutor for RunCommandTool {
                 });
             }
 
-            let mut command = build_shell_command(&typed.command);
+            let mut command = Command::new(&self.shell.binary);
+            for arg in &self.shell.args {
+                command.arg(arg);
+            }
+            command.arg(&typed.command);
             command
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
@@ -925,11 +937,12 @@ pub fn register_builtins(
     patch_limits: PatchLimits,
     search_config: SearchToolConfig,
     webfetch_config: WebFetchToolConfig,
+    shell: super::DetectedShell,
 ) -> Result<(), ToolError> {
     registry.register(Box::new(ReadFileTool::new(read_limits)))?;
     registry.register(Box::new(ApplyPatchTool::new(patch_limits)))?;
     registry.register(Box::new(WriteFileTool))?;
-    registry.register(Box::new(RunCommandTool))?;
+    registry.register(Box::new(RunCommandTool::new(shell)))?;
     registry.register(Box::new(GlobTool))?;
     git::register_git_tools(registry)?;
     if search_config.enabled {
@@ -1082,7 +1095,7 @@ fn unique_backup_path(target: &Path) -> Result<PathBuf, ToolError> {
         .unwrap_or_default()
         .as_millis();
     for attempt in 0..1000 {
-        let suffix = format!("forge_patch_bak_{}_{}", stamp, attempt);
+        let suffix = format!("forge_patch_bak_{stamp}_{attempt}");
         let candidate = target.with_extension(suffix);
         if !candidate.exists() {
             return Ok(candidate);
@@ -1210,9 +1223,8 @@ async fn read_stream<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     let mut collected = String::new();
     loop {
         let n = match reader.read(&mut buf).await {
-            Ok(0) => break,
+            Ok(0) | Err(_) => break,
             Ok(n) => n,
-            Err(_) => break,
         };
         let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
         if collected.len() < max_collect {
@@ -1237,22 +1249,6 @@ async fn read_stream<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
         let _ = tx.send(event).await;
     }
     collected
-}
-
-fn build_shell_command(command: &str) -> Command {
-    #[cfg(windows)]
-    {
-        let mut cmd = Command::new("cmd.exe");
-        cmd.arg("/C").arg(command);
-        cmd
-    }
-
-    #[cfg(not(windows))]
-    {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg(command);
-        cmd
-    }
 }
 
 struct ChildGuard {

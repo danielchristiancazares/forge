@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Context window management with summarization and persistence"
 
+[lints]
+workspace = true
+
 [dependencies]
 forge-types.workspace = true
 forge-providers.workspace = true

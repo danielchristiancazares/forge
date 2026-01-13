@@ -187,7 +187,6 @@ fn draw_messages(
             _ => {
                 // Regular messages - render as markdown
                 let content_style = match msg {
-                    Message::System(_) => Style::default().fg(palette.text_muted),
                     Message::User(_) => Style::default().fg(palette.text_primary),
                     Message::Assistant(_) => Style::default().fg(palette.text_secondary),
                     _ => Style::default().fg(palette.text_muted),
@@ -556,7 +555,7 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: 
         InputMode::Insert => vec![
             Span::styled("Enter", styles::key_highlight(palette)),
             Span::styled(" send  ", styles::key_hint(palette)),
-            Span::styled("Shift+Enter", styles::key_highlight(palette)),
+            Span::styled("Ctrl+Enter/Shift+Enter", styles::key_highlight(palette)),
             Span::styled(" newline  ", styles::key_hint(palette)),
             Span::styled("Esc", styles::key_highlight(palette)),
             Span::styled(" normal ", styles::key_hint(palette)),
@@ -630,11 +629,7 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: 
 
         let raw_lines: Vec<&str> = draft.split('\n').collect();
         let visible_lines = inner_height as usize;
-        let start_line = if cursor_line_index + 1 > visible_lines {
-            cursor_line_index + 1 - visible_lines
-        } else {
-            0
-        };
+        let start_line = (cursor_line_index + 1).saturating_sub(visible_lines);
         let end_line = (start_line + visible_lines).min(raw_lines.len());
 
         let mut display_lines = Vec::new();
@@ -726,7 +721,7 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: 
                 }
                 (cmd[byte_offset..].to_string(), skipped_width as u16)
             } else {
-                (cmd.to_string(), 0u16)
+                (cmd.clone(), 0u16)
             }
         } else {
             (
@@ -734,9 +729,7 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: 
                     InputMode::Insert | InputMode::Normal | InputMode::ModelSelect => {
                         app.draft_text().to_string()
                     }
-                    InputMode::Command => command_line
-                        .as_ref()
-                        .map(|s| s.to_string())
+                    InputMode::Command => command_line.clone()
                         .unwrap_or_default(),
                 },
                 0u16,
@@ -764,8 +757,8 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: 
                 .saturating_sub(horizontal_scroll);
             let cursor_y = area.y.saturating_add(1 + padding_v);
             cursor_pos = Some((cursor_x, cursor_y));
-        } else if mode == InputMode::Command {
-            if let Some(command_line) = command_line.as_ref() {
+        } else if mode == InputMode::Command
+            && let Some(command_line) = command_line.as_ref() {
                 let cursor_display_pos = command_line.width() as u16;
                 let cursor_x = area
                     .x
@@ -775,7 +768,6 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: 
                 let cursor_y = area.y.saturating_add(1 + padding_v);
                 cursor_pos = Some((cursor_x, cursor_y));
             }
-        }
 
         vec![Line::from(spans)]
     };
@@ -861,7 +853,7 @@ fn draw_command_palette(frame: &mut Frame, app: &App, palette: &Palette) {
 
     // Center the palette
     let palette_width = 50.min(area.width.saturating_sub(4));
-    let palette_height = 10;
+    let palette_height = 14;
 
     let palette_area = Rect {
         x: area.x + (area.width.saturating_sub(palette_width) / 2),
@@ -879,8 +871,14 @@ fn draw_command_palette(frame: &mut Frame, app: &App, palette: &Palette) {
     let commands = vec![
         ("q, quit", "Exit the application"),
         ("clear", "Clear conversation history"),
+        ("cancel", "Cancel streaming or tool execution"),
+        ("tool <id> <result>", "Submit a tool result"),
+        ("tools", "Show tool status"),
         ("model <name>", "Change the model"),
         ("p, provider <name>", "Switch provider (claude/gpt)"),
+        ("ctx", "Show context usage"),
+        ("jrnl", "Show stream journal stats"),
+        ("sum", "Summarize older messages"),
         ("screen", "Toggle fullscreen/inline mode"),
         ("help", "Show available commands"),
     ];
@@ -1104,6 +1102,8 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
     let selected = app.tool_approval_selected().unwrap_or(&[]);
     let cursor = app.tool_approval_cursor().unwrap_or(0);
     let confirm_deny = app.tool_approval_deny_confirm();
+    let expanded = app.tool_approval_expanded();
+    let any_selected = selected.iter().any(|flag| *flag);
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
@@ -1159,6 +1159,17 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
                 Style::default().fg(palette.text_muted),
             )));
         }
+
+        if expanded == Some(i)
+            && let Ok(details) = serde_json::to_string_pretty(&req.arguments) {
+                for line in details.lines() {
+                    let truncated = truncate_with_ellipsis(line, max_width.saturating_sub(6));
+                    lines.push(Line::from(Span::styled(
+                        format!("      {truncated}"),
+                        Style::default().fg(palette.text_muted),
+                    )));
+                }
+            }
     }
 
     if confirm_deny {
@@ -1171,7 +1182,14 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
         )));
     }
 
-    // Render Submit and Deny buttons
+    if !any_selected {
+        lines.push(Line::from(Span::styled(
+            " No tools selected — approving will deny all.",
+            Style::default().fg(palette.warning),
+        )));
+    }
+
+    // Render Approve and Deny buttons
     lines.push(Line::from(""));
     let submit_cursor = requests.len();
     let deny_cursor = requests.len() + 1;
@@ -1199,7 +1217,7 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
             format!("{submit_pointer} "),
             Style::default().fg(palette.text_muted),
         ),
-        Span::styled("[ Submit ]", submit_style),
+        Span::styled("[ Approve selected ]", submit_style),
         Span::raw("    "),
         Span::styled(
             format!("{deny_pointer} "),
@@ -1212,10 +1230,16 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
     lines.push(Line::from(vec![
         Span::styled("Space", styles::key_highlight(palette)),
         Span::styled(" toggle  ", styles::key_hint(palette)),
-        Span::styled("j/k", styles::key_highlight(palette)),
+        Span::styled("↑↓", styles::key_highlight(palette)),
         Span::styled(" navigate  ", styles::key_hint(palette)),
+        Span::styled("Tab", styles::key_highlight(palette)),
+        Span::styled(" details  ", styles::key_hint(palette)),
         Span::styled("Enter", styles::key_highlight(palette)),
-        Span::styled(" select", styles::key_hint(palette)),
+        Span::styled(" activate  ", styles::key_hint(palette)),
+        Span::styled("a", styles::key_highlight(palette)),
+        Span::styled(" approve all  ", styles::key_hint(palette)),
+        Span::styled("d/Esc", styles::key_highlight(palette)),
+        Span::styled(" deny", styles::key_hint(palette)),
     ]));
 
     let content_width = lines.iter().map(ratatui::prelude::Line::width).max().unwrap_or(10) as u16;
@@ -1260,26 +1284,27 @@ fn draw_tool_recovery_prompt(
         results_map.insert(result.tool_call_id.as_str(), result);
     }
 
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(Span::styled(
-        " Tool recovery detected ",
-        Style::default()
-            .fg(palette.text_primary)
-            .add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::from(Span::styled(
-        " Tools will not be re-run.",
-        Style::default().fg(palette.text_muted),
-    )));
-    lines.push(Line::from(Span::styled(
-        " Resume keeps recovered results and continues.",
-        Style::default().fg(palette.text_muted),
-    )));
-    lines.push(Line::from(Span::styled(
-        " Discard drops recovered results and continues.",
-        Style::default().fg(palette.text_muted),
-    )));
-    lines.push(Line::from(""));
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            " Tool recovery detected ",
+            Style::default()
+                .fg(palette.text_primary)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            " Tools will not be re-run.",
+            Style::default().fg(palette.text_muted),
+        )),
+        Line::from(Span::styled(
+            " Resume keeps recovered results and continues.",
+            Style::default().fg(palette.text_muted),
+        )),
+        Line::from(Span::styled(
+            " Discard drops recovered results and continues.",
+            Style::default().fg(palette.text_muted),
+        )),
+        Line::from(""),
+    ];
 
     for call in calls {
         let (icon, style) = if let Some(result) = results_map.get(call.id.as_str()) {
@@ -1313,9 +1338,9 @@ fn draw_tool_recovery_prompt(
 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled("R", styles::key_highlight(palette)),
+        Span::styled("r", styles::key_highlight(palette)),
         Span::styled(" resume with recovered results  ", styles::key_hint(palette)),
-        Span::styled("D", styles::key_highlight(palette)),
+        Span::styled("d", styles::key_highlight(palette)),
         Span::styled(" discard results", styles::key_hint(palette)),
     ]));
 

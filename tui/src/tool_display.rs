@@ -26,17 +26,11 @@ fn extract_primary_arg(name: &str, args: &Value) -> Option<String> {
         "glob" | "search" | "rg" | "ripgrep" | "ugrep" | "ug" => "pattern",
 
         // File tools
-        "read" | "read_file" | "readfile" => "path",
-        "write" | "write_file" | "writefile" => "path",
-        "edit" => "path",
-        "delete" => "path",
-        "move" => "source",
-        "copy" => "source",
-        "listdir" => "path",
-        "outline" => "path",
+        "read" | "read_file" | "readfile" | "write" | "write_file" | "writefile" | "edit"
+        | "delete" | "listdir" | "outline" | "gitblame" | "git_blame" => "path",
+        "move" | "copy" => "source",
 
         // Git tools with primary args
-        "gitblame" | "git_blame" => "path",
         "gitcommit" | "git_commit" => return format_git_commit(obj),
         "gitdiff" | "git_diff" => return format_git_diff(obj),
         "gitadd" | "git_add" => return format_git_add(obj),
@@ -75,9 +69,9 @@ fn format_git_commit(obj: &serde_json::Map<String, Value>) -> Option<String> {
     let message = obj.get("message")?.as_str()?;
 
     let result = if let Some(scope) = obj.get("scope").and_then(|v| v.as_str()) {
-        format!("{}({}): {}", commit_type, scope, message)
+        format!("{commit_type}({scope}): {message}")
     } else {
-        format!("{}: {}", commit_type, message)
+        format!("{commit_type}: {message}")
     };
     Some(result)
 }
@@ -89,18 +83,18 @@ fn format_git_diff(obj: &serde_json::Map<String, Value>) -> Option<String> {
         obj.get("from_ref").and_then(|v| v.as_str()),
         obj.get("to_ref").and_then(|v| v.as_str()),
     ) {
-        return Some(format!("{}..{}", from, to));
+        return Some(format!("{from}..{to}"));
     }
 
     // Check for flags
     let mut parts = Vec::new();
-    if obj.get("cached").and_then(|v| v.as_bool()) == Some(true) {
+    if obj.get("cached").and_then(serde_json::Value::as_bool) == Some(true) {
         parts.push("--cached");
     }
-    if obj.get("stat").and_then(|v| v.as_bool()) == Some(true) {
+    if obj.get("stat").and_then(serde_json::Value::as_bool) == Some(true) {
         parts.push("--stat");
     }
-    if obj.get("name_only").and_then(|v| v.as_bool()) == Some(true) {
+    if obj.get("name_only").and_then(serde_json::Value::as_bool) == Some(true) {
         parts.push("--name-only");
     }
 
@@ -121,10 +115,10 @@ fn format_git_diff(obj: &serde_json::Map<String, Value>) -> Option<String> {
 
 /// Format git add: `-A`, `-u`, or file count.
 fn format_git_add(obj: &serde_json::Map<String, Value>) -> Option<String> {
-    if obj.get("all").and_then(|v| v.as_bool()) == Some(true) {
+    if obj.get("all").and_then(serde_json::Value::as_bool) == Some(true) {
         return Some("-A".to_string());
     }
-    if obj.get("update").and_then(|v| v.as_bool()) == Some(true) {
+    if obj.get("update").and_then(serde_json::Value::as_bool) == Some(true) {
         return Some("-u".to_string());
     }
     if let Some(paths) = obj.get("paths").and_then(|v| v.as_array())
@@ -153,24 +147,24 @@ fn format_git_restore(obj: &serde_json::Map<String, Value>) -> Option<String> {
 /// Format git branch: create/delete/rename info.
 fn format_git_branch(obj: &serde_json::Map<String, Value>) -> Option<String> {
     if let Some(name) = obj.get("create").and_then(|v| v.as_str()) {
-        return Some(format!("create {}", name));
+        return Some(format!("create {name}"));
     }
     if let Some(name) = obj.get("delete").and_then(|v| v.as_str()) {
-        return Some(format!("delete {}", name));
+        return Some(format!("delete {name}"));
     }
     if let Some(name) = obj.get("force_delete").and_then(|v| v.as_str()) {
-        return Some(format!("delete -D {}", name));
+        return Some(format!("delete -D {name}"));
     }
     if let Some(old) = obj.get("rename").and_then(|v| v.as_str())
         && let Some(new) = obj.get("new_name").and_then(|v| v.as_str())
     {
-        return Some(format!("{} -> {}", old, new));
+        return Some(format!("{old} -> {new}"));
     }
     // List mode
-    if obj.get("list_all").and_then(|v| v.as_bool()) == Some(true) {
+    if obj.get("list_all").and_then(serde_json::Value::as_bool) == Some(true) {
         return Some("-a".to_string());
     }
-    if obj.get("list_remote").and_then(|v| v.as_bool()) == Some(true) {
+    if obj.get("list_remote").and_then(serde_json::Value::as_bool) == Some(true) {
         return Some("-r".to_string());
     }
     None
@@ -179,7 +173,7 @@ fn format_git_branch(obj: &serde_json::Map<String, Value>) -> Option<String> {
 /// Format git checkout: branch/commit/paths.
 fn format_git_checkout(obj: &serde_json::Map<String, Value>) -> Option<String> {
     if let Some(branch) = obj.get("create_branch").and_then(|v| v.as_str()) {
-        return Some(format!("-b {}", branch));
+        return Some(format!("-b {branch}"));
     }
     if let Some(branch) = obj.get("branch").and_then(|v| v.as_str()) {
         return Some(branch.to_string());
@@ -206,24 +200,24 @@ fn format_git_log(obj: &serde_json::Map<String, Value>) -> Option<String> {
         return Some(path.to_string());
     }
     if let Some(author) = obj.get("author").and_then(|v| v.as_str()) {
-        return Some(format!("--author={}", author));
+        return Some(format!("--author={author}"));
     }
     if let Some(since) = obj.get("since").and_then(|v| v.as_str()) {
-        return Some(format!("--since={}", since));
+        return Some(format!("--since={since}"));
     }
-    if let Some(n) = obj.get("max_count").and_then(|v| v.as_u64()) {
-        return Some(format!("-{}", n));
+    if let Some(n) = obj.get("max_count").and_then(serde_json::Value::as_u64) {
+        return Some(format!("-{n}"));
     }
     None
 }
 
-/// Format apply_patch: file count from patch content.
+/// Format `apply_patch`: file count from patch content.
 fn format_patch_summary(obj: &serde_json::Map<String, Value>) -> Option<String> {
     // Try to count files from patch content
     if let Some(patch) = obj.get("patch").and_then(|v| v.as_str()) {
         let file_count = patch.matches("--- a/").count();
         if file_count > 0 {
-            return Some(format!("{} file(s)", file_count));
+            return Some(format!("{file_count} file(s)"));
         }
     }
     // Fallback to path if present
@@ -262,7 +256,7 @@ fn truncate(s: &str, max_chars: usize) -> String {
 
     // Take max_chars - 1 characters, then add ellipsis
     let truncated: String = s.chars().take(max_chars.saturating_sub(1)).collect();
-    format!("{}…", truncated)
+    format!("{truncated}…")
 }
 
 #[cfg(test)]

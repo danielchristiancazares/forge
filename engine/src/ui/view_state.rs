@@ -9,36 +9,25 @@ use super::{ModalEffect, ScrollState};
 
 /// Severity for status messages shown in the UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum StatusKind {
+    #[default]
     Info,
     Success,
     Warning,
     Error,
 }
 
-impl Default for StatusKind {
-    fn default() -> Self {
-        Self::Info
-    }
-}
 
 /// UI configuration options derived from config/environment.
 #[derive(Debug, Clone, Copy)]
+#[derive(Default)]
 pub struct UiOptions {
     pub ascii_only: bool,
     pub high_contrast: bool,
     pub reduced_motion: bool,
 }
 
-impl Default for UiOptions {
-    fn default() -> Self {
-        Self {
-            ascii_only: false,
-            high_contrast: false,
-            reduced_motion: false,
-        }
-    }
-}
 
 /// State related to rendering and UI display.
 ///
@@ -84,7 +73,8 @@ impl Default for ViewState {
 }
 
 impl ViewState {
-    /// Create a new ViewState with default values.
+    /// Create a new `ViewState` with default values.
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }

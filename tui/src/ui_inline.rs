@@ -24,6 +24,7 @@ pub const INLINE_VIEWPORT_HEIGHT: u16 = INLINE_INPUT_HEIGHT + 1;
 pub const INLINE_MODEL_SELECTOR_HEIGHT: u16 = 18;
 
 /// Returns the viewport height needed for inline mode based on current input mode.
+#[must_use] 
 pub fn inline_viewport_height(mode: InputMode) -> u16 {
     match mode {
         InputMode::ModelSelect => INLINE_MODEL_SELECTOR_HEIGHT,
@@ -54,6 +55,7 @@ pub struct InlineOutput {
 }
 
 impl InlineOutput {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             next_display_index: 0,
@@ -297,7 +299,6 @@ fn append_message_lines(
         _ => {
             // Regular messages
             let content_style = match msg {
-                Message::System(_) => Style::default().fg(palette.text_muted),
                 Message::User(_) => Style::default().fg(palette.text_primary),
                 Message::Assistant(_) => Style::default().fg(palette.text_secondary),
                 _ => Style::default().fg(palette.text_muted),
@@ -457,9 +458,14 @@ fn approval_signature(app: &App) -> Option<String> {
     let requests = app.tool_approval_requests()?;
     let selected = app.tool_approval_selected().unwrap_or(&[]);
     let cursor = app.tool_approval_cursor().unwrap_or(0);
+    let expanded = app.tool_approval_expanded();
     let mut sig = format!("{}|{}|", requests.len(), cursor);
     for flag in selected {
         sig.push(if *flag { '1' } else { '0' });
+    }
+    if let Some(expanded) = expanded {
+        sig.push('|');
+        sig.push_str(&expanded.to_string());
     }
     Some(sig)
 }
@@ -470,6 +476,8 @@ fn append_approval_lines(lines: &mut Vec<Line>, app: &App, palette: &Palette) {
     };
     let selected = app.tool_approval_selected().unwrap_or(&[]);
     let cursor = app.tool_approval_cursor().unwrap_or(0);
+    let expanded = app.tool_approval_expanded();
+    let any_selected = selected.iter().any(|flag| *flag);
 
     if !lines.is_empty() {
         lines.push(Line::from(""));
@@ -491,6 +499,14 @@ fn append_approval_lines(lines: &mut Vec<Line>, app: &App, palette: &Palette) {
             let summary = truncate_with_ellipsis(summary.as_ref(), 80);
             lines.push(Line::from(format!("     {summary}")));
         }
+
+        if expanded == Some(i)
+            && let Ok(details) = serde_json::to_string_pretty(&req.arguments) {
+                for line in details.lines() {
+                    let truncated = truncate_with_ellipsis(line, 80);
+                    lines.push(Line::from(format!("       {truncated}")));
+                }
+            }
     }
 
     // Submit and Deny buttons
@@ -499,7 +515,7 @@ fn append_approval_lines(lines: &mut Vec<Line>, app: &App, palette: &Palette) {
     let submit_pointer = if cursor == submit_cursor { ">" } else { " " };
     let deny_pointer = if cursor == deny_cursor { ">" } else { " " };
     lines.push(Line::from(format!(
-        " {submit_pointer} [ Submit ]    {deny_pointer} [ Deny All ]"
+        " {submit_pointer} [ Approve selected ]    {deny_pointer} [ Deny All ]"
     )));
 
     if app.tool_approval_deny_confirm() {
@@ -508,7 +524,15 @@ fn append_approval_lines(lines: &mut Vec<Line>, app: &App, palette: &Palette) {
             Style::default().fg(palette.error),
         )));
     }
-    lines.push(Line::from("Keys: Space toggle, j/k navigate, Enter select"));
+    if !any_selected {
+        lines.push(Line::from(Span::styled(
+            "No tools selected — approving will deny all.",
+            Style::default().fg(palette.warning),
+        )));
+    }
+    lines.push(Line::from(
+        "Keys: Space toggle, ↑/↓ navigate, Tab details, Enter activate, a approve all, d/Esc deny",
+    ));
 }
 
 fn append_recovery_prompt(lines: &mut Vec<Line>, app: &App, palette: &Palette) {

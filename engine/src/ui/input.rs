@@ -54,6 +54,16 @@ impl DraftInput {
         self.enter_char('\n');
     }
 
+    pub fn enter_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let index = self.byte_index();
+        self.text.insert_str(index, text);
+        let inserted = text.graphemes(true).count();
+        self.cursor = self.clamp_cursor(self.cursor.saturating_add(inserted));
+    }
+
     pub fn delete_char(&mut self) {
         if self.cursor == 0 {
             return;
@@ -171,15 +181,19 @@ impl InputState {
 
     pub fn draft(&self) -> &DraftInput {
         match self {
-            InputState::Normal(draft) | InputState::Insert(draft) => draft,
-            InputState::Command { draft, .. } | InputState::ModelSelect { draft, .. } => draft,
+            InputState::Normal(draft)
+            | InputState::Insert(draft)
+            | InputState::Command { draft, .. }
+            | InputState::ModelSelect { draft, .. } => draft,
         }
     }
 
     pub fn draft_mut(&mut self) -> &mut DraftInput {
         match self {
-            InputState::Normal(draft) | InputState::Insert(draft) => draft,
-            InputState::Command { draft, .. } | InputState::ModelSelect { draft, .. } => draft,
+            InputState::Normal(draft)
+            | InputState::Insert(draft)
+            | InputState::Command { draft, .. }
+            | InputState::ModelSelect { draft, .. } => draft,
         }
     }
 
@@ -206,45 +220,40 @@ impl InputState {
 
     pub fn into_normal(self) -> InputState {
         match self {
-            InputState::Normal(draft) | InputState::Insert(draft) => InputState::Normal(draft),
-            InputState::Command { draft, .. } | InputState::ModelSelect { draft, .. } => {
-                InputState::Normal(draft)
-            }
+            InputState::Normal(draft)
+            | InputState::Insert(draft)
+            | InputState::Command { draft, .. }
+            | InputState::ModelSelect { draft, .. } => InputState::Normal(draft),
         }
     }
 
     pub fn into_insert(self) -> InputState {
         match self {
-            InputState::Normal(draft) | InputState::Insert(draft) => InputState::Insert(draft),
-            InputState::Command { draft, .. } | InputState::ModelSelect { draft, .. } => {
-                InputState::Insert(draft)
-            }
+            InputState::Normal(draft)
+            | InputState::Insert(draft)
+            | InputState::Command { draft, .. }
+            | InputState::ModelSelect { draft, .. } => InputState::Insert(draft),
         }
     }
 
     pub fn into_command(self) -> InputState {
         match self {
-            InputState::Normal(draft) | InputState::Insert(draft) => InputState::Command {
+            InputState::Normal(draft)
+            | InputState::Insert(draft)
+            | InputState::Command { draft, .. }
+            | InputState::ModelSelect { draft, .. } => InputState::Command {
                 draft,
                 command: String::new(),
             },
-            InputState::Command { draft, .. } | InputState::ModelSelect { draft, .. } => {
-                InputState::Command {
-                    draft,
-                    command: String::new(),
-                }
-            }
         }
     }
 
     pub fn into_model_select(self) -> InputState {
         match self {
-            InputState::Normal(draft) | InputState::Insert(draft) => {
-                InputState::ModelSelect { draft, selected: 0 }
-            }
-            InputState::Command { draft, .. } | InputState::ModelSelect { draft, .. } => {
-                InputState::ModelSelect { draft, selected: 0 }
-            }
+            InputState::Normal(draft)
+            | InputState::Insert(draft)
+            | InputState::Command { draft, .. }
+            | InputState::ModelSelect { draft, .. } => InputState::ModelSelect { draft, selected: 0 },
         }
     }
 }

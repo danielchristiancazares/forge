@@ -255,7 +255,7 @@ fn parse_block(lines: &[String], mut i: usize) -> Result<(Vec<String>, usize), P
                 return Err(err("Dot-stuffed line must start with '..'"));
             }
         } else {
-            block.push(raw.to_string());
+            block.push(raw.clone());
         }
         i += 1;
     }
@@ -301,14 +301,12 @@ pub fn parse_file(bytes: &[u8]) -> Result<FileContent, PatchError> {
                 final_newline = true;
                 set_eol(&mut eol_kind, EolKind::CrLf)?;
                 i += 2;
-                continue;
             }
             b'\n' => {
                 push_line(&mut lines, &mut buf)?;
                 final_newline = true;
                 set_eol(&mut eol_kind, EolKind::Lf)?;
                 i += 1;
-                continue;
             }
             b => {
                 buf.push(b);

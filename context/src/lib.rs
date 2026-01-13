@@ -1,4 +1,4 @@
-//! ContextInfinity - Adaptive context window management
+//! `ContextInfinity` - Adaptive context window management
 //!
 //! This module provides:
 //! - Model-specific context window limits

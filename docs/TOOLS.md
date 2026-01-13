@@ -6,10 +6,17 @@ This guide covers configuring and using the Tool Executor Framework in Forge. Fo
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-34 | Overview: Tool capabilities, sandboxing, approval, journaling |
-| 35-90 | Quick Start and Tool Modes: enabling tools, testing, mode comparison |
-| 91-200 | Built-in Tools: read_file, apply_patch, run_command with parameters and limits |
-| 201-276 | Configuration Reference, Security Model, Approval Workflow, Crash Recovery, Troubleshooting |
+| 1-30 | Header & TOC |
+| 31-44 | Overview |
+| 45-84 | Quick Start |
+| 85-99 | Tool Modes |
+| 100-196 | Built-in Tools |
+| 197-282 | Configuration Reference |
+| 283-306 | Security Model |
+| 307-336 | Approval Workflow |
+| 337-371 | Crash Recovery |
+| 372-417 | Troubleshooting |
+| 418-433 | Commands Reference & Links |
 
 ## Table of Contents
 

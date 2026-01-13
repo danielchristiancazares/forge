@@ -365,9 +365,7 @@ impl ToolExecutor for SearchTool {
                 resolved.clone()
             } else {
                 resolved
-                    .parent()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| resolved.clone())
+                    .parent().map_or_else(|| resolved.clone(), std::path::Path::to_path_buf)
             };
 
             let deadline = Instant::now() + Duration::from_millis(timeout_ms);
@@ -383,12 +381,10 @@ impl ToolExecutor for SearchTool {
                 } else if let Some(rel) = relativize_path(&resolved, &search_root_dir)
                     && include_glob
                         .as_ref()
-                        .map(|set| set.is_match(&rel))
-                        .unwrap_or(true)
+                        .is_none_or(|set| set.is_match(&rel))
                     && !exclude_glob
                         .as_ref()
-                        .map(|set| set.is_match(&rel))
-                        .unwrap_or(false)
+                        .is_some_and(|set| set.is_match(&rel))
                 {
                     files_scanned = 1;
                     match ctx.sandbox.ensure_path_allowed(&resolved) {
@@ -443,15 +439,12 @@ impl ToolExecutor for SearchTool {
                                 continue;
                             }
 
-                            let rel = match relativize_path(path, &search_root_dir) {
-                                Some(rel) => rel,
-                                None => {
-                                    errors.push(SearchFileError {
-                                        path: normalize_display_path(path),
-                                        error: "path outside search root".to_string(),
-                                    });
-                                    continue;
-                                }
+                            let rel = if let Some(rel) = relativize_path(path, &search_root_dir) { rel } else {
+                                errors.push(SearchFileError {
+                                    path: normalize_display_path(path),
+                                    error: "path outside search root".to_string(),
+                                });
+                                continue;
                             };
 
                             if let Some(include) = include_glob
@@ -1354,7 +1347,7 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
             }
         }
         if let Some(level) = fuzzy {
-            cmd.arg(format!("-Z{}", level));
+            cmd.arg(format!("-Z{level}"));
         }
 
         cmd.arg("--");
@@ -1527,9 +1520,7 @@ fn parse_rg_error(value: &serde_json::Value) -> Option<SearchFileError> {
     let path = data
         .get("path")
         .and_then(|p| p.get("text"))
-        .and_then(|p| p.as_str())
-        .map(normalize_path_text)
-        .unwrap_or_else(|| "<unknown>".to_string());
+        .and_then(|p| p.as_str()).map_or_else(|| "<unknown>".to_string(), normalize_path_text);
     Some(SearchFileError {
         path,
         error: message,

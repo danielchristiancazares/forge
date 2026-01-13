@@ -31,6 +31,7 @@ fn test_app() -> App {
         tool_settings.patch_limits,
         tool_settings.search.clone(),
         tool_settings.webfetch.clone(),
+        tool_settings.shell.clone(),
     );
     let tool_registry = std::sync::Arc::new(tool_registry);
     let tool_definitions = match tool_settings.mode {
@@ -67,6 +68,9 @@ fn test_app() -> App {
         tool_journal,
         tool_file_cache,
         tool_iterations: 0,
+        history_load_warning_shown: false,
+        autosave_warning_shown: false,
+        empty_send_warning_shown: false,
     }
 }
 

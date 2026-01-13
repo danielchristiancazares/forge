@@ -3,7 +3,7 @@ mod assets;
 use anyhow::Result;
 use crossterm::{
     cursor::MoveTo,
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
     terminal::{
         Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
@@ -83,11 +83,14 @@ impl TerminalSession {
         enable_raw_mode()?;
 
         let mut out = stdout();
-        let use_alternate_screen = matches!(mode, UiMode::Full);
-        if use_alternate_screen
-            && let Err(err) = execute!(out, EnterAlternateScreen, EnableMouseCapture)
-        {
+        if let Err(err) = execute!(out, EnableBracketedPaste) {
             let _ = disable_raw_mode();
+            return Err(err.into());
+        }
+        let use_alternate_screen = matches!(mode, UiMode::Full);
+        if use_alternate_screen && let Err(err) = execute!(out, EnterAlternateScreen) {
+            let _ = disable_raw_mode();
+            let _ = execute!(out, DisableBracketedPaste);
             return Err(err.into());
         }
 
@@ -107,7 +110,10 @@ impl TerminalSession {
                 let _ = disable_raw_mode();
                 if use_alternate_screen {
                     let mut out = stdout();
-                    let _ = execute!(out, LeaveAlternateScreen, DisableMouseCapture);
+                    let _ = execute!(out, LeaveAlternateScreen, DisableBracketedPaste);
+                } else {
+                    let mut out = stdout();
+                    let _ = execute!(out, DisableBracketedPaste);
                 }
                 return Err(err.into());
             }
@@ -127,10 +133,11 @@ impl Drop for TerminalSession {
             let _ = execute!(
                 self.terminal.backend_mut(),
                 LeaveAlternateScreen,
-                DisableMouseCapture
+                DisableBracketedPaste
             );
         } else {
             let _ = clear_inline_viewport(&mut self.terminal);
+            let _ = execute!(self.terminal.backend_mut(), DisableBracketedPaste);
         }
         let _ = self.terminal.show_cursor();
     }
@@ -145,7 +152,7 @@ async fn main() -> Result<()> {
 
     assets::init();
 
-    let config = ForgeConfig::load();
+    let config = ForgeConfig::load().ok().flatten();
     let mut ui_mode = UiMode::from_config(config.as_ref())
         .or_else(UiMode::from_env)
         .unwrap_or(UiMode::Full);

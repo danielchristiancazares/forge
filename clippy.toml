@@ -1,0 +1,8 @@
+# Clippy configuration for pedantic lints
+# These are allowed as intentional design choices
+
+# Allow longer functions - refactoring would reduce readability
+too-many-lines-threshold = 400
+
+# Allow similar names that are contextually clear
+single-char-binding-names-threshold = 5

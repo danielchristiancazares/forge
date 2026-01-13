@@ -4,6 +4,8 @@
 //! segments using a cheaper/faster LLM model. Summaries preserve key facts,
 //! decisions, and context while reducing token count.
 
+use std::fmt::Write;
+
 use anyhow::{Result, anyhow};
 use serde_json::json;
 
@@ -41,11 +43,11 @@ const OPENAI_API_URL: &str = "https://api.openai.com/v1/responses";
 /// - Use clear, concise language
 ///
 /// # Arguments
-/// * `messages` - Slice of (MessageId, Message) tuples to summarize
+/// * `messages` - Slice of (`MessageId`, Message) tuples to summarize
 /// * `target_tokens` - Target token count for the summary
 ///
 /// # Returns
-/// A tuple of (system_instruction, conversation_text) for the API call.
+/// A tuple of (`system_instruction`, `conversation_text`) for the API call.
 pub fn build_summarization_prompt(
     messages: &[(MessageId, Message)],
     target_tokens: u32,
@@ -74,32 +76,35 @@ Write the summary as a continuous narrative that captures the essence of the con
             Message::Assistant(_) => "Assistant",
             Message::ToolUse(call) => {
                 // Format tool calls with their name for context
-                conversation_text.push_str(&format!(
+                let _ = write!(
+                    conversation_text,
                     "[Message {}] Assistant (Tool Call: {}): {}\n\n",
                     id.as_u64(),
                     call.name,
                     serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string())
-                ));
+                );
                 continue;
             }
             Message::ToolResult(result) => {
                 // Format tool results with their status
                 let status = if result.is_error { "Error" } else { "Result" };
-                conversation_text.push_str(&format!(
+                let _ = write!(
+                    conversation_text,
                     "[Message {}] Tool {}: {}\n\n",
                     id.as_u64(),
                     status,
                     result.content
-                ));
+                );
                 continue;
             }
         };
-        conversation_text.push_str(&format!(
+        let _ = write!(
+            conversation_text,
             "[Message {}] {}: {}\n\n",
             id.as_u64(),
             role,
             message.content()
-        ));
+        );
     }
 
     (system_instruction, conversation_text)
@@ -126,7 +131,7 @@ fn count_tokens(counter: &TokenCounter, text: &str) -> u32 {
 /// # Arguments
 /// * `config` - API configuration (provides the API key and determines provider)
 /// * `counter` - Token counter for accurate token estimation
-/// * `messages` - Slice of (MessageId, Message) tuples to summarize
+/// * `messages` - Slice of (`MessageId`, Message) tuples to summarize
 /// * `target_tokens` - Target token count for the summary
 ///
 /// # Returns
@@ -226,7 +231,7 @@ async fn generate_summary_claude(
             .text()
             .await
             .unwrap_or_else(|e| format!("<failed to read error: {e}>"));
-        return Err(anyhow!("Claude API error {}: {}", status, error_text));
+        return Err(anyhow!("Claude API error {status}: {error_text}"));
     }
 
     let json: serde_json::Value = response.json().await?;
@@ -237,12 +242,12 @@ async fn generate_summary_claude(
         .as_array()
         .and_then(|arr| arr.first())
         .and_then(|block| block["text"].as_str())
-        .ok_or_else(|| anyhow!("Failed to extract summary from Claude response: {:?}", json))?;
+        .ok_or_else(|| anyhow!("Failed to extract summary from Claude response: {json:?}"))?;
 
     Ok(summary.to_string())
 }
 
-/// Generate summary using OpenAI Responses API (non-streaming).
+/// Generate summary using `OpenAI` Responses API (non-streaming).
 ///
 /// Uses the Responses API for consistency with the main provider module.
 /// Request format: `{ model, instructions, input, max_output_tokens, stream: false }`
@@ -271,7 +276,7 @@ async fn generate_summary_openai(
 
     let response = client
         .post(OPENAI_API_URL)
-        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Authorization", format!("Bearer {api_key}"))
         .header("content-type", "application/json")
         .json(&body)
         .send()
@@ -283,7 +288,7 @@ async fn generate_summary_openai(
             .text()
             .await
             .unwrap_or_else(|e| format!("<failed to read error: {e}>"));
-        return Err(anyhow!("OpenAI API error {}: {}", status, error_text));
+        return Err(anyhow!("OpenAI API error {status}: {error_text}"));
     }
 
     let json: serde_json::Value = response.json().await?;
@@ -296,12 +301,13 @@ async fn generate_summary_openai(
         .and_then(|item| item["content"].as_array())
         .and_then(|content| content.first())
         .and_then(|block| block["text"].as_str())
-        .ok_or_else(|| anyhow!("Failed to extract summary from OpenAI response: {:?}", json))?;
+        .ok_or_else(|| anyhow!("Failed to extract summary from OpenAI response: {json:?}"))?;
 
     Ok(summary.to_string())
 }
 
 /// Get the summarization model name for a given provider.
+#[must_use] 
 pub fn summarization_model(provider: Provider) -> &'static str {
     match provider {
         Provider::Claude => CLAUDE_SUMMARIZATION_MODEL,

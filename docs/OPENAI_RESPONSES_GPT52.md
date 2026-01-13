@@ -8,11 +8,17 @@ sampling/logprob controls (per product decision).
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-14 | Core Request Fields (model, input, instructions, max_output_tokens) |
-| 15-20 | Reasoning Controls (effort, summary, included content) |
-| 21-30 | Formatting & Tools (text.verbosity, structured outputs, tool_choice) |
-| 31-41 | Streaming & State (SSE, background, conversation history) |
-| 42-60 | Caching, Safety, Metadata, & References |
+| 1-16 | Header & TOC |
+| 17-25 | Core Request Fields |
+| 26-32 | Reasoning Controls |
+| 33-37 | Output Formatting |
+| 38-44 | Tools and Tool Selection |
+| 45-50 | Streaming / Background |
+| 51-57 | Conversation State |
+| 58-64 | Caching / Safety / Tiering |
+| 65-69 | Metadata and Templates |
+| 70-73 | Out of Scope |
+| 74-81 | References |
 
 ## Core request fields
 

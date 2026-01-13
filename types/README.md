@@ -8,16 +8,23 @@ This crate provides the foundational type system that enforces correctness at co
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-108 | Design Philosophy: invariants at construction, provider scoping, sum types, compile-time vs runtime |
-| 109-215 | NonEmpty String Types: NonEmptyString, NonEmptyStaticStr, EmptyStringError |
-| 216-357 | Provider and Model Types: Provider enum, ModelName, ModelNameKind, ModelParseError |
-| 358-398 | API Key Types: ApiKey enum, provider scoping |
-| 399-493 | OpenAI Request Options: ReasoningEffort, TextVerbosity, Truncation, OpenAIRequestOptions |
-| 494-570 | Caching and Output Limits: CacheHint, OutputLimits, OutputLimitsError |
-| 571-650 | Streaming Events: StreamEvent enum, StreamFinishReason, FinishReason details |
-| 651-720 | Tool Calling Types: ToolDefinition, ToolCall, ToolResult, ToolError |
-| 721-784 | Message Types: Message enum, SystemMessage, UserMessage, AssistantMessage, CacheableMessage |
-| 785-830 | Terminal Sanitization, Type Relationships diagram, Error Types Summary, Testing |
+| 1-21 | Header & TOC |
+| 22-40 | Table of Contents |
+| 41-104 | Design Philosophy |
+| 105-125 | Module Structure |
+| 126-231 | NonEmpty String Types |
+| 232-373 | Provider and Model Types |
+| 374-413 | API Key Types |
+| 414-509 | OpenAI Request Options |
+| 510-595 | Caching and Output Limits |
+| 596-658 | Streaming Events |
+| 659-762 | Tool Calling Types |
+| 763-910 | Message Types |
+| 911-979 | Terminal Sanitization |
+| 980-1024 | Type Relationships |
+| 1025-1039 | Error Types Summary |
+| 1040-1057 | Testing |
+| 1058-1090 | Extending the Crate |
 
 ## Table of Contents
 
@@ -130,6 +137,7 @@ thiserror = "2.0"
 A string guaranteed to be non-empty after trimming whitespace.
 
 **Invariants:**
+
 - Content is never empty after `trim()`
 - Whitespace-only strings are rejected
 
@@ -182,6 +190,7 @@ let raw: String = s.into();  // via From trait
 ```
 
 **Serde Behavior:**
+
 - Serializes as a plain JSON string
 - Deserialization validates non-emptiness and fails with error if invalid
 
@@ -190,6 +199,7 @@ let raw: String = s.into();  // via From trait
 A compile-time checked non-empty static string. Validation occurs at compile time via `const fn` panic.
 
 **Invariants:**
+
 - Content is never empty
 - Validation guaranteed at compile time
 
@@ -211,6 +221,7 @@ let runtime: NonEmptyString = GREETING.into();
 ```
 
 **Use Cases:**
+
 - System prompts
 - Error messages
 - Default values
@@ -296,6 +307,7 @@ let model = Provider::Claude.parse_model("claude-sonnet-4-5-20250929")?;
 A provider-scoped model name that prevents mixing models across providers.
 
 **Invariants:**
+
 - Always associated with a specific `Provider`
 - Claude models must start with `claude-`
 - OpenAI models must start with `gpt-5`
@@ -541,6 +553,7 @@ let cached = CacheHint::Ephemeral;
 Validated output configuration that guarantees invariants by construction.
 
 **Invariants:**
+
 - If thinking is enabled: `thinking_budget >= 1024`
 - If thinking is enabled: `thinking_budget < max_output_tokens`
 
@@ -882,6 +895,7 @@ match &message {
 ```
 
 **Serde Behavior:**
+
 - `AssistantMessage` model info is flattened via `#[serde(flatten)]`
 - Each variant serializes with its role and content
 
@@ -915,6 +929,7 @@ The `sanitize` module provides security-critical text sanitization for terminal 
 ### Security Rationale
 
 Terminal emulators interpret escape sequences that can:
+
 - **Manipulate clipboard** (OSC 52)
 - **Create deceptive hyperlinks** (OSC 8)
 - **Rewrite displayed content** (CSI cursor movement)
@@ -927,12 +942,14 @@ All text from untrusted sources (LLM output, network errors, persisted history) 
 Sanitizes text for safe terminal display.
 
 **Strips:**
+
 - ANSI escape sequences (CSI, OSC, DCS, PM, APC)
 - C0 control characters (`0x00`-`0x1F`) except `\n`, `\t`, `\r`
 - C1 control characters (`0x80`-`0x9F`)
 - DEL character (`0x7F`)
 
 **Preserves:**
+
 - All printable ASCII and UTF-8 characters
 - Newlines, tabs, and carriage returns
 
@@ -1046,6 +1063,7 @@ cargo test -p forge-types
 ```
 
 The test suite verifies:
+
 - `NonEmptyString` rejects empty and whitespace-only strings
 - `Provider::parse()` handles all aliases correctly  
 - `ModelName::parse()` validates provider prefix requirements
@@ -1082,8 +1100,8 @@ The test suite verifies:
 ### Adding Configuration Types
 
 Follow the pattern of `OpenAIReasoningEffort`:
+
 1. Define enum with `#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]`
 2. Implement `parse(&str) -> Option<Self>` for user input
 3. Implement `as_str(self) -> &'static str` for API serialization
 4. Mark default variant with `#[default]`
-

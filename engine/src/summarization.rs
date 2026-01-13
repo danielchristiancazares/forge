@@ -134,7 +134,7 @@ impl super::App {
 
     /// Poll for completed summarization task and apply the result.
     ///
-    /// This should be called in the main tick() loop. It checks if the background
+    /// This should be called in the main `tick()` loop. It checks if the background
     /// summarization task has completed, and if so, applies the result via
     /// `context_manager.complete_summarization()`.
     pub fn poll_summarization(&mut self) {
@@ -321,14 +321,14 @@ impl super::App {
 
 /// Calculate exponential backoff delay for summarization retry.
 fn summarization_retry_delay(attempt: u8) -> Duration {
-    let exponent = attempt.saturating_sub(1).min(10) as u32;
+    let exponent = u32::from(attempt.saturating_sub(1).min(10));
     let base = SUMMARIZATION_RETRY_BASE_MS.saturating_mul(1u64 << exponent);
     let capped = base.min(SUMMARIZATION_RETRY_MAX_MS);
 
-    let nanos = SystemTime::now()
+    let nanos = u64::from(SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .subsec_nanos() as u64;
+        .subsec_nanos());
     let jitter = nanos % (SUMMARIZATION_RETRY_JITTER_MS + 1);
 
     let delay_ms = capped

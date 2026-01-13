@@ -1,4 +1,5 @@
 # Forge Color Scheme
+
 ## Kanagawa Wave Palette Reference
 
 **Version:** 1.0
@@ -8,10 +9,13 @@
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-13 | Overview: Kanagawa Wave inspiration |
-| 14-90 | Kanagawa Wave Palette: background (Sumi Ink), foreground (Fuji), accents, diagnostics, wave colors |
-| 91-160 | Semantic Role Mapping: Core UI, brand/accent, status, input modes, search, diff |
-| 161-210 | Implementation: theme.rs constants, style functions, usage examples |
+| 1-21 | Header & TOC |
+| 22-27 | 1. Overview |
+| 28-104 | 2. Kanagawa Wave Palette |
+| 105-192 | 3. Semantic Role Mapping |
+| 193-258 | 4. Rust Constants |
+| 259-281 | 5. Accessibility Notes |
+| 282-287 | 6. References |
 
 ---
 

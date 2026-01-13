@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Core state machine and orchestration for Forge"
 
+[lints]
+workspace = true
+
 [dependencies]
 forge-types.workspace = true
 forge-providers.workspace = true
@@ -34,6 +37,7 @@ dirs.workspace = true
 tracing.workspace = true
 
 unicode-segmentation.workspace = true
+which = "7"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

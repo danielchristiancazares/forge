@@ -11,10 +11,13 @@
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-15 | Header & Change Log |
-| 16-36 | Introduction: Purpose, Scope (Delete tool) |
-| 37-53 | Functional Requirements: Interface, Behavior (File deletion) |
-| 54-82 | NFRs, Configuration, Verification |
+| 1-20 | Header & TOC |
+| 21-28 | 0. Change Log |
+| 29-54 | 1. Introduction |
+| 55-74 | 2. Functional Requirements |
+| 75-85 | 3. Non-Functional Requirements |
+| 86-94 | 4. Configuration |
+| 95-104 | 5. Verification Requirements |
 
 ---
 

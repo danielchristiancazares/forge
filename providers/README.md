@@ -6,19 +6,23 @@ This document provides comprehensive documentation for the `forge-providers` cra
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-59 | Overview: responsibilities, crate structure, dependencies |
-| 60-124 | Architecture Diagram: send_message dispatch, SSE streaming flow |
-| 125-186 | Provider System: Provider enum, dispatch pattern |
-| 187-310 | Type-Driven Design: ApiConfig, ApiKey, ModelName, OutputLimits, CacheHint |
-| 311-398 | SSE Streaming Infrastructure: event parsing, boundary detection, StreamEvent enum |
-| 399-517 | Claude API Client: endpoint, auth, request building, content blocks, response parsing |
-| 518-670 | OpenAI API Client: Responses API, role mapping, GPT-5.2 options, response parsing |
-| 671-732 | Error Handling: ApiConfigError, HTTP errors, stream recovery, propagation pattern |
-| 733-781 | Public API Reference: send_message signature, ApiConfig methods, re-exports |
-| 782-915 | Usage Examples: basic streaming, OpenAI reasoning, Claude thinking, caching |
-| 916-957 | Error Handling summary, Dependencies, Thread Safety, Testing |
-| 958-1200 | Extension Guide: adding new provider (6 steps), provider-specific features |
-| 1201-1434 | Additional Usage Examples and Summary: architectural strengths, patterns, quick reference |
+| 1-22 | Header & TOC |
+| 23-41 | Table of Contents |
+| 42-82 | Overview |
+| 83-148 | Architecture Diagram |
+| 149-208 | Provider System |
+| 209-332 | Type-Driven Design |
+| 333-420 | SSE Streaming Infrastructure |
+| 421-540 | Claude API Client |
+| 541-694 | OpenAI API Client |
+| 695-755 | Error Handling implementation |
+| 756-803 | Public API Reference |
+| 804-937 | Usage Examples |
+| 938-949 | Error Handling summary |
+| 950-961 | Dependencies |
+| 962-967 | Thread Safety |
+| 968-980 | Testing |
+| 981-1454 | Extension Guide |
 
 ## Table of Contents
 

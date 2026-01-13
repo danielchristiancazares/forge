@@ -3,6 +3,10 @@
 //! This crate contains pure domain types with no IO, no async, and minimal dependencies.
 //! Everything here can be used from any layer of the application.
 
+// Pedantic lint configuration - these are intentional design choices
+#![allow(clippy::missing_errors_doc)] // Result-returning functions are self-explanatory
+#![allow(clippy::missing_panics_doc)] // Panics are documented in assertions
+
 mod sanitize;
 pub use sanitize::sanitize_terminal_text;
 
@@ -34,15 +38,18 @@ impl NonEmptyString {
         }
     }
 
+    #[must_use]
     pub fn append(mut self, suffix: impl AsRef<str>) -> Self {
         self.0.push_str(suffix.as_ref());
         Self(self.0)
     }
 
+    #[must_use] 
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    #[must_use] 
     pub fn into_inner(self) -> String {
         self.0
     }
@@ -89,13 +96,13 @@ impl AsRef<str> for NonEmptyString {
 pub struct NonEmptyStaticStr(&'static str);
 
 impl NonEmptyStaticStr {
+    #[must_use] 
     pub const fn new(value: &'static str) -> Self {
-        if value.is_empty() {
-            panic!("NonEmptyStaticStr must not be empty");
-        }
+        assert!(!value.is_empty(), "NonEmptyStaticStr must not be empty");
         Self(value)
     }
 
+    #[must_use] 
     pub const fn as_str(self) -> &'static str {
         self.0
     }
@@ -120,6 +127,7 @@ pub enum Provider {
 }
 
 impl Provider {
+    #[must_use] 
     pub fn as_str(&self) -> &'static str {
         match self {
             Provider::Claude => "claude",
@@ -127,6 +135,7 @@ impl Provider {
         }
     }
 
+    #[must_use] 
     pub fn display_name(&self) -> &'static str {
         match self {
             Provider::Claude => "Claude",
@@ -134,6 +143,7 @@ impl Provider {
         }
     }
 
+    #[must_use] 
     pub fn env_var(&self) -> &'static str {
         match self {
             Provider::Claude => "ANTHROPIC_API_KEY",
@@ -141,6 +151,7 @@ impl Provider {
         }
     }
 
+    #[must_use] 
     pub fn default_model(&self) -> ModelName {
         match self {
             Provider::Claude => ModelName::known(*self, "claude-sonnet-4-5-20250929"),
@@ -149,6 +160,7 @@ impl Provider {
     }
 
     /// All available models for this provider.
+    #[must_use] 
     pub fn available_models(&self) -> &'static [&'static str] {
         match self {
             Provider::Claude => &[
@@ -166,6 +178,7 @@ impl Provider {
     }
 
     /// Parse provider from string.
+    #[must_use] 
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "claude" | "anthropic" => Some(Provider::Claude),
@@ -175,6 +188,7 @@ impl Provider {
     }
 
     /// Get all available providers.
+    #[must_use] 
     pub fn all() -> &'static [Provider] {
         &[Provider::Claude, Provider::OpenAI]
     }
@@ -244,6 +258,7 @@ impl ModelName {
         })
     }
 
+    #[must_use] 
     pub const fn known(provider: Provider, name: &'static str) -> Self {
         Self {
             provider,
@@ -252,14 +267,17 @@ impl ModelName {
         }
     }
 
+    #[must_use] 
     pub const fn provider(&self) -> Provider {
         self.provider
     }
 
+    #[must_use] 
     pub fn as_str(&self) -> &str {
         self.name.as_ref()
     }
 
+    #[must_use] 
     pub const fn kind(&self) -> ModelNameKind {
         self.kind
     }
@@ -277,7 +295,7 @@ impl std::fmt::Display for ModelName {
 
 /// Provider-scoped API key.
 ///
-/// This prevents the invalid state "OpenAI key used with Claude" from being representable.
+/// This prevents the invalid state "`OpenAI` key used with Claude" from being representable.
 #[derive(Debug, Clone)]
 pub enum ApiKey {
     Claude(String),
@@ -285,6 +303,7 @@ pub enum ApiKey {
 }
 
 impl ApiKey {
+    #[must_use] 
     pub fn provider(&self) -> Provider {
         match self {
             ApiKey::Claude(_) => Provider::Claude,
@@ -292,6 +311,7 @@ impl ApiKey {
         }
     }
 
+    #[must_use] 
     pub fn as_str(&self) -> &str {
         match self {
             ApiKey::Claude(key) | ApiKey::OpenAI(key) => key,
@@ -314,6 +334,7 @@ pub enum OpenAIReasoningEffort {
 }
 
 impl OpenAIReasoningEffort {
+    #[must_use] 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "none" => Some(Self::None),
@@ -325,6 +346,7 @@ impl OpenAIReasoningEffort {
         }
     }
 
+    #[must_use] 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
@@ -345,6 +367,7 @@ pub enum OpenAITextVerbosity {
 }
 
 impl OpenAITextVerbosity {
+    #[must_use] 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "low" => Some(Self::Low),
@@ -354,6 +377,7 @@ impl OpenAITextVerbosity {
         }
     }
 
+    #[must_use] 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Low => "low",
@@ -371,6 +395,7 @@ pub enum OpenAITruncation {
 }
 
 impl OpenAITruncation {
+    #[must_use] 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "auto" => Some(Self::Auto),
@@ -379,6 +404,7 @@ impl OpenAITruncation {
         }
     }
 
+    #[must_use] 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
@@ -395,6 +421,7 @@ pub struct OpenAIRequestOptions {
 }
 
 impl OpenAIRequestOptions {
+    #[must_use] 
     pub fn new(
         reasoning_effort: OpenAIReasoningEffort,
         verbosity: OpenAITextVerbosity,
@@ -407,14 +434,17 @@ impl OpenAIRequestOptions {
         }
     }
 
+    #[must_use] 
     pub fn reasoning_effort(self) -> OpenAIReasoningEffort {
         self.reasoning_effort
     }
 
+    #[must_use] 
     pub fn verbosity(self) -> OpenAITextVerbosity {
         self.verbosity
     }
 
+    #[must_use] 
     pub fn truncation(self) -> OpenAITruncation {
         self.truncation
     }
@@ -438,7 +468,7 @@ impl Default for OpenAIRequestOptions {
 ///
 /// Different providers handle caching differently:
 /// - Claude: Explicit `cache_control: { type: "ephemeral" }` markers
-/// - OpenAI: Automatic server-side prefix caching (hints ignored)
+/// - `OpenAI`: Automatic server-side prefix caching (hints ignored)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CacheHint {
     /// No caching preference - provider uses default behavior.
@@ -474,6 +504,7 @@ pub enum OutputLimitsError {
 
 impl OutputLimits {
     /// Create output limits without thinking.
+    #[must_use] 
     pub const fn new(max_output_tokens: u32) -> Self {
         Self {
             max_output_tokens,
@@ -504,16 +535,19 @@ impl OutputLimits {
     }
 
     /// Get max output tokens.
+    #[must_use] 
     pub const fn max_output_tokens(&self) -> u32 {
         self.max_output_tokens
     }
 
     /// Get thinking budget if enabled.
+    #[must_use] 
     pub const fn thinking_budget(&self) -> Option<u32> {
         self.thinking_budget
     }
 
     /// Check if thinking is enabled.
+    #[must_use] 
     pub const fn has_thinking(&self) -> bool {
         self.thinking_budget.is_some()
     }
@@ -530,7 +564,7 @@ pub enum StreamEvent {
     TextDelta(String),
     /// Thinking/reasoning content delta (Claude extended thinking).
     ThinkingDelta(String),
-    /// Tool call started - emitted when a tool_use content block begins.
+    /// Tool call started - emitted when a `tool_use` content block begins.
     ToolCallStart { id: String, name: String },
     /// Tool call arguments delta - emitted as JSON arguments stream in.
     ToolCallDelta { id: String, arguments: String },
@@ -553,7 +587,7 @@ pub enum StreamFinishReason {
 
 /// Definition of a tool that can be called by the LLM.
 ///
-/// This follows the standard function calling schema used by Claude and OpenAI.
+/// This follows the standard function calling schema used by Claude and `OpenAI`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
     /// The name of the tool (function name).
@@ -650,6 +684,7 @@ pub struct SystemMessage {
 }
 
 impl SystemMessage {
+    #[must_use] 
     pub fn new(content: NonEmptyString) -> Self {
         Self {
             content,
@@ -657,6 +692,7 @@ impl SystemMessage {
         }
     }
 
+    #[must_use] 
     pub fn content(&self) -> &str {
         self.content.as_str()
     }
@@ -669,6 +705,7 @@ pub struct UserMessage {
 }
 
 impl UserMessage {
+    #[must_use] 
     pub fn new(content: NonEmptyString) -> Self {
         Self {
             content,
@@ -676,6 +713,7 @@ impl UserMessage {
         }
     }
 
+    #[must_use] 
     pub fn content(&self) -> &str {
         self.content.as_str()
     }
@@ -690,6 +728,7 @@ pub struct AssistantMessage {
 }
 
 impl AssistantMessage {
+    #[must_use] 
     pub fn new(model: ModelName, content: NonEmptyString) -> Self {
         Self {
             content,
@@ -698,14 +737,17 @@ impl AssistantMessage {
         }
     }
 
+    #[must_use] 
     pub fn content(&self) -> &str {
         self.content.as_str()
     }
 
+    #[must_use] 
     pub fn provider(&self) -> Provider {
         self.model.provider()
     }
 
+    #[must_use] 
     pub fn model(&self) -> &ModelName {
         &self.model
     }
@@ -726,10 +768,12 @@ pub enum Message {
 }
 
 impl Message {
+    #[must_use] 
     pub fn system(content: NonEmptyString) -> Self {
         Self::System(SystemMessage::new(content))
     }
 
+    #[must_use] 
     pub fn user(content: NonEmptyString) -> Self {
         Self::User(UserMessage::new(content))
     }
@@ -738,30 +782,33 @@ impl Message {
         Ok(Self::user(NonEmptyString::new(content)?))
     }
 
+    #[must_use] 
     pub fn assistant(model: ModelName, content: NonEmptyString) -> Self {
         Self::Assistant(AssistantMessage::new(model, content))
     }
 
     /// Create a tool use message (assistant requesting a tool call).
+    #[must_use] 
     pub fn tool_use(call: ToolCall) -> Self {
         Self::ToolUse(call)
     }
 
     /// Create a tool result message (result of executing a tool).
+    #[must_use] 
     pub fn tool_result(result: ToolResult) -> Self {
         Self::ToolResult(result)
     }
 
+    #[must_use] 
     pub fn role_str(&self) -> &'static str {
         match self {
             Message::System(_) => "system",
-            Message::User(_) => "user",
-            Message::Assistant(_) => "assistant",
-            Message::ToolUse(_) => "assistant", // Tool use is from assistant
-            Message::ToolResult(_) => "user",   // Tool result is sent as user role
+            Message::User(_) | Message::ToolResult(_) => "user",
+            Message::Assistant(_) | Message::ToolUse(_) => "assistant",
         }
     }
 
+    #[must_use] 
     pub fn content(&self) -> &str {
         match self {
             Message::System(m) => m.content(),
@@ -781,6 +828,7 @@ pub struct CacheableMessage {
 }
 
 impl CacheableMessage {
+    #[must_use] 
     pub fn new(message: Message, cache_hint: CacheHint) -> Self {
         Self {
             message,
@@ -789,11 +837,13 @@ impl CacheableMessage {
     }
 
     /// Create a message with no cache hint.
+    #[must_use] 
     pub fn plain(message: Message) -> Self {
         Self::new(message, CacheHint::None)
     }
 
     /// Create a message marked for caching.
+    #[must_use] 
     pub fn cached(message: Message) -> Self {
         Self::new(message, CacheHint::Ephemeral)
     }

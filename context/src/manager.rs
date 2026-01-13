@@ -1,6 +1,6 @@
 //! Context Manager - orchestrates all context management components.
 //!
-//! The ContextManager is the main entry point for:
+//! The `ContextManager` is the main entry point for:
 //! - Adding messages to history
 //! - Switching models (triggers adaptation)
 //! - Building working context for API calls
@@ -107,13 +107,15 @@ pub struct PreparedContext<'a> {
     working_context: WorkingContext,
 }
 
-impl<'a> PreparedContext<'a> {
+impl PreparedContext<'_> {
     /// Materialize messages for an API call.
+    #[must_use] 
     pub fn api_messages(&self) -> Vec<Message> {
         self.working_context.materialize(&self.manager.history)
     }
 
     /// Usage stats for UI.
+    #[must_use] 
     pub fn usage(&self) -> ContextUsage {
         ContextUsage::from_context(&self.working_context)
     }
@@ -157,6 +159,7 @@ pub struct ContextManager {
 
 impl ContextManager {
     /// Create a new context manager for the given model.
+    #[must_use] 
     pub fn new(initial_model: &str) -> Self {
         let registry = ModelRegistry::new();
         let resolved = registry.get(initial_model);
@@ -178,7 +181,7 @@ impl ContextManager {
     /// Set the configured output limit.
     ///
     /// When set, the effective input budget will reserve only this amount
-    /// for output instead of the model's full max_output capability.
+    /// for output instead of the model's full `max_output` capability.
     /// This allows more input context when users configure smaller output limits.
     pub fn set_output_limit(&mut self, limit: u32) {
         self.configured_output_limit = Some(limit);
@@ -217,7 +220,8 @@ impl ContextManager {
     /// Check if a stream step ID already exists in history.
     ///
     /// Used for idempotent crash recovery - if history already contains
-    /// an entry with this step_id, we should not recover it again.
+    /// an entry with this `step_id`, we should not recover it again.
+    #[must_use] 
     pub fn has_step_id(&self, step_id: i64) -> bool {
         self.history.has_step_id(step_id)
     }
@@ -243,20 +247,18 @@ impl ContextManager {
 
         let new_budget = self.effective_budget();
 
-        if new_budget < old_budget {
-            ContextAdaptation::Shrinking {
+        match new_budget.cmp(&old_budget) {
+            std::cmp::Ordering::Less => ContextAdaptation::Shrinking {
                 old_budget,
                 new_budget,
                 needs_summarization: self.build_working_context().is_err(),
-            }
-        } else if new_budget > old_budget {
-            ContextAdaptation::Expanding {
+            },
+            std::cmp::Ordering::Greater => ContextAdaptation::Expanding {
                 old_budget,
                 new_budget,
                 can_restore: self.history.summarized_count(),
-            }
-        } else {
-            ContextAdaptation::NoChange
+            },
+            std::cmp::Ordering::Equal => ContextAdaptation::NoChange,
         }
     }
 
@@ -273,6 +275,16 @@ impl ContextManager {
     /// Returns an error if summarization is needed to fit within budget, or if
     /// the most recent messages alone exceed the budget (unrecoverable).
     fn build_working_context(&self) -> Result<WorkingContext, ContextBuildError> {
+        #[derive(Debug)]
+        enum Block {
+            Unsummarized(Vec<(MessageId, u32)>),
+            Summarized {
+                summary_id: SummaryId,
+                messages: Vec<(MessageId, u32)>,
+                summary_tokens: u32,
+            },
+        }
+
         let budget = self.effective_budget();
         let mut ctx = WorkingContext::new(budget);
 
@@ -299,16 +311,6 @@ impl ContextManager {
         let recent_start = entries.len().saturating_sub(preserve_count);
         let remaining_budget = budget.saturating_sub(tokens_for_recent);
 
-        #[derive(Debug)]
-        enum Block {
-            Unsummarized(Vec<(MessageId, u32)>),
-            Summarized {
-                summary_id: SummaryId,
-                messages: Vec<(MessageId, u32)>,
-                summary_tokens: u32,
-            },
-        }
-
         // Phase 2: Partition older messages into contiguous blocks.
         let older_entries = &entries[..recent_start];
         let mut blocks: Vec<Block> = Vec::new();
@@ -321,40 +323,37 @@ impl ContextManager {
                 .summary_id()
                 .map(|sid| (sid, self.history.summary(sid).token_count()));
 
-            match summarized_here {
-                Some((summary_id, summary_tokens)) => {
-                    if !unsummarized.is_empty() {
-                        blocks.push(Block::Unsummarized(std::mem::take(&mut unsummarized)));
-                    }
-
-                    match summary_block {
-                        Some((current_id, _)) if current_id == summary_id => {}
-                        Some((current_id, current_tokens)) => {
-                            blocks.push(Block::Summarized {
-                                summary_id: current_id,
-                                messages: std::mem::take(&mut summarized),
-                                summary_tokens: current_tokens,
-                            });
-                            summary_block = Some((summary_id, summary_tokens));
-                        }
-                        None => {
-                            summary_block = Some((summary_id, summary_tokens));
-                        }
-                    }
-
-                    summarized.push((entry.id(), entry.token_count()));
+            if let Some((summary_id, summary_tokens)) = summarized_here {
+                if !unsummarized.is_empty() {
+                    blocks.push(Block::Unsummarized(std::mem::take(&mut unsummarized)));
                 }
-                None => {
-                    if let Some((summary_id, summary_tokens)) = summary_block.take() {
+
+                match summary_block {
+                    Some((current_id, _)) if current_id == summary_id => {}
+                    Some((current_id, current_tokens)) => {
                         blocks.push(Block::Summarized {
-                            summary_id,
+                            summary_id: current_id,
                             messages: std::mem::take(&mut summarized),
-                            summary_tokens,
+                            summary_tokens: current_tokens,
                         });
+                        summary_block = Some((summary_id, summary_tokens));
                     }
-
-                    unsummarized.push((entry.id(), entry.token_count()));
+                    None => {
+                        summary_block = Some((summary_id, summary_tokens));
+                    }
                 }
+
+                summarized.push((entry.id(), entry.token_count()));
+            } else {
+                if let Some((summary_id, summary_tokens)) = summary_block.take() {
+                    blocks.push(Block::Summarized {
+                        summary_id,
+                        messages: std::mem::take(&mut summarized),
+                        summary_tokens,
+                    });
+                }
+
+                unsummarized.push((entry.id(), entry.token_count()));
             }
         }
 
@@ -443,7 +442,7 @@ impl ContextManager {
         let mut need_summary: Vec<MessageId> = need_summary_rev.into_iter().rev().collect();
 
         if !need_summary.is_empty() {
-            need_summary.sort_by_key(|id| id.as_u64());
+            need_summary.sort_by_key(super::history::MessageId::as_u64);
             need_summary.dedup();
 
             let tokens_to_summarize: u32 = need_summary
@@ -458,7 +457,7 @@ impl ContextManager {
                 SummarizationNeeded {
                     excess_tokens,
                     messages_to_summarize: need_summary,
-                    suggestion: format!("{} older messages need summarization", msg_count),
+                    suggestion: format!("{msg_count} older messages need summarization"),
                 },
             ));
         }
@@ -489,7 +488,7 @@ impl ContextManager {
         message_ids: &[MessageId],
     ) -> Option<PendingSummarization> {
         let mut ids: Vec<MessageId> = message_ids.to_vec();
-        ids.sort_by_key(|id| id.as_u64());
+        ids.sort_by_key(super::history::MessageId::as_u64);
         ids.dedup();
 
         if ids.is_empty() {
@@ -521,7 +520,7 @@ impl ContextManager {
             .summarization_config
             .target_ratio
             .clamp(MIN_SUMMARY_RATIO, MAX_SUMMARY_RATIO);
-        let target_tokens = ((original_tokens as f64) * ratio as f64).round() as u32;
+        let target_tokens = (f64::from(original_tokens) * f64::from(ratio)).round() as u32;
         let target_tokens = target_tokens.clamp(MIN_SUMMARY_TOKENS, MAX_SUMMARY_TOKENS);
 
         let first = ids.first().copied()?;
@@ -577,10 +576,10 @@ impl ContextManager {
     ///
     /// This does not mutate history. If the current model's budget can fit original messages for
     /// previously-summarized segments, `build_working_context()` will choose originals.
+    #[must_use] 
     pub fn try_restore_messages(&self) -> usize {
-        let ctx = match self.build_working_context() {
-            Ok(ctx) => ctx,
-            Err(_) => return 0,
+        let Ok(ctx) = self.build_working_context() else {
+            return 0;
         };
 
         ctx.segments()
@@ -605,6 +604,7 @@ impl ContextManager {
     }
 
     /// Get current usage statistics with explicit summarization status.
+    #[must_use] 
     pub fn usage_status(&self) -> ContextUsageStatus {
         let fallback_usage = || ContextUsage {
             used_tokens: self.history.total_tokens(),
@@ -633,21 +633,25 @@ impl ContextManager {
     }
 
     /// Access to full history.
+    #[must_use] 
     pub fn history(&self) -> &FullHistory {
         &self.history
     }
 
     /// Current model name.
+    #[must_use] 
     pub fn current_model(&self) -> &str {
         &self.current_model
     }
 
     /// Current model limits.
+    #[must_use] 
     pub fn current_limits(&self) -> ModelLimits {
         self.current_limits
     }
 
     /// Where the current model limits came from.
+    #[must_use] 
     pub fn current_limits_source(&self) -> ModelLimitsSource {
         self.current_limits_source
     }

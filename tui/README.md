@@ -6,22 +6,25 @@ This document provides comprehensive documentation for the Text User Interface (
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-68 | Overview: modal interface, file structure, architecture notes |
-| 69-103 | Architecture Diagram: event loop and component relationships |
-| 104-163 | Core Components: main.rs entry point, terminal session, UI modes |
-| 164-296 | Application State Management: InputState enum, AppState async state machine, scroll state |
-| 297-381 | Input Handling System: event processing, mode-specific key handlers |
-| 382-609 | Type-Driven Design Patterns: proof tokens, mode wrappers, NonEmptyString, state patterns |
-| 610-824 | Rendering Pipeline: full-screen layout, message rendering, scrollbar, overlays, tool UI |
-| 825-864 | UI Modes: Full vs Inline - differences and mode switching |
-| 865-1030 | Message and Streaming System: Message types, streaming lifecycle, crash recovery |
-| 1031-1093 | Context Management Integration: ContextManager, usage display, summarization flow |
-| 1094-1149 | Theming and Styling: color palette, styles, spinner animation |
-| 1150-1235 | Key Data Structures: DraftInput, DisplayItem, ActiveStream, PredefinedModel |
-| 1236-1275 | Event Loop and Update Cycle: tick cycle, timing details |
-| 1276-1390 | Command System: available commands, processing flow, model selector |
-| 1391-1810 | Extension Guide: adding input modes, commands, UI components, animations, themes, providers |
-| 1811-1972 | Appendix and Summary: markdown rendering, architectural strengths, key patterns |
+| 1-25 | Header & TOC |
+| 26-45 | Table of Contents |
+| 46-91 | Overview |
+| 92-127 | Architecture Diagram |
+| 128-232 | Core Components |
+| 233-318 | Application State Management |
+| 319-403 | Input Handling System |
+| 404-632 | Type-Driven Design Patterns |
+| 633-847 | Rendering Pipeline |
+| 848-885 | UI Modes: Full vs Inline |
+| 886-1052 | Message and Streaming System |
+| 1053-1115 | Context Management Integration |
+| 1116-1173 | Theming and Styling |
+| 1174-1257 | Key Data Structures |
+| 1258-1298 | Event Loop and Update Cycle |
+| 1299-1413 | Command System |
+| 1414-1909 | Extension Guide |
+| 1910-1943 | Appendix: Markdown Rendering |
+| 1944-1994 | Summary |
 
 ## Table of Contents
 
@@ -1990,4 +1993,3 @@ The Forge TUI is a well-structured, modal terminal interface built on these prin
 | Add modal animation | `app.rs`, `effects.rs`, `ui.rs` | `ModalEffect`, `ModalEffectKind`, `apply_modal_effect()` |
 
 The architecture prioritizes correctness, maintainability, and extensibility through Rust's type system rather than runtime checks.
-

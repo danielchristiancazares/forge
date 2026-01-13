@@ -6,6 +6,9 @@ rust-version.workspace = true
 authors.workspace = true
 description = "A custom TUI for interacting with GPT and Claude"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "forge"
 path = "src/main.rs"

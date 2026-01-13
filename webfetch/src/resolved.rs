@@ -116,10 +116,9 @@ impl ResolvedSecurityConfig {
         Self {
             blocked_cidrs,
             allowed_ports,
-            allow_insecure_tls: security.map(|s| s.allow_insecure_tls).unwrap_or(false),
+            allow_insecure_tls: security.is_some_and(|s| s.allow_insecure_tls),
             allow_insecure_overrides: security
-                .map(|s| s.allow_insecure_overrides)
-                .unwrap_or(false),
+                .is_some_and(|s| s.allow_insecure_overrides),
         }
     }
 }
@@ -136,15 +135,13 @@ impl ResolvedHttpConfig {
     fn from_config(config: &WebFetchConfig) -> Self {
         let http = config.http.as_ref();
         let headers = http.and_then(|h| h.headers.clone()).unwrap_or_default();
-        let use_system_proxy = http.map(|h| h.use_system_proxy).unwrap_or(false);
+        let use_system_proxy = http.is_some_and(|h| h.use_system_proxy);
         let connect_timeout = http
             .and_then(|h| h.connect_timeout_seconds)
-            .map(|s| TimeoutSetting::Enabled(Duration::from_secs(s as u64)))
-            .unwrap_or(TimeoutSetting::Disabled);
+            .map_or(TimeoutSetting::Disabled, |s| TimeoutSetting::Enabled(Duration::from_secs(u64::from(s))));
         let read_timeout = http
             .and_then(|h| h.read_timeout_seconds)
-            .map(|s| TimeoutSetting::Enabled(Duration::from_secs(s as u64)))
-            .unwrap_or(TimeoutSetting::Disabled);
+            .map_or(TimeoutSetting::Disabled, |s| TimeoutSetting::Enabled(Duration::from_secs(u64::from(s))));
 
         Self {
             headers,
@@ -172,7 +169,7 @@ pub(crate) struct ResolvedRobotsConfig {
 impl ResolvedRobotsConfig {
     fn from_config(config: &WebFetchConfig, user_agent: &str) -> Self {
         let robots = config.robots.as_ref();
-        let fail_open = robots.map(|r| r.fail_open).unwrap_or(false);
+        let fail_open = robots.is_some_and(|r| r.fail_open);
         let user_agent_token = robots
             .and_then(|r| r.user_agent_token.clone())
             .filter(|s| !s.trim().is_empty())
@@ -259,11 +256,10 @@ impl BrowserPolicy {
             .chromium_path
             .clone()
             .filter(|p| !p.as_os_str().is_empty())
-            .map(ChromiumLocation::Explicit)
-            .unwrap_or(ChromiumLocation::SearchPath);
+            .map_or(ChromiumLocation::SearchPath, ChromiumLocation::Explicit);
 
         let timeout_seconds = browser.timeout_seconds.unwrap_or(config.timeout_seconds());
-        let timeout = Duration::from_secs(timeout_seconds as u64);
+        let timeout = Duration::from_secs(u64::from(timeout_seconds));
         let max_rendered_dom_bytes = browser
             .max_rendered_dom_bytes
             .unwrap_or(DEFAULT_MAX_RENDERED_DOM_BYTES);

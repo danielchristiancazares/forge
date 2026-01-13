@@ -6,10 +6,13 @@ A powerful TUI for interacting with GPT and Claude, featuring an agentic tool ex
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-35 | Overview & Features: TUI, Context Infinity, Tool Executor |
-| 36-65 | Getting Started: Quick Start, Installation |
-| 66-95 | Configuration: Config.toml reference |
-| 96-101 | Documentation Index & Dev Guide |
+| 1-13 | Header & TOC |
+| 14-35 | Features: Core Capabilities, Context Infinity, Tool Executor |
+| 36-45 | Quick Start |
+| 46-70 | Configuration |
+| 71-86 | Documentation Index |
+| 87-94 | Development |
+| 95-108 | Coverage (LCOV) |
 
 ## Features
 

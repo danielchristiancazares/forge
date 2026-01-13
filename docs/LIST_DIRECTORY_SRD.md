@@ -9,6 +9,22 @@
 
 ---
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-15 | Header & TOC |
+| 16-24 | 0. Change Log |
+| 25-73 | 1. Introduction |
+| 74-118 | 2. Overall Description |
+| 119-242 | 3. Functional Requirements |
+| 243-267 | 4. Non-Functional Requirements |
+| 268-293 | 5. Configuration |
+| 294-314 | 6. Test and Validation Requirements |
+| 315-320 | 7. Open Questions |
+
+---
+
 ## 0. Change Log
 
 ### 0.1 Initial version

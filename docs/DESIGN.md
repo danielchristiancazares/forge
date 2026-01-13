@@ -4,12 +4,24 @@
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-17 | Core Idea: Make invalid states unrepresentable, correctness by construction |
-| 18-48 | Typestate (ShuffledDeck Pattern): temporal coupling, transitions, proof of history |
-| 49-71 | Parametricity: enforced agnosticism, structural blindness |
-| 72-105 | Constrained Generics and Shared Foundation: call-site rejection, pattern table |
-| 106-138 | Ownership and Data Providers: coordination, mechanism vs policy |
-| 139-165 | State as Location and Capability Tokens: existence as state, phase validity |
+| 1-13 | Header & TOC |
+| 14-19 | How to Read This Document |
+| 20-29 | The Core Idea |
+| 30-60 | Typestate: The ShuffledDeck Pattern |
+| 61-83 | Parametricity (Enforced Agnosticism) |
+| 84-104 | Constrained Generics (Call-Site Rejection) |
+| 105-117 | The Shared Foundation |
+| 118-134 | Ownership is Coordination |
+| 135-149 | Data Providers Don't Decide |
+| 150-166 | State as Location |
+| 167-180 | Capability Tokens |
+| 181-196 | Boundaries vs. Internals |
+| 197-206 | On Assertions |
+| 207-222 | The Death List |
+| 223-238 | The Litmus Test: Memory Layout |
+| 239-262 | Approximations in C++ |
+| 263-276 | The Test |
+| 277-289 | Not Acceptable |
 
 ## How to Read This Document
 
@@ -225,12 +237,12 @@ When reviewing code, interpret these patterns as structural failures:
 Not all enums are bad. Apply the **Memory Layout Test** to distinguish "Behavior" from "State."
 
 * **Behavioral Configuration (Valid):** `enum AI { Aggressive, Defensive }`
-    * Does changing this enum invalidate any member variables? **No.**
-    * The object structure remains identical; only the algorithm changes.
+  * Does changing this enum invalidate any member variables? **No.**
+  * The object structure remains identical; only the algorithm changes.
 
 * **Structural State (Invalid):** `enum Connection { Disconnected, Connected }`
-    * Does changing this enum invalidate `m_socketHandle`? **Yes.**
-    * This is a Sum Type masquerading as a Product Type. You are manually managing a relationship the compiler doesn't see.
+  * Does changing this enum invalidate `m_socketHandle`? **Yes.**
+  * This is a Sum Type masquerading as a Product Type. You are manually managing a relationship the compiler doesn't see.
 
 **Rule:** If the validity of data depends on the value of a flag, that flag must not exist. The data structure itself must change (via `variant` or move to a new type).
 

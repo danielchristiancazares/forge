@@ -14,7 +14,7 @@ pub fn truncate_with_ellipsis(raw: &str, max: usize) -> String {
     }
 }
 
-/// Parse a model name string back into a ModelName.
+/// Parse a model name string back into a `ModelName`.
 ///
 /// Used for crash recovery when we need to reconstruct the model from stored metadata.
 /// Falls back to None if the model name cannot be parsed.

@@ -6,10 +6,11 @@ This project uses **Rust 1.92.0** with **Edition 2024**. This document covers ke
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-48 | Lifetime Capture, Temporary Scope Changes in impl Trait and if-let |
-| 49-92 | Unsafe Changes: extern blocks, unsafe attributes, static mut, match ergonomics |
-| 93-138 | Macro Changes, Reserved Syntax, Prelude Additions, Box IntoIterator |
-| 139-157 | Unsafe Environment Functions, Cargo Resolver 3 |
+| 1-13 | Header & TOC |
+| 14-165 | Edition 2024 Key Changes (Lifetime, Temps, Unsafe, Macros, etc) |
+| 166-195 | Rust 1.92.0 Specific Features |
+| 196-210 | Project-Specific Notes |
+| 211-217 | Sources |
 
 ## Edition 2024 Key Changes (from 2021)
 
@@ -59,6 +60,7 @@ fn f() -> usize {
 ### Unsafe Changes
 
 **`extern` blocks require `unsafe`:**
+
 ```rust
 // Edition 2024 syntax
 unsafe extern "C" {
@@ -67,6 +69,7 @@ unsafe extern "C" {
 ```
 
 **Unsafe attributes require `unsafe()` wrapper:**
+
 ```rust
 #[unsafe(no_mangle)]
 fn my_function() {}
@@ -76,6 +79,7 @@ fn another() {}
 ```
 
 **Static mut references are errors:**
+
 ```rust
 static mut GLOBAL: i32 = 0;
 // let x = &GLOBAL;  // ERROR in 2024 - use raw pointers instead
@@ -102,6 +106,7 @@ fn f(opt: &mut Option<i32>) {
 ### Macro Changes
 
 **`:expr` fragment now matches `const` and `_`:**
+
 ```rust
 macro_rules! m {
     ($e:expr) => { $e };
@@ -113,6 +118,7 @@ m!(_);                 // Valid in 2024
 ```
 
 **Fragment specifiers required:**
+
 ```rust
 // ERROR in 2024 - missing specifier
 macro_rules! broken {
@@ -129,6 +135,7 @@ macro_rules! broken {
 ### Prelude Additions
 
 `Future` and `IntoFuture` added to prelude:
+
 ```rust
 // No longer need: use std::future::Future;
 async fn example() -> impl Future<Output = i32> {
@@ -139,6 +146,7 @@ async fn example() -> impl Future<Output = i32> {
 ### `Box<[T]>` IntoIterator
 
 `Box<[T]>` now implements `IntoIterator` yielding owned values:
+
 ```rust
 let b: Box<[i32]> = vec![1, 2, 3].into_boxed_slice();
 for x in b {  // x: i32 (owned), not &i32
@@ -149,6 +157,7 @@ for x in b {  // x: i32 (owned), not &i32
 ### Unsafe Environment Functions
 
 These are now `unsafe fn`:
+
 - `std::env::set_var`
 - `std::env::remove_var`
 - `std::os::unix::process::CommandExt::before_exec`
@@ -156,6 +165,7 @@ These are now `unsafe fn`:
 ### Cargo Resolver 3
 
 Edition 2024 uses `resolver = "3"` which is MSRV-aware:
+
 ```toml
 [workspace]
 resolver = "3"  # Considers rust-version when resolving deps
@@ -176,6 +186,7 @@ resolver = "3"  # Considers rust-version when resolving deps
 ### Standard Library
 
 New stabilized APIs:
+
 - `NonZero<u{N}>::div_ceil`
 - `Location::file_as_c_str`
 - `RwLockWriteGuard::downgrade`
@@ -196,11 +207,13 @@ New stabilized APIs:
 ## Project-Specific Notes
 
 This project (`forge`) uses:
+
 - `edition = "2024"`
 - `rust-version = "1.92.0"`
 - `resolver = "3"` (workspace)
 
 When reviewing code, keep in mind:
+
 1. Lifetime capture in `impl Trait` returns is implicit
 2. Temporaries drop earlier in `if let` and tail expressions
 3. `extern` blocks should have `unsafe` keyword

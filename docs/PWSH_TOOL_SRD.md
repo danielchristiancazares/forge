@@ -11,10 +11,13 @@
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-15 | Header & Change Log |
-| 16-36 | Introduction: Purpose, Scope (PowerShell) |
-| 37-56 | Functional Requirements: Interface, Behavior |
-| 57-86 | NFRs, Configuration, Verification |
+| 1-20 | Header & TOC |
+| 21-27 | 0. Change Log |
+| 28-54 | 1. Introduction |
+| 55-78 | 2. Functional Requirements |
+| 79-89 | 3. Non-Functional Requirements |
+| 90-98 | 4. Configuration |
+| 99-108 | 5. Verification Requirements |
 
 ---
 

@@ -6,16 +6,16 @@
         "User": {
           "content": "hello",
           "timestamp": {
-            "secs_since_epoch": 1768198872,
-            "nanos_since_epoch": 588536900
+            "secs_since_epoch": 1768301661,
+            "nanos_since_epoch": 39554100
           }
         }
       },
       "token_count": 6,
       "summary_id": null,
       "created_at": {
-        "secs_since_epoch": 1768198872,
-        "nanos_since_epoch": 588764400
+        "secs_since_epoch": 1768301661,
+        "nanos_since_epoch": 39920900
       },
       "stream_step_id": null
     }

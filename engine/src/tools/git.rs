@@ -1,4 +1,8 @@
 //! Git tool executors.
+//!
+//! Note: JSON schema literals use numbers like 5000000 which clippy warns about,
+//! but JSON doesn't support numeric separators, so we allow this lint.
+#![allow(clippy::unreadable_literal)]
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -300,7 +304,7 @@ impl ToolExecutor for GitTool {
             GitToolKind::Diff => {
                 let typed: GitDiffArgs = parse_args(args)?;
                 if let (Some(from_ref), Some(to_ref)) = (typed.from_ref, typed.to_ref) {
-                    format!("Git diff {}..{}", from_ref, to_ref)
+                    format!("Git diff {from_ref}..{to_ref}")
                 } else {
                     "Git diff".to_string()
                 }
@@ -511,27 +515,24 @@ async fn run_git(
     let stderr_task = tokio::spawn(read_to_end_limited(stderr, max_stderr_bytes));
 
     let mut timed_out = false;
-    let status = match time::timeout(Duration::from_millis(timeout_ms), child.wait()).await {
-        Ok(res) => res.map_err(|e| ToolError::ExecutionFailed {
-            tool: "git".to_string(),
-            message: e.to_string(),
-        })?,
-        Err(_) => {
-            timed_out = true;
-            let _ = child.kill().await;
-            match time::timeout(Duration::from_millis(2_000), child.wait()).await {
-                Ok(res) => res.map_err(|e| ToolError::ExecutionFailed {
+    let status = if let Ok(res) = time::timeout(Duration::from_millis(timeout_ms), child.wait()).await { res.map_err(|e| ToolError::ExecutionFailed {
+        tool: "git".to_string(),
+        message: e.to_string(),
+    })? } else {
+        timed_out = true;
+        let _ = child.kill().await;
+        match time::timeout(Duration::from_millis(2_000), child.wait()).await {
+            Ok(res) => res.map_err(|e| ToolError::ExecutionFailed {
+                tool: "git".to_string(),
+                message: e.to_string(),
+            })?,
+            Err(_) => {
+                return Err(ToolError::ExecutionFailed {
                     tool: "git".to_string(),
-                    message: e.to_string(),
-                })?,
-                Err(_) => {
-                    return Err(ToolError::ExecutionFailed {
-                        tool: "git".to_string(),
-                        message: format!(
-                            "git command timed out after {timeout_ms} ms and did not terminate"
-                        ),
-                    });
-                }
+                    message: format!(
+                        "git command timed out after {timeout_ms} ms and did not terminate"
+                    ),
+                });
             }
         }
     };
@@ -570,9 +571,8 @@ async fn read_to_end_limited<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
 
     loop {
         let n = match reader.read(&mut tmp).await {
-            Ok(0) => break,
+            Ok(0) | Err(_) => break,
             Ok(n) => n,
-            Err(_) => break,
         };
         let remaining = max_bytes.saturating_sub(buf.len());
         if remaining == 0 {

@@ -145,8 +145,7 @@ fn validate_scheme(url: &Url) -> Result<(), WebFetchError> {
         scheme => Err(WebFetchError::new(
             ErrorCode::InvalidScheme,
             format!(
-                "scheme '{}' not allowed; only http and https are supported",
-                scheme
+                "scheme '{scheme}' not allowed; only http and https are supported"
             ),
             false,
         )
@@ -874,7 +873,7 @@ fn has_binary_magic(sniff: &[u8]) -> bool {
 }
 
 fn to_ascii_lowercase(bytes: &[u8]) -> Vec<u8> {
-    bytes.iter().map(|b| b.to_ascii_lowercase()).collect()
+    bytes.iter().map(u8::to_ascii_lowercase).collect()
 }
 
 fn determine_charset(
@@ -960,7 +959,7 @@ pub(crate) fn ssrf_block_to_error(
                 .security
                 .allowed_ports
                 .iter()
-                .map(|p| p.to_string())
+                .map(std::string::ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(","),
         ),

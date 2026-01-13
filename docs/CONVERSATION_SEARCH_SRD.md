@@ -1,5 +1,7 @@
 # Conversation Search
+
 ## Software Requirements Document
+
 **Version:** 1.0
 **Date:** 2026-01-09
 **Status:** Draft
@@ -8,16 +10,25 @@
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-50 | Introduction: purpose, scope, definitions, references |
-| 51-88 | Overall Description: product perspective, functions, constraints, inline mode decision |
-| 89-180 | Functional Requirements: search mode entry, input, matching, navigation |
-| 181-250 | Highlighting and Rendering: match styling, scroll behavior |
-| 251-302 | State Management, NFRs, Verification Requirements |
+| 1-18 | Header & TOC |
+| 19-24 | 0. Change Log |
+| 25-61 | 1. Introduction |
+| 62-99 | 2. Overall Description |
+| 100-200 | 3. Functional Requirements |
+| 201-217 | 4. Non-Functional Requirements |
+| 218-269 | 5. Data Structures |
+| 270-300 | 6. UI Layout |
+| 301-327 | 7. State Transitions |
+| 328-360 | 8. Implementation Checklist |
+| 361-383 | 9. Verification Requirements |
+| 384-399 | 10. Future Considerations |
 
 ---
 
 ## 0. Change Log
+
 ### 0.1 Initial draft
+
 * Initial requirements for in-conversation search functionality.
 
 ---
@@ -25,20 +36,25 @@
 ## 1. Introduction
 
 ### 1.1 Purpose
+
 Define requirements for searching within the current conversation, allowing users to find and navigate to specific content in message history.
 
 ### 1.2 Scope
+
 The Conversation Search feature will:
+
 * Search across all messages in the current conversation (user, assistant, system, tool)
 * Highlight matches and allow navigation between them
 * Integrate with vim-modal input paradigm
 
 Out of scope:
+
 * Cross-session/history search (searching past conversations)
 * Semantic/fuzzy search (exact substring/regex only for v1)
 * Search-and-replace
 
 ### 1.3 Definitions
+
 | Term | Definition |
 | --- | --- |
 | Match | A substring in message content matching the search pattern |
@@ -46,6 +62,7 @@ Out of scope:
 | Active match | The currently focused match for navigation |
 
 ### 1.4 References
+
 | Document | Description |
 | --- | --- |
 | `tui/README.md` | TUI architecture and extension guide |
@@ -55,6 +72,7 @@ Out of scope:
 | `tui/src/ui_inline.rs` | Inline mode rendering |
 
 ### 1.5 Requirement Keywords
+
 The key words **MUST**, **MUST NOT**, **SHALL**, **SHOULD**, **MAY** are as defined in RFC 2119.
 
 ---
@@ -62,9 +80,11 @@ The key words **MUST**, **MUST NOT**, **SHALL**, **SHOULD**, **MAY** are as defi
 ## 2. Overall Description
 
 ### 2.1 Product Perspective
+
 Conversation Search is a TUI-only feature integrated into the full-screen alternate-screen mode. Inline mode presents architectural challenges (content pushed to terminal history cannot be overlaid), so search will be full-screen only in v1.
 
 ### 2.2 Product Functions
+
 | Function | Description |
 | --- | --- |
 | FR-CS-ENTER | Enter search mode from normal mode |
@@ -75,16 +95,19 @@ Conversation Search is a TUI-only feature integrated into the full-screen altern
 | FR-CS-EXIT | Exit search mode, optionally preserving scroll position |
 
 ### 2.3 User Characteristics
+
 * Users familiar with vim `/` search paradigm
 * Users expect `n`/`N` for next/prev match navigation
 * Users expect `Enter` to confirm and `Esc` to cancel
 
 ### 2.4 Constraints
+
 * Full-screen (alternate screen) mode only for v1
 * Must not block streaming or tool execution
 * Must handle large conversations without UI lag
 
 ### 2.5 Inline Mode Consideration
+
 Inline mode uses `terminal.insert_before()` to push content above the input area. This architecture does not support overlays or re-rendering previous output. Options for future versions:
 
 | Option | Trade-off |
@@ -106,6 +129,7 @@ Inline mode uses `terminal.insert_before()` to push content above the input area
 **FR-CS-02:** In Normal mode, pressing `/` MUST enter Search mode (currently enters Command mode; see FR-CS-03).
 
 **FR-CS-03:** The existing `/` → Command mode binding MUST be changed. Options:
+
 | Binding | Search | Command |
 | --- | --- | --- |
 | Option A | `/` | `:` only |
@@ -119,6 +143,7 @@ Inline mode uses `terminal.insert_before()` to push content above the input area
 ### 3.2 Search Input
 
 **FR-CS-05:** Search mode MUST display a search prompt at the bottom of the screen:
+
 ```
 /pattern_here█
 ```
@@ -126,6 +151,7 @@ Inline mode uses `terminal.insert_before()` to push content above the input area
 **FR-CS-06:** Search MUST be incremental — matches update as the user types.
 
 **FR-CS-07:** Search input MUST support:
+
 * Character insertion at cursor
 * Backspace/Delete
 * Cursor movement (Left/Right/Home/End)
@@ -145,17 +171,21 @@ Inline mode uses `terminal.insert_before()` to push content above the input area
 **FR-CS-12:** The active match (current navigation target) MUST be highlighted with a different style (e.g., `colors::SEARCH_ACTIVE`).
 
 **FR-CS-13:** A match count MUST be displayed in the search prompt or status bar:
+
 ```
 /pattern█  [3/17]
 ```
+
 Format: `[active_index/total_matches]` or `[total_matches matches]` if no active.
 
 **FR-CS-14:** If no matches exist, the prompt MUST indicate this:
+
 ```
 /pattern█  [No matches]
 ```
 
 **FR-CS-15:** Matches MUST span the following message types:
+
 * User messages (content)
 * Assistant messages (content)
 * System messages (content)
@@ -165,6 +195,7 @@ Format: `[active_index/total_matches]` or `[total_matches matches]` if no active
 ### 3.4 Match Navigation
 
 **FR-CS-16:** Pressing `Enter` in search mode MUST:
+
 1. Confirm the search
 2. Jump to the first match (or next match from current scroll position)
 3. Transition to Normal mode with search highlights preserved
@@ -180,6 +211,7 @@ Format: `[active_index/total_matches]` or `[total_matches matches]` if no active
 ### 3.5 Search Exit
 
 **FR-CS-21:** Pressing `Esc` in Search mode MUST:
+
 1. Clear the search pattern
 2. Remove all highlights
 3. Return to Normal mode at previous scroll position
@@ -201,6 +233,7 @@ Format: `[active_index/total_matches]` or `[total_matches matches]` if no active
 ## 4. Non-Functional Requirements
 
 ### 4.1 Performance
+
 | Requirement | Specification |
 | --- | --- |
 | NFR-CS-PERF-01 | Incremental search MUST complete in <50ms for conversations up to 1000 messages |
@@ -208,6 +241,7 @@ Format: `[active_index/total_matches]` or `[total_matches matches]` if no active
 | NFR-CS-PERF-03 | Search state SHOULD be computed lazily or cached between frames |
 
 ### 4.2 Accessibility
+
 | Requirement | Specification |
 | --- | --- |
 | NFR-CS-A11Y-01 | Match highlight colors MUST have sufficient contrast ratio (WCAG AA) |
@@ -218,6 +252,7 @@ Format: `[active_index/total_matches]` or `[total_matches matches]` if no active
 ## 5. Data Structures
 
 ### 5.1 SearchState
+
 ```rust
 /// Active search state, held in App when search is active.
 pub struct SearchState {
@@ -242,6 +277,7 @@ pub struct SearchMatch {
 ```
 
 ### 5.2 InputMode Extension
+
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InputMode {
@@ -255,6 +291,7 @@ pub enum InputMode {
 ```
 
 ### 5.3 InputState Extension
+
 ```rust
 pub enum InputState {
     Normal(DraftInput),
@@ -270,6 +307,7 @@ pub enum InputState {
 ## 6. UI Layout
 
 ### 6.1 Full-Screen Search Mode
+
 ```
 ┌─────────────────────────────────────────────────────┐
 │ ○ You                                               │
@@ -289,6 +327,7 @@ pub enum InputState {
 ```
 
 ### 6.2 Theme Colors (suggested)
+
 ```rust
 // In tui/src/theme.rs
 pub const SEARCH_MATCH: Color = Color::Rgb(60, 60, 0);      // Dark yellow bg
@@ -328,32 +367,36 @@ pub const SEARCH_MATCH_FG: Color = Color::Rgb(255, 255, 200); // Light text on m
 ## 8. Implementation Checklist
 
 ### 8.1 Engine Changes (`engine/src/lib.rs`)
+
 - [ ] Add `InputMode::Search` variant
-- [ ] Add `InputState::Search` variant with `SearchState`
-- [ ] Add `SearchState` struct with pattern, cursor, matches, active_index
-- [ ] Add `SearchMatch` struct
-- [ ] Implement `enter_search_mode()`, `exit_search_mode()`
-- [ ] Implement `search_next()`, `search_prev()`
-- [ ] Implement `search_pattern()` getter for TUI
-- [ ] Implement `search_matches()` getter for TUI
-- [ ] Implement `search_active_index()` getter for TUI
-- [ ] Add `SearchToken` proof type for search mode operations
-- [ ] Invalidate search on new message send
+* [ ] Add `InputState::Search` variant with `SearchState`
+* [ ] Add `SearchState` struct with pattern, cursor, matches, active_index
+* [ ] Add `SearchMatch` struct
+* [ ] Implement `enter_search_mode()`, `exit_search_mode()`
+* [ ] Implement `search_next()`, `search_prev()`
+* [ ] Implement `search_pattern()` getter for TUI
+* [ ] Implement `search_matches()` getter for TUI
+* [ ] Implement `search_active_index()` getter for TUI
+* [ ] Add `SearchToken` proof type for search mode operations
+* [ ] Invalidate search on new message send
 
 ### 8.2 TUI Changes (`tui/src/lib.rs`)
+
 - [ ] Import `SearchState` types
-- [ ] Modify `draw_messages()` to apply match highlighting
-- [ ] Add `draw_search_prompt()` function
-- [ ] Call `draw_search_prompt()` when `InputMode::Search`
-- [ ] Add search colors to `theme.rs`
+* [ ] Modify `draw_messages()` to apply match highlighting
+* [ ] Add `draw_search_prompt()` function
+* [ ] Call `draw_search_prompt()` when `InputMode::Search`
+* [ ] Add search colors to `theme.rs`
 
 ### 8.3 Input Changes (`tui/src/input.rs`)
+
 - [ ] Change `/` in Normal mode to call `enter_search_mode()` (full-screen only)
-- [ ] Add `handle_search_mode()` function
-- [ ] Handle `n`/`N` in Normal mode when search active
-- [ ] Handle `Esc` in Normal mode to clear search
+* [ ] Add `handle_search_mode()` function
+* [ ] Handle `n`/`N` in Normal mode when search active
+* [ ] Handle `Esc` in Normal mode to clear search
 
 ### 8.4 Inline Mode (`tui/src/ui_inline.rs`)
+
 - [ ] Detect `/` press and show status: "Search requires full-screen mode. Use /screen to switch."
 
 ---
@@ -361,6 +404,7 @@ pub const SEARCH_MATCH_FG: Color = Color::Rgb(255, 255, 200); // Light text on m
 ## 9. Verification Requirements
 
 ### 9.1 Unit Tests
+
 | Test ID | Description |
 | --- | --- |
 | T-CS-MATCH-01 | Pattern finds all occurrences in message content |
@@ -373,6 +417,7 @@ pub const SEARCH_MATCH_FG: Color = Color::Rgb(255, 255, 200); // Light text on m
 | T-CS-STATE-02 | exit_search_mode() clears state |
 
 ### 9.2 Integration Tests
+
 | Test ID | Description |
 | --- | --- |
 | IT-CS-E2E-01 | Full search flow: enter, type, navigate, exit |
@@ -384,13 +429,16 @@ pub const SEARCH_MATCH_FG: Color = Color::Rgb(255, 255, 200); // Light text on m
 ## 10. Future Considerations
 
 ### 10.1 v2 Enhancements
+
 * Regex search mode (`/\v` prefix or toggle)
 * Case-sensitive toggle (`\C` suffix)
 * Search history (up/down arrow in search prompt)
 * Cross-session search (search SQLite history)
 
 ### 10.2 Inline Mode Support
+
 If inline mode search is desired, the recommended approach is:
+
 1. On `/` press, temporarily switch to alternate screen
 2. Display full conversation with search UI
 3. On exit, return to inline mode

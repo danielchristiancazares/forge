@@ -1,6 +1,6 @@
-//! WebFetch: URL fetching with browser fallback for Forge.
+//! `WebFetch`: URL fetching with browser fallback for Forge.
 //!
-//! This crate implements the WebFetch tool specification (WEBFETCH_SRD.md v2.4).
+//! This crate implements the `WebFetch` tool specification (`WEBFETCH_SRD.md` v2.4).
 //! It provides safe URL fetching with SSRF protection, robots.txt compliance,
 //! HTML-to-Markdown extraction, and token-aware chunking.
 //!
@@ -51,7 +51,7 @@ pub use types::{
 
 /// Fetch a URL and return structured, chunked content.
 ///
-/// This is the main entry point for the WebFetch tool. It:
+/// This is the main entry point for the `WebFetch` tool. It:
 ///
 /// 1. Validates the URL for SSRF protection
 /// 2. Checks robots.txt compliance
@@ -149,7 +149,7 @@ pub async fn fetch(
     }
 
     // Sort notes by canonical order (FR-WF-NOTES-ORDER-01)
-    notes.sort_by_key(|n| n.order());
+    notes.sort_by_key(types::Note::order);
     notes.dedup();
 
     // Build output
@@ -227,7 +227,7 @@ async fn check_robots(
         RobotsResult::Allowed => Ok(()),
         RobotsResult::Disallowed { rule } => Err(WebFetchError::new(
             ErrorCode::RobotsDisallowed,
-            format!("robots.txt disallows this path: {}", rule),
+            format!("robots.txt disallows this path: {rule}"),
             false,
         )
         .with_detail("rule", rule)),
@@ -240,7 +240,7 @@ async fn check_robots(
 
 /// Fetch content via HTTP or browser.
 ///
-/// Returns: (html, final_url, used_browser, dom_truncated, blocked_non_get, charset_fallback)
+/// Returns: (html, `final_url`, `used_browser`, `dom_truncated`, `blocked_non_get`, `charset_fallback`)
 async fn fetch_content(
     input: &ResolvedRequest,
     config: &ResolvedConfig,
@@ -259,10 +259,9 @@ async fn fetch_content(
                 response.blocked_non_get,
                 false,
             ));
-        } else {
-            // Browser unavailable, fall back to HTTP
-            notes.push(Note::BrowserUnavailableUsedHttp);
         }
+        // Browser unavailable, fall back to HTTP
+        notes.push(Note::BrowserUnavailableUsedHttp);
     }
 
     // Try HTTP fetch
@@ -275,21 +274,17 @@ async fn fetch_content(
     // Check for SPA heuristics (minimal HTML that likely needs JS)
     if !input.force_browser && is_spa_heuristic(&html) && browser::is_available(config) {
         // Try browser fallback for SPA
-        match browser::render(&input.url, config).await {
-            Ok(browser_response) => {
-                return Ok((
-                    browser_response.html,
-                    browser_response.final_url,
-                    true,
-                    browser_response.dom_truncated,
-                    browser_response.blocked_non_get,
-                    charset_fallback,
-                ));
-            }
-            Err(_) => {
-                // Browser failed, continue with HTTP response
-            }
+        if let Ok(browser_response) = browser::render(&input.url, config).await {
+            return Ok((
+                browser_response.html,
+                browser_response.final_url,
+                true,
+                browser_response.dom_truncated,
+                browser_response.blocked_non_get,
+                charset_fallback,
+            ));
         }
+        // Browser failed, continue with HTTP response
     }
 
     // HTTP response (no browser used)
@@ -306,10 +301,10 @@ async fn fetch_content(
 /// Decode response body to string.
 fn decode_body(body: &[u8], charset: Option<&str>) -> Result<String, WebFetchError> {
     match charset {
-        Some("utf-8") | Some("UTF-8") | None => String::from_utf8(body.to_vec()).map_err(|e| {
+        Some("utf-8" | "UTF-8") | None => String::from_utf8(body.to_vec()).map_err(|e| {
             WebFetchError::new(
                 ErrorCode::ExtractionFailed,
-                format!("invalid UTF-8 in response body: {}", e),
+                format!("invalid UTF-8 in response body: {e}"),
                 false,
             )
         }),

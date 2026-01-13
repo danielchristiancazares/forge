@@ -29,7 +29,7 @@ pub enum RobotsResult {
     Allowed,
     /// Path is disallowed.
     Disallowed { rule: String },
-    /// robots.txt unavailable (and fail_open applies).
+    /// robots.txt unavailable (and `fail_open` applies).
     Unavailable { error: String },
 }
 
@@ -84,28 +84,25 @@ pub async fn check(url: &Url, config: &ResolvedConfig) -> Result<RobotsResult, W
     match fetch_robots(url, config).await {
         Ok(FetchResult::Content(content)) => {
             // Parse and cache
-            match parse(&content) {
-                Ok(robots) => {
-                    let result = robots.check(url.path(), user_agent);
-                    if cache_entries > 0 {
-                        cache_robots(
-                            &origin,
-                            CachedRobots::Parsed(robots),
-                            cache_ttl,
-                            cache_entries,
-                        )
+            if let Ok(robots) = parse(&content) {
+                let result = robots.check(url.path(), user_agent);
+                if cache_entries > 0 {
+                    cache_robots(
+                        &origin,
+                        CachedRobots::Parsed(robots),
+                        cache_ttl,
+                        cache_entries,
+                    )
+                    .await;
+                }
+                Ok(result)
+            } else {
+                // Malformed robots.txt → allow-all, cache it
+                if cache_entries > 0 {
+                    cache_robots(&origin, CachedRobots::AllowAll, cache_ttl, cache_entries)
                         .await;
-                    }
-                    Ok(result)
                 }
-                Err(_) => {
-                    // Malformed robots.txt → allow-all, cache it
-                    if cache_entries > 0 {
-                        cache_robots(&origin, CachedRobots::AllowAll, cache_ttl, cache_entries)
-                            .await;
-                    }
-                    Ok(RobotsResult::Allowed)
-                }
+                Ok(RobotsResult::Allowed)
             }
         }
         Ok(FetchResult::AllowAll) => {
@@ -176,9 +173,9 @@ fn compute_origin(url: &Url) -> String {
     // Only include port if non-standard
     let default_port = if scheme == "https" { 443 } else { 80 };
     if port == default_port {
-        format!("{}://{}", scheme, host)
+        format!("{scheme}://{host}")
     } else {
-        format!("{}://{}:{}", scheme, host, port)
+        format!("{scheme}://{host}:{port}")
     }
 }
 
@@ -337,7 +334,7 @@ fn build_robots_url(url: &Url) -> Result<Url, WebFetchError> {
         format!(":{port}")
     };
 
-    let robots_url_str = format!("{}://{}{}/robots.txt", scheme, host, port_part);
+    let robots_url_str = format!("{scheme}://{host}{port_part}/robots.txt");
 
     Url::parse(&robots_url_str)
         .map_err(|e| WebFetchError::new(ErrorCode::InvalidUrl, e.to_string(), false))
@@ -354,11 +351,8 @@ pub fn is_valid_robots_redirect(original: &Url, redirect: &Url) -> bool {
 
     // Check scheme compatibility first
     let scheme_ok = match (original.scheme(), redirect.scheme()) {
-        ("http", "http") => true,
-        ("http", "https") => true, // Upgrade allowed
-        ("https", "https") => true,
-        ("https", "http") => false, // Downgrade not allowed
-        _ => false,
+        ("http", "http" | "https") | ("https", "https") => true, // Upgrade allowed
+        _ => false, // Downgrade or unknown scheme not allowed
     };
 
     if !scheme_ok {
@@ -575,15 +569,13 @@ fn path_matches(path: &str, pattern: &str) -> bool {
     };
 
     // If no wildcards, simple prefix match
-    if !pattern.contains('*') {
-        if anchored {
-            path == pattern
-        } else {
-            path.starts_with(pattern)
-        }
-    } else {
+    if pattern.contains('*') {
         // Wildcard matching
         wildcard_match(path, pattern, anchored)
+    } else if anchored {
+        path == pattern
+    } else {
+        path.starts_with(pattern)
     }
 }
 

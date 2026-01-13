@@ -9,15 +9,29 @@
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-56 | Section 1 - Overview: purpose, core principles, goals, non-goals |
-| 57-109 | Section 2 - Normative Language: definitions (Session, Branch, Turn, Chunk, etc.), system invariants |
-| 110-175 | Section 3 - Architecture: component diagram, Orchestrator, Provider Adapter, Librarian, Storage |
-| 176-216 | Section 4 - Identifiers: ID types (SessionId, BranchId, etc.), sequences, content hashes |
-| 217-478 | Section 5 - Data Model: ContentBlock, Message, TranscriptItem, Session, Branch, State, Turn, Step, Chunk |
-| 479-560 | Section 6 - Turn Lifecycle: state machine, input gating, atomicity, recovery |
-| 561-650 | Section 7 - Context Assembly: components, budgeting, shrinker algorithm |
-| 651-720 | Section 8 - State Updates: Librarian, triggers, state update constraints |
-| 721-816 | Sections 9-13 - Retrieval, Streaming, Provider Adapter, Configuration, NFRs |
+| 1-23 | Header & TOC |
+| 24-71 | 1. Overview |
+| 72-124 | 2. Normative Language, Definitions, and Invariants |
+| 125-190 | 3. Architecture |
+| 191-231 | 4. Identifiers, Ordering, and Hashing |
+| 232-494 | 5. Data Model |
+| 495-583 | 6. Turn Lifecycle, Atomicity, and Recovery |
+| 584-618 | 7. Context Assembly and Budgeting |
+| 619-653 | 8. Retrieval Strategy |
+| 654-680 | 9. Chunking and Indexing |
+| 681-715 | 10. Summarization (Librarian) |
+| 716-780 | 11. Provider Integration |
+| 781-807 | 12. Tools Policy |
+| 809-841 | 13. Streaming Durability |
+| 842-873 | 14. Security, Privacy, and Prompt Hardening |
+| 874-895 | 15. Observability and Telemetry |
+| 896-1010 | 16. Storage Implementation (SQLite) |
+| 1011-1037 | 17. TUI Requirements |
+| 1038-1090 | 18. Configuration |
+| 1091-1104 | 19. Risks and Mitigations |
+| 1105-1117 | 20. Success Metrics |
+| 1118-1151 | 21. Implementation Phases |
+| 1152-1160 | 22. Acceptance Tests |
 
 ---
 
@@ -1156,4 +1170,3 @@ disable_parallel_tool_use = true
 3. **Crash recovery post-stream pre-commit**: kill after response finalization but before commit; restart reconciler commits head deterministically.
 4. **Context shrinker determinism**: intentionally exceed limit; retries shrink in defined order; logs show steps.
 5. **Idempotent indexing**: rerun indexing job for same turn; no duplicate chunks/embeddings inserted.
-

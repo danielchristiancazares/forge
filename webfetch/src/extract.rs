@@ -155,8 +155,7 @@ pub fn extract(html: &str, final_url: &Url) -> Result<ExtractedContent, WebFetch
         return Err(WebFetchError::new(
             ErrorCode::ExtractionFailed,
             format!(
-                "extracted content too short ({} non-whitespace chars, minimum {})",
-                char_count, MIN_EXTRACTED_CHARS
+                "extracted content too short ({char_count} non-whitespace chars, minimum {MIN_EXTRACTED_CHARS})"
             ),
             false,
         ));
@@ -382,12 +381,12 @@ fn convert_element(output: &mut String, element: ElementRef<'_>, ctx: &mut Conve
         "pre" => convert_pre(output, element, ctx),
         "code" => {
             // Inline code (not inside <pre>)
-            if !ctx.in_preformatted {
-                output.push('`');
+            if ctx.in_preformatted {
                 output.push_str(&element.text().collect::<String>());
-                output.push('`');
             } else {
+                output.push('`');
                 output.push_str(&element.text().collect::<String>());
+                output.push('`');
             }
         }
 
@@ -422,13 +421,6 @@ fn convert_element(output: &mut String, element: ElementRef<'_>, ctx: &mut Conve
             output.push_str("---\n\n");
         }
 
-        // Inline elements - just recurse
-        "span" | "small" | "mark" | "sub" | "sup" | "abbr" | "time" | "cite" | "dfn" | "kbd"
-        | "samp" | "var" | "q" | "wbr" | "bdi" | "bdo" | "ruby" | "rt" | "rp" | "data"
-        | "label" | "output" => {
-            convert_children(output, element, ctx);
-        }
-
         // Definition lists
         "dl" => convert_definition_list(output, element, ctx),
 
@@ -440,7 +432,7 @@ fn convert_element(output: &mut String, element: ElementRef<'_>, ctx: &mut Conve
         | "input" | "button" | "select" | "textarea" | "iframe" | "object" | "embed" | "canvas"
         | "svg" | "video" | "audio" | "source" | "track" | "map" | "area" => {}
 
-        // Default: recurse into unknown elements
+        // Inline elements and unknown elements - just recurse
         _ => {
             convert_children(output, element, ctx);
         }
@@ -536,7 +528,7 @@ fn convert_ordered_list(output: &mut String, element: ElementRef<'_>, ctx: &mut 
             && li.value().name() == "li"
         {
             output.push_str(&indent);
-            output.push_str(&format!("{}. ", i));
+            output.push_str(&format!("{i}. "));
             convert_list_item_content(output, li, ctx);
             i += 1;
         }
@@ -740,7 +732,7 @@ fn convert_table(output: &mut String, element: ElementRef<'_>, ctx: &mut Convers
     }
 
     // Find max column count
-    let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let col_count = rows.iter().map(std::vec::Vec::len).max().unwrap_or(0);
     if col_count == 0 {
         return;
     }
@@ -756,7 +748,7 @@ fn convert_table(output: &mut String, element: ElementRef<'_>, ctx: &mut Convers
     let col_widths: Vec<usize> = (0..col_count)
         .map(|col| {
             rows.iter()
-                .map(|row| row.get(col).map_or(0, |c| c.len()))
+                .map(|row| row.get(col).map_or(0, std::string::String::len))
                 .max()
                 .unwrap_or(3)
                 .max(3)
@@ -913,8 +905,8 @@ fn collapse_inline_whitespace(s: &str) -> String {
         return String::new();
     }
 
-    let has_leading = s.chars().next().is_some_and(|c| c.is_whitespace());
-    let has_trailing = s.chars().last().is_some_and(|c| c.is_whitespace());
+    let has_leading = s.chars().next().is_some_and(char::is_whitespace);
+    let has_trailing = s.chars().last().is_some_and(char::is_whitespace);
 
     let collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
 

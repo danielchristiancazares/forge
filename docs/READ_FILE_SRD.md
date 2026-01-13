@@ -11,11 +11,14 @@
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-15 | Header & Change Log |
-| 16-43 | Introduction: Purpose, Scope, Definitions |
-| 44-57 | Overall Description: Perspective, Functions |
-| 58-85 | Functional Requirements: Interface, Output, Limits |
-| 86-117 | NFRs, Configuration, Verification |
+| 1-21 | Header & TOC |
+| 22-29 | Change Log |
+| 30-64 | Introduction: Purpose, Scope, Definitions |
+| 65-80 | Overall Description: Perspective, Functions |
+| 81-113 | Functional Requirements: Interface, Output, Limits |
+| 114-123 | Non-Functional Requirements |
+| 124-134 | Configuration |
+| 135-145 | Verification Requirements |
 
 ---
 

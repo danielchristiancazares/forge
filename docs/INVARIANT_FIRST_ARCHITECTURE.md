@@ -4,12 +4,28 @@
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-35 | Pattern Summary: intent, context, problem, forces, solution, consequences |
-| 36-80 | Definitions: core terms (invariant, invalid state, representable), system topology |
-| 81-111 | Primary Rule: invalid states must not be representable, compilation as evidence |
-| 112-180 | Typestate Transitions, Call-Site Rejection, Error Handling |
-| 181-250 | Boundary vs Core, Mechanism vs Policy, Assertion Policy |
-| 251-302 | Concurrency, Testing Strategy, Anti-Patterns, Examples |
+| 1-13 | Header & TOC |
+| 14-39 | Pattern Summary |
+| 40-47 | 0. Status and Scope |
+| 48-92 | 1. Definitions |
+| 93-122 | 2. Primary Rule |
+| 123-147 | 3. Typestate Transitions |
+| 148-180 | 4. Parametricity |
+| 181-193 | 5. Constrained Generics and Call-Site Rejection |
+| 194-230 | 6. Ownership as Coordination Elimination |
+| 231-247 | 7. Mechanism vs Policy |
+| 248-269 | 8. State as Location |
+| 270-286 | 9. Capability Tokens |
+| 287-311 | 10. Boundary and Core Separation |
+| 312-330 | 11. Assertions |
+| 331-363 | 12. Non-Conforming Patterns |
+| 364-395 | 13. Litmus Tests |
+| 396-429 | 14. Implementation Notes |
+| 430-451 | 15. Known Limitations |
+| 452-465 | 16. Operational Definitions Checklist |
+| 466-492 | 17. Non-Acceptable Objections |
+| 493-505 | 18. Closing Statement |
+| 506-552 | Appendix |
 
 ## Pattern Summary
 

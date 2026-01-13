@@ -1,6 +1,6 @@
 //! Stream Journal - Streaming durability system for crash recovery
 //!
-//! This module ensures that streaming deltas are persisted to SQLite BEFORE
+//! This module ensures that streaming deltas are persisted to `SQLite` BEFORE
 //! being displayed to the user. This guarantees that after a crash, we can
 //! recover the partial response and resume or replay.
 //!
@@ -13,7 +13,7 @@
 //!
 //! # Performance Consideration
 //!
-//! Currently, SQLite writes are synchronous and run in the async UI loop.
+//! Currently, `SQLite` writes are synchronous and run in the async UI loop.
 //! For high-frequency deltas on slow disks, this could cause UI stutter.
 //! Future optimization: move journaling to a dedicated thread with channel-based
 //! event submission, batching commits per N deltas or time interval.
@@ -91,11 +91,13 @@ pub struct ActiveJournal {
 }
 
 impl ActiveJournal {
+    #[must_use] 
     pub fn step_id(&self) -> StepId {
         self.step_id
     }
 
     /// Get the model name associated with this streaming session.
+    #[must_use] 
     pub fn model_name(&self) -> &str {
         &self.model_name
     }
@@ -136,7 +138,7 @@ pub enum RecoveredStream {
     Complete {
         /// The step ID that was interrupted
         step_id: StepId,
-        /// Accumulated text from text_delta events
+        /// Accumulated text from `text_delta` events
         partial_text: String,
         /// Last sequence number seen
         last_seq: u64,
@@ -147,7 +149,7 @@ pub enum RecoveredStream {
     Errored {
         /// The step ID that was interrupted
         step_id: StepId,
-        /// Accumulated text from text_delta events
+        /// Accumulated text from `text_delta` events
         partial_text: String,
         /// Last sequence number seen
         last_seq: u64,
@@ -160,7 +162,7 @@ pub enum RecoveredStream {
     Incomplete {
         /// The step ID that was interrupted
         step_id: StepId,
-        /// Accumulated text from text_delta events
+        /// Accumulated text from `text_delta` events
         partial_text: String,
         /// Last sequence number seen
         last_seq: u64,
@@ -173,7 +175,7 @@ static JOURNAL_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Stream journal for durable streaming with crash recovery
 ///
-/// This journal persists every streaming delta to SQLite before it's
+/// This journal persists every streaming delta to `SQLite` before it's
 /// displayed to the user, enabling recovery after crashes.
 pub struct StreamJournal {
     db: Connection,
@@ -183,7 +185,7 @@ pub struct StreamJournal {
 
 impl StreamJournal {
     /// SQL to initialize the database schema
-    const SCHEMA: &'static str = r#"
+    const SCHEMA: &'static str = r"
         CREATE TABLE IF NOT EXISTS stream_journal (
             step_id INTEGER NOT NULL,
             seq INTEGER NOT NULL,
@@ -211,7 +213,7 @@ impl StreamJournal {
             committed INTEGER DEFAULT 0,
             created_at TEXT NOT NULL
         );
-    "#;
+    ";
 
     /// Open or create journal database at the given path
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -222,7 +224,7 @@ impl StreamJournal {
             && !parent.exists()
         {
             std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory: {:?}", parent))?;
+                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
         }
         if let Some(parent) = path.parent() {
             ensure_secure_dir(parent)?;
@@ -230,7 +232,7 @@ impl StreamJournal {
         ensure_secure_db_files(path)?;
 
         let db = Connection::open(path)
-            .with_context(|| format!("Failed to open database at {:?}", path))?;
+            .with_context(|| format!("Failed to open database at {}", path.display()))?;
 
         Self::initialize(db)
     }
@@ -270,11 +272,11 @@ impl StreamJournal {
     /// or a new step ID cannot be allocated.
     pub fn begin_session(&mut self, model_name: impl Into<String>) -> Result<ActiveJournal> {
         if let Some(step_id) = self.active_step {
-            bail!("Cannot begin session: already streaming step {}", step_id);
+            bail!("Cannot begin session: already streaming step {step_id}");
         }
         // Check for any recoverable steps (unsealed OR uncommitted)
         if let Some(step_id) = self.latest_recoverable_step_id()? {
-            bail!("Cannot begin session: recoverable step {} exists", step_id);
+            bail!("Cannot begin session: recoverable step {step_id} exists");
         }
 
         let step_id = self.next_step_id()?;
@@ -350,7 +352,7 @@ impl StreamJournal {
             "UPDATE step_metadata SET committed = 1 WHERE step_id = ?1",
             params![step_id],
         )
-        .with_context(|| format!("Failed to mark step {} as committed", step_id))?;
+        .with_context(|| format!("Failed to mark step {step_id} as committed"))?;
 
         // Delete journal entries
         let deleted = tx
@@ -358,14 +360,14 @@ impl StreamJournal {
                 "DELETE FROM stream_journal WHERE step_id = ?1",
                 params![step_id],
             )
-            .with_context(|| format!("Failed to delete journal entries for step {}", step_id))?;
+            .with_context(|| format!("Failed to delete journal entries for step {step_id}"))?;
 
         // Delete metadata (now that it's committed)
         tx.execute(
             "DELETE FROM step_metadata WHERE step_id = ?1",
             params![step_id],
         )
-        .with_context(|| format!("Failed to delete metadata for step {}", step_id))?;
+        .with_context(|| format!("Failed to delete metadata for step {step_id}"))?;
 
         tx.commit()
             .context("Failed to commit commit-prune transaction")?;
@@ -389,14 +391,14 @@ impl StreamJournal {
                 "DELETE FROM stream_journal WHERE step_id = ?1",
                 params![step_id],
             )
-            .with_context(|| format!("Failed to delete journal entries for step {}", step_id))?;
+            .with_context(|| format!("Failed to delete journal entries for step {step_id}"))?;
 
         // Delete metadata
         tx.execute(
             "DELETE FROM step_metadata WHERE step_id = ?1",
             params![step_id],
         )
-        .with_context(|| format!("Failed to delete metadata for step {}", step_id))?;
+        .with_context(|| format!("Failed to delete metadata for step {step_id}"))?;
 
         tx.commit()
             .context("Failed to commit discard transaction")?;
@@ -680,7 +682,7 @@ fn seal_step(db: &Connection, step_id: StepId) -> Result<()> {
         "UPDATE stream_journal SET sealed = 1 WHERE step_id = ?1 AND sealed = 0",
         params![step_id],
     )
-    .with_context(|| format!("Failed to seal step {}", step_id))?;
+    .with_context(|| format!("Failed to seal step {step_id}"))?;
 
     Ok(())
 }
@@ -691,14 +693,14 @@ fn discard_step(db: &Connection, step_id: StepId) -> Result<u64> {
             "DELETE FROM stream_journal WHERE step_id = ?1 AND sealed = 0",
             params![step_id],
         )
-        .with_context(|| format!("Failed to discard unsealed entries for step {}", step_id))?;
+        .with_context(|| format!("Failed to discard unsealed entries for step {step_id}"))?;
 
     // Also clean up the metadata entry for this discarded step
     db.execute(
         "DELETE FROM step_metadata WHERE step_id = ?1",
         params![step_id],
     )
-    .with_context(|| format!("Failed to delete metadata for discarded step {}", step_id))?;
+    .with_context(|| format!("Failed to delete metadata for discarded step {step_id}"))?;
 
     Ok(deleted as u64)
 }
@@ -747,7 +749,7 @@ pub struct JournalStats {
     pub current_step_id: StepId,
 }
 
-/// Convert a SystemTime to ISO 8601 string
+/// Convert a `SystemTime` to ISO 8601 string
 fn system_time_to_iso8601(time: SystemTime) -> String {
     let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
     let secs = duration.as_secs();
@@ -777,19 +779,18 @@ fn chrono_lite_format(secs: u64, millis: u32) -> String {
     let (year, month, day) = days_to_ymd(days);
 
     format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        year, month, day, hours, minutes, seconds, millis
+        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
     )
 }
 
 fn ensure_secure_dir(path: &Path) -> Result<()> {
     std::fs::create_dir_all(path)
-        .with_context(|| format!("Failed to create directory: {:?}", path))?;
+        .with_context(|| format!("Failed to create directory: {}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let metadata = std::fs::metadata(path)
-            .with_context(|| format!("Failed to read directory metadata: {:?}", path))?;
+            .with_context(|| format!("Failed to read directory metadata: {}", path.display()))?;
 
         // Only modify permissions if we own the directory
         let our_uid = unsafe { libc::getuid() };
@@ -803,7 +804,7 @@ fn ensure_secure_dir(path: &Path) -> Result<()> {
         if current_mode & 0o077 != 0 {
             // Group or other has some access - tighten to 0o700
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-                .with_context(|| format!("Failed to set directory permissions: {:?}", path))?;
+                .with_context(|| format!("Failed to set directory permissions: {}", path.display()))?;
         }
     }
     Ok(())
@@ -817,13 +818,13 @@ fn ensure_secure_db_files(path: &Path) -> Result<()> {
             .read(true)
             .write(true)
             .open(path)
-            .with_context(|| format!("Failed to create database file: {:?}", path))?;
+            .with_context(|| format!("Failed to create database file: {}", path.display()))?;
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("Failed to set database permissions: {:?}", path))?;
+            .with_context(|| format!("Failed to set database permissions: {}", path.display()))?;
         for suffix in ["-wal", "-shm"] {
             let sidecar = sqlite_sidecar_path(path, suffix);
             if sidecar.exists() {
@@ -846,11 +847,11 @@ fn sqlite_sidecar_path(path: &Path, suffix: &str) -> std::path::PathBuf {
 /// Convert days since Unix epoch to (year, month, day)
 fn days_to_ymd(days: u64) -> (i32, u32, u32) {
     // Algorithm from Howard Hinnant's date algorithms
-    let z = days as i64 + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
+    let z = days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = i64::from(yoe) + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;
@@ -860,7 +861,7 @@ fn days_to_ymd(days: u64) -> (i32, u32, u32) {
     (year as i32, m, d)
 }
 
-/// Parse ISO 8601 string to SystemTime (for internal use)
+/// Parse ISO 8601 string to `SystemTime` (for internal use)
 #[allow(dead_code)]
 fn iso8601_to_system_time(s: &str) -> Option<SystemTime> {
     // Parse format: YYYY-MM-DDTHH:MM:SS.mmmZ
@@ -882,8 +883,8 @@ fn iso8601_to_system_time(s: &str) -> Option<SystemTime> {
     };
 
     let days = ymd_to_days(year, month, day)?;
-    let secs = days as u64 * 86400 + hour as u64 * 3600 + minute as u64 * 60 + second as u64;
-    let duration = Duration::from_secs(secs) + Duration::from_millis(millis as u64);
+    let secs = days as u64 * 86400 + u64::from(hour) * 3600 + u64::from(minute) * 60 + u64::from(second);
+    let duration = Duration::from_secs(secs) + Duration::from_millis(u64::from(millis));
 
     UNIX_EPOCH.checked_add(duration)
 }
@@ -894,14 +895,14 @@ fn ymd_to_days(year: i32, month: u32, day: u32) -> Option<i64> {
         return None;
     }
 
-    let y = if month <= 2 { year - 1 } else { year } as i64;
+    let y = i64::from(if month <= 2 { year - 1 } else { year });
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = (y - era * 400) as u32;
     let m = month;
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
 
-    Some(era * 146097 + doe as i64 - 719468)
+    Some(era * 146_097 + i64::from(doe) - 719_468)
 }
 
 #[cfg(test)]

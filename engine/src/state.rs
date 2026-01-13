@@ -62,7 +62,7 @@ pub(crate) struct ActiveStream {
 ///
 /// Holds the state for an in-progress summarization operation:
 /// - The message IDs being summarized
-/// - The JoinHandle for the async task
+/// - The `JoinHandle` for the async task
 #[derive(Debug)]
 pub struct SummarizationTask {
     pub(crate) scope: SummarizationScope,
@@ -151,6 +151,7 @@ pub(crate) struct ApprovalState {
     pub(crate) selected: Vec<bool>,
     pub(crate) cursor: usize,
     pub(crate) deny_confirm: bool,
+    pub(crate) expanded: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -203,7 +204,7 @@ pub(crate) struct ToolPlan {
 
 /// Operation state - what the app is currently doing.
 ///
-/// Note: ContextInfinity enablement is tracked separately via `App.context_infinity`,
+/// Note: `ContextInfinity` enablement is tracked separately via `App.context_infinity`,
 /// not encoded in this enum. This prevents implicit feature toggling through state
 /// transitions.
 #[derive(Debug)]

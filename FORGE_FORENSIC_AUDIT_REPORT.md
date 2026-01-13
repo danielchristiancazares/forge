@@ -8,16 +8,18 @@
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-20 | Executive Table: Bug ID, Status, Severity, Likelihood summary |
-| 21-62 | B01 PROVEN: Stream journal blocks UI (sync SQLite), fix: async task |
-| 63-101 | B02 DISPROVEN: Stream disconnection misclassified (dead code, not bug) |
-| 102-142 | B03 PROVEN: Model switch during active stream corrupts context, fix: state check |
-| 143-181 | B04 PROVEN: Terminal left in raw state on panic, fix: panic hook |
-| 182-205 | B05 DISPROVEN: Runtime invariant validation present, no illegal overlaps |
-| 206-277 | B06 PROVEN: Async task leak on panic (summarization only), fix: store handle before spawn |
-| 278-312 | B07 PROVEN: Resource exhaustion from unbounded growth, fix: collection limits |
-| 313-355 | B08 PROVEN: Tool resource cleanup not RAII, fix: cleanup guards |
-| 356-398 | B09 PROVEN: Tool approval UX dead-end, fix: timeout mechanism |
+| 1-21 | Header & Status Note |
+| 22-35 | Executive Table |
+| 36-37 | Bug Analysis Intro |
+| 38-77 | B01: Stream journal blocks UI |
+| 78-116 | B02: Stream disconnection misclassified |
+| 117-157 | B03: Model switch context corruption |
+| 158-196 | B04: Terminal broken state validation |
+| 197-220 | B05: Runtime invariant validation |
+| 221-292 | B06: Async task leak on panic |
+| 293-327 | B07: Resource exhaustion |
+| 328-370 | B08: Tool cleanup RAII |
+| 371-413 | B09: Tool approval dead-end |
 
 ## Executive Table
 
@@ -42,6 +44,7 @@ I. **Bug statement**: Synchronous SQLite operations in `process_stream_events()`
 II. **Key invariants**: UI/event loop must remain responsive; hot path must not block on disk I/O.
 
 III. **Code-path trace**:
+
 - `cli/src/main.rs:197`: `app.process_stream_events()` called on main thread every loop iteration
 - `engine/src/lib.rs:2541-2544`: For each `StreamEvent::TextDelta`, calls `active.journal.append_text(&mut self.stream_journal, text.clone())`
 - `context/src/stream_journal.rs:102-108`: `append_text()` calls `journal.append_event(self, StreamDeltaEvent::TextDelta(content.into()))`
@@ -50,6 +53,7 @@ III. **Code-path trace**:
 
 IV. **Proof artifact (Logic proof)**:
 Timeline demonstrating UI blockage:
+
 1. User types, triggering `handle_events()` → input queued
 2. `app.process_stream_events()` called on main thread
 3. Stream event received, `append_text()` invoked
@@ -58,6 +62,7 @@ Timeline demonstrating UI blockage:
 6. High-frequency text deltas (multiple per second) compound blocking
 
 V. **Disproof attempt**:
+
 1. **SQLite is async?** No - `rusqlite` is synchronous, all calls block thread
 2. **Operations batched?** No - each delta triggers immediate INSERT
 3. **Background thread?** No - journal operations called directly from main thread
@@ -65,6 +70,7 @@ V. **Disproof attempt**:
 VI. **Severity & likelihood**: High severity (UI freezing), High likelihood (occurs during all streaming sessions).
 
 VII. **Minimal fix**: Move journal operations to async task.
+
 ```rust
 // In engine/src/lib.rs process_stream_events()
 tokio::spawn(async move {
@@ -73,6 +79,7 @@ tokio::spawn(async move {
     }
 });
 ```
+
 **Why**: Decouples I/O from UI thread, maintains crash recovery invariants.
 
 ### B02 — Stream disconnection misclassified as completion (premature EOF)
@@ -82,30 +89,35 @@ I. **Bug statement**: OpenAI streaming incorrectly treats proper completions as 
 II. **Key invariants**: Stream is "complete" only if explicit provider completion signal observed (OpenAI "response.completed", Claude "message_stop").
 
 III. **Code-path trace**:
+
 - `providers/src/lib.rs:702-704`: OpenAI receives "response.completed" → sends `StreamEvent::Done` → returns `OpenAIStreamAction::Stop`
 - `providers/src/lib.rs:863`: `let saw_done = false;` (immutable, never mutated)
 - `providers/src/lib.rs:905`: Early return on `OpenAIStreamAction::Stop` before EOF check
 - `providers/src/lib.rs:912-917`: EOF check unreachable after proper completion
 
 Claude path (identical behavior):
+
 - `providers/src/lib.rs:421-423`: Receives "[DONE]" → sends `StreamEvent::Done` → early return
 - `providers/src/lib.rs:389`: `let saw_done = false;` (immutable, never mutated)
 - `providers/src/lib.rs:486-491`: EOF check unreachable after proper completion
 
 IV. **Proof artifact (Logic proof + Code inspection)**:
 **Both providers work correctly**:
+
 1. Completion signal received (`response.completed` / `[DONE]` / `message_stop`)
 2. Function returns immediately via early return at line 905 (OpenAI) or 479/423 (Claude)
 3. EOF check never executed for proper completions
 4. EOF check only triggers for genuine premature disconnections
 
 **Variable is dead code**:
+
 - `saw_done` declared immutable (no `mut`)
 - Never assigned after declaration
 - Early returns bypass EOF check for all completion paths
 - Both providers behave identically despite different variable declarations
 
 V. **Disproof**:
+
 1. **False errors occur?** No - early returns prevent EOF check execution on proper completion
 2. **saw_done actually used?** No - variable is completely unused (dead code)
 3. **Claude different?** No - both providers use identical early-return pattern
@@ -121,12 +133,14 @@ I. **Bug statement**: Model commands execute without checking active operations,
 II. **Key invariants**: Model changes must be blocked or queued while Busy; active operation must have stable model identity.
 
 III. **Code-path trace**:
+
 - `engine/src/lib.rs:4123-4143`: `/model` command handler calls `self.set_model(model)` immediately
 - `engine/src/lib.rs:1921-1932`: `set_model()` updates `self.model` and context manager without state checks
 - `engine/src/lib.rs:2331-2357`: `start_streaming()` checks busy states but model commands bypass this
 
 IV. **Proof artifact (Logic proof)**:
 State transition demonstrating violation:
+
 1. User starts streaming with model A
 2. AppState = `EnabledState::Streaming(active_stream_with_model_A)`
 3. User types `:model B`
@@ -135,6 +149,7 @@ State transition demonstrating violation:
 6. Context manager adaptation may trigger summarization with wrong model
 
 V. **Disproof attempt**:
+
 1. **start_streaming checks model?** No - only checks busy states, not model consistency
 2. **set_model validates state?** No - operates on raw App without invariants
 3. **Context isolation?** No - context manager uses current `self.model`
@@ -142,6 +157,7 @@ V. **Disproof attempt**:
 VI. **Severity & likelihood**: High (context corruption), Medium (requires user to switch models during active operations).
 
 VII. **Minimal fix**: Add state check to model commands.
+
 ```rust
 // In engine/src/lib.rs process_command()
 Some("model") => {
@@ -153,6 +169,7 @@ Some("model") => {
     // ... rest of model command logic
 }
 ```
+
 **Why**: Prevents model changes during busy states, maintains operation-model consistency.
 
 ### B04 — Terminal can be left in raw/broken state on panic/abort
@@ -162,6 +179,7 @@ I. **Bug statement**: No panic handling means terminal cleanup may be skipped, l
 II. **Key invariants**: Terminal must be restored on all exits (normal, error, panic) or provide recovery steps.
 
 III. **Code-path trace**:
+
 - `cli/src/main.rs:138-182`: `main()` has no `catch_unwind` or panic hooks
 - `cli/src/main.rs:155`: `TerminalSession::new()` enables raw mode + alternate screen
 - `cli/src/main.rs:122-136`: `TerminalSession::drop()` restores terminal state
@@ -169,12 +187,14 @@ III. **Code-path trace**:
 
 IV. **Proof artifact (Logic proof)**:
 Panic path demonstrating broken terminal:
+
 1. Any panic in `run_app_full()` or `run_app_inline()`
 2. Stack unwinds, `TerminalSession` Drop skipped
 3. Raw mode remains active, alternate screen not restored
 4. User left with broken terminal requiring manual `reset` command
 
 V. **Disproof attempt**:
+
 1. **Panic hook installed?** No - no `std::panic::set_hook()` calls
 2. **catch_unwind in main?** No - main allows panics to propagate
 3. **Automatic cleanup?** No - Drop only runs on normal exit
@@ -182,6 +202,7 @@ V. **Disproof attempt**:
 VI. **Severity & likelihood**: Medium (terminal broken), Low (requires code panic).
 
 VII. **Minimal fix**: Add panic hook for terminal recovery.
+
 ```rust
 // In cli/src/main.rs main()
 std::panic::set_hook(Box::new(|panic_info| {
@@ -192,6 +213,7 @@ std::panic::set_hook(Box::new(|panic_info| {
     eprintln!("Panic occurred, terminal restored. Error: {panic_info}");
 }));
 ```
+
 **Why**: Ensures terminal restoration even on panic, provides user recovery path.
 
 ### B05 — Missing runtime invariant validation allows illegal overlaps
@@ -201,12 +223,14 @@ I. **Bug statement**: Claimed missing validation allows multiple concurrent oper
 II. **Key invariants**: Busy states must be mutually exclusive at runtime; illegal overlaps must be detected and rejected.
 
 III. **Code-path trace**:
+
 - `engine/src/lib.rs:2331-2357`: `start_streaming()` checks all busy states before proceeding
 - `AppState` enum variants mutually exclusive by construction
 - `App::tick()` and command handlers respect state transitions
 
 IV. **Proof artifact (Logic proof)**:
 Invariant preservation demonstration:
+
 1. `start_streaming()` validates `!matches!(self.state, Streaming(_) | ToolLoop(_) | Summarizing*(_))`
 2. Command handlers check appropriate preconditions
 3. `AppState` enum prevents simultaneous streaming + summarization
@@ -227,6 +251,7 @@ II. **Key invariants**: Spawned tasks must be tracked; on cancellation/panic/shu
 III. **Code-path trace**:
 
 **PROVEN LEAK - Summarization (engine/src/lib.rs:2104-2125)**:
+
 ```rust
 let handle = tokio::spawn(async move { ... });  // Line 2104 - SPAWNED FIRST
 // ... 10 lines of non-atomic setup ...
@@ -234,9 +259,11 @@ let task = SummarizationTask { handle, ... };   // Line 2108
 // ... 7 more lines ...
 self.state = AppState::...(SummarizationState { task });  // Line 2123 - STORED LAST
 ```
+
 **Leak window**: Panic between lines 2104-2122 → `JoinHandle::drop()` detaches task (doesn't abort).
 
 **SAFE - Streaming (engine/src/lib.rs:2401-2479)**:
+
 ```rust
 let (abort_handle, abort_registration) = AbortHandle::new_pair();  // 2401
 let active = ActiveStream { abort_handle, ... };  // 2403
@@ -244,17 +271,21 @@ self.state = AppState::...(active);  // 2411 - STORED BEFORE SPAWN
 // ... later ...
 tokio::spawn(async move { ... });  // 2479 - SPAWNED AFTER STORE
 ```
+
 **No leak**: Handle stored in state before spawn, panic-safe.
 
 **SAFE - Tool execution (engine/src/lib.rs:3158-3167)**:
+
 ```rust
 exec.abort_handle = Some(abort_handle.clone());  // 3159 - STORED FIRST
 let handle = tokio::spawn(async move { ... });   // 3167 - SPAWNED AFTER STORE
 ```
+
 **No leak**: Handle stored before spawn, panic-safe.
 
 IV. **Proof artifact (Logic proof)**:
 Summarization leak scenario:
+
 1. `start_summarization()` calls `tokio::spawn()` at line 2104
 2. Panic occurs during setup (lines 2105-2122)
 3. Stack unwinds, `JoinHandle` dropped
@@ -263,6 +294,7 @@ Summarization leak scenario:
 6. App restart cannot reclaim orphaned tasks
 
 V. **Disproof attempt**:
+
 1. **JoinHandle aborts on drop?** No - [tokio docs](https://docs.rs/tokio/latest/tokio/task/struct.JoinHandle.html#method.abort): drop **detaches**, doesn't abort
 2. **All sites vulnerable?** No - streaming and tool execution store handles before spawning
 3. **Panic unlikely?** Irrelevant - correctness requires panic-safety
@@ -270,6 +302,7 @@ V. **Disproof attempt**:
 VI. **Severity & likelihood**: Medium (orphaned API calls, resource leak), Low (requires panic during narrow window).
 
 VII. **Minimal fix**: Store handle before spawning.
+
 ```rust
 // In engine/src/lib.rs start_summarization()
 // Create stub task BEFORE spawning
@@ -288,6 +321,7 @@ task.handle = tokio::spawn(async move {
 // Now safe to store in state
 self.state = AppState::Enabled(EnabledState::Summarizing(SummarizationState { task }));
 ```
+
 **Why**: Eliminates leak window, ensures handle always tracked for abort on panic.
 
 ### B07 — Resource exhaustion from unbounded growth
@@ -297,18 +331,21 @@ I. **Bug statement**: No hard caps on collections allow memory exhaustion.
 II. **Key invariants**: Hard caps needed for memory-relevant collections (message count/bytes, tool output, context size).
 
 III. **Code-path trace**:
+
 - `context/src/manager.rs`: No maximum conversation length enforced
 - `engine/src/lib.rs`: Tool execution collects unlimited output bytes/lines
 - History storage grows without bounds
 
 IV. **Proof artifact (Logic proof)**:
 Exhaustion scenario:
+
 1. Long conversation accumulates unbounded message history
 2. Tool outputs concatenate without size limits
 3. Memory usage grows linearly with conversation length
 4. No circuit breaker prevents OOM
 
 V. **Disproof attempt**:
+
 1. **Implicit limits?** No - collections use `Vec` without capacity limits
 2. **ContextInfinity caps?** No - only caps working context, not total history
 3. **Tool timeouts?** Yes, but output size unlimited within timeout
@@ -316,6 +353,7 @@ V. **Disproof attempt**:
 VI. **Severity & likelihood**: High (OOM crashes), Low (requires very long conversations).
 
 VII. **Minimal fix**: Add collection size limits.
+
 ```rust
 // In context/src/manager.rs
 const MAX_HISTORY_MESSAGES: usize = 10000;
@@ -323,6 +361,7 @@ const MAX_HISTORY_MESSAGES: usize = 10000;
 // In engine/src/lib.rs tool execution
 const MAX_TOOL_OUTPUT_BYTES: usize = 10 * 1024 * 1024; // 10MB
 ```
+
 **Why**: Prevents unbounded memory growth, provides predictable resource usage.
 
 ### B08 — Tool resource cleanup is manual (not RAII), can leak on early returns/panic within cleanup paths
@@ -332,12 +371,14 @@ I. **Bug statement**: Manual cleanup of tool resources risks leaks on early retu
 II. **Key invariants**: Tool execution resources must be released even if errors occur mid-transition.
 
 III. **Code-path trace**:
+
 - `engine/src/lib.rs:3333-3350`: Manual cleanup nullifies `join_handle`, `event_rx`, `abort_handle`
 - Error paths may return early before cleanup
 - Panic during cleanup leaves resources uncleared
 
 IV. **Proof artifact (Logic proof)**:
 Leak scenario:
+
 1. Tool execution starts, resources allocated
 2. Error occurs during execution
 3. Early return before cleanup code
@@ -345,6 +386,7 @@ Leak scenario:
 5. Resources persist until app restart
 
 V. **Disproof attempt**:
+
 1. **RAII guards exist?** No - manual nullification only
 2. **All error paths covered?** No - complex cleanup logic with multiple exit points
 3. **Panic-safe?** No - panic during cleanup leaves inconsistent state
@@ -352,6 +394,7 @@ V. **Disproof attempt**:
 VI. **Severity & likelihood**: Medium (resource leaks), Medium (error path complexity).
 
 VII. **Minimal fix**: Use RAII cleanup guards.
+
 ```rust
 // In engine/src/lib.rs
 struct ToolExecutionGuard<'a> {
@@ -366,6 +409,7 @@ impl Drop for ToolExecutionGuard<'_> {
     }
 }
 ```
+
 **Why**: Ensures cleanup on scope exit, prevents leaks on early returns/panics.
 
 ### B09 — Tool approval UX dead-end (no timeout/escape besides quit)
@@ -375,18 +419,21 @@ I. **Bug statement**: Tool approval mode has no timeout or escape mechanism besi
 II. **Key invariants**: Long-running approval states need timeout/escape to prevent UI dead-ends.
 
 III. **Code-path trace**:
+
 - `engine/src/lib.rs:2905-2915`: Tool approval enters `ToolLoopPhase::AwaitingApproval`
 - No timeout mechanism for approval state
 - Only escape is `tool_approval_deny_all()` or app quit
 
 IV. **Proof artifact (Logic proof)**:
 Dead-end scenario:
+
 1. Tool requires approval, enters approval mode
 2. User walks away, approval state persists indefinitely
 3. No timeout or auto-deny mechanism
 4. UI stuck until manual intervention
 
 V. **Disproof attempt**:
+
 1. **Timeout exists?** No - approval state has no time limits
 2. **Auto-deny?** No - requires explicit user action
 3. **Background processing?** No - approval blocks tool execution
@@ -394,6 +441,7 @@ V. **Disproof attempt**:
 VI. **Severity & likelihood**: Low (inconvenient), High (affects all approval-required tools).
 
 VII. **Minimal fix**: Add approval timeout.
+
 ```rust
 // In engine/src/lib.rs tool approval state
 struct ApprovalState {
@@ -410,4 +458,5 @@ if approval.started_at.elapsed() > APPROVAL_TIMEOUT {
     self.tool_approval_deny_all();
 }
 ```
+
 **Why**: Prevents indefinite approval blocking, provides automatic fallback.

@@ -1,4 +1,4 @@
-//! LRU disk cache with TTL for WebFetch.
+//! LRU disk cache with TTL for `WebFetch`.
 //!
 //! This module implements caching per FR-WF-16 through FR-WF-17:
 //! - SHA256-based cache keys (URL + rendering method)
@@ -96,8 +96,7 @@ impl CacheEntry {
     /// Check if entry is expired.
     pub fn is_expired(&self) -> bool {
         parse_rfc3339(&self.expires_at)
-            .map(|exp| SystemTime::now() > exp)
-            .unwrap_or(true)
+            .is_none_or(|exp| SystemTime::now() > exp)
     }
 
     /// Update last accessed time (does NOT slide TTL).
@@ -113,8 +112,8 @@ impl CacheEntry {
             + self.expires_at.len()
             + self.last_accessed_at.len()
             + self.final_url.len()
-            + self.title.as_ref().map(|s| s.len()).unwrap_or(0)
-            + self.language.as_ref().map(|s| s.len()).unwrap_or(0)
+            + self.title.as_ref().map_or(0, std::string::String::len)
+            + self.language.as_ref().map_or(0, std::string::String::len)
             + self.markdown.len();
 
         (base_overhead + content_size) as u64
@@ -146,7 +145,7 @@ pub struct Cache {
     /// TTL duration.
     ttl: Duration,
 
-    /// In-memory LRU tracking (key → (last_access, size)).
+    /// In-memory LRU tracking (key → (`last_access`, size)).
     lru: HashMap<String, (SystemTime, u64)>,
 }
 
@@ -159,7 +158,7 @@ impl Cache {
         fs::create_dir_all(&dir).map_err(|e| {
             WebFetchError::new(
                 ErrorCode::Internal,
-                format!("failed to create cache directory: {}", e),
+                format!("failed to create cache directory: {e}"),
                 false,
             )
         })?;
@@ -200,14 +199,11 @@ impl Cache {
             }
         };
 
-        let mut entry: CacheEntry = match serde_json::from_str(&content) {
-            Ok(e) => e,
-            Err(_) => {
-                // Corrupted entry - delete and miss
-                let _ = fs::remove_file(&path);
-                self.lru.remove(&key);
-                return CacheResult::Miss;
-            }
+        let mut entry: CacheEntry = if let Ok(e) = serde_json::from_str(&content) { e } else {
+            // Corrupted entry - delete and miss
+            let _ = fs::remove_file(&path);
+            self.lru.remove(&key);
+            return CacheResult::Miss;
         };
 
         // FR-WF-CCH-VER-01: Version mismatch
@@ -386,7 +382,7 @@ impl Cache {
     /// Layout: `{cache_dir}/{first2}/{keyhex}.json`
     fn entry_path(&self, key: &str) -> PathBuf {
         let prefix = if key.len() >= 2 { &key[..2] } else { "00" };
-        self.dir.join(prefix).join(format!("{}.json", key))
+        self.dir.join(prefix).join(format!("{key}.json"))
     }
 }
 
@@ -405,10 +401,10 @@ impl std::fmt::Display for CacheWriteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CacheWriteError::EntryTooLarge { size, max } => {
-                write!(f, "entry too large: {} bytes (max {})", size, max)
+                write!(f, "entry too large: {size} bytes (max {max})")
             }
-            CacheWriteError::SerializationFailed(e) => write!(f, "serialization failed: {}", e),
-            CacheWriteError::Io(e) => write!(f, "IO error: {}", e),
+            CacheWriteError::SerializationFailed(e) => write!(f, "serialization failed: {e}"),
+            CacheWriteError::Io(e) => write!(f, "IO error: {e}"),
         }
     }
 }
@@ -439,7 +435,7 @@ pub fn cache_key(url: &Url, method: RenderingMethod) -> String {
     hex_encode(&result)
 }
 
-/// Format SystemTime as RFC3339 with second precision.
+/// Format `SystemTime` as RFC3339 with second precision.
 pub fn format_rfc3339(time: SystemTime) -> String {
     let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
     let secs = duration.as_secs();
@@ -456,12 +452,11 @@ pub fn format_rfc3339(time: SystemTime) -> String {
     let (year, month, day) = days_to_ymd(days);
 
     format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        year, month, day, hours, minutes, seconds
+        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z"
     )
 }
 
-/// Parse RFC3339 timestamp to SystemTime.
+/// Parse RFC3339 timestamp to `SystemTime`.
 pub fn parse_rfc3339(s: &str) -> Option<SystemTime> {
     // Expected format: YYYY-MM-DDTHH:MM:SSZ
     if s.len() < 20 {
@@ -552,7 +547,7 @@ fn is_leap_year(year: u64) -> bool {
 
 /// Hex encoding helper.
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]

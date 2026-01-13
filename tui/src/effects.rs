@@ -5,6 +5,7 @@ use ratatui::layout::Rect;
 use forge_engine::{ModalEffect, ModalEffectKind};
 
 /// Apply a modal effect to transform the base rectangle.
+#[must_use] 
 pub fn apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> Rect {
     match effect.kind() {
         ModalEffectKind::PopScale => {
@@ -18,7 +19,7 @@ pub fn apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> R
             let base_bottom = base.y.saturating_add(base.height);
             let max_offset = viewport_bottom.saturating_sub(base_bottom);
             let offset = max_offset.min(base.height.saturating_div(2)).min(6);
-            let y_offset = ((1.0 - t) * offset as f32).round() as u16;
+            let y_offset = ((1.0 - t) * f32::from(offset)).round() as u16;
             Rect {
                 x: base.x,
                 y: base.y.saturating_add(y_offset),
@@ -30,8 +31,8 @@ pub fn apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> R
 }
 
 fn scale_rect(base: Rect, scale: f32) -> Rect {
-    let width = ((base.width as f32) * scale).round() as u16;
-    let height = ((base.height as f32) * scale).round() as u16;
+    let width = (f32::from(base.width) * scale).round() as u16;
+    let height = (f32::from(base.height) * scale).round() as u16;
     let width = width.max(1).min(base.width);
     let height = height.max(1).min(base.height);
     let x = base.x + (base.width.saturating_sub(width) / 2);

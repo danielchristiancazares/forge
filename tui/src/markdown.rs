@@ -106,6 +106,7 @@ pub fn clear_render_cache() {
 /// Render markdown content to ratatui Lines.
 ///
 /// Uses an internal cache to avoid re-parsing unchanged content.
+#[must_use] 
 pub fn render_markdown(content: &str, base_style: Style, palette: &Palette) -> Vec<Line<'static>> {
     let key = CacheKey::new(content, base_style, palette);
 
@@ -221,10 +222,7 @@ impl MarkdownRenderer {
 
     fn start_tag(&mut self, tag: Tag) {
         match tag {
-            Tag::Heading { .. } => {
-                self.bold_count += 1;
-            }
-            Tag::Strong => {
+            Tag::Heading { .. } | Tag::Strong => {
                 self.bold_count += 1;
             }
             Tag::Emphasis => {
@@ -298,7 +296,7 @@ impl MarkdownRenderer {
             TagEnd::List(_) => {
                 self.list_stack.pop();
             }
-            TagEnd::Item => {
+            TagEnd::Item | TagEnd::Paragraph => {
                 self.flush_line();
             }
             TagEnd::Table => {
@@ -313,9 +311,6 @@ impl MarkdownRenderer {
             TagEnd::TableCell => {
                 self.current_row
                     .push(std::mem::take(&mut self.current_cell));
-            }
-            TagEnd::Paragraph => {
-                self.flush_line();
             }
             _ => {}
         }

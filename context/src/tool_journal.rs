@@ -33,7 +33,7 @@ pub struct ToolJournal {
 }
 
 impl ToolJournal {
-    const SCHEMA: &'static str = r#"
+    const SCHEMA: &'static str = r"
         CREATE TABLE IF NOT EXISTS tool_batches (
             batch_id INTEGER PRIMARY KEY,
             model_name TEXT NOT NULL,
@@ -68,7 +68,7 @@ impl ToolJournal {
 
         CREATE INDEX IF NOT EXISTS idx_tool_results_batch
         ON tool_results(batch_id);
-    "#;
+    ";
 
     /// Open or create tool journal database at the given path.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -77,7 +77,7 @@ impl ToolJournal {
             && !parent.exists()
         {
             std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory: {:?}", parent))?;
+                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
         }
         if let Some(parent) = path.parent() {
             ensure_secure_dir(parent)?;
@@ -85,7 +85,7 @@ impl ToolJournal {
         ensure_secure_db_files(path)?;
 
         let db = Connection::open(path)
-            .with_context(|| format!("Failed to open tool journal at {:?}", path))?;
+            .with_context(|| format!("Failed to open tool journal at {}", path.display()))?;
         Self::initialize(db)
     }
 
@@ -113,7 +113,7 @@ impl ToolJournal {
         calls: &[ToolCall],
     ) -> Result<ToolBatchId> {
         if let Some(existing) = self.pending_batch_id()? {
-            bail!("Cannot begin tool batch: pending batch {} exists", existing);
+            bail!("Cannot begin tool batch: pending batch {existing} exists");
         }
 
         let created_at = system_time_to_iso8601(SystemTime::now());
@@ -155,7 +155,7 @@ impl ToolJournal {
     /// `update_assistant_text`.
     pub fn begin_streaming_batch(&mut self, model_name: &str) -> Result<ToolBatchId> {
         if let Some(existing) = self.pending_batch_id()? {
-            bail!("Cannot begin tool batch: pending batch {} exists", existing);
+            bail!("Cannot begin tool batch: pending batch {existing} exists");
         }
 
         let created_at = system_time_to_iso8601(SystemTime::now());
@@ -192,7 +192,7 @@ impl ToolJournal {
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![batch_id, seq as i64, tool_call_id, tool_name, ""],
             )
-            .with_context(|| format!("Failed to insert tool call {}", tool_call_id))?;
+            .with_context(|| format!("Failed to insert tool call {tool_call_id}"))?;
         Ok(())
     }
 
@@ -211,9 +211,9 @@ impl ToolJournal {
                  WHERE batch_id = ?2 AND tool_call_id = ?3",
                 params![delta, batch_id, tool_call_id],
             )
-            .with_context(|| format!("Failed to append tool args {}", tool_call_id))?;
+            .with_context(|| format!("Failed to append tool args {tool_call_id}"))?;
         if updated == 0 {
-            bail!("No tool call found for id {}", tool_call_id);
+            bail!("No tool call found for id {tool_call_id}");
         }
         Ok(())
     }
@@ -230,9 +230,9 @@ impl ToolJournal {
                 "UPDATE tool_batches SET assistant_text = ?1 WHERE batch_id = ?2",
                 params![assistant_text, batch_id],
             )
-            .with_context(|| format!("Failed to update assistant text for batch {}", batch_id))?;
+            .with_context(|| format!("Failed to update assistant text for batch {batch_id}"))?;
         if updated == 0 {
-            bail!("No tool batch found for id {}", batch_id);
+            bail!("No tool batch found for id {batch_id}");
         }
         Ok(())
     }
@@ -248,7 +248,7 @@ impl ToolJournal {
                     batch_id,
                     &result.tool_call_id,
                     &result.content,
-                    result.is_error as i32,
+                    i32::from(result.is_error),
                     created_at,
                 ],
             )
@@ -267,25 +267,25 @@ impl ToolJournal {
             "UPDATE tool_batches SET committed = 1 WHERE batch_id = ?1",
             params![batch_id],
         )
-        .with_context(|| format!("Failed to mark tool batch {} committed", batch_id))?;
+        .with_context(|| format!("Failed to mark tool batch {batch_id} committed"))?;
 
         tx.execute(
             "DELETE FROM tool_calls WHERE batch_id = ?1",
             params![batch_id],
         )
-        .with_context(|| format!("Failed to delete tool calls for batch {}", batch_id))?;
+        .with_context(|| format!("Failed to delete tool calls for batch {batch_id}"))?;
 
         tx.execute(
             "DELETE FROM tool_results WHERE batch_id = ?1",
             params![batch_id],
         )
-        .with_context(|| format!("Failed to delete tool results for batch {}", batch_id))?;
+        .with_context(|| format!("Failed to delete tool results for batch {batch_id}"))?;
 
         tx.execute(
             "DELETE FROM tool_batches WHERE batch_id = ?1",
             params![batch_id],
         )
-        .with_context(|| format!("Failed to delete tool batch {}", batch_id))?;
+        .with_context(|| format!("Failed to delete tool batch {batch_id}"))?;
 
         tx.commit().context("Failed to commit tool batch pruning")?;
         Ok(())
@@ -302,19 +302,19 @@ impl ToolJournal {
             "DELETE FROM tool_calls WHERE batch_id = ?1",
             params![batch_id],
         )
-        .with_context(|| format!("Failed to delete tool calls for batch {}", batch_id))?;
+        .with_context(|| format!("Failed to delete tool calls for batch {batch_id}"))?;
 
         tx.execute(
             "DELETE FROM tool_results WHERE batch_id = ?1",
             params![batch_id],
         )
-        .with_context(|| format!("Failed to delete tool results for batch {}", batch_id))?;
+        .with_context(|| format!("Failed to delete tool results for batch {batch_id}"))?;
 
         tx.execute(
             "DELETE FROM tool_batches WHERE batch_id = ?1",
             params![batch_id],
         )
-        .with_context(|| format!("Failed to delete tool batch {}", batch_id))?;
+        .with_context(|| format!("Failed to delete tool batch {batch_id}"))?;
 
         tx.commit().context("Failed to commit tool batch discard")?;
         Ok(())
@@ -364,9 +364,13 @@ impl ToolJournal {
 
         for row in rows {
             let (id, name, args_json) = row?;
-            let args = match serde_json::from_str(&args_json) {
-                Ok(value) => value,
-                Err(_) => serde_json::Value::String(args_json.clone()),
+            let args = if args_json.trim().is_empty() {
+                serde_json::Value::Object(serde_json::Map::new())
+            } else {
+                match serde_json::from_str(&args_json) {
+                    Ok(value) => value,
+                    Err(_) => serde_json::Value::Object(serde_json::Map::new()),
+                }
             };
             calls.push(ToolCall::new(id, name, args));
         }
@@ -446,19 +450,18 @@ fn chrono_lite_format(secs: u64, millis: u32) -> String {
     let (year, month, day) = days_to_ymd(days);
 
     format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        year, month, day, hours, minutes, seconds, millis
+        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
     )
 }
 
 fn ensure_secure_dir(path: &Path) -> Result<()> {
     std::fs::create_dir_all(path)
-        .with_context(|| format!("Failed to create directory: {:?}", path))?;
+        .with_context(|| format!("Failed to create directory: {}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let metadata = std::fs::metadata(path)
-            .with_context(|| format!("Failed to read directory metadata: {:?}", path))?;
+            .with_context(|| format!("Failed to read directory metadata: {}", path.display()))?;
 
         // Only modify permissions if we own the directory
         let our_uid = unsafe { libc::getuid() };
@@ -472,7 +475,7 @@ fn ensure_secure_dir(path: &Path) -> Result<()> {
         if current_mode & 0o077 != 0 {
             // Group or other has some access - tighten to 0o700
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-                .with_context(|| format!("Failed to set directory permissions: {:?}", path))?;
+                .with_context(|| format!("Failed to set directory permissions: {}", path.display()))?;
         }
     }
     Ok(())
@@ -486,13 +489,13 @@ fn ensure_secure_db_files(path: &Path) -> Result<()> {
             .read(true)
             .write(true)
             .open(path)
-            .with_context(|| format!("Failed to create database file: {:?}", path))?;
+            .with_context(|| format!("Failed to create database file: {}", path.display()))?;
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("Failed to set database permissions: {:?}", path))?;
+            .with_context(|| format!("Failed to set database permissions: {}", path.display()))?;
         for suffix in ["-wal", "-shm"] {
             let sidecar = sqlite_sidecar_path(path, suffix);
             if sidecar.exists() {
@@ -513,11 +516,11 @@ fn sqlite_sidecar_path(path: &Path, suffix: &str) -> std::path::PathBuf {
 }
 
 fn days_to_ymd(days: u64) -> (i32, u32, u32) {
-    let z = days as i64 + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
+    let z = days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = i64::from(yoe) + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;

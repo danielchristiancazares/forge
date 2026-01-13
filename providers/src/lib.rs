@@ -1,7 +1,11 @@
 //! LLM provider clients with streaming support.
 //!
-//! This crate handles HTTP communication with Claude and OpenAI APIs,
+//! This crate handles HTTP communication with Claude and `OpenAI` APIs,
 //! including SSE streaming and error handling.
+
+// Pedantic lint configuration - these are intentional design choices
+#![allow(clippy::missing_errors_doc)] // Result-returning functions are self-explanatory
+#![allow(clippy::missing_panics_doc)] // Panics are documented in assertions
 
 use anyhow::Result;
 use forge_types::{
@@ -57,6 +61,7 @@ pub fn http_client() -> &'static reqwest::Client {
 ///
 /// Use this for non-streaming requests like summarization where you want
 /// to bound the total request time.
+#[must_use] 
 pub fn http_client_with_timeout(timeout_secs: u64) -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
@@ -120,7 +125,7 @@ async fn read_capped_error_body(response: reqwest::Response) -> String {
         if body.len() > MAX_ERROR_BODY_BYTES {
             body.truncate(MAX_ERROR_BODY_BYTES);
             let text = String::from_utf8_lossy(&body);
-            return format!("{}...(truncated)", text);
+            return format!("{text}...(truncated)");
         }
     }
     String::from_utf8_lossy(&body).into_owned()
@@ -162,27 +167,33 @@ impl ApiConfig {
         })
     }
 
+    #[must_use] 
     pub fn with_openai_options(mut self, options: OpenAIRequestOptions) -> Self {
         self.openai_options = options;
         self
     }
 
+    #[must_use] 
     pub fn provider(&self) -> Provider {
         self.api_key.provider()
     }
 
+    #[must_use] 
     pub fn api_key(&self) -> &str {
         self.api_key.as_str()
     }
 
+    #[must_use] 
     pub fn api_key_owned(&self) -> ApiKey {
         self.api_key.clone()
     }
 
+    #[must_use] 
     pub fn model(&self) -> &ModelName {
         &self.model
     }
 
+    #[must_use] 
     pub fn openai_options(&self) -> OpenAIRequestOptions {
         self.openai_options
     }
@@ -221,12 +232,12 @@ pub async fn send_message(
 
 /// Claude/Anthropic API implementation.
 pub mod claude {
-    use super::*;
+    use super::{CacheHint, CacheableMessage, OutputLimits, ToolDefinition, Message, ApiConfig, StreamEvent, Result, http_client, read_capped_error_body, Duration, STREAM_IDLE_TIMEOUT_SECS, MAX_SSE_BUFFER_BYTES, drain_next_sse_event, extract_sse_data};
     use serde_json::json;
 
     const API_URL: &str = "https://api.anthropic.com/v1/messages";
 
-    /// Build a content block with optional cache_control.
+    /// Build a content block with optional `cache_control`.
     fn content_block(text: &str, cache_hint: CacheHint) -> serde_json::Value {
         match cache_hint {
             CacheHint::None => json!({
@@ -366,6 +377,8 @@ pub mod claude {
         tools: Option<&[ToolDefinition]>,
         on_event: impl Fn(StreamEvent) + Send + 'static,
     ) -> Result<()> {
+        use futures_util::StreamExt;
+
         let client = http_client();
 
         let body = build_request_body(
@@ -389,14 +402,12 @@ pub mod claude {
             let status = response.status();
             let error_text = read_capped_error_body(response).await;
             on_event(StreamEvent::Error(format!(
-                "API error {}: {}",
-                status, error_text
+                "API error {status}: {error_text}"
             )));
             return Ok(());
         }
 
         // Process SSE stream
-        use futures_util::StreamExt;
         let mut stream = response.bytes_stream();
         let mut buffer: Vec<u8> = Vec::new();
         let saw_done = false;
@@ -404,17 +415,14 @@ pub mod claude {
         let mut current_tool_id: Option<String> = None;
 
         loop {
-            let next = match tokio::time::timeout(
+            let Ok(next) = tokio::time::timeout(
                 Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS),
                 stream.next(),
             )
             .await
-            {
-                Ok(next) => next,
-                Err(_) => {
-                    on_event(StreamEvent::Error("Stream idle timeout".to_string()));
-                    return Ok(());
-                }
+            else {
+                on_event(StreamEvent::Error("Stream idle timeout".to_string()));
+                return Ok(());
             };
             let Some(chunk) = next else { break };
             let chunk = chunk?;
@@ -433,14 +441,11 @@ pub mod claude {
                     continue;
                 }
 
-                let event = match std::str::from_utf8(&event) {
-                    Ok(event) => event,
-                    Err(_) => {
-                        on_event(StreamEvent::Error(
-                            "Received invalid UTF-8 from SSE stream".to_string(),
-                        ));
-                        return Ok(());
-                    }
+                let Ok(event) = std::str::from_utf8(&event) else {
+                    on_event(StreamEvent::Error(
+                        "Received invalid UTF-8 from SSE stream".to_string(),
+                    ));
+                    return Ok(());
                 };
 
                 if let Some(data) = extract_sse_data(event) {
@@ -521,6 +526,7 @@ pub mod claude {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use forge_types::Provider;
         use forge_types::NonEmptyString;
 
         #[test]
@@ -567,9 +573,9 @@ pub mod claude {
     }
 }
 
-/// OpenAI API implementation.
+/// `OpenAI` API implementation.
 pub mod openai {
-    use super::*;
+    use super::{StreamEvent, Message, ApiConfig, CacheableMessage, OutputLimits, ToolDefinition, Result, http_client, read_capped_error_body, Duration, STREAM_IDLE_TIMEOUT_SECS, MAX_SSE_BUFFER_BYTES, drain_next_sse_event, extract_sse_data};
     use serde_json::{Value, json};
     use std::collections::{HashMap, HashSet};
 
@@ -587,7 +593,7 @@ pub mod openai {
                     .and_then(|error| error.get("message"))
                     .and_then(|value| value.as_str())
             })
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
     }
 
     fn extract_incomplete_reason(payload: &Value) -> Option<String> {
@@ -596,7 +602,7 @@ pub mod openai {
             .and_then(|response| response.get("incomplete_details"))
             .and_then(|details| details.get("reason"))
             .and_then(|value| value.as_str())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
     }
 
     fn resolve_call_id(
@@ -669,14 +675,7 @@ pub mod openai {
                 }
                 OpenAIStreamAction::Continue
             }
-            "response.output_text.delta" => {
-                if let Some(delta) = json["delta"].as_str() {
-                    state.saw_text_delta = true;
-                    on_event(StreamEvent::TextDelta(delta.to_string()));
-                }
-                OpenAIStreamAction::Continue
-            }
-            "response.refusal.delta" => {
+            "response.output_text.delta" | "response.refusal.delta" => {
                 if let Some(delta) = json["delta"].as_str() {
                     state.saw_text_delta = true;
                     on_event(StreamEvent::TextDelta(delta.to_string()));
@@ -743,21 +742,19 @@ pub mod openai {
         }
     }
 
-    /// Map message role to OpenAI Responses API role.
+    /// Map message role to `OpenAI` Responses API role.
     ///
-    /// Per the OpenAI Model Spec, the authority hierarchy is:
+    /// Per the `OpenAI` Model Spec, the authority hierarchy is:
     ///   Root > System > Developer > User > Guideline
     ///
-    /// "System" level is reserved for OpenAI's own runtime injections.
-    /// API developers operate at "Developer" level, so Message::System
+    /// "System" level is reserved for `OpenAI`'s own runtime injections.
+    /// API developers operate at "Developer" level, so `Message::System`
     /// maps to "developer" role, not "system".
     fn openai_role(msg: &Message) -> &'static str {
         match msg {
             Message::System(_) => "developer",
-            Message::User(_) => "user",
-            Message::Assistant(_) => "assistant",
-            Message::ToolUse(_) => "assistant", // Tool calls come from assistant
-            Message::ToolResult(_) => "user",   // Tool results are sent as user
+            Message::User(_) | Message::ToolResult(_) => "user",
+            Message::Assistant(_) | Message::ToolUse(_) => "assistant",
         }
     }
 
@@ -859,6 +856,8 @@ pub mod openai {
         tools: Option<&[ToolDefinition]>,
         on_event: impl Fn(StreamEvent) + Send + 'static,
     ) -> Result<()> {
+        use futures_util::StreamExt;
+
         let client = http_client();
 
         let body = build_request_body(config, messages, limits, system_prompt, tools);
@@ -875,13 +874,11 @@ pub mod openai {
             let status = response.status();
             let error_text = read_capped_error_body(response).await;
             on_event(StreamEvent::Error(format!(
-                "API error {}: {}",
-                status, error_text
+                "API error {status}: {error_text}"
             )));
             return Ok(());
         }
 
-        use futures_util::StreamExt;
         let mut stream = response.bytes_stream();
         let mut buffer: Vec<u8> = Vec::new();
         let saw_done = false;
@@ -889,17 +886,14 @@ pub mod openai {
         let mut emit = |event| on_event(event);
 
         loop {
-            let next = match tokio::time::timeout(
+            let Ok(next) = tokio::time::timeout(
                 Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS),
                 stream.next(),
             )
             .await
-            {
-                Ok(next) => next,
-                Err(_) => {
-                    on_event(StreamEvent::Error("Stream idle timeout".to_string()));
-                    return Ok(());
-                }
+            else {
+                on_event(StreamEvent::Error("Stream idle timeout".to_string()));
+                return Ok(());
             };
             let Some(chunk) = next else { break };
             let chunk = chunk?;
@@ -918,14 +912,11 @@ pub mod openai {
                     continue;
                 }
 
-                let event = match std::str::from_utf8(&event) {
-                    Ok(event) => event,
-                    Err(_) => {
-                        on_event(StreamEvent::Error(
-                            "Received invalid UTF-8 from SSE stream".to_string(),
-                        ));
-                        return Ok(());
-                    }
+                let Ok(event) = std::str::from_utf8(&event) else {
+                    on_event(StreamEvent::Error(
+                        "Received invalid UTF-8 from SSE stream".to_string(),
+                    ));
+                    return Ok(());
                 };
 
                 if let Some(data) = extract_sse_data(event) {
@@ -958,6 +949,7 @@ pub mod openai {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use forge_types::{ApiKey, Provider};
         use forge_types::NonEmptyString;
         use serde_json::json;
 

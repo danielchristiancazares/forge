@@ -6,9 +6,13 @@ LP1 is a line-oriented patch DSL for applying structured edits across one or mor
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-52 | Patch Structure, Commands (R/I/P/E/T/B/N), Blocks and dot-stuffing |
-| 53-112 | Normative Semantics: newline boundaries, greedy scan, canonical representation |
-| 113-140 | Grammar (EBNF) for LP1 syntax |
+| 1-12 | Header & TOC |
+| 13-20 | Patch Structure |
+| 21-37 | Commands |
+| 38-46 | Blocks and dot-stuffing |
+| 47-60 | Normative Semantics |
+| 61-145 | Normative Newline Model |
+| 146-194 | Grammar (EBNF) |
 
 ## Patch structure
 

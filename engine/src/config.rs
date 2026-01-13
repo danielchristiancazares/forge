@@ -14,6 +14,26 @@ pub struct ForgeConfig {
     pub tools: Option<ToolsConfig>,
 }
 
+#[derive(Debug)]
+pub enum ConfigError {
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    Parse {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
+}
+
+impl ConfigError {
+    pub fn path(&self) -> &PathBuf {
+        match self {
+            ConfigError::Read { path, .. } | ConfigError::Parse { path, .. } => path,
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct AppConfig {
     pub provider: Option<String>,
@@ -41,10 +61,10 @@ pub struct ContextConfig {
 }
 
 /// Legacy configuration for prompt caching.
-/// Prefer [anthropic] cache_enabled going forward.
+/// Prefer [anthropic] `cache_enabled` going forward.
 #[derive(Debug, Default, Deserialize)]
 pub struct CacheConfig {
-    /// Enable prompt caching. Default: true for Claude, ignored for OpenAI.
+    /// Enable prompt caching. Default: true for Claude, ignored for `OpenAI`.
     pub enabled: Option<bool>,
 }
 
@@ -73,7 +93,7 @@ pub struct AnthropicConfig {
     pub thinking_budget_tokens: Option<u32>,
 }
 
-/// OpenAI Responses API request defaults.
+/// `OpenAI` Responses API request defaults.
 ///
 /// ```toml
 /// [openai]
@@ -102,7 +122,7 @@ pub struct OpenAIConfig {
 /// ```
 #[derive(Debug, Default, Deserialize)]
 pub struct ToolsConfig {
-    /// Tool loop mode: disabled | parse_only | enabled
+    /// Tool loop mode: disabled | `parse_only` | enabled
     pub mode: Option<String>,
     /// Whether parallel tool execution is allowed.
     pub allow_parallel: Option<bool>,
@@ -125,15 +145,15 @@ pub struct ToolsConfig {
     pub environment: Option<ToolEnvironmentConfig>,
     /// Approval policy config.
     pub approval: Option<ToolApprovalConfig>,
-    /// read_file limits.
+    /// `read_file` limits.
     pub read_file: Option<ReadFileConfig>,
-    /// apply_patch limits.
+    /// `apply_patch` limits.
     pub apply_patch: Option<ApplyPatchConfig>,
     /// search limits.
     pub search: Option<SearchConfig>,
     /// webfetch limits.
     pub webfetch: Option<WebFetchConfig>,
-    /// Shell configuration for run_command.
+    /// Shell configuration for `run_command`.
     pub shell: Option<ShellConfig>,
 }
 
@@ -190,14 +210,14 @@ pub struct ToolApprovalConfig {
     pub prompt_side_effects: Option<bool>,
 }
 
-/// read_file limits configuration.
+/// `read_file` limits configuration.
 #[derive(Debug, Default, Deserialize)]
 pub struct ReadFileConfig {
     pub max_file_read_bytes: Option<usize>,
     pub max_scan_bytes: Option<usize>,
 }
 
-/// apply_patch limits configuration.
+/// `apply_patch` limits configuration.
 #[derive(Debug, Default, Deserialize)]
 pub struct ApplyPatchConfig {
     pub max_patch_bytes: Option<usize>,
@@ -229,7 +249,7 @@ pub struct WebFetchConfig {
     pub cache_ttl_days: Option<u32>,
 }
 
-/// Shell configuration for run_command tool.
+/// Shell configuration for `run_command` tool.
 ///
 /// ```toml
 /// [tools.shell]
@@ -240,12 +260,12 @@ pub struct WebFetchConfig {
 pub struct ShellConfig {
     /// Override shell binary (e.g., "pwsh", "bash", "/usr/local/bin/fish").
     pub binary: Option<String>,
-    /// Override shell args (e.g., ["-c"] or ["/C"]).
+    /// Override shell args (e.g., `["-c"]` or `["/C"]`).
     pub args: Option<Vec<String>>,
 }
 
 impl ToolDefinitionConfig {
-    /// Convert this config to a ToolDefinition.
+    /// Convert this config to a `ToolDefinition`.
     pub fn to_tool_definition(&self) -> Result<forge_types::ToolDefinition, String> {
         let params_json = toml_to_json(&self.parameters)?;
         Ok(forge_types::ToolDefinition::new(
@@ -310,29 +330,33 @@ pub fn expand_env_vars(value: &str) -> String {
 }
 
 impl ForgeConfig {
-    pub fn load() -> Option<Self> {
-        let path = config_path()?;
+    pub fn load() -> Result<Option<Self>, ConfigError> {
+        let path = match config_path() {
+            Some(path) => path,
+            None => return Ok(None),
+        };
         if !path.exists() {
-            return None;
+            return Ok(None);
         }
 
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(err) => {
                 tracing::warn!("Failed to read config at {:?}: {}", path, err);
-                return None;
+                return Err(ConfigError::Read { path, source: err });
             }
         };
 
         match toml::from_str(&content) {
-            Ok(config) => Some(config),
+            Ok(config) => Ok(Some(config)),
             Err(err) => {
                 tracing::warn!("Failed to parse config at {:?}: {}", path, err);
-                None
+                Err(ConfigError::Parse { path, source: err })
             }
         }
     }
 
+    #[must_use] 
     pub fn path() -> Option<PathBuf> {
         config_path()
     }

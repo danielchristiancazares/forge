@@ -90,6 +90,67 @@ pretty_assertions = "1.4"
 insta = { version = "1.42", features = ["json"] }
 vt100 = "0.15"
 
+[workspace.lints.clippy]
+# Enable pedantic but allow specific lints that are design choices
+pedantic = { level = "warn", priority = -1 }
+
+# Documentation lints - extensive work, allow for now
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+# Function length - readability > arbitrary limits
+too_many_lines = "allow"
+
+# Cast lints - intentional casts in context
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+cast_possible_wrap = "allow"
+
+# Struct design choices
+struct_excessive_bools = "allow"
+struct_field_names = "allow"
+
+# These are style preferences
+similar_names = "allow"
+module_name_repetitions = "allow"
+
+# Error handling design - boxing would add complexity
+result_large_err = "allow"
+
+# Pass by value/ref micro-optimizations - not worth the churn
+trivially_copy_pass_by_ref = "allow"
+needless_pass_by_value = "allow"
+
+# Builder pattern - returning Self doesn't always need must_use
+return_self_not_must_use = "allow"
+
+# Doc formatting - allow quotes in docs
+doc_markdown = "allow"
+
+# String formatting style - format_push_string and format_collect
+# Using push_str(&format!()) is often clearer than write!()
+format_push_string = "allow"
+format_collect = "allow"
+
+# Option/Result patterns - map_unwrap_or
+# Using map().unwrap_or_else() is sometimes clearer than map_or_else()
+map_unwrap_or = "allow"
+
+# Let-else pattern - not always clearer
+manual_let_else = "allow"
+
+# Clone efficiency - clone_from is micro-optimization
+assigning_clones = "allow"
+
+# Struct initialization style
+default_trait_access = "allow"
+
+# Function return style - unnecessary_wraps
+# Sometimes Result is used for API consistency
+unnecessary_wraps = "allow"
+
 [profile.release]
 lto = true
 codegen-units = 1

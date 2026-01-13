@@ -5,6 +5,7 @@ pub mod git;
 pub mod lp1;
 pub mod sandbox;
 pub mod search;
+pub mod shell;
 pub mod webfetch;
 
 use std::collections::{HashMap, HashSet};
@@ -21,6 +22,7 @@ use tokio::sync::mpsc;
 
 use sandbox::Sandbox;
 pub use search::SearchToolConfig;
+pub use shell::DetectedShell;
 pub use webfetch::WebFetchToolConfig;
 
 /// Tool execution future type alias.
@@ -77,6 +79,7 @@ pub struct ConfirmationRequest {
     pub tool_name: String,
     pub summary: String,
     pub risk_level: RiskLevel,
+    pub arguments: Value,
 }
 
 /// Planned disposition for a tool call.
@@ -164,7 +167,7 @@ pub enum DenialReason {
 impl std::fmt::Display for DenialReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DenialReason::Denylisted { tool } => write!(f, "Tool '{}' is denylisted", tool),
+            DenialReason::Denylisted { tool } => write!(f, "Tool '{tool}' is denylisted"),
             DenialReason::Disabled => write!(f, "Tool execution disabled by policy"),
             DenialReason::PathOutsideSandbox {
                 attempted,
@@ -228,7 +231,7 @@ impl ToolRegistry {
     pub fn lookup(&self, name: &str) -> Result<&dyn ToolExecutor, ToolError> {
         self.executors
             .get(name)
-            .map(|b| b.as_ref())
+            .map(std::convert::AsRef::as_ref)
             .ok_or_else(|| ToolError::UnknownTool {
                 name: name.to_string(),
             })
@@ -298,14 +301,14 @@ pub struct ToolLimits {
     pub max_tool_args_bytes: usize,
 }
 
-/// Tool-specific limits for read_file.
+/// Tool-specific limits for `read_file`.
 #[derive(Debug, Clone, Copy)]
 pub struct ReadFileLimits {
     pub max_file_read_bytes: usize,
     pub max_scan_bytes: usize,
 }
 
-/// Tool-specific limits for apply_patch.
+/// Tool-specific limits for `apply_patch`.
 #[derive(Debug, Clone, Copy)]
 pub struct PatchLimits {
     pub max_patch_bytes: usize,
@@ -330,6 +333,7 @@ pub struct ToolSettings {
     pub patch_limits: PatchLimits,
     pub search: SearchToolConfig,
     pub webfetch: WebFetchToolConfig,
+    pub shell: DetectedShell,
     pub timeouts: ToolTimeouts,
     pub max_output_bytes: usize,
     pub policy: Policy,

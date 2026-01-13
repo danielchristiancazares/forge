@@ -169,7 +169,7 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
     blocks
 }
 
-/// Parse ATX heading: returns (level, normalized_text, raw_line).
+/// Parse ATX heading: returns (level, `normalized_text`, `raw_line`).
 fn parse_atx_heading(line: &str) -> Option<(u8, String, String)> {
     let trimmed = line.trim_start();
 
@@ -205,7 +205,7 @@ fn parse_atx_heading(line: &str) -> Option<(u8, String, String)> {
     Some((level as u8, normalize_whitespace(text), line.to_string()))
 }
 
-/// Parse code fence start: returns (fence_pattern, language).
+/// Parse code fence start: returns (`fence_pattern`, language).
 fn parse_fence_start(line: &str) -> Option<(String, String)> {
     let trimmed = line.trim_start();
 

@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 description = "LLM provider clients (Claude, OpenAI) with streaming support"
 
+[lints]
+workspace = true
+
 [dependencies]
 forge-types.workspace = true
 

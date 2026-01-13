@@ -1,7 +1,7 @@
 //! Application initialization for the App.
 //!
 //! This module contains:
-//! - App::new constructor
+//! - `App::new` constructor
 //! - Configuration loading and parsing
 //! - Default constants for tool settings
 //! - Data directory and path helpers
@@ -74,7 +74,10 @@ const DEFAULT_SANDBOX_DENIES: [&str; 21] = [
 
 impl App {
     pub fn new(system_prompt: Option<&'static str>) -> anyhow::Result<Self> {
-        let config = ForgeConfig::load();
+        let (config, config_error) = match ForgeConfig::load() {
+            Ok(config) => (config, None),
+            Err(err) => (None, Some(err)),
+        };
 
         // Load API keys from config, then fall back to environment.
         let mut api_keys = HashMap::new();
@@ -250,8 +253,10 @@ impl App {
             std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
         let ui_options = Self::ui_options_from_config(config.as_ref());
-        let mut view = ViewState::default();
-        view.ui_options = ui_options;
+        let view = ViewState {
+            ui_options,
+            ..ViewState::default()
+        };
 
         let mut app = Self {
             input: InputState::default(),
@@ -279,6 +284,9 @@ impl App {
             tool_journal,
             tool_file_cache,
             tool_iterations: 0,
+            history_load_warning_shown: false,
+            autosave_warning_shown: false,
+            empty_send_warning_shown: false,
         };
 
         app.clamp_output_limits_to_model();
@@ -289,6 +297,19 @@ impl App {
         // Load previous session's history if available
         app.load_history_if_exists();
         app.check_crash_recovery();
+        if let Some(err) = config_error {
+            let path = err.path().display().to_string();
+            let message = match &err {
+                config::ConfigError::Parse { source, .. } => {
+                    format!("Couldn't parse {path} ({source}). Using defaults.")
+                }
+                config::ConfigError::Read { source, .. } => {
+                    format!("Couldn't read {path} ({source}). Using defaults.")
+                }
+            };
+            app.set_status_warning(message);
+        }
+
         if app.view.status_message.is_none() && app.current_api_key().is_some() {
             let provider = app.provider().display_name();
             app.set_status_success(format!("API key detected for {provider}"));
@@ -362,11 +383,10 @@ impl App {
 
     pub(crate) fn context_infinity_enabled_from_env() -> bool {
         match std::env::var("FORGE_CONTEXT_INFINITY") {
-            Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-                "0" | "false" | "off" | "no" => false,
-                "1" | "true" | "on" | "yes" => true,
-                _ => true,
-            },
+            Ok(value) => !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "off" | "no"
+            ),
             Err(_) => true,
         }
     }

@@ -1,11 +1,11 @@
 //! Token counting using tiktoken.
 //!
-//! This module provides **approximate** token counting using the cl100k_base
-//! encoding from tiktoken. While reasonably accurate for OpenAI models (GPT-4,
+//! This module provides **approximate** token counting using the `cl100k_base`
+//! encoding from tiktoken. While reasonably accurate for `OpenAI` models (GPT-4,
 //! GPT-3.5), token counts may differ for:
 //!
 //! - **Claude models**: Anthropic uses a different tokenizer; counts may vary by ~5-10%
-//! - **GPT-5.x models**: May use updated tokenization not reflected in cl100k_base
+//! - **GPT-5.x models**: May use updated tokenization not reflected in `cl100k_base`
 //! - **Message overhead**: The fixed 4-token overhead per message is an approximation
 //!
 //! The 5% safety margin in `ModelLimits::effective_input_budget()` helps account
@@ -30,7 +30,7 @@ fn get_encoder() -> Option<&'static CoreBPE> {
     ENCODER.get_or_init(|| cl100k_base().ok()).as_ref()
 }
 
-/// Thread-safe approximate token counter using tiktoken's cl100k_base encoding.
+/// Thread-safe approximate token counter using tiktoken's `cl100k_base` encoding.
 ///
 /// **Note**: Token counts are approximate. See module documentation for accuracy
 /// considerations across different providers and models.

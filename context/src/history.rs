@@ -29,6 +29,7 @@ impl MessageId {
         Self(id)
     }
 
+    #[must_use] 
     pub fn as_u64(&self) -> u64 {
         self.0
     }
@@ -171,6 +172,7 @@ impl<'de> Deserialize<'de> for HistoryEntry {
 }
 
 impl HistoryEntry {
+    #[must_use] 
     pub fn new(id: MessageId, message: Message, token_count: u32) -> Self {
         HistoryEntry::Original {
             id,
@@ -185,6 +187,7 @@ impl HistoryEntry {
     ///
     /// Used for assistant messages from streaming responses to enable
     /// idempotent crash recovery.
+    #[must_use] 
     pub fn new_with_step_id(
         id: MessageId,
         message: Message,
@@ -200,12 +203,14 @@ impl HistoryEntry {
         }
     }
 
+    #[must_use] 
     pub fn id(&self) -> MessageId {
         match self {
             HistoryEntry::Original { id, .. } | HistoryEntry::Summarized { id, .. } => *id,
         }
     }
 
+    #[must_use] 
     pub fn message(&self) -> &Message {
         match self {
             HistoryEntry::Original { message, .. } | HistoryEntry::Summarized { message, .. } => {
@@ -214,6 +219,7 @@ impl HistoryEntry {
         }
     }
 
+    #[must_use] 
     pub fn token_count(&self) -> u32 {
         match self {
             HistoryEntry::Original { token_count, .. }
@@ -221,6 +227,7 @@ impl HistoryEntry {
         }
     }
 
+    #[must_use] 
     pub fn summary_id(&self) -> Option<SummaryId> {
         match self {
             HistoryEntry::Summarized { summary_id, .. } => Some(*summary_id),
@@ -229,6 +236,7 @@ impl HistoryEntry {
     }
 
     /// Get the stream journal step ID if this entry was created from a stream.
+    #[must_use] 
     pub fn stream_step_id(&self) -> Option<i64> {
         match self {
             HistoryEntry::Original { stream_step_id, .. }
@@ -236,6 +244,7 @@ impl HistoryEntry {
         }
     }
 
+    #[must_use] 
     pub fn is_summarized(&self) -> bool {
         matches!(self, HistoryEntry::Summarized { .. })
     }
@@ -248,15 +257,8 @@ impl HistoryEntry {
                 token_count,
                 created_at,
                 stream_step_id,
-            } => HistoryEntry::Summarized {
-                id: *id,
-                message: message.clone(),
-                token_count: *token_count,
-                summary_id,
-                created_at: *created_at,
-                stream_step_id: *stream_step_id,
-            },
-            HistoryEntry::Summarized {
+            }
+            | HistoryEntry::Summarized {
                 id,
                 message,
                 token_count,
@@ -296,6 +298,7 @@ pub struct Summary {
 }
 
 impl Summary {
+    #[must_use] 
     pub fn new(
         id: SummaryId,
         covers: Range<MessageId>,
@@ -315,10 +318,12 @@ impl Summary {
         }
     }
 
+    #[must_use] 
     pub fn content(&self) -> &str {
         self.content.as_str()
     }
 
+    #[must_use] 
     pub fn token_count(&self) -> u32 {
         self.token_count
     }
@@ -404,16 +409,14 @@ impl FullHistorySerde {
         let expected_next_message_id = entries.len() as u64;
         if next_message_id != expected_next_message_id {
             return Err(format!(
-                "next_message_id {} does not match entry count {}",
-                next_message_id, expected_next_message_id
+                "next_message_id {next_message_id} does not match entry count {expected_next_message_id}"
             ));
         }
 
         let expected_next_summary_id = summaries.len() as u64;
         if next_summary_id != expected_next_summary_id {
             return Err(format!(
-                "next_summary_id {} does not match summary count {}",
-                next_summary_id, expected_next_summary_id
+                "next_summary_id {next_summary_id} does not match summary count {expected_next_summary_id}"
             ));
         }
 
@@ -487,6 +490,7 @@ impl FullHistorySerde {
 }
 
 impl FullHistory {
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -524,7 +528,8 @@ impl FullHistory {
     /// Check if a stream step ID already exists in history.
     ///
     /// Used for idempotent crash recovery - if history already contains
-    /// an entry with this step_id, we should not recover it again.
+    /// an entry with this `step_id`, we should not recover it again.
+    #[must_use] 
     pub fn has_step_id(&self, step_id: i64) -> bool {
         self.entries
             .iter()
@@ -568,7 +573,7 @@ impl FullHistory {
         // Check for already-summarized messages in the range.
         // This shouldn't happen under normal operation but detect it for debugging.
         let mut orphaned_summaries: Vec<SummaryId> = Vec::new();
-        for entry in self.entries.iter() {
+        for entry in &self.entries {
             let entry_id = entry.id().as_u64();
             if entry_id >= start
                 && entry_id < end
@@ -604,42 +609,49 @@ impl FullHistory {
     }
 
     /// Get all history entries.
+    #[must_use] 
     pub fn entries(&self) -> &[HistoryEntry] {
         &self.entries
     }
 
     /// Number of summaries in history.
+    #[must_use] 
     pub fn summaries_len(&self) -> usize {
         self.summaries.len()
     }
 
     /// Next summary ID to assign.
+    #[must_use] 
     pub fn next_summary_id(&self) -> SummaryId {
         SummaryId::new(self.summaries.len() as u64)
     }
 
     /// Get a specific entry by ID.
+    #[must_use] 
     pub fn get_entry(&self, id: MessageId) -> &HistoryEntry {
         let index = id.as_u64() as usize;
         &self.entries[index]
     }
 
     /// Get a specific summary by ID.
+    #[must_use] 
     pub fn summary(&self, id: SummaryId) -> &Summary {
         &self.summaries[id.0 as usize]
     }
 
     /// Total tokens across all original messages.
     pub fn total_tokens(&self) -> u32 {
-        self.entries.iter().map(|e| e.token_count()).sum()
+        self.entries.iter().map(HistoryEntry::token_count).sum()
     }
 
     /// Number of messages in history.
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Returns true if history has no entries.
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -672,6 +684,7 @@ impl FullHistory {
     }
 
     /// Count of summarized messages.
+    #[must_use] 
     pub fn summarized_count(&self) -> usize {
         self.entries.iter().filter(|e| e.is_summarized()).count()
     }
@@ -680,6 +693,7 @@ impl FullHistory {
     ///
     /// Under normal operation, this should return an empty vector. Non-empty
     /// results indicate either hierarchical re-summarization occurred or a bug.
+    #[must_use] 
     pub fn orphaned_summaries(&self) -> Vec<SummaryId> {
         let mut referenced: std::collections::HashSet<SummaryId> = std::collections::HashSet::new();
 

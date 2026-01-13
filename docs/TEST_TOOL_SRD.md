@@ -11,10 +11,12 @@
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-15 | Header & Change Log |
-| 16-36 | Introduction: Purpose, Scope (Test tool) |
-| 37-56 | Functional Requirements: Interface, Behavior |
-| 57-87 | NFRs, Configuration, Verification |
+| 1-28 | Header & TOC |
+| 29-55 | Introduction |
+| 56-79 | Functional Requirements |
+| 80-89 | Non-Functional Requirements |
+| 90-100 | Configuration |
+| 101-110 | Verification Requirements |
 
 ---
 

@@ -2,6 +2,8 @@
 //!
 //! This module handles parsing and formatting API errors into user-friendly messages.
 
+use std::fmt::Write;
+
 use serde_json::Value;
 
 use forge_types::{NonEmptyStaticStr, NonEmptyString, Provider};
@@ -22,9 +24,7 @@ pub(crate) fn split_api_error(raw: &str) -> Option<(String, String)> {
 }
 
 pub(crate) fn extract_error_message(raw: &str) -> Option<String> {
-    let body = split_api_error(raw)
-        .map(|(_, body)| body)
-        .unwrap_or_else(|| raw.trim().to_string());
+    let body = split_api_error(raw).map_or_else(|| raw.trim().to_string(), |(_, body)| body);
     let payload: Value = serde_json::from_str(&body).ok()?;
     payload
         .pointer("/error/message")
@@ -36,7 +36,7 @@ pub(crate) fn extract_error_message(raw: &str) -> Option<String> {
         })
         .or_else(|| payload.pointer("/message").and_then(|value| value.as_str()))
         .or_else(|| payload.as_str())
-        .map(|msg| msg.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 pub(crate) fn is_auth_error(raw: &str) -> bool {
@@ -70,25 +70,24 @@ pub(crate) fn format_stream_error(provider: Provider, model: &str, err: &str) ->
         let mut content = String::new();
         content.push_str(STREAM_ERROR_BADGE.as_str());
         content.push_str("\n\n");
-        content.push_str(&format!(
+        let _ = write!(
+            content,
             "{} authentication failed for model {}.",
             provider.display_name(),
             model
-        ));
+        );
         content.push_str("\n\nFix:\n- Set ");
         content.push_str(env_var);
-        let config_hint = config::config_path()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "~/.forge/config.toml".to_string());
-        content.push_str(&format!(
-            " (env) or add it to {} under [api_keys].\n- Then retry your message.",
-            config_hint
-        ));
+        let config_hint = config::config_path().map_or_else(|| "~/.forge/config.toml".to_string(), |p| p.display().to_string());
+        let _ = write!(
+            content,
+            " (env) or add it to {config_hint} under [api_keys].\n- Then retry your message."
+        );
 
-        let detail = if !status.trim().is_empty() {
-            status.trim().to_string()
-        } else {
+        let detail = if status.trim().is_empty() {
             util::truncate_with_ellipsis(&extracted, 160)
+        } else {
+            status.trim().to_string()
         };
         if !detail.is_empty() {
             content.push_str("\n\nDetails: ");
@@ -116,12 +115,12 @@ pub(crate) fn format_stream_error(provider: Provider, model: &str, err: &str) ->
     let mut content = String::new();
     content.push_str(STREAM_ERROR_BADGE.as_str());
     content.push_str("\n\n");
-    if !status.trim().is_empty() {
+    if status.trim().is_empty() {
+        content.push_str("Request failed.");
+    } else {
         content.push_str("Request failed (");
         content.push_str(status.trim());
         content.push_str(").");
-    } else {
-        content.push_str("Request failed.");
     }
     if !detail_short.is_empty() {
         content.push_str("\n\nDetails: ");

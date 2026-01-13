@@ -11,10 +11,13 @@
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-15 | Header & Change Log |
-| 16-38 | Introduction: Move, Copy, list_directory scope |
-| 39-80 | Functional Requirements: Interface, Move, Copy, list_directory logic |
-| 81-110 | NFRs, Configuration, Verification |
+| 1-20 | Header & TOC |
+| 21-32 | 0. Change Log |
+| 33-60 | 1. Introduction |
+| 61-102 | 2. Functional Requirements |
+| 103-113 | 3. Non-Functional Requirements |
+| 114-124 | 4. Configuration |
+| 125-135 | 5. Verification Requirements |
 
 ---
 

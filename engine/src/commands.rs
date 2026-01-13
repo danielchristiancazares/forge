@@ -88,6 +88,59 @@ impl<'a> Command<'a> {
 }
 
 impl super::App {
+    /// Cancel the current active operation (streaming/tools), if any.
+    /// Returns true if a cancellation happened.
+    pub fn cancel_active_operation(&mut self) -> bool {
+        match self.replace_with_idle() {
+            OperationState::Streaming(active) => {
+                active.abort_handle.abort();
+
+                // Clean up journal state
+                let _ = active.journal.discard(&mut self.stream_journal);
+                self.set_status_warning("Streaming cancelled");
+                true
+            }
+            OperationState::AwaitingToolResults(pending) => {
+                self.cancel_tool_batch(
+                    pending.assistant_text,
+                    pending.pending_calls,
+                    pending.results,
+                    pending.model,
+                    pending.step_id,
+                    pending.batch_id,
+                );
+                self.set_status_warning("Tool results cancelled");
+                true
+            }
+            OperationState::ToolLoop(state) => {
+                if let ToolLoopPhase::Executing(exec) = &state.phase
+                    && let Some(handle) = &exec.abort_handle
+                {
+                    handle.abort();
+                }
+                self.cancel_tool_batch(
+                    state.batch.assistant_text,
+                    state.batch.calls,
+                    state.batch.results,
+                    state.batch.model,
+                    state.batch.step_id,
+                    state.batch.batch_id,
+                );
+                self.set_status_warning("Tool execution cancelled");
+                true
+            }
+            OperationState::ToolRecovery(state) => {
+                self.commit_recovered_tool_batch(state, ToolRecoveryDecision::Discard);
+                true
+            }
+            other => {
+                self.state = other;
+                self.set_status_warning("No active stream to cancel");
+                false
+            }
+        }
+    }
+
     /// Process a slash command entered by the user.
     pub fn process_command(&mut self, command: EnteredCommand) {
         let parsed = Command::parse(&command.raw);
@@ -288,49 +341,7 @@ impl super::App {
                 }
             }
             Command::Cancel => {
-                match self.replace_with_idle() {
-                    OperationState::Streaming(active) => {
-                        active.abort_handle.abort();
-
-                        // Clean up journal state
-                        let _ = active.journal.discard(&mut self.stream_journal);
-                        self.set_status_warning("Streaming cancelled");
-                    }
-                    OperationState::AwaitingToolResults(pending) => {
-                        self.cancel_tool_batch(
-                            pending.assistant_text,
-                            pending.pending_calls,
-                            pending.results,
-                            pending.model,
-                            pending.step_id,
-                            pending.batch_id,
-                        );
-                        self.set_status_warning("Tool results cancelled");
-                    }
-                    OperationState::ToolLoop(state) => {
-                        if let ToolLoopPhase::Executing(exec) = &state.phase
-                            && let Some(handle) = &exec.abort_handle
-                        {
-                            handle.abort();
-                        }
-                        self.cancel_tool_batch(
-                            state.batch.assistant_text,
-                            state.batch.calls,
-                            state.batch.results,
-                            state.batch.model,
-                            state.batch.step_id,
-                            state.batch.batch_id,
-                        );
-                        self.set_status_warning("Tool execution cancelled");
-                    }
-                    OperationState::ToolRecovery(state) => {
-                        self.commit_recovered_tool_batch(state, ToolRecoveryDecision::Discard);
-                    }
-                    other => {
-                        self.state = other;
-                        self.set_status_warning("No active stream to cancel");
-                    }
-                }
+                self.cancel_active_operation();
             }
             Command::Screen => {
                 self.view.toggle_screen_mode = true;

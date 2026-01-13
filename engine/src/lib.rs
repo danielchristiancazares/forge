@@ -80,7 +80,7 @@ use state::{
 /// Accumulator for a single tool call during streaming.
 ///
 /// As tool call events arrive, we accumulate the JSON arguments string
-/// until the stream completes, then parse into a complete ToolCall.
+/// until the stream completes, then parse into a complete `ToolCall`.
 #[derive(Debug, Clone)]
 struct ToolCallAccumulator {
     id: String,
@@ -108,6 +108,7 @@ pub struct StreamingMessage {
 }
 
 impl StreamingMessage {
+    #[must_use] 
     pub fn new(
         model: ModelName,
         receiver: mpsc::UnboundedReceiver<StreamEvent>,
@@ -122,14 +123,17 @@ impl StreamingMessage {
         }
     }
 
+    #[must_use] 
     pub fn provider(&self) -> Provider {
         self.model.provider()
     }
 
+    #[must_use] 
     pub fn model_name(&self) -> &ModelName {
         &self.model
     }
 
+    #[must_use] 
     pub fn content(&self) -> &str {
         &self.content
     }
@@ -177,6 +181,7 @@ impl StreamingMessage {
     }
 
     /// Returns true if any tool calls were received during streaming.
+    #[must_use] 
     pub fn has_tool_calls(&self) -> bool {
         !self.tool_calls.is_empty()
     }
@@ -194,7 +199,20 @@ impl StreamingMessage {
                     acc.id.clone(),
                     "Tool arguments exceeded maximum size",
                 ));
-                calls.push(ToolCall::new(acc.id, acc.name, serde_json::Value::Null));
+                calls.push(ToolCall::new(
+                    acc.id,
+                    acc.name,
+                    serde_json::Value::Object(serde_json::Map::new()),
+                ));
+                continue;
+            }
+
+            if acc.arguments_json.trim().is_empty() {
+                calls.push(ToolCall::new(
+                    acc.id,
+                    acc.name,
+                    serde_json::Value::Object(serde_json::Map::new()),
+                ));
                 continue;
             }
 
@@ -210,7 +228,11 @@ impl StreamingMessage {
                         acc.id.clone(),
                         "Invalid tool arguments JSON",
                     ));
-                    calls.push(ToolCall::new(acc.id, acc.name, serde_json::Value::Null));
+                    calls.push(ToolCall::new(
+                        acc.id,
+                        acc.name,
+                        serde_json::Value::Object(serde_json::Map::new()),
+                    ));
                 }
             }
         }
@@ -254,15 +276,15 @@ pub struct App {
     stream_journal: StreamJournal,
     /// Current operation state.
     state: OperationState,
-    /// Whether ContextInfinity (automatic summarization) is enabled.
+    /// Whether `ContextInfinity` (automatic summarization) is enabled.
     /// This is determined at init from config/env and does not change during runtime.
     context_infinity: bool,
     /// Validated output limits (max tokens + optional thinking budget).
-    /// Invariant: if thinking is enabled, budget < max_tokens.
+    /// Invariant: if thinking is enabled, budget < `max_tokens`.
     output_limits: OutputLimits,
     /// Whether prompt caching is enabled (for Claude).
     cache_enabled: bool,
-    /// OpenAI request defaults (reasoning/verbosity/truncation).
+    /// `OpenAI` request defaults (reasoning/verbosity/truncation).
     openai_options: OpenAIRequestOptions,
     /// System prompt sent to the LLM with each request.
     system_prompt: Option<&'static str>,
@@ -288,6 +310,12 @@ pub struct App {
     tool_file_cache: std::sync::Arc<tokio::sync::Mutex<tools::ToolFileCache>>,
     /// Tool iterations used in the current user turn.
     tool_iterations: u32,
+    /// Whether we've already warned about a failed history load.
+    history_load_warning_shown: bool,
+    /// Whether we've already warned about autosave failures.
+    autosave_warning_shown: bool,
+    /// Whether we've already warned about empty sends.
+    empty_send_warning_shown: bool,
 }
 
 impl App {
@@ -344,7 +372,7 @@ impl App {
         }
     }
 
-    /// Get pending tool calls if we're in AwaitingToolResults state.
+    /// Get pending tool calls if we're in `AwaitingToolResults` state.
     pub fn pending_tool_calls(&self) -> Option<&[ToolCall]> {
         match &self.state {
             OperationState::AwaitingToolResults(pending) => Some(&pending.pending_calls),
@@ -422,6 +450,16 @@ impl App {
         match &self.state {
             OperationState::ToolLoop(state) => match &state.phase {
                 ToolLoopPhase::AwaitingApproval(approval) => Some(approval.cursor),
+                ToolLoopPhase::Executing(_) => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn tool_approval_expanded(&self) -> Option<usize> {
+        match &self.state {
+            OperationState::ToolLoop(state) => match &state.phase {
+                ToolLoopPhase::AwaitingApproval(approval) => approval.expanded,
                 ToolLoopPhase::Executing(_) => None,
             },
             _ => None,
@@ -640,16 +678,22 @@ impl App {
 
     /// Handle context adaptation after a model switch.
     ///
-    /// This method is called after set_model() or set_provider() to handle
+    /// This method is called after `set_model()` or `set_provider()` to handle
     /// the context adaptation result:
-    /// - If shrinking with needs_summarization, starts background summarization
+    /// - If shrinking with `needs_summarization`, starts background summarization
     /// - If expanding, attempts to restore previously summarized messages
     fn handle_context_adaptation(&mut self) {
         let adaptation = self.context_manager.switch_model(self.model.as_str());
         self.invalidate_usage_cache();
 
         match adaptation {
-            ContextAdaptation::NoChange => {}
+            ContextAdaptation::NoChange
+            | ContextAdaptation::Shrinking {
+                needs_summarization: false,
+                ..
+            } => {
+                // No action needed
+            }
             ContextAdaptation::Shrinking {
                 old_budget,
                 new_budget,
@@ -661,12 +705,6 @@ impl App {
                     new_budget / 1000
                 ));
                 self.start_summarization();
-            }
-            ContextAdaptation::Shrinking {
-                needs_summarization: false,
-                ..
-            } => {
-                // Shrinking but still fits - no action needed
             }
             ContextAdaptation::Expanding {
                 old_budget,
@@ -825,6 +863,7 @@ impl App {
         {
             approval.cursor -= 1;
             approval.deny_confirm = false;
+            approval.expanded = None;
         }
     }
 
@@ -838,6 +877,7 @@ impl App {
                 approval.cursor += 1;
             }
             approval.deny_confirm = false;
+            approval.expanded = None;
         }
     }
 
@@ -847,6 +887,20 @@ impl App {
             && approval.cursor < approval.selected.len()
         {
             approval.selected[approval.cursor] = !approval.selected[approval.cursor];
+            approval.deny_confirm = false;
+        }
+    }
+
+    pub fn tool_approval_toggle_details(&mut self) {
+        if let OperationState::ToolLoop(state) = &mut self.state
+            && let ToolLoopPhase::AwaitingApproval(approval) = &mut state.phase
+            && approval.cursor < approval.requests.len()
+        {
+            if approval.expanded == Some(approval.cursor) {
+                approval.expanded = None;
+            } else {
+                approval.expanded = Some(approval.cursor);
+            }
             approval.deny_confirm = false;
         }
     }

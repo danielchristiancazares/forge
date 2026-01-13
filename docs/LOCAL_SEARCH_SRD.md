@@ -1,4 +1,5 @@
 # Local Search Tool
+
 ## Software Requirements Document
 
 **Version:** 1.2
@@ -10,14 +11,15 @@
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-31 | Header and change log summary |
-| 33-83 | Section 1 - Introduction |
-| 85-106 | Section 2 - Overall Description |
-| 109-314 | Section 3 - Functional Requirements |
-| 317-336 | Section 4 - Non-Functional Requirements |
-| 339-364 | Section 5 - Configuration |
-| 367-399 | Section 6 - Verification Requirements |
-| 402-434 | Appendix A - Path Normalization (Normative) |
+| 1-22 | Header & TOC |
+| 23-32 | 0. Change Log |
+| 33-84 | 1. Introduction |
+| 85-107 | 2. Overall Description |
+| 108-315 | 3. Functional Requirements |
+| 316-337 | 4. Non-Functional Requirements |
+| 338-365 | 5. Configuration |
+| 366-400 | 6. Verification Requirements |
+| 401-435 | Appendix A - Path Normalization |
 
 ---
 

@@ -179,6 +179,7 @@ impl App {
                 selected: vec![true; batch.approval_requests.len()],
                 cursor: 0,
                 deny_confirm: false,
+                expanded: None,
             };
             self.state = OperationState::ToolLoop(ToolLoopState {
                 batch,
@@ -335,14 +336,13 @@ impl App {
 
             let allowlisted = self.tool_settings.policy.is_allowlisted(&call.name);
             let needs_confirmation = match self.tool_settings.policy.mode {
-                tools::ApprovalMode::Auto => exec.requires_approval(),
+                tools::ApprovalMode::Auto | tools::ApprovalMode::Deny => exec.requires_approval(),
                 tools::ApprovalMode::Prompt => {
                     exec.requires_approval()
                         || (self.tool_settings.policy.prompt_side_effects
                             && exec.is_side_effecting()
                             && !allowlisted)
                 }
-                tools::ApprovalMode::Deny => exec.requires_approval(),
             };
 
             if needs_confirmation {
@@ -360,6 +360,7 @@ impl App {
                     tool_name: call.name.clone(),
                     summary,
                     risk_level: exec.risk_level(),
+                    arguments: call.arguments.clone(),
                 });
                 approval_calls.push(call.clone());
             } else {

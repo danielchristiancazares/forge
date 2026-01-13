@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 description = "TUI rendering and input handling for Forge"
 
+[lints]
+workspace = true
+
 [dependencies]
 forge-engine.workspace = true
 forge-types.workspace = true

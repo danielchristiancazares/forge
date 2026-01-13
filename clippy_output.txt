@@ -1,0 +1,2075 @@
+warning: docs for function returning `Result` missing `# Errors` section
+  --> types\src\lib.rs:28:5
+   |
+28 |     pub fn new(value: impl Into<String>) -> Result<Self, EmptyStringError> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+   = note: `-W clippy::missing-errors-doc` implied by `-W clippy::pedantic`
+   = help: to override `-W clippy::pedantic` add `#[allow(clippy::missing_errors_doc)]`
+
+warning: missing `#[must_use]` attribute on a method returning `Self`
+  --> types\src\lib.rs:37:5
+   |
+37 | /     pub fn append(mut self, suffix: impl AsRef<str>) -> Self {
+38 | |         self.0.push_str(suffix.as_ref());
+39 | |         Self(self.0)
+40 | |     }
+   | |_____^
+   |
+   = help: consider adding the `#[must_use]` attribute to the method or directly to the `Self` type
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#return_self_not_must_use
+   = note: `-W clippy::return-self-not-must-use` implied by `-W clippy::pedantic`
+   = help: to override `-W clippy::pedantic` add `#[allow(clippy::return_self_not_must_use)]`
+
+warning: docs for function which may panic missing `# Panics` section
+  --> types\src\lib.rs:95:5
+   |
+95 |     pub const fn new(value: &'static str) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: first possible panic found here
+  --> types\src\lib.rs:96:9
+   |
+96 |         assert!(!value.is_empty(), "NonEmptyStaticStr must not be empty");
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_panics_doc
+   = note: `-W clippy::missing-panics-doc` implied by `-W clippy::pedantic`
+   = help: to override `-W clippy::pedantic` add `#[allow(clippy::missing_panics_doc)]`
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> types\src\lib.rs:171:5
+    |
+171 |     pub fn parse_model(&self, raw: &str) -> Result<ModelName, ModelParseError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> types\src\lib.rs:223:5
+    |
+223 |     pub fn parse(provider: Provider, raw: &str) -> Result<Self, ModelParseError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> types\src\lib.rs:513:5
+    |
+513 | /     pub fn with_thinking(
+514 | |         max_output_tokens: u32,
+515 | |         thinking_budget: u32,
+516 | |     ) -> Result<Self, OutputLimitsError> {
+    | |________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> types\src\lib.rs:776:5
+    |
+776 |     pub fn try_user(content: impl Into<String>) -> Result<Self, EmptyStringError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: `forge-types` (lib) generated 7 warnings
+warning: docs for function which may panic missing `# Panics` section
+  --> providers\src\lib.rs:44:1
+   |
+44 | pub fn http_client() -> &'static reqwest::Client {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: first possible panic found here
+  --> providers\src\lib.rs:47:9
+   |
+47 | /         reqwest::Client::builder()
+48 | |             .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+49 | |             .redirect(reqwest::redirect::Policy::none())
+50 | |             .https_only(true)
+51 | |             .build()
+52 | |             .expect("build shared HTTP client")
+   | |_______________________________________________^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_panics_doc
+   = note: `-W clippy::missing-panics-doc` implied by `-W clippy::pedantic`
+   = help: to override `-W clippy::pedantic` add `#[allow(clippy::missing_panics_doc)]`
+
+warning: docs for function which may panic missing `# Panics` section
+  --> providers\src\lib.rs:61:1
+   |
+61 | pub fn http_client_with_timeout(timeout_secs: u64) -> reqwest::Client {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: first possible panic found here
+  --> providers\src\lib.rs:62:5
+   |
+62 | /     reqwest::Client::builder()
+63 | |         .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+64 | |         .timeout(Duration::from_secs(timeout_secs))
+65 | |         .redirect(reqwest::redirect::Policy::none())
+66 | |         .https_only(true)
+67 | |         .build()
+68 | |         .expect("build HTTP client with timeout")
+   | |_________________________________________________^
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_panics_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> providers\src\lib.rs:149:5
+    |
+149 |     pub fn new(api_key: ApiKey, model: ModelName) -> Result<Self, ApiConfigError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+    = note: `-W clippy::missing-errors-doc` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::missing_errors_doc)]`
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> providers\src\lib.rs:211:1
+    |
+211 | / pub async fn send_message(
+212 | |     config: &ApiConfig,
+213 | |     messages: &[CacheableMessage],
+214 | |     limits: OutputLimits,
+...   |
+217 | |     on_event: impl Fn(StreamEvent) + Send + 'static,
+218 | | ) -> Result<()> {
+    | |_______________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> providers\src\lib.rs:368:5
+    |
+368 | /     pub async fn send_message(
+369 | |         config: &ApiConfig,
+370 | |         messages: &[CacheableMessage],
+371 | |         limits: OutputLimits,
+...   |
+374 | |         on_event: impl Fn(StreamEvent) + Send + 'static,
+375 | |     ) -> Result<()> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> providers\src\lib.rs:847:5
+    |
+847 | /     pub async fn send_message(
+848 | |         config: &ApiConfig,
+849 | |         messages: &[CacheableMessage],
+850 | |         limits: OutputLimits,
+...   |
+853 | |         on_event: impl Fn(StreamEvent) + Send + 'static,
+854 | |     ) -> Result<()> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: `forge-providers` (lib) generated 6 warnings
+warning: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+   --> context\src\history.rs:459:37
+    |
+459 |                 let summary_index = summary_id.0 as usize;
+    |                                     ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+    = note: `-W clippy::cast-possible-truncation` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::cast_possible_truncation)]`
+help: ... or use `try_from` and handle the error accordingly
+    |
+459 -                 let summary_index = summary_id.0 as usize;
+459 +                 let summary_index = usize::try_from(summary_id.0);
+    |
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\history.rs:545:5
+    |
+545 |     pub fn add_summary(&mut self, summary: Summary) -> Result<SummaryId> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+    = note: `-W clippy::missing-errors-doc` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::missing_errors_doc)]`
+
+warning: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+   --> context\src\history.rs:632:21
+    |
+632 |         let index = id.as_u64() as usize;
+    |                     ^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+632 -         let index = id.as_u64() as usize;
+632 +         let index = usize::try_from(id.as_u64());
+    |
+
+warning: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+   --> context\src\history.rs:639:25
+    |
+639 |         &self.summaries[id.0 as usize]
+    |                         ^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+639 -         &self.summaries[id.0 as usize]
+639 +         &self.summaries[usize::try_from(id.0)]
+    |
+
+warning: casting `f64` to `u32` may truncate the value
+   --> context\src\manager.rs:523:29
+    |
+523 |         let target_tokens = (f64::from(original_tokens) * f64::from(ratio)).round() as u32;
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+
+warning: casting `f64` to `u32` may lose the sign of the value
+   --> context\src\manager.rs:523:29
+    |
+523 |         let target_tokens = (f64::from(original_tokens) * f64::from(ratio)).round() as u32;
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_sign_loss
+    = note: `-W clippy::cast-sign-loss` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::cast_sign_loss)]`
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\manager.rs:543:5
+    |
+543 | /     pub fn complete_summarization(
+544 | |         &mut self,
+545 | |         scope: SummarizationScope,
+546 | |         content: NonEmptyString,
+547 | |         generated_by: String,
+548 | |     ) -> Result<SummaryId> {
+    | |__________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\manager.rs:598:5
+    |
+598 |     pub fn prepare(&self) -> Result<PreparedContext<'_>, ContextBuildError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\manager.rs:666:5
+    |
+666 |     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\manager.rs:712:5
+    |
+712 |     pub fn load(path: impl AsRef<Path>, model: &str) -> Result<Self> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\stream_journal.rs:105:5
+    |
+105 | /     pub fn append_text(
+106 | |         &mut self,
+107 | |         journal: &mut StreamJournal,
+108 | |         content: impl Into<String>,
+109 | |     ) -> Result<()> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\stream_journal.rs:113:5
+    |
+113 |     pub fn append_done(&mut self, journal: &mut StreamJournal) -> Result<()> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\stream_journal.rs:117:5
+    |
+117 | /     pub fn append_error(
+118 | |         &mut self,
+119 | |         journal: &mut StreamJournal,
+120 | |         message: impl Into<String>,
+121 | |     ) -> Result<()> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\stream_journal.rs:125:5
+    |
+125 |     pub fn seal(self, journal: &mut StreamJournal) -> Result<String> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\stream_journal.rs:129:5
+    |
+129 |     pub fn discard(self, journal: &mut StreamJournal) -> Result<u64> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\stream_journal.rs:219:5
+    |
+219 |     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\stream_journal.rs:241:5
+    |
+241 |     pub fn open_in_memory() -> Result<Self> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\stream_journal.rs:327:5
+    |
+327 |     pub fn seal_unsealed(&mut self, step_id: StepId) -> Result<String> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\stream_journal.rs:344:5
+    |
+344 |     pub fn commit_and_prune_step(&mut self, step_id: StepId) -> Result<u64> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\stream_journal.rs:382:5
+    |
+382 |     pub fn discard_step(&mut self, step_id: StepId) -> Result<u64> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\stream_journal.rs:424:5
+    |
+424 |     pub fn discard_unsealed(&mut self, step_id: StepId) -> Result<u64> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\stream_journal.rs:430:5
+    |
+430 |     pub fn stats(&self) -> Result<JournalStats> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\stream_journal.rs:437:5
+    |
+437 |     pub fn next_step_id(&mut self) -> Result<StepId> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: this argument is passed by value, but not consumed in the function body
+   --> context\src\stream_journal.rs:472:40
+    |
+472 |     fn seal_active(&mut self, session: ActiveJournal) -> Result<String> {
+    |                                        ^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_pass_by_value
+    = note: `-W clippy::needless-pass-by-value` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::needless_pass_by_value)]`
+help: consider taking a reference instead
+    |
+472 |     fn seal_active(&mut self, session: &ActiveJournal) -> Result<String> {
+    |                                        +
+
+warning: this argument is passed by value, but not consumed in the function body
+   --> context\src\stream_journal.rs:480:43
+    |
+480 |     fn discard_active(&mut self, session: ActiveJournal) -> Result<u64> {
+    |                                           ^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_pass_by_value
+help: consider taking a reference instead
+    |
+480 |     fn discard_active(&mut self, session: &ActiveJournal) -> Result<u64> {
+    |                                           +
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\stream_journal.rs:517:5
+    |
+517 |     pub fn recover(&self) -> Result<Option<RecoveredStream>> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: casting `i64` to `u64` may lose the sign of the value
+   --> context\src\stream_journal.rs:732:24
+    |
+732 |         total_entries: total_entries as u64,
+    |                        ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, use `cast_unsigned()` instead: `total_entries.cast_unsigned()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_sign_loss
+
+warning: casting `i64` to `u64` may lose the sign of the value
+   --> context\src\stream_journal.rs:733:25
+    |
+733 |         sealed_entries: sealed_entries as u64,
+    |                         ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, use `cast_unsigned()` instead: `sealed_entries.cast_unsigned()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_sign_loss
+
+warning: casting `i64` to `u64` may lose the sign of the value
+   --> context\src\stream_journal.rs:734:27
+    |
+734 |         unsealed_entries: unsealed_entries as u64,
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, use `cast_unsigned()` instead: `unsealed_entries.cast_unsigned()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_sign_loss
+
+warning: casting `u64` to `i64` may wrap around the value
+   --> context\src\stream_journal.rs:850:13
+    |
+850 |     let z = days as i64 + 719_468;
+    |             ^^^^^^^^^^^ help: if this is intentional, use `cast_signed()` instead: `days.cast_signed()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_wrap
+    = note: `-W clippy::cast-possible-wrap` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::cast_possible_wrap)]`
+
+warning: casting `i64` to `u32` may truncate the value
+   --> context\src\stream_journal.rs:852:15
+    |
+852 |     let doe = (z - era * 146_097) as u32;
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+852 -     let doe = (z - era * 146_097) as u32;
+852 +     let doe = u32::try_from(z - era * 146_097);
+    |
+
+warning: casting `i64` to `u32` may lose the sign of the value
+   --> context\src\stream_journal.rs:852:15
+    |
+852 |     let doe = (z - era * 146_097) as u32;
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_sign_loss
+
+warning: casting `i64` to `i32` may truncate the value
+   --> context\src\stream_journal.rs:861:6
+    |
+861 |     (year as i32, m, d)
+    |      ^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+861 -     (year as i32, m, d)
+861 +     (i32::try_from(year), m, d)
+    |
+
+warning: casting `i64` to `u64` may lose the sign of the value
+   --> context\src\stream_journal.rs:886:16
+    |
+886 |     let secs = days as u64 * 86400 + u64::from(hour) * 3600 + u64::from(minute) * 60 + u64::from(second);
+    |                ^^^^^^^^^^^ help: if this is intentional, use `cast_unsigned()` instead: `days.cast_unsigned()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_sign_loss
+
+warning: casting `i64` to `u32` may truncate the value
+   --> context\src\stream_journal.rs:900:15
+    |
+900 |     let yoe = (y - era * 400) as u32;
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+900 -     let yoe = (y - era * 400) as u32;
+900 +     let yoe = u32::try_from(y - era * 400);
+    |
+
+warning: casting `i64` to `u32` may lose the sign of the value
+   --> context\src\stream_journal.rs:900:15
+    |
+900 |     let yoe = (y - era * 400) as u32;
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_sign_loss
+
+warning: this argument (8 byte) is passed by reference, but would be more efficient if passed by value (limit: 8 byte)
+   --> context\src\summarization.rs:122:26
+    |
+122 | fn count_tokens(counter: &TokenCounter, text: &str) -> u32 {
+    |                          ^^^^^^^^^^^^^ help: consider passing by value instead: `TokenCounter`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#trivially_copy_pass_by_ref
+    = note: `-W clippy::trivially-copy-pass-by-ref` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::trivially_copy_pass_by_ref)]`
+
+warning: docs for function returning `Result` missing `# Errors` section
+  --> context\src\tool_journal.rs:74:5
+   |
+74 |     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+  --> context\src\tool_journal.rs:93:5
+   |
+93 |     pub fn open_in_memory() -> Result<Self> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\tool_journal.rs:109:5
+    |
+109 | /     pub fn begin_batch(
+110 | |         &mut self,
+111 | |         model_name: &str,
+112 | |         assistant_text: &str,
+113 | |         calls: &[ToolCall],
+114 | |     ) -> Result<ToolBatchId> {
+    | |____________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: casting `usize` to `i64` may wrap around the value on targets with 64-bit wide pointers
+   --> context\src\tool_journal.rs:140:35
+    |
+140 |                 params![batch_id, seq as i64, &call.id, &call.name, args_json],
+    |                                   ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_wrap
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\tool_journal.rs:156:5
+    |
+156 |     pub fn begin_streaming_batch(&mut self, model_name: &str) -> Result<ToolBatchId> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\tool_journal.rs:182:5
+    |
+182 | /     pub fn record_call_start(
+183 | |         &mut self,
+184 | |         batch_id: ToolBatchId,
+185 | |         seq: usize,
+186 | |         tool_call_id: &str,
+187 | |         tool_name: &str,
+188 | |     ) -> Result<()> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: casting `usize` to `i64` may wrap around the value on targets with 64-bit wide pointers
+   --> context\src\tool_journal.rs:193:35
+    |
+193 |                 params![batch_id, seq as i64, tool_call_id, tool_name, ""],
+    |                                   ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_wrap
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\tool_journal.rs:200:5
+    |
+200 | /     pub fn append_call_args(
+201 | |         &mut self,
+202 | |         batch_id: ToolBatchId,
+203 | |         tool_call_id: &str,
+204 | |         delta: &str,
+205 | |     ) -> Result<()> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\tool_journal.rs:222:5
+    |
+222 | /     pub fn update_assistant_text(
+223 | |         &mut self,
+224 | |         batch_id: ToolBatchId,
+225 | |         assistant_text: &str,
+226 | |     ) -> Result<()> {
+    | |___________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\tool_journal.rs:241:5
+    |
+241 |     pub fn record_result(&mut self, batch_id: ToolBatchId, result: &ToolResult) -> Result<()> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\tool_journal.rs:260:5
+    |
+260 |     pub fn commit_batch(&mut self, batch_id: ToolBatchId) -> Result<()> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\tool_journal.rs:295:5
+    |
+295 |     pub fn discard_batch(&mut self, batch_id: ToolBatchId) -> Result<()> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> context\src\tool_journal.rs:324:5
+    |
+324 |     pub fn recover(&self) -> Result<Option<RecoveredToolBatch>> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: casting `u64` to `i64` may wrap around the value
+   --> context\src\tool_journal.rs:519:13
+    |
+519 |     let z = days as i64 + 719_468;
+    |             ^^^^^^^^^^^ help: if this is intentional, use `cast_signed()` instead: `days.cast_signed()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_wrap
+
+warning: casting `i64` to `u32` may truncate the value
+   --> context\src\tool_journal.rs:521:15
+    |
+521 |     let doe = (z - era * 146_097) as u32;
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+521 -     let doe = (z - era * 146_097) as u32;
+521 +     let doe = u32::try_from(z - era * 146_097);
+    |
+
+warning: casting `i64` to `u32` may lose the sign of the value
+   --> context\src\tool_journal.rs:521:15
+    |
+521 |     let doe = (z - era * 146_097) as u32;
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_sign_loss
+
+warning: casting `i64` to `i32` may truncate the value
+   --> context\src\tool_journal.rs:530:6
+    |
+530 |     (year as i32, m, d)
+    |      ^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+530 -     (year as i32, m, d)
+530 +     (i32::try_from(year), m, d)
+    |
+
+warning: casting `u32` to `f32` causes a loss of precision (`u32` is 32 bits wide, but `f32`'s mantissa is only 23 bits wide)
+   --> context\src\working_context.rs:200:14
+    |
+200 |             (self.used_tokens as f32 / self.budget_tokens as f32) * 100.0
+    |              ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_precision_loss
+    = note: `-W clippy::cast-precision-loss` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::cast_precision_loss)]`
+
+warning: casting `u32` to `f32` causes a loss of precision (`u32` is 32 bits wide, but `f32`'s mantissa is only 23 bits wide)
+   --> context\src\working_context.rs:200:40
+    |
+200 |             (self.used_tokens as f32 / self.budget_tokens as f32) * 100.0
+    |                                        ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_precision_loss
+
+warning: casting `u32` to `f32` causes a loss of precision (`u32` is 32 bits wide, but `f32`'s mantissa is only 23 bits wide)
+   --> context\src\working_context.rs:209:35
+    |
+209 |                 format!("{:.1}M", n as f32 / 1_000_000.0)
+    |                                   ^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_precision_loss
+
+warning: casting `u32` to `f32` causes a loss of precision (`u32` is 32 bits wide, but `f32`'s mantissa is only 23 bits wide)
+   --> context\src\working_context.rs:211:35
+    |
+211 |                 format!("{:.1}k", n as f32 / 1000.0)
+    |                                   ^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_precision_loss
+
+warning: `forge-context` (lib) generated 58 warnings
+warning: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+   --> webfetch\src\browser.rs:218:27
+    |
+218 |     if final_html.len() > browser_config.max_rendered_dom_bytes as usize {
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+    = note: `-W clippy::cast-possible-truncation` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::cast_possible_truncation)]`
+help: ... or use `try_from` and handle the error accordingly
+    |
+218 -     if final_html.len() > browser_config.max_rendered_dom_bytes as usize {
+218 +     if final_html.len() > usize::try_from(browser_config.max_rendered_dom_bytes) {
+    |
+
+warning: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+   --> webfetch\src\browser.rs:219:49
+    |
+219 |         final_html = truncate_utf8(&final_html, browser_config.max_rendered_dom_bytes as usize);
+    |                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+219 -         final_html = truncate_utf8(&final_html, browser_config.max_rendered_dom_bytes as usize);
+219 +         final_html = truncate_utf8(&final_html, usize::try_from(browser_config.max_rendered_dom_bytes));
+    |
+
+warning: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+   --> webfetch\src\browser.rs:737:25
+    |
+737 |         let max_bytes = config.max_download_bytes as usize;
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+737 -         let max_bytes = config.max_download_bytes as usize;
+737 +         let max_bytes = usize::try_from(config.max_download_bytes);
+    |
+
+warning: this argument (1 byte) is passed by reference, but would be more efficient if passed by value (limit: 8 byte)
+  --> webfetch\src\cache.rs:34:15
+   |
+34 |     fn as_str(&self) -> &'static str {
+   |               ^^^^^ help: consider passing by value instead: `self`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#trivially_copy_pass_by_ref
+   = note: `-W clippy::trivially-copy-pass-by-ref` implied by `-W clippy::pedantic`
+   = help: to override `-W clippy::pedantic` add `#[allow(clippy::trivially_copy_pass_by_ref)]`
+
+warning: this could be rewritten as `let...else`
+   --> webfetch\src\cache.rs:194:9
+    |
+194 | /         let content = match fs::read_to_string(&path) {
+195 | |             Ok(c) => c,
+196 | |             Err(_) => {
+...   |
+200 | |         };
+    | |__________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#manual_let_else
+    = note: `-W clippy::manual-let-else` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::manual_let_else)]`
+help: consider writing
+    |
+194 ~         let Ok(content) = fs::read_to_string(&path) else {
+195 +                 // FR-WF-CCH-READ-01: Treat as cache miss
+196 +                 return CacheResult::Miss;
+197 +             };
+    |
+
+warning: this function's return value is unnecessary
+   --> webfetch\src\cache.rs:326:5
+    |
+326 |     fn evict_if_needed(&mut self, new_entry_bytes: u64) -> Result<(), CacheWriteError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#unnecessary_wraps
+    = note: `-W clippy::unnecessary-wraps` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::unnecessary_wraps)]`
+help: remove the return type...
+    |
+326 -     fn evict_if_needed(&mut self, new_entry_bytes: u64) -> Result<(), CacheWriteError> {
+326 +     fn evict_if_needed(&mut self, new_entry_bytes: u64) -> () {
+    |
+help: ...and then remove returned values
+    |
+335 ~             return ;
+336 |         }
+...
+369 |
+370 ~         
+    |
+
+warning: casting `usize` to `u32` may truncate the value on targets with 64-bit wide pointers
+   --> webfetch\src\cache.rs:375:23
+    |
+375 |         let entries = self.lru.len() as u32;
+    |                       ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+375 -         let entries = self.lru.len() as u32;
+375 +         let entries = u32::try_from(self.lru.len());
+    |
+
+warning: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+   --> webfetch\src\cache.rs:535:28
+    |
+535 |         days += month_days[(m - 1) as usize];
+    |                            ^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+535 -         days += month_days[(m - 1) as usize];
+535 +         days += month_days[usize::try_from(m - 1)];
+    |
+
+warning: use of `format!` to build up a string from an iterator
+   --> webfetch\src\cache.rs:550:5
+    |
+550 |     bytes.iter().map(|b| format!("{b:02x}")).collect()
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: call `fold` instead
+   --> webfetch\src\cache.rs:550:18
+    |
+550 |     bytes.iter().map(|b| format!("{b:02x}")).collect()
+    |                  ^^^
+help: ... and use the `write!` macro here
+   --> webfetch\src\cache.rs:550:26
+    |
+550 |     bytes.iter().map(|b| format!("{b:02x}")).collect()
+    |                          ^^^^^^^^^^^^^^^^^^
+    = note: this can be written more efficiently by appending to a `String` directly
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#format_collect
+    = note: `-W clippy::format-collect` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::format_collect)]`
+
+warning: casting `usize` to `u8` may truncate the value
+   --> webfetch\src\chunk.rs:205:11
+    |
+205 |     Some((level as u8, normalize_whitespace(text), line.to_string()))
+    |           ^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+205 -     Some((level as u8, normalize_whitespace(text), line.to_string()))
+205 +     Some((u8::try_from(level), normalize_whitespace(text), line.to_string()))
+    |
+
+warning: this argument (8 byte) is passed by reference, but would be more efficient if passed by value (limit: 8 byte)
+   --> webfetch\src\chunk.rs:533:14
+    |
+533 |     counter: &TokenCounter,
+    |              ^^^^^^^^^^^^^ help: consider passing by value instead: `TokenCounter`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#trivially_copy_pass_by_ref
+
+warning: this argument (8 byte) is passed by reference, but would be more efficient if passed by value (limit: 8 byte)
+   --> webfetch\src\chunk.rs:618:14
+    |
+618 |     counter: &TokenCounter,
+    |              ^^^^^^^^^^^^^ help: consider passing by value instead: `TokenCounter`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#trivially_copy_pass_by_ref
+
+warning: this argument (8 byte) is passed by reference, but would be more efficient if passed by value (limit: 8 byte)
+   --> webfetch\src\chunk.rs:671:14
+    |
+671 |     counter: &TokenCounter,
+    |              ^^^^^^^^^^^^^ help: consider passing by value instead: `TokenCounter`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#trivially_copy_pass_by_ref
+
+warning: this argument (8 byte) is passed by reference, but would be more efficient if passed by value (limit: 8 byte)
+   --> webfetch\src\chunk.rs:710:14
+    |
+710 |     counter: &TokenCounter,
+    |              ^^^^^^^^^^^^^ help: consider passing by value instead: `TokenCounter`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#trivially_copy_pass_by_ref
+
+warning: this argument (8 byte) is passed by reference, but would be more efficient if passed by value (limit: 8 byte)
+   --> webfetch\src\chunk.rs:798:14
+    |
+798 |     counter: &TokenCounter,
+    |              ^^^^^^^^^^^^^ help: consider passing by value instead: `TokenCounter`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#trivially_copy_pass_by_ref
+
+warning: assigning the result of `Clone::clone()` may be inefficient
+   --> webfetch\src\chunk.rs:843:13
+    |
+843 |             current_text = item.clone();
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use `clone_from()`: `current_text.clone_from(item)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#assigning_clones
+    = note: `-W clippy::assigning-clones` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::assigning_clones)]`
+
+warning: this argument (8 byte) is passed by reference, but would be more efficient if passed by value (limit: 8 byte)
+   --> webfetch\src\chunk.rs:889:14
+    |
+889 |     counter: &TokenCounter,
+    |              ^^^^^^^^^^^^^ help: consider passing by value instead: `TokenCounter`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#trivially_copy_pass_by_ref
+
+warning: `format!(..)` appended to existing `String`
+   --> webfetch\src\extract.rs:531:13
+    |
+531 |             output.push_str(&format!("{i}. "));
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider using `write!` to avoid the extra allocation
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#format_push_string
+    = note: `-W clippy::format-push-string` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::format_push_string)]`
+
+warning: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+   --> webfetch\src\http.rs:353:29
+    |
+353 |             let max_bytes = config.max_download_bytes as usize;
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+353 -             let max_bytes = config.max_download_bytes as usize;
+353 +             let max_bytes = usize::try_from(config.max_download_bytes);
+    |
+
+warning: this could be rewritten as `let...else`
+   --> webfetch\src\http.rs:723:9
+    |
+723 | /         let response = match tokio::time::timeout(remaining, send_future).await {
+724 | |             Ok(res) => res,
+725 | |             Err(_) => return Err(timeout_error(TimeoutPhase::Request, config)),
+726 | |         };
+    | |__________^ help: consider writing: `let Ok(response) = tokio::time::timeout(remaining, send_future).await else { return Err(timeout_error(TimeoutPhase::Request, config)) };`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#manual_let_else
+
+warning: this argument is passed by value, but not consumed in the function body
+   --> webfetch\src\http.rs:901:31
+    |
+901 | fn normalize_charset(charset: String) -> Option<&'static str> {
+    |                               ^^^^^^ help: consider changing the type to: `&str`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_pass_by_value
+    = note: `-W clippy::needless-pass-by-value` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::needless_pass_by_value)]`
+
+warning: casting `u128` to `u64` may truncate the value
+   --> webfetch\src\http.rs:999:22
+    |
+999 |     let timeout_ms = config.timeout.as_millis() as u64;
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+999 -     let timeout_ms = config.timeout.as_millis() as u64;
+999 +     let timeout_ms = u64::try_from(config.timeout.as_millis());
+    |
+
+warning: this argument is passed by value, but not consumed in the function body
+  --> webfetch\src\resolved.rs:28:30
+   |
+28 |     pub fn from_input(input: WebFetchInput, config: &ResolvedConfig) -> Self {
+   |                              ^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_pass_by_value
+help: consider taking a reference instead
+   |
+28 |     pub fn from_input(input: &WebFetchInput, config: &ResolvedConfig) -> Self {
+   |                              +
+
+warning: this function's return value is unnecessarily wrapped by `Result`
+  --> webfetch\src\resolved.rs:58:5
+   |
+58 |     pub fn from_config(config: &WebFetchConfig) -> Result<Self, WebFetchError> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#unnecessary_wraps
+help: remove `Result` from the return type...
+   |
+58 -     pub fn from_config(config: &WebFetchConfig) -> Result<Self, WebFetchError> {
+58 +     pub fn from_config(config: &WebFetchConfig) -> resolved::ResolvedConfig {
+   |
+help: ...and then remove the surrounding `Ok()` from returning expressions
+   |
+81 ~         Self {
+82 +             user_agent,
+83 +             timeout,
+84 +             max_redirects,
+85 +             default_max_chunk_tokens,
+86 +             max_download_bytes,
+87 +             max_dns_attempts,
+88 +             cache,
+89 +             robots,
+90 +             browser,
+91 +             security,
+92 +             http,
+93 +         }
+   |
+
+warning: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+   --> webfetch\src\robots.rs:262:20
+    |
+262 |                 && len as usize > max_bytes
+    |                    ^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+262 -                 && len as usize > max_bytes
+262 +                 && usize::try_from(len) > max_bytes
+    |
+
+warning: this could be rewritten as `let...else`
+   --> webfetch\src\robots.rs:305:13
+    |
+305 | /             let text = match std::str::from_utf8(&body) {
+306 | |                 Ok(text) => text,
+307 | |                 Err(_) => return Ok(FetchResult::AllowAll),
+308 | |             };
+    | |______________^ help: consider writing: `let Ok(text) = std::str::from_utf8(&body) else { return Ok(FetchResult::AllowAll) };`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#manual_let_else
+
+warning: this function's return value is unnecessarily wrapped by `Result`
+   --> webfetch\src\robots.rs:653:1
+    |
+653 | pub fn parse(content: &str) -> Result<Robots, WebFetchError> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#unnecessary_wraps
+help: remove `Result` from the return type...
+    |
+653 - pub fn parse(content: &str) -> Result<Robots, WebFetchError> {
+653 + pub fn parse(content: &str) -> robots::Robots {
+    |
+help: ...and then remove the surrounding `Ok()` from returning expressions
+    |
+715 -     Ok(robots)
+715 +     robots
+    |
+
+warning: missing `#[must_use]` attribute on a method returning `Self`
+   --> webfetch\src\types.rs:502:5
+    |
+502 | /     pub fn with_detail(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+503 | |         self.details.0.push((key.into(), value.into()));
+504 | |         self
+505 | |     }
+    | |_____^
+    |
+    = help: consider adding the `#[must_use]` attribute to the method or directly to the `Self` type
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#return_self_not_must_use
+    = note: `-W clippy::return-self-not-must-use` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::return_self_not_must_use)]`
+
+warning: assigning the result of `Clone::clone()` may be inefficient
+   --> webfetch\src\lib.rs:134:9
+    |
+134 |         fetched_at = cache_entry.fetched_at.clone();
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use `clone_from()`: `fetched_at.clone_from(&cache_entry.fetched_at)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#assigning_clones
+
+warning: this function's return value is unnecessarily wrapped by `Result`
+   --> webfetch\src\lib.rs:175:1
+    |
+175 | / fn check_cache(
+176 | |     request: &ResolvedRequest,
+177 | |     config: &ResolvedConfig,
+178 | |     rendering_method: cache::RenderingMethod,
+179 | | ) -> Result<Option<WebFetchOutput>, WebFetchError> {
+    | |__________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#unnecessary_wraps
+help: remove `Result` from the return type...
+    |
+179 - ) -> Result<Option<WebFetchOutput>, WebFetchError> {
+179 + ) -> std::option::Option<types::WebFetchOutput> {
+    |
+help: ...and then remove the surrounding `Ok()` from returning expressions
+    |
+181 ~         return None;
+182 |     };
+...
+185 |         Ok(c) => c,
+186 ~         Err(_) => return None,
+187 |     };
+...
+200 |
+201 ~             Some(WebFetchOutput {
+202 +                 requested_url: request.requested_url.clone(),
+203 +                 final_url: entry.final_url,
+204 +                 fetched_at: entry.fetched_at,
+205 +                 title: entry.title,
+206 +                 language: entry.language,
+207 +                 chunks,
+208 +                 rendering_method: final_method,
+209 +                 truncated: false,
+210 +                 truncation_reason: None,
+211 +                 notes: vec![Note::CacheHit],
+212 +             })
+213 |         }
+214 ~         CacheResult::Miss | CacheResult::VersionMismatch => None,
+    |
+
+warning: this could be rewritten as `let...else`
+   --> webfetch\src\lib.rs:184:5
+    |
+184 | /     let mut cache = match Cache::new(settings) {
+185 | |         Ok(c) => c,
+186 | |         Err(_) => return Ok(None),
+187 | |     };
+    | |______^ help: consider writing: `let Ok(mut cache) = Cache::new(settings) else { return Ok(None) };`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#manual_let_else
+
+warning: `forge-webfetch` (lib) generated 31 warnings
+warning: binding's name is too similar to existing binding
+    --> engine\src\tools\search.rs:1466:9
+     |
+1466 |     let line_text = trim_line_endings(lines_text);
+     |         ^^^^^^^^^
+     |
+note: existing binding defined here
+    --> engine\src\tools\search.rs:1465:9
+     |
+1465 |     let lines_text = data.get("lines")?.get("text")?.as_str()?;
+     |         ^^^^^^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#similar_names
+     = note: `-W clippy::similar-names` implied by `-W clippy::pedantic`
+     = help: to override `-W clippy::pedantic` add `#[allow(clippy::similar_names)]`
+
+warning: binding's name is too similar to existing binding
+    --> engine\src\tools\search.rs:1503:9
+     |
+1503 |     let line_text = trim_line_endings(lines_text);
+     |         ^^^^^^^^^
+     |
+note: existing binding defined here
+    --> engine\src\tools\search.rs:1502:9
+     |
+1502 |     let lines_text = data.get("lines")?.get("text")?.as_str()?;
+     |         ^^^^^^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#similar_names
+
+warning: all fields have the same postfix: `seconds`
+   --> engine\src\config.rs:182:1
+    |
+182 | / pub struct ToolTimeoutsConfig {
+183 | |     pub default_seconds: Option<u64>,
+184 | |     pub file_operations_seconds: Option<u64>,
+185 | |     pub shell_commands_seconds: Option<u64>,
+186 | | }
+    | |_^
+    |
+    = help: remove the postfixes
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#struct_field_names
+    = note: `-W clippy::struct-field-names` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::struct_field_names)]`
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> engine\src\config.rs:333:5
+    |
+333 |     pub fn load() -> Result<Option<Self>, ConfigError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+    = note: `-W clippy::missing-errors-doc` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::missing_errors_doc)]`
+
+warning: this could be rewritten as `let...else`
+   --> engine\src\config.rs:334:9
+    |
+334 | /         let path = match config_path() {
+335 | |             Some(path) => path,
+336 | |             None => return Ok(None),
+337 | |         };
+    | |__________^ help: consider writing: `let Some(path) = config_path() else { return Ok(None) };`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#manual_let_else
+    = note: `-W clippy::manual-let-else` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::manual_let_else)]`
+
+warning: this could be rewritten as `let...else`
+   --> engine\src\tools\builtins.rs:220:17
+    |
+220 | /                 let entry = match entry {
+221 | |                     Ok(e) => e,
+222 | |                     Err(_) => continue, // Skip unreadable entries
+223 | |                 };
+    | |__________________^ help: consider writing: `let Ok(entry) = entry else { continue };`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#manual_let_else
+
+warning: `format!(..)` appended to existing `String`
+   --> engine\src\tools\builtins.rs:254:21
+    |
+254 |                     out.push_str(&format!("\n\n[truncated at {limit} matches]"));
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider using `write!` to avoid the extra allocation
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#format_push_string
+    = note: `-W clippy::format-push-string` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::format_push_string)]`
+
+warning: `format!(..)` appended to existing `String`
+   --> engine\src\tools\builtins.rs:367:17
+    |
+367 |                 summary.push_str(&format!(" lines {start}-{end}"));
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider using `write!` to avoid the extra allocation
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#format_push_string
+
+warning: `format!(..)` appended to existing `String`
+   --> engine\src\tools\builtins.rs:369:17
+    |
+369 |                 summary.push_str(&format!(" lines {start}-"));
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider using `write!` to avoid the extra allocation
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#format_push_string
+
+warning: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+   --> engine\src\tools\builtins.rs:441:20
+    |
+441 |                 if meta.len() as usize > read_limit {
+    |                    ^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+    = note: `-W clippy::cast-possible-truncation` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::cast_possible_truncation)]`
+help: ... or use `try_from` and handle the error accordingly
+    |
+441 -                 if meta.len() as usize > read_limit {
+441 +                 if usize::try_from(meta.len()) > read_limit {
+    |
+
+warning: this argument is passed by value, but not consumed in the function body
+   --> engine\src\tools\builtins.rs:938:20
+    |
+938 |     search_config: SearchToolConfig,
+    |                    ^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_pass_by_value
+    = note: `-W clippy::needless-pass-by-value` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::needless_pass_by_value)]`
+help: consider taking a reference instead
+    |
+938 |     search_config: &SearchToolConfig,
+    |                    +
+
+warning: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+   --> engine\src\tools\builtins.rs:986:8
+    |
+986 |     if meta.len() as usize > max_raw {
+    |        ^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+986 -     if meta.len() as usize > max_raw {
+986 +     if usize::try_from(meta.len()) > max_raw {
+    |
+
+warning: more than 3 bools in a struct
+   --> engine\src\tools\git.rs:396:1
+    |
+396 | / struct GitExecResult {
+397 | |     git_bin: String,
+398 | |     args: Vec<String>,
+399 | |     working_dir: Option<PathBuf>,
+...   |
+406 | |     timed_out: bool,
+407 | | }
+    | |_^
+    |
+    = help: consider using a state machine or refactoring bools into two-variant enums
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#struct_excessive_bools
+    = note: `-W clippy::struct-excessive-bools` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::struct_excessive_bools)]`
+
+warning: this argument is passed by value, but not consumed in the function body
+   --> engine\src\tools\git.rs:411:11
+    |
+411 |     text: String,
+    |           ^^^^^^ help: consider changing the type to: `&str`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_pass_by_value
+
+warning: this could be rewritten as `let...else`
+   --> engine\src\tools\search.rs:442:29
+    |
+442 | / ...                   let rel = if let Some(rel) = relativize_path(path, &search_root_dir) { rel } else {
+443 | | ...                       errors.push(SearchFileError {
+444 | | ...                           path: normalize_display_path(path),
+445 | | ...                           error: "path outside search root".to_string(),
+446 | | ...                       });
+447 | | ...                       continue;
+448 | | ...                   };
+    | |________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#manual_let_else
+help: consider writing
+    |
+442 ~                             let Some(rel) = relativize_path(path, &search_root_dir) else {
+443 +                                 errors.push(SearchFileError {
+444 +                                     path: normalize_display_path(path),
+445 +                                     error: "path outside search root".to_string(),
+446 +                                 });
+447 +                                 continue;
+448 +                             };
+    |
+
+warning: this argument is passed by value, but not consumed in the function body
+   --> engine\src\tools\search.rs:707:42
+    |
+707 |     fn from_tool_error(path: &Path, err: ToolError, root: &Path) -> Self {
+    |                                          ^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_pass_by_value
+help: consider taking a reference instead
+    |
+707 |     fn from_tool_error(path: &Path, err: &ToolError, root: &Path) -> Self {
+    |                                          +
+
+warning: `format!(..)` appended to existing `String`
+    --> engine\src\tools\search.rs:1057:17
+     |
+1057 | /                 out.push_str(&format!(
+1058 | |                     "{}:{}:{}: {}",
+1059 | |                     data.path.text, data.line_number, data.column, data.lines.text
+1060 | |                 ));
+     | |__________________^
+     |
+     = help: consider using `write!` to avoid the extra allocation
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#format_push_string
+
+warning: `format!(..)` appended to existing `String`
+    --> engine\src\tools\search.rs:1063:17
+     |
+1063 | /                 out.push_str(&format!(
+1064 | |                     "{}:{}: {}",
+1065 | |                     data.path.text, data.line_number, data.lines.text
+1066 | |                 ));
+     | |__________________^
+     |
+     = help: consider using `write!` to avoid the extra allocation
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#format_push_string
+
+warning: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+    --> engine\src\tools\search.rs:1469:17
+     |
+1469 |     let start = submatch.get("start")?.as_u64()? as usize;
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1469 -     let start = submatch.get("start")?.as_u64()? as usize;
+1469 +     let start = usize::try_from(submatch.get("start")?.as_u64()?);
+     |
+
+warning: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+    --> engine\src\tools\search.rs:1470:15
+     |
+1470 |     let end = submatch.get("end")?.as_u64()? as usize;
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1470 -     let end = submatch.get("end")?.as_u64()? as usize;
+1470 +     let end = usize::try_from(submatch.get("end")?.as_u64()?);
+     |
+
+warning: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+    --> engine\src\tools\search.rs:1538:16
+     |
+1538 |     let size = value.get("size")?.as_u64()? as usize;
+     |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1538 -     let size = value.get("size")?.as_u64()? as usize;
+1538 +     let size = usize::try_from(value.get("size")?.as_u64()?);
+     |
+
+warning: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers
+    --> engine\src\tools\search.rs:1542:17
+     |
+1542 |     let start = column.saturating_sub(1) as usize;
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1542 -     let start = column.saturating_sub(1) as usize;
+1542 +     let start = usize::try_from(column.saturating_sub(1));
+     |
+
+warning: all fields have the same prefix: `max_tool`
+   --> engine\src\tools\mod.rs:298:1
+    |
+298 | / pub struct ToolLimits {
+299 | |     pub max_tool_calls_per_batch: usize,
+300 | |     pub max_tool_iterations_per_user_turn: u32,
+301 | |     pub max_tool_args_bytes: usize,
+302 | | }
+    | |_^
+    |
+    = help: remove the prefixes
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#struct_field_names
+
+warning: all fields have the same postfix: `timeout`
+   --> engine\src\tools\mod.rs:319:1
+    |
+319 | / pub struct ToolTimeouts {
+320 | |     pub default_timeout: Duration,
+321 | |     pub file_operations_timeout: Duration,
+322 | |     pub shell_commands_timeout: Duration,
+323 | | }
+    | |_^
+    |
+    = help: remove the postfixes
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#struct_field_names
+
+warning: this argument is passed by value, but not consumed in the function body
+   --> engine\src\commands.rs:145:48
+    |
+145 |     pub fn process_command(&mut self, command: EnteredCommand) {
+    |                                                ^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_pass_by_value
+help: consider taking a reference instead
+    |
+145 |     pub fn process_command(&mut self, command: &EnteredCommand) {
+    |                                                +
+
+warning: docs for function returning `Result` missing `# Errors` section
+  --> engine\src\init.rs:76:5
+   |
+76 |     pub fn new(system_prompt: Option<&'static str>) -> anyhow::Result<Self> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: called `map(<f>).unwrap_or_else(<g>)` on an `Option` value
+   --> engine\src\init.rs:140:21
+    |
+140 |           let model = config
+    |  _____________________^
+141 | |             .as_ref()
+142 | |             .and_then(|cfg| cfg.app.as_ref())
+143 | |             .and_then(|app| app.model.as_ref())
+...   |
+150 | |             })
+151 | |             .unwrap_or_else(|| provider.default_model());
+    | |________________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#map_unwrap_or
+    = note: `-W clippy::map-unwrap-or` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::map_unwrap_or)]`
+
+warning: called `map(<f>).unwrap_or_else(<g>)` on an `Option` value
+   --> engine\src\init.rs:564:28
+    |
+564 |                   let list = policy_cfg
+    |  ____________________________^
+565 | |                     .map(|cfg| cfg.allowlist.clone())
+566 | |                     .unwrap_or_else(|| {
+567 | |                         vec![
+...   |
+575 | |                     });
+    | |______________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#map_unwrap_or
+
+warning: this could be rewritten as `let...else`
+   --> engine\src\input_modes.rs:159:9
+    |
+159 | /         let api_key = if let Some(key) = self.app.current_api_key().cloned() { key } else {
+160 | |             self.app.set_status_warning(format!(
+161 | |                 "No API key configured. Set {} environment variable.",
+162 | |                 self.app.provider().env_var()
+163 | |             ));
+164 | |             return None;
+165 | |         };
+    | |__________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#manual_let_else
+help: consider writing
+    |
+159 ~         let Some(api_key) = self.app.current_api_key().cloned() else {
+160 +             self.app.set_status_warning(format!(
+161 +                 "No API key configured. Set {} environment variable.",
+162 +                 self.app.provider().env_var()
+163 +             ));
+164 +             return None;
+165 +         };
+    |
+
+warning: this could be rewritten as `let...else`
+   --> engine\src\input_modes.rs:168:9
+    |
+168 | /         let content = if let Ok(content) = NonEmptyString::new(raw_content.clone()) { content } else {
+169 | |             self.app.set_status_warning("Cannot send empty message");
+170 | |             return None;
+171 | |         };
+    | |__________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#manual_let_else
+help: consider writing
+    |
+168 ~         let Ok(content) = NonEmptyString::new(raw_content.clone()) else {
+169 +             self.app.set_status_warning("Cannot send empty message");
+170 +             return None;
+171 +         };
+    |
+
+warning: docs for function returning `Result` missing `# Errors` section
+  --> engine\src\persistence.rs:31:5
+   |
+31 |     pub fn save_history(&self) -> anyhow::Result<()> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: this could be rewritten as `let...else`
+   --> engine\src\streaming.rs:158:17
+    |
+158 | /                 let active = match &mut self.state {
+159 | |                     OperationState::Streaming(active) => active,
+160 | |                     _ => return,
+161 | |                 };
+    | |__________________^ help: consider writing: `let OperationState::Streaming(active) = &mut self.state else { return };`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#manual_let_else
+
+warning: this could be rewritten as `let...else`
+   --> engine\src\summarization.rs:181:17
+    |
+181 | /                 let summary_text = if let Ok(text) = NonEmptyString::new(summary_text) { text } else {
+182 | |                     self.handle_summarization_failure(
+183 | |                         attempt,
+184 | |                         "summary was empty".to_string(),
+...   |
+187 | |                     return;
+188 | |                 };
+    | |__________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#manual_let_else
+help: consider writing
+    |
+181 ~                 let Ok(summary_text) = NonEmptyString::new(summary_text) else {
+182 +                     self.handle_summarization_failure(
+183 +                         attempt,
+184 +                         "summary was empty".to_string(),
+185 +                         queued_request,
+186 +                     );
+187 +                     return;
+188 +                 };
+    |
+
+warning: this argument is passed by value, but not consumed in the function body
+   --> engine\src\summarization.rs:235:16
+    |
+235 |         error: String,
+    |                ^^^^^^ help: consider changing the type to: `&str`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_pass_by_value
+
+warning: docs for function which may panic missing `# Panics` section
+   --> engine\src\tool_loop.rs:724:5
+    |
+724 |     pub fn submit_tool_result(&mut self, result: ToolResult) -> Result<bool, String> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: first possible panic found here
+   --> engine\src\tool_loop.rs:760:54
+    |
+760 |                     .record_result(pending.batch_id, pending.results.last().unwrap());
+    |                                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_panics_doc
+    = note: `-W clippy::missing-panics-doc` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::missing_panics_doc)]`
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> engine\src\tool_loop.rs:724:5
+    |
+724 |     pub fn submit_tool_result(&mut self, result: ToolResult) -> Result<bool, String> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: this could be rewritten as `let...else`
+   --> engine\src\tool_loop.rs:727:13
+    |
+727 | /             let pending = match &mut self.state {
+728 | |                 OperationState::AwaitingToolResults(pending) => pending,
+729 | |                 _ => return Err("Not awaiting tool results".to_string()),
+730 | |             };
+    | |______________^ help: consider writing: `let OperationState::AwaitingToolResults(pending) = &mut self.state else { return Err("Not awaiting tool results".to_string()) };`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#manual_let_else
+
+warning: this argument is passed by value, but not consumed in the function body
+   --> engine\src\tool_loop.rs:802:25
+    |
+802 |         assistant_text: String,
+    |                         ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_pass_by_value
+help: consider changing the type to
+    |
+802 -         assistant_text: String,
+802 +         assistant_text: &str,
+    |
+help: change `assistant_text.clone()` to
+    |
+812 -         if let Ok(content) = NonEmptyString::new(assistant_text.clone()) {
+812 +         if let Ok(content) = NonEmptyString::new(assistant_text.to_string()) {
+    |
+
+warning: this argument is passed by value, but not consumed in the function body
+   --> engine\src\tool_loop.rs:803:21
+    |
+803 |         tool_calls: Vec<ToolCall>,
+    |                     ^^^^^^^^^^^^^ help: consider changing the type to: `&[ToolCall]`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_pass_by_value
+
+warning: this argument is passed by value, but not consumed in the function body
+   --> engine\src\tool_loop.rs:805:16
+    |
+805 |         model: ModelName,
+    |                ^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_pass_by_value
+help: consider taking a reference instead
+    |
+805 |         model: &ModelName,
+    |                +
+
+warning: this argument is passed by value, but not consumed in the function body
+   --> engine\src\tool_loop.rs:877:62
+    |
+877 |     pub(crate) fn resolve_tool_approval(&mut self, decision: tools::ApprovalDecision) {
+    |                                                              ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_pass_by_value
+help: consider taking a reference instead
+    |
+877 |     pub(crate) fn resolve_tool_approval(&mut self, decision: &tools::ApprovalDecision) {
+    |                                                              +
+
+warning: assigning the result of `Clone::clone()` may be inefficient
+   --> engine\src\tool_loop.rs:929:9
+    |
+929 |         batch.execute_now = queue.clone();
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use `clone_from()`: `batch.execute_now.clone_from(&queue)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#assigning_clones
+    = note: `-W clippy::assigning-clones` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::assigning_clones)]`
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> engine\src\lib.rs:141:5
+    |
+141 |     pub fn try_recv_event(&mut self) -> Result<StreamEvent, mpsc::error::TryRecvError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> engine\src\lib.rs:247:5
+    |
+247 |     pub fn into_message(self) -> Result<Message, forge_types::EmptyStringError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: more than 3 bools in a struct
+   --> engine\src\lib.rs:263:1
+    |
+263 | / pub struct App {
+264 | |     input: InputState,
+265 | |     display: Vec<DisplayItem>,
+266 | |     should_quit: bool,
+...   |
+318 | |     empty_send_warning_shown: bool,
+319 | | }
+    | |_^
+    |
+    = help: consider using a state machine or refactoring bools into two-variant enums
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#struct_excessive_bools
+
+warning: `forge-engine` (lib) generated 45 warnings
+warning: casting `f32` to `u16` may truncate the value
+  --> tui\src\effects.rs:22:28
+   |
+22 |             let y_offset = ((1.0 - t) * f32::from(offset)).round() as u16;
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+   = note: `-W clippy::cast-possible-truncation` implied by `-W clippy::pedantic`
+   = help: to override `-W clippy::pedantic` add `#[allow(clippy::cast_possible_truncation)]`
+
+warning: casting `f32` to `u16` may lose the sign of the value
+  --> tui\src\effects.rs:22:28
+   |
+22 |             let y_offset = ((1.0 - t) * f32::from(offset)).round() as u16;
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_sign_loss
+   = note: `-W clippy::cast-sign-loss` implied by `-W clippy::pedantic`
+   = help: to override `-W clippy::pedantic` add `#[allow(clippy::cast_sign_loss)]`
+
+warning: casting `f32` to `u16` may truncate the value
+  --> tui\src\effects.rs:34:17
+   |
+34 |     let width = (f32::from(base.width) * scale).round() as u16;
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+
+warning: casting `f32` to `u16` may lose the sign of the value
+  --> tui\src\effects.rs:34:17
+   |
+34 |     let width = (f32::from(base.width) * scale).round() as u16;
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_sign_loss
+
+warning: casting `f32` to `u16` may truncate the value
+  --> tui\src\effects.rs:35:18
+   |
+35 |     let height = (f32::from(base.height) * scale).round() as u16;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+
+warning: casting `f32` to `u16` may lose the sign of the value
+  --> tui\src\effects.rs:35:18
+   |
+35 |     let height = (f32::from(base.height) * scale).round() as u16;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_sign_loss
+
+warning: docs for function returning `Result` missing `# Errors` section
+  --> tui\src\input.rs:11:1
+   |
+11 | pub async fn handle_events(app: &mut App) -> Result<bool> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+   = note: `-W clippy::missing-errors-doc` implied by `-W clippy::pedantic`
+   = help: to override `-W clippy::pedantic` add `#[allow(clippy::missing_errors_doc)]`
+
+warning: all fields have the same postfix: `hash`
+  --> tui\src\markdown.rs:23:1
+   |
+23 | / struct CacheKey {
+24 | |     content_hash: u64,
+25 | |     style_hash: u64,
+26 | |     palette_hash: u64,
+27 | | }
+   | |_^
+   |
+   = help: remove the postfixes
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#struct_field_names
+   = note: `-W clippy::struct-field-names` implied by `-W clippy::pedantic`
+   = help: to override `-W clippy::pedantic` add `#[allow(clippy::struct_field_names)]`
+
+warning: docs for function returning `Result` missing `# Errors` section
+  --> tui\src\ui_inline.rs:35:1
+   |
+35 | / pub fn clear_inline_viewport<B>(terminal: &mut Terminal<B>) -> Result<(), B::Error>
+36 | | where
+37 | |     B: Backend,
+   | |_______________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: docs for function returning `Result` missing `# Errors` section
+  --> tui\src\ui_inline.rs:81:5
+   |
+81 | /     pub fn flush<B>(&mut self, terminal: &mut Terminal<B>, app: &mut App) -> Result<(), B::Error>
+82 | |     where
+83 | |         B: Backend,
+   | |___________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#missing_errors_doc
+
+warning: casting `usize` to `u16` may truncate the value
+   --> tui\src\ui_inline.rs:564:38
+    |
+564 |         total = total.saturating_add(rows as u16);
+    |                                      ^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+564 -         total = total.saturating_add(rows as u16);
+564 +         total = total.saturating_add(u16::try_from(rows));
+    |
+
+warning: casting `usize` to `u16` may truncate the value
+   --> tui\src\lib.rs:486:38
+    |
+486 |         total = total.saturating_add(rows as u16);
+    |                                      ^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+486 -         total = total.saturating_add(rows as u16);
+486 +         total = total.saturating_add(u16::try_from(rows));
+    |
+
+warning: casting `usize` to `u16` may truncate the value
+   --> tui\src\lib.rs:614:24
+    |
+614 |     let prefix_width = prefix.width() as u16;
+    |                        ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+614 -     let prefix_width = prefix.width() as u16;
+614 +     let prefix_width = u16::try_from(prefix.width());
+    |
+
+warning: casting `usize` to `u16` may truncate the value
+   --> tui\src\lib.rs:653:37
+    |
+653 |                 horizontal_scroll = skipped_width as u16;
+    |                                     ^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+653 -                 horizontal_scroll = skipped_width as u16;
+653 +                 horizontal_scroll = u16::try_from(skipped_width);
+    |
+
+warning: casting `usize` to `u16` may truncate the value
+   --> tui\src\lib.rs:672:26
+    |
+672 |         let cursor_row = cursor_line_index.saturating_sub(start_line) as u16;
+    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+672 -         let cursor_row = cursor_line_index.saturating_sub(start_line) as u16;
+672 +         let cursor_row = u16::try_from(cursor_line_index.saturating_sub(start_line));
+    |
+
+warning: casting `usize` to `u16` may truncate the value
+   --> tui\src\lib.rs:676:29
+    |
+676 |             .saturating_add(cursor_display_pos as u16)
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+676 -             .saturating_add(cursor_display_pos as u16)
+676 +             .saturating_add(u16::try_from(cursor_display_pos))
+    |
+
+warning: casting `usize` to `u16` may truncate the value
+   --> tui\src\lib.rs:703:52
+    |
+703 |                 (draft[byte_offset..].to_string(), skipped_width as u16)
+    |                                                    ^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+703 -                 (draft[byte_offset..].to_string(), skipped_width as u16)
+703 +                 (draft[byte_offset..].to_string(), u16::try_from(skipped_width))
+    |
+
+warning: casting `usize` to `u16` may truncate the value
+   --> tui\src\lib.rs:722:50
+    |
+722 |                 (cmd[byte_offset..].to_string(), skipped_width as u16)
+    |                                                  ^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+722 -                 (cmd[byte_offset..].to_string(), skipped_width as u16)
+722 +                 (cmd[byte_offset..].to_string(), u16::try_from(skipped_width))
+    |
+
+warning: casting `usize` to `u16` may truncate the value
+   --> tui\src\lib.rs:752:38
+    |
+752 |             let cursor_display_pos = text_before_cursor.width() as u16;
+    |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+752 -             let cursor_display_pos = text_before_cursor.width() as u16;
+752 +             let cursor_display_pos = u16::try_from(text_before_cursor.width());
+    |
+
+warning: casting `usize` to `u16` may truncate the value
+   --> tui\src\lib.rs:762:42
+    |
+762 |                 let cursor_display_pos = command_line.width() as u16;
+    |                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+762 -                 let cursor_display_pos = command_line.width() as u16;
+762 +                 let cursor_display_pos = u16::try_from(command_line.width());
+    |
+
+warning: casting `usize` to `u16` may truncate the value
+    --> tui\src\lib.rs:1049:24
+     |
+1049 |     let inner_height = lines.len() as u16;
+     |                        ^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1049 -     let inner_height = lines.len() as u16;
+1049 +     let inner_height = u16::try_from(lines.len());
+     |
+
+warning: casting `usize` to `u16` may truncate the value
+    --> tui\src\lib.rs:1245:25
+     |
+1245 |     let content_width = lines.iter().map(ratatui::prelude::Line::width).max().unwrap_or(10) as u16;
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1245 -     let content_width = lines.iter().map(ratatui::prelude::Line::width).max().unwrap_or(10) as u16;
+1245 +     let content_width = u16::try_from(lines.iter().map(ratatui::prelude::Line::width).max().unwrap_or(10));
+     |
+
+warning: casting `usize` to `u16` may truncate the value
+    --> tui\src\lib.rs:1247:26
+     |
+1247 |     let content_height = lines.len() as u16;
+     |                          ^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1247 -     let content_height = lines.len() as u16;
+1247 +     let content_height = u16::try_from(lines.len());
+     |
+
+warning: casting `usize` to `u16` may truncate the value
+    --> tui\src\lib.rs:1347:25
+     |
+1347 |     let content_width = lines.iter().map(ratatui::prelude::Line::width).max().unwrap_or(10) as u16;
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1347 -     let content_width = lines.iter().map(ratatui::prelude::Line::width).max().unwrap_or(10) as u16;
+1347 +     let content_width = u16::try_from(lines.iter().map(ratatui::prelude::Line::width).max().unwrap_or(10));
+     |
+
+warning: casting `usize` to `u16` may truncate the value
+    --> tui\src\lib.rs:1349:26
+     |
+1349 |     let content_height = lines.len() as u16;
+     |                          ^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+     |
+1349 -     let content_height = lines.len() as u16;
+1349 +     let content_height = u16::try_from(lines.len());
+     |
+
+warning: `forge-tui` (lib) generated 25 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.32s

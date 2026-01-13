@@ -1,4 +1,4 @@
-//! WebFetch tool executor for URL fetching with browser fallback.
+//! `WebFetch` tool executor for URL fetching with browser fallback.
 
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -9,7 +9,7 @@ use super::{
 
 const WEBFETCH_TOOL_NAME: &str = "WebFetch";
 
-/// Configuration for the WebFetch tool.
+/// Configuration for the `WebFetch` tool.
 #[derive(Debug, Clone)]
 pub struct WebFetchToolConfig {
     pub enabled: bool,
@@ -37,7 +37,7 @@ impl Default for WebFetchToolConfig {
     }
 }
 
-/// WebFetch tool executor.
+/// `WebFetch` tool executor.
 #[derive(Debug)]
 pub struct WebFetchTool {
     config: WebFetchToolConfig,

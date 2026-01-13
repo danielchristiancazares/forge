@@ -87,6 +87,10 @@ impl InsertMode<'_> {
         self.draft_mut().enter_newline();
     }
 
+    pub fn enter_text(&mut self, text: &str) {
+        self.draft_mut().enter_text(text);
+    }
+
     pub fn delete_char(&mut self) {
         self.draft_mut().delete_char();
     }
@@ -115,6 +119,7 @@ impl InsertMode<'_> {
     ///
     /// Returns a token proving that a non-empty user message was queued, and that it is valid to
     /// begin a new stream.
+    #[must_use] 
     pub fn queue_message(self) -> Option<QueuedUserMessage> {
         match &self.app.state {
             OperationState::Streaming(_) => {
@@ -144,6 +149,10 @@ impl InsertMode<'_> {
         }
 
         if self.app.draft_text().trim().is_empty() {
+            if !self.app.empty_send_warning_shown {
+                self.app.set_status_warning("Type a message to send.");
+                self.app.empty_send_warning_shown = true;
+            }
             return None;
         }
 
@@ -213,6 +222,7 @@ impl CommandMode<'_> {
         command.pop();
     }
 
+    #[must_use] 
     pub fn take_command(self) -> Option<EnteredCommand> {
         let input = std::mem::take(&mut self.app.input);
         let InputState::Command { draft, command } = input else {
