@@ -1376,33 +1376,27 @@ fn draw_tool_recovery_prompt(frame: &mut Frame, app: &App, palette: &Palette, gl
 }
 
 fn create_welcome_screen(app: &App, palette: &Palette, glyphs: &Glyphs) -> Paragraph<'static> {
+    let version = env!("CARGO_PKG_VERSION");
+    let build_profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     let logo = vec![
         Line::from(""),
         Line::from(vec![Span::styled(
-            "  ╭─────────────────────────────────────╮",
-            Style::default().fg(palette.primary_dim),
+            "  Forge",
+            Style::default()
+                .fg(palette.primary)
+                .add_modifier(Modifier::BOLD),
         )]),
-        Line::from(vec![
-            Span::styled("  │", Style::default().fg(palette.primary_dim)),
-            Span::styled(
-                "     ✨ LLM API Harness ✨              ",
-                Style::default()
-                    .fg(palette.primary)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("│", Style::default().fg(palette.primary_dim)),
-        ]),
-        Line::from(vec![
-            Span::styled("  │", Style::default().fg(palette.primary_dim)),
-            Span::styled(
-                "     Your AI Assistant Interface       ",
-                Style::default().fg(palette.text_secondary),
-            ),
-            Span::styled("│", Style::default().fg(palette.primary_dim)),
-        ]),
         Line::from(vec![Span::styled(
-            "  ╰─────────────────────────────────────╯",
-            Style::default().fg(palette.primary_dim),
+            format!("  v{version} ({build_profile})"),
+            Style::default().fg(palette.text_secondary),
+        )]),
+        Line::from(vec![Span::styled(
+            "  Your AI Assistant Interface",
+            Style::default().fg(palette.text_secondary),
         )]),
         Line::from(""),
         Line::from(""),
