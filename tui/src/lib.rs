@@ -957,6 +957,7 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App, palette: &Palette, 
     lines.push(Line::from(""));
 
     let models = PredefinedModel::all();
+    let preview_index = models.len();
     let mut row_index = 0usize;
     let mut push_row = |label: &str, selected: bool, muted: bool, tag: Option<(&str, Style)>| {
         row_index += 1;
@@ -1016,7 +1017,7 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App, palette: &Palette, 
 
     push_row(
         "Google Gemini 3 Pro",
-        false,
+        selected_index == preview_index,
         true,
         Some((
             "preview",

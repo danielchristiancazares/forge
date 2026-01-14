@@ -7,6 +7,7 @@ use std::time::Duration;
 pub enum ModalEffectKind {
     PopScale,
     SlideUp,
+    Shake,
 }
 
 /// Modal animation effect state.
@@ -33,6 +34,16 @@ impl ModalEffect {
     pub fn slide_up(duration: Duration) -> Self {
         Self {
             kind: ModalEffectKind::SlideUp,
+            elapsed: Duration::ZERO,
+            duration,
+        }
+    }
+
+    /// Create a shake effect.
+    #[must_use]
+    pub fn shake(duration: Duration) -> Self {
+        Self {
+            kind: ModalEffectKind::Shake,
             elapsed: Duration::ZERO,
             duration,
         }
@@ -83,6 +94,13 @@ mod tests {
     fn slide_up_initial_state() {
         let effect = ModalEffect::slide_up(Duration::from_millis(300));
         assert_eq!(effect.kind(), ModalEffectKind::SlideUp);
+        assert!(!effect.is_finished());
+    }
+
+    #[test]
+    fn shake_initial_state() {
+        let effect = ModalEffect::shake(Duration::from_millis(250));
+        assert_eq!(effect.kind(), ModalEffectKind::Shake);
         assert!(!effect.is_finished());
     }
 

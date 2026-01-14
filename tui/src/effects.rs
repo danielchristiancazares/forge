@@ -27,6 +27,20 @@ pub fn apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> R
                 height: base.height,
             }
         }
+        ModalEffectKind::Shake => {
+            let t = effect.progress().clamp(0.0, 1.0);
+            let decay = 1.0 - t;
+            let oscillations = 4.0;
+            let amplitude = 3.0;
+            let offset = (f32::sin(t * std::f32::consts::TAU * oscillations) * amplitude * decay)
+                .round() as i32;
+            let viewport_left = i32::from(viewport.x);
+            let viewport_right = i32::from(viewport.x) + i32::from(viewport.width);
+            let max_x = (viewport_right - i32::from(base.width)).max(viewport_left);
+            let base_x = i32::from(base.x);
+            let x = (base_x + offset).clamp(viewport_left, max_x) as u16;
+            Rect { x, ..base }
+        }
     }
 }
 

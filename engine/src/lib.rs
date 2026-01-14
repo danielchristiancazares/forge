@@ -823,6 +823,18 @@ impl App {
         self.input.model_select_index()
     }
 
+    fn model_select_preview_index() -> usize {
+        PredefinedModel::all().len()
+    }
+
+    fn trigger_model_select_shake(&mut self) {
+        if self.view.ui_options.reduced_motion {
+            return;
+        }
+        self.view.modal_effect = Some(ModalEffect::shake(Duration::from_millis(360)));
+        self.view.last_frame = Instant::now();
+    }
+
     pub fn model_select_move_up(&mut self) {
         if let InputState::ModelSelect { selected, .. } = &mut self.input
             && *selected > 0
@@ -833,7 +845,7 @@ impl App {
 
     pub fn model_select_move_down(&mut self) {
         if let InputState::ModelSelect { selected, .. } = &mut self.input {
-            let max_index = PredefinedModel::all().len().saturating_sub(1);
+            let max_index = Self::model_select_preview_index();
             if *selected < max_index {
                 *selected += 1;
             }
@@ -842,7 +854,7 @@ impl App {
 
     pub fn model_select_set_index(&mut self, index: usize) {
         if let InputState::ModelSelect { selected, .. } = &mut self.input {
-            let max_index = PredefinedModel::all().len().saturating_sub(1);
+            let max_index = Self::model_select_preview_index();
             *selected = index.min(max_index);
         }
     }
@@ -853,11 +865,13 @@ impl App {
             return;
         };
         let models = PredefinedModel::all();
-        if let Some(predefined) = models.get(index) {
-            let model = predefined.to_model_name();
-            self.set_model(model);
-            self.set_status_success(format!("Model set to: {}", predefined.display_name()));
-        }
+        let Some(predefined) = models.get(index) else {
+            self.trigger_model_select_shake();
+            return;
+        };
+        let model = predefined.to_model_name();
+        self.set_model(model);
+        self.set_status_success(format!("Model set to: {}", predefined.display_name()));
         self.enter_normal_mode();
     }
 
