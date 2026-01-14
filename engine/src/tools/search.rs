@@ -307,12 +307,6 @@ impl ToolExecutor for SearchTool {
                     message: "fuzzy must be in range 1-4".to_string(),
                 });
             }
-            if fuzzy.is_some() && context > 0 {
-                return Err(ToolError::BadArgs {
-                    message: "fuzzy search does not support context lines".to_string(),
-                });
-            }
-
             let max_matches_per_file = typed
                 .max_matches_per_file
                 .unwrap_or(self.config.max_matches_per_file);
@@ -588,6 +582,16 @@ impl ToolExecutor for SearchTool {
                 }
             }
 
+            if fuzzy.is_some() && context > 0 {
+                inject_fuzzy_context(
+                    &mut accumulator,
+                    &search_root_dir,
+                    &order_root,
+                    context,
+                    &mut errors,
+                );
+            }
+
             let mut events = accumulator.finish();
             let mut truncated = events.len() > max_results;
             if timed_out && events.len() >= max_results {
@@ -797,9 +801,6 @@ impl SearchAccumulator {
         sort_key: Vec<u8>,
         line_text: String,
     ) {
-        if self.closed_files.contains(&path) {
-            return;
-        }
         let event = ParsedEvent {
             path,
             line_number,
@@ -1076,6 +1077,79 @@ fn render_content(matches: &[SearchEvent], truncated: bool, timed_out: bool) -> 
     out.trim_end().to_string()
 }
 
+fn inject_fuzzy_context(
+    accumulator: &mut SearchAccumulator,
+    search_root: &Path,
+    order_root: &Path,
+    context: usize,
+    errors: &mut Vec<SearchFileError>,
+) {
+    if context == 0 {
+        return;
+    }
+
+    let mut matches_by_path: HashMap<String, Vec<u64>> = HashMap::new();
+    for event in &accumulator.events {
+        if matches!(event.kind, ParsedEventKind::Match { .. }) {
+            matches_by_path
+                .entry(event.path.clone())
+                .or_default()
+                .push(event.line_number);
+        }
+    }
+
+    for (path, mut match_lines) in matches_by_path {
+        match_lines.sort_unstable();
+        match_lines.dedup();
+
+        let mut context_lines = HashSet::new();
+        for line in &match_lines {
+            let start = line.saturating_sub(context as u64);
+            let end = line.saturating_add(context as u64);
+            for line_number in start..=end {
+                if line_number == 0 || match_lines.binary_search(&line_number).is_ok() {
+                    continue;
+                }
+                context_lines.insert(line_number);
+            }
+        }
+
+        if context_lines.is_empty() {
+            continue;
+        }
+
+        let abs_path = search_root.join(&path);
+        let bytes = match std::fs::read(&abs_path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                errors.push(SearchFileError {
+                    path: path.clone(),
+                    error: err.to_string(),
+                });
+                continue;
+            }
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let mut line_number = 1u64;
+        let sort_key = path_sort_key(&abs_path, order_root);
+        for raw_line in text.split_terminator('\n') {
+            if context_lines.contains(&line_number) {
+                accumulator.events.push(ParsedEvent {
+                    path: path.clone(),
+                    line_number,
+                    sort_key: sort_key.clone(),
+                    kind: ParsedEventKind::Context {
+                        line_text: trim_line_endings(raw_line),
+                    },
+                    parse_index: accumulator.parse_index,
+                });
+                accumulator.parse_index += 1;
+            }
+            line_number += 1;
+        }
+    }
+}
+
 fn finalize_output(response: SearchResponse, ctx: &ToolCtx) -> Result<String, ToolError> {
     let effective_max = ctx.max_output_bytes.min(ctx.available_capacity_bytes);
     let mut response = response;
@@ -1303,7 +1377,7 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
         deadline,
         accumulator,
     } = base;
-    // ugrep formatted output does not support context. Only run when context == 0.
+    // ugrep formatted output does not include context; fuzzy context is injected separately.
     let mut timed_out = false;
     let mut exit_code = None;
     let mut stderr_out = None;
