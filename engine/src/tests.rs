@@ -1,8 +1,11 @@
 //! Unit tests for the engine crate.
 
 use std::path::PathBuf;
+use std::time::Instant;
 
+use anyhow::anyhow;
 use futures_util::future::AbortHandle;
+use serde_json::json;
 
 use super::*;
 use crate::init::DEFAULT_MAX_TOOL_ARGS_BYTES;
@@ -300,6 +303,26 @@ fn queue_message_sets_pending_user_message() {
     assert_eq!(original_text, "test message");
 }
 
+#[tokio::test]
+async fn summarization_not_needed_starts_queued_request() {
+    let mut app = test_app();
+    app.input = InputState::Insert(DraftInput {
+        text: "queued".to_string(),
+        cursor: 6,
+    });
+
+    let token = app.insert_token().expect("insert mode");
+    let queued = app
+        .insert_mode(token)
+        .queue_message()
+        .expect("queued message");
+
+    let result = app.start_summarization_with_attempt(Some(queued.config), 1);
+
+    assert_eq!(result, SummarizationStart::NotNeeded);
+    assert!(matches!(app.state, OperationState::Streaming(_)));
+}
+
 #[test]
 fn rollback_pending_user_message_restores_input() {
     let mut app = test_app();
@@ -436,4 +459,182 @@ fn streaming_message_provider_and_model() {
 
     assert_eq!(stream.provider(), Provider::OpenAI);
     assert_eq!(stream.model_name().as_str(), "gpt-5.2");
+}
+
+#[test]
+fn tool_call_args_overflow_pre_resolved_error() {
+    let (_tx, rx) = mpsc::unbounded_channel();
+    let model = Provider::Claude.default_model();
+    let mut stream = StreamingMessage::new(model, rx, 4);
+
+    stream.apply_event(StreamEvent::ToolCallStart {
+        id: "call-1".to_string(),
+        name: "run_command".to_string(),
+    });
+    stream.apply_event(StreamEvent::ToolCallDelta {
+        id: "call-1".to_string(),
+        arguments: "12345".to_string(),
+    });
+
+    let parsed = stream.take_tool_calls();
+    assert_eq!(parsed.calls.len(), 1);
+    assert_eq!(parsed.pre_resolved.len(), 1);
+    let result = &parsed.pre_resolved[0];
+    assert_eq!(result.tool_call_id, "call-1");
+    assert!(result.is_error);
+    assert_eq!(result.content, "Tool arguments exceeded maximum size");
+    assert_eq!(parsed.calls[0].arguments, json!({}));
+}
+
+#[tokio::test]
+async fn tool_loop_awaiting_approval_then_deny_all_commits() {
+    let mut app = test_app();
+    app.tools_mode = tools::ToolsMode::Enabled;
+    app.tool_settings.mode = tools::ToolsMode::Enabled;
+    app.tool_definitions = app.tool_registry.definitions();
+    app.api_keys.clear();
+
+    let call = ToolCall::new(
+        "call-1",
+        "apply_patch",
+        json!({
+            "patch": "LP1\nF foo.txt\nT\nhello\n.\nEND\n"
+        }),
+    );
+    app.handle_tool_calls(
+        "assistant".to_string(),
+        vec![call],
+        Vec::new(),
+        app.model.clone(),
+        1,
+        None,
+    );
+
+    match &app.state {
+        OperationState::ToolLoop(state) => match state.phase {
+            ToolLoopPhase::AwaitingApproval(ref approval) => {
+                assert_eq!(approval.requests.len(), 1);
+            }
+            _ => panic!("expected awaiting approval"),
+        },
+        _ => panic!("expected tool loop state"),
+    }
+
+    app.resolve_tool_approval(tools::ApprovalDecision::DenyAll);
+
+    assert!(matches!(app.state, OperationState::Idle));
+    let last = app.history().entries().last().expect("tool result");
+    assert!(matches!(last.message(), Message::ToolResult(_)));
+    assert_eq!(last.message().content(), "Tool call denied by user");
+}
+
+#[test]
+fn submit_tool_result_validation_rejects_bad_and_duplicate_ids() {
+    let mut app = test_app();
+    app.tools_mode = tools::ToolsMode::ParseOnly;
+    app.tool_settings.mode = tools::ToolsMode::ParseOnly;
+
+    let calls = vec![
+        ToolCall::new("call-1", "run_command", json!({ "command": "echo 1" })),
+        ToolCall::new("call-2", "run_command", json!({ "command": "echo 2" })),
+    ];
+    app.handle_tool_calls(
+        "assistant".to_string(),
+        calls,
+        Vec::new(),
+        app.model.clone(),
+        1,
+        None,
+    );
+
+    assert!(matches!(app.state, OperationState::AwaitingToolResults(_)));
+
+    let err = app
+        .submit_tool_result(ToolResult::success("unknown", "ok"))
+        .expect_err("unknown id");
+    assert!(err.contains("No pending tool call"));
+
+    let result = app
+        .submit_tool_result(ToolResult::success("call-1", "ok"))
+        .expect("submit first");
+    assert!(!result);
+
+    let err_dup = app
+        .submit_tool_result(ToolResult::success("call-1", "dup"))
+        .expect_err("duplicate result");
+    assert!(err_dup.contains("already submitted"));
+
+    let result = app
+        .submit_tool_result(ToolResult::success("call-2", "ok"))
+        .expect("submit second");
+    assert!(result);
+    assert!(matches!(app.state, OperationState::Idle));
+}
+
+#[tokio::test]
+async fn summarization_failure_sets_retry_with_queued_request() {
+    let mut app = test_app();
+
+    let content = NonEmptyString::new("alpha").expect("non-empty");
+    let msg_id = app.push_history_message(Message::user(content));
+    let pending = app
+        .context_manager
+        .prepare_summarization(&[msg_id])
+        .expect("pending summarization");
+
+    let config =
+        ApiConfig::new(ApiKey::Claude("test".to_string()), app.model.clone()).expect("api config");
+    let handle = tokio::spawn(async { Err(anyhow!("boom")) });
+
+    let task = SummarizationTask {
+        scope: pending.scope,
+        generated_by: "test".to_string(),
+        handle,
+        attempt: 1,
+    };
+    app.state = OperationState::SummarizingWithQueued(SummarizationWithQueuedState {
+        task,
+        queued: config.clone(),
+    });
+
+    let before = Instant::now();
+    tokio::task::yield_now().await;
+    app.poll_summarization();
+
+    match &app.state {
+        OperationState::SummarizationRetryWithQueued(state) => {
+            assert_eq!(state.retry.attempt, 2);
+            assert!(state.retry.ready_at >= before);
+            assert_eq!(state.queued.model().as_str(), config.model().as_str());
+        }
+        _ => panic!("expected retry with queued"),
+    }
+}
+
+#[test]
+fn tool_loop_max_iterations_short_circuits() {
+    let mut app = test_app();
+    app.tools_mode = tools::ToolsMode::Enabled;
+    app.tool_settings.mode = tools::ToolsMode::Enabled;
+    app.tool_iterations = app.tool_settings.limits.max_tool_iterations_per_user_turn;
+    app.api_keys.clear();
+
+    let call = ToolCall::new(
+        "call-1",
+        "apply_patch",
+        json!({ "patch": "LP1\nF foo.txt\nT\nhello\n.\nEND\n" }),
+    );
+    app.handle_tool_calls(
+        "assistant".to_string(),
+        vec![call],
+        Vec::new(),
+        app.model.clone(),
+        1,
+        None,
+    );
+
+    assert!(matches!(app.state, OperationState::Idle));
+    let last = app.history().entries().last().expect("tool result");
+    assert!(matches!(last.message(), Message::ToolResult(_)));
+    assert_eq!(last.message().content(), "Max tool iterations reached");
 }
