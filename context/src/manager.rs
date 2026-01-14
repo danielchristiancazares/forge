@@ -806,7 +806,7 @@ mod tests {
         // Add many messages to exceed budget
         for i in 0..20 {
             manager.push_message(
-                Message::try_user(&format!("Message {} with some content to use tokens", i))
+                Message::try_user(format!("Message {i} with some content to use tokens"))
                     .expect("non-empty"),
             );
         }
@@ -852,7 +852,7 @@ mod tests {
                 let min_id = needed
                     .messages_to_summarize
                     .iter()
-                    .map(|id| id.as_u64())
+                    .map(MessageId::as_u64)
                     .min()
                     .unwrap();
                 assert_eq!(min_id, 0, "Should include oldest messages first");

@@ -132,6 +132,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(windows)]
     fn test_default_args_for_cmd() {
         assert_eq!(default_args_for("cmd"), vec!["/C"]);
         assert_eq!(default_args_for("cmd.exe"), vec!["/C"]);

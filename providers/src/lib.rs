@@ -1297,7 +1297,7 @@ mod tests {
         #[test]
         fn handles_empty_data() {
             let event = "data: ";
-            assert_eq!(extract_sse_data(event), Some("".to_string()));
+            assert_eq!(extract_sse_data(event), Some(String::new()));
         }
 
         #[test]

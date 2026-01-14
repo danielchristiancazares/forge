@@ -79,10 +79,10 @@ fn renders_simple_table() {
 
 #[test]
 fn renders_multi_column_table() {
-    let md = r#"| Test | Result | Notes |
+    let md = r"| Test | Result | Notes |
 |------|--------|-------|
 | A    | Pass   | Good  |
-| B    | Fail   | Bad   |"#;
+| B    | Fail   | Bad   |";
 
     let palette = Palette::standard();
     let lines = render_markdown(md, Style::default(), &palette);
@@ -100,7 +100,7 @@ fn renders_bullet_list() {
         .flat_map(|l| l.spans.iter())
         .map(|s| s.content.as_ref())
         .collect();
-    assert!(text.contains("•") || text.contains("-"));
+    assert!(text.contains("•") || text.contains('-'));
 }
 
 #[test]

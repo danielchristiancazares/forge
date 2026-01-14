@@ -112,8 +112,7 @@ fn multi_section_html() -> String {
         <p>{extra}</p>
     </main>
 </body>
-</html>"#,
-        extra = extra
+</html>"#
     )
 }
 
@@ -337,7 +336,7 @@ async fn test_extraction_removes_boilerplate() {
         .await;
 
     // HTML with boilerplate elements
-    let html = r#"<!DOCTYPE html>
+    let html = r"<!DOCTYPE html>
 <html>
 <head><title>Clean Page</title></head>
 <body>
@@ -350,7 +349,7 @@ async fn test_extraction_removes_boilerplate() {
     <footer>Footer content</footer>
     <script>alert('js');</script>
 </body>
-</html>"#;
+</html>";
 
     Mock::given(method("GET"))
         .and(path("/"))

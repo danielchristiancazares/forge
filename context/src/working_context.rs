@@ -48,6 +48,7 @@ impl ContextSegment {
 
     /// Returns true if this is an original message.
     #[cfg(test)]
+    #[must_use]
     pub fn is_original(&self) -> bool {
         matches!(self, Self::Original { .. })
     }
@@ -118,18 +119,21 @@ impl WorkingContext {
 
     /// How much space remains in the budget.
     #[cfg(test)]
+    #[must_use]
     pub fn remaining_budget(&self) -> u32 {
         self.token_budget.saturating_sub(self.total_tokens())
     }
 
     /// Check if context fits within budget.
     #[cfg(test)]
+    #[must_use]
     pub fn fits_budget(&self) -> bool {
         self.total_tokens() <= self.token_budget
     }
 
     /// Count of original message segments.
     #[cfg(test)]
+    #[must_use]
     pub fn original_count(&self) -> usize {
         self.segments.iter().filter(|s| s.is_original()).count()
     }

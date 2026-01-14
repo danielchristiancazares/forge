@@ -329,6 +329,7 @@ impl Summary {
     }
 
     #[cfg(test)]
+    #[must_use]
     /// Compression ratio (summary tokens / original tokens).
     /// Lower is better compression.
     pub fn compression_ratio(&self) -> f32 {
@@ -340,6 +341,7 @@ impl Summary {
     }
 
     #[cfg(test)]
+    #[must_use]
     /// Tokens saved by using this summary instead of originals.
     pub fn tokens_saved(&self) -> u32 {
         self.original_tokens.saturating_sub(self.token_count)
@@ -711,6 +713,7 @@ impl FullHistory {
     }
 
     #[cfg(test)]
+    #[must_use]
     /// Get the most recent N entries.
     pub fn recent_entries(&self, n: usize) -> &[HistoryEntry] {
         let start = self.entries.len().saturating_sub(n);
@@ -794,7 +797,7 @@ mod tests {
         let mut history = FullHistory::new();
 
         for i in 0..10 {
-            history.push(make_test_message(&format!("Message {}", i)), 10);
+            history.push(make_test_message(&format!("Message {i}")), 10);
         }
 
         let recent = history.recent_entries(3);
@@ -835,7 +838,7 @@ mod tests {
 
         // Add 4 messages
         for i in 0..4 {
-            history.push(make_test_message(&format!("Message {}", i)), 100);
+            history.push(make_test_message(&format!("Message {i}")), 100);
         }
 
         // Create first summary covering messages 0-2
@@ -878,8 +881,7 @@ mod tests {
             assert_eq!(
                 history.get_entry(MessageId::new(i)).summary_id(),
                 Some(summary1_id),
-                "message {} should point to summary 1",
-                i
+                "message {i} should point to summary 1"
             );
         }
 

@@ -104,7 +104,7 @@ mod tests {
     fn zero_duration_immediately_finished() {
         let effect = ModalEffect::pop_scale(Duration::ZERO);
         assert!(effect.is_finished());
-        assert_eq!(effect.progress(), 1.0);
+        assert!((effect.progress() - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]

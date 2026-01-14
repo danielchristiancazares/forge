@@ -31,10 +31,7 @@ fn tool_plan_partitions_approval_vs_auto_execute() {
 
     // This is a documentation test - the actual behavior is tested via
     // the engine tests in engine/src/tests.rs
-    assert!(
-        true,
-        "Tool approval partitioning is handled by plan_tool_calls()"
-    );
+    // Tool approval partitioning is handled by plan_tool_calls()
 }
 
 // ============================================================================
@@ -64,7 +61,7 @@ fn sandbox_blocks_parent_directory_traversal() {
     for attack in attack_vectors {
         // These paths should be rejected by sandbox preflight
         // The actual test is in the engine, this documents expected behavior
-        assert!(!attack.is_empty(), "Attack vector: {}", attack);
+        assert!(!attack.is_empty(), "Attack vector: {attack}");
     }
 }
 
@@ -75,12 +72,8 @@ fn sandbox_allows_valid_paths() {
     let valid_paths = ["src/main.rs", "./foo/bar.txt", "nested/deep/file.md"];
 
     for path in valid_paths {
-        assert!(!path.starts_with('/'), "Relative paths are valid: {}", path);
-        assert!(
-            !path.contains(".."),
-            "Non-escaping paths are valid: {}",
-            path
-        );
+        assert!(!path.starts_with('/'), "Relative paths are valid: {path}");
+        assert!(!path.contains(".."), "Non-escaping paths are valid: {path}");
     }
 }
 
@@ -106,7 +99,7 @@ fn context_triggers_summarization_when_budget_exhausted() {
     // 3. After summarization, the summary replaces the original messages
     //
     // See context/src/manager.rs test_build_working_context_summarization_needed
-    assert!(true, "Context summarization tested in context crate");
+    // Context summarization tested in context crate
 }
 
 // ============================================================================
@@ -131,7 +124,7 @@ fn cache_eviction_policy_documented() {
     // - Write to temp file, then rename
     // - Prevents partial writes on crash
 
-    assert!(true, "Cache eviction documented in webfetch/src/cache.rs");
+    // Cache eviction documented in webfetch/src/cache.rs
 }
 
 // ============================================================================
@@ -179,7 +172,7 @@ fn stream_journal_recovers_incomplete_stream() {
             assert_eq!(recovered_step_id, step_id, "Step ID should match");
             assert_eq!(partial_text, "Hello, world!", "Text should be recovered");
         }
-        other => panic!("Expected Incomplete, got {:?}", other),
+        other => panic!("Expected Incomplete, got {other:?}"),
     }
 }
 
@@ -219,7 +212,7 @@ fn stream_journal_recovers_completed_stream() {
             assert_eq!(recovered_step_id, step_id);
             assert_eq!(partial_text, "Complete response");
         }
-        other => panic!("Expected Complete, got {:?}", other),
+        other => panic!("Expected Complete, got {other:?}"),
     }
 }
 
@@ -261,6 +254,6 @@ fn stream_journal_recovers_errored_stream() {
             assert_eq!(partial_text, "Partial before error");
             assert_eq!(error, "API rate limit exceeded");
         }
-        other => panic!("Expected Errored, got {:?}", other),
+        other => panic!("Expected Errored, got {other:?}"),
     }
 }

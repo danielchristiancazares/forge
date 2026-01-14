@@ -1115,14 +1115,14 @@ mod tests {
 
     #[test]
     fn bug_nonempty_static_str_allows_whitespace_only() {
+        // But NonEmptyStaticStr::new allows them (only checks !is_empty())
+        const WHITESPACE_ONLY: NonEmptyStaticStr = NonEmptyStaticStr::new("   ");
+
         // NonEmptyString::new rejects whitespace-only strings
         assert!(
             NonEmptyString::new("   ").is_err(),
             "NonEmptyString::new should reject whitespace-only strings"
         );
-
-        // But NonEmptyStaticStr::new allows them (only checks !is_empty())
-        const WHITESPACE_ONLY: NonEmptyStaticStr = NonEmptyStaticStr::new("   ");
 
         // Verify it really is whitespace-only
         assert_eq!(WHITESPACE_ONLY.as_str().trim(), "");

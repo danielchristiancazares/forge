@@ -125,5 +125,5 @@ fn test_premature_eof_behavior_is_documented() {
     // - But reaching it IS the error case (stream EOF without terminal)
     //
     // Behavior is correct, variable should be removed.
-    assert!(true, "This test documents expected behavior - see comments");
+    // This test documents expected behavior - see comments above
 }

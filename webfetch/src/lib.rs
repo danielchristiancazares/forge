@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_is_spa_heuristic_normal_html() {
-        let html = r#"<html><body><h1>Hello World</h1><p>This is a normal page with plenty of content that should not trigger the SPA heuristic detection.</p></body></html>"#;
+        let html = r"<html><body><h1>Hello World</h1><p>This is a normal page with plenty of content that should not trigger the SPA heuristic detection.</p></body></html>";
         assert!(!is_spa_heuristic(html));
     }
 

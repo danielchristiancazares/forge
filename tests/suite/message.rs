@@ -95,7 +95,7 @@ fn non_empty_string_try_from_string() {
     let result: Result<NonEmptyString, _> = "test".to_string().try_into();
     assert!(result.is_ok());
 
-    let result: Result<NonEmptyString, _> = "".to_string().try_into();
+    let result: Result<NonEmptyString, _> = String::new().try_into();
     assert!(result.is_err());
 }
 

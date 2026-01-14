@@ -318,7 +318,7 @@ mod tests {
         fn limits_are_copy_and_clone() {
             let limits = ModelLimits::new(100_000, 8000);
             let copied = limits;
-            let cloned = limits.clone();
+            let cloned = limits;
             assert_eq!(limits, copied);
             assert_eq!(limits, cloned);
         }

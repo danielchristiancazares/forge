@@ -89,13 +89,11 @@ async fn test_force_browser_unavailable_falls_back_to_http() {
 
 #[tokio::test]
 async fn test_force_browser_renders_when_available() {
-    let chromium_path = match env::var("FORGE_TEST_CHROMIUM_PATH") {
-        Ok(path) => PathBuf::from(path),
-        Err(_) => {
-            eprintln!("FORGE_TEST_CHROMIUM_PATH not set; skipping browser test");
-            return;
-        }
+    let Ok(path) = env::var("FORGE_TEST_CHROMIUM_PATH") else {
+        eprintln!("FORGE_TEST_CHROMIUM_PATH not set; skipping browser test");
+        return;
     };
+    let chromium_path = PathBuf::from(path);
 
     let html = "<html><body><main><h1>Browser Render</h1><p>This page has enough text content to pass extraction.</p></main></body></html>";
     let server = setup_server(html).await;

@@ -41,8 +41,7 @@ fn test_app() -> App {
     let tool_registry = std::sync::Arc::new(tool_registry);
     let tool_definitions = match tool_settings.mode {
         tools::ToolsMode::Enabled => tool_registry.definitions(),
-        tools::ToolsMode::ParseOnly => Vec::new(),
-        tools::ToolsMode::Disabled => Vec::new(),
+        tools::ToolsMode::ParseOnly | tools::ToolsMode::Disabled => Vec::new(),
     };
     let tool_journal = ToolJournal::open_in_memory().expect("in-memory tool journal");
     let tool_file_cache = std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
@@ -153,9 +152,10 @@ async fn drive_tool_loop_to_idle(app: &mut App) {
             }
             _ => panic!("unexpected state while driving tool loop"),
         }
-        if start.elapsed() > timeout {
-            panic!("tool loop did not finish before timeout");
-        }
+        assert!(
+            start.elapsed() <= timeout,
+            "tool loop did not finish before timeout"
+        );
     }
 }
 
@@ -632,7 +632,7 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
             ToolLoopPhase::AwaitingApproval(ref approval) => {
                 assert_eq!(approval.requests.len(), 1);
             }
-            _ => panic!("expected awaiting approval"),
+            ToolLoopPhase::Executing(_) => panic!("expected awaiting approval"),
         },
         _ => panic!("expected tool loop state"),
     }
@@ -678,7 +678,7 @@ async fn tool_loop_preserves_order_after_approval() {
     match &app.state {
         OperationState::ToolLoop(state) => match state.phase {
             ToolLoopPhase::AwaitingApproval(_) => {}
-            _ => panic!("expected awaiting approval"),
+            ToolLoopPhase::Executing(_) => panic!("expected awaiting approval"),
         },
         _ => panic!("expected tool loop state"),
     }
@@ -727,7 +727,7 @@ async fn tool_loop_write_then_read_same_batch() {
     match &app.state {
         OperationState::ToolLoop(state) => match state.phase {
             ToolLoopPhase::AwaitingApproval(_) => {}
-            _ => panic!("expected awaiting approval"),
+            ToolLoopPhase::Executing(_) => panic!("expected awaiting approval"),
         },
         _ => panic!("expected tool loop state"),
     }

@@ -561,7 +561,7 @@ mod tests {
 
         assert_eq!(lines1.len(), lines2.len());
         for (l1, l2) in lines1.iter().zip(lines2.iter()) {
-            assert_eq!(format!("{:?}", l1), format!("{:?}", l2));
+            assert_eq!(format!("{l1:?}"), format!("{l2:?}"));
         }
     }
 

@@ -22,7 +22,7 @@ pub async fn mount_chat_response(server: &MockServer, response_content: &str) {
     let body = serde_json::json!({
         "id": "resp_test",
         "object": "response",
-        "created_at": 1234567890,
+        "created_at": 1_234_567_890,
         "model": "gpt-4o",
         "output": [{
             "id": "msg_test",
@@ -56,13 +56,13 @@ pub async fn mount_streaming_response(server: &MockServer, chunks: &[&str]) {
             "type": "response.output_text.delta",
             "delta": chunk
         });
-        sse_body.push_str(&format!("data: {}\n\n", data));
+        sse_body.push_str(&format!("data: {data}\n\n"));
     }
 
     let done_event = serde_json::json!({
         "type": "response.completed"
     });
-    sse_body.push_str(&format!("data: {}\n\n", done_event));
+    sse_body.push_str(&format!("data: {done_event}\n\n"));
 
     Mock::given(method("POST"))
         .and(path("/v1/responses"))

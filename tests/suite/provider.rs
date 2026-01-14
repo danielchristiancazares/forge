@@ -124,12 +124,12 @@ fn provider_default_models_exist() {
 fn provider_available_models_not_empty() {
     for provider in Provider::all() {
         let models = provider.available_models();
-        assert!(!models.is_empty(), "{:?} has no available models", provider);
+        assert!(!models.is_empty(), "{provider:?} has no available models");
     }
 }
 
 #[test]
 fn model_name_display() {
     let model = ModelName::known(Provider::Claude, "claude-sonnet-4-5-20250929");
-    assert_eq!(format!("{}", model), "claude-sonnet-4-5-20250929");
+    assert_eq!(format!("{model}"), "claude-sonnet-4-5-20250929");
 }

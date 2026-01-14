@@ -334,7 +334,7 @@ mod tests {
     fn counter_is_copy_and_clone() {
         let counter = TokenCounter::new();
         let copied = counter;
-        let cloned = counter.clone();
+        let cloned = counter;
 
         // All should work identically
         assert_eq!(counter.count_str("test"), copied.count_str("test"));
