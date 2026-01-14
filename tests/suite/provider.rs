@@ -10,12 +10,12 @@ fn provider_parse_aliases() {
     assert_eq!(Provider::parse("Claude"), Some(Provider::Claude));
     assert_eq!(Provider::parse("CLAUDE"), Some(Provider::Claude));
     assert_eq!(Provider::parse("anthropic"), Some(Provider::Claude));
-    
+
     // OpenAI aliases
     assert_eq!(Provider::parse("openai"), Some(Provider::OpenAI));
     assert_eq!(Provider::parse("gpt"), Some(Provider::OpenAI));
     assert_eq!(Provider::parse("chatgpt"), Some(Provider::OpenAI));
-    
+
     // Unknown
     assert_eq!(Provider::parse("gemini"), None);
     assert_eq!(Provider::parse(""), None);
@@ -59,7 +59,7 @@ fn model_name_parse_unknown() {
 fn model_name_parse_empty_fails() {
     let result = ModelName::parse(Provider::Claude, "");
     assert!(result.is_err());
-    
+
     let result = ModelName::parse(Provider::Claude, "   ");
     assert!(result.is_err());
 }
@@ -75,7 +75,7 @@ fn model_name_known_constructor() {
 fn api_key_provider_association() {
     let claude_key = ApiKey::Claude("sk-ant-test".to_string());
     let openai_key = ApiKey::OpenAI("sk-test".to_string());
-    
+
     assert_eq!(claude_key.provider(), Provider::Claude);
     assert_eq!(openai_key.provider(), Provider::OpenAI);
 }
@@ -84,7 +84,7 @@ fn api_key_provider_association() {
 fn api_config_validates_provider_match() {
     let key = ApiKey::Claude("test".to_string());
     let model = Provider::Claude.default_model();
-    
+
     let config = ApiConfig::new(key, model);
     assert!(config.is_ok());
 }
@@ -93,7 +93,7 @@ fn api_config_validates_provider_match() {
 fn api_config_rejects_provider_mismatch() {
     let key = ApiKey::Claude("test".to_string());
     let model = Provider::OpenAI.default_model();
-    
+
     let config = ApiConfig::new(key, model);
     assert!(config.is_err());
 }
@@ -102,9 +102,9 @@ fn api_config_rejects_provider_mismatch() {
 fn api_config_accessors() {
     let key = ApiKey::OpenAI("sk-secret".to_string());
     let model = ModelName::known(Provider::OpenAI, "gpt-4o");
-    
+
     let config = ApiConfig::new(key, model).unwrap();
-    
+
     assert_eq!(config.provider(), Provider::OpenAI);
     assert_eq!(config.api_key(), "sk-secret");
     assert_eq!(config.model().as_str(), "gpt-4o");

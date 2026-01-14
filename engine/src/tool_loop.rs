@@ -395,12 +395,7 @@ impl App {
             return 0;
         }
 
-        let available_bytes = (available_tokens as usize).saturating_mul(4);
-        if available_bytes == 0 {
-            DEFAULT_TOOL_CAPACITY_BYTES
-        } else {
-            available_bytes
-        }
+        (available_tokens as usize).saturating_mul(4)
     }
 
     fn remaining_tool_capacity(&mut self, batch: &ToolBatch) -> usize {
@@ -925,8 +920,20 @@ impl App {
         }
         batch.results.extend(denied_results);
 
-        let mut queue = batch.execute_now.clone();
-        queue.extend(approved_calls);
+        let mut allowed_ids: HashSet<String> = batch
+            .execute_now
+            .iter()
+            .map(|call| call.id.clone())
+            .collect();
+        for call in &approved_calls {
+            allowed_ids.insert(call.id.clone());
+        }
+        let queue: Vec<ToolCall> = batch
+            .calls
+            .iter()
+            .filter(|call| allowed_ids.contains(&call.id))
+            .cloned()
+            .collect();
         batch.execute_now = queue.clone();
 
         if queue.is_empty() {

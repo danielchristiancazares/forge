@@ -8,19 +8,19 @@ Context Infinity is Forge's system for managing unlimited conversation context w
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-59 | Overview: core principle, design principles, architecture diagram |
-| 60-109 | Core Concepts: Full History (append-only), HistoryEntry enum, Summaries |
-| 110-175 | Token Budget Calculation: ModelLimits, effective budget formula, known model limits |
-| 176-282 | Context Building Algorithm: 5 phases - reserve recent, partition, select, assemble, return |
-| 283-370 | Model Switching (Context Adaptation): shrinking vs expanding, ContextAdaptation enum |
-| 371-444 | Stream Journal (Crash Recovery): schema, lifecycle, RAII pattern with ActiveJournal |
-| 445-505 | Token Counting: TokenCounter, singleton pattern, usage statistics |
-| 506-559 | Persistence and Configuration: history serialization, journal location, config options |
-| 560-610 | Type-Driven Design: proof types table, PreparedContext as proof |
-| 611-715 | Public API - Core Types: ContextManager, PreparedContext, ContextAdaptation |
-| 716-925 | Public API - History, Model Limits, Token Counting, Stream Journal, Tool Journal |
-| 926-1030 | Public API - Summarization, Working Context, ContextUsage |
-| 1031-1178 | Complete Workflow Example, Type Relationships, Error Handling, Dependencies, Testing |
+| 1-65 | Overview: core principle, design principles, architecture diagram |
+| 66-120 | Core Concepts: Full History (append-only), HistoryEntry enum, Summaries |
+| 121-195 | Token Budget Calculation: ModelLimits, effective budget formula, output limit config |
+| 196-310 | Context Building Algorithm: 5 phases, error types (SummarizationNeeded, RecentMessagesTooLarge) |
+| 311-400 | Model Switching (Context Adaptation): shrinking vs expanding, ContextAdaptation enum |
+| 401-510 | Stream Journal (Crash Recovery): schema, lifecycle, RAII pattern, commit-and-prune flow |
+| 511-580 | Token Counting: TokenCounter, singleton pattern, accuracy caveats |
+| 581-650 | Usage Statistics and Persistence: ContextUsage, history serialization, journal locations |
+| 651-720 | Type-Driven Design: proof types table, PreparedContext as proof |
+| 721-850 | Public API - Core Types: ContextManager, PreparedContext, ContextBuildError |
+| 851-1050 | Public API - History, Model Limits, Token Counting, Stream Journal, Tool Journal |
+| 1051-1150 | Public API - Summarization, Working Context, ContextUsage |
+| 1151-1320 | Complete Workflow Example, Type Relationships, Error Handling, Dependencies, Testing |
 
 ## Overview
 
@@ -74,6 +74,7 @@ context/src/
   working_context.rs  # WorkingContext, ContextSegment, ContextUsage
   stream_journal.rs   # StreamJournal, ActiveJournal (crash recovery)
   summarization.rs    # LLM-based summarization via cheaper models
+  tool_journal.rs     # ToolJournal (tool batch crash recovery)
 ```
 
 ## Core Concepts
@@ -164,7 +165,7 @@ The **effective input budget** is calculated as:
 effective_budget = context_window - max_output - (5% safety margin)
 ```
 
-Example for Claude Sonnet 4 (200k context, 64k output):
+Example for Claude Sonnet 4.5 (200k context, 64k output):
 
 ```
 available = 200,000 - 64,000 = 136,000
@@ -174,9 +175,26 @@ effective_budget = 136,000 - 6,800 = 129,200 tokens
 
 The 5% safety margin accounts for:
 
-- Token counting inaccuracies
+- Token counting inaccuracies (see [Token Counting Accuracy](#token-counting-accuracy))
 - System prompt overhead
 - Tool definitions and formatting
+
+### Configured Output Limit
+
+When a user configures a smaller output limit than the model's maximum, more tokens become available for input context. Use `set_output_limit()` to adjust:
+
+```rust
+let mut manager = ContextManager::new("claude-sonnet-4-5-20250514");
+
+// Model has 64k max output, but user configured 16k
+manager.set_output_limit(16_000);
+
+// Now effective budget is:
+// 200,000 - 16,000 = 184,000 available
+// 184,000 * 0.95 = 174,800 effective budget (vs 129,200 without config)
+```
+
+The reserved output is clamped to the model's `max_output` - requesting more than the model supports has no effect.
 
 ### Known Model Limits
 
@@ -188,7 +206,7 @@ The 5% safety margin accounts for:
 | `gpt-5.2` | 400,000 | 128,000 |
 | Unknown | 8,192 | 4,096 |
 
-Model lookup uses **prefix matching** - `claude-sonnet-4-20250514` matches `claude-sonnet-4`.
+Model lookup uses **prefix matching** - `claude-sonnet-4-5-20250514` matches `claude-sonnet-4-5`.
 
 ## Context Building Algorithm
 
@@ -260,12 +278,26 @@ If all content fits: return `Ok(WorkingContext)`
 If unsummarized messages don't fit:
 
 ```rust
-Err(SummarizationNeeded {
+Err(ContextBuildError::SummarizationNeeded(SummarizationNeeded {
     excess_tokens: u32,
     messages_to_summarize: Vec<MessageId>,
     suggestion: String,
+}))
+```
+
+### Error: Recent Messages Too Large
+
+If the N most recent messages alone exceed the budget, summarization cannot help. This is an unrecoverable error:
+
+```rust
+Err(ContextBuildError::RecentMessagesTooLarge {
+    required_tokens: u32,  // Tokens needed for recent messages
+    budget_tokens: u32,    // Available budget
+    message_count: usize,  // Number of recent messages
 })
 ```
+
+The user must either reduce their input or switch to a model with a larger context window.
 
 ## When Summarization Triggers
 
@@ -418,29 +450,59 @@ CREATE TABLE stream_journal (
 
 ### Recovery
 
-On startup, check for unsealed entries:
+On startup, check for recoverable entries (unsealed OR sealed but uncommitted):
 
 ```rust
-pub fn recover(&self) -> Option<RecoveredStream>
+pub fn recover(&self) -> Result<Option<RecoveredStream>>
 
 pub enum RecoveredStream {
-    Complete {      // Has 'done' or 'error' event
+    Complete {      // Has 'done' event, stream finished cleanly
         step_id: StepId,
         partial_text: String,
         last_seq: u64,
+        model_name: Option<String>,  // For attribution
+    },
+    Errored {       // Has 'error' event, stream failed
+        step_id: StepId,
+        partial_text: String,
+        last_seq: u64,
+        error: String,
+        model_name: Option<String>,
     },
     Incomplete {    // Stream was interrupted mid-flight
         step_id: StepId,
         partial_text: String,
         last_seq: u64,
+        model_name: Option<String>,
     },
 }
 ```
 
 The app can then:
 
-- **Complete**: Seal and use the recovered text
-- **Incomplete**: Discard and retry, or seal what was received
+- **Complete**: Commit to history, then `commit_and_prune_step()`
+- **Errored**: Log the error, then `discard_step()`
+- **Incomplete**: Discard and retry, or commit partial text
+
+### Commit-and-Prune Flow
+
+After sealing a stream, its data remains in the journal until explicitly pruned. This enables crash recovery even after sealing:
+
+```rust
+// 1. Stream completes
+active.append_done(&mut journal)?;
+let text = active.seal(&mut journal)?;
+
+// 2. Save to history (must succeed before pruning)
+let step_id = active.step_id();
+manager.push_message_with_step_id(Message::assistant(...), step_id);
+manager.save("~/.forge/history.json")?;
+
+// 3. ONLY after history is persisted, prune the journal
+journal.commit_and_prune_step(step_id)?;
+```
+
+**Key invariant**: Never prune before history is persisted. If the app crashes between seal and prune, the journal enables recovery.
 
 ### RAII Pattern
 
@@ -451,6 +513,7 @@ pub struct ActiveJournal {
     journal_id: u64,
     step_id: StepId,
     next_seq: u64,
+    model_name: String,
 }
 ```
 
@@ -464,11 +527,21 @@ Methods like `append_text()` require `&mut ActiveJournal`, ensuring:
 
 Token counting uses tiktoken's `cl100k_base` encoding, compatible with GPT-4, GPT-3.5, and Claude models.
 
+### Token Counting Accuracy
+
+**Important**: Token counts are **approximate**. The `cl100k_base` encoding provides:
+
+- **Exact counts** for GPT-4 and GPT-3.5 models
+- **Approximate counts** for Claude models (~5-10% variance, Anthropic uses a different tokenizer)
+- **Approximate counts** for GPT-5.x models (may use updated tokenization)
+
+The 5% safety margin in `ModelLimits::effective_input_budget()` compensates for these inaccuracies. For precise counts, use the provider's native token counting endpoint when available.
+
 ### Implementation
 
 ```rust
 pub struct TokenCounter {
-    encoder: &'static CoreBPE,  // Singleton, initialized once
+    encoder: Option<&'static CoreBPE>,  // Singleton, initialized once
 }
 
 impl TokenCounter {
@@ -477,21 +550,23 @@ impl TokenCounter {
 }
 ```
 
-Per-message overhead: **~4 tokens** for role markers and formatting.
+Per-message overhead: **~4 tokens** for role markers and formatting. This approximation covers:
+- Role name (e.g., "user", "assistant")
+- Message structure/delimiters
 
 ### Efficiency
 
 The tiktoken encoder is expensive to initialize. `TokenCounter` uses a singleton pattern:
 
 ```rust
-static ENCODER: OnceLock<CoreBPE> = OnceLock::new();
+static ENCODER: OnceLock<Option<CoreBPE>> = OnceLock::new();
 
-fn get_encoder() -> &'static CoreBPE {
-    ENCODER.get_or_init(|| cl100k_base().expect("..."))
+fn get_encoder() -> Option<&'static CoreBPE> {
+    ENCODER.get_or_init(|| cl100k_base().ok()).as_ref()
 }
 ```
 
-Creating multiple `TokenCounter` instances is cheap - they share the encoder.
+Creating multiple `TokenCounter` instances is cheap - they share the encoder. If initialization fails, the counter falls back to byte-length estimates.
 
 ## Usage Statistics
 
@@ -615,15 +690,19 @@ fn count_message(&self, msg: &Message) -> u32;
 
 ## Limitations
 
-1. **Summarization requires API call**: Summarization uses LLM calls (claude-haiku-4-5 or gpt-5-nano), adding latency and cost.
+1. **Summarization requires API call**: Summarization uses LLM calls (`claude-haiku-4-5` or `gpt-5-nano`), adding latency and cost.
 
-2. **Contiguous ranges only**: Summaries must cover contiguous message ranges. Selective summarization is not supported.
+2. **Contiguous ranges only**: Summaries must cover contiguous message ranges. Selective summarization is not supported to maintain chronological coherence.
 
-3. **Token counting approximation**: The cl100k_base encoding is accurate for GPT models but approximate for Claude. The 5% safety margin compensates.
+3. **Token counting approximation**: The `cl100k_base` encoding is accurate for GPT models but approximate for Claude (~5-10% variance). The 5% safety margin compensates.
 
-4. **No streaming summarization**: Summaries are generated with non-streaming API calls.
+4. **No streaming summarization**: Summaries are generated with non-streaming API calls (60 second timeout).
 
-5. **Single summary per range**: A message range can only have one summary. Re-summarization replaces the existing summary.
+5. **Single summary per range**: A message range can only have one summary. Re-summarization replaces the existing summary (orphaning the old one).
+
+6. **Recent messages cannot be summarized**: The N most recent messages (default: 4) are always preserved verbatim. If these alone exceed the budget, the error is unrecoverable.
+
+7. **SQLite journal latency**: Stream deltas are written synchronously to SQLite before display. On slow disks, this may cause UI stutter for high-frequency deltas.
 
 ---
 
@@ -636,10 +715,10 @@ fn count_message(&self, msg: &Message) -> u32;
 The main orchestrator for context management.
 
 ```rust
-use forge_context::{ContextManager, PreparedContext, SummarizationNeeded};
+use forge_context::{ContextManager, PreparedContext, ContextBuildError, SummarizationNeeded};
 
 // Create a manager for a specific model
-let mut manager = ContextManager::new("claude-sonnet-4-20250514");
+let mut manager = ContextManager::new("claude-sonnet-4-5-20250514");
 
 // Add messages to history
 let msg_id = manager.push_message(Message::try_user("Hello!")?);
@@ -664,8 +743,12 @@ match manager.prepare() {
         let usage = prepared.usage();
         // Make API call with messages...
     }
-    Err(SummarizationNeeded { messages_to_summarize, .. }) => {
+    Err(ContextBuildError::SummarizationNeeded(needed)) => {
         // Must summarize before proceeding
+        let ids = needed.messages_to_summarize;
+    }
+    Err(ContextBuildError::RecentMessagesTooLarge { required_tokens, budget_tokens, .. }) => {
+        // Unrecoverable: user must reduce input or switch models
     }
 }
 ```
@@ -676,11 +759,17 @@ match manager.prepare() {
 |--------|-------------|
 | `new(model)` | Create manager for initial model |
 | `push_message(msg)` | Add message, returns `MessageId` |
+| `push_message_with_step_id(msg, id)` | Add message with stream step ID for crash recovery |
+| `has_step_id(id)` | Check if step ID exists (for idempotent recovery) |
+| `rollback_last_message(id)` | Remove last message if ID matches (transactional rollback) |
 | `switch_model(name)` | Change model, returns `ContextAdaptation` |
-| `prepare()` | Build context proof or signal summarization needed |
+| `set_output_limit(limit)` | Configure output limit for more input budget |
+| `prepare()` | Build context proof or return `ContextBuildError` |
 | `prepare_summarization(ids)` | Create async summarization request |
 | `complete_summarization(...)` | Apply generated summary to history |
 | `usage_status()` | Get current usage with explicit status |
+| `current_limits()` | Get current model's `ModelLimits` |
+| `current_limits_source()` | Get where limits came from (`Prefix`, `Override`, `DefaultFallback`) |
 | `save(path)` / `load(path, model)` | Persistence |
 
 #### `PreparedContext<'a>`
@@ -718,15 +807,78 @@ pub enum ContextAdaptation {
 }
 ```
 
+#### `ContextBuildError`
+
+Error returned when context cannot be built within budget:
+
+```rust
+pub enum ContextBuildError {
+    /// Older messages need summarization to fit within budget.
+    SummarizationNeeded(SummarizationNeeded),
+    /// The most recent N messages alone exceed the budget (unrecoverable).
+    RecentMessagesTooLarge {
+        required_tokens: u32,
+        budget_tokens: u32,
+        message_count: usize,
+    },
+}
+```
+
 #### `SummarizationNeeded`
 
-Error type indicating summarization is required:
+Details about summarization needed to proceed:
 
 ```rust
 pub struct SummarizationNeeded {
     pub excess_tokens: u32,
     pub messages_to_summarize: Vec<MessageId>,
     pub suggestion: String,
+}
+```
+
+#### `ContextUsageStatus`
+
+Usage state with explicit summarization status, returned by `usage_status()`:
+
+```rust
+pub enum ContextUsageStatus {
+    /// Context fits within budget
+    Ready(ContextUsage),
+    /// Context exceeds budget, summarization needed
+    NeedsSummarization {
+        usage: ContextUsage,
+        needed: SummarizationNeeded,
+    },
+    /// Recent messages alone exceed budget (unrecoverable)
+    RecentMessagesTooLarge {
+        usage: ContextUsage,
+        required_tokens: u32,
+        budget_tokens: u32,
+    },
+}
+```
+
+#### `PendingSummarization`
+
+Request for async summarization, returned by `prepare_summarization()`:
+
+```rust
+pub struct PendingSummarization {
+    pub scope: SummarizationScope,           // Contiguous range of message IDs
+    pub messages: Vec<(MessageId, Message)>, // Messages to summarize
+    pub original_tokens: u32,                // Total tokens in originals
+    pub target_tokens: u32,                  // Target summary size
+}
+```
+
+#### `SummarizationScope`
+
+Contiguous set of message IDs to summarize (passed to `complete_summarization()`):
+
+```rust
+pub struct SummarizationScope {
+    ids: Vec<MessageId>,
+    range: Range<MessageId>,  // [start, end) exclusive
 }
 ```
 
@@ -878,34 +1030,45 @@ use forge_context::{StreamJournal, ActiveJournal, RecoveredStream};
 let mut journal = StreamJournal::open("~/.forge/stream.db")?;
 
 // Check for crash recovery on startup
-if let Some(recovered) = journal.recover() {
+if let Some(recovered) = journal.recover()? {
     match recovered {
-        RecoveredStream::Complete { partial_text, step_id, .. } => {
-            // Stream finished but wasn't sealed
-            journal.seal_unsealed(step_id)?;
+        RecoveredStream::Complete { partial_text, step_id, model_name, .. } => {
+            // Stream finished but wasn't committed to history
+            // Commit to history, then prune
+            journal.commit_and_prune_step(step_id)?;
+        }
+        RecoveredStream::Errored { partial_text, step_id, error, .. } => {
+            // Stream failed with error
+            journal.discard_step(step_id)?;
         }
         RecoveredStream::Incomplete { partial_text, step_id, .. } => {
             // Stream was interrupted mid-flight
             // Option 1: Discard and retry
-            journal.discard_unsealed(step_id)?;
-            // Option 2: Resume from partial_text
+            journal.discard_step(step_id)?;
+            // Option 2: Commit partial text to history
         }
     }
 }
 
-// Begin streaming session
-let mut active: ActiveJournal = journal.begin_session()?;
+// Begin streaming session (model name stored for recovery attribution)
+let mut active: ActiveJournal = journal.begin_session("claude-sonnet-4-5")?;
 
 // Persist each delta BEFORE displaying to user
 active.append_text(&mut journal, "Hello")?;
 active.append_text(&mut journal, " world")?;
 active.append_done(&mut journal)?;
 
-// Seal when complete (marks entries as committed)
+// Seal when complete (marks entries as sealed)
 let full_text: String = active.seal(&mut journal)?;
+
+// After history is persisted, prune the journal
+let step_id = active.step_id();  // Get before seal consumes active
+journal.commit_and_prune_step(step_id)?;
 ```
 
 **Key invariant:** Deltas must be persisted before display. This write-ahead approach ensures durability at the cost of slightly higher latency per delta.
+
+**Commit-and-prune invariant:** Never prune before history is persisted. The journal commit and prune operation is atomic.
 
 #### `ActiveJournal`
 
@@ -914,6 +1077,7 @@ RAII handle proving a stream is in-flight:
 ```rust
 impl ActiveJournal {
     fn step_id(&self) -> StepId;
+    fn model_name(&self) -> &str;  // Model name for attribution
     fn append_text(&mut self, journal: &mut StreamJournal, content: impl Into<String>) -> Result<()>;
     fn append_done(&mut self, journal: &mut StreamJournal) -> Result<()>;
     fn append_error(&mut self, journal: &mut StreamJournal, message: impl Into<String>) -> Result<()>;
@@ -932,11 +1096,20 @@ pub enum RecoveredStream {
         step_id: StepId,
         partial_text: String,
         last_seq: u64,
+        model_name: Option<String>,  // For attribution
+    },
+    Errored {
+        step_id: StepId,
+        partial_text: String,
+        last_seq: u64,
+        error: String,
+        model_name: Option<String>,
     },
     Incomplete {
         step_id: StepId,
         partial_text: String,
         last_seq: u64,
+        model_name: Option<String>,
     },
 }
 ```
@@ -1021,7 +1194,7 @@ journal.update_assistant_text(batch_id, "I'll read that file...")?;
 Async function to generate summaries via LLM:
 
 ```rust
-use forge_context::{generate_summary, summarization_model};
+use forge_context::{generate_summary, summarization_model, TokenCounter};
 use forge_providers::ApiConfig;
 
 // Get the summarization model for current provider
@@ -1029,17 +1202,23 @@ let model_name = summarization_model(Provider::Claude);
 // Returns "claude-haiku-4-5" (cheaper/faster)
 
 // Generate summary
+let counter = TokenCounter::new();
 let summary_text = generate_summary(
     &api_config,
-    &messages_to_summarize,  // Vec<(MessageId, Message)>
+    &counter,
+    &messages_to_summarize,  // &[(MessageId, Message)]
     target_tokens,           // Target size for summary
 ).await?;
 ```
 
+The function validates that input doesn't exceed the summarizer model's context limit before making the API call.
+
 **Summarization models used:**
 
-- Claude: `claude-haiku-4-5`
-- OpenAI: `gpt-5-nano`
+| Provider | Model | Context Limit |
+|----------|-------|---------------|
+| Claude | `claude-haiku-4-5` | 190,000 tokens |
+| OpenAI | `gpt-5-nano` | 380,000 tokens |
 
 ### Working Context
 
@@ -1091,51 +1270,77 @@ impl ContextUsage {
 
 ```rust
 use forge_context::{
-    ContextManager, PreparedContext, SummarizationNeeded,
-    StreamJournal, ActiveJournal, generate_summary,
+    ContextManager, PreparedContext, ContextBuildError,
+    StreamJournal, ActiveJournal, generate_summary, TokenCounter,
 };
 use forge_types::Message;
 
 // Initialize
-let mut manager = ContextManager::new("claude-sonnet-4");
+let mut manager = ContextManager::new("claude-sonnet-4-5");
 let mut journal = StreamJournal::open("~/.forge/journal.db")?;
+let counter = TokenCounter::new();
 
-// Handle crash recovery
-if let Some(recovered) = journal.recover() {
-    // ... handle recovery ...
+// Handle crash recovery (idempotent)
+if let Some(recovered) = journal.recover()? {
+    match recovered {
+        RecoveredStream::Complete { step_id, partial_text, model_name, .. } => {
+            // Check if already in history (idempotent recovery)
+            if !manager.has_step_id(step_id) {
+                manager.push_message_with_step_id(
+                    Message::assistant(NonEmptyString::new(&partial_text)?),
+                    step_id,
+                );
+                manager.save("~/.forge/history.json")?;
+            }
+            journal.commit_and_prune_step(step_id)?;
+        }
+        RecoveredStream::Errored { step_id, error, .. } => {
+            tracing::warn!("Recovered stream failed: {}", error);
+            journal.discard_step(step_id)?;
+        }
+        RecoveredStream::Incomplete { step_id, .. } => {
+            journal.discard_step(step_id)?;
+        }
+    }
 }
 
 // Add user message
-manager.push_message(Message::try_user("Explain Rust lifetimes")?);
+let user_msg_id = manager.push_message(Message::try_user("Explain Rust lifetimes")?);
 
 // Prepare context
 let prepared = match manager.prepare() {
     Ok(p) => p,
-    Err(SummarizationNeeded { messages_to_summarize, .. }) => {
+    Err(ContextBuildError::SummarizationNeeded(needed)) => {
         // Summarization needed - handle async
-        let pending = manager.prepare_summarization(&messages_to_summarize)
+        let pending = manager.prepare_summarization(&needed.messages_to_summarize)
             .expect("messages exist");
         
         let summary_text = generate_summary(
             &api_config,
+            &counter,
             &pending.messages,
             pending.target_tokens,
         ).await?;
         
         manager.complete_summarization(
-            pending.summary_id,
             pending.scope,
             NonEmptyString::new(&summary_text)?,
             "claude-haiku-4-5".to_string(),
-        );
+        )?;
         
         manager.prepare()?  // Should succeed now
+    }
+    Err(ContextBuildError::RecentMessagesTooLarge { required_tokens, budget_tokens, .. }) => {
+        // Rollback user message and report error
+        manager.rollback_last_message(user_msg_id);
+        return Err(anyhow!("Input too large: {} tokens > {} budget", required_tokens, budget_tokens));
     }
 };
 
 // Make API call with streaming
 let api_messages = prepared.api_messages();
-let mut active = journal.begin_session()?;
+let mut active = journal.begin_session("claude-sonnet-4-5")?;
+let step_id = active.step_id();
 
 for chunk in stream_response(&api_messages).await {
     active.append_text(&mut journal, &chunk)?;  // Persist first
@@ -1145,11 +1350,17 @@ for chunk in stream_response(&api_messages).await {
 active.append_done(&mut journal)?;
 let full_response = active.seal(&mut journal)?;
 
-// Add assistant response to history
-manager.push_message(Message::assistant(NonEmptyString::new(&full_response)?));
+// Add assistant response to history with step ID (for idempotent recovery)
+manager.push_message_with_step_id(
+    Message::assistant(NonEmptyString::new(&full_response)?),
+    step_id,
+);
 
-// Persist conversation
+// Persist conversation BEFORE pruning journal
 manager.save("~/.forge/history.json")?;
+
+// Only prune after history is safely persisted
+journal.commit_and_prune_step(step_id)?;
 ```
 
 ## Type Relationships

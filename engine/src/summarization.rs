@@ -45,7 +45,12 @@ impl super::App {
 
         // Try to build working context to see if summarization is needed
         let message_ids = match self.context_manager.prepare() {
-            Ok(_) => return SummarizationStart::NotNeeded, // No summarization needed
+            Ok(_) => {
+                if let Some(config) = queued_request {
+                    self.start_streaming(QueuedUserMessage { config });
+                }
+                return SummarizationStart::NotNeeded;
+            }
             Err(ContextBuildError::SummarizationNeeded(needed)) => needed.messages_to_summarize,
             Err(ContextBuildError::RecentMessagesTooLarge {
                 required_tokens,

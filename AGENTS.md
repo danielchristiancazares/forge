@@ -1,14 +1,5 @@
 # Repository Guidelines
 
-## LLM-TOC
-<!-- Auto-generated section map for LLM context -->
-| Lines | Section |
-|-------|---------|
-| 1-74 | Project Structure and Configuration: module organization, build commands, config.toml |
-| 75-128 | Type-Driven Design Patterns: proof tokens, validated newtypes, mode wrappers |
-| 129-200 | State Machines: InputState, AppState async operations, transitions |
-| 201-269 | Extension Points, Key Files, TUI/Streaming Patterns |
-
 ## Project Structure & Module Organization
 
 - `Cargo.toml` / `Cargo.lock`: workspace metadata and locked dependencies.
@@ -17,7 +8,11 @@
   - `src/assets.rs`: bundled prompt/assets
   - `assets/`: prompt templates
 - `engine/`: core application state + command handling
-  - `src/lib.rs`: `App`, input state machine, commands, model selection, state machine
+  - `src/lib.rs`: `App` orchestration + streaming message handling, re-exports UI state
+  - `src/state.rs`: `OperationState` + tool/summarization state
+  - `src/commands.rs`: slash command parsing + dispatch
+  - `src/tool_loop.rs`: tool execution loop + approvals/recovery
+  - `src/ui/`: input state machine + view state
   - `src/config.rs`: config parsing + env expansion
 - `tui/`: TUI rendering + input handling
   - `src/lib.rs`: full-screen rendering + overlays (command palette, model picker)
@@ -49,6 +44,23 @@
 - `cargo test`: run tests.
 - `cargo clippy -- -D warnings`: lint and fail on warnings.
 - `cargo cov`: coverage via cargo-llvm-cov.
+
+## Formatting, Linting, and Testing Workflow
+
+- Run `just fmt` automatically after making Rust code changes; no approval needed.
+- Before finalizing a change, run clippy scoped to the affected crate: `cargo clippy -p <crate> -- -D warnings` from the repo root. Prefer `-p` to avoid workspace-wide runs; only run `just lint` without `-p` when changes span shared crates or workspace-wide config.
+- Tests:
+  1. Run tests for the specific crate that changed (e.g., `tui/` → `cargo test -p forge-tui`, `cli/` → `cargo test -p forge`).
+  2. After those pass, if changes touch shared crates (`types`, `engine`, `context`, `providers`, `webfetch`) or workspace-level code, run `cargo test --all-features`.
+- Interactive approvals: ask before running `just lint` (workspace-wide clippy) and before `cargo test --all-features`. Project-specific tests can run without asking. `just fmt` never needs approval.
+
+## Additional Coding Guidelines
+
+- Always collapse if statements per https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_if
+- Always inline format! args when possible per https://rust-lang.github.io/rust-clippy/master/index.html#uninlined_format_args
+- Use method references over closures when possible per https://rust-lang.github.io/rust-clippy/master/index.html#redundant_closure_for_method_calls
+- When writing tests, prefer comparing the equality of entire objects over fields one by one.
+- When making a change that adds or changes an API, ensure that the documentation in the `docs/` folder is up to date if applicable.
 
 ## Configuration
 
@@ -141,7 +153,7 @@ These borrow `App` mutably, expose only valid operations for that mode, and are 
 
 ## State Machines
 
-### Input State Machine (`engine/src/lib.rs`)
+### Input State Machine (`engine/src/ui/input.rs`)
 
 ```rust
 enum InputState {
@@ -163,30 +175,37 @@ enum InputState {
 
 **Key invariant:** `DraftInput` (message being composed) persists across mode transitions.
 
-### Async Operation State Machine (`engine/src/lib.rs`)
+### Async Operation State Machine (`engine/src/state.rs`)
 
 ```rust
-enum AppState {
-    Enabled(EnabledState),   // ContextInfinity enabled
-    Disabled(DisabledState), // ContextInfinity disabled
-}
-
-enum EnabledState {
+pub(crate) enum OperationState {
     Idle,
     Streaming(ActiveStream),
+    AwaitingToolResults(PendingToolExecution),
+    ToolLoop(ToolLoopState),
+    ToolRecovery(ToolRecoveryState),
     Summarizing(SummarizationState),
     SummarizingWithQueued(SummarizationWithQueuedState),
     SummarizationRetry(SummarizationRetryState),
     SummarizationRetryWithQueued(SummarizationRetryWithQueuedState),
 }
-
-enum DisabledState {
-    Idle,
-    Streaming(ActiveStream),
-}
 ```
 
-**Key invariant:** Cannot be streaming and summarizing simultaneously.
+**Note:** `ContextInfinity` enablement is tracked on `App.context_infinity` (set at init), not encoded in `OperationState`.
+
+**Key invariant:** Only one operation is active at a time; streaming, tool execution/recovery, and summarization are mutually exclusive.
+
+### Tool Execution State Machine (`engine/src/tool_loop.rs`, `engine/src/state.rs`)
+
+Tool calls are streamed as `StreamEvent::ToolCallStart`/`ToolCallDelta` and accumulated in `StreamingMessage`. After the stream completes, `handle_tool_calls()` routes by tools mode:
+
+- `ToolsMode::Disabled`: emit error results and commit immediately.
+- `ToolsMode::ParseOnly`: enter `OperationState::AwaitingToolResults(PendingToolExecution)` and wait for `/tool ...` results via `submit_tool_result()`.
+- `ToolsMode::Enabled`: enter `OperationState::ToolLoop(ToolLoopState)`:
+  - `ToolLoopPhase::AwaitingApproval(ApprovalState)` when approvals are required.
+  - `ToolLoopPhase::Executing(ActiveToolExecution)` while tools run.
+
+On completion, `commit_tool_batch()` records `tool_use` + `tool_result` messages and returns to `Idle`. Crash recovery can place the app in `OperationState::ToolRecovery`, prompting resume/discard.
 
 ### Context Usage Status (`context/src/manager.rs`)
 
@@ -210,8 +229,8 @@ The streaming system uses a **journal-before-display** pattern for crash recover
 queue_message() → start_streaming() → process_stream_events() → finish_streaming()
                          │                      │
                          │                      ├─ For each event:
-                         │                      │  1. Persist to journal
-                         │                      │  2. Apply to StreamingMessage
+                         │                      │  1. Persist to stream journal (text/done/error) or tool journal (tool call start/args)
+                         │                      │  2. Apply to StreamingMessage (text + tool call accumulation)
                          │                      │  3. UI renders
                          │                      │
                          └─ Creates ActiveStream with:
@@ -220,7 +239,7 @@ queue_message() → start_streaming() → process_stream_events() → finish_str
                             - AbortHandle (cancellation)
 ```
 
-**Critical:** Events are persisted to SQLite journal BEFORE updating the UI. On crash, `StreamJournal::recover()` restores partial content.
+**Critical:** Text/done/error events persist to `StreamJournal`, and tool call start/args persist to `ToolJournal`, BEFORE updating the UI. On crash, `StreamJournal::recover()` restores partial content; tool batches can be recovered from `ToolJournal`.
 
 ### Stream Events
 
@@ -228,6 +247,8 @@ queue_message() → start_streaming() → process_stream_events() → finish_str
 pub enum StreamEvent {
     TextDelta(String),      // Content chunk - persisted
     ThinkingDelta(String),  // Reasoning content - NOT persisted, not displayed
+    ToolCallStart { id: String, name: String }, // Tool call started (recorded to tool journal)
+    ToolCallDelta { id: String, arguments: String }, // Tool call args chunk (recorded to tool journal)
     Done,                   // Stream completed - persisted
     Error(String),          // Stream failed - persisted
 }
@@ -239,14 +260,15 @@ pub enum StreamEvent {
 
 | Task | Location |
 |------|----------|
-| Add slash command | `App::process_command()` in `engine/src/lib.rs` |
-| Add input mode | `InputState` enum + `InputMode` enum in `engine/src/lib.rs`, handler in `tui/src/input.rs` |
+| Add slash command | `Command::parse` + `App::process_command()` in `engine/src/commands.rs` |
+| Add input mode | `InputState` + `InputMode` in `engine/src/ui/input.rs`, handler in `tui/src/input.rs` |
 | Add key binding | `handle_*_mode()` functions in `tui/src/input.rs` |
 | Add UI overlay | `draw_*` function in `tui/src/lib.rs`, call from `draw()` |
 | Add provider | `Provider` enum in `types/src/lib.rs`, client in `providers/src/` |
 | Change colors | `colors::` module in `tui/src/theme.rs` |
 | Change styles | `styles::` module in `tui/src/theme.rs` |
-| Add modal animation | `ModalEffect` in `engine/src/lib.rs`, apply via `tui/src/effects.rs` |
+| Add modal animation | `ModalEffect` in `engine/src/ui/modal.rs`, apply via `tui/src/effects.rs` |
+| Tool execution loop | `engine/src/tool_loop.rs` + `engine/src/state.rs` |
 | Modify token limits | `model_limits.rs` in `context/src/` |
 | Modify summarization | `summarization.rs` in `context/src/` |
 
@@ -286,22 +308,29 @@ if let Some(cmd) = command {
 
 ### Adding a New Command
 
-In `App::process_command()` (`engine/src/lib.rs`):
+In `engine/src/commands.rs`:
 
 ```rust
+// 1) Add a new Command variant
+//    Command::MyCommand(Option<&'a str>)
+
+// 2) Parse it in Command::parse
 match parts.first().copied() {
     // ... existing commands
-    Some("mycommand" | "mc") => {
-        if let Some(arg) = parts.get(1) {
-            // Handle with argument
-        } else {
-            // Handle without argument
-        }
+    Some("mycommand" | "mc") => Command::MyCommand(parts.get(1).copied()),
+    // ...
+}
+
+// 3) Handle it in App::process_command
+match parsed {
+    Command::MyCommand(arg) => {
+        // Handle with/without arg
     }
+    // ...
 }
 ```
 
-Update help text in the same function.
+Update help text in `process_command()` when needed.
 
 ---
 
@@ -313,7 +342,7 @@ Update help text in the same function.
 
 3. **Journal before display:** Stream events must be persisted before updating UI state.
 
-4. **One streaming operation at a time:** `AppState` enforces mutual exclusion between streaming and summarization.
+4. **One operation at a time:** `OperationState` enforces mutual exclusion between streaming, tool execution/recovery, and summarization.
 
 5. **OpenAI models must be GPT-5+:** `ModelName::new()` rejects models not starting with `gpt-5`.
 

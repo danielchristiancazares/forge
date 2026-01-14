@@ -72,8 +72,9 @@ tui/src/
 ├── lib.rs                      # Full-screen UI rendering + overlays
 ├── ui_inline.rs                # Inline terminal UI rendering
 ├── input.rs                    # Keyboard input handling
-├── theme.rs                    # Colors and styling
+├── theme.rs                    # Colors, styling, and glyphs
 ├── markdown.rs                 # Markdown to ratatui conversion
+├── tool_display.rs             # Compact tool call display formatting
 └── effects.rs                  # Modal animation transforms (PopScale, SlideUp)
 
 context/src/                    # Context window management
@@ -222,7 +223,7 @@ pub struct App {
     stream_journal: StreamJournal,
 
     // State machine for async operations
-    state: AppState,
+    state: OperationState,
 
     // Output configuration
     output_limits: OutputLimits,
@@ -279,26 +280,20 @@ Each state carries the `DraftInput` (the message being composed), ensuring it pe
 The application uses an explicit state machine for async operations:
 
 ```rust
-enum AppState {
-    Enabled(EnabledState),   // ContextInfinity enabled
-    Disabled(DisabledState), // ContextInfinity disabled
-}
-
-enum EnabledState {
+enum OperationState {
     Idle,
     Streaming(ActiveStream),
     AwaitingToolResults(PendingToolExecution),
+    ToolLoop(ToolLoopState),
+    ToolRecovery(ToolRecoveryState),
     Summarizing(SummarizationState),
     SummarizingWithQueued(SummarizationWithQueuedState),
     SummarizationRetry(SummarizationRetryState),
     SummarizationRetryWithQueued(SummarizationRetryWithQueuedState),
 }
-
-enum DisabledState {
-    Idle,
-    Streaming(ActiveStream),
-}
 ```
+
+Note: ContextInfinity enablement is tracked separately via `App.context_infinity`, not encoded in this enum.
 
 This design:
 
@@ -593,17 +588,15 @@ Created by `CommandMode::take_command()` when Enter is pressed, consumed by `App
 
 ### State as Location Pattern
 
-The `AppState` enum makes the application's async state explicit:
+The `OperationState` enum makes the application's async state explicit:
 
 ```rust
-enum AppState {
-    Enabled(EnabledState),   // ContextInfinity enabled
-    Disabled(DisabledState), // ContextInfinity disabled
-}
-
-enum EnabledState {
+enum OperationState {
     Idle,
     Streaming(ActiveStream),
+    AwaitingToolResults(PendingToolExecution),
+    ToolLoop(ToolLoopState),
+    ToolRecovery(ToolRecoveryState),
     Summarizing(SummarizationState),
     SummarizingWithQueued(SummarizationWithQueuedState),
     SummarizationRetry(SummarizationRetryState),
@@ -629,7 +622,7 @@ Key benefits:
 | `NonEmptyStaticStr` | Content is non-empty (compile-time validated) |
 | `ActiveJournal` | Stream journaling session is active |
 | `ModelName` | Model name is valid for its provider |
-| `AppState` variants | Mutually exclusive async operations |
+| `OperationState` variants | Mutually exclusive async operations |
 
 ---
 
@@ -819,12 +812,17 @@ pub const INLINE_VIEWPORT_HEIGHT: u16 = INLINE_INPUT_HEIGHT + 1;
 
 ```rust
 pub struct InlineOutput {
-    next_display_index: usize,  // Track which messages have been printed
-    has_output: bool,           // Whether any output has been written
+    next_display_index: usize,         // Track which messages have been printed
+    has_output: bool,                  // Whether any output has been written
+    last_tool_output_len: usize,       // Track tool output line count
+    last_tool_status_signature: Option<String>,    // Detect tool status changes
+    last_pending_tool_signature: Option<String>,   // Detect pending tool changes
+    last_approval_signature: Option<String>,       // Detect approval state changes
+    last_recovery_active: bool,        // Track recovery prompt state
 }
 ```
 
-The `flush` method writes completed messages above the viewport using `terminal.insert_before()`, which scrolls existing terminal content up.
+The `flush` method writes completed messages above the viewport using `terminal.insert_before()`, which scrolls existing terminal content up. The signature fields prevent duplicate output when state hasn't changed.
 
 #### Differences from Full-Screen
 
@@ -836,15 +834,14 @@ The `flush` method writes completed messages above the viewport using `terminal.
 | Streaming | In-place update | Only shows input area |
 | Markdown rendering | Full markdown parser | Plain text with indentation |
 
-**Role Icons by Mode:**
+Both modes use the same `Glyphs` system from `theme.rs`, which respects the `ascii_only` UI option:
 
-| Role | Full-Screen | Inline |
-|------|-------------|--------|
+| Role | Unicode | ASCII (`ascii_only: true`) |
+|------|---------|----------------------------|
 | System | `●` | `S` |
-| User | `○` | `○` |
-| Assistant | `◆` | `*` |
-
-Inline mode uses simpler icons for better terminal compatibility and to distinguish flushed messages visually.
+| User | `○` | `U` |
+| Assistant | `◆` | `A` |
+| Tool | `⚙` | `T` |
 
 ---
 
@@ -1120,29 +1117,30 @@ The `RecentMessagesTooLarge` variant indicates that recent messages alone exceed
 
 ### Color Palette (`theme.rs`)
 
-The TUI uses a Catppuccin-inspired color palette:
+The TUI uses a Kanagawa Wave-inspired color palette with an optional high-contrast mode:
 
 ```rust
-pub mod colors {
-    // Primary brand colors
-    pub const PRIMARY: Color = Color::Rgb(139, 92, 246);      // Purple
-    pub const PRIMARY_DIM: Color = Color::Rgb(109, 72, 206);  // Darker purple
+mod colors {
+    // Backgrounds (Sumi Ink)
+    pub const BG_DARK: Color = Color::Rgb(22, 22, 29);       // sumiInk0
+    pub const BG_PANEL: Color = Color::Rgb(31, 31, 40);      // sumiInk3
+    pub const BG_HIGHLIGHT: Color = Color::Rgb(42, 42, 55);  // sumiInk4
 
-    // Background colors
-    pub const BG_DARK: Color = Color::Rgb(17, 17, 27);        // Near black
-    pub const BG_PANEL: Color = Color::Rgb(30, 30, 46);       // Panel background
-    pub const BG_HIGHLIGHT: Color = Color::Rgb(44, 46, 68);   // Row highlight (model selector)
+    // Foregrounds (Fuji)
+    pub const TEXT_PRIMARY: Color = Color::Rgb(220, 215, 186);   // fujiWhite
+    pub const TEXT_SECONDARY: Color = Color::Rgb(200, 192, 147); // oldWhite
+    pub const TEXT_MUTED: Color = Color::Rgb(114, 113, 105);     // fujiGray
 
-    // Text colors
-    pub const TEXT_PRIMARY: Color = Color::Rgb(205, 214, 244);   // Main text
-    pub const TEXT_SECONDARY: Color = Color::Rgb(147, 153, 178); // Dimmed
-    pub const TEXT_MUTED: Color = Color::Rgb(88, 91, 112);       // Very dim
+    // Primary/Brand
+    pub const PRIMARY: Color = Color::Rgb(149, 127, 184);     // oniViolet
+    pub const PRIMARY_DIM: Color = Color::Rgb(147, 138, 169); // springViolet1
 
     // Accent colors
-    pub const GREEN: Color = Color::Rgb(166, 227, 161);  // Success/user
-    pub const YELLOW: Color = Color::Rgb(249, 226, 175); // Warning
-    pub const RED: Color = Color::Rgb(243, 139, 168);    // Error
-    pub const PEACH: Color = Color::Rgb(250, 179, 135);  // Accent
+    pub const GREEN: Color = Color::Rgb(152, 187, 108);   // springGreen
+    pub const YELLOW: Color = Color::Rgb(230, 195, 132);  // carpYellow
+    pub const RED: Color = Color::Rgb(255, 93, 98);       // peachRed
+    pub const ORANGE: Color = Color::Rgb(255, 160, 102);  // surimiOrange (peach)
+    pub const CYAN: Color = Color::Rgb(127, 180, 202);    // springBlue (accent)
 }
 ```
 
@@ -1150,23 +1148,27 @@ pub mod colors {
 
 ```rust
 pub mod styles {
-    pub fn user_name() -> Style       // Green, bold
-    pub fn assistant_name() -> Style  // Purple, bold
-    pub fn mode_normal() -> Style     // Dark on gray, bold
-    pub fn mode_insert() -> Style     // Dark on green, bold
-    pub fn mode_command() -> Style    // Dark on yellow, bold
-    pub fn key_hint() -> Style        // Muted text
-    pub fn key_highlight() -> Style   // Peach, bold
+    pub fn user_name(palette: &Palette) -> Style       // Green, bold
+    pub fn assistant_name(palette: &Palette) -> Style  // Purple, bold
+    pub fn mode_normal(palette: &Palette) -> Style     // Dark on gray, bold
+    pub fn mode_insert(palette: &Palette) -> Style     // Dark on green, bold
+    pub fn mode_command(palette: &Palette) -> Style    // Dark on yellow, bold
+    pub fn key_hint(palette: &Palette) -> Style        // Muted text
+    pub fn key_highlight(palette: &Palette) -> Style   // Peach, bold
 }
 ```
 
 ### Spinner Animation
 
-```rust
-pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+The spinner respects `ascii_only` UI option for terminal compatibility:
 
-pub fn spinner_frame(tick: usize) -> &'static str {
-    SPINNER_FRAMES[tick % SPINNER_FRAMES.len()]
+```rust
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_FRAMES_ASCII: &[&str] = &["|", "/", "-", "\\"];
+
+pub fn spinner_frame(tick: usize, options: UiOptions) -> &'static str {
+    let frames = glyphs(options).spinner_frames;
+    frames[tick % frames.len()]
 }
 ```
 
@@ -1211,9 +1213,11 @@ Holds state for an in-progress streaming response:
 
 ```rust
 struct ActiveStream {
-    message: StreamingMessage,    // Accumulating content with MPSC receiver
-    journal: ActiveJournal,       // RAII handle ensuring chunks are journaled
-    abort_handle: AbortHandle,    // Cancellation handle from futures_util
+    message: StreamingMessage,              // Accumulating content with MPSC receiver
+    journal: ActiveJournal,                 // RAII handle ensuring chunks are journaled
+    abort_handle: AbortHandle,              // Cancellation handle from futures_util
+    tool_batch_id: Option<ToolBatchId>,     // Associated tool batch for recovery
+    tool_call_seq: usize,                   // Sequence counter for tool calls
 }
 ```
 
@@ -1350,8 +1354,7 @@ pub(crate) fn process_command(&mut self, command: EnteredCommand) {
             // Abort any active streaming or summarization
             let state = self.replace_with_idle();
             match state {
-                AppState::Enabled(EnabledState::Streaming(active))
-                | AppState::Disabled(DisabledState::Streaming(active)) => {
+                OperationState::Streaming(active) => {
                     active.abort_handle.abort();
                     let _ = active.journal.discard(&mut self.stream_journal);
                 }
@@ -1963,7 +1966,7 @@ The Forge TUI is a well-structured, modal terminal interface built on these prin
 |---------|---------|---------|
 | Proof Tokens | Enforce preconditions at compile time | `InsertToken`, `CommandToken`, `QueuedUserMessage` |
 | Mode Wrappers | Controlled access to mode-specific operations | `InsertMode<'a>`, `CommandMode<'a>` |
-| State as Location | Make async operation state explicit | `AppState::Enabled(EnabledState::Streaming(...))` |
+| State as Location | Make async operation state explicit | `OperationState::Streaming(...)` |
 | Newtype Validation | Guarantee invariants via types | `NonEmptyString`, `ModelName` |
 | RAII Handles | Ensure cleanup via Drop | `ActiveJournal`, `TerminalSession` |
 

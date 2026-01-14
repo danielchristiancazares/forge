@@ -62,6 +62,9 @@ pub(crate) use init::{
     DEFAULT_TOOL_CAPACITY_BYTES, TOOL_EVENT_CHANNEL_CAPACITY, TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
 };
 
+/// Maximum number of stream events to process per UI tick.
+pub const DEFAULT_STREAM_EVENT_BUDGET: usize = 512;
+
 // Re-export public state types
 pub use state::{PendingToolExecution, SummarizationTask};
 

@@ -2,17 +2,6 @@
 
 This file provides guidance for Claude Code (claude.ai/code) when working with code in this repository.
 
-## LLM-TOC
-<!-- Auto-generated section map for LLM context -->
-| Lines | Section |
-|-------|---------|
-| 1-46 | Build Commands and Configuration: cargo commands, config.toml structure |
-| 47-90 | Architecture: workspace structure, key files table |
-| 91-137 | Main Event Loop, Input State Machine, Type-Driven Design patterns |
-| 138-174 | Provider System, Context Infinity, Key Extension Points |
-| 175-225 | Documentation, Testing, Common Pitfalls, Commit Style |
-| 226-237 | Security Testing: authorized red-team context for hardening |
-
 ## Build Commands
 
 ```bash
@@ -65,6 +54,7 @@ forge/
 ├── context/        # Context window management + SQLite persistence
 ├── engine/         # App state machine, commands, orchestration
 ├── tui/            # TUI rendering (ratatui) + input handling
+├── webfetch/       # URL fetching, HTML-to-Markdown, chunking for LLM
 ├── tests/          # Integration tests
 └── docs/           # Architecture documentation
 ```
@@ -76,23 +66,26 @@ forge/
 | `cli` | `main.rs` | Entry point, terminal session, event loop |
 | `engine` | `lib.rs` | App state machine, commands, streaming logic |
 | `engine` | `config.rs` | Config parsing (`ForgeConfig`) |
+| `engine` | `tool_loop.rs` | Tool executor orchestration, approval flow |
+| `engine` | `state.rs` | `ToolBatch`, `ApprovalState`, operation states |
 | `tui` | `lib.rs` | Full-screen rendering |
 | `tui` | `ui_inline.rs` | Inline terminal rendering |
 | `tui` | `input.rs` | Keyboard input handling |
 | `tui` | `theme.rs` | Colors and styles |
 | `tui` | `markdown.rs` | Markdown to ratatui conversion |
 | `tui` | `effects.rs` | Modal animations (PopScale, SlideUp) |
+| `tui` | `tool_display.rs` | Tool result rendering |
 | `context` | `manager.rs` | Context orchestration, summarization triggers |
 | `context` | `history.rs` | Persistent storage (`MessageId`, `SummaryId`) |
 | `context` | `stream_journal.rs` | SQLite WAL for crash recovery |
+| `context` | `tool_journal.rs` | Tool execution journaling |
 | `context` | `working_context.rs` | Token budget allocation |
 | `context` | `summarization.rs` | Summary generation |
 | `context` | `model_limits.rs` | Per-model token limits |
 | `context` | `token_counter.rs` | Token counting |
-| `providers` | `lib.rs` | Provider dispatch + SSE parsing |
-| `providers` | `claude.rs` | Anthropic API client |
-| `providers` | `openai.rs` | OpenAI API client |
+| `providers` | `lib.rs` | Provider dispatch, SSE parsing, inline `claude`/`openai` modules |
 | `types` | `lib.rs` | Message types, `NonEmptyString`, `ModelName` |
+| `webfetch` | `lib.rs` | URL fetch orchestration, chunking for LLM context |
 
 ### Main Event Loop (`cli/src/main.rs`)
 
@@ -164,6 +157,35 @@ Adaptive context management with automatic summarization:
 - `token_counter.rs` - token counting utilities
 
 See `context/README.md` for details.
+
+### Tool Executor Framework (`engine/src/tool_loop.rs`)
+
+Robust tool execution with crash recovery and user approval:
+
+**Core Types** (`engine/src/state.rs`):
+
+| Type | Purpose |
+|------|---------|
+| `ToolBatch` | Unit of execution: assistant text + tool calls + results |
+| `ApprovalState` | Tracks user permission decisions for dangerous operations |
+| `ToolLoopPhase` | State machine: `AwaitingApproval` → `Executing` |
+| `ActiveToolExecution` | Running tool with output capture and abort handle |
+| `ToolRecoveryState` | Recovered batch awaiting user decision (resume/discard) |
+
+**Crash Recovery** (`context/src/tool_journal.rs`):
+
+- `ToolJournal` - SQLite persistence with WAL mode
+- Journal-before-commit pattern: tool calls written before execution
+- `RecoveredToolBatch` - reconstructs partial batches after crash
+- On startup, uncommitted batches prompt user to resume or discard
+
+**Execution Flow**:
+
+1. LLM returns tool calls → `ToolBatch` created, journaled
+2. Calls partitioned: safe (execute immediately) vs dangerous (need approval)
+3. If approval needed → `AwaitingApproval` state, UI shows confirmation
+4. User approves/denies → `Executing` state, tools run sequentially
+5. Results collected → batch committed to journal, sent back to LLM
 
 ### Key Extension Points
 

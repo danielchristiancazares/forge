@@ -1,6 +1,6 @@
 //! Message type tests
 
-use forge_types::{EmptyStringError, Message, ModelName, NonEmptyString, Provider};
+use forge_types::{Message, NonEmptyString, Provider};
 
 #[test]
 fn non_empty_string_rejects_empty() {
@@ -40,11 +40,11 @@ fn non_empty_string_into_inner() {
 fn message_role_str() {
     let content = NonEmptyString::new("test").unwrap();
     let model = Provider::Claude.default_model();
-    
+
     let system = Message::system(content.clone());
     let user = Message::user(content.clone());
     let assistant = Message::assistant(model, content);
-    
+
     assert_eq!(system.role_str(), "system");
     assert_eq!(user.role_str(), "user");
     assert_eq!(assistant.role_str(), "assistant");
@@ -74,7 +74,7 @@ fn try_user_with_empty_content() {
 fn assistant_message_has_provider() {
     let content = NonEmptyString::new("response").unwrap();
     let model = Provider::OpenAI.default_model();
-    
+
     if let Message::Assistant(m) = Message::assistant(model, content) {
         assert_eq!(m.provider(), Provider::OpenAI);
     } else {
@@ -94,7 +94,7 @@ fn non_empty_string_deref() {
 fn non_empty_string_try_from_string() {
     let result: Result<NonEmptyString, _> = "test".to_string().try_into();
     assert!(result.is_ok());
-    
+
     let result: Result<NonEmptyString, _> = "".to_string().try_into();
     assert!(result.is_err());
 }

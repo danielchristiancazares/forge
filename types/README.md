@@ -296,7 +296,7 @@ let models: &[&str] = Provider::Claude.available_models();
 // ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001", "claude-opus-4-5-20251101"]
 
 let models: &[&str] = Provider::OpenAI.available_models();
-// ["gpt-5.2", "gpt-5.2-2025-12-11", "gpt-5.2-chat-latest"]
+// ["gpt-5.2", "gpt-5.2-2025-12-11"]
 
 // Parse model name with validation
 let model = Provider::Claude.parse_model("claude-sonnet-4-5-20250929")?;

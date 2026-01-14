@@ -1,11 +1,13 @@
 //! Unit tests for the engine crate.
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use futures_util::future::AbortHandle;
 use serde_json::json;
+use tempfile::tempdir;
 
 use super::*;
 use crate::init::DEFAULT_MAX_TOOL_ARGS_BYTES;
@@ -74,6 +76,86 @@ fn test_app() -> App {
         history_load_warning_shown: false,
         autosave_warning_shown: false,
         empty_send_warning_shown: false,
+    }
+}
+
+#[derive(Debug)]
+struct MockTool {
+    name: &'static str,
+    requires_approval: bool,
+    log: Arc<Mutex<Vec<String>>>,
+}
+
+impl MockTool {
+    fn new(name: &'static str, requires_approval: bool, log: Arc<Mutex<Vec<String>>>) -> Self {
+        Self {
+            name,
+            requires_approval,
+            log,
+        }
+    }
+}
+
+impl tools::ToolExecutor for MockTool {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn description(&self) -> &'static str {
+        "Mock tool for ordering tests"
+    }
+
+    fn schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false
+        })
+    }
+
+    fn is_side_effecting(&self) -> bool {
+        false
+    }
+
+    fn requires_approval(&self) -> bool {
+        self.requires_approval
+    }
+
+    fn approval_summary(&self, _args: &serde_json::Value) -> Result<String, tools::ToolError> {
+        let name = self.name;
+        Ok(format!("Run {name}"))
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _args: serde_json::Value,
+        _ctx: &'a mut tools::ToolCtx,
+    ) -> tools::ToolFut<'a> {
+        let log = Arc::clone(&self.log);
+        let name = self.name.to_string();
+        Box::pin(async move {
+            log.lock().expect("log lock").push(name);
+            Ok("ok".to_string())
+        })
+    }
+}
+
+async fn drive_tool_loop_to_idle(app: &mut App) {
+    let start = Instant::now();
+    let timeout = Duration::from_secs(5);
+    loop {
+        if matches!(app.state, OperationState::Idle) {
+            break;
+        }
+        match app.state {
+            OperationState::ToolLoop(_) => {
+                app.poll_tool_loop();
+                tokio::task::yield_now().await;
+            }
+            _ => panic!("unexpected state while driving tool loop"),
+        }
+        if start.elapsed() > timeout {
+            panic!("tool loop did not finish before timeout");
+        }
     }
 }
 
@@ -260,6 +342,41 @@ fn process_stream_events_applies_deltas_and_done() {
     assert_eq!(last.message().content(), "hello");
     assert!(!app.is_loading());
     assert!(app.streaming().is_none());
+}
+
+#[test]
+fn process_stream_events_respects_budget() {
+    let mut app = test_app();
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    let streaming = StreamingMessage::new(
+        app.model.clone(),
+        rx,
+        app.tool_settings.limits.max_tool_args_bytes,
+    );
+    let (abort_handle, _abort_registration) = AbortHandle::new_pair();
+    let journal = app
+        .stream_journal
+        .begin_session(app.model.as_str())
+        .expect("journal session");
+    app.state = OperationState::Streaming(ActiveStream {
+        message: streaming,
+        journal,
+        abort_handle,
+        tool_batch_id: None,
+        tool_call_seq: 0,
+    });
+
+    for _ in 0..10_000 {
+        tx.send(StreamEvent::TextDelta("x".to_string()))
+            .expect("send delta");
+    }
+
+    app.process_stream_events();
+
+    let content_len = app.streaming().expect("still streaming").content().len();
+    assert_eq!(content_len, DEFAULT_STREAM_EVENT_BUDGET);
+    assert!(content_len < 10_000);
 }
 
 #[test]
@@ -526,6 +643,121 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
     let last = app.history().entries().last().expect("tool result");
     assert!(matches!(last.message(), Message::ToolResult(_)));
     assert_eq!(last.message().content(), "Tool call denied by user");
+}
+
+#[tokio::test]
+async fn tool_loop_preserves_order_after_approval() {
+    let mut app = test_app();
+    app.tools_mode = tools::ToolsMode::Enabled;
+    app.tool_settings.mode = tools::ToolsMode::Enabled;
+    app.api_keys.clear();
+
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let registry = std::sync::Arc::get_mut(&mut app.tool_registry).expect("unique registry");
+    registry
+        .register(Box::new(MockTool::new("mock_a", true, Arc::clone(&log))))
+        .expect("register mock_a");
+    registry
+        .register(Box::new(MockTool::new("mock_b", false, Arc::clone(&log))))
+        .expect("register mock_b");
+    app.tool_definitions = app.tool_registry.definitions();
+
+    let calls = vec![
+        ToolCall::new("call-a", "mock_a", json!({})),
+        ToolCall::new("call-b", "mock_b", json!({})),
+    ];
+    app.handle_tool_calls(
+        "assistant".to_string(),
+        calls,
+        Vec::new(),
+        app.model.clone(),
+        1,
+        None,
+    );
+
+    match &app.state {
+        OperationState::ToolLoop(state) => match state.phase {
+            ToolLoopPhase::AwaitingApproval(_) => {}
+            _ => panic!("expected awaiting approval"),
+        },
+        _ => panic!("expected tool loop state"),
+    }
+
+    assert!(log.lock().expect("log lock").is_empty());
+
+    app.resolve_tool_approval(tools::ApprovalDecision::ApproveAll);
+    drive_tool_loop_to_idle(&mut app).await;
+
+    let order = log.lock().expect("log lock").clone();
+    assert_eq!(order, vec!["mock_a".to_string(), "mock_b".to_string()]);
+}
+
+#[tokio::test]
+async fn tool_loop_write_then_read_same_batch() {
+    let mut app = test_app();
+    app.tools_mode = tools::ToolsMode::Enabled;
+    app.tool_settings.mode = tools::ToolsMode::Enabled;
+    app.tool_settings.policy.mode = tools::ApprovalMode::Auto;
+    app.tool_definitions = app.tool_registry.definitions();
+    app.api_keys.clear();
+
+    let temp_dir = tempdir().expect("temp dir");
+    app.tool_settings.sandbox =
+        tools::sandbox::Sandbox::new(vec![temp_dir.path().to_path_buf()], Vec::new(), false)
+            .expect("sandbox");
+
+    let calls = vec![
+        ToolCall::new(
+            "call-write",
+            "write_file",
+            json!({ "path": "test.txt", "content": "hello" }),
+        ),
+        ToolCall::new("call-read", "read_file", json!({ "path": "test.txt" })),
+    ];
+
+    app.handle_tool_calls(
+        "assistant".to_string(),
+        calls,
+        Vec::new(),
+        app.model.clone(),
+        1,
+        None,
+    );
+
+    match &app.state {
+        OperationState::ToolLoop(state) => match state.phase {
+            ToolLoopPhase::AwaitingApproval(_) => {}
+            _ => panic!("expected awaiting approval"),
+        },
+        _ => panic!("expected tool loop state"),
+    }
+
+    app.resolve_tool_approval(tools::ApprovalDecision::ApproveAll);
+    drive_tool_loop_to_idle(&mut app).await;
+
+    let results: Vec<&ToolResult> = app
+        .history()
+        .entries()
+        .iter()
+        .filter_map(|entry| match entry.message() {
+            Message::ToolResult(result) => Some(result),
+            _ => None,
+        })
+        .collect();
+
+    let write_result = results
+        .iter()
+        .find(|result| result.tool_call_id == "call-write")
+        .expect("write result");
+    assert!(!write_result.is_error);
+    assert!(write_result.content.contains("Created"));
+
+    let read_result = results
+        .iter()
+        .find(|result| result.tool_call_id == "call-read")
+        .expect("read result");
+    assert!(!read_result.is_error);
+    assert_eq!(read_result.content, "hello");
 }
 
 #[test]

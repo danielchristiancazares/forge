@@ -967,7 +967,7 @@ API errors are delivered through the `StreamEvent::Error` variant rather than as
 
 - `ApiConfig` is `Clone + Send + Sync`
 - The `on_event` callback must be `Send + 'static` for cross-task delivery
-- No internal state is shared between calls; each `send_message` creates its own HTTP client
+- A shared static HTTP client (`http_client()`) is reused across all requests for connection pooling efficiency
 
 ## Testing
 
@@ -1093,7 +1093,6 @@ pub enum ModelParseError {
 /// YourProvider API implementation.
 pub mod your_provider {
     use super::*;
-    use reqwest::Client;
     use serde_json::json;
 
     const API_URL: &str = "https://api.yourprovider.com/v1/chat";
@@ -1139,7 +1138,7 @@ pub mod your_provider {
         system_prompt: Option<&str>,
         on_event: impl Fn(StreamEvent) + Send + 'static,
     ) -> Result<()> {
-        let client = Client::new();
+        let client = http_client();
 
         let body = build_request_body(config, messages, limits, system_prompt);
 
@@ -1153,7 +1152,7 @@ pub mod your_provider {
 
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
+            let error_text = read_capped_error_body(response).await;
             on_event(StreamEvent::Error(format!("API error {}: {}", status, error_text)));
             return Ok(());
         }

@@ -588,7 +588,7 @@ mod tests {
         // Just verify clear doesn't panic
         clear_render_cache();
         let palette = Palette::standard();
-        render_markdown("test", Style::default(), &palette);
+        let _ = render_markdown("test", Style::default(), &palette);
         clear_render_cache();
     }
 

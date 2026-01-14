@@ -1097,4 +1097,48 @@ mod tests {
             StreamFinishReason::Error("test".to_string())
         );
     }
+
+    // ========================================================================
+    // Bug Proof: NonEmptyStaticStr -> NonEmptyString invariant violation
+    // ========================================================================
+    //
+    // BUG: NonEmptyStaticStr::new only checks !is_empty(), not trim().is_empty()
+    //      but NonEmptyString::new rejects whitespace-only via trim().is_empty()
+    //      The From<NonEmptyStaticStr> impl bypasses this validation.
+    //
+    // This allows creating a NonEmptyString with whitespace-only content,
+    // violating its documented invariant.
+    //
+    // FIX: Either:
+    //   1. NonEmptyStaticStr::new should also reject whitespace-only strings, OR
+    //   2. From<NonEmptyStaticStr> for NonEmptyString should validate with trim()
+
+    #[test]
+    fn bug_nonempty_static_str_allows_whitespace_only() {
+        // NonEmptyString::new rejects whitespace-only strings
+        assert!(
+            NonEmptyString::new("   ").is_err(),
+            "NonEmptyString::new should reject whitespace-only strings"
+        );
+
+        // But NonEmptyStaticStr::new allows them (only checks !is_empty())
+        const WHITESPACE_ONLY: NonEmptyStaticStr = NonEmptyStaticStr::new("   ");
+
+        // Verify it really is whitespace-only
+        assert_eq!(WHITESPACE_ONLY.as_str().trim(), "");
+
+        // BUG: This conversion bypasses NonEmptyString's trim() validation
+        let converted: NonEmptyString = WHITESPACE_ONLY.into();
+
+        // The invariant is violated: we have a NonEmptyString that is
+        // effectively "empty" (whitespace-only), which should be impossible
+        assert_eq!(
+            converted.as_str().trim(),
+            "",
+            "BUG: NonEmptyString contains whitespace-only content, violating its invariant"
+        );
+
+        // This would fail if created directly:
+        // NonEmptyString::new(converted.as_str())  // would return Err
+    }
 }

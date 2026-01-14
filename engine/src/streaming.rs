@@ -9,9 +9,10 @@ use futures_util::future::{AbortHandle, Abortable};
 use tokio::sync::mpsc;
 
 use super::{
-    ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError, EMPTY_RESPONSE_BADGE,
-    Message, NonEmptyString, OperationState, QueuedUserMessage, StreamEvent, StreamFinishReason,
-    StreamingMessage, SummarizationStart, format_stream_error, sanitize_terminal_text, security,
+    ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError,
+    DEFAULT_STREAM_EVENT_BUDGET, EMPTY_RESPONSE_BADGE, Message, NonEmptyString, OperationState,
+    QueuedUserMessage, StreamEvent, StreamFinishReason, StreamingMessage, SummarizationStart,
+    format_stream_error, sanitize_terminal_text, security,
 };
 
 impl super::App {
@@ -152,7 +153,13 @@ impl super::App {
             return;
         }
 
+        let max_events = DEFAULT_STREAM_EVENT_BUDGET;
+        if max_events == 0 {
+            return;
+        }
+
         // Process all available events.
+        let mut processed = 0usize;
         loop {
             let event = {
                 let active = match &mut self.state {
@@ -310,6 +317,11 @@ impl super::App {
             if let Some(reason) = finish_reason {
                 self.finish_streaming(reason);
                 return;
+            }
+
+            processed = processed.saturating_add(1);
+            if processed >= max_events {
+                break;
             }
         }
     }

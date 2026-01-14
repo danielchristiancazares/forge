@@ -14,6 +14,10 @@ name = "forge"
 path = "src/main.rs"
 
 [[test]]
+name = "all"
+path = "../tests/all.rs"
+
+[[test]]
 name = "ui_snapshots"
 path = "../tests/ui_snapshots.rs"
 

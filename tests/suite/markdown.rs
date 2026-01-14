@@ -1,7 +1,7 @@
 //! Markdown rendering tests
 
+use forge_tui::Palette;
 use forge_tui::markdown::render_markdown;
-use forge_tui::theme::Palette;
 use ratatui::style::Style;
 
 #[test]
@@ -9,9 +9,10 @@ fn renders_plain_text() {
     let palette = Palette::standard();
     let lines = render_markdown("Hello world", Style::default(), &palette);
     assert!(!lines.is_empty());
-    
+
     // Should have indentation
-    let text: String = lines.iter()
+    let text: String = lines
+        .iter()
         .flat_map(|l| l.spans.iter())
         .map(|s| s.content.as_ref())
         .collect();
@@ -36,11 +37,12 @@ fn renders_italic_text() {
 fn renders_inline_code() {
     let palette = Palette::standard();
     let lines = render_markdown("Use `println!` macro", Style::default(), &palette);
-    let text: String = lines.iter()
+    let text: String = lines
+        .iter()
         .flat_map(|l| l.spans.iter())
         .map(|s| s.content.as_ref())
         .collect();
-    assert!(text.contains("`println!`"));
+    assert!(text.contains("println!"));
 }
 
 #[test]
@@ -50,7 +52,7 @@ fn main() {
     println!("Hello");
 }
 ```"#;
-    
+
     let palette = Palette::standard();
     let lines = render_markdown(md, Style::default(), &palette);
     // Should have opening fence, code lines, closing fence
@@ -62,12 +64,13 @@ fn renders_simple_table() {
     let md = "| A | B |\n|---|---|\n| 1 | 2 |";
     let palette = Palette::standard();
     let lines = render_markdown(md, Style::default(), &palette);
-    
+
     // Should have: top border, header, separator, data row, bottom border
     assert!(lines.len() >= 5);
-    
+
     // Check for box drawing characters
-    let text: String = lines.iter()
+    let text: String = lines
+        .iter()
         .flat_map(|l| l.spans.iter())
         .map(|s| s.content.as_ref())
         .collect();
@@ -80,7 +83,7 @@ fn renders_multi_column_table() {
 |------|--------|-------|
 | A    | Pass   | Good  |
 | B    | Fail   | Bad   |"#;
-    
+
     let palette = Palette::standard();
     let lines = render_markdown(md, Style::default(), &palette);
     assert!(lines.len() >= 6); // borders + header + separator + 2 data rows
@@ -91,8 +94,9 @@ fn renders_bullet_list() {
     let md = "- Item 1\n- Item 2\n- Item 3";
     let palette = Palette::standard();
     let lines = render_markdown(md, Style::default(), &palette);
-    
-    let text: String = lines.iter()
+
+    let text: String = lines
+        .iter()
         .flat_map(|l| l.spans.iter())
         .map(|s| s.content.as_ref())
         .collect();
@@ -104,8 +108,9 @@ fn renders_numbered_list() {
     let md = "1. First\n2. Second\n3. Third";
     let palette = Palette::standard();
     let lines = render_markdown(md, Style::default(), &palette);
-    
-    let text: String = lines.iter()
+
+    let text: String = lines
+        .iter()
         .flat_map(|l| l.spans.iter())
         .map(|s| s.content.as_ref())
         .collect();

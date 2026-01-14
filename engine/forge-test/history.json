@@ -3,24 +3,100 @@
     {
       "id": 0,
       "message": {
-        "User": {
-          "content": "hello",
+        "Assistant": {
+          "content": "assistant",
           "timestamp": {
-            "secs_since_epoch": 1768301661,
-            "nanos_since_epoch": 39554100
-          }
+            "secs_since_epoch": 1768390240,
+            "nanos_since_epoch": 717051000
+          },
+          "provider": "Claude",
+          "model": "claude-sonnet-4-5-20250929",
+          "kind": "Known"
         }
       },
       "token_count": 6,
       "summary_id": null,
       "created_at": {
-        "secs_since_epoch": 1768301661,
-        "nanos_since_epoch": 39920900
+        "secs_since_epoch": 1768390240,
+        "nanos_since_epoch": 717300500
+      },
+      "stream_step_id": 1
+    },
+    {
+      "id": 1,
+      "message": {
+        "ToolUse": {
+          "id": "call-write",
+          "name": "write_file",
+          "arguments": {
+            "content": "hello",
+            "path": "test.txt"
+          }
+        }
+      },
+      "token_count": 7,
+      "summary_id": null,
+      "created_at": {
+        "secs_since_epoch": 1768390240,
+        "nanos_since_epoch": 717340000
+      },
+      "stream_step_id": null
+    },
+    {
+      "id": 2,
+      "message": {
+        "ToolUse": {
+          "id": "call-read",
+          "name": "read_file",
+          "arguments": {
+            "path": "test.txt"
+          }
+        }
+      },
+      "token_count": 7,
+      "summary_id": null,
+      "created_at": {
+        "secs_since_epoch": 1768390240,
+        "nanos_since_epoch": 717358200
+      },
+      "stream_step_id": null
+    },
+    {
+      "id": 3,
+      "message": {
+        "ToolResult": {
+          "tool_call_id": "call-write",
+          "content": "Created \\\\?\\C:\\Users\\danie\\AppData\\Local\\Temp\\.tmphsAMS8\\test.txt (5 bytes)",
+          "is_error": false
+        }
+      },
+      "token_count": 31,
+      "summary_id": null,
+      "created_at": {
+        "secs_since_epoch": 1768390240,
+        "nanos_since_epoch": 717645200
+      },
+      "stream_step_id": null
+    },
+    {
+      "id": 4,
+      "message": {
+        "ToolResult": {
+          "tool_call_id": "call-read",
+          "content": "hello",
+          "is_error": false
+        }
+      },
+      "token_count": 6,
+      "summary_id": null,
+      "created_at": {
+        "secs_since_epoch": 1768390240,
+        "nanos_since_epoch": 717656500
       },
       "stream_step_id": null
     }
   ],
   "summaries": [],
-  "next_message_id": 1,
+  "next_message_id": 5,
   "next_summary_id": 0
 }

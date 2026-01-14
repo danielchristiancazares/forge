@@ -6,18 +6,19 @@ This document provides comprehensive documentation for the `forge-engine` crate 
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-57 | Overview: responsibilities, file structure, dependencies |
-| 58-93 | Architecture Diagram: App structure with InputState, AppState, components |
-| 94-240 | State Machine Design: AppState enum, EnabledState, ToolLoop states, transition diagrams |
-| 241-316 | Input Mode System: InputState enum, DraftInput, mode transitions |
-| 317-415 | Type-Driven Design Patterns: proof tokens, InsertToken, CommandToken, mode wrappers |
-| 416-513 | Streaming Orchestration: ActiveStream, StreamingMessage, lifecycle, journal recovery |
-| 514-565 | Command System: built-in commands table, processing flow |
-| 566-627 | Context Management Integration: ContextManager, summarization retry, model switch adaptation |
-| 628-777 | Configuration: ForgeConfig structure, loading, env expansion, config sections |
-| 778-988 | Public API Reference: App lifecycle, state queries, mode transitions, streaming ops |
-| 989-1165 | Extension Guide: adding commands, input modes, providers, async operation states |
-| 1166-1318 | Re-exported Types, Error Handling, Thread Safety |
+| 1-107 | Overview: responsibilities, file structure, dependencies |
+| 108-143 | Architecture Diagram: App structure with InputState, OperationState, components |
+| 144-302 | State Machine Design: OperationState enum, states, transition diagrams |
+| 303-378 | Input Mode System: InputState enum, DraftInput, mode transitions |
+| 379-477 | Type-Driven Design Patterns: proof tokens, InsertToken, CommandToken, mode wrappers |
+| 478-575 | Streaming Orchestration: ActiveStream, StreamingMessage, lifecycle, journal recovery |
+| 576-631 | Command System: built-in commands table, processing flow |
+| 632-694 | Context Management Integration: ContextManager, summarization retry, model switch adaptation |
+| 695-866 | Configuration: ForgeConfig structure, loading, env expansion, config sections |
+| 867-1011 | Tool Execution System: ToolRegistry, built-in tools, approval workflow, sandbox |
+| 1012-1245 | Public API Reference: App lifecycle, state queries, mode transitions, streaming ops |
+| 1246-1538 | Extension Guide: adding commands, input modes, providers, async operation states |
+| 1539-1670 | Re-exported Types, Error Handling, Thread Safety, Data Directory |
 
 ## Table of Contents
 
@@ -30,22 +31,24 @@ This document provides comprehensive documentation for the `forge-engine` crate 
 7. [Command System](#command-system)
 8. [Context Management Integration](#context-management-integration)
 9. [Configuration](#configuration)
-10. [Public API Reference](#public-api-reference)
-11. [Extension Guide](#extension-guide)
+10. [Tool Execution System](#tool-execution-system)
+11. [Public API Reference](#public-api-reference)
+12. [Extension Guide](#extension-guide)
 
 ---
 
 ## Overview
 
-The `forge-engine` crate is the heart of the Forge application - a TUI-agnostic engine that manages LLM conversation state, input modes, streaming responses, and adaptive context management. It decouples application logic from terminal UI concerns, enabling the same engine to power different presentation layers.
+The `forge-engine` crate is the heart of the Forge application - a TUI-agnostic engine that manages LLM conversation state, input modes, streaming responses, tool execution, and adaptive context management. It decouples application logic from terminal UI concerns, enabling the same engine to power different presentation layers.
 
 ### Key Responsibilities
 
 | Responsibility | Description |
 |----------------|-------------|
 | **Input Mode State Machine** | Vim-style modal editing (Normal, Insert, Command, ModelSelect) |
-| **Async Operation State Machine** | Mutually exclusive states for streaming, summarizing, idle |
+| **Async Operation State Machine** | Mutually exclusive states for streaming, tool execution, summarizing, idle |
 | **Streaming Management** | Non-blocking LLM response streaming with crash recovery |
+| **Tool Execution** | Built-in tools (read_file, write_file, apply_patch, etc.) with approval workflow |
 | **Context Infinity** | Adaptive context window management with automatic summarization |
 | **Provider Abstraction** | Unified interface for Claude and OpenAI APIs |
 | **History Persistence** | Conversation storage and recovery across sessions |
@@ -54,11 +57,39 @@ The `forge-engine` crate is the heart of the Forge application - a TUI-agnostic 
 
 ```
 engine/
-├── Cargo.toml              # Crate manifest and dependencies
-├── README.md               # Public API documentation
+├── Cargo.toml                  # Crate manifest and dependencies
+├── README.md                   # This documentation
 └── src/
-    ├── lib.rs              # App state machine, commands, streaming logic
-    └── config.rs           # Config parsing (ForgeConfig)
+    ├── lib.rs                  # App struct, main module, re-exports
+    ├── config.rs               # ForgeConfig parsing (TOML + env expansion)
+    ├── state.rs                # OperationState enum and state transitions
+    ├── input_modes.rs          # Proof tokens (InsertToken, CommandToken, etc.)
+    ├── commands.rs             # Command enum and typed parsing
+    ├── streaming.rs            # start_streaming, process_stream_events
+    ├── summarization.rs        # Summarization task spawn and retry logic
+    ├── tool_loop.rs            # Tool execution loop, approval workflow
+    ├── init.rs                 # App::new() constructor, tool settings defaults
+    ├── errors.rs               # Error formatting, API key redaction
+    ├── persistence.rs          # History save/load logic
+    ├── security.rs             # Input sanitization and security checks
+    ├── util.rs                 # Utility functions
+    ├── tools/
+    │   ├── mod.rs              # ToolRegistry, ToolExecutor trait, ToolError
+    │   ├── builtins.rs         # Built-in tool implementations
+    │   ├── git.rs              # Git tool executors (status, diff, commit, etc.)
+    │   ├── lp1.rs              # LP1 patch format parser and applier
+    │   ├── sandbox.rs          # Sandbox path resolution and enforcement
+    │   ├── search.rs           # Search tool (ugrep/ripgrep backend)
+    │   ├── shell.rs            # Shell detection and command execution
+    │   └── webfetch.rs         # WebFetch tool for URL fetching
+    └── ui/
+        ├── mod.rs              # UI types re-exports
+        ├── display.rs          # DisplayItem enum
+        ├── input.rs            # InputState, DraftInput, InputMode
+        ├── modal.rs            # ModalEffect animations
+        ├── model_select.rs     # PredefinedModel enum
+        ├── scroll.rs           # ScrollState tracking
+        └── view_state.rs       # ViewState, StatusKind for UI state
 ```
 
 ### Dependencies
@@ -67,9 +98,10 @@ The engine depends on several workspace crates:
 
 | Crate | Purpose |
 |-------|---------|
-| `forge-types` | Core domain types (Message, Provider, ModelName, etc.) |
+| `forge-types` | Core domain types (Message, Provider, ModelName, ToolCall, etc.) |
 | `forge-context` | Context window management, summarization, persistence |
 | `forge-providers` | LLM API clients (Claude, OpenAI) |
+| `forge-webfetch` | URL fetching for web-based tools |
 
 ---
 
@@ -87,23 +119,22 @@ The engine depends on several workspace crates:
 │  └───────────────────────────────────────────────────────────────────┘  │
 │                                                                          │
 │  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │                       AppState                                     │  │
-│  │   ┌─────────────────────────┐    ┌────────────────────────────┐  │  │
-│  │   │     Enabled (CI On)     │    │    Disabled (CI Off)       │  │  │
-│  │   │  ┌───────────────────┐  │    │  ┌───────────────────┐    │  │  │
-│  │   │  │ Idle              │  │    │  │ Idle              │    │  │  │
-│  │   │  │ Streaming         │  │    │  │ Streaming         │    │  │  │
-│  │   │  │ Summarizing       │  │    │  └───────────────────┘    │  │  │
-│  │   │  │ SummarizingQueued │  │    └────────────────────────────┘  │  │
-│  │   │  │ SumRetry          │  │                                    │  │
-│  │   │  │ SumRetryQueued    │  │                                    │  │
-│  │   │  └───────────────────┘  │                                    │  │
-│  │   └─────────────────────────┘                                    │  │
+│  │                     OperationState                                 │  │
+│  │   ┌─────────────────────────────────────────────────────────────┐ │  │
+│  │   │ Idle | Streaming | AwaitingToolResults | ToolLoop |         │ │  │
+│  │   │ ToolRecovery | Summarizing | SummarizingWithQueued |        │ │  │
+│  │   │ SummarizationRetry | SummarizationRetryWithQueued           │ │  │
+│  │   └─────────────────────────────────────────────────────────────┘ │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 │                                                                          │
 │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐  │
-│  │  ContextManager  │  │  StreamJournal   │  │  Display & Scroll    │  │
-│  │  (forge-context) │  │  (crash recovery)│  │  (Vec<DisplayItem>)  │  │
+│  │  ContextManager  │  │  StreamJournal   │  │  ToolJournal         │  │
+│  │  (forge-context) │  │  (crash recovery)│  │  (tool recovery)     │  │
+│  └──────────────────┘  └──────────────────┘  └──────────────────────┘  │
+│                                                                          │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐  │
+│  │  ToolRegistry    │  │  Display Items   │  │  ViewState           │  │
+│  │  (tool executor) │  │ (Vec<DisplayItem>)│  │  (status, scroll)   │  │
 │  └──────────────────┘  └──────────────────┘  └──────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -114,31 +145,34 @@ The engine depends on several workspace crates:
 
 The engine uses explicit state machines to enforce invariants at compile time, making impossible states unrepresentable.
 
-### AppState - Async Operation State Machine
+### OperationState - Async Operation State Machine
 
-The `AppState` enum tracks the current async operation status. It is partitioned by whether ContextInfinity is enabled:
+The `OperationState` enum tracks the current async operation status. Each variant is mutually exclusive:
 
 ```rust
-enum AppState {
-    Enabled(EnabledState),   // ContextInfinity on - supports summarization
-    Disabled(DisabledState), // ContextInfinity off - basic mode only
-}
-
-enum EnabledState {
-    Idle,                                    // Ready for new operations
-    Streaming(ActiveStream),                 // API response in progress
-    AwaitingToolResults(PendingToolExecution), // Parse-only: awaiting manual results
-    ToolLoop(ToolLoopState),                 // Tool execution in progress
-    ToolRecovery(ToolRecoveryState),         // Crash recovery: pending user decision
-    Summarizing(SummarizationState),         // Background summarization
+pub(crate) enum OperationState {
+    Idle,                                           // Ready for new operations
+    Streaming(ActiveStream),                        // API response in progress
+    AwaitingToolResults(PendingToolExecution),      // Parse-only mode: awaiting manual results
+    ToolLoop(ToolLoopState),                        // Tool execution in progress
+    ToolRecovery(ToolRecoveryState),                // Crash recovery: pending user decision
+    Summarizing(SummarizationState),                // Background summarization
     SummarizingWithQueued(SummarizingWithQueuedState), // Summarizing + pending request
-    SummarizationRetry(SummarizationRetryState),       // Retry after failure
+    SummarizationRetry(SummarizationRetryState),    // Retry after failure
     SummarizationRetryWithQueued(SummarizationRetryWithQueuedState),
 }
+```
 
-enum DisabledState {
-    Idle,                    // Ready for new operations
-    Streaming(ActiveStream), // API response in progress
+### Supporting State Types
+
+```rust
+// Active streaming state
+struct ActiveStream {
+    message: StreamingMessage,           // Accumulating response content
+    journal: ActiveJournal,              // RAII handle for crash recovery
+    abort_handle: AbortHandle,           // For cancellation
+    tool_batch_id: Option<ToolBatchId>,  // Current tool batch (if resuming after tools)
+    tool_call_seq: usize,                // Tool call sequence counter
 }
 
 // Tool loop sub-states
@@ -152,18 +186,31 @@ struct ToolLoopState {
     phase: ToolLoopPhase,
 }
 
+// Crash recovery state
 struct ToolRecoveryState {
     batch: RecoveredToolBatch,            // Incomplete batch from crash
     step_id: StepId,                      // Journal step for recovery
     model: ModelName,                     // Model that made the calls
+}
+
+// Summarization task
+struct SummarizationTask {
+    scope: SummarizationScope,                          // Which messages to summarize
+    generated_by: String,                               // Model that generated the summary
+    handle: JoinHandle<anyhow::Result<String>>,         // Async task handle
+    attempt: u8,                                        // Retry attempt number
+}
+
+// Summarization state
+struct SummarizationState {
+    task: SummarizationTask,
 }
 ```
 
 ### State Transition Diagram
 
 ```
-
-                              AppState::Enabled
+                              OperationState
     ┌────────────────────────────────────────────────────────────────────────┐
     │                                                                         │
     │     ┌──────────────────────────────────────────────────────────────┐   │
@@ -197,13 +244,11 @@ struct ToolRecoveryState {
     │     │ Streaming │  (auto-resume after tool results)                     │
     │     └───────────┘                                                       │
     └────────────────────────────────────────────────────────────────────────┘
-
 ```
 
 ### Tool Loop State Machine
 
 ```
-
     Streaming (tool_calls detected)
         │
         v
@@ -238,7 +283,6 @@ struct ToolRecoveryState {
         │
         v
     Streaming (LLM continuation with tool results)
-
 ```
 
 ### Design Rationale
@@ -263,7 +307,7 @@ The engine implements a vim-style modal editing system with four distinct modes.
 ### InputState Enum
 
 ```rust
-enum InputState {
+pub(crate) enum InputState {
     Normal(DraftInput),                         // Navigation mode
     Insert(DraftInput),                         // Text editing mode
     Command { draft: DraftInput, command: String }, // Slash command entry
@@ -276,7 +320,7 @@ Each variant carries `DraftInput` (the message being composed), ensuring it pers
 ### DraftInput - Text Buffer with Cursor
 
 ```rust
-struct DraftInput {
+pub struct DraftInput {
     text: String,    // The draft message content
     cursor: usize,   // Cursor position (grapheme index, not byte index)
 }
@@ -299,7 +343,7 @@ fn byte_index_at(&self, grapheme_index: usize) -> usize {
 
 ```
         ┌───────────────┐
-        │    Normal     │ ← Default mode, navigation
+        │    Normal     │ <- Default mode, navigation
         └───────┬───────┘
                 │
     ┌───────────┼───────────┬────────────────┐
@@ -550,30 +594,35 @@ The engine provides a slash command system for user actions.
 | `:tools` | - | List configured tools |
 | `:help` | - | List available commands |
 
-### Command Processing
+### Command Enum
+
+The `Command` enum provides typed command parsing:
 
 ```rust
-pub fn process_command(&mut self, command: EnteredCommand) {
-    let parts: Vec<&str> = command.raw.split_whitespace().collect();
+pub(crate) enum Command {
+    Quit,
+    Clear,
+    Cancel,
+    Model(Option<String>),
+    Provider(Option<String>),
+    Context,
+    Journal,
+    Summarize,
+    Screen,
+    Tool { id: String, result: ToolResultInput },
+    Tools,
+    Help,
+    Unknown(String),
+}
 
-    match parts.first().copied() {
-        Some("q" | "quit") => self.request_quit(),
-        Some("clear") => {
-            // Abort any active operation
-            // Clear display and context
-            self.context_manager = ContextManager::new(self.model.as_str());
-            self.set_status("Conversation cleared");
+impl Command {
+    pub fn parse(raw: &str) -> Self {
+        let parts: Vec<&str> = raw.split_whitespace().collect();
+        match parts.first().copied() {
+            Some("q" | "quit") => Command::Quit,
+            Some("clear") => Command::Clear,
+            // ... etc
         }
-        Some("model") => {
-            if let Some(model_name) = parts.get(1) {
-                // Parse and set model
-            } else {
-                self.enter_model_select_mode(); // Open TUI picker
-            }
-        }
-        // ... other commands ...
-        Some(cmd) => self.set_status(format!("Unknown command: {cmd}")),
-        None => {}
     }
 }
 ```
@@ -659,7 +708,7 @@ pub struct ForgeConfig {
     pub thinking: Option<ThinkingConfig>, // Legacy
     pub anthropic: Option<AnthropicConfig>,
     pub openai: Option<OpenAIConfig>,
-    pub tools: Option<ToolsConfig>,       // Tool/function calling config
+    pub tools: Option<ToolsConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -668,6 +717,25 @@ pub struct AppConfig {
     pub model: Option<String>,
     pub tui: Option<String>,
     pub max_output_tokens: Option<u32>,
+    pub ascii_only: Option<bool>,
+    pub high_contrast: Option<bool>,
+    pub reduced_motion: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ToolsConfig {
+    pub mode: Option<String>,              // disabled | parse_only | enabled
+    pub allow_parallel: Option<bool>,
+    pub max_tool_calls_per_batch: Option<usize>,
+    pub max_tool_iterations_per_user_turn: Option<usize>,
+    pub max_tool_args_bytes: Option<usize>,
+    pub sandbox: Option<SandboxConfig>,
+    pub timeouts: Option<TimeoutsConfig>,
+    pub output: Option<OutputConfig>,
+    pub approval: Option<ApprovalConfig>,
+    pub read_file: Option<ReadFileConfig>,
+    pub apply_patch: Option<ApplyPatchConfig>,
+    pub definitions: Option<Vec<ToolDefinition>>,
 }
 ```
 
@@ -702,6 +770,9 @@ provider = "claude"        # or "openai"
 model = "claude-sonnet-4-5-20250929"
 tui = "full"               # or "inline"
 max_output_tokens = 16000
+ascii_only = false         # ASCII-only glyphs for icons/spinners
+high_contrast = false      # High-contrast color palette
+reduced_motion = false     # Disable modal animations
 ```
 
 #### [api_keys]
@@ -793,6 +864,151 @@ type = "object"
 
 ---
 
+## Tool Execution System
+
+The engine provides a comprehensive tool execution system with built-in tools, approval workflows, and sandbox enforcement.
+
+### ToolRegistry
+
+The `ToolRegistry` manages tool registration and lookup:
+
+```rust
+#[derive(Default)]
+pub struct ToolRegistry {
+    executors: HashMap<String, Box<dyn ToolExecutor>>,
+}
+
+impl ToolRegistry {
+    pub fn register(&mut self, executor: Box<dyn ToolExecutor>) -> Result<(), ToolError>;
+    pub fn lookup(&self, name: &str) -> Result<&dyn ToolExecutor, ToolError>;
+    pub fn definitions(&self) -> Vec<ToolDefinition>;
+    pub fn is_empty(&self) -> bool;
+}
+```
+
+### ToolExecutor Trait
+
+All tools implement the `ToolExecutor` trait:
+
+```rust
+pub trait ToolExecutor: Send + Sync + UnwindSafe {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    fn schema(&self) -> serde_json::Value;
+    fn is_side_effecting(&self) -> bool;
+    fn requires_approval(&self) -> bool { false }
+    fn risk_level(&self) -> RiskLevel { ... }
+    fn approval_summary(&self, args: &Value) -> Result<String, ToolError>;
+    fn timeout(&self) -> Option<Duration> { None }
+    fn execute<'a>(&'a self, args: Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
+}
+```
+
+### Built-in Tools
+
+#### Core Tools
+
+| Tool | Description | Side Effects |
+|------|-------------|--------------|
+| `read_file` | Read file contents with optional line range | No |
+| `write_file` | Write content to a new file (fails if exists) | Yes |
+| `apply_patch` | Apply LP1 patches to files | Yes |
+| `run_command` | Execute shell commands | Yes |
+| `Glob` | Find files matching glob patterns | No |
+| `Search` | Search file contents with regex (aliases: `search`, `rg`, `ripgrep`, `ugrep`, `ug`) | No |
+| `WebFetch` | Fetch and parse web page content | No |
+
+#### Git Tools
+
+| Tool | Description | Side Effects |
+|------|-------------|--------------|
+| `git_status` | Show working tree status | No |
+| `git_diff` | Show file changes in working tree or staging area | No |
+| `git_log` | Show commit history | No |
+| `git_show` | Show commit details and diff | No |
+| `git_blame` | Show revision and author for each line | No |
+| `git_add` | Stage files for commit | Yes |
+| `git_commit` | Create a conventional commit | Yes |
+| `git_branch` | List, create, rename, or delete branches | Yes |
+| `git_checkout` | Switch branches or restore files | Yes |
+| `git_restore` | Discard uncommitted changes (destructive) | Yes |
+| `git_stash` | Stash changes in working directory | Yes |
+
+### Tool Approval Workflow
+
+The approval system provides three modes:
+
+```rust
+pub enum ApprovalMode {
+    Auto,     // Execute without asking
+    Prompt,   // Ask user for each tool call
+    Deny,     // Reject all tool calls
+}
+```
+
+Approval configuration:
+
+```rust
+pub struct ApprovalConfig {
+    pub enabled: bool,
+    pub mode: ApprovalMode,
+    pub allowlist: Vec<String>,      // Tools that skip approval
+    pub denylist: Vec<String>,       // Tools always denied
+    pub prompt_side_effects: bool,   // Prompt only for side-effect tools
+}
+```
+
+### Sandbox Enforcement
+
+The sandbox restricts tool access to authorized paths:
+
+```rust
+pub struct SandboxConfig {
+    pub allowed_roots: Vec<PathBuf>,    // Permitted directories
+    pub denied_patterns: Vec<String>,   // Glob patterns to block
+    pub allow_absolute: bool,           // Allow absolute paths
+    pub include_default_denies: bool,   // Include .git, node_modules, etc.
+}
+```
+
+Default denied patterns:
+- `**/.git/**` - Git internals
+- `**/node_modules/**` - Node dependencies
+- `**/.env*` - Environment files
+- `**/secrets/**` - Secret directories
+
+### ToolError Enum
+
+```rust
+pub enum ToolError {
+    BadArgs { message: String },
+    Timeout { tool: String, elapsed: Duration },
+    SandboxViolation(DenialReason),
+    ExecutionFailed { tool: String, message: String },
+    Cancelled,
+    UnknownTool { name: String },
+    DuplicateTool { name: String },
+    DuplicateToolCallId { id: String },
+    PatchFailed { file: PathBuf, message: String },
+    StaleFile { file: PathBuf, reason: String },
+}
+```
+
+### Tool Execution Flow
+
+```
+1. LLM response contains tool_calls
+2. Enter ToolLoop(AwaitingApproval) state
+3. Display tool calls for user review
+4. User approves/denies (or auto based on config)
+5. Execute approved tools sequentially
+6. Journal each result for crash recovery
+7. Commit batch to history
+8. Auto-resume streaming with tool results
+```
+
+---
+
 ## Public API Reference
 
 ### Main Types
@@ -822,7 +1038,7 @@ if let Some(token) = app.insert_token() {
     let mut insert = app.insert_mode(token);
     insert.enter_char('x');
     insert.delete_char();
-    
+
     // Submit message (consumes the InsertMode wrapper)
     if let Some(queued) = insert.queue_message() {
         app.start_streaming(queued);
@@ -900,6 +1116,17 @@ pub enum DisplayItem {
 }
 ```
 
+#### `StatusKind`
+
+```rust
+pub enum StatusKind {
+    Normal,   // Standard status message
+    Error,    // Error status (red)
+    Success,  // Success status (green)
+    Warning,  // Warning status (yellow)
+}
+```
+
 #### `PredefinedModel`
 
 ```rust
@@ -958,6 +1185,9 @@ let kind = effect.kind();
 | `has_api_key(provider)` | `bool` | Check if API key is configured |
 | `context_infinity_enabled()` | `bool` | Whether adaptive context is on |
 | `context_usage_status()` | `ContextUsageStatus` | Token usage statistics |
+| `is_in_tool_loop()` | `bool` | Whether in tool execution |
+| `is_awaiting_tool_approval()` | `bool` | Whether waiting for tool approval |
+| `pending_tool_calls()` | `Option<&[ToolCall]>` | Get pending tool calls |
 
 ### Mode Transitions
 
@@ -980,6 +1210,14 @@ let kind = effect.kind();
 |--------|-------------|
 | `start_streaming(queued)` | Begin API request |
 | `process_stream_events()` | Apply pending stream chunks |
+
+### Tool Approval Operations
+
+| Method | Description |
+|--------|-------------|
+| `approve_all_tools()` | Approve all pending tool calls |
+| `deny_all_tools()` | Deny all pending tool calls |
+| `approve_selected_tools(indices)` | Approve specific tool calls |
 
 ### Model/Provider Management
 
@@ -1009,36 +1247,50 @@ let kind = effect.kind();
 
 ### Adding a New Command
 
-1. **Add command handler in `process_command()`** (`engine/src/lib.rs`):
+1. **Add command variant to `Command` enum** (`engine/src/commands.rs`):
 
 ```rust
-pub fn process_command(&mut self, command: EnteredCommand) {
-    let parts: Vec<&str> = command.raw.split_whitespace().collect();
+pub(crate) enum Command {
+    // ... existing commands ...
+    MyCommand(Option<String>),
+}
 
-    match parts.first().copied() {
-        // ... existing commands ...
-
-        Some("mycommand" | "mc") => {
-            // Get optional argument
-            if let Some(arg) = parts.get(1) {
-                // Process with argument
-                self.set_status(format!("MyCommand executed with: {arg}"));
-            } else {
-                // No argument - show help or use default
-                self.set_status("Usage: :mycommand <arg>");
+impl Command {
+    pub fn parse(raw: &str) -> Self {
+        let parts: Vec<&str> = raw.split_whitespace().collect();
+        match parts.first().copied() {
+            // ... existing matches ...
+            Some("mycommand" | "mc") => {
+                Command::MyCommand(parts.get(1).map(|s| s.to_string()))
             }
+            Some(cmd) => Command::Unknown(cmd.to_string()),
+            None => Command::Unknown(String::new()),
         }
-
-        Some(cmd) => self.set_status(format!("Unknown command: {cmd}")),
-        None => {}
     }
 }
 ```
 
-1. **Update help text**:
+2. **Handle command in `process_command()`** (`engine/src/lib.rs`):
 
 ```rust
-Some("help") => {
+pub fn process_command(&mut self, command: EnteredCommand) {
+    match Command::parse(&command.raw) {
+        // ... existing handlers ...
+        Command::MyCommand(arg) => {
+            if let Some(value) = arg {
+                self.set_status(format!("MyCommand executed with: {value}"));
+            } else {
+                self.set_status("Usage: :mycommand <arg>");
+            }
+        }
+    }
+}
+```
+
+3. **Update help text**:
+
+```rust
+Command::Help => {
     self.set_status(
         "Commands: /q(uit), /clear, /mycommand, ..."  // Add new command
     );
@@ -1047,10 +1299,10 @@ Some("help") => {
 
 ### Adding a New Input Mode
 
-1. **Extend `InputState` enum**:
+1. **Extend `InputState` enum** (`engine/src/ui/input.rs`):
 
 ```rust
-enum InputState {
+pub(crate) enum InputState {
     Normal(DraftInput),
     Insert(DraftInput),
     Command { draft: DraftInput, command: String },
@@ -1059,7 +1311,7 @@ enum InputState {
 }
 ```
 
-1. **Add mode enum variant**:
+2. **Add mode enum variant** (`engine/src/input_modes.rs`):
 
 ```rust
 pub enum InputMode {
@@ -1071,11 +1323,11 @@ pub enum InputMode {
 }
 ```
 
-1. **Add transition method**:
+3. **Add transition method**:
 
 ```rust
 impl InputState {
-    fn into_my_mode(self) -> InputState {
+    pub(crate) fn into_my_mode(self) -> InputState {
         match self {
             InputState::Normal(draft) | InputState::Insert(draft) => {
                 InputState::MyMode {
@@ -1095,7 +1347,7 @@ impl App {
 }
 ```
 
-1. **Add proof token pattern** (optional):
+4. **Add proof token pattern** (optional):
 
 ```rust
 pub struct MyModeToken(());
@@ -1121,7 +1373,7 @@ impl<'a> MyMode<'a> {
 }
 ```
 
-1. **Handle in TUI input handler** (`tui/src/input.rs`):
+5. **Handle in TUI input handler** (`tui/src/input.rs`):
 
 ```rust
 pub async fn handle_events(app: &mut App) -> Result<bool> {
@@ -1166,9 +1418,9 @@ impl Provider {
 }
 ```
 
-1. **Add API client** (`providers/src/my_provider.rs`)
+2. **Add API client** (`providers/src/my_provider.rs`)
 
-2. **Update config structure** (`engine/src/config.rs`):
+3. **Update config structure** (`engine/src/config.rs`):
 
 ```rust
 pub struct ApiKeys {
@@ -1178,14 +1430,75 @@ pub struct ApiKeys {
 }
 ```
 
-1. **Update key loading in `App::new()`**
+4. **Update key loading in `App::new()`** (`engine/src/init.rs`)
+
+### Adding a New Built-in Tool
+
+1. **Create tool executor** (`engine/src/tools/my_tool.rs`):
+
+```rust
+pub struct MyTool;
+
+impl ToolExecutor for MyTool {
+    fn name(&self) -> &'static str { "my_tool" }
+
+    fn description(&self) -> &'static str {
+        "Does something useful"
+    }
+
+    fn schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "arg1": { "type": "string", "description": "First argument" }
+            },
+            "required": ["arg1"]
+        })
+    }
+
+    fn is_side_effecting(&self) -> bool { false }
+
+    fn approval_summary(&self, args: &Value) -> Result<String, ToolError> {
+        let arg1 = args["arg1"].as_str().unwrap_or("?");
+        Ok(format!("Run my_tool with arg: {arg1}"))
+    }
+
+    fn execute<'a>(&'a self, args: Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
+        Box::pin(async move {
+            let arg1 = args["arg1"].as_str()
+                .ok_or_else(|| ToolError::BadArgs {
+                    message: "arg1 required".into()
+                })?;
+
+            // Do work...
+
+            Ok("Result".to_string())
+        })
+    }
+}
+```
+
+2. **Register in `register_builtins()`** (`engine/src/tools/builtins.rs`):
+
+```rust
+pub fn register_builtins(
+    registry: &mut ToolRegistry,
+    // ... existing parameters ...
+) -> Result<(), ToolError> {
+    registry.register(Box::new(ReadFileTool::new(read_limits)))?;
+    registry.register(Box::new(ApplyPatchTool::new(patch_limits)))?;
+    // ... existing tools ...
+    registry.register(Box::new(MyTool))?;  // New tool
+    Ok(())
+}
+```
 
 ### Adding a New Async Operation State
 
-1. **Add new state variant**:
+1. **Add new state variant** (`engine/src/state.rs`):
 
 ```rust
-enum EnabledState {
+pub(crate) enum OperationState {
     Idle,
     Streaming(ActiveStream),
     Summarizing(SummarizationState),
@@ -1194,14 +1507,14 @@ enum EnabledState {
 }
 ```
 
-1. **Add state transition guards**:
+2. **Add state transition guards**:
 
 ```rust
 pub fn start_my_operation(&mut self) {
     match &self.state {
-        AppState::Enabled(EnabledState::Idle) => {
+        OperationState::Idle => {
             // Start operation
-            self.state = AppState::Enabled(EnabledState::MyOperation(state));
+            self.state = OperationState::MyOperation(state);
         }
         _ => {
             self.set_status("Cannot start: busy with other operation");
@@ -1210,7 +1523,7 @@ pub fn start_my_operation(&mut self) {
 }
 ```
 
-1. **Add polling in `tick()`**:
+3. **Add polling in `tick()`**:
 
 ```rust
 pub fn tick(&mut self) {
@@ -1238,6 +1551,7 @@ The engine re-exports commonly needed types from its dependencies:
 | `MessageId` | Unique identifier for messages |
 | `StreamJournal` | WAL for crash recovery |
 | `ActiveJournal` | RAII handle for stream journaling |
+| `ToolJournal` | WAL for tool execution recovery |
 | `ModelLimits` | Token limits for a model |
 | `TokenCounter` | Token counting utilities |
 
@@ -1259,6 +1573,9 @@ The engine re-exports commonly needed types from its dependencies:
 | `StreamEvent` | Streaming response events |
 | `StreamFinishReason` | How streaming ended |
 | `OutputLimits` | Max tokens and thinking budget |
+| `ToolCall` | Tool invocation from LLM |
+| `ToolResult` | Result of tool execution |
+| `ToolDefinition` | Tool schema for API |
 
 ---
 
@@ -1328,9 +1645,24 @@ Failed summarizations are retried with exponential backoff:
 
 ## Thread Safety
 
-The `App` struct is not thread-safe and should be used from a single async task. Background operations (summarization, streaming) are spawned as separate Tokio tasks that communicate via channels:
+The `App` struct is not thread-safe and should be used from a single async task. Background operations (summarization, streaming, tool execution) are spawned as separate Tokio tasks that communicate via channels:
 
 - **Streaming**: `mpsc::unbounded_channel()` for `StreamEvent` delivery
 - **Summarization**: `tokio::task::JoinHandle` polled via `is_finished()`
+- **Tool execution**: Sequential execution with journal persistence
 - **Cancellation**: `AbortHandle` for graceful task termination
 
+---
+
+## Data Directory
+
+The engine stores persistent data in `~/.forge/`:
+
+| Path | Purpose |
+|------|---------|
+| `~/.forge/config.toml` | User configuration |
+| `~/.forge/history.db` | SQLite database for conversation history |
+| `~/.forge/stream_journal.db` | WAL for stream crash recovery |
+| `~/.forge/tool_journal.db` | WAL for tool execution recovery |
+
+All database files use SQLite with WAL mode for durability.

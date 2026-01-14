@@ -2,8 +2,10 @@
 //!
 //! Common infrastructure for integration tests.
 
-use wiremock::{Mock, MockServer, ResponseTemplate};
+#![allow(dead_code)]
+
 use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Start a mock server that simulates the Claude API
 pub async fn start_claude_mock() -> MockServer {
@@ -67,7 +69,7 @@ pub async fn mount_streaming_response(server: &MockServer, chunks: &[&str]) {
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_string(sse_body)
-                .insert_header("content-type", "text/event-stream")
+                .insert_header("content-type", "text/event-stream"),
         )
         .mount(server)
         .await;

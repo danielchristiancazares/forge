@@ -414,7 +414,6 @@ pub mod claude {
         // Process SSE stream
         let mut stream = response.bytes_stream();
         let mut buffer: Vec<u8> = Vec::new();
-        let saw_done = false;
         // Track current tool call ID for streaming tool arguments
         let mut current_tool_id: Option<String> = None;
 
@@ -516,12 +515,10 @@ pub mod claude {
             }
         }
 
-        // Detect premature EOF (connection closed before message_stop)
-        if !saw_done {
-            on_event(StreamEvent::Error(
-                "Connection closed before stream completed".to_string(),
-            ));
-        }
+        // Premature EOF: connection closed without message_stop or [DONE]
+        on_event(StreamEvent::Error(
+            "Connection closed before stream completed".to_string(),
+        ));
         Ok(())
     }
 
@@ -887,7 +884,6 @@ pub mod openai {
 
         let mut stream = response.bytes_stream();
         let mut buffer: Vec<u8> = Vec::new();
-        let saw_done = false;
         let mut state = OpenAIStreamState::default();
         let mut emit = |event| on_event(event);
 
@@ -941,12 +937,10 @@ pub mod openai {
             }
         }
 
-        // Detect premature EOF (connection closed before response.completed)
-        if !saw_done {
-            on_event(StreamEvent::Error(
-                "Connection closed before stream completed".to_string(),
-            ));
-        }
+        // Premature EOF: connection closed without response.completed or [DONE]
+        on_event(StreamEvent::Error(
+            "Connection closed before stream completed".to_string(),
+        ));
         Ok(())
     }
 
