@@ -204,10 +204,16 @@ pub fn glyphs(options: UiOptions) -> Glyphs {
 }
 
 /// Get spinner frame based on tick count and UI options.
+///
+/// When `reduced_motion` is enabled, returns a static glyph instead of cycling.
 #[must_use]
 pub fn spinner_frame(tick: usize, options: UiOptions) -> &'static str {
     let frames = glyphs(options).spinner_frames;
-    frames[tick % frames.len()]
+    if options.reduced_motion {
+        frames[0]
+    } else {
+        frames[tick % frames.len()]
+    }
 }
 
 /// Pre-defined styles for common UI elements.
@@ -262,5 +268,55 @@ pub mod styles {
         Style::default()
             .fg(palette.peach)
             .add_modifier(Modifier::BOLD)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spinner_frame_cycles_without_reduced_motion() {
+        let options = UiOptions {
+            ascii_only: false,
+            high_contrast: false,
+            reduced_motion: false,
+        };
+        let frame0 = spinner_frame(0, options);
+        let frame1 = spinner_frame(1, options);
+        assert_ne!(frame0, frame1, "spinner should cycle through frames");
+    }
+
+    #[test]
+    fn spinner_frame_static_with_reduced_motion() {
+        let options = UiOptions {
+            ascii_only: false,
+            high_contrast: false,
+            reduced_motion: true,
+        };
+        let frame0 = spinner_frame(0, options);
+        let frame1 = spinner_frame(1, options);
+        let frame100 = spinner_frame(100, options);
+        assert_eq!(
+            frame0, frame1,
+            "spinner should be static with reduced_motion"
+        );
+        assert_eq!(frame0, frame100, "spinner should remain static at any tick");
+    }
+
+    #[test]
+    fn spinner_frame_static_with_reduced_motion_ascii() {
+        let options = UiOptions {
+            ascii_only: true,
+            high_contrast: false,
+            reduced_motion: true,
+        };
+        let frame0 = spinner_frame(0, options);
+        let frame1 = spinner_frame(1, options);
+        assert_eq!(
+            frame0, frame1,
+            "ascii spinner should be static with reduced_motion"
+        );
+        assert_eq!(frame0, "|", "ascii spinner static frame should be '|'");
     }
 }
