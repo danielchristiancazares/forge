@@ -474,9 +474,9 @@ mod tests {
 
     #[test]
     fn toml_to_json_float() {
-        let toml_val = toml::Value::Float(3.14);
+        let toml_val = toml::Value::Float(2.5);
         let json = toml_to_json(&toml_val).unwrap();
-        assert_eq!(json, serde_json::json!(3.14));
+        assert_eq!(json, serde_json::json!(2.5));
     }
 
     #[test]
@@ -575,22 +575,22 @@ openai = "sk-openai-test"
 
     #[test]
     fn parse_context_config() {
-        let toml_str = r#"
+        let toml_str = r"
 [context]
 infinity = true
-"#;
+";
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.context.unwrap().infinity, Some(true));
     }
 
     #[test]
     fn parse_anthropic_config() {
-        let toml_str = r#"
+        let toml_str = r"
 [anthropic]
 cache_enabled = true
 thinking_enabled = false
 thinking_budget_tokens = 10000
-"#;
+";
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         let anthropic = config.anthropic.unwrap();
         assert_eq!(anthropic.cache_enabled, Some(true));
@@ -651,12 +651,12 @@ include_default_denies = true
 
     #[test]
     fn parse_tool_timeouts_config() {
-        let toml_str = r#"
+        let toml_str = r"
 [tools.timeouts]
 default_seconds = 60
 file_operations_seconds = 30
 shell_commands_seconds = 120
-"#;
+";
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         let timeouts = config.tools.unwrap().timeouts.unwrap();
         assert_eq!(timeouts.default_seconds, Some(60));
@@ -721,7 +721,7 @@ max_file_size_bytes = 1048576
         assert_eq!(search.default_max_results, Some(100));
         assert_eq!(search.max_matches_per_file, Some(50));
         assert_eq!(search.max_files, Some(1000));
-        assert_eq!(search.max_file_size_bytes, Some(1048576));
+        assert_eq!(search.max_file_size_bytes, Some(1_048_576));
     }
 
     #[test]
@@ -744,7 +744,7 @@ cache_ttl_days = 7
         assert_eq!(webfetch.timeout_seconds, Some(30));
         assert_eq!(webfetch.max_redirects, Some(5));
         assert_eq!(webfetch.default_max_chunk_tokens, Some(2000));
-        assert_eq!(webfetch.max_download_bytes, Some(10485760));
+        assert_eq!(webfetch.max_download_bytes, Some(10_485_760));
         assert_eq!(webfetch.cache_dir, Some("/tmp/webfetch".to_string()));
         assert_eq!(webfetch.cache_ttl_days, Some(7));
     }
