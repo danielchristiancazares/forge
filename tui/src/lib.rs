@@ -68,13 +68,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if has_status {
         draw_status_delineator(frame, app, chunks[1], &palette);
     }
-    draw_input(
-        frame,
-        app,
-        chunks[1 + status_height as usize],
-        &palette,
-        &glyphs,
-    );
+    draw_input(frame, app, chunks[2], &palette, &glyphs);
 
     // Draw command palette if in command mode
     if app.input_mode() == InputMode::Command {
