@@ -30,3 +30,6 @@ Desktop.ini
 forge-source.zip
 sha256.txt
 /gemini-review/
+
+# Test artifacts
+/engine/forge-test/history.json
