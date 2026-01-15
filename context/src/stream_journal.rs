@@ -838,8 +838,8 @@ fn ensure_secure_db_files(path: &Path) -> Result<()> {
 fn sqlite_sidecar_path(path: &Path, suffix: &str) -> std::path::PathBuf {
     let file_name = path.file_name().map(|name| name.to_string_lossy());
     match file_name {
-        Some(name) => path.with_file_name(format!("{}{}", name, suffix)),
-        None => std::path::PathBuf::from(format!("{}{}", path.display(), suffix)),
+        Some(name) => path.with_file_name(format!("{name}{suffix}")),
+        None => std::path::PathBuf::from(format!("{}{suffix}", path.display())),
     }
 }
 
