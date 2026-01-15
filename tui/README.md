@@ -244,7 +244,7 @@ The TUI uses a state machine pattern for input modes, ensuring type-safe transit
 enum InputState {
     Normal(DraftInput),
     Insert(DraftInput),
-    Command { draft: DraftInput, command: String },
+    Command { draft: DraftInput, command: DraftInput },
     ModelSelect { draft: DraftInput, selected: usize },
 }
 ```
@@ -1446,7 +1446,7 @@ pub enum InputMode {
 enum InputState {
     Normal(DraftInput),
     Insert(DraftInput),
-    Command { draft: DraftInput, command: String },
+    Command { draft: DraftInput, command: DraftInput },
     ModelSelect { draft: DraftInput, selected: usize },
     Search { draft: DraftInput, query: String, results: Vec<usize> },  // New
 }

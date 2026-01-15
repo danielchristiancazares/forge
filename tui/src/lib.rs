@@ -495,10 +495,13 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: 
     let mode = app.input_mode();
     let options = app.ui_options();
     // Clone command text to avoid borrow conflict with mutable context_usage_status()
-    let command_line: Option<String> = if mode == InputMode::Command {
-        app.command_text().map(str::to_string)
+    let (command_line, command_cursor_byte_index) = if mode == InputMode::Command {
+        (
+            app.command_text().map(str::to_string),
+            app.command_cursor_byte_index(),
+        )
     } else {
-        None
+        (None, None)
     };
 
     let multiline = mode == InputMode::Insert && app.draft_text().contains('\n');
@@ -701,7 +704,11 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: 
         } else if mode == InputMode::Command
             && let Some(cmd) = &command_line
         {
-            let cursor_display_pos = cmd.width();
+            let cursor_byte_index = command_cursor_byte_index
+                .unwrap_or(cmd.len())
+                .min(cmd.len());
+            let text_before_cursor = &cmd[..cursor_byte_index];
+            let cursor_display_pos = text_before_cursor.width();
             if cursor_display_pos >= content_width {
                 let scroll_target = cursor_display_pos - content_width + 1;
                 let mut byte_offset = 0;
@@ -753,7 +760,11 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: 
         } else if mode == InputMode::Command
             && let Some(command_line) = command_line.as_ref()
         {
-            let cursor_display_pos = command_line.width() as u16;
+            let cursor_byte_index = command_cursor_byte_index
+                .unwrap_or(command_line.len())
+                .min(command_line.len());
+            let text_before_cursor = &command_line[..cursor_byte_index];
+            let cursor_display_pos = text_before_cursor.width() as u16;
             let cursor_x = area
                 .x
                 .saturating_add(1 + prefix_width)

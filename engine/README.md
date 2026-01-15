@@ -310,7 +310,7 @@ The engine implements a vim-style modal editing system with four distinct modes.
 pub(crate) enum InputState {
     Normal(DraftInput),                         // Navigation mode
     Insert(DraftInput),                         // Text editing mode
-    Command { draft: DraftInput, command: String }, // Slash command entry
+    Command { draft: DraftInput, command: DraftInput }, // Slash command entry
     ModelSelect { draft: DraftInput, selected: usize }, // Model picker overlay
 }
 ```
@@ -1305,7 +1305,7 @@ Command::Help => {
 pub(crate) enum InputState {
     Normal(DraftInput),
     Insert(DraftInput),
-    Command { draft: DraftInput, command: String },
+    Command { draft: DraftInput, command: DraftInput },
     ModelSelect { draft: DraftInput, selected: usize },
     MyMode { draft: DraftInput, custom_state: MyState },  // New mode
 }

@@ -296,7 +296,7 @@ pub enum InputMode {
 pub enum InputState {
     Normal(DraftInput),
     Insert(DraftInput),
-    Command { draft: DraftInput, command: String },
+    Command { draft: DraftInput, command: DraftInput },
     ModelSelect { draft: DraftInput, selected: usize },
     Search { draft: DraftInput, state: SearchState },  // NEW
 }
