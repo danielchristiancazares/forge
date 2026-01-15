@@ -849,7 +849,7 @@ impl ToolExecutor for RunCommandTool {
             {
                 use std::os::unix::process::CommandExt;
                 unsafe {
-                    command.pre_exec(|| {
+                    command.as_std_mut().pre_exec(|| {
                         libc::setsid();
                         Ok(())
                     });
