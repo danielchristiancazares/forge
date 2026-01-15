@@ -473,3 +473,682 @@ fn apply_final_newline(content: &mut FileContent, value: bool) {
         content.final_newline = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // parse_patch tests
+    // ========================================================================
+
+    #[test]
+    fn parse_minimal_patch() {
+        let input = "LP1\nF test.txt\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        assert_eq!(patch.files.len(), 1);
+        assert_eq!(patch.files[0].path, "test.txt");
+        assert!(patch.files[0].ops.is_empty());
+    }
+
+    #[test]
+    fn parse_patch_with_comments() {
+        let input = "# Comment line\nLP1\n# Another comment\nF file.txt\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        assert_eq!(patch.files[0].path, "file.txt");
+    }
+
+    #[test]
+    fn parse_patch_with_blank_lines() {
+        let input = "\n\nLP1\n\nF test.txt\n\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        assert_eq!(patch.files.len(), 1);
+    }
+
+    #[test]
+    fn parse_missing_header() {
+        let input = "F test.txt\nEND\n";
+        let err = parse_patch(input).unwrap_err();
+        assert!(err.message.contains("header"));
+    }
+
+    #[test]
+    fn parse_missing_end() {
+        let input = "LP1\nF test.txt\n";
+        let err = parse_patch(input).unwrap_err();
+        assert!(err.message.contains("END"));
+    }
+
+    #[test]
+    fn parse_invalid_header() {
+        let input = "LP2\nF test.txt\nEND\n";
+        let err = parse_patch(input).unwrap_err();
+        assert!(err.message.contains("Invalid LP1 header"));
+    }
+
+    #[test]
+    fn parse_multiple_files() {
+        let input = "LP1\nF first.txt\nF second.txt\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        assert_eq!(patch.files.len(), 2);
+        assert_eq!(patch.files[0].path, "first.txt");
+        assert_eq!(patch.files[1].path, "second.txt");
+    }
+
+    #[test]
+    fn parse_quoted_path() {
+        let input = "LP1\nF \"path with spaces.txt\"\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        assert_eq!(patch.files[0].path, "path with spaces.txt");
+    }
+
+    #[test]
+    fn parse_quoted_path_with_escapes() {
+        let input = "LP1\nF \"path\\\"with\\\\quotes.txt\"\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        assert_eq!(patch.files[0].path, "path\"with\\quotes.txt");
+    }
+
+    #[test]
+    fn parse_unterminated_quoted_path() {
+        let input = "LP1\nF \"unterminated\nEND\n";
+        let err = parse_patch(input).unwrap_err();
+        assert!(err.message.contains("Unterminated"));
+    }
+
+    #[test]
+    fn parse_missing_file_path() {
+        let input = "LP1\nF \nEND\n";
+        let err = parse_patch(input).unwrap_err();
+        assert!(err.message.contains("Missing file path"));
+    }
+
+    // ========================================================================
+    // Operation parsing tests
+    // ========================================================================
+
+    #[test]
+    fn parse_replace_op() {
+        let input = "LP1\nF test.txt\nR\nold line\n.\nnew line\n.\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        assert_eq!(patch.files[0].ops.len(), 1);
+        match &patch.files[0].ops[0] {
+            Op::Replace { occ, find, replace } => {
+                assert!(occ.is_none());
+                assert_eq!(find, &vec!["old line".to_string()]);
+                assert_eq!(replace, &vec!["new line".to_string()]);
+            }
+            _ => panic!("Expected Replace op"),
+        }
+    }
+
+    #[test]
+    fn parse_replace_with_occurrence() {
+        let input = "LP1\nF test.txt\nR 2\nfind\n.\nreplace\n.\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        match &patch.files[0].ops[0] {
+            Op::Replace { occ, .. } => {
+                assert_eq!(*occ, Some(2));
+            }
+            _ => panic!("Expected Replace op"),
+        }
+    }
+
+    #[test]
+    fn parse_insert_after_op() {
+        let input = "LP1\nF test.txt\nI\nanchor\n.\ninserted\n.\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        match &patch.files[0].ops[0] {
+            Op::InsertAfter { find, insert, .. } => {
+                assert_eq!(find, &vec!["anchor".to_string()]);
+                assert_eq!(insert, &vec!["inserted".to_string()]);
+            }
+            _ => panic!("Expected InsertAfter op"),
+        }
+    }
+
+    #[test]
+    fn parse_insert_before_op() {
+        let input = "LP1\nF test.txt\nP\nanchor\n.\ninserted\n.\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        match &patch.files[0].ops[0] {
+            Op::InsertBefore { find, insert, .. } => {
+                assert_eq!(find, &vec!["anchor".to_string()]);
+                assert_eq!(insert, &vec!["inserted".to_string()]);
+            }
+            _ => panic!("Expected InsertBefore op"),
+        }
+    }
+
+    #[test]
+    fn parse_erase_op() {
+        let input = "LP1\nF test.txt\nE\nto delete\n.\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        match &patch.files[0].ops[0] {
+            Op::Erase { find, .. } => {
+                assert_eq!(find, &vec!["to delete".to_string()]);
+            }
+            _ => panic!("Expected Erase op"),
+        }
+    }
+
+    #[test]
+    fn parse_append_op() {
+        let input = "LP1\nF test.txt\nT\nappended line\n.\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        match &patch.files[0].ops[0] {
+            Op::Append { block } => {
+                assert_eq!(block, &vec!["appended line".to_string()]);
+            }
+            _ => panic!("Expected Append op"),
+        }
+    }
+
+    #[test]
+    fn parse_prepend_op() {
+        let input = "LP1\nF test.txt\nB\nprepended line\n.\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        match &patch.files[0].ops[0] {
+            Op::Prepend { block } => {
+                assert_eq!(block, &vec!["prepended line".to_string()]);
+            }
+            _ => panic!("Expected Prepend op"),
+        }
+    }
+
+    #[test]
+    fn parse_set_final_newline_on() {
+        let input = "LP1\nF test.txt\nN +\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        match &patch.files[0].ops[0] {
+            Op::SetFinalNewline(value) => {
+                assert!(*value);
+            }
+            _ => panic!("Expected SetFinalNewline op"),
+        }
+    }
+
+    #[test]
+    fn parse_set_final_newline_off() {
+        let input = "LP1\nF test.txt\nN -\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        match &patch.files[0].ops[0] {
+            Op::SetFinalNewline(value) => {
+                assert!(!*value);
+            }
+            _ => panic!("Expected SetFinalNewline op"),
+        }
+    }
+
+    #[test]
+    fn parse_invalid_final_newline_flag() {
+        let input = "LP1\nF test.txt\nN x\nEND\n";
+        let err = parse_patch(input).unwrap_err();
+        assert!(err.message.contains("Invalid N flag"));
+    }
+
+    #[test]
+    fn parse_multiline_block() {
+        let input = "LP1\nF test.txt\nT\nline 1\nline 2\nline 3\n.\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        match &patch.files[0].ops[0] {
+            Op::Append { block } => {
+                assert_eq!(block.len(), 3);
+                assert_eq!(block[0], "line 1");
+                assert_eq!(block[1], "line 2");
+                assert_eq!(block[2], "line 3");
+            }
+            _ => panic!("Expected Append op"),
+        }
+    }
+
+    #[test]
+    fn parse_dot_stuffed_lines() {
+        let input = "LP1\nF test.txt\nT\n..literal dot\n...\n.\nEND\n";
+        let patch = parse_patch(input).unwrap();
+        match &patch.files[0].ops[0] {
+            Op::Append { block } => {
+                assert_eq!(block[0], ".literal dot");
+                assert_eq!(block[1], "..");
+            }
+            _ => panic!("Expected Append op"),
+        }
+    }
+
+    #[test]
+    fn parse_invalid_dot_stuffing() {
+        let input = "LP1\nF test.txt\nT\n.invalid\n.\nEND\n";
+        let err = parse_patch(input).unwrap_err();
+        assert!(err.message.contains("Dot-stuffed"));
+    }
+
+    #[test]
+    fn parse_unknown_operation() {
+        let input = "LP1\nF test.txt\nX\n.\nEND\n";
+        let err = parse_patch(input).unwrap_err();
+        assert!(err.message.contains("Unknown LP1 operation"));
+    }
+
+    #[test]
+    fn parse_invalid_occurrence() {
+        let input = "LP1\nF test.txt\nR abc\nfind\n.\nreplace\n.\nEND\n";
+        let err = parse_patch(input).unwrap_err();
+        assert!(err.message.contains("Invalid occurrence"));
+    }
+
+    #[test]
+    fn parse_zero_occurrence_rejected() {
+        let input = "LP1\nF test.txt\nR 0\nfind\n.\nreplace\n.\nEND\n";
+        let err = parse_patch(input).unwrap_err();
+        assert!(err.message.contains("Occurrence must be >= 1"));
+    }
+
+    #[test]
+    fn parse_crlf_input() {
+        let input = "LP1\r\nF test.txt\r\nEND\r\n";
+        let patch = parse_patch(input).unwrap();
+        assert_eq!(patch.files[0].path, "test.txt");
+    }
+
+    // ========================================================================
+    // parse_file tests
+    // ========================================================================
+
+    #[test]
+    fn parse_file_empty() {
+        let content = parse_file(b"").unwrap();
+        assert!(content.lines.is_empty());
+        assert!(!content.final_newline);
+        assert!(content.eol_kind.is_none());
+    }
+
+    #[test]
+    fn parse_file_single_line_no_newline() {
+        let content = parse_file(b"hello").unwrap();
+        assert_eq!(content.lines, vec!["hello"]);
+        assert!(!content.final_newline);
+    }
+
+    #[test]
+    fn parse_file_single_line_with_newline() {
+        let content = parse_file(b"hello\n").unwrap();
+        assert_eq!(content.lines, vec!["hello"]);
+        assert!(content.final_newline);
+        assert_eq!(content.eol_kind, Some(EolKind::Lf));
+    }
+
+    #[test]
+    fn parse_file_multiple_lines_lf() {
+        let content = parse_file(b"line1\nline2\nline3\n").unwrap();
+        assert_eq!(content.lines, vec!["line1", "line2", "line3"]);
+        assert!(content.final_newline);
+        assert_eq!(content.eol_kind, Some(EolKind::Lf));
+    }
+
+    #[test]
+    fn parse_file_multiple_lines_crlf() {
+        let content = parse_file(b"line1\r\nline2\r\n").unwrap();
+        assert_eq!(content.lines, vec!["line1", "line2"]);
+        assert!(content.final_newline);
+        assert_eq!(content.eol_kind, Some(EolKind::CrLf));
+    }
+
+    #[test]
+    fn parse_file_mixed_eol_rejected() {
+        let result = parse_file(b"line1\nline2\r\n");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("Mixed EOL"));
+    }
+
+    #[test]
+    fn parse_file_bare_cr_rejected() {
+        let result = parse_file(b"hello\rworld");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("Bare CR"));
+    }
+
+    #[test]
+    fn parse_file_invalid_utf8_rejected() {
+        let result = parse_file(b"\xff\xfe invalid utf8");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("Invalid UTF-8"));
+    }
+
+    // ========================================================================
+    // emit_file tests
+    // ========================================================================
+
+    #[test]
+    fn emit_file_empty() {
+        let content = FileContent {
+            lines: vec![],
+            final_newline: false,
+            eol_kind: None,
+        };
+        let bytes = emit_file(&content);
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn emit_file_single_line_no_newline() {
+        let content = FileContent {
+            lines: vec!["hello".to_string()],
+            final_newline: false,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let bytes = emit_file(&content);
+        assert_eq!(bytes, b"hello");
+    }
+
+    #[test]
+    fn emit_file_single_line_with_newline() {
+        let content = FileContent {
+            lines: vec!["hello".to_string()],
+            final_newline: true,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let bytes = emit_file(&content);
+        assert_eq!(bytes, b"hello\n");
+    }
+
+    #[test]
+    fn emit_file_multiple_lines_lf() {
+        let content = FileContent {
+            lines: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            final_newline: true,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let bytes = emit_file(&content);
+        assert_eq!(bytes, b"a\nb\nc\n");
+    }
+
+    #[test]
+    fn emit_file_multiple_lines_crlf() {
+        let content = FileContent {
+            lines: vec!["a".to_string(), "b".to_string()],
+            final_newline: true,
+            eol_kind: Some(EolKind::CrLf),
+        };
+        let bytes = emit_file(&content);
+        assert_eq!(bytes, b"a\r\nb\r\n");
+    }
+
+    #[test]
+    fn emit_file_defaults_to_lf() {
+        let content = FileContent {
+            lines: vec!["test".to_string()],
+            final_newline: true,
+            eol_kind: None,
+        };
+        let bytes = emit_file(&content);
+        assert_eq!(bytes, b"test\n");
+    }
+
+    // ========================================================================
+    // apply_ops tests
+    // ========================================================================
+
+    #[test]
+    fn apply_replace_single_line() {
+        let mut content = FileContent {
+            lines: vec!["old".to_string()],
+            final_newline: true,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let ops = vec![Op::Replace {
+            occ: None,
+            find: vec!["old".to_string()],
+            replace: vec!["new".to_string()],
+        }];
+        apply_ops(&mut content, &ops).unwrap();
+        assert_eq!(content.lines, vec!["new"]);
+    }
+
+    #[test]
+    fn apply_replace_multiline() {
+        let mut content = FileContent {
+            lines: vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string(),
+            ],
+            final_newline: true,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let ops = vec![Op::Replace {
+            occ: None,
+            find: vec!["b".to_string(), "c".to_string()],
+            replace: vec!["X".to_string()],
+        }];
+        apply_ops(&mut content, &ops).unwrap();
+        assert_eq!(content.lines, vec!["a", "X", "d"]);
+    }
+
+    #[test]
+    fn apply_replace_with_occurrence() {
+        let mut content = FileContent {
+            lines: vec!["dup".to_string(), "middle".to_string(), "dup".to_string()],
+            final_newline: true,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let ops = vec![Op::Replace {
+            occ: Some(2),
+            find: vec!["dup".to_string()],
+            replace: vec!["replaced".to_string()],
+        }];
+        apply_ops(&mut content, &ops).unwrap();
+        assert_eq!(content.lines, vec!["dup", "middle", "replaced"]);
+    }
+
+    #[test]
+    fn apply_insert_after() {
+        let mut content = FileContent {
+            lines: vec!["anchor".to_string(), "after".to_string()],
+            final_newline: true,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let ops = vec![Op::InsertAfter {
+            occ: None,
+            find: vec!["anchor".to_string()],
+            insert: vec!["inserted".to_string()],
+        }];
+        apply_ops(&mut content, &ops).unwrap();
+        assert_eq!(content.lines, vec!["anchor", "inserted", "after"]);
+    }
+
+    #[test]
+    fn apply_insert_before() {
+        let mut content = FileContent {
+            lines: vec!["before".to_string(), "anchor".to_string()],
+            final_newline: true,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let ops = vec![Op::InsertBefore {
+            occ: None,
+            find: vec!["anchor".to_string()],
+            insert: vec!["inserted".to_string()],
+        }];
+        apply_ops(&mut content, &ops).unwrap();
+        assert_eq!(content.lines, vec!["before", "inserted", "anchor"]);
+    }
+
+    #[test]
+    fn apply_erase() {
+        let mut content = FileContent {
+            lines: vec!["keep".to_string(), "delete".to_string(), "keep".to_string()],
+            final_newline: true,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let ops = vec![Op::Erase {
+            occ: None,
+            find: vec!["delete".to_string()],
+        }];
+        apply_ops(&mut content, &ops).unwrap();
+        assert_eq!(content.lines, vec!["keep", "keep"]);
+    }
+
+    #[test]
+    fn apply_append() {
+        let mut content = FileContent {
+            lines: vec!["existing".to_string()],
+            final_newline: true,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let ops = vec![Op::Append {
+            block: vec!["appended".to_string()],
+        }];
+        apply_ops(&mut content, &ops).unwrap();
+        assert_eq!(content.lines, vec!["existing", "appended"]);
+    }
+
+    #[test]
+    fn apply_prepend() {
+        let mut content = FileContent {
+            lines: vec!["existing".to_string()],
+            final_newline: true,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let ops = vec![Op::Prepend {
+            block: vec!["prepended".to_string()],
+        }];
+        apply_ops(&mut content, &ops).unwrap();
+        assert_eq!(content.lines, vec!["prepended", "existing"]);
+    }
+
+    #[test]
+    fn apply_set_final_newline_true() {
+        let mut content = FileContent {
+            lines: vec!["line".to_string()],
+            final_newline: false,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let ops = vec![Op::SetFinalNewline(true)];
+        apply_ops(&mut content, &ops).unwrap();
+        assert!(content.final_newline);
+    }
+
+    #[test]
+    fn apply_set_final_newline_false() {
+        let mut content = FileContent {
+            lines: vec!["line".to_string()],
+            final_newline: true,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let ops = vec![Op::SetFinalNewline(false)];
+        apply_ops(&mut content, &ops).unwrap();
+        assert!(!content.final_newline);
+    }
+
+    #[test]
+    fn apply_ops_match_not_found() {
+        let mut content = FileContent {
+            lines: vec!["line".to_string()],
+            final_newline: true,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let ops = vec![Op::Replace {
+            occ: None,
+            find: vec!["nonexistent".to_string()],
+            replace: vec!["new".to_string()],
+        }];
+        let err = apply_ops(&mut content, &ops).unwrap_err();
+        assert!(err.message.contains("Match not found"));
+    }
+
+    #[test]
+    fn apply_ops_match_not_unique() {
+        let mut content = FileContent {
+            lines: vec!["dup".to_string(), "dup".to_string()],
+            final_newline: true,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let ops = vec![Op::Replace {
+            occ: None,
+            find: vec!["dup".to_string()],
+            replace: vec!["new".to_string()],
+        }];
+        let err = apply_ops(&mut content, &ops).unwrap_err();
+        assert!(err.message.contains("not unique"));
+    }
+
+    #[test]
+    fn apply_ops_occurrence_out_of_range() {
+        let mut content = FileContent {
+            lines: vec!["line".to_string()],
+            final_newline: true,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let ops = vec![Op::Replace {
+            occ: Some(5),
+            find: vec!["line".to_string()],
+            replace: vec!["new".to_string()],
+        }];
+        let err = apply_ops(&mut content, &ops).unwrap_err();
+        assert!(err.message.contains("Occurrence out of range"));
+    }
+
+    #[test]
+    fn apply_ops_clears_final_newline_on_empty() {
+        let mut content = FileContent {
+            lines: vec!["only".to_string()],
+            final_newline: true,
+            eol_kind: Some(EolKind::Lf),
+        };
+        let ops = vec![Op::Erase {
+            occ: None,
+            find: vec!["only".to_string()],
+        }];
+        apply_ops(&mut content, &ops).unwrap();
+        assert!(content.lines.is_empty());
+        assert!(!content.final_newline);
+    }
+
+    // ========================================================================
+    // Roundtrip tests
+    // ========================================================================
+
+    #[test]
+    fn roundtrip_lf() {
+        let original = b"line1\nline2\nline3\n";
+        let content = parse_file(original).unwrap();
+        let emitted = emit_file(&content);
+        assert_eq!(emitted, original);
+    }
+
+    #[test]
+    fn roundtrip_crlf() {
+        let original = b"line1\r\nline2\r\n";
+        let content = parse_file(original).unwrap();
+        let emitted = emit_file(&content);
+        assert_eq!(emitted, original);
+    }
+
+    #[test]
+    fn roundtrip_no_final_newline() {
+        let original = b"line1\nline2";
+        let content = parse_file(original).unwrap();
+        let emitted = emit_file(&content);
+        assert_eq!(emitted, original);
+    }
+
+    // ========================================================================
+    // PatchError tests
+    // ========================================================================
+
+    #[test]
+    fn patch_error_display() {
+        let err = PatchError {
+            message: "Test error".to_string(),
+        };
+        assert_eq!(format!("{err}"), "Test error");
+    }
+
+    #[test]
+    fn patch_error_is_error() {
+        let err: Box<dyn std::error::Error> = Box::new(PatchError {
+            message: "error".to_string(),
+        });
+        assert_eq!(err.to_string(), "error");
+    }
+}

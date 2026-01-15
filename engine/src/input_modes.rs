@@ -210,35 +210,77 @@ impl InsertMode<'_> {
 // ============================================================================
 
 impl CommandMode<'_> {
-    fn command_mut(&mut self) -> Option<&mut String> {
+    fn command_mut(&mut self) -> Option<&mut DraftInput> {
         self.app.input.command_mut()
+    }
+
+    pub fn move_cursor_left(&mut self) {
+        let Some(command) = self.command_mut() else {
+            return;
+        };
+        command.move_cursor_left();
+    }
+
+    pub fn move_cursor_right(&mut self) {
+        let Some(command) = self.command_mut() else {
+            return;
+        };
+        command.move_cursor_right();
+    }
+
+    pub fn reset_cursor(&mut self) {
+        let Some(command) = self.command_mut() else {
+            return;
+        };
+        command.reset_cursor();
+    }
+
+    pub fn move_cursor_end(&mut self) {
+        let Some(command) = self.command_mut() else {
+            return;
+        };
+        command.move_cursor_end();
     }
 
     pub fn push_char(&mut self, c: char) {
         let Some(command) = self.command_mut() else {
             return;
         };
-
-        command.push(c);
+        command.enter_char(c);
     }
 
     pub fn backspace(&mut self) {
         let Some(command) = self.command_mut() else {
             return;
         };
+        command.delete_char();
+    }
 
-        command.pop();
+    pub fn delete_word_backwards(&mut self) {
+        let Some(command) = self.command_mut() else {
+            return;
+        };
+        command.delete_word_backwards();
+    }
+
+    pub fn clear_line(&mut self) {
+        let Some(command) = self.command_mut() else {
+            return;
+        };
+        command.clear();
     }
 
     #[must_use]
     pub fn take_command(self) -> Option<EnteredCommand> {
         let input = std::mem::take(&mut self.app.input);
-        let InputState::Command { draft, command } = input else {
+        let InputState::Command { draft, mut command } = input else {
             self.app.input = input;
             return None;
         };
 
         self.app.input = InputState::Normal(draft);
-        Some(EnteredCommand { raw: command })
+        Some(EnteredCommand {
+            raw: command.take_text(),
+        })
     }
 }

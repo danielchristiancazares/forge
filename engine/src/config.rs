@@ -366,3 +366,444 @@ impl ForgeConfig {
 pub fn config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".forge").join("config.toml"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // expand_env_vars tests
+    // ========================================================================
+
+    #[test]
+    fn expand_env_vars_no_vars() {
+        let result = expand_env_vars("hello world");
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn expand_env_vars_single_var() {
+        unsafe {
+            std::env::set_var("TEST_CONFIG_VAR", "replaced");
+        }
+        let result = expand_env_vars("prefix ${TEST_CONFIG_VAR} suffix");
+        assert_eq!(result, "prefix replaced suffix");
+        unsafe {
+            std::env::remove_var("TEST_CONFIG_VAR");
+        }
+    }
+
+    #[test]
+    fn expand_env_vars_missing_var_becomes_empty() {
+        unsafe {
+            std::env::remove_var("MISSING_VAR_FOR_TEST");
+        }
+        let result = expand_env_vars("before ${MISSING_VAR_FOR_TEST} after");
+        assert_eq!(result, "before  after");
+    }
+
+    #[test]
+    fn expand_env_vars_multiple_vars() {
+        unsafe {
+            std::env::set_var("VAR_A", "alpha");
+            std::env::set_var("VAR_B", "beta");
+        }
+        let result = expand_env_vars("${VAR_A}-${VAR_B}");
+        assert_eq!(result, "alpha-beta");
+        unsafe {
+            std::env::remove_var("VAR_A");
+            std::env::remove_var("VAR_B");
+        }
+    }
+
+    #[test]
+    fn expand_env_vars_unclosed_brace_preserved() {
+        let result = expand_env_vars("test ${UNCLOSED");
+        assert_eq!(result, "test ${UNCLOSED");
+    }
+
+    #[test]
+    fn expand_env_vars_empty_var_name_preserved() {
+        let result = expand_env_vars("test ${} more");
+        assert_eq!(result, "test  more");
+    }
+
+    #[test]
+    fn expand_env_vars_adjacent_vars() {
+        unsafe {
+            std::env::set_var("ADJ_A", "X");
+            std::env::set_var("ADJ_B", "Y");
+        }
+        let result = expand_env_vars("${ADJ_A}${ADJ_B}");
+        assert_eq!(result, "XY");
+        unsafe {
+            std::env::remove_var("ADJ_A");
+            std::env::remove_var("ADJ_B");
+        }
+    }
+
+    #[test]
+    fn expand_env_vars_unicode_content() {
+        unsafe {
+            std::env::set_var("UNICODE_VAR", "🦀");
+        }
+        let result = expand_env_vars("Hello ${UNICODE_VAR} Rust");
+        assert_eq!(result, "Hello 🦀 Rust");
+        unsafe {
+            std::env::remove_var("UNICODE_VAR");
+        }
+    }
+
+    // ========================================================================
+    // toml_to_json tests
+    // ========================================================================
+
+    #[test]
+    fn toml_to_json_string() {
+        let toml_val = toml::Value::String("test".to_string());
+        let json = toml_to_json(&toml_val).unwrap();
+        assert_eq!(json, serde_json::Value::String("test".to_string()));
+    }
+
+    #[test]
+    fn toml_to_json_integer() {
+        let toml_val = toml::Value::Integer(42);
+        let json = toml_to_json(&toml_val).unwrap();
+        assert_eq!(json, serde_json::json!(42));
+    }
+
+    #[test]
+    fn toml_to_json_float() {
+        let toml_val = toml::Value::Float(3.14);
+        let json = toml_to_json(&toml_val).unwrap();
+        assert_eq!(json, serde_json::json!(3.14));
+    }
+
+    #[test]
+    fn toml_to_json_boolean() {
+        let toml_val = toml::Value::Boolean(true);
+        let json = toml_to_json(&toml_val).unwrap();
+        assert_eq!(json, serde_json::json!(true));
+    }
+
+    #[test]
+    fn toml_to_json_array() {
+        let toml_val = toml::Value::Array(vec![
+            toml::Value::Integer(1),
+            toml::Value::Integer(2),
+            toml::Value::Integer(3),
+        ]);
+        let json = toml_to_json(&toml_val).unwrap();
+        assert_eq!(json, serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn toml_to_json_table() {
+        let mut table = toml::value::Table::new();
+        table.insert("key".to_string(), toml::Value::String("value".to_string()));
+        table.insert("num".to_string(), toml::Value::Integer(123));
+        let toml_val = toml::Value::Table(table);
+        let json = toml_to_json(&toml_val).unwrap();
+        assert_eq!(json["key"], "value");
+        assert_eq!(json["num"], 123);
+    }
+
+    #[test]
+    fn toml_to_json_nested() {
+        let mut inner = toml::value::Table::new();
+        inner.insert("nested".to_string(), toml::Value::Boolean(true));
+        let mut outer = toml::value::Table::new();
+        outer.insert("inner".to_string(), toml::Value::Table(inner));
+        let toml_val = toml::Value::Table(outer);
+        let json = toml_to_json(&toml_val).unwrap();
+        assert_eq!(json["inner"]["nested"], true);
+    }
+
+    #[test]
+    fn toml_to_json_invalid_float_nan() {
+        let toml_val = toml::Value::Float(f64::NAN);
+        let result = toml_to_json(&toml_val);
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // ForgeConfig parsing tests
+    // ========================================================================
+
+    #[test]
+    fn parse_empty_config() {
+        let config: ForgeConfig = toml::from_str("").unwrap();
+        assert!(config.app.is_none());
+        assert!(config.api_keys.is_none());
+    }
+
+    #[test]
+    fn parse_app_config() {
+        let toml_str = r#"
+[app]
+provider = "claude"
+model = "claude-sonnet-4-5-20250929"
+tui = "full"
+max_output_tokens = 4096
+ascii_only = true
+high_contrast = false
+reduced_motion = true
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let app = config.app.unwrap();
+        assert_eq!(app.provider, Some("claude".to_string()));
+        assert_eq!(app.model, Some("claude-sonnet-4-5-20250929".to_string()));
+        assert_eq!(app.tui, Some("full".to_string()));
+        assert_eq!(app.max_output_tokens, Some(4096));
+        assert_eq!(app.ascii_only, Some(true));
+        assert_eq!(app.high_contrast, Some(false));
+        assert_eq!(app.reduced_motion, Some(true));
+    }
+
+    #[test]
+    fn parse_api_keys_config() {
+        let toml_str = r#"
+[api_keys]
+anthropic = "sk-ant-test"
+openai = "sk-openai-test"
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let keys = config.api_keys.unwrap();
+        assert_eq!(keys.anthropic, Some("sk-ant-test".to_string()));
+        assert_eq!(keys.openai, Some("sk-openai-test".to_string()));
+    }
+
+    #[test]
+    fn parse_context_config() {
+        let toml_str = r#"
+[context]
+infinity = true
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.context.unwrap().infinity, Some(true));
+    }
+
+    #[test]
+    fn parse_anthropic_config() {
+        let toml_str = r#"
+[anthropic]
+cache_enabled = true
+thinking_enabled = false
+thinking_budget_tokens = 10000
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let anthropic = config.anthropic.unwrap();
+        assert_eq!(anthropic.cache_enabled, Some(true));
+        assert_eq!(anthropic.thinking_enabled, Some(false));
+        assert_eq!(anthropic.thinking_budget_tokens, Some(10000));
+    }
+
+    #[test]
+    fn parse_openai_config() {
+        let toml_str = r#"
+[openai]
+reasoning_effort = "high"
+verbosity = "medium"
+truncation = "auto"
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let openai = config.openai.unwrap();
+        assert_eq!(openai.reasoning_effort, Some("high".to_string()));
+        assert_eq!(openai.verbosity, Some("medium".to_string()));
+        assert_eq!(openai.truncation, Some("auto".to_string()));
+    }
+
+    #[test]
+    fn parse_tools_config() {
+        let toml_str = r#"
+[tools]
+mode = "enabled"
+allow_parallel = false
+max_tool_calls_per_batch = 10
+max_tool_iterations_per_user_turn = 25
+max_tool_args_bytes = 65536
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let tools = config.tools.unwrap();
+        assert_eq!(tools.mode, Some("enabled".to_string()));
+        assert_eq!(tools.allow_parallel, Some(false));
+        assert_eq!(tools.max_tool_calls_per_batch, Some(10));
+        assert_eq!(tools.max_tool_iterations_per_user_turn, Some(25));
+        assert_eq!(tools.max_tool_args_bytes, Some(65536));
+    }
+
+    #[test]
+    fn parse_tool_sandbox_config() {
+        let toml_str = r#"
+[tools.sandbox]
+allowed_roots = ["/home/user/project", "/tmp"]
+denied_patterns = ["*.secret", "**/.env"]
+allow_absolute = false
+include_default_denies = true
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let sandbox = config.tools.unwrap().sandbox.unwrap();
+        assert_eq!(sandbox.allowed_roots, vec!["/home/user/project", "/tmp"]);
+        assert_eq!(sandbox.denied_patterns, vec!["*.secret", "**/.env"]);
+        assert_eq!(sandbox.allow_absolute, Some(false));
+        assert_eq!(sandbox.include_default_denies, Some(true));
+    }
+
+    #[test]
+    fn parse_tool_timeouts_config() {
+        let toml_str = r#"
+[tools.timeouts]
+default_seconds = 60
+file_operations_seconds = 30
+shell_commands_seconds = 120
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let timeouts = config.tools.unwrap().timeouts.unwrap();
+        assert_eq!(timeouts.default_seconds, Some(60));
+        assert_eq!(timeouts.file_operations_seconds, Some(30));
+        assert_eq!(timeouts.shell_commands_seconds, Some(120));
+    }
+
+    #[test]
+    fn parse_tool_approval_config() {
+        let toml_str = r#"
+[tools.approval]
+enabled = true
+mode = "prompt"
+allowlist = ["read_file", "list_files"]
+denylist = ["run_command"]
+prompt_side_effects = true
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let approval = config.tools.unwrap().approval.unwrap();
+        assert_eq!(approval.enabled, Some(true));
+        assert_eq!(approval.mode, Some("prompt".to_string()));
+        assert_eq!(approval.allowlist, vec!["read_file", "list_files"]);
+        assert_eq!(approval.denylist, vec!["run_command"]);
+        assert_eq!(approval.prompt_side_effects, Some(true));
+    }
+
+    #[test]
+    fn parse_shell_config() {
+        let toml_str = r#"
+[tools.shell]
+binary = "pwsh"
+args = ["-NoProfile", "-Command"]
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let shell = config.tools.unwrap().shell.unwrap();
+        assert_eq!(shell.binary, Some("pwsh".to_string()));
+        assert_eq!(
+            shell.args,
+            Some(vec!["-NoProfile".to_string(), "-Command".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_search_config() {
+        let toml_str = r#"
+[tools.search]
+enabled = true
+binary = "rg"
+fallback_binary = "grep"
+default_timeout_ms = 5000
+default_max_results = 100
+max_matches_per_file = 50
+max_files = 1000
+max_file_size_bytes = 1048576
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let search = config.tools.unwrap().search.unwrap();
+        assert_eq!(search.enabled, Some(true));
+        assert_eq!(search.binary, Some("rg".to_string()));
+        assert_eq!(search.fallback_binary, Some("grep".to_string()));
+        assert_eq!(search.default_timeout_ms, Some(5000));
+        assert_eq!(search.default_max_results, Some(100));
+        assert_eq!(search.max_matches_per_file, Some(50));
+        assert_eq!(search.max_files, Some(1000));
+        assert_eq!(search.max_file_size_bytes, Some(1048576));
+    }
+
+    #[test]
+    fn parse_webfetch_config() {
+        let toml_str = r#"
+[tools.webfetch]
+enabled = true
+user_agent = "CustomBot/1.0"
+timeout_seconds = 30
+max_redirects = 5
+default_max_chunk_tokens = 2000
+max_download_bytes = 10485760
+cache_dir = "/tmp/webfetch"
+cache_ttl_days = 7
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let webfetch = config.tools.unwrap().webfetch.unwrap();
+        assert_eq!(webfetch.enabled, Some(true));
+        assert_eq!(webfetch.user_agent, Some("CustomBot/1.0".to_string()));
+        assert_eq!(webfetch.timeout_seconds, Some(30));
+        assert_eq!(webfetch.max_redirects, Some(5));
+        assert_eq!(webfetch.default_max_chunk_tokens, Some(2000));
+        assert_eq!(webfetch.max_download_bytes, Some(10485760));
+        assert_eq!(webfetch.cache_dir, Some("/tmp/webfetch".to_string()));
+        assert_eq!(webfetch.cache_ttl_days, Some(7));
+    }
+
+    #[test]
+    fn parse_tool_definition_config() {
+        let toml_str = r#"
+[[tools.definitions]]
+name = "get_weather"
+description = "Get weather for a location"
+[tools.definitions.parameters]
+type = "object"
+[tools.definitions.parameters.properties.location]
+type = "string"
+description = "City name"
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let tools = config.tools.unwrap();
+        assert_eq!(tools.definitions.len(), 1);
+        let def = &tools.definitions[0];
+        assert_eq!(def.name, "get_weather");
+        assert_eq!(def.description, "Get weather for a location");
+    }
+
+    #[test]
+    fn tool_definition_to_tool_definition() {
+        let toml_str = r#"
+name = "test_tool"
+description = "A test tool"
+[parameters]
+type = "object"
+additionalProperties = false
+[parameters.properties.arg1]
+type = "string"
+"#;
+        let def: ToolDefinitionConfig = toml::from_str(toml_str).unwrap();
+        let tool_def = def.to_tool_definition().unwrap();
+        assert_eq!(tool_def.name, "test_tool");
+        assert_eq!(tool_def.description, "A test tool");
+        assert_eq!(tool_def.parameters["type"], "object");
+    }
+
+    // ========================================================================
+    // ConfigError tests
+    // ========================================================================
+
+    #[test]
+    fn config_error_path_accessor() {
+        let path = PathBuf::from("/test/path");
+        let err = ConfigError::Read {
+            path: path.clone(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+        };
+        assert_eq!(err.path(), &path);
+
+        let parse_err = ConfigError::Parse {
+            path: path.clone(),
+            source: toml::from_str::<ForgeConfig>("invalid toml [").unwrap_err(),
+        };
+        assert_eq!(parse_err.path(), &path);
+    }
+}

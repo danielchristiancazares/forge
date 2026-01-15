@@ -810,7 +810,11 @@ impl App {
     }
 
     pub fn enter_model_select_mode(&mut self) {
-        self.input = std::mem::take(&mut self.input).into_model_select();
+        let index = PredefinedModel::all()
+            .iter()
+            .position(|m| m.to_model_name() == self.model)
+            .unwrap_or(0);
+        self.input = std::mem::take(&mut self.input).into_model_select(index);
         if self.view.ui_options.reduced_motion {
             self.view.modal_effect = None;
         } else {
@@ -1016,6 +1020,14 @@ impl App {
 
     pub fn command_text(&self) -> Option<&str> {
         self.input.command()
+    }
+
+    pub fn command_cursor(&self) -> Option<usize> {
+        self.input.command_cursor()
+    }
+
+    pub fn command_cursor_byte_index(&self) -> Option<usize> {
+        self.input.command_cursor_byte_index()
     }
 
     pub fn update_scroll_max(&mut self, max: u16) {

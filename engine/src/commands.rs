@@ -401,3 +401,223 @@ impl super::App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // Command parsing tests
+    // ========================================================================
+
+    #[test]
+    fn parse_quit_commands() {
+        assert_eq!(Command::parse("q"), Command::Quit);
+        assert_eq!(Command::parse("quit"), Command::Quit);
+        assert_eq!(Command::parse("q extra"), Command::Quit);
+    }
+
+    #[test]
+    fn parse_clear_command() {
+        assert_eq!(Command::parse("clear"), Command::Clear);
+    }
+
+    #[test]
+    fn parse_model_command() {
+        assert_eq!(Command::parse("model"), Command::Model(None));
+        assert_eq!(
+            Command::parse("model claude-sonnet-4-5-20250929"),
+            Command::Model(Some("claude-sonnet-4-5-20250929"))
+        );
+        assert_eq!(
+            Command::parse("model gpt-5.2"),
+            Command::Model(Some("gpt-5.2"))
+        );
+    }
+
+    #[test]
+    fn parse_provider_commands() {
+        assert_eq!(Command::parse("provider"), Command::Provider(None));
+        assert_eq!(Command::parse("p"), Command::Provider(None));
+        assert_eq!(
+            Command::parse("provider claude"),
+            Command::Provider(Some("claude"))
+        );
+        assert_eq!(Command::parse("p gpt"), Command::Provider(Some("gpt")));
+    }
+
+    #[test]
+    fn parse_context_commands() {
+        assert_eq!(Command::parse("context"), Command::Context);
+        assert_eq!(Command::parse("ctx"), Command::Context);
+    }
+
+    #[test]
+    fn parse_journal_commands() {
+        assert_eq!(Command::parse("journal"), Command::Journal);
+        assert_eq!(Command::parse("jrnl"), Command::Journal);
+    }
+
+    #[test]
+    fn parse_summarize_commands() {
+        assert_eq!(Command::parse("summarize"), Command::Summarize);
+        assert_eq!(Command::parse("sum"), Command::Summarize);
+    }
+
+    #[test]
+    fn parse_cancel_command() {
+        assert_eq!(Command::parse("cancel"), Command::Cancel);
+    }
+
+    #[test]
+    fn parse_screen_command() {
+        assert_eq!(Command::parse("screen"), Command::Screen);
+    }
+
+    #[test]
+    fn parse_tools_command() {
+        assert_eq!(Command::parse("tools"), Command::Tools);
+    }
+
+    #[test]
+    fn parse_help_command() {
+        assert_eq!(Command::parse("help"), Command::Help);
+    }
+
+    #[test]
+    fn parse_empty_command() {
+        assert_eq!(Command::parse(""), Command::Empty);
+        assert_eq!(Command::parse("   "), Command::Empty);
+    }
+
+    #[test]
+    fn parse_unknown_command() {
+        assert_eq!(Command::parse("foobar"), Command::Unknown("foobar"));
+        assert_eq!(Command::parse("xyz 123"), Command::Unknown("xyz"));
+    }
+
+    #[test]
+    fn parse_tool_usage() {
+        assert_eq!(Command::parse("tool"), Command::Tool(ToolCommand::Usage));
+        assert_eq!(
+            Command::parse("tool onlyid"),
+            Command::Tool(ToolCommand::Usage)
+        );
+    }
+
+    #[test]
+    fn parse_tool_success() {
+        assert_eq!(
+            Command::parse("tool call-123 result content here"),
+            Command::Tool(ToolCommand::Success {
+                id: "call-123",
+                content: "result content here"
+            })
+        );
+    }
+
+    #[test]
+    fn parse_tool_success_minimal_content() {
+        // With minimal content (single character)
+        let parsed = Command::parse("tool call-123 x");
+        match parsed {
+            Command::Tool(ToolCommand::Success { id, content }) => {
+                assert_eq!(id, "call-123");
+                assert_eq!(content, "x");
+            }
+            _ => panic!("Expected Tool Success"),
+        }
+    }
+
+    #[test]
+    fn parse_tool_insufficient_args_shows_usage() {
+        // "tool id" without content shows usage
+        assert_eq!(
+            Command::parse("tool call-123"),
+            Command::Tool(ToolCommand::Usage)
+        );
+    }
+
+    #[test]
+    fn parse_tool_error() {
+        assert_eq!(
+            Command::parse("tool error call-456 error message here"),
+            Command::Tool(ToolCommand::Error {
+                id: "call-456",
+                message: "error message here"
+            })
+        );
+    }
+
+    #[test]
+    fn parse_tool_error_multiword() {
+        let parsed = Command::parse("tool error abc this is a longer error message");
+        match parsed {
+            Command::Tool(ToolCommand::Error { id, message }) => {
+                assert_eq!(id, "abc");
+                assert_eq!(message, "this is a longer error message");
+            }
+            _ => panic!("Expected Tool Error"),
+        }
+    }
+
+    #[test]
+    fn parse_preserves_whitespace_in_tool_content() {
+        let parsed = Command::parse("tool myid   spaced   content");
+        match parsed {
+            Command::Tool(ToolCommand::Success { id, content }) => {
+                assert_eq!(id, "myid");
+                // Content should preserve internal whitespace after trimming leading
+                assert!(content.contains("spaced   content"));
+            }
+            _ => panic!("Expected Tool Success"),
+        }
+    }
+
+    #[test]
+    fn parse_case_sensitive() {
+        // Commands should be case-sensitive
+        assert_eq!(Command::parse("QUIT"), Command::Unknown("QUIT"));
+        assert_eq!(Command::parse("Clear"), Command::Unknown("Clear"));
+        assert_eq!(Command::parse("MODEL"), Command::Unknown("MODEL"));
+    }
+
+    // ========================================================================
+    // ToolCommand equality tests
+    // ========================================================================
+
+    #[test]
+    fn tool_command_eq() {
+        assert_eq!(ToolCommand::Usage, ToolCommand::Usage);
+        assert_eq!(
+            ToolCommand::Success {
+                id: "a",
+                content: "b"
+            },
+            ToolCommand::Success {
+                id: "a",
+                content: "b"
+            }
+        );
+        assert_ne!(
+            ToolCommand::Success {
+                id: "a",
+                content: "b"
+            },
+            ToolCommand::Success {
+                id: "a",
+                content: "c"
+            }
+        );
+        assert_eq!(
+            ToolCommand::Error {
+                id: "x",
+                message: "y"
+            },
+            ToolCommand::Error {
+                id: "x",
+                message: "y"
+            }
+        );
+    }
+}
