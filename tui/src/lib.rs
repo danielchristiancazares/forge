@@ -237,15 +237,25 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
             streaming.provider().display_name(),
             styles::assistant_name(palette),
         );
-
-        let header_line = Line::from(vec![
+        let is_empty = streaming.content().is_empty();
+        let mut header_spans = vec![
             Span::styled(format!(" {icon} "), name_style),
             Span::styled(name, name_style),
-        ]);
+        ];
+        if !is_empty {
+            let spinner = spinner_frame(app.tick_count(), app.ui_options());
+            header_spans.push(Span::styled(
+                format!("  {spinner} streaming"),
+                Style::default()
+                    .fg(palette.text_muted)
+                    .add_modifier(Modifier::ITALIC),
+            ));
+        }
+        let header_line = Line::from(header_spans);
         lines.push(header_line);
         lines.push(Line::from(""));
 
-        if streaming.content().is_empty() {
+        if is_empty {
             // Show animated spinner for loading
             let spinner = spinner_frame(app.tick_count(), app.ui_options());
             lines.push(Line::from(vec![

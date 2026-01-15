@@ -216,7 +216,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_input(frame, app, chunks[0], &palette, &glyphs);
     }
 
-    // TODO: Inline model picker needs a compact layout (bug report: pretty modal is cramped).
     // Draw model selector overlay if in model select mode
     if app.input_mode() == InputMode::ModelSelect {
         draw_model_selector(frame, app, &palette, &glyphs);
