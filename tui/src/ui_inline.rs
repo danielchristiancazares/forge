@@ -14,7 +14,7 @@ use forge_types::sanitize_terminal_text;
 
 use crate::theme::{Glyphs, Palette, glyphs, palette, styles};
 use crate::tool_display;
-use crate::{draw_input, draw_model_selector, draw_status_bar};
+use crate::{draw_input, draw_model_selector, draw_status_delineator};
 
 pub const INLINE_INPUT_HEIGHT: u16 = 5;
 pub const INLINE_VIEWPORT_HEIGHT: u16 = INLINE_INPUT_HEIGHT + 1;
@@ -181,7 +181,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         InputMode::Normal => 3,
         _ => INLINE_INPUT_HEIGHT,
     };
-    let total_height = input_height + 1;
+
+    // Show status delineator only when there's a status message
+    let has_status = app.status_message().is_some();
+    let status_height = u16::from(has_status);
+
+    let total_height = input_height + status_height;
     let top_padding = area.height.saturating_sub(total_height);
     let content_area = Rect {
         x: area.x,
@@ -190,13 +195,26 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         height: area.height.saturating_sub(top_padding),
     };
 
+    let constraints: Vec<Constraint> = if has_status {
+        vec![
+            Constraint::Length(status_height),
+            Constraint::Length(input_height),
+        ]
+    } else {
+        vec![Constraint::Length(input_height)]
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(input_height), Constraint::Length(1)])
+        .constraints(constraints)
         .split(content_area);
 
-    draw_input(frame, app, chunks[0], &palette);
-    draw_status_bar(frame, app, chunks[1], &palette, &glyphs);
+    if has_status {
+        draw_status_delineator(frame, app, chunks[0], &palette);
+        draw_input(frame, app, chunks[1], &palette, &glyphs);
+    } else {
+        draw_input(frame, app, chunks[0], &palette, &glyphs);
+    }
 
     // TODO: Inline model picker needs a compact layout (bug report: pretty modal is cramped).
     // Draw model selector overlay if in model select mode

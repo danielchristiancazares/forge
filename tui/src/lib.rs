@@ -50,19 +50,31 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         _ => 5,
     };
 
+    // Check if we have a status message to show as delineator
+    let has_status = app.status_message().is_some();
+    let status_height = u16::from(has_status);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Min(1),               // Messages
-            Constraint::Length(input_height), // Input
-            Constraint::Length(1),            // Status bar
+            Constraint::Min(1),                // Messages
+            Constraint::Length(status_height), // Status delineator (if any)
+            Constraint::Length(input_height),  // Input
         ])
         .split(frame.area());
 
     draw_messages(frame, app, chunks[0], &palette, &glyphs);
-    draw_input(frame, app, chunks[1], &palette);
-    draw_status_bar(frame, app, chunks[2], &palette, &glyphs);
+    if has_status {
+        draw_status_delineator(frame, app, chunks[1], &palette);
+    }
+    draw_input(
+        frame,
+        app,
+        chunks[1 + status_height as usize],
+        &palette,
+        &glyphs,
+    );
 
     // Draw command palette if in command mode
     if app.input_mode() == InputMode::Command {
@@ -491,7 +503,13 @@ fn truncate_with_ellipsis(raw: &str, max: usize) -> String {
     }
 }
 
-pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette) {
+pub(crate) fn draw_input(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    palette: &Palette,
+    glyphs: &Glyphs,
+) {
     let mode = app.input_mode();
     let options = app.ui_options();
     // Clone command text to avoid borrow conflict with mutable context_usage_status()
@@ -777,6 +795,25 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: 
         vec![Line::from(spans)]
     };
 
+    // Model info for bottom-left chrome
+    let (model_text, model_style) = if app.is_loading() {
+        let spinner = spinner_frame(app.tick_count(), app.ui_options());
+        (
+            format!("{spinner} {}", app.model()),
+            Style::default().fg(palette.primary),
+        )
+    } else if app.current_api_key().is_some() {
+        (
+            format!("{} {}", glyphs.status_ready, app.model()),
+            Style::default().fg(palette.success),
+        )
+    } else {
+        (
+            format!("{} No API key", glyphs.status_missing),
+            Style::default().fg(palette.error),
+        )
+    };
+
     let input = Paragraph::new(input_lines).block(
         Block::default()
             .borders(Borders::ALL)
@@ -784,6 +821,7 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: 
             .border_style(border_style)
             .title_top(Line::from(vec![Span::styled(mode_text, mode_style)]))
             .title_top(Line::from(hints).alignment(Alignment::Right))
+            .title_bottom(Line::from(vec![Span::styled(model_text, model_style)]))
             .title_bottom(
                 Line::from(vec![Span::styled(
                     usage_str,
@@ -801,61 +839,43 @@ pub(crate) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: 
     }
 }
 
-pub(crate) fn draw_status_bar(
-    frame: &mut Frame,
-    app: &App,
-    area: Rect,
-    palette: &Palette,
-    glyphs: &Glyphs,
-) {
-    let (status_text, status_style) = if let Some(msg) = app.status_message() {
-        let kind = app.status_kind();
-        let (prefix, color) = match kind {
-            forge_engine::StatusKind::Error => ("Error: ", palette.error),
-            forge_engine::StatusKind::Warning => ("Warning: ", palette.warning),
-            forge_engine::StatusKind::Success => ("Success: ", palette.success),
-            forge_engine::StatusKind::Info => ("", palette.text_secondary),
-        };
-        (format!("{prefix}{msg}"), Style::default().fg(color))
-    } else if app.is_loading() {
-        let spinner = spinner_frame(app.tick_count(), app.ui_options());
-        (
-            format!("{spinner} Processing request..."),
-            Style::default().fg(palette.primary),
-        )
-    } else if app.current_api_key().is_some() {
-        (
-            format!(
-                "{} {} │ {}",
-                glyphs.status_ready,
-                app.provider().display_name(),
-                app.model()
-            ),
-            Style::default().fg(palette.success),
-        )
-    } else {
-        (
-            format!(
-                "{} No API key │ Set {}",
-                glyphs.status_missing,
-                app.provider().env_var()
-            ),
-            Style::default().fg(palette.error),
-        )
+/// Draw status message as a styled delineator line.
+///
+/// Renders as: `─ Status: message ─────────────────`
+fn draw_status_delineator(frame: &mut Frame, app: &App, area: Rect, palette: &Palette) {
+    let options = app.ui_options();
+    let dash = if options.ascii_only { "-" } else { "─" };
+    let dash_style = Style::default().fg(palette.bg_border);
+
+    let Some(msg) = app.status_message() else {
+        return;
     };
 
-    let status_text = if app.context_infinity_enabled() {
-        status_text
-    } else {
-        format!("{status_text} │ CI: off")
+    let kind = app.status_kind();
+    let (prefix, color) = match kind {
+        forge_engine::StatusKind::Error => ("Error: ", palette.error),
+        forge_engine::StatusKind::Warning => ("Warning: ", palette.warning),
+        forge_engine::StatusKind::Success => ("Success: ", palette.success),
+        forge_engine::StatusKind::Info => ("", palette.text_secondary),
     };
+    let status_text = format!("{prefix}{msg}");
+    let status_style = Style::default().fg(color);
 
-    // Build status line
-    let status = Paragraph::new(Line::from(vec![
+    // Calculate how many dashes we need for padding
+    // Format: "─ Status: message ─────────"
+    let text_width = status_text.width() + 3; // " Status: message "
+    let remaining = area.width.saturating_sub(text_width as u16) as usize;
+    let trailing_dashes = dash.repeat(remaining.max(1));
+
+    let line = Line::from(vec![
+        Span::styled(dash, dash_style),
         Span::raw(" "),
         Span::styled(status_text, status_style),
-    ]));
-    frame.render_widget(status, area);
+        Span::raw(" "),
+        Span::styled(trailing_dashes, dash_style),
+    ]);
+
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 fn draw_command_palette(frame: &mut Frame, app: &App, palette: &Palette) {
