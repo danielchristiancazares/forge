@@ -335,6 +335,11 @@ impl App {
         std::mem::take(&mut self.view.toggle_screen_mode)
     }
 
+    /// Request toggling between fullscreen and inline UI modes.
+    pub fn request_toggle_screen_mode(&mut self) {
+        self.view.toggle_screen_mode = true;
+    }
+
     /// Check if a transcript clear was requested and clear the flag.
     pub fn take_clear_transcript(&mut self) -> bool {
         std::mem::take(&mut self.view.clear_transcript)

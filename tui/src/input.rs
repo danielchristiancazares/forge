@@ -141,6 +141,10 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::End | KeyCode::Char('G') => {
             app.scroll_to_bottom();
         }
+        // Toggle screen mode (inline/fullscreen)
+        KeyCode::Char('s') => {
+            app.request_toggle_screen_mode();
+        }
         _ => {}
     }
 }
