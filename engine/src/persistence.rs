@@ -48,14 +48,16 @@ impl App {
 
         match ContextManager::load(&path, self.model.as_str()) {
             Ok(mut loaded_manager) => {
+                let count = loaded_manager.history().len();
                 // Sync output limit before replacing context manager
                 loaded_manager.set_output_limit(self.output_limits.max_output_tokens());
                 self.context_manager = loaded_manager;
                 self.rebuild_display_from_history();
-                self.set_status_success(format!(
-                    "Loaded {} messages from previous session",
-                    self.context_manager.history().len()
-                ));
+                if count > 0 {
+                    self.set_status_success(format!(
+                        "Loaded {count} messages from previous session"
+                    ));
+                }
             }
             Err(e) => {
                 tracing::warn!("Failed to load history: {e}");
