@@ -4,7 +4,7 @@ use ratatui::prelude::{Backend, Terminal};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Clear, Paragraph, Widget, Wrap},
 };
@@ -12,8 +12,11 @@ use ratatui::{
 use forge_engine::{App, DisplayItem, InputMode, Message};
 use forge_types::sanitize_terminal_text;
 
-use crate::theme::{Glyphs, Palette, glyphs, palette, styles};
-use crate::tool_display;
+use crate::shared::{
+    ApprovalView, ToolCallStatus, ToolCallStatusKind, collect_approval_view, collect_tool_statuses,
+    message_header_parts, tool_status_signature, wrapped_line_count,
+};
+use crate::theme::{Glyphs, Palette, glyphs, palette};
 use crate::{draw_input, draw_model_selector, draw_status_delineator};
 
 pub const INLINE_INPUT_HEIGHT: u16 = 5;
@@ -103,10 +106,11 @@ impl InlineOutput {
             self.next_display_index = items.len();
         }
 
-        let tool_signature = tool_status_signature(app);
+        let tool_statuses = collect_tool_statuses(app, 80);
+        let tool_signature = tool_status_signature(tool_statuses.as_deref());
         if tool_signature != self.last_tool_status_signature {
-            if tool_signature.is_some() {
-                append_tool_status_lines(&mut lines, app, &glyphs);
+            if let Some(statuses) = tool_statuses.as_ref() {
+                append_tool_status_lines(&mut lines, statuses, &glyphs);
             }
             self.last_tool_status_signature = tool_signature;
         }
@@ -137,10 +141,11 @@ impl InlineOutput {
             self.last_tool_output_len = 0;
         }
 
-        let approval_signature = approval_signature(app);
+        let approval_view = collect_approval_view(app, 80);
+        let approval_signature = approval_signature(approval_view.as_ref());
         if approval_signature != self.last_approval_signature {
-            if approval_signature.is_some() {
-                append_approval_lines(&mut lines, app, &palette);
+            if let Some(view) = approval_view.as_ref() {
+                append_approval_lines(&mut lines, view, &palette);
             }
             self.last_approval_signature = approval_signature;
         }
@@ -235,56 +240,7 @@ fn append_message_lines(
     }
     *msg_count += 1;
 
-    let (icon, name, name_style) = match msg {
-        Message::System(_) => (
-            glyphs.system.to_string(),
-            "System".to_string(),
-            Style::default()
-                .fg(palette.text_muted)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Message::User(_) => (
-            glyphs.user.to_string(),
-            "You".to_string(),
-            styles::user_name(palette),
-        ),
-        Message::Assistant(m) => (
-            glyphs.assistant.to_string(),
-            m.provider().display_name().to_string(),
-            styles::assistant_name(palette),
-        ),
-        Message::ToolUse(call) => {
-            let compact = tool_display::format_tool_call_compact(&call.name, &call.arguments);
-            let compact = sanitize_terminal_text(&compact).into_owned();
-            (
-                glyphs.tool.to_string(),
-                compact,
-                Style::default()
-                    .fg(palette.accent)
-                    .add_modifier(Modifier::BOLD),
-            )
-        }
-        Message::ToolResult(result) => {
-            let (icon, style, label) = if result.is_error {
-                (
-                    glyphs.tool_result_err,
-                    Style::default()
-                        .fg(palette.error)
-                        .add_modifier(Modifier::BOLD),
-                    "Tool Result (error)",
-                )
-            } else {
-                (
-                    glyphs.tool_result_ok,
-                    Style::default()
-                        .fg(palette.success)
-                        .add_modifier(Modifier::BOLD),
-                    "Tool Result (ok)",
-                )
-            };
-            (icon.to_string(), label.to_string(), style)
-        }
-    };
+    let (icon, name, name_style) = message_header_parts(msg, palette, glyphs);
 
     let header_line = Line::from(vec![
         Span::styled(format!(" {icon} "), name_style),
@@ -336,45 +292,6 @@ fn append_message_lines(
     }
 }
 
-fn tool_status_signature(app: &App) -> Option<String> {
-    let calls = app.tool_loop_calls()?;
-    let mut results_map: std::collections::HashMap<&str, &forge_types::ToolResult> =
-        std::collections::HashMap::new();
-    if let Some(results) = app.tool_loop_results() {
-        for result in results {
-            results_map.insert(result.tool_call_id.as_str(), result);
-        }
-    }
-    let execute_ids: std::collections::HashSet<&str> = app
-        .tool_loop_execute_calls()
-        .map(|exec_calls| exec_calls.iter().map(|c| c.id.as_str()).collect())
-        .unwrap_or_default();
-    let current_id = app.tool_loop_current_call_id();
-    let approval_pending = app.tool_approval_requests().is_some();
-
-    let mut parts = Vec::with_capacity(calls.len());
-    for call in calls {
-        let status = if let Some(result) = results_map.get(call.id.as_str()) {
-            if !execute_ids.contains(call.id.as_str()) {
-                "denied"
-            } else if result.is_error {
-                "error"
-            } else {
-                "ok"
-            }
-        } else if current_id == Some(call.id.as_str()) {
-            "running"
-        } else if approval_pending && !execute_ids.contains(call.id.as_str()) {
-            "approval"
-        } else {
-            "pending"
-        };
-        parts.push(format!("{}:{status}", call.id));
-    }
-
-    Some(parts.join("|"))
-}
-
 fn pending_tool_signature(app: &App) -> Option<String> {
     let calls = app.pending_tool_calls()?;
     let mut parts = Vec::with_capacity(calls.len());
@@ -384,65 +301,30 @@ fn pending_tool_signature(app: &App) -> Option<String> {
     Some(parts.join("|"))
 }
 
-fn append_tool_status_lines(lines: &mut Vec<Line>, app: &App, glyphs: &Glyphs) {
-    let Some(calls) = app.tool_loop_calls() else {
-        return;
-    };
-    let mut results_map: std::collections::HashMap<&str, &forge_types::ToolResult> =
-        std::collections::HashMap::new();
-    if let Some(results) = app.tool_loop_results() {
-        for result in results {
-            results_map.insert(result.tool_call_id.as_str(), result);
-        }
-    }
-    let execute_ids: std::collections::HashSet<&str> = app
-        .tool_loop_execute_calls()
-        .map(|exec_calls| exec_calls.iter().map(|c| c.id.as_str()).collect())
-        .unwrap_or_default();
-    let current_id = app.tool_loop_current_call_id();
-    let approval_pending = app.tool_approval_requests().is_some();
-
+fn append_tool_status_lines(lines: &mut Vec<Line>, statuses: &[ToolCallStatus], glyphs: &Glyphs) {
     if !lines.is_empty() {
         lines.push(Line::from(""));
     }
     lines.push(Line::from("Tool status:"));
 
-    for call in calls {
-        let mut reason: Option<String> = None;
-        let icon = if let Some(result) = results_map.get(call.id.as_str()) {
-            if !execute_ids.contains(call.id.as_str()) {
-                let content = sanitize_terminal_text(&result.content);
-                reason = content
-                    .lines()
-                    .next()
-                    .map(|line| truncate_with_ellipsis(line, 80));
-                glyphs.denied
-            } else if result.is_error {
-                let content = sanitize_terminal_text(&result.content);
-                reason = content
-                    .lines()
-                    .next()
-                    .map(|line| truncate_with_ellipsis(line, 80));
-                glyphs.tool_result_err
-            } else {
-                glyphs.tool_result_ok
-            }
-        } else if current_id == Some(call.id.as_str()) {
-            glyphs.running
-        } else if approval_pending && !execute_ids.contains(call.id.as_str()) {
-            glyphs.paused
-        } else {
-            glyphs.bullet
+    for status in statuses {
+        let icon = match status.status {
+            ToolCallStatusKind::Denied => glyphs.denied,
+            ToolCallStatusKind::Error => glyphs.tool_result_err,
+            ToolCallStatusKind::Ok => glyphs.tool_result_ok,
+            ToolCallStatusKind::Running => glyphs.running,
+            ToolCallStatusKind::Approval => glyphs.paused,
+            ToolCallStatusKind::Pending => glyphs.bullet,
         };
 
-        let name = sanitize_terminal_text(&call.name);
-        let id = sanitize_terminal_text(&call.id);
+        let name = sanitize_terminal_text(&status.name);
+        let id = sanitize_terminal_text(&status.id);
         lines.push(Line::from(format!(
             "  {icon} {} ({})",
             name.as_ref(),
             id.as_ref()
         )));
-        if let Some(reason) = reason {
+        if let Some(reason) = status.reason.as_ref() {
             lines.push(Line::from(format!("     {reason}")));
         }
     }
@@ -471,72 +353,57 @@ fn append_pending_tool_lines(lines: &mut Vec<Line>, app: &App, glyphs: &Glyphs) 
     ));
 }
 
-fn approval_signature(app: &App) -> Option<String> {
-    let requests = app.tool_approval_requests()?;
-    let selected = app.tool_approval_selected().unwrap_or(&[]);
-    let cursor = app.tool_approval_cursor().unwrap_or(0);
-    let expanded = app.tool_approval_expanded();
-    let mut sig = format!("{}|{}|", requests.len(), cursor);
-    for flag in selected {
+fn approval_signature(view: Option<&ApprovalView>) -> Option<String> {
+    let view = view?;
+    let mut sig = format!("{}|{}|", view.items.len(), view.cursor);
+    for flag in &view.selected {
         sig.push(if *flag { '1' } else { '0' });
     }
-    if let Some(expanded) = expanded {
+    if let Some(expanded) = view.expanded {
         sig.push('|');
         sig.push_str(&expanded.to_string());
     }
     Some(sig)
 }
 
-fn append_approval_lines(lines: &mut Vec<Line>, app: &App, palette: &Palette) {
-    let Some(requests) = app.tool_approval_requests() else {
-        return;
-    };
-    let selected = app.tool_approval_selected().unwrap_or(&[]);
-    let cursor = app.tool_approval_cursor().unwrap_or(0);
-    let expanded = app.tool_approval_expanded();
-    let any_selected = selected.iter().any(|flag| *flag);
+fn append_approval_lines(lines: &mut Vec<Line>, view: &ApprovalView, palette: &Palette) {
+    let selected = &view.selected;
+    let cursor = view.cursor;
+    let any_selected = view.any_selected;
 
     if !lines.is_empty() {
         lines.push(Line::from(""));
     }
     lines.push(Line::from("Tool approval required:"));
 
-    for (i, req) in requests.iter().enumerate() {
+    for (i, item) in view.items.iter().enumerate() {
         let is_selected = selected.get(i).copied().unwrap_or(false);
         let pointer = if i == cursor { ">" } else { " " };
         let checkbox = if is_selected { "[x]" } else { "[ ]" };
-        let risk = format!("{:?}", req.risk_level).to_uppercase();
-        let tool_name = sanitize_terminal_text(&req.tool_name);
+        let risk = item.risk_label.as_str();
+        let tool_name = item.tool_name.as_str();
         lines.push(Line::from(format!(
-            " {pointer} {checkbox} {} ({risk})",
-            tool_name.as_ref()
+            " {pointer} {checkbox} {tool_name} ({risk})"
         )));
-        if !req.summary.trim().is_empty() {
-            let summary = sanitize_terminal_text(&req.summary);
-            let summary = truncate_with_ellipsis(summary.as_ref(), 80);
+        if let Some(summary) = item.summary.as_ref() {
             lines.push(Line::from(format!("     {summary}")));
         }
 
-        if expanded == Some(i)
-            && let Ok(details) = serde_json::to_string_pretty(&req.arguments)
-        {
-            for line in details.lines() {
-                let truncated = truncate_with_ellipsis(line, 80);
-                lines.push(Line::from(format!("       {truncated}")));
-            }
+        for line in &item.details {
+            lines.push(Line::from(format!("       {line}")));
         }
     }
 
     // Submit and Deny buttons
-    let submit_cursor = requests.len();
-    let deny_cursor = requests.len() + 1;
+    let submit_cursor = view.items.len();
+    let deny_cursor = view.items.len() + 1;
     let submit_pointer = if cursor == submit_cursor { ">" } else { " " };
     let deny_pointer = if cursor == deny_cursor { ">" } else { " " };
     lines.push(Line::from(format!(
         " {submit_pointer} [ Approve selected ]    {deny_pointer} [ Deny All ]"
     )));
 
-    if app.tool_approval_deny_confirm() {
+    if view.deny_confirm {
         lines.push(Line::from(Span::styled(
             "Confirm Deny All: press Enter again",
             Style::default().fg(palette.error),
@@ -568,32 +435,4 @@ fn append_recovery_prompt(lines: &mut Vec<Line>, app: &App, palette: &Palette) {
         Style::default().fg(palette.text_muted),
     )));
     lines.push(Line::from("Press r to resume or d to discard."));
-}
-
-fn wrapped_line_count(lines: &[Line], width: u16) -> u16 {
-    let width = width.max(1) as usize;
-    let mut total: u16 = 0;
-
-    for line in lines {
-        let line_width = line.width();
-        let rows = if line_width == 0 {
-            1
-        } else {
-            ((line_width - 1) / width) + 1
-        };
-        total = total.saturating_add(rows as u16);
-    }
-
-    total
-}
-
-fn truncate_with_ellipsis(raw: &str, max: usize) -> String {
-    let max = max.max(3);
-    let trimmed = raw.trim();
-    if trimmed.chars().count() <= max {
-        trimmed.to_string()
-    } else {
-        let head: String = trimmed.chars().take(max - 3).collect();
-        format!("{head}...")
-    }
 }

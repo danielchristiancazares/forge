@@ -202,6 +202,11 @@ impl MarkdownRenderer {
         // Flush any remaining content
         self.flush_line();
 
+        // Handle incomplete code block (common during streaming)
+        if self.in_code_block && !self.code_block_content.is_empty() {
+            self.render_code_block();
+        }
+
         self.lines
     }
 
@@ -683,6 +688,31 @@ mod tests {
         assert!(
             all_text.contains("thinking") || all_text.contains("important"),
             "HTML/XML content should appear in rendered output: {all_text}"
+        );
+    }
+
+    #[test]
+    fn test_incomplete_code_block_streaming() {
+        clear_render_cache();
+
+        // Simulate streaming: code block started but not closed
+        let content = "Here is some code:\n\n```rust\nfn main() {\n    println!(\"hello\");\n}";
+        let palette = Palette::standard();
+        let lines = render_markdown(content, Style::default(), &palette);
+
+        // Should render the incomplete code block content
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+
+        assert!(
+            all_text.contains("fn main()"),
+            "Incomplete code block should be rendered: {all_text}"
+        );
+        assert!(
+            all_text.contains("println"),
+            "Code block content should appear: {all_text}"
         );
     }
 }

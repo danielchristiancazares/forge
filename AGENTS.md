@@ -62,6 +62,10 @@
 - When writing tests, prefer comparing the equality of entire objects over fields one by one.
 - When making a change that adds or changes an API, ensure that the documentation in the `docs/` folder is up to date if applicable.
 
+## Documentation Style
+
+- Add a blank line between list items to improve readability.
+
 ## Configuration
 
 Config file: `~/.forge/config.toml` (supports `${ENV_VAR}` expansion)

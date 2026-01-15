@@ -54,6 +54,9 @@ pub use input_modes::{
     CommandMode, CommandToken, EnteredCommand, InsertMode, InsertToken, QueuedUserMessage,
 };
 
+// Re-export command metadata used by UI
+pub use commands::{CommandSpec, command_help_summary, command_specs};
+
 // Re-export persistence constants used by streaming module
 pub(crate) use persistence::{ABORTED_JOURNAL_BADGE, EMPTY_RESPONSE_BADGE};
 

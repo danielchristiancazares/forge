@@ -431,6 +431,105 @@ mod tests {
         assert!(result.unwrap().is_empty());
     }
 
+    #[test]
+    fn test_summarizer_input_limit_claude() {
+        let limit = summarizer_input_limit(Provider::Claude);
+        assert_eq!(limit, CLAUDE_SUMMARIZER_INPUT_LIMIT);
+        assert_eq!(limit, 190_000);
+    }
+
+    #[test]
+    fn test_summarizer_input_limit_openai() {
+        let limit = summarizer_input_limit(Provider::OpenAI);
+        assert_eq!(limit, OPENAI_SUMMARIZER_INPUT_LIMIT);
+        assert_eq!(limit, 380_000);
+    }
+
+    #[test]
+    fn test_build_prompt_with_system_message() {
+        use forge_types::NonEmptyString;
+
+        let messages = vec![(
+            MessageId::new_for_test(0),
+            Message::system(NonEmptyString::new("You are a helpful assistant.").expect("msg")),
+        )];
+
+        let (_, conversation) = build_summarization_prompt(&messages, 500);
+        assert!(conversation.contains("System:"));
+        assert!(conversation.contains("You are a helpful assistant."));
+        assert!(conversation.contains("[Message 0]"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_assistant_message() {
+        use forge_types::NonEmptyString;
+
+        let messages = vec![(
+            MessageId::new_for_test(0),
+            Message::assistant(
+                Provider::Claude.default_model(),
+                NonEmptyString::new("Hello! How can I help?").expect("msg"),
+            ),
+        )];
+
+        let (_, conversation) = build_summarization_prompt(&messages, 500);
+        assert!(conversation.contains("Assistant:"));
+        assert!(conversation.contains("Hello! How can I help?"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_tool_use() {
+        use forge_types::ToolCall;
+        use serde_json::json;
+
+        let tool_call = ToolCall {
+            id: "call_123".to_string(),
+            name: "read_file".to_string(),
+            arguments: json!({"path": "/tmp/test.txt"}),
+        };
+
+        let messages = vec![(MessageId::new_for_test(0), Message::ToolUse(tool_call))];
+
+        let (_, conversation) = build_summarization_prompt(&messages, 500);
+        assert!(conversation.contains("Tool Call: read_file"));
+        assert!(conversation.contains("/tmp/test.txt"));
+        assert!(conversation.contains("[Message 0]"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_tool_result_success() {
+        use forge_types::ToolResult;
+
+        let result = ToolResult {
+            tool_call_id: "call_123".to_string(),
+            content: "File contents here".to_string(),
+            is_error: false,
+        };
+
+        let messages = vec![(MessageId::new_for_test(0), Message::ToolResult(result))];
+
+        let (_, conversation) = build_summarization_prompt(&messages, 500);
+        assert!(conversation.contains("Tool Result:"));
+        assert!(conversation.contains("File contents here"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_tool_result_error() {
+        use forge_types::ToolResult;
+
+        let result = ToolResult {
+            tool_call_id: "call_456".to_string(),
+            content: "File not found".to_string(),
+            is_error: true,
+        };
+
+        let messages = vec![(MessageId::new_for_test(0), Message::ToolResult(result))];
+
+        let (_, conversation) = build_summarization_prompt(&messages, 500);
+        assert!(conversation.contains("Tool Error:"));
+        assert!(conversation.contains("File not found"));
+    }
+
     // Note: Integration tests that actually call the API would go in tests/
     // and would be marked with #[ignore] to avoid running in CI without keys.
 }

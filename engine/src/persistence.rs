@@ -299,18 +299,30 @@ impl App {
         }
         if history_saved {
             self.finalize_journal_commit(step_id);
-            self.set_status_success(format!(
-                "Recovered {} bytes (step {}, last seq {}) from crashed session",
-                partial_text.len(),
+            if partial_text.is_empty() {
+                // Nothing to recover - just cleaned up stale journal
+                tracing::debug!(
+                    "Cleared stale session journal (step {}, last seq {})",
+                    step_id,
+                    last_seq
+                );
+            } else {
+                self.set_status_success(format!(
+                    "Recovered {} bytes from crashed session",
+                    partial_text.len(),
+                ));
+            }
+        } else if partial_text.is_empty() {
+            // Nothing to recover but autosave failed - will retry next session
+            tracing::debug!(
+                "Stale journal cleanup deferred (step {}, last seq {})",
                 step_id,
-                last_seq,
-            ));
+                last_seq
+            );
         } else {
             self.set_status_warning(format!(
-                "Recovered {} bytes (step {}, last seq {}) but autosave failed; recovery will retry",
+                "Recovered {} bytes but autosave failed; recovery will retry",
                 partial_text.len(),
-                step_id,
-                last_seq,
             ));
         }
 

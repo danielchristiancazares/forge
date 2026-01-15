@@ -8,6 +8,104 @@ use super::{
     state::{OperationState, SummarizationStart, ToolLoopPhase, ToolRecoveryDecision},
 };
 
+#[derive(Debug, Clone, Copy)]
+pub struct CommandSpec {
+    pub palette_label: &'static str,
+    pub help_label: &'static str,
+    pub description: &'static str,
+    pub show_in_help: bool,
+}
+
+const COMMAND_SPECS: &[CommandSpec] = &[
+    CommandSpec {
+        palette_label: "q, quit",
+        help_label: "q(uit)",
+        description: "Exit the application",
+        show_in_help: true,
+    },
+    CommandSpec {
+        palette_label: "clear",
+        help_label: "clear",
+        description: "Clear conversation history",
+        show_in_help: true,
+    },
+    CommandSpec {
+        palette_label: "cancel",
+        help_label: "cancel",
+        description: "Cancel streaming or tool execution",
+        show_in_help: true,
+    },
+    CommandSpec {
+        palette_label: "tool <id> <result>",
+        help_label: "tool",
+        description: "Submit a tool result",
+        show_in_help: true,
+    },
+    CommandSpec {
+        palette_label: "tools",
+        help_label: "tools",
+        description: "Show tool status",
+        show_in_help: true,
+    },
+    CommandSpec {
+        palette_label: "model <name>",
+        help_label: "model",
+        description: "Change the model",
+        show_in_help: true,
+    },
+    CommandSpec {
+        palette_label: "p, provider <name>",
+        help_label: "p(rovider)",
+        description: "Switch provider (claude/gpt)",
+        show_in_help: true,
+    },
+    CommandSpec {
+        palette_label: "ctx",
+        help_label: "ctx",
+        description: "Show context usage",
+        show_in_help: true,
+    },
+    CommandSpec {
+        palette_label: "jrnl",
+        help_label: "jrnl",
+        description: "Show stream journal stats",
+        show_in_help: true,
+    },
+    CommandSpec {
+        palette_label: "sum",
+        help_label: "sum",
+        description: "Summarize older messages",
+        show_in_help: true,
+    },
+    CommandSpec {
+        palette_label: "screen",
+        help_label: "screen",
+        description: "Toggle fullscreen/inline mode",
+        show_in_help: true,
+    },
+    CommandSpec {
+        palette_label: "help",
+        help_label: "help",
+        description: "Show available commands",
+        show_in_help: false,
+    },
+];
+
+#[must_use]
+pub fn command_specs() -> &'static [CommandSpec] {
+    COMMAND_SPECS
+}
+
+#[must_use]
+pub fn command_help_summary() -> String {
+    let labels: Vec<&str> = COMMAND_SPECS
+        .iter()
+        .filter(|spec| spec.show_in_help)
+        .map(|spec| spec.help_label)
+        .collect();
+    format!("Commands: /{}", labels.join(", /"))
+}
+
 /// Parsed command with typed arguments.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command<'a> {
@@ -390,9 +488,7 @@ impl super::App {
                 }
             }
             Command::Help => {
-                self.set_status(
-                    "Commands: /q(uit), /clear, /cancel, /model, /p(rovider), /ctx, /jrnl, /sum, /screen, /tool, /tools",
-                );
+                self.set_status(command_help_summary());
             }
             Command::Unknown(cmd) => {
                 self.set_status_warning(format!("Unknown command: {cmd}"));

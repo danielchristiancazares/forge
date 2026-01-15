@@ -10,6 +10,16 @@ use serde_json::Value;
 /// Returns format like `Search("pattern")` or just `git_status` for tools without
 /// a displayable primary argument.
 pub fn format_tool_call_compact(name: &str, args: &Value) -> String {
+    // Special case: apply_patch displays as Edit(path) without quotes
+    if name.eq_ignore_ascii_case("apply_patch") || name.eq_ignore_ascii_case("applypatch") {
+        if let Some(obj) = args.as_object()
+            && let Some(path) = format_patch_summary(obj)
+        {
+            return format!("Edit({})", truncate(&path, 60));
+        }
+        return "Edit".to_string();
+    }
+
     match extract_primary_arg(name, args) {
         Some(val) => format!("{}(\"{}\")", name, truncate(&val, 60)),
         None => name.to_string(),
@@ -211,17 +221,51 @@ fn format_git_log(obj: &serde_json::Map<String, Value>) -> Option<String> {
     None
 }
 
-/// Format `apply_patch`: file count from patch content.
+/// Format `apply_patch`: extract file path(s) from LP1 patch content.
 fn format_patch_summary(obj: &serde_json::Map<String, Value>) -> Option<String> {
-    // Try to count files from patch content
     if let Some(patch) = obj.get("patch").and_then(|v| v.as_str()) {
-        let file_count = patch.matches("--- a/").count();
-        if file_count > 0 {
-            return Some(format!("{file_count} file(s)"));
+        // Extract file paths from LP1 format (lines starting with "F ")
+        let files: Vec<&str> = patch
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if let Some(path) = trimmed.strip_prefix("F ") {
+                    let path = path.trim();
+                    // Handle quoted paths
+                    if let Some(inner) = path.strip_prefix('"') {
+                        // Find closing quote, handle escaped quotes
+                        let mut end = 0;
+                        let mut chars = inner.chars().peekable();
+                        while let Some(c) = chars.next() {
+                            if c == '\\' {
+                                chars.next(); // skip escaped char
+                                end += 2;
+                            } else if c == '"' {
+                                break;
+                            } else {
+                                end += c.len_utf8();
+                            }
+                        }
+                        if end > 0 {
+                            return Some(&inner[..end]);
+                        }
+                    }
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        match files.len() {
+            0 => None,
+            1 => Some(files[0].to_string()),
+            n => Some(format!("{n} files")),
         }
+    } else {
+        // Fallback to path if present
+        obj.get("path").and_then(|v| v.as_str()).map(String::from)
     }
-    // Fallback to path if present
-    obj.get("path").and_then(|v| v.as_str()).map(String::from)
 }
 
 /// Format build/test: working dir or build system.
@@ -453,5 +497,44 @@ mod tests {
     fn test_null_args() {
         let args = Value::Null;
         assert_eq!(format_tool_call_compact("Search", &args), "Search");
+    }
+
+    #[test]
+    fn test_apply_patch_single_file() {
+        let args = json!({"patch": "LP1\nF src/main.rs\nR\nold\n.\nnew\n.\nEND\n"});
+        assert_eq!(
+            format_tool_call_compact("apply_patch", &args),
+            "Edit(src/main.rs)"
+        );
+    }
+
+    #[test]
+    fn test_apply_patch_multiple_files() {
+        let args = json!({"patch": "LP1\nF src/a.rs\nR\nold\n.\nnew\n.\nF src/b.rs\nR\nold\n.\nnew\n.\nEND\n"});
+        assert_eq!(
+            format_tool_call_compact("apply_patch", &args),
+            "Edit(2 files)"
+        );
+    }
+
+    #[test]
+    fn test_apply_patch_quoted_path() {
+        let args = json!({"patch": "LP1\nF \"path with spaces.rs\"\nT\nhello\n.\nEND\n"});
+        assert_eq!(
+            format_tool_call_compact("apply_patch", &args),
+            "Edit(path with spaces.rs)"
+        );
+    }
+
+    #[test]
+    fn test_apply_patch_no_files() {
+        let args = json!({"patch": "LP1\nEND\n"});
+        assert_eq!(format_tool_call_compact("apply_patch", &args), "Edit");
+    }
+
+    #[test]
+    fn test_apply_patch_empty_args() {
+        let args = json!({});
+        assert_eq!(format_tool_call_compact("apply_patch", &args), "Edit");
     }
 }

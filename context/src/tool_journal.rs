@@ -572,4 +572,148 @@ mod tests {
         journal.commit_batch(batch_id).unwrap();
         assert!(journal.recover().unwrap().is_none());
     }
+
+    #[test]
+    fn begin_batch_fails_when_pending_exists() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+        let calls = vec![ToolCall::new("1", "test", serde_json::json!({}))];
+
+        // First batch succeeds
+        let _batch_id = journal
+            .begin_batch("test-model", "assistant", &calls)
+            .unwrap();
+
+        // Second batch should fail
+        let result = journal.begin_batch("test-model", "another", &calls);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("pending batch"));
+    }
+
+    #[test]
+    fn streaming_batch_workflow() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+
+        // Begin streaming batch
+        let batch_id = journal.begin_streaming_batch("test-model").unwrap();
+
+        // Record tool call start
+        journal
+            .record_call_start(batch_id, 0, "call_1", "read_file")
+            .unwrap();
+
+        // Append arguments in chunks
+        journal
+            .append_call_args(batch_id, "call_1", r#"{"path":"#)
+            .unwrap();
+        journal
+            .append_call_args(batch_id, "call_1", r#""foo.txt"}"#)
+            .unwrap();
+
+        // Update assistant text
+        journal
+            .update_assistant_text(batch_id, "Let me read the file")
+            .unwrap();
+
+        // Recover and verify
+        let recovered = journal.recover().unwrap().expect("should recover");
+        assert_eq!(recovered.batch_id, batch_id);
+        assert_eq!(recovered.model_name, "test-model");
+        assert_eq!(recovered.assistant_text, "Let me read the file");
+        assert_eq!(recovered.calls.len(), 1);
+        assert_eq!(recovered.calls[0].name, "read_file");
+        assert_eq!(recovered.calls[0].arguments["path"], "foo.txt");
+    }
+
+    #[test]
+    fn discard_batch_removes_all_data() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+        let calls = vec![ToolCall::new("1", "test", serde_json::json!({}))];
+
+        let batch_id = journal
+            .begin_batch("test-model", "assistant", &calls)
+            .unwrap();
+
+        // Add a result
+        let result = ToolResult::success("1", "done");
+        journal.record_result(batch_id, &result).unwrap();
+
+        // Discard the batch
+        journal.discard_batch(batch_id).unwrap();
+
+        // Should be no pending batches
+        assert!(journal.recover().unwrap().is_none());
+    }
+
+    #[test]
+    fn records_error_result() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+        let calls = vec![ToolCall::new("1", "test", serde_json::json!({}))];
+
+        let batch_id = journal
+            .begin_batch("test-model", "assistant", &calls)
+            .unwrap();
+
+        // Record an error result
+        let result = ToolResult::error("1", "Something went wrong");
+        journal.record_result(batch_id, &result).unwrap();
+
+        let recovered = journal.recover().unwrap().expect("should recover");
+        assert_eq!(recovered.results.len(), 1);
+        assert!(recovered.results[0].is_error);
+        assert_eq!(recovered.results[0].content, "Something went wrong");
+    }
+
+    #[test]
+    fn append_call_args_fails_for_unknown_call() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+
+        let batch_id = journal.begin_streaming_batch("test-model").unwrap();
+
+        // Try to append to non-existent call
+        let result = journal.append_call_args(batch_id, "nonexistent", "data");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn update_assistant_text_fails_for_unknown_batch() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+
+        // Try to update a non-existent batch
+        let result = journal.update_assistant_text(999, "text");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn recover_handles_empty_arguments_json() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+
+        let batch_id = journal.begin_streaming_batch("test-model").unwrap();
+        journal
+            .record_call_start(batch_id, 0, "call_1", "test_tool")
+            .unwrap();
+        // Don't append any arguments - leave it empty
+
+        let recovered = journal.recover().unwrap().expect("should recover");
+        assert_eq!(recovered.calls.len(), 1);
+        // Empty args should become empty object
+        assert!(recovered.calls[0].arguments.is_object());
+    }
+
+    #[test]
+    fn recover_handles_invalid_arguments_json() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+
+        let batch_id = journal.begin_streaming_batch("test-model").unwrap();
+        journal
+            .record_call_start(batch_id, 0, "call_1", "test_tool")
+            .unwrap();
+        // Append invalid JSON
+        journal
+            .append_call_args(batch_id, "call_1", "not valid json {{{")
+            .unwrap();
+
+        let recovered = journal.recover().unwrap().expect("should recover");
+        // Invalid JSON should become empty object
+        assert!(recovered.calls[0].arguments.is_object());
+    }
 }

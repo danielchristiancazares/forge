@@ -330,4 +330,120 @@ mod tests {
         };
         assert_eq!(high.severity(), 2);
     }
+
+    #[test]
+    fn test_percentage_zero_budget() {
+        let usage = ContextUsage {
+            used_tokens: 1000,
+            budget_tokens: 0,
+            summarized_segments: 0,
+        };
+        assert_eq!(usage.percentage(), 0.0);
+    }
+
+    #[test]
+    fn test_percentage_full_usage() {
+        let usage = ContextUsage {
+            used_tokens: 100_000,
+            budget_tokens: 100_000,
+            summarized_segments: 0,
+        };
+        assert!((usage.percentage() - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_format_compact_small_tokens() {
+        let usage = ContextUsage {
+            used_tokens: 500,
+            budget_tokens: 900,
+            summarized_segments: 0,
+        };
+        let formatted = usage.format_compact();
+        assert!(formatted.contains("500"));
+        assert!(formatted.contains("900"));
+    }
+
+    #[test]
+    fn test_format_compact_million_tokens() {
+        let usage = ContextUsage {
+            used_tokens: 1_500_000,
+            budget_tokens: 2_000_000,
+            summarized_segments: 0,
+        };
+        let formatted = usage.format_compact();
+        assert!(formatted.contains("1.5M"));
+        assert!(formatted.contains("2.0M"));
+    }
+
+    #[test]
+    fn test_context_segment_tokens() {
+        let original = ContextSegment::original(MessageId::new_for_test(0), 150);
+        assert_eq!(original.tokens(), 150);
+
+        let summarized = ContextSegment::summarized(
+            super::super::history::SummaryId::new_for_test(0),
+            vec![MessageId::new_for_test(1)],
+            200,
+        );
+        assert_eq!(summarized.tokens(), 200);
+    }
+
+    #[test]
+    fn test_context_segment_type_checks() {
+        let original = ContextSegment::original(MessageId::new_for_test(0), 100);
+        assert!(original.is_original());
+        assert!(!original.is_summarized());
+
+        let summarized = ContextSegment::summarized(
+            super::super::history::SummaryId::new_for_test(0),
+            vec![],
+            50,
+        );
+        assert!(!summarized.is_original());
+        assert!(summarized.is_summarized());
+    }
+
+    #[test]
+    fn test_severity_boundary_exactly_70_percent() {
+        let usage = ContextUsage {
+            used_tokens: 70_000,
+            budget_tokens: 100_000,
+            summarized_segments: 0,
+        };
+        // Exactly 70% should be green (severity 0)
+        assert_eq!(usage.severity(), 0);
+    }
+
+    #[test]
+    fn test_severity_boundary_just_over_70_percent() {
+        let usage = ContextUsage {
+            used_tokens: 70_001,
+            budget_tokens: 100_000,
+            summarized_segments: 0,
+        };
+        // Just over 70% should be yellow (severity 1)
+        assert_eq!(usage.severity(), 1);
+    }
+
+    #[test]
+    fn test_severity_boundary_exactly_90_percent() {
+        let usage = ContextUsage {
+            used_tokens: 90_000,
+            budget_tokens: 100_000,
+            summarized_segments: 0,
+        };
+        // Exactly 90% should be yellow (severity 1)
+        assert_eq!(usage.severity(), 1);
+    }
+
+    #[test]
+    fn test_severity_boundary_just_over_90_percent() {
+        let usage = ContextUsage {
+            used_tokens: 90_001,
+            budget_tokens: 100_000,
+            summarized_segments: 0,
+        };
+        // Just over 90% should be red (severity 2)
+        assert_eq!(usage.severity(), 2);
+    }
 }

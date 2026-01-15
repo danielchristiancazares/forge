@@ -3,6 +3,7 @@
 mod effects;
 mod input;
 pub mod markdown;
+mod shared;
 mod theme;
 mod tool_display;
 mod ui_inline;
@@ -30,11 +31,16 @@ use unicode_width::UnicodeWidthStr;
 
 use forge_engine::{
     App, ContextUsageStatus, DisplayItem, InputMode, Message, PredefinedModel, Provider,
+    command_specs,
 };
 use forge_types::{ToolResult, sanitize_terminal_text};
 
 pub use self::markdown::clear_render_cache;
 use self::markdown::render_markdown;
+use self::shared::{
+    ToolCallStatusKind, collect_approval_view, collect_tool_statuses, message_header_parts,
+    wrapped_line_count,
+};
 
 /// Main draw function
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -106,56 +112,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
         *msg_count += 1;
 
         // Message header with role icon and name
-        let (icon, name, name_style) = match msg {
-            Message::System(_) => (
-                glyphs.system.to_string(),
-                "System".to_string(),
-                Style::default()
-                    .fg(palette.text_muted)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Message::User(_) => (
-                glyphs.user.to_string(),
-                "You".to_string(),
-                styles::user_name(palette),
-            ),
-            Message::Assistant(m) => (
-                glyphs.assistant.to_string(),
-                m.provider().display_name().to_string(),
-                styles::assistant_name(palette),
-            ),
-            Message::ToolUse(call) => {
-                let compact = tool_display::format_tool_call_compact(&call.name, &call.arguments);
-                let compact = sanitize_terminal_text(&compact).into_owned();
-                (
-                    glyphs.tool.to_string(),
-                    compact,
-                    Style::default()
-                        .fg(palette.accent)
-                        .add_modifier(Modifier::BOLD),
-                )
-            }
-            Message::ToolResult(result) => {
-                let (icon, style, label) = if result.is_error {
-                    (
-                        glyphs.tool_result_err,
-                        Style::default()
-                            .fg(palette.error)
-                            .add_modifier(Modifier::BOLD),
-                        "Tool Result (error)",
-                    )
-                } else {
-                    (
-                        glyphs.tool_result_ok,
-                        Style::default()
-                            .fg(palette.success)
-                            .add_modifier(Modifier::BOLD),
-                        "Tool Result (ok)",
-                    )
-                };
-                (icon.to_string(), label.to_string(), style)
-            }
-        };
+        let (icon, name, name_style) = message_header_parts(msg, palette, glyphs);
 
         let header_line = Line::from(vec![
             Span::styled(format!(" {icon} "), name_style),
@@ -306,7 +263,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
         )));
     }
 
-    if let Some(calls) = app.tool_loop_calls() {
+    if let Some(statuses) = collect_tool_statuses(app, 80) {
         if msg_count > 0 || app.streaming().is_some() || app.pending_tool_calls().is_some() {
             lines.push(Line::from(""));
         }
@@ -324,86 +281,52 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
                 .add_modifier(Modifier::ITALIC),
         )));
 
-        let mut results_map: std::collections::HashMap<&str, &ToolResult> =
-            std::collections::HashMap::new();
-        if let Some(results) = app.tool_loop_results() {
-            for result in results {
-                results_map.insert(result.tool_call_id.as_str(), result);
-            }
-        }
-
-        let execute_ids: std::collections::HashSet<&str> = app
-            .tool_loop_execute_calls()
-            .map(|exec_calls| exec_calls.iter().map(|c| c.id.as_str()).collect())
-            .unwrap_or_default();
-
-        let current_id = app.tool_loop_current_call_id();
-
-        for call in calls {
-            let result = results_map.get(call.id.as_str());
-            let mut reason: Option<String> = None;
-            let (icon, style, label) = if let Some(result) = result {
-                if !execute_ids.contains(call.id.as_str()) {
-                    let content = sanitize_terminal_text(&result.content);
-                    reason = content
-                        .lines()
-                        .next()
-                        .map(|line| truncate_with_ellipsis(line, 80));
-                    (
-                        glyphs.denied,
-                        Style::default()
-                            .fg(palette.warning)
-                            .add_modifier(Modifier::BOLD),
-                        "denied",
-                    )
-                } else if result.is_error {
-                    let content = sanitize_terminal_text(&result.content);
-                    reason = content
-                        .lines()
-                        .next()
-                        .map(|line| truncate_with_ellipsis(line, 80));
-                    (
-                        glyphs.tool_result_err,
-                        Style::default()
-                            .fg(palette.error)
-                            .add_modifier(Modifier::BOLD),
-                        "error",
-                    )
-                } else {
-                    (
-                        glyphs.tool_result_ok,
-                        Style::default()
-                            .fg(palette.success)
-                            .add_modifier(Modifier::BOLD),
-                        "ok",
-                    )
-                }
-            } else if current_id == Some(call.id.as_str()) {
-                (
+        for status in statuses {
+            let (icon, style, label) = match status.status {
+                ToolCallStatusKind::Denied => (
+                    glyphs.denied,
+                    Style::default()
+                        .fg(palette.warning)
+                        .add_modifier(Modifier::BOLD),
+                    "denied",
+                ),
+                ToolCallStatusKind::Error => (
+                    glyphs.tool_result_err,
+                    Style::default()
+                        .fg(palette.error)
+                        .add_modifier(Modifier::BOLD),
+                    "error",
+                ),
+                ToolCallStatusKind::Ok => (
+                    glyphs.tool_result_ok,
+                    Style::default()
+                        .fg(palette.success)
+                        .add_modifier(Modifier::BOLD),
+                    "ok",
+                ),
+                ToolCallStatusKind::Running => (
                     spinner,
                     Style::default()
                         .fg(palette.primary)
                         .add_modifier(Modifier::BOLD),
                     "running",
-                )
-            } else if approval_pending && !execute_ids.contains(call.id.as_str()) {
-                (
+                ),
+                ToolCallStatusKind::Approval => (
                     glyphs.paused,
                     Style::default()
                         .fg(palette.warning)
                         .add_modifier(Modifier::BOLD),
                     "paused",
-                )
-            } else {
-                (
+                ),
+                ToolCallStatusKind::Pending => (
                     glyphs.bullet,
                     Style::default().fg(palette.text_muted),
                     "pending",
-                )
+                ),
             };
 
-            let name = sanitize_terminal_text(&call.name);
-            let id = sanitize_terminal_text(&call.id);
+            let name = sanitize_terminal_text(&status.name);
+            let id = sanitize_terminal_text(&status.id);
             lines.push(Line::from(vec![
                 Span::styled(format!("  {icon} "), style),
                 Span::styled(
@@ -412,7 +335,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
                 ),
             ]));
 
-            if let Some(reason) = reason {
+            if let Some(reason) = status.reason {
                 lines.push(Line::from(Span::styled(
                     format!("    ↳ {reason}"),
                     Style::default().fg(palette.text_muted),
@@ -476,34 +399,6 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
             }),
             &mut scrollbar_state,
         );
-    }
-}
-
-fn wrapped_line_count(lines: &[Line], width: u16) -> u16 {
-    let width = width.max(1) as usize;
-    let mut total: u16 = 0;
-
-    for line in lines {
-        let line_width = line.width();
-        let rows = if line_width == 0 {
-            1
-        } else {
-            ((line_width - 1) / width) + 1
-        };
-        total = total.saturating_add(rows as u16);
-    }
-
-    total
-}
-
-fn truncate_with_ellipsis(raw: &str, max: usize) -> String {
-    let max = max.max(3);
-    let trimmed = raw.trim();
-    if trimmed.chars().count() <= max {
-        trimmed.to_string()
-    } else {
-        let head: String = trimmed.chars().take(max - 3).collect();
-        format!("{head}...")
     }
 }
 
@@ -902,29 +797,16 @@ fn draw_command_palette(frame: &mut Frame, app: &App, palette: &Palette) {
     let filter_raw = app.command_text().unwrap_or("").trim();
     let filter = filter_raw.trim_start_matches('/').to_ascii_lowercase();
 
-    let commands = vec![
-        ("q, quit", "Exit the application"),
-        ("clear", "Clear conversation history"),
-        ("cancel", "Cancel streaming or tool execution"),
-        ("tool <id> <result>", "Submit a tool result"),
-        ("tools", "Show tool status"),
-        ("model <name>", "Change the model"),
-        ("p, provider <name>", "Switch provider (claude/gpt)"),
-        ("ctx", "Show context usage"),
-        ("jrnl", "Show stream journal stats"),
-        ("sum", "Summarize older messages"),
-        ("screen", "Toggle fullscreen/inline mode"),
-        ("help", "Show available commands"),
-    ];
+    let commands = command_specs();
 
     let filtered: Vec<_> = if filter.is_empty() {
-        commands
+        commands.iter().collect()
     } else {
         commands
-            .into_iter()
-            .filter(|(cmd, desc)| {
-                cmd.to_ascii_lowercase().contains(&filter)
-                    || desc.to_ascii_lowercase().contains(&filter)
+            .iter()
+            .filter(|spec| {
+                spec.palette_label.to_ascii_lowercase().contains(&filter)
+                    || spec.description.to_ascii_lowercase().contains(&filter)
             })
             .collect()
     };
@@ -949,7 +831,9 @@ fn draw_command_palette(frame: &mut Frame, app: &App, palette: &Palette) {
             Style::default().fg(palette.text_muted),
         )));
     } else {
-        for (cmd, desc) in filtered {
+        for spec in filtered {
+            let cmd = spec.palette_label;
+            let desc = spec.description;
             lines.push(Line::from(vec![
                 Span::styled(format!("  /{cmd}"), Style::default().fg(palette.peach)),
                 Span::styled(format!("  {desc}"), Style::default().fg(palette.text_muted)),
@@ -1131,14 +1015,15 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App, palette: &Palette, 
 }
 
 fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
-    let Some(requests) = app.tool_approval_requests() else {
+    let max_width = frame.area().width.saturating_sub(6).clamp(20, 80) as usize;
+    let Some(view) = collect_approval_view(app, max_width) else {
         return;
     };
-    let selected = app.tool_approval_selected().unwrap_or(&[]);
-    let cursor = app.tool_approval_cursor().unwrap_or(0);
-    let confirm_deny = app.tool_approval_deny_confirm();
-    let expanded = app.tool_approval_expanded();
-    let any_selected = selected.iter().any(|flag| *flag);
+
+    let selected = &view.selected;
+    let cursor = view.cursor;
+    let confirm_deny = view.deny_confirm;
+    let any_selected = view.any_selected;
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
@@ -1149,14 +1034,12 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
     )));
     lines.push(Line::from(""));
 
-    let max_width = frame.area().width.saturating_sub(6).clamp(20, 80) as usize;
-
-    for (i, req) in requests.iter().enumerate() {
+    for (i, item) in view.items.iter().enumerate() {
         let is_selected = selected.get(i).copied().unwrap_or(false);
         let pointer = if i == cursor { ">" } else { " " };
         let checkbox = if is_selected { "[x]" } else { "[ ]" };
-        let risk_label = format!("{:?}", req.risk_level).to_uppercase();
-        let risk_style = match risk_label.as_str() {
+        let risk_label = item.risk_label.as_str();
+        let risk_style = match risk_label {
             "HIGH" => Style::default()
                 .fg(palette.error)
                 .add_modifier(Modifier::BOLD),
@@ -1175,36 +1058,29 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
             Style::default().fg(palette.text_primary)
         };
 
-        let tool_name = sanitize_terminal_text(&req.tool_name).into_owned();
+        let tool_name = item.tool_name.as_str();
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{pointer} {checkbox} "),
                 Style::default().fg(palette.text_muted),
             ),
-            Span::styled(tool_name, name_style),
+            Span::styled(tool_name.to_string(), name_style),
             Span::raw(" "),
-            Span::styled(risk_label, risk_style),
+            Span::styled(risk_label.to_string(), risk_style),
         ]));
 
-        if !req.summary.trim().is_empty() {
-            let summary = sanitize_terminal_text(&req.summary);
-            let summary = truncate_with_ellipsis(summary.as_ref(), max_width.saturating_sub(6));
+        if let Some(summary) = item.summary.as_ref() {
             lines.push(Line::from(Span::styled(
                 format!("    {summary}"),
                 Style::default().fg(palette.text_muted),
             )));
         }
 
-        if expanded == Some(i)
-            && let Ok(details) = serde_json::to_string_pretty(&req.arguments)
-        {
-            for line in details.lines() {
-                let truncated = truncate_with_ellipsis(line, max_width.saturating_sub(6));
-                lines.push(Line::from(Span::styled(
-                    format!("      {truncated}"),
-                    Style::default().fg(palette.text_muted),
-                )));
-            }
+        for line in &item.details {
+            lines.push(Line::from(Span::styled(
+                format!("      {line}"),
+                Style::default().fg(palette.text_muted),
+            )));
         }
     }
 
@@ -1227,8 +1103,8 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
 
     // Render Approve and Deny buttons
     lines.push(Line::from(""));
-    let submit_cursor = requests.len();
-    let deny_cursor = requests.len() + 1;
+    let submit_cursor = view.items.len();
+    let deny_cursor = view.items.len() + 1;
 
     let submit_pointer = if cursor == submit_cursor { ">" } else { " " };
     let deny_pointer = if cursor == deny_cursor { ">" } else { " " };
