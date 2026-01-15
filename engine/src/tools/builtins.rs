@@ -533,6 +533,9 @@ impl ToolExecutor for ApplyPatchTool {
             })?;
 
             let mut staged: Vec<StagedFile> = Vec::new();
+            // Human-visible diff (unified-diff-style) derived from the LP1 ops.
+            // We only include diffs for files that actually changed on disk.
+            let mut diff_sections: Vec<String> = Vec::new();
             for file_patch in &patch.files {
                 let resolved = ctx
                     .sandbox
@@ -628,6 +631,10 @@ impl ToolExecutor for ApplyPatchTool {
                 let new_bytes = lp1::emit_file(&content);
                 let changed = new_bytes != original_bytes;
 
+                if changed {
+                    diff_sections.push(lp1::format_file_patch_as_diff(file_patch, existed));
+                }
+
                 staged.push(StagedFile {
                     path: resolved,
                     existed,
@@ -656,7 +663,13 @@ impl ToolExecutor for ApplyPatchTool {
                 summary_lines.push("No changes applied.".to_string());
             }
 
-            Ok(sanitize_output(&summary_lines.join("\n")))
+            let mut output = summary_lines.join("\n");
+            if any_changed && !diff_sections.is_empty() {
+                output.push_str("\n\n");
+                output.push_str(&diff_sections.join("\n\n"));
+            }
+
+            Ok(sanitize_output(&output))
         })
     }
 }

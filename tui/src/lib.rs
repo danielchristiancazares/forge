@@ -1,5 +1,6 @@
 //! TUI rendering for Forge using ratatui.
 
+mod diff_render;
 mod effects;
 mod input;
 pub mod markdown;
@@ -35,6 +36,7 @@ use forge_engine::{
 };
 use forge_types::{ToolResult, sanitize_terminal_text};
 
+use self::diff_render::render_tool_result_lines;
 pub use self::markdown::clear_render_cache;
 use self::markdown::render_markdown;
 use self::shared::{
@@ -127,19 +129,19 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
                 // Compact format: args are in the header line, no body needed
             }
             Message::ToolResult(result) => {
-                // Render result content with appropriate styling
+                // Render result content with diff-aware coloring
                 let content_style = if result.is_error {
                     Style::default().fg(palette.error)
                 } else {
                     Style::default().fg(palette.text_secondary)
                 };
                 let content = sanitize_terminal_text(&result.content);
-                for result_line in content.lines() {
-                    lines.push(Line::from(Span::styled(
-                        format!("  {result_line}"),
-                        content_style,
-                    )));
-                }
+                lines.extend(render_tool_result_lines(
+                    content.as_ref(),
+                    content_style,
+                    &palette,
+                    "  ",
+                ));
             }
             _ => {
                 // Regular messages - render as markdown

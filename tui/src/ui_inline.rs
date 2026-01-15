@@ -12,6 +12,7 @@ use ratatui::{
 use forge_engine::{App, DisplayItem, InputMode, Message};
 use forge_types::sanitize_terminal_text;
 
+use crate::diff_render::render_tool_result_lines;
 use crate::shared::{
     ApprovalView, ToolCallStatus, ToolCallStatusKind, collect_approval_view, collect_tool_statuses,
     message_header_parts, tool_status_signature, wrapped_line_count,
@@ -255,19 +256,19 @@ fn append_message_lines(
             // Compact format: args are in the header line, no body needed
         }
         Message::ToolResult(result) => {
-            // Render result content with appropriate styling
+            // Render result content with diff-aware coloring
             let content_style = if result.is_error {
                 Style::default().fg(palette.error)
             } else {
                 Style::default().fg(palette.text_secondary)
             };
             let content = sanitize_terminal_text(&result.content);
-            for result_line in content.lines() {
-                lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(result_line.to_string(), content_style),
-                ]));
-            }
+            lines.extend(render_tool_result_lines(
+                content.as_ref(),
+                content_style,
+                &palette,
+                "    ",
+            ));
         }
         _ => {
             // Regular messages
