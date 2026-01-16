@@ -211,6 +211,7 @@ impl ApiConfig {
 /// * `limits` - Output token limits (with optional thinking budget)
 /// * `system_prompt` - Optional system prompt to inject
 /// * `tools` - Optional list of tool definitions for function calling
+/// * `gemini_cache` - Optional Gemini cache reference (ignored for other providers)
 /// * `on_event` - Callback for streaming events
 pub async fn send_message(
     config: &ApiConfig,
@@ -218,6 +219,7 @@ pub async fn send_message(
     limits: OutputLimits,
     system_prompt: Option<&str>,
     tools: Option<&[ToolDefinition]>,
+    gemini_cache: Option<&gemini::GeminiCache>,
     on_event: impl Fn(StreamEvent) + Send + 'static,
 ) -> Result<()> {
     match config.provider() {
@@ -226,6 +228,18 @@ pub async fn send_message(
         }
         Provider::OpenAI => {
             openai::send_message(config, messages, limits, system_prompt, tools, on_event).await
+        }
+        Provider::Gemini => {
+            gemini::send_message(
+                config,
+                messages,
+                limits,
+                system_prompt,
+                tools,
+                gemini_cache,
+                on_event,
+            )
+            .await
         }
     }
 }
@@ -1125,6 +1139,769 @@ pub mod openai {
                 StreamEvent::ToolCallDelta { id, arguments }
                     if id == "call_2" && arguments == "{\"path\":\"baz\"}"
             ));
+        }
+    }
+}
+
+/// Google Gemini API implementation.
+pub mod gemini {
+    use super::{
+        ApiConfig, CacheableMessage, Duration, MAX_SSE_BUFFER_BYTES, Message, OutputLimits, Result,
+        STREAM_IDLE_TIMEOUT_SECS, StreamEvent, ToolDefinition, drain_next_sse_event,
+        extract_sse_data, http_client, read_capped_error_body,
+    };
+    use chrono::{DateTime, Utc};
+    use serde_json::{Value, json};
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use uuid::Uuid;
+
+    const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
+
+    // ============================================================================
+    // Context Caching Types
+    // ============================================================================
+
+    /// Active Gemini cache reference.
+    ///
+    /// Gemini uses explicit caching where a cache object is created via API
+    /// and then referenced in subsequent requests via `cachedContent` field.
+    #[derive(Debug, Clone)]
+    pub struct GeminiCache {
+        /// Cache name returned by API (e.g., "cachedContents/abc123")
+        pub name: String,
+        /// When this cache expires (UTC)
+        pub expire_time: DateTime<Utc>,
+        /// Hash of cached system prompt (for detecting changes)
+        pub system_prompt_hash: u64,
+    }
+
+    impl GeminiCache {
+        /// Check if this cache has expired.
+        #[must_use]
+        pub fn is_expired(&self) -> bool {
+            Utc::now() >= self.expire_time
+        }
+
+        /// Check if this cache matches the given system prompt.
+        #[must_use]
+        pub fn matches_prompt(&self, prompt: &str) -> bool {
+            hash_prompt(prompt) == self.system_prompt_hash
+        }
+    }
+
+    /// Configuration for Gemini caching.
+    #[derive(Debug, Clone, Default)]
+    pub struct GeminiCacheConfig {
+        /// Whether caching is enabled
+        pub enabled: bool,
+        /// TTL in seconds for cached content (default: 3600 = 1 hour)
+        pub ttl_seconds: u32,
+    }
+
+    /// Hash a system prompt for comparison.
+    fn hash_prompt(prompt: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        prompt.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Check if a prompt is large enough to cache.
+    ///
+    /// Gemini requires minimum token counts:
+    /// - Gemini 3 Pro: 4,096 tokens
+    /// - Gemini Flash models: 1,024 tokens
+    fn should_cache_prompt(prompt: &str, model: &str) -> bool {
+        let min_tokens = if model.contains("flash") { 1024 } else { 4096 };
+        // Rough estimate: 1 token ≈ 4 characters
+        prompt.len() / 4 >= min_tokens
+    }
+
+    /// Create a cached content object with the system prompt.
+    ///
+    /// This calls the Gemini cachedContents API to create a persistent cache
+    /// that can be referenced in subsequent requests.
+    ///
+    /// # Note
+    /// The cachedContents endpoint uses camelCase (unlike generateContent
+    /// which mixes snake_case and camelCase).
+    pub async fn create_cache(
+        api_key: &str,
+        model: &str,
+        system_prompt: &str,
+        ttl_seconds: u32,
+    ) -> Result<GeminiCache> {
+        // Check if prompt meets minimum token threshold
+        if !should_cache_prompt(system_prompt, model) {
+            anyhow::bail!(
+                "System prompt too short for caching (minimum ~4096 tokens for Pro models)"
+            );
+        }
+
+        let url = format!("{API_BASE}/cachedContents");
+
+        // NOTE: cachedContents endpoint uses camelCase throughout
+        let body = json!({
+            "model": format!("models/{}", model),
+            "systemInstruction": {
+                "parts": [{ "text": system_prompt }]
+            },
+            "ttl": format!("{}s", ttl_seconds)
+        });
+
+        let response = http_client()
+            .post(&url)
+            .header("x-goog-api-key", api_key)
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = read_capped_error_body(response).await;
+            anyhow::bail!("Failed to create cache: {status} - {error_text}");
+        }
+
+        let data: Value = response.json().await?;
+
+        // Parse the response
+        let name = data["name"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing 'name' in cache response"))?
+            .to_string();
+
+        let expire_time_str = data["expireTime"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing 'expireTime' in cache response"))?;
+
+        let expire_time = DateTime::parse_from_rfc3339(expire_time_str)
+            .map_err(|e| anyhow::anyhow!("Invalid expireTime format: {e}"))?
+            .with_timezone(&Utc);
+
+        tracing::info!("Created Gemini cache: {name} (expires: {expire_time})");
+
+        Ok(GeminiCache {
+            name,
+            expire_time,
+            system_prompt_hash: hash_prompt(system_prompt),
+        })
+    }
+
+    /// Build a content part for Gemini API.
+    fn text_part(text: &str) -> Value {
+        json!({ "text": text })
+    }
+
+    fn remove_additional_properties(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                map.remove("additionalProperties");
+                for value in map.values_mut() {
+                    remove_additional_properties(value);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    remove_additional_properties(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Build the request body for Gemini API.
+    ///
+    /// Note: Gemini API uses mixed casing:
+    /// - `system_instruction` (snake_case)
+    /// - `generationConfig` (camelCase)
+    /// - `contents`, `tools` (lowercase)
+    /// - `cachedContent` (camelCase) for cache references
+    fn build_request_body(
+        messages: &[CacheableMessage],
+        limits: OutputLimits,
+        system_prompt: Option<&str>,
+        tools: Option<&[ToolDefinition]>,
+        thinking_enabled: bool,
+        cache: Option<&GeminiCache>,
+    ) -> Value {
+        let mut contents: Vec<Value> = Vec::new();
+
+        for cacheable in messages {
+            let msg = &cacheable.message;
+            match msg {
+                Message::System(_) => {
+                    // System messages go into contents as user messages for Gemini
+                    // (main system prompt uses top-level system_instruction)
+                    contents.push(json!({
+                        "role": "user",
+                        "parts": [text_part(msg.content())]
+                    }));
+                }
+                Message::User(_) => {
+                    contents.push(json!({
+                        "role": "user",
+                        "parts": [text_part(msg.content())]
+                    }));
+                }
+                Message::Assistant(_) => {
+                    contents.push(json!({
+                        "role": "model",
+                        "parts": [text_part(msg.content())]
+                    }));
+                }
+                Message::ToolUse(call) => {
+                    // Function call from the model
+                    contents.push(json!({
+                        "role": "model",
+                        "parts": [{
+                            "functionCall": {
+                                "name": call.name,
+                                "args": call.arguments
+                            }
+                        }]
+                    }));
+                }
+                Message::ToolResult(result) => {
+                    // Function response sent as user message
+                    contents.push(json!({
+                        "role": "user",
+                        "parts": [{
+                            "functionResponse": {
+                                "name": result.tool_call_id.clone(),
+                                "response": {
+                                    "result": result.content
+                                }
+                            }
+                        }]
+                    }));
+                }
+            }
+        }
+
+        let mut body = serde_json::Map::new();
+        body.insert("contents".into(), json!(contents));
+
+        // If cache is provided, reference it instead of inline system_instruction
+        // (the system prompt is already in the cache)
+        if let Some(cache) = cache {
+            body.insert("cachedContent".into(), json!(cache.name));
+        } else if let Some(prompt) = system_prompt
+            && !prompt.trim().is_empty()
+        {
+            // System instruction uses snake_case
+            body.insert(
+                "system_instruction".into(),
+                json!({
+                    "parts": [text_part(prompt)]
+                }),
+            );
+        }
+
+        // Generation config uses camelCase
+        let mut gen_config = serde_json::Map::new();
+        gen_config.insert("maxOutputTokens".into(), json!(limits.max_output_tokens()));
+        gen_config.insert("temperature".into(), json!(1.0));
+
+        // Add thinking config if enabled (Gemini 3 Pro uses thinkingLevel)
+        if thinking_enabled {
+            gen_config.insert(
+                "thinkingConfig".into(),
+                json!({
+                    "thinkingLevel": "high",
+                    "includeThoughts": true
+                }),
+            );
+        }
+
+        body.insert("generationConfig".into(), Value::Object(gen_config));
+
+        // Add tool definitions if provided
+        if let Some(tools) = tools
+            && !tools.is_empty()
+        {
+            let function_declarations: Vec<Value> = tools
+                .iter()
+                .map(|t| {
+                    let mut parameters = t.parameters.clone();
+                    remove_additional_properties(&mut parameters);
+                    json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": parameters
+                    })
+                })
+                .collect();
+            body.insert(
+                "tools".into(),
+                json!([{
+                    "functionDeclarations": function_declarations
+                }]),
+            );
+        }
+
+        Value::Object(body)
+    }
+
+    /// Map Gemini finishReason to StreamEvent.
+    fn handle_finish_reason(reason: &str) -> Option<StreamEvent> {
+        match reason {
+            "STOP" | "MAX_TOKENS" => Some(StreamEvent::Done),
+            "SAFETY" => Some(StreamEvent::Error(
+                "Content filtered by safety settings".to_string(),
+            )),
+            "RECITATION" => Some(StreamEvent::Error(
+                "Response blocked: recitation".to_string(),
+            )),
+            "LANGUAGE" => Some(StreamEvent::Error("Unsupported language".to_string())),
+            "BLOCKLIST" => Some(StreamEvent::Error(
+                "Content contains blocked terms".to_string(),
+            )),
+            "PROHIBITED_CONTENT" => Some(StreamEvent::Error(
+                "Prohibited content detected".to_string(),
+            )),
+            "SPII" => Some(StreamEvent::Error("Sensitive PII detected".to_string())),
+            "MALFORMED_FUNCTION_CALL" => Some(StreamEvent::Error(
+                "Invalid function call generated".to_string(),
+            )),
+            "MISSING_THOUGHT_SIGNATURE" => Some(StreamEvent::Error(
+                "Missing thought signature in request".to_string(),
+            )),
+            "TOO_MANY_TOOL_CALLS" => Some(StreamEvent::Error(
+                "Too many consecutive tool calls".to_string(),
+            )),
+            "UNEXPECTED_TOOL_CALL" => Some(StreamEvent::Error(
+                "Tool call but no tools enabled".to_string(),
+            )),
+            "OTHER" => Some(StreamEvent::Error(
+                "Generation stopped: unknown reason".to_string(),
+            )),
+            _ => None, // Unknown reason, continue processing
+        }
+    }
+
+    pub async fn send_message(
+        config: &ApiConfig,
+        messages: &[CacheableMessage],
+        limits: OutputLimits,
+        system_prompt: Option<&str>,
+        tools: Option<&[ToolDefinition]>,
+        cache: Option<&GeminiCache>,
+        on_event: impl Fn(StreamEvent) + Send + 'static,
+    ) -> Result<()> {
+        use futures_util::StreamExt;
+
+        let client = http_client();
+        let model = config.model().as_str();
+        let url = format!("{API_BASE}/models/{model}:streamGenerateContent?alt=sse");
+
+        // Check if thinking is enabled based on limits (temporary - will use config later)
+        let thinking_enabled = limits.thinking_budget().is_some();
+
+        let body = build_request_body(
+            messages,
+            limits,
+            system_prompt,
+            tools,
+            thinking_enabled,
+            cache,
+        );
+
+        let response = client
+            .post(&url)
+            .header("x-goog-api-key", config.api_key())
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = read_capped_error_body(response).await;
+            on_event(StreamEvent::Error(format!(
+                "API error {status}: {error_text}"
+            )));
+            return Ok(());
+        }
+
+        // Process SSE stream
+        let mut stream = response.bytes_stream();
+        let mut buffer: Vec<u8> = Vec::new();
+
+        loop {
+            let Ok(next) =
+                tokio::time::timeout(Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS), stream.next())
+                    .await
+            else {
+                on_event(StreamEvent::Error("Stream idle timeout".to_string()));
+                return Ok(());
+            };
+            let Some(chunk) = next else { break };
+            let chunk = chunk?;
+            buffer.extend_from_slice(&chunk);
+
+            // Security: prevent unbounded buffer growth
+            if buffer.len() > MAX_SSE_BUFFER_BYTES {
+                on_event(StreamEvent::Error(
+                    "SSE buffer exceeded maximum size (4 MiB)".to_string(),
+                ));
+                return Ok(());
+            }
+
+            while let Some(event) = drain_next_sse_event(&mut buffer) {
+                if event.is_empty() {
+                    continue;
+                }
+
+                let Ok(event) = std::str::from_utf8(&event) else {
+                    on_event(StreamEvent::Error(
+                        "Received invalid UTF-8 from SSE stream".to_string(),
+                    ));
+                    return Ok(());
+                };
+
+                if let Some(data) = extract_sse_data(event) {
+                    if data == "[DONE]" {
+                        on_event(StreamEvent::Done);
+                        return Ok(());
+                    }
+
+                    if let Ok(json) = serde_json::from_str::<Value>(&data) {
+                        // Check for error response
+                        if let Some(error) = json.get("error") {
+                            let message = error
+                                .get("message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Unknown error");
+                            on_event(StreamEvent::Error(message.to_string()));
+                            return Ok(());
+                        }
+
+                        // Process candidates
+                        if let Some(candidates) = json.get("candidates").and_then(|v| v.as_array())
+                        {
+                            for candidate in candidates {
+                                // Check finish reason
+                                if let Some(reason) =
+                                    candidate.get("finishReason").and_then(|v| v.as_str())
+                                    && let Some(event) = handle_finish_reason(reason)
+                                {
+                                    on_event(event);
+                                    return Ok(());
+                                }
+
+                                // Process content parts
+                                if let Some(content) = candidate.get("content")
+                                    && let Some(parts) =
+                                        content.get("parts").and_then(|v| v.as_array())
+                                {
+                                    for part in parts {
+                                        // Check for thinking content
+                                        let is_thought = part
+                                            .get("thought")
+                                            .and_then(serde_json::Value::as_bool)
+                                            == Some(true);
+
+                                        // Text content
+                                        if let Some(text) =
+                                            part.get("text").and_then(|v| v.as_str())
+                                        {
+                                            if is_thought {
+                                                on_event(StreamEvent::ThinkingDelta(
+                                                    text.to_string(),
+                                                ));
+                                            } else {
+                                                on_event(StreamEvent::TextDelta(text.to_string()));
+                                            }
+                                        }
+
+                                        // Function call
+                                        if let Some(func_call) = part.get("functionCall") {
+                                            let name = func_call
+                                                .get("name")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("")
+                                                .to_string();
+                                            let args =
+                                                func_call.get("args").cloned().unwrap_or(json!({}));
+
+                                            // Generate UUID for tool call ID (Gemini doesn't provide one)
+                                            let id = format!("call_{}", Uuid::new_v4());
+
+                                            on_event(StreamEvent::ToolCallStart {
+                                                id: id.clone(),
+                                                name,
+                                            });
+
+                                            // Send arguments as a single delta
+                                            if let Ok(args_str) = serde_json::to_string(&args) {
+                                                on_event(StreamEvent::ToolCallDelta {
+                                                    id,
+                                                    arguments: args_str,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Premature EOF: connection closed without finishReason or [DONE]
+        on_event(StreamEvent::Error(
+            "Connection closed before stream completed".to_string(),
+        ));
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn contains_additional_properties(value: &Value) -> bool {
+            match value {
+                Value::Object(map) => {
+                    map.contains_key("additionalProperties")
+                        || map.values().any(contains_additional_properties)
+                }
+                Value::Array(values) => values.iter().any(contains_additional_properties),
+                _ => false,
+            }
+        }
+
+        #[test]
+        fn builds_request_with_system_instruction() {
+            let messages = vec![CacheableMessage::plain(Message::try_user("hello").unwrap())];
+            let limits = OutputLimits::new(4096);
+
+            let body = build_request_body(
+                &messages,
+                limits,
+                Some("You are helpful"),
+                None,
+                false,
+                None,
+            );
+
+            assert!(body.get("system_instruction").is_some());
+            let sys = body.get("system_instruction").unwrap();
+            assert_eq!(sys["parts"][0]["text"], "You are helpful");
+        }
+
+        #[test]
+        fn builds_request_with_generation_config() {
+            let messages = vec![CacheableMessage::plain(Message::try_user("hello").unwrap())];
+            let limits = OutputLimits::new(8192);
+
+            let body = build_request_body(&messages, limits, None, None, false, None);
+
+            let gen_config = body.get("generationConfig").unwrap();
+            assert_eq!(gen_config["maxOutputTokens"], 8192);
+            assert_eq!(gen_config["temperature"], 1.0);
+        }
+
+        #[test]
+        fn builds_request_with_thinking_config() {
+            let messages = vec![CacheableMessage::plain(Message::try_user("hello").unwrap())];
+            let limits = OutputLimits::new(8192);
+
+            let body = build_request_body(&messages, limits, None, None, true, None);
+
+            let gen_config = body.get("generationConfig").unwrap();
+            let thinking = gen_config.get("thinkingConfig").unwrap();
+            assert_eq!(thinking["thinkingLevel"], "high");
+            assert_eq!(thinking["includeThoughts"], true);
+        }
+
+        #[test]
+        fn builds_request_with_tools() {
+            let messages = vec![CacheableMessage::plain(Message::try_user("hello").unwrap())];
+            let limits = OutputLimits::new(4096);
+
+            let tools = vec![forge_types::ToolDefinition::new(
+                "get_weather",
+                "Get weather for a location",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "location": { "type": "string" }
+                    }
+                }),
+            )];
+
+            let body = build_request_body(&messages, limits, None, Some(&tools), false, None);
+
+            let tools_json = body.get("tools").unwrap();
+            let decls = &tools_json[0]["functionDeclarations"];
+            assert_eq!(decls[0]["name"], "get_weather");
+        }
+
+        #[test]
+        fn strips_additional_properties_from_tool_schemas() {
+            let messages = vec![CacheableMessage::plain(Message::try_user("hello").unwrap())];
+            let limits = OutputLimits::new(4096);
+
+            let tools = vec![forge_types::ToolDefinition::new(
+                "complex_tool",
+                "Tool with nested schema",
+                json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "location": { "type": "string" },
+                        "options": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "unit": { "type": "string" }
+                            }
+                        },
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                    "value": { "type": "string" }
+                                }
+                            }
+                        }
+                    }
+                }),
+            )];
+
+            let body = build_request_body(&messages, limits, None, Some(&tools), false, None);
+
+            let params = &body["tools"][0]["functionDeclarations"][0]["parameters"];
+            assert!(!contains_additional_properties(params));
+        }
+
+        #[test]
+        fn maps_tool_use_to_function_call() {
+            let call = forge_types::ToolCall::new("call_123", "read_file", json!({"path": "foo"}));
+            let messages = vec![CacheableMessage::plain(Message::tool_use(call))];
+            let limits = OutputLimits::new(4096);
+
+            let body = build_request_body(&messages, limits, None, None, false, None);
+
+            let contents = body.get("contents").unwrap().as_array().unwrap();
+            assert_eq!(contents[0]["role"], "model");
+            let func_call = &contents[0]["parts"][0]["functionCall"];
+            assert_eq!(func_call["name"], "read_file");
+        }
+
+        #[test]
+        fn maps_tool_result_to_function_response() {
+            let result = forge_types::ToolResult::success("read_file", "file contents here");
+            let messages = vec![CacheableMessage::plain(Message::tool_result(result))];
+            let limits = OutputLimits::new(4096);
+
+            let body = build_request_body(&messages, limits, None, None, false, None);
+
+            let contents = body.get("contents").unwrap().as_array().unwrap();
+            assert_eq!(contents[0]["role"], "user");
+            let func_resp = &contents[0]["parts"][0]["functionResponse"];
+            assert_eq!(func_resp["name"], "read_file");
+        }
+
+        #[test]
+        fn handle_finish_reason_stop() {
+            let event = handle_finish_reason("STOP");
+            assert!(matches!(event, Some(StreamEvent::Done)));
+        }
+
+        #[test]
+        fn handle_finish_reason_safety() {
+            let event = handle_finish_reason("SAFETY");
+            assert!(matches!(event, Some(StreamEvent::Error(_))));
+        }
+
+        #[test]
+        fn handle_finish_reason_unknown() {
+            let event = handle_finish_reason("UNKNOWN_REASON");
+            assert!(event.is_none());
+        }
+
+        #[test]
+        fn builds_request_with_cache_reference() {
+            use chrono::TimeZone;
+
+            let messages = vec![CacheableMessage::plain(Message::try_user("hello").unwrap())];
+            let limits = OutputLimits::new(4096);
+
+            let cache = GeminiCache {
+                name: "cachedContents/abc123".to_string(),
+                expire_time: Utc.with_ymd_and_hms(2030, 1, 1, 0, 0, 0).unwrap(),
+                system_prompt_hash: 12345,
+            };
+
+            let body = build_request_body(
+                &messages,
+                limits,
+                Some("You are helpful"), // Should be ignored when cache present
+                None,
+                false,
+                Some(&cache),
+            );
+
+            // Should have cachedContent reference
+            assert_eq!(body.get("cachedContent").unwrap(), "cachedContents/abc123");
+
+            // Should NOT have system_instruction (it's in the cache)
+            assert!(body.get("system_instruction").is_none());
+        }
+
+        #[test]
+        fn cache_expiry_check() {
+            use chrono::TimeZone;
+
+            // Expired cache
+            let expired = GeminiCache {
+                name: "test".to_string(),
+                expire_time: Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap(),
+                system_prompt_hash: 0,
+            };
+            assert!(expired.is_expired());
+
+            // Future cache
+            let future = GeminiCache {
+                name: "test".to_string(),
+                expire_time: Utc.with_ymd_and_hms(2030, 1, 1, 0, 0, 0).unwrap(),
+                system_prompt_hash: 0,
+            };
+            assert!(!future.is_expired());
+        }
+
+        #[test]
+        fn cache_prompt_matching() {
+            let prompt = "You are a helpful assistant.";
+            let hash = hash_prompt(prompt);
+
+            let cache = GeminiCache {
+                name: "test".to_string(),
+                expire_time: Utc::now(),
+                system_prompt_hash: hash,
+            };
+
+            assert!(cache.matches_prompt(prompt));
+            assert!(!cache.matches_prompt("Different prompt"));
+        }
+
+        #[test]
+        fn should_cache_large_prompt() {
+            // 4096 tokens * 4 chars/token = 16384 chars minimum
+            let small_prompt = "A".repeat(1000);
+            let large_prompt = "A".repeat(20000);
+
+            assert!(!should_cache_prompt(&small_prompt, "gemini-3-pro"));
+            assert!(should_cache_prompt(&large_prompt, "gemini-3-pro"));
+
+            // Flash models have lower threshold
+            let medium_prompt = "A".repeat(5000);
+            assert!(should_cache_prompt(&medium_prompt, "gemini-3-flash"));
         }
     }
 }
