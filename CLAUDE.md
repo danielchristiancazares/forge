@@ -18,8 +18,7 @@ Config: `~/.forge/config.toml` (supports `${ENV_VAR}` expansion)
 
 ```toml
 [app]
-provider = "claude"        # or "openai"
-model = "claude-sonnet-4-5-20250929"
+model = "claude-sonnet-4-5-20250929"  # Provider inferred from model prefix
 tui = "full"               # or "inline"
 ascii_only = false         # ASCII-only glyphs for icons/spinners
 high_contrast = false      # High-contrast color palette
@@ -28,6 +27,7 @@ reduced_motion = false     # Disable modal animations
 [api_keys]
 anthropic = "${ANTHROPIC_API_KEY}"
 openai = "${OPENAI_API_KEY}"
+google = "${GEMINI_API_KEY}"
 
 [context]
 infinity = true            # Enable summarization-based context management
@@ -35,9 +35,14 @@ infinity = true            # Enable summarization-based context management
 [anthropic]
 cache_enabled = true
 thinking_enabled = false
+
+[google]
+thinking_enabled = true    # Uses thinkingLevel="high" for Gemini 3 Pro
 ```
 
-Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `FORGE_TUI`, `FORGE_CONTEXT_INFINITY=0`
+Models: `claude-*` → Claude, `gpt-*` → OpenAI, `gemini-*` → Gemini
+
+Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_TUI`, `FORGE_CONTEXT_INFINITY=0`
 
 ## Architecture
 
@@ -50,7 +55,7 @@ forge/
 ├── Cargo.toml      # Workspace root (pure workspace, no [package])
 ├── cli/            # Binary entry point + terminal session management
 ├── types/          # Core domain types (no IO, no async)
-├── providers/      # LLM API clients (Claude, OpenAI)
+├── providers/      # LLM API clients (Claude, OpenAI, Gemini)
 ├── context/        # Context window management + SQLite persistence
 ├── engine/         # App state machine, commands, orchestration
 ├── tui/            # TUI rendering (ratatui) + input handling
@@ -83,7 +88,7 @@ forge/
 | `context` | `summarization.rs` | Summary generation |
 | `context` | `model_limits.rs` | Per-model token limits |
 | `context` | `token_counter.rs` | Token counting |
-| `providers` | `lib.rs` | Provider dispatch, SSE parsing, inline `claude`/`openai` modules |
+| `providers` | `lib.rs` | Provider dispatch, SSE parsing, inline `claude`/`openai`/`gemini` modules |
 | `types` | `lib.rs` | Message types, `NonEmptyString`, `ModelName` |
 | `webfetch` | `lib.rs` | URL fetch orchestration, chunking for LLM context |
 
@@ -136,11 +141,17 @@ The codebase enforces correctness through types (see `docs/DESIGN.md`):
 
 ### Provider System (`providers/src/lib.rs`)
 
-`Provider` enum (Claude, OpenAI) with:
+`Provider` enum (Claude, OpenAI, Gemini) with:
 
 - `default_model()` → provider's default model
 - `available_models()` → known model list
 - `parse_model(raw)` → validates model name, returns `ModelName`
+
+| Provider | Default Model | Context | Output |
+|----------|---------------|---------|--------|
+| Claude | `claude-sonnet-4-5-20250929` | 200K | 16K |
+| OpenAI | `gpt-5.2` | 1M | 100K |
+| Gemini | `gemini-3-pro-preview` | 1M | 65K |
 
 Adding a provider: extend `Provider` enum, implement all match arms, add module in `providers/src/`.
 

@@ -16,22 +16,30 @@ fn provider_parse_aliases() {
     assert_eq!(Provider::parse("gpt"), Some(Provider::OpenAI));
     assert_eq!(Provider::parse("chatgpt"), Some(Provider::OpenAI));
 
+    // Gemini aliases
+    assert_eq!(Provider::parse("gemini"), Some(Provider::Gemini));
+    assert_eq!(Provider::parse("google"), Some(Provider::Gemini));
+    assert_eq!(Provider::parse("Gemini"), Some(Provider::Gemini));
+
     // Unknown
-    assert_eq!(Provider::parse("gemini"), None);
+    assert_eq!(Provider::parse("unknown_provider"), None);
     assert_eq!(Provider::parse(""), None);
 }
 
 #[test]
-fn provider_all_returns_both() {
+fn provider_all_returns_all() {
     let all = Provider::all();
     assert!(all.contains(&Provider::Claude));
     assert!(all.contains(&Provider::OpenAI));
+    assert!(all.contains(&Provider::Gemini));
+    assert_eq!(all.len(), 3);
 }
 
 #[test]
 fn provider_env_vars() {
     assert_eq!(Provider::Claude.env_var(), "ANTHROPIC_API_KEY");
     assert_eq!(Provider::OpenAI.env_var(), "OPENAI_API_KEY");
+    assert_eq!(Provider::Gemini.env_var(), "GEMINI_API_KEY");
 }
 
 #[test]
@@ -75,9 +83,11 @@ fn model_name_known_constructor() {
 fn api_key_provider_association() {
     let claude_key = ApiKey::Claude("sk-ant-test".to_string());
     let openai_key = ApiKey::OpenAI("sk-test".to_string());
+    let gemini_key = ApiKey::Gemini("AIza-test".to_string());
 
     assert_eq!(claude_key.provider(), Provider::Claude);
     assert_eq!(openai_key.provider(), Provider::OpenAI);
+    assert_eq!(gemini_key.provider(), Provider::Gemini);
 }
 
 #[test]

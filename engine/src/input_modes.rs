@@ -126,11 +126,6 @@ impl InsertMode<'_> {
                 self.app.set_status_warning("Already streaming a response");
                 return None;
             }
-            OperationState::AwaitingToolResults(_) => {
-                self.app
-                    .set_status_warning("Busy: waiting for tool results");
-                return None;
-            }
             OperationState::ToolLoop(_) => {
                 self.app
                     .set_status_warning("Busy: tool execution in progress");
@@ -190,6 +185,7 @@ impl InsertMode<'_> {
         let api_key = match self.app.model.provider() {
             Provider::Claude => ApiKey::Claude(api_key),
             Provider::OpenAI => ApiKey::OpenAI(api_key),
+            Provider::Gemini => ApiKey::Gemini(api_key),
         };
 
         let config = match ApiConfig::new(api_key, self.app.model.clone()) {

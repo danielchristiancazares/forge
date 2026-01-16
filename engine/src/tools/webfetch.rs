@@ -12,7 +12,6 @@ const WEBFETCH_TOOL_NAME: &str = "WebFetch";
 /// Configuration for the `WebFetch` tool.
 #[derive(Debug, Clone)]
 pub struct WebFetchToolConfig {
-    pub enabled: bool,
     pub user_agent: Option<String>,
     pub timeout_seconds: u32,
     pub max_redirects: u32,
@@ -25,7 +24,6 @@ pub struct WebFetchToolConfig {
 impl Default for WebFetchToolConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             user_agent: None,
             timeout_seconds: 20,
             max_redirects: 5,
@@ -197,7 +195,6 @@ mod tests {
     #[test]
     fn default_config() {
         let config = WebFetchToolConfig::default();
-        assert!(!config.enabled);
         assert_eq!(config.timeout_seconds, 20);
         assert_eq!(config.default_max_chunk_tokens, 600);
     }

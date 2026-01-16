@@ -10,6 +10,7 @@ use ignore::WalkBuilder;
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use similar::{ChangeTag, TextDiff};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
@@ -94,6 +95,94 @@ struct GlobArgs {
 
 const DEFAULT_GLOB_LIMIT: usize = 1000;
 const MAX_GLOB_LIMIT: usize = 10_000;
+
+/// Format a unified diff between old and new file content.
+///
+/// Produces output with:
+/// - 1 line of context around each change
+/// - `...` between changes separated by >3 unchanged lines
+/// - Red (`-`) for deletions, green (`+`) for additions
+fn format_unified_diff(path: &str, old_bytes: &[u8], new_bytes: &[u8], existed: bool) -> String {
+    let old_text = std::str::from_utf8(old_bytes).unwrap_or("");
+    let new_text = std::str::from_utf8(new_bytes).unwrap_or("");
+
+    let diff = TextDiff::from_lines(old_text, new_text);
+
+    let mut out = String::new();
+
+    // File header
+    out.push_str(&format!(
+        "--- {}\n",
+        if existed { path } else { "/dev/null" }
+    ));
+    out.push_str(&format!("+++ {path}\n"));
+
+    // Collect all changes with their line indices
+    let changes: Vec<_> = diff.iter_all_changes().collect();
+    if changes.is_empty() {
+        return out;
+    }
+
+    // Group changes into hunks with 1 line of context, collapsing gaps >3 lines
+    let mut i = 0;
+    let mut last_output_idx: Option<usize> = None;
+
+    while i < changes.len() {
+        let change = &changes[i];
+
+        match change.tag() {
+            ChangeTag::Equal => {
+                // Check if this context line is near a change
+                let near_prev_change = i > 0 && changes[i - 1].tag() != ChangeTag::Equal;
+                let near_next_change = changes
+                    .get(i + 1)
+                    .is_some_and(|c| c.tag() != ChangeTag::Equal);
+
+                if near_prev_change || near_next_change {
+                    // Check if we need a gap marker
+                    if let Some(last_idx) = last_output_idx {
+                        let gap = i - last_idx - 1;
+                        if gap > 3 {
+                            out.push_str("...\n");
+                        }
+                    }
+                    out.push(' ');
+                    out.push_str(change.value().trim_end_matches('\n'));
+                    out.push('\n');
+                    last_output_idx = Some(i);
+                }
+            }
+            ChangeTag::Delete => {
+                if let Some(last_idx) = last_output_idx {
+                    let gap = i - last_idx - 1;
+                    if gap > 3 {
+                        out.push_str("...\n");
+                    }
+                }
+                out.push('-');
+                out.push_str(change.value().trim_end_matches('\n'));
+                out.push('\n');
+                last_output_idx = Some(i);
+            }
+            ChangeTag::Insert => {
+                if let Some(last_idx) = last_output_idx {
+                    let gap = i - last_idx - 1;
+                    if gap > 3 {
+                        out.push_str("...\n");
+                    }
+                }
+                out.push('+');
+                out.push_str(change.value().trim_end_matches('\n'));
+                out.push('\n');
+                last_output_idx = Some(i);
+            }
+        }
+
+        i += 1;
+    }
+
+    out
+}
 
 impl ToolExecutor for GlobTool {
     fn name(&self) -> &'static str {
@@ -349,11 +438,11 @@ impl ToolExecutor for ReadFileTool {
     }
 
     fn requires_approval(&self) -> bool {
-        true
+        false
     }
 
     fn risk_level(&self) -> RiskLevel {
-        RiskLevel::Medium
+        RiskLevel::Low
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
@@ -632,7 +721,12 @@ impl ToolExecutor for ApplyPatchTool {
                 let changed = new_bytes != original_bytes;
 
                 if changed {
-                    diff_sections.push(lp1::format_file_patch_as_diff(file_patch, existed));
+                    diff_sections.push(format_unified_diff(
+                        &file_patch.path,
+                        &original_bytes,
+                        &new_bytes,
+                        existed,
+                    ));
                 }
 
                 staged.push(StagedFile {
@@ -958,14 +1052,10 @@ pub fn register_builtins(
     registry.register(Box::new(RunCommandTool::new(shell)))?;
     registry.register(Box::new(GlobTool))?;
     git::register_git_tools(registry)?;
-    if search_config.enabled {
-        for name in SearchTool::aliases() {
-            registry.register(Box::new(SearchTool::with_name(name, search_config.clone())))?;
-        }
+    for name in SearchTool::aliases() {
+        registry.register(Box::new(SearchTool::with_name(name, search_config.clone())))?;
     }
-    if webfetch_config.enabled {
-        registry.register(Box::new(WebFetchTool::new(webfetch_config)))?;
-    }
+    registry.register(Box::new(WebFetchTool::new(webfetch_config)))?;
     Ok(())
 }
 

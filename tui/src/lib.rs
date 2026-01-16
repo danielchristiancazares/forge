@@ -17,6 +17,8 @@ pub use ui_inline::{
     clear_inline_viewport, draw as draw_inline, inline_viewport_height,
 };
 
+use std::cell::RefCell;
+
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
@@ -41,8 +43,49 @@ pub use self::markdown::clear_render_cache;
 use self::markdown::render_markdown;
 use self::shared::{
     ToolCallStatusKind, collect_approval_view, collect_tool_statuses, message_header_parts,
-    wrapped_line_count,
+    wrapped_line_rows,
 };
+
+/// Cache for rendered message lines to avoid rebuilding every frame.
+/// Only used when idle (no streaming, no tool execution).
+#[derive(Default)]
+struct MessageLinesCache {
+    /// (display_version, width) - cache is valid only when both match
+    key: (usize, u16),
+    lines: Vec<Line<'static>>,
+    row_counts: Vec<usize>,
+}
+
+impl MessageLinesCache {
+    fn get(&self, display_version: usize, width: u16) -> Option<(&[Line<'static>], &[usize])> {
+        if self.key == (display_version, width) && !self.lines.is_empty() {
+            Some((&self.lines, &self.row_counts))
+        } else {
+            None
+        }
+    }
+
+    fn set(
+        &mut self,
+        display_version: usize,
+        width: u16,
+        lines: Vec<Line<'static>>,
+        row_counts: Vec<usize>,
+    ) {
+        self.key = (display_version, width);
+        self.lines = lines;
+        self.row_counts = row_counts;
+    }
+
+    fn invalidate(&mut self) {
+        self.lines.clear();
+        self.row_counts.clear();
+    }
+}
+
+thread_local! {
+    static MESSAGE_CACHE: RefCell<MessageLinesCache> = RefCell::new(MessageLinesCache::default());
+}
 
 /// Main draw function
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -98,65 +141,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, glyphs: &Glyphs) {
-    // Helper to render a single message (defined at function start to satisfy clippy)
-    fn render_message(
-        msg: &Message,
-        lines: &mut Vec<Line>,
-        msg_count: &mut usize,
-        palette: &Palette,
-        glyphs: &Glyphs,
-    ) {
-        // Add spacing between messages (except first)
-        if *msg_count > 0 {
-            lines.push(Line::from(""));
-            lines.push(Line::from(""));
-        }
-        *msg_count += 1;
-
-        // Message header with role icon and name
-        let (icon, name, name_style) = message_header_parts(msg, palette, glyphs);
-
-        let header_line = Line::from(vec![
-            Span::styled(format!(" {icon} "), name_style),
-            Span::styled(name, name_style),
-        ]);
-        lines.push(header_line);
-        lines.push(Line::from("")); // Space after header
-
-        // Message content - render based on type
-        match msg {
-            Message::ToolUse(_) => {
-                // Compact format: args are in the header line, no body needed
-            }
-            Message::ToolResult(result) => {
-                // Render result content with diff-aware coloring
-                let content_style = if result.is_error {
-                    Style::default().fg(palette.error)
-                } else {
-                    Style::default().fg(palette.text_secondary)
-                };
-                let content = sanitize_terminal_text(&result.content);
-                lines.extend(render_tool_result_lines(
-                    content.as_ref(),
-                    content_style,
-                    &palette,
-                    "  ",
-                ));
-            }
-            _ => {
-                // Regular messages - render as markdown
-                let content_style = match msg {
-                    Message::User(_) => Style::default().fg(palette.text_primary),
-                    Message::Assistant(_) => Style::default().fg(palette.text_secondary),
-                    _ => Style::default().fg(palette.text_muted),
-                };
-                let content = sanitize_terminal_text(msg.content());
-                let rendered = render_markdown(content.as_ref(), content_style, palette);
-                lines.extend(rendered);
-            }
-        }
-    }
-
     let messages_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -166,12 +150,144 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
     // Show welcome screen if no messages
     if app.is_empty() {
         app.update_scroll_max(0);
+        MESSAGE_CACHE.with(|cache| cache.borrow_mut().invalidate());
         let welcome = create_welcome_screen(app, palette, glyphs);
         frame.render_widget(welcome.block(messages_block), area);
         return;
     }
 
-    // Build message content
+    // Calculate inner area early for cache key
+    let inner = messages_block.inner(area);
+    let display_version = app.display_version();
+
+    // Check if we're in a cacheable state (no streaming, no tool execution)
+    let is_streaming = app.streaming().is_some();
+    let has_tool_activity = collect_tool_statuses(app, 80).is_some();
+    let is_cacheable = !is_streaming && !has_tool_activity;
+
+    // Try to use cache if in cacheable state
+    let (lines, line_rows, total_rows) = if is_cacheable {
+        MESSAGE_CACHE.with(|cache| {
+            let cache_ref = cache.borrow();
+            if let Some((cached_lines, cached_rows)) = cache_ref.get(display_version, inner.width) {
+                // Cache hit - clone the cached data
+                let lines = cached_lines.to_vec();
+                let line_rows = cached_rows.to_vec();
+                let total_rows: usize = line_rows.iter().sum();
+                return (lines, line_rows, total_rows);
+            }
+            drop(cache_ref);
+
+            // Cache miss - build lines
+            let (lines, line_rows, total_rows) =
+                build_message_lines(app, palette, glyphs, inner.width);
+
+            // Update cache
+            cache.borrow_mut().set(
+                display_version,
+                inner.width,
+                lines.clone(),
+                line_rows.clone(),
+            );
+
+            (lines, line_rows, total_rows)
+        })
+    } else {
+        // Not cacheable - invalidate cache and build fresh
+        MESSAGE_CACHE.with(|cache| cache.borrow_mut().invalidate());
+        build_message_lines_with_dynamic(app, palette, glyphs, inner.width)
+    };
+
+    // Handle u16 overflow for very long conversations
+    let mut lines = lines;
+    let mut line_rows = line_rows;
+    let mut total_rows = total_rows;
+    let max_rows = u16::MAX as usize;
+
+    // Ratatui scroll offsets are u16; trim oldest rows if content exceeds that range.
+    if total_rows > max_rows {
+        let mut drop_count = 0;
+        while total_rows > max_rows && drop_count < line_rows.len() {
+            total_rows = total_rows.saturating_sub(line_rows[drop_count]);
+            drop_count += 1;
+        }
+
+        if drop_count > 0 {
+            lines.drain(0..drop_count);
+            line_rows.drain(0..drop_count);
+        }
+    }
+
+    let visible_height = inner.height as usize;
+    let max_scroll = total_rows.saturating_sub(visible_height).min(max_rows) as u16;
+    app.update_scroll_max(max_scroll);
+    let scroll_offset = app.scroll_offset_from_top();
+
+    let messages = Paragraph::new(lines)
+        .block(messages_block)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll_offset, 0));
+
+    frame.render_widget(messages, area);
+
+    // Only render scrollbar when content exceeds viewport
+    if max_scroll > 0 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some(glyphs.arrow_up))
+            .end_symbol(Some(glyphs.arrow_down))
+            .track_symbol(Some(glyphs.track))
+            .thumb_symbol(glyphs.thumb)
+            .style(Style::default().fg(palette.text_muted));
+
+        // content_length = scrollable range (max_scroll), not total_lines
+        // This ensures thumb is at bottom when scroll_offset == max_scroll
+        let mut scrollbar_state =
+            ScrollbarState::new(max_scroll as usize).position(scroll_offset as usize);
+
+        frame.render_stateful_widget(
+            scrollbar,
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
+}
+
+/// Build message lines for static content only (no streaming, no tool status).
+/// Used for caching when idle.
+fn build_message_lines(
+    app: &App,
+    palette: &Palette,
+    glyphs: &Glyphs,
+    width: u16,
+) -> (Vec<Line<'static>>, Vec<usize>, usize) {
+    let mut lines: Vec<Line> = Vec::new();
+    let mut msg_count = 0;
+
+    for item in app.display_items() {
+        let msg = match item {
+            DisplayItem::History(id) => app.history().get_entry(*id).message(),
+            DisplayItem::Local(msg) => msg,
+        };
+        render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs);
+    }
+
+    let line_rows = wrapped_line_rows(&lines, width);
+    let total_rows: usize = line_rows.iter().sum();
+
+    (lines, line_rows, total_rows)
+}
+
+/// Build message lines including dynamic content (streaming, tool status).
+/// Not cached since content changes frequently.
+fn build_message_lines_with_dynamic(
+    app: &App,
+    palette: &Palette,
+    glyphs: &Glyphs,
+    width: u16,
+) -> (Vec<Line<'static>>, Vec<usize>, usize) {
     let mut lines: Vec<Line> = Vec::new();
     let mut msg_count = 0;
 
@@ -181,10 +297,10 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
             DisplayItem::History(id) => app.history().get_entry(*id).message(),
             DisplayItem::Local(msg) => msg,
         };
-        render_message(msg, &mut lines, &mut msg_count, palette, glyphs);
+        render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs);
     }
 
-    // Render streaming message if present (State as Location)
+    // Render streaming message if present
     if let Some(streaming) = app.streaming() {
         if msg_count > 0 {
             lines.push(Line::from(""));
@@ -210,12 +326,10 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
                     .add_modifier(Modifier::ITALIC),
             ));
         }
-        let header_line = Line::from(header_spans);
-        lines.push(header_line);
+        lines.push(Line::from(header_spans));
         lines.push(Line::from(""));
 
         if is_empty {
-            // Show animated spinner for loading
             let spinner = spinner_frame(app.tick_count(), app.ui_options());
             lines.push(Line::from(vec![
                 Span::raw("    "),
@@ -230,43 +344,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
         }
     }
 
-    // Render awaiting tool results status if present
-    if let Some(pending_calls) = app.pending_tool_calls() {
-        if msg_count > 0 || app.streaming().is_some() {
-            lines.push(Line::from(""));
-        }
-        let spinner = spinner_frame(app.tick_count(), app.ui_options());
-        let status_line = Line::from(vec![
-            Span::styled(format!("{spinner} "), Style::default().fg(palette.warning)),
-            Span::styled(
-                format!("Awaiting {} tool result(s)...", pending_calls.len()),
-                Style::default()
-                    .fg(palette.text_muted)
-                    .add_modifier(Modifier::ITALIC),
-            ),
-        ]);
-        lines.push(status_line);
-
-        // List pending tools
-        for call in pending_calls {
-            let name = sanitize_terminal_text(&call.name);
-            let id = sanitize_terminal_text(&call.id);
-            lines.push(Line::from(Span::styled(
-                format!("  {} {} ({})", glyphs.bullet, name.as_ref(), id.as_ref()),
-                Style::default().fg(palette.text_muted),
-            )));
-        }
-
-        lines.push(Line::from(Span::styled(
-            "  Use /tool <id> <result> or /tool error <id> <message>",
-            Style::default()
-                .fg(palette.text_muted)
-                .add_modifier(Modifier::ITALIC),
-        )));
-    }
-
+    // Render tool statuses if present
     if let Some(statuses) = collect_tool_statuses(app, 80) {
-        if msg_count > 0 || app.streaming().is_some() || app.pending_tool_calls().is_some() {
+        if msg_count > 0 || app.streaming().is_some() {
             lines.push(Line::from(""));
         }
         let spinner = spinner_frame(app.tick_count(), app.ui_options());
@@ -363,44 +443,68 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
         }
     }
 
-    // Calculate content height and visible height for scrolling
-    let inner = messages_block.inner(area);
-    let total_lines = wrapped_line_count(&lines, inner.width);
-    let visible_height = inner.height;
+    let line_rows = wrapped_line_rows(&lines, width);
+    let total_rows: usize = line_rows.iter().sum();
 
-    let max_scroll = total_lines.saturating_sub(visible_height);
-    app.update_scroll_max(max_scroll);
-    let scroll_offset = app.scroll_offset_from_top();
+    (lines, line_rows, total_rows)
+}
 
-    let messages = Paragraph::new(lines)
-        .block(messages_block)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll_offset, 0));
+/// Render a single message to lines (static helper for both cached and uncached paths).
+fn render_message_static(
+    msg: &Message,
+    lines: &mut Vec<Line<'static>>,
+    msg_count: &mut usize,
+    palette: &Palette,
+    glyphs: &Glyphs,
+) {
+    // Add spacing between messages (except first)
+    if *msg_count > 0 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(""));
+    }
+    *msg_count += 1;
 
-    frame.render_widget(messages, area);
+    // Message header with role icon and name
+    let (icon, name, name_style) = message_header_parts(msg, palette, glyphs);
 
-    // Only render scrollbar when content exceeds viewport
-    if max_scroll > 0 {
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(Some(glyphs.arrow_up))
-            .end_symbol(Some(glyphs.arrow_down))
-            .track_symbol(Some(glyphs.track))
-            .thumb_symbol(glyphs.thumb)
-            .style(Style::default().fg(palette.text_muted));
+    let header_line = Line::from(vec![
+        Span::styled(format!(" {icon} "), name_style),
+        Span::styled(name, name_style),
+    ]);
+    lines.push(header_line);
+    lines.push(Line::from("")); // Space after header
 
-        // content_length = scrollable range (max_scroll), not total_lines
-        // This ensures thumb is at bottom when scroll_offset == max_scroll
-        let mut scrollbar_state =
-            ScrollbarState::new(max_scroll as usize).position(scroll_offset as usize);
-
-        frame.render_stateful_widget(
-            scrollbar,
-            area.inner(Margin {
-                vertical: 1,
-                horizontal: 0,
-            }),
-            &mut scrollbar_state,
-        );
+    // Message content - render based on type
+    match msg {
+        Message::ToolUse(_) => {
+            // Compact format: args are in the header line, no body needed
+        }
+        Message::ToolResult(result) => {
+            // Render result content with diff-aware coloring
+            let content_style = if result.is_error {
+                Style::default().fg(palette.error)
+            } else {
+                Style::default().fg(palette.text_secondary)
+            };
+            let content = sanitize_terminal_text(&result.content);
+            lines.extend(render_tool_result_lines(
+                content.as_ref(),
+                content_style,
+                palette,
+                "  ",
+            ));
+        }
+        _ => {
+            // Regular messages - render as markdown
+            let content_style = match msg {
+                Message::User(_) => Style::default().fg(palette.text_primary),
+                Message::Assistant(_) => Style::default().fg(palette.text_secondary),
+                _ => Style::default().fg(palette.text_muted),
+            };
+            let content = sanitize_terminal_text(msg.content());
+            let rendered = render_markdown(content.as_ref(), content_style, palette);
+            lines.extend(rendered);
+        }
     }
 }
 
@@ -498,10 +602,13 @@ pub(crate) fn draw_input(
         ContextUsageStatus::NeedsSummarization { usage, .. } => (usage, 1),
         ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => (usage, 2),
     };
+    let pct = usage.percentage();
+    let remaining = (100.0 - pct).clamp(0.0, 100.0);
+    let base_usage = format!("Context {remaining:.0}% left");
     let usage_str = match severity_override {
-        2 => format!("{} !!", usage.format_compact()), // Double bang for unrecoverable
-        1 => format!("{} !", usage.format_compact()),
-        _ => usage.format_compact(),
+        2 => format!("{base_usage} !!"), // Double bang for unrecoverable
+        1 => format!("{base_usage} !"),
+        _ => base_usage,
     };
     let usage_color = match severity_override {
         1 | 2 => palette.red,
@@ -878,7 +985,6 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App, palette: &Palette, 
     lines.push(Line::from(""));
 
     let models = PredefinedModel::all();
-    let preview_index = models.len();
     let mut row_index = 0usize;
     let mut push_row = |label: &str, selected: bool, muted: bool, tag: Option<(&str, Style)>| {
         row_index += 1;
@@ -935,18 +1041,6 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App, palette: &Palette, 
         let is_selected = i == selected_index;
         push_row(model.display_name(), is_selected, false, None);
     }
-
-    push_row(
-        "Google Gemini 3 Pro",
-        selected_index == preview_index,
-        true,
-        Some((
-            "preview",
-            Style::default()
-                .fg(palette.peach)
-                .add_modifier(Modifier::BOLD),
-        )),
-    );
 
     if matches!(lines.last(), Some(line) if line.width() == 0) {
         lines.pop();

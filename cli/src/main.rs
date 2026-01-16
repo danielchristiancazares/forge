@@ -156,7 +156,7 @@ async fn main() -> Result<()> {
     let mut ui_mode = UiMode::from_config(config.as_ref())
         .or_else(UiMode::from_env)
         .unwrap_or(UiMode::Full);
-    let mut app = App::new(Some(assets::system_prompt()))?;
+    let mut app = App::new(Some(assets::system_prompts()))?;
 
     loop {
         let run_result = {

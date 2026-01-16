@@ -20,7 +20,6 @@ const SEARCH_TOOL_ALIASES: &[&str] = &["Search", "search", "rg", "ripgrep", "ugr
 
 #[derive(Debug, Clone)]
 pub struct SearchToolConfig {
-    pub enabled: bool,
     pub binary: String,
     pub fallback_binary: String,
     pub default_timeout_ms: u64,
@@ -33,7 +32,6 @@ pub struct SearchToolConfig {
 impl Default for SearchToolConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             binary: "ugrep".to_string(),
             fallback_binary: "rg".to_string(),
             default_timeout_ms: 20_000,

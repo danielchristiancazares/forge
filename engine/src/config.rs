@@ -10,6 +10,7 @@ pub struct ForgeConfig {
     pub thinking: Option<ThinkingConfig>,
     pub anthropic: Option<AnthropicConfig>,
     pub openai: Option<OpenAIConfig>,
+    pub google: Option<GeminiConfig>,
     /// Tool configurations for function calling.
     pub tools: Option<ToolsConfig>,
 }
@@ -36,7 +37,6 @@ impl ConfigError {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct AppConfig {
-    pub provider: Option<String>,
     pub model: Option<String>,
     pub tui: Option<String>,
     /// Maximum output tokens for responses. Overrides model default.
@@ -53,6 +53,7 @@ pub struct AppConfig {
 pub struct ApiKeys {
     pub anthropic: Option<String>,
     pub openai: Option<String>,
+    pub google: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -108,6 +109,24 @@ pub struct OpenAIConfig {
     pub truncation: Option<String>,
 }
 
+/// Google Gemini API request defaults.
+///
+/// ```toml
+/// [google]
+/// thinking_enabled = true
+/// cache_enabled = true
+/// cache_ttl_seconds = 3600
+/// ```
+#[derive(Debug, Default, Deserialize)]
+pub struct GeminiConfig {
+    /// Enable thinking mode with `thinkingLevel: "high"`. Default: false.
+    pub thinking_enabled: Option<bool>,
+    /// Enable explicit context caching. Default: false.
+    pub cache_enabled: Option<bool>,
+    /// TTL for cached content in seconds. Default: 3600.
+    pub cache_ttl_seconds: Option<u32>,
+}
+
 /// Tool configurations for function calling.
 ///
 /// ```toml
@@ -122,16 +141,10 @@ pub struct OpenAIConfig {
 /// ```
 #[derive(Debug, Default, Deserialize)]
 pub struct ToolsConfig {
-    /// Tool loop mode: disabled | `parse_only` | enabled
-    pub mode: Option<String>,
-    /// Whether parallel tool execution is allowed.
-    pub allow_parallel: Option<bool>,
     /// Maximum tool calls per batch.
     pub max_tool_calls_per_batch: Option<usize>,
     /// Maximum tool iterations per user turn.
     pub max_tool_iterations_per_user_turn: Option<u32>,
-    /// Maximum serialized tool args size (bytes).
-    pub max_tool_args_bytes: Option<usize>,
     /// List of tool definitions.
     #[serde(default)]
     pub definitions: Vec<ToolDefinitionConfig>,
@@ -201,13 +214,11 @@ pub struct ToolEnvironmentConfig {
 /// Approval policy configuration for tools.
 #[derive(Debug, Default, Deserialize)]
 pub struct ToolApprovalConfig {
-    pub enabled: Option<bool>,
     pub mode: Option<String>,
     #[serde(default)]
     pub allowlist: Vec<String>,
     #[serde(default)]
     pub denylist: Vec<String>,
-    pub prompt_side_effects: Option<bool>,
 }
 
 /// `read_file` limits configuration.
@@ -226,7 +237,6 @@ pub struct ApplyPatchConfig {
 /// search tool limits configuration.
 #[derive(Debug, Default, Deserialize)]
 pub struct SearchConfig {
-    pub enabled: Option<bool>,
     pub binary: Option<String>,
     pub fallback_binary: Option<String>,
     pub default_timeout_ms: Option<u64>,
@@ -239,7 +249,6 @@ pub struct SearchConfig {
 /// webfetch tool configuration.
 #[derive(Debug, Default, Deserialize)]
 pub struct WebFetchConfig {
-    pub enabled: Option<bool>,
     pub user_agent: Option<String>,
     pub timeout_seconds: Option<u32>,
     pub max_redirects: Option<u32>,
@@ -541,7 +550,6 @@ mod tests {
     fn parse_app_config() {
         let toml_str = r#"
 [app]
-provider = "claude"
 model = "claude-sonnet-4-5-20250929"
 tui = "full"
 max_output_tokens = 4096
@@ -551,7 +559,6 @@ reduced_motion = true
 "#;
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         let app = config.app.unwrap();
-        assert_eq!(app.provider, Some("claude".to_string()));
         assert_eq!(app.model, Some("claude-sonnet-4-5-20250929".to_string()));
         assert_eq!(app.tui, Some("full".to_string()));
         assert_eq!(app.max_output_tokens, Some(4096));
@@ -566,11 +573,13 @@ reduced_motion = true
 [api_keys]
 anthropic = "sk-ant-test"
 openai = "sk-openai-test"
+google = "AIza-test"
 "#;
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         let keys = config.api_keys.unwrap();
         assert_eq!(keys.anthropic, Some("sk-ant-test".to_string()));
         assert_eq!(keys.openai, Some("sk-openai-test".to_string()));
+        assert_eq!(keys.google, Some("AIza-test".to_string()));
     }
 
     #[test]
@@ -614,22 +623,31 @@ truncation = "auto"
     }
 
     #[test]
+    fn parse_google_config() {
+        let toml_str = r"
+[google]
+thinking_enabled = true
+cache_enabled = true
+cache_ttl_seconds = 7200
+";
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let google = config.google.unwrap();
+        assert_eq!(google.thinking_enabled, Some(true));
+        assert_eq!(google.cache_enabled, Some(true));
+        assert_eq!(google.cache_ttl_seconds, Some(7200));
+    }
+
+    #[test]
     fn parse_tools_config() {
         let toml_str = r#"
 [tools]
-mode = "enabled"
-allow_parallel = false
 max_tool_calls_per_batch = 10
 max_tool_iterations_per_user_turn = 25
-max_tool_args_bytes = 65536
 "#;
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         let tools = config.tools.unwrap();
-        assert_eq!(tools.mode, Some("enabled".to_string()));
-        assert_eq!(tools.allow_parallel, Some(false));
         assert_eq!(tools.max_tool_calls_per_batch, Some(10));
         assert_eq!(tools.max_tool_iterations_per_user_turn, Some(25));
-        assert_eq!(tools.max_tool_args_bytes, Some(65536));
     }
 
     #[test]
@@ -668,19 +686,15 @@ shell_commands_seconds = 120
     fn parse_tool_approval_config() {
         let toml_str = r#"
 [tools.approval]
-enabled = true
-mode = "prompt"
+mode = "default"
 allowlist = ["read_file", "list_files"]
 denylist = ["run_command"]
-prompt_side_effects = true
 "#;
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         let approval = config.tools.unwrap().approval.unwrap();
-        assert_eq!(approval.enabled, Some(true));
-        assert_eq!(approval.mode, Some("prompt".to_string()));
+        assert_eq!(approval.mode, Some("default".to_string()));
         assert_eq!(approval.allowlist, vec!["read_file", "list_files"]);
         assert_eq!(approval.denylist, vec!["run_command"]);
-        assert_eq!(approval.prompt_side_effects, Some(true));
     }
 
     #[test]
@@ -703,7 +717,6 @@ args = ["-NoProfile", "-Command"]
     fn parse_search_config() {
         let toml_str = r#"
 [tools.search]
-enabled = true
 binary = "rg"
 fallback_binary = "grep"
 default_timeout_ms = 5000
@@ -714,7 +727,6 @@ max_file_size_bytes = 1048576
 "#;
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         let search = config.tools.unwrap().search.unwrap();
-        assert_eq!(search.enabled, Some(true));
         assert_eq!(search.binary, Some("rg".to_string()));
         assert_eq!(search.fallback_binary, Some("grep".to_string()));
         assert_eq!(search.default_timeout_ms, Some(5000));
@@ -728,7 +740,6 @@ max_file_size_bytes = 1048576
     fn parse_webfetch_config() {
         let toml_str = r#"
 [tools.webfetch]
-enabled = true
 user_agent = "CustomBot/1.0"
 timeout_seconds = 30
 max_redirects = 5
@@ -739,7 +750,6 @@ cache_ttl_days = 7
 "#;
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         let webfetch = config.tools.unwrap().webfetch.unwrap();
-        assert_eq!(webfetch.enabled, Some(true));
         assert_eq!(webfetch.user_agent, Some("CustomBot/1.0".to_string()));
         assert_eq!(webfetch.timeout_seconds, Some(30));
         assert_eq!(webfetch.max_redirects, Some(5));

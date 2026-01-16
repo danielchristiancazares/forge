@@ -95,6 +95,7 @@ impl super::App {
                 match self.model.provider() {
                     Provider::Claude => ApiKey::Claude(key),
                     Provider::OpenAI => ApiKey::OpenAI(key),
+                    Provider::Gemini => ApiKey::Gemini(key),
                 }
             } else {
                 self.set_status_warning("Cannot summarize: no API key configured");

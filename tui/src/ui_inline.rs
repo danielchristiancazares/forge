@@ -53,7 +53,6 @@ pub struct InlineOutput {
     has_output: bool,
     last_tool_output_len: usize,
     last_tool_status_signature: Option<String>,
-    last_pending_tool_signature: Option<String>,
     last_approval_signature: Option<String>,
     last_recovery_active: bool,
 }
@@ -66,7 +65,6 @@ impl InlineOutput {
             has_output: false,
             last_tool_output_len: 0,
             last_tool_status_signature: None,
-            last_pending_tool_signature: None,
             last_approval_signature: None,
             last_recovery_active: false,
         }
@@ -77,7 +75,6 @@ impl InlineOutput {
         self.has_output = false;
         self.last_tool_output_len = 0;
         self.last_tool_status_signature = None;
-        self.last_pending_tool_signature = None;
         self.last_approval_signature = None;
         self.last_recovery_active = false;
     }
@@ -114,14 +111,6 @@ impl InlineOutput {
                 append_tool_status_lines(&mut lines, statuses, &glyphs);
             }
             self.last_tool_status_signature = tool_signature;
-        }
-
-        let pending_signature = pending_tool_signature(app);
-        if pending_signature != self.last_pending_tool_signature {
-            if pending_signature.is_some() {
-                append_pending_tool_lines(&mut lines, app, &glyphs);
-            }
-            self.last_pending_tool_signature = pending_signature;
         }
 
         if let Some(output_lines) = app.tool_loop_output_lines() {
@@ -266,7 +255,7 @@ fn append_message_lines(
             lines.extend(render_tool_result_lines(
                 content.as_ref(),
                 content_style,
-                &palette,
+                palette,
                 "    ",
             ));
         }
@@ -291,15 +280,6 @@ fn append_message_lines(
             }
         }
     }
-}
-
-fn pending_tool_signature(app: &App) -> Option<String> {
-    let calls = app.pending_tool_calls()?;
-    let mut parts = Vec::with_capacity(calls.len());
-    for call in calls {
-        parts.push(call.id.clone());
-    }
-    Some(parts.join("|"))
 }
 
 fn append_tool_status_lines(lines: &mut Vec<Line>, statuses: &[ToolCallStatus], glyphs: &Glyphs) {
@@ -329,29 +309,6 @@ fn append_tool_status_lines(lines: &mut Vec<Line>, statuses: &[ToolCallStatus], 
             lines.push(Line::from(format!("     {reason}")));
         }
     }
-}
-
-fn append_pending_tool_lines(lines: &mut Vec<Line>, app: &App, glyphs: &Glyphs) {
-    let Some(calls) = app.pending_tool_calls() else {
-        return;
-    };
-    if !lines.is_empty() {
-        lines.push(Line::from(""));
-    }
-    lines.push(Line::from("Awaiting tool results:"));
-    for call in calls {
-        let name = sanitize_terminal_text(&call.name);
-        let id = sanitize_terminal_text(&call.id);
-        lines.push(Line::from(format!(
-            "  {} {} ({})",
-            glyphs.bullet,
-            name.as_ref(),
-            id.as_ref()
-        )));
-    }
-    lines.push(Line::from(
-        "Use /tool <id> <result> or /tool error <id> <message>",
-    ));
 }
 
 fn approval_signature(view: Option<&ApprovalView>) -> Option<String> {

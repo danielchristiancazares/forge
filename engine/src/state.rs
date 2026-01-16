@@ -110,27 +110,6 @@ pub(crate) struct SummarizationRetryWithQueuedState {
 // Tool Execution State
 // ============================================================================
 
-/// State for when the assistant has made tool calls and we're waiting for results.
-///
-/// This is similar to the Summarizing state - a pause in the conversation flow
-/// while external processing occurs. Once all tool results are submitted,
-/// the conversation resumes with the updated context.
-#[derive(Debug)]
-pub struct PendingToolExecution {
-    /// Text content from assistant before/alongside tool calls (may be empty).
-    pub assistant_text: String,
-    /// Tool calls waiting for results.
-    pub pending_calls: Vec<ToolCall>,
-    /// Results received so far.
-    pub results: Vec<ToolResult>,
-    /// Model that made the tool calls.
-    pub model: ModelName,
-    /// Journal step ID for recovery.
-    pub step_id: StepId,
-    /// Tool batch journal ID.
-    pub batch_id: ToolBatchId,
-}
-
 #[derive(Debug)]
 pub(crate) struct ToolBatch {
     pub(crate) assistant_text: String,
@@ -211,7 +190,6 @@ pub(crate) struct ToolPlan {
 pub(crate) enum OperationState {
     Idle,
     Streaming(ActiveStream),
-    AwaitingToolResults(PendingToolExecution),
     ToolLoop(ToolLoopState),
     ToolRecovery(ToolRecoveryState),
     Summarizing(SummarizationState),

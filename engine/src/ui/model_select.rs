@@ -7,12 +7,17 @@ use forge_types::{ModelName, Provider};
 pub enum PredefinedModel {
     ClaudeOpus,
     Gpt52,
+    GeminiPro,
 }
 
 impl PredefinedModel {
     #[must_use]
     pub const fn all() -> &'static [PredefinedModel] {
-        &[PredefinedModel::ClaudeOpus, PredefinedModel::Gpt52]
+        &[
+            PredefinedModel::ClaudeOpus,
+            PredefinedModel::Gpt52,
+            PredefinedModel::GeminiPro,
+        ]
     }
 
     #[must_use]
@@ -20,6 +25,7 @@ impl PredefinedModel {
         match self {
             PredefinedModel::ClaudeOpus => "Anthropic Claude Opus 4.5",
             PredefinedModel::Gpt52 => "OpenAI GPT 5.2",
+            PredefinedModel::GeminiPro => "Google Gemini 3 Pro",
         }
     }
 
@@ -30,6 +36,9 @@ impl PredefinedModel {
                 ModelName::known(Provider::Claude, "claude-opus-4-5-20251101")
             }
             PredefinedModel::Gpt52 => ModelName::known(Provider::OpenAI, "gpt-5.2"),
+            PredefinedModel::GeminiPro => {
+                ModelName::known(Provider::Gemini, "gemini-3-pro-preview")
+            }
         }
     }
 
@@ -38,6 +47,7 @@ impl PredefinedModel {
         match self {
             PredefinedModel::ClaudeOpus => Provider::Claude,
             PredefinedModel::Gpt52 => Provider::OpenAI,
+            PredefinedModel::GeminiPro => Provider::Gemini,
         }
     }
 }

@@ -137,13 +137,17 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('g') => {
             app.scroll_to_top();
         }
-        // Jump to bottom (End or G)
-        KeyCode::End | KeyCode::Char('G') => {
+        // Jump to bottom (End, G, or Right)
+        KeyCode::End | KeyCode::Char('G') | KeyCode::Right => {
             app.scroll_to_bottom();
         }
         // Toggle screen mode (inline/fullscreen)
         KeyCode::Char('s') => {
             app.request_toggle_screen_mode();
+        }
+        // Scroll up by 20% chunk
+        KeyCode::Left => {
+            app.scroll_up_chunk();
         }
         _ => {}
     }

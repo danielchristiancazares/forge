@@ -4,6 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use forge_engine::{App, Message, ToolResult, sanitize_terminal_text};
 
@@ -104,21 +106,96 @@ fn first_result_line(result: &ToolResult, max_len: usize) -> Option<String> {
         .map(|line| truncate_with_ellipsis(line, max_len))
 }
 
-pub(crate) fn wrapped_line_count(lines: &[Line], width: u16) -> u16 {
-    let width = width.max(1) as usize;
-    let mut total: u16 = 0;
+fn wrapped_rows_for_text(text: &str, width: usize) -> usize {
+    if text.is_empty() {
+        return 1;
+    }
 
-    for line in lines {
-        let line_width = line.width();
-        let rows = if line_width == 0 {
-            1
+    let mut total: usize = 0;
+    let mut current_width: usize = 0;
+    let mut had_tokens = false;
+    let mut run_is_whitespace: Option<bool> = None;
+    let mut run_width: usize = 0;
+
+    let mut flush_run = |run_width: &mut usize, current_width: &mut usize, total: &mut usize| {
+        if *run_width == 0 {
+            return;
+        }
+        had_tokens = true;
+
+        if *current_width == 0 && *run_width > width {
+            let full_lines = *run_width / width;
+            let rem = *run_width % width;
+            *total = total.saturating_add(full_lines);
+            *current_width = rem;
+        } else if *current_width + *run_width <= width {
+            *current_width += *run_width;
         } else {
-            ((line_width - 1) / width) + 1
-        };
-        total = total.saturating_add(rows as u16);
+            *total = total.saturating_add(1);
+            if *run_width > width {
+                let full_lines = *run_width / width;
+                let rem = *run_width % width;
+                *total = total.saturating_add(full_lines);
+                *current_width = rem;
+            } else {
+                *current_width = *run_width;
+            }
+        }
+        *run_width = 0;
+    };
+
+    for grapheme in text.graphemes(true) {
+        let is_whitespace = grapheme.chars().all(char::is_whitespace);
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if grapheme_width == 0 {
+            continue;
+        }
+
+        if run_is_whitespace == Some(is_whitespace) || run_is_whitespace.is_none() {
+            run_is_whitespace = Some(is_whitespace);
+            run_width = run_width.saturating_add(grapheme_width);
+        } else {
+            flush_run(&mut run_width, &mut current_width, &mut total);
+            run_is_whitespace = Some(is_whitespace);
+            run_width = grapheme_width;
+        }
+    }
+
+    flush_run(&mut run_width, &mut current_width, &mut total);
+
+    if !had_tokens || current_width > 0 {
+        total = total.saturating_add(1);
     }
 
     total
+}
+
+pub(crate) fn wrapped_line_rows(lines: &[Line], width: u16) -> Vec<usize> {
+    let width = width.max(1) as usize;
+    let mut rows = Vec::with_capacity(lines.len());
+
+    for line in lines {
+        let text = line.to_string();
+        rows.push(wrapped_rows_for_text(&text, width));
+    }
+
+    rows
+}
+
+pub(crate) fn wrapped_line_count_exact(lines: &[Line], width: u16) -> usize {
+    let width = width.max(1) as usize;
+    if lines.is_empty() {
+        return 0;
+    }
+
+    lines
+        .iter()
+        .map(|line| wrapped_rows_for_text(&line.to_string(), width))
+        .sum()
+}
+
+pub(crate) fn wrapped_line_count(lines: &[Line], width: u16) -> u16 {
+    wrapped_line_count_exact(lines, width).min(u16::MAX as usize) as u16
 }
 
 pub(crate) fn truncate_with_ellipsis(raw: &str, max: usize) -> String {

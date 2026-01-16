@@ -8,11 +8,13 @@
 use futures_util::future::{AbortHandle, Abortable};
 use tokio::sync::mpsc;
 
+use forge_types::Provider;
+
 use super::{
     ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError,
-    DEFAULT_STREAM_EVENT_BUDGET, EMPTY_RESPONSE_BADGE, Message, NonEmptyString, OperationState,
-    QueuedUserMessage, StreamEvent, StreamFinishReason, StreamingMessage, SummarizationStart,
-    format_stream_error, sanitize_terminal_text, security,
+    DEFAULT_STREAM_EVENT_BUDGET, EMPTY_RESPONSE_BADGE, GeminiCache, GeminiCacheConfig, Message,
+    NonEmptyString, OperationState, QueuedUserMessage, StreamEvent, StreamFinishReason,
+    StreamingMessage, SummarizationStart, format_stream_error, sanitize_terminal_text, security,
 };
 
 impl super::App {
@@ -86,7 +88,10 @@ impl super::App {
 
         // Convert messages to cacheable format based on cache_enabled setting
         let cache_enabled = self.cache_enabled;
-        let system_prompt = self.system_prompt;
+        // Select the correct system prompt for the active provider
+        let system_prompt = self
+            .system_prompts
+            .map(|prompts| prompts.get(config.provider()));
         let cacheable_messages: Vec<CacheableMessage> = if cache_enabled {
             // Cache older messages, keep recent ones fresh
             // Claude allows max 4 cache_control blocks total
@@ -117,6 +122,11 @@ impl super::App {
         // Clone tool definitions for async task
         let tools = self.tool_definitions.clone();
 
+        // Clone Gemini cache state for async task (only relevant for Gemini provider)
+        let gemini_cache_arc = self.gemini_cache.clone();
+        let gemini_cache_config = self.gemini_cache_config.clone();
+        let is_gemini = config.provider() == Provider::Gemini;
+
         let task = async move {
             let tx_events = tx.clone();
             // Convert tools to Option<&[ToolDefinition]>
@@ -125,12 +135,31 @@ impl super::App {
             } else {
                 Some(tools.as_slice())
             };
+
+            // Handle Gemini cache lifecycle
+            let gemini_cache = if is_gemini
+                && gemini_cache_config.enabled
+                && let Some(prompt) = system_prompt
+            {
+                get_or_create_gemini_cache(
+                    &gemini_cache_arc,
+                    &gemini_cache_config,
+                    config.api_key(),
+                    config.model().as_str(),
+                    prompt,
+                )
+                .await
+            } else {
+                None
+            };
+
             let result = forge_providers::send_message(
                 &config,
                 &cacheable_messages,
                 limits,
                 system_prompt,
                 tools_ref,
+                gemini_cache.as_ref(),
                 move |event| {
                     let _ = tx_events.send(event);
                 },
@@ -426,5 +455,57 @@ impl super::App {
         // Stream completed successfully with content
         self.pending_user_message = None;
         self.commit_history_message(message, step_id);
+    }
+}
+
+/// Get an existing valid Gemini cache or create a new one.
+///
+/// This function checks if there's a valid (non-expired, matching) cache.
+/// If not, it creates a new cache via the Gemini API and stores it.
+async fn get_or_create_gemini_cache(
+    cache_arc: &std::sync::Arc<tokio::sync::Mutex<Option<GeminiCache>>>,
+    config: &GeminiCacheConfig,
+    api_key: &str,
+    model: &str,
+    system_prompt: &str,
+) -> Option<GeminiCache> {
+    // First, check if we have a valid cache
+    {
+        let guard = cache_arc.lock().await;
+        if let Some(cache) = guard.as_ref() {
+            if !cache.is_expired() && cache.matches_prompt(system_prompt) {
+                tracing::debug!("Using existing Gemini cache: {}", cache.name);
+                return Some(cache.clone());
+            }
+            tracing::debug!(
+                "Gemini cache invalid (expired: {}, prompt mismatch: {})",
+                cache.is_expired(),
+                !cache.matches_prompt(system_prompt)
+            );
+        }
+    }
+
+    // Cache is invalid or doesn't exist - create a new one
+    tracing::info!("Creating new Gemini cache for system prompt");
+    match forge_providers::gemini::create_cache(api_key, model, system_prompt, config.ttl_seconds)
+        .await
+    {
+        Ok(new_cache) => {
+            tracing::info!(
+                "Created Gemini cache: {} (expires: {})",
+                new_cache.name,
+                new_cache.expire_time
+            );
+            let cache_clone = new_cache.clone();
+            // Store the new cache
+            let mut guard = cache_arc.lock().await;
+            *guard = Some(new_cache);
+            Some(cache_clone)
+        }
+        Err(e) => {
+            // Log warning and continue without cache (graceful degradation)
+            tracing::warn!("Failed to create Gemini cache: {e}");
+            None
+        }
     }
 }

@@ -18,12 +18,16 @@ use super::token_counter::TokenCounter;
 /// Models used for summarization (cheaper/faster than main models).
 const CLAUDE_SUMMARIZATION_MODEL: &str = "claude-haiku-4-5";
 const OPENAI_SUMMARIZATION_MODEL: &str = "gpt-5-nano";
+/// Gemini 3 Pro Preview - use the same model for now (no cheaper variant available yet).
+const GEMINI_SUMMARIZATION_MODEL: &str = "gemini-3-pro-preview";
 
 /// Context limits for summarizer models (conservative to leave room for output + overhead).
 /// Claude Haiku 4.5 has 200k context, we use 190k to leave room for output and system prompt.
 const CLAUDE_SUMMARIZER_INPUT_LIMIT: u32 = 190_000;
 /// GPT-5-nano has 400k context, we use 380k to leave room for output and system prompt.
 const OPENAI_SUMMARIZER_INPUT_LIMIT: u32 = 380_000;
+/// Gemini 3 Pro has 1M context, we use 950k to leave room for output and system prompt.
+const GEMINI_SUMMARIZER_INPUT_LIMIT: u32 = 950_000;
 
 const MIN_SUMMARY_TOKENS: u32 = 64;
 const MAX_SUMMARY_TOKENS: u32 = 2048;
@@ -33,6 +37,8 @@ const SUMMARY_TIMEOUT_SECS: u64 = 60;
 const CLAUDE_API_URL: &str = "https://api.anthropic.com/v1/messages";
 /// Using Responses API for consistency with main provider (providers/src/lib.rs).
 const OPENAI_API_URL: &str = "https://api.openai.com/v1/responses";
+/// Gemini API endpoint (non-streaming).
+const GEMINI_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
 
 /// Build a summarization prompt for a slice of messages.
 ///
@@ -115,6 +121,7 @@ pub fn summarizer_input_limit(provider: Provider) -> u32 {
     match provider {
         Provider::Claude => CLAUDE_SUMMARIZER_INPUT_LIMIT,
         Provider::OpenAI => OPENAI_SUMMARIZER_INPUT_LIMIT,
+        Provider::Gemini => GEMINI_SUMMARIZER_INPUT_LIMIT,
     }
 }
 
@@ -184,6 +191,15 @@ pub async fn generate_summary(
         }
         Provider::OpenAI => {
             generate_summary_openai(
+                config.api_key(),
+                &system_instruction,
+                &conversation_text,
+                max_tokens,
+            )
+            .await
+        }
+        Provider::Gemini => {
+            generate_summary_gemini(
                 config.api_key(),
                 &system_instruction,
                 &conversation_text,
@@ -306,12 +322,78 @@ async fn generate_summary_openai(
     Ok(summary.to_string())
 }
 
+/// Generate summary using Gemini API (non-streaming).
+///
+/// Uses the `generateContent` endpoint without streaming.
+/// Request format uses Gemini's unique structure with top-level `system_instruction`.
+async fn generate_summary_gemini(
+    api_key: &str,
+    system_instruction: &str,
+    conversation_text: &str,
+    max_tokens: u32,
+) -> Result<String> {
+    let client = http_client_with_timeout(SUMMARY_TIMEOUT_SECS);
+
+    // Gemini uses top-level system_instruction and mixed casing
+    let body = json!({
+        "system_instruction": {
+            "parts": [{ "text": system_instruction }]
+        },
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{
+                    "text": format!("Please summarize the following conversation:\n\n{}", conversation_text)
+                }]
+            }
+        ],
+        "generationConfig": {
+            "maxOutputTokens": max_tokens,
+            "temperature": 1.0
+        }
+    });
+
+    let url = format!("{GEMINI_API_BASE}/models/{GEMINI_SUMMARIZATION_MODEL}:generateContent");
+
+    let response = client
+        .post(&url)
+        .header("x-goog-api-key", api_key)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|e| format!("<failed to read error: {e}>"));
+        return Err(anyhow!("Gemini API error {status}: {error_text}"));
+    }
+
+    let json: serde_json::Value = response.json().await?;
+
+    // Extract text from Gemini's response format:
+    // { "candidates": [{ "content": { "parts": [{ "text": "..." }] } }] }
+    let summary = json["candidates"]
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|candidate| candidate["content"]["parts"].as_array())
+        .and_then(|parts| parts.first())
+        .and_then(|part| part["text"].as_str())
+        .ok_or_else(|| anyhow!("Failed to extract summary from Gemini response: {json:?}"))?;
+
+    Ok(summary.to_string())
+}
+
 /// Get the summarization model name for a given provider.
 #[must_use]
 pub fn summarization_model(provider: Provider) -> &'static str {
     match provider {
         Provider::Claude => CLAUDE_SUMMARIZATION_MODEL,
         Provider::OpenAI => OPENAI_SUMMARIZATION_MODEL,
+        Provider::Gemini => GEMINI_SUMMARIZATION_MODEL,
     }
 }
 

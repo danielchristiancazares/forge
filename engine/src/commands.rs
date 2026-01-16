@@ -4,7 +4,6 @@
 
 use super::{
     ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, ModelNameKind, Provider,
-    ToolResult,
     state::{OperationState, SummarizationStart, ToolLoopPhase, ToolRecoveryDecision},
 };
 
@@ -118,19 +117,10 @@ pub(crate) enum Command<'a> {
     Summarize,
     Cancel,
     Screen,
-    Tool(ToolCommand<'a>),
     Tools,
     Help,
     Unknown(&'a str),
     Empty,
-}
-
-/// Tool command variants.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ToolCommand<'a> {
-    Success { id: &'a str, content: &'a str },
-    Error { id: &'a str, message: &'a str },
-    Usage,
 }
 
 impl<'a> Command<'a> {
@@ -148,35 +138,6 @@ impl<'a> Command<'a> {
             Some("summarize" | "sum") => Command::Summarize,
             Some("cancel") => Command::Cancel,
             Some("screen") => Command::Screen,
-            Some("tool") => {
-                if parts.len() < 3 {
-                    Command::Tool(ToolCommand::Usage)
-                } else if parts[1] == "error" && parts.len() >= 4 {
-                    // Find the position after "tool error <id> " to get the rest as content
-                    let prefix_len = "tool error ".len() + parts[2].len() + 1;
-                    let message = if raw.len() > prefix_len {
-                        raw[prefix_len..].trim_start()
-                    } else {
-                        ""
-                    };
-                    Command::Tool(ToolCommand::Error {
-                        id: parts[2],
-                        message,
-                    })
-                } else {
-                    // Find the position after "tool <id> " to get the rest as content
-                    let prefix_len = "tool ".len() + parts[1].len() + 1;
-                    let content = if raw.len() > prefix_len {
-                        raw[prefix_len..].trim_start()
-                    } else {
-                        ""
-                    };
-                    Command::Tool(ToolCommand::Success {
-                        id: parts[1],
-                        content,
-                    })
-                }
-            }
             Some("tools") => Command::Tools,
             Some("help") => Command::Help,
             Some(cmd) => Command::Unknown(cmd),
@@ -196,18 +157,6 @@ impl super::App {
                 // Clean up journal state
                 let _ = active.journal.discard(&mut self.stream_journal);
                 self.set_status_warning("Streaming cancelled");
-                true
-            }
-            OperationState::AwaitingToolResults(pending) => {
-                self.cancel_tool_batch(
-                    pending.assistant_text,
-                    pending.pending_calls,
-                    pending.results,
-                    pending.model,
-                    pending.step_id,
-                    pending.batch_id,
-                );
-                self.set_status_warning("Tool results cancelled");
                 true
             }
             OperationState::ToolLoop(state) => {
@@ -254,13 +203,6 @@ impl super::App {
                         active.abort_handle.abort();
                         let _ = active.journal.discard(&mut self.stream_journal);
                     }
-                    OperationState::AwaitingToolResults(pending) => {
-                        // Clear pending tool execution and discard the journal step.
-                        self.discard_journal_step(pending.step_id);
-                        if pending.batch_id != 0 {
-                            let _ = self.tool_journal.discard_batch(pending.batch_id);
-                        }
-                    }
                     OperationState::ToolLoop(state) => {
                         if let ToolLoopPhase::Executing(exec) = &state.phase
                             && let Some(handle) = &exec.abort_handle
@@ -290,6 +232,7 @@ impl super::App {
                 }
 
                 self.display.clear();
+                self.display_version = self.display_version.wrapping_add(1);
                 self.context_manager = ContextManager::new(self.model.as_str());
                 self.context_manager
                     .set_output_limit(self.output_limits.max_output_tokens());
@@ -373,6 +316,15 @@ impl super::App {
                         budget_tokens,
                     } => (usage, None, Some((*required_tokens, *budget_tokens))),
                 };
+                let format_k = |n: u32| -> String {
+                    if n >= 1_000_000 {
+                        format!("{:.1}M", n as f32 / 1_000_000.0)
+                    } else if n >= 1000 {
+                        format!("{:.1}k", n as f32 / 1000.0)
+                    } else {
+                        n.to_string()
+                    }
+                };
                 let limits = self.context_manager.current_limits();
                 let limits_source = match self.context_manager.current_limits_source() {
                     ModelLimitsSource::Override => "override".to_string(),
@@ -384,6 +336,8 @@ impl super::App {
                 } else {
                     "off"
                 };
+                let pct = usage.percentage();
+                let remaining = (100.0 - pct).clamp(0.0, 100.0);
                 let status_suffix = if let Some((required, budget)) = recent_too_large {
                     format!(" │ ERROR: recent msgs ({required} tokens) > budget ({budget} tokens)")
                 } else {
@@ -396,14 +350,14 @@ impl super::App {
                     })
                 };
                 self.set_status(format!(
-                    "ContextInfinity: {} │ Context: {} │ Model: {} │ Limits: {} │ Window: {}k │ Budget: {}k │ Max output: {}k{}",
+                    "ContextInfinity: {} │ Context: {remaining:.0}% left │ Used: {} │ Budget(effective): {} │ Window(raw): {} │ Max output: {} │ Model: {} │ Limits: {}{}",
                     context_flag,
-                    usage.format_compact(),
+                    format_k(usage.used_tokens),
+                    format_k(usage.budget_tokens),
+                    format_k(limits.context_window()),
+                    format_k(limits.max_output()),
                     self.context_manager.current_model(),
                     limits_source,
-                    limits.context_window() / 1000,
-                    limits.effective_input_budget() / 1000,
-                    limits.max_output() / 1000,
                     status_suffix,
                 ));
             }
@@ -448,29 +402,6 @@ impl super::App {
             Command::Screen => {
                 self.view.toggle_screen_mode = true;
             }
-            Command::Tool(tool_cmd) => match tool_cmd {
-                ToolCommand::Usage => {
-                    self.set_status(
-                        "Usage: /tool <call_id> <result> or /tool error <call_id> <message>",
-                    );
-                }
-                ToolCommand::Error { id, message } => {
-                    let result = ToolResult::error(id.to_string(), message.to_string());
-                    match self.submit_tool_result(result) {
-                        Ok(true) => self.set_status_success("All tool results submitted"),
-                        Ok(false) => {} // Status already set by submit_tool_result
-                        Err(e) => self.set_status_error(format!("Tool error: {e}")),
-                    }
-                }
-                ToolCommand::Success { id, content } => {
-                    let result = ToolResult::success(id.to_string(), content.to_string());
-                    match self.submit_tool_result(result) {
-                        Ok(true) => self.set_status_success("All tool results submitted"),
-                        Ok(false) => {} // Status already set by submit_tool_result
-                        Err(e) => self.set_status_error(format!("Tool error: {e}")),
-                    }
-                }
-            },
             Command::Tools => {
                 if self.tool_definitions.is_empty() {
                     self.set_status_warning("No tools configured. Add tools to config.toml");
@@ -593,127 +524,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_tool_usage() {
-        assert_eq!(Command::parse("tool"), Command::Tool(ToolCommand::Usage));
-        assert_eq!(
-            Command::parse("tool onlyid"),
-            Command::Tool(ToolCommand::Usage)
-        );
-    }
-
-    #[test]
-    fn parse_tool_success() {
-        assert_eq!(
-            Command::parse("tool call-123 result content here"),
-            Command::Tool(ToolCommand::Success {
-                id: "call-123",
-                content: "result content here"
-            })
-        );
-    }
-
-    #[test]
-    fn parse_tool_success_minimal_content() {
-        // With minimal content (single character)
-        let parsed = Command::parse("tool call-123 x");
-        match parsed {
-            Command::Tool(ToolCommand::Success { id, content }) => {
-                assert_eq!(id, "call-123");
-                assert_eq!(content, "x");
-            }
-            _ => panic!("Expected Tool Success"),
-        }
-    }
-
-    #[test]
-    fn parse_tool_insufficient_args_shows_usage() {
-        // "tool id" without content shows usage
-        assert_eq!(
-            Command::parse("tool call-123"),
-            Command::Tool(ToolCommand::Usage)
-        );
-    }
-
-    #[test]
-    fn parse_tool_error() {
-        assert_eq!(
-            Command::parse("tool error call-456 error message here"),
-            Command::Tool(ToolCommand::Error {
-                id: "call-456",
-                message: "error message here"
-            })
-        );
-    }
-
-    #[test]
-    fn parse_tool_error_multiword() {
-        let parsed = Command::parse("tool error abc this is a longer error message");
-        match parsed {
-            Command::Tool(ToolCommand::Error { id, message }) => {
-                assert_eq!(id, "abc");
-                assert_eq!(message, "this is a longer error message");
-            }
-            _ => panic!("Expected Tool Error"),
-        }
-    }
-
-    #[test]
-    fn parse_preserves_whitespace_in_tool_content() {
-        let parsed = Command::parse("tool myid   spaced   content");
-        match parsed {
-            Command::Tool(ToolCommand::Success { id, content }) => {
-                assert_eq!(id, "myid");
-                // Content should preserve internal whitespace after trimming leading
-                assert!(content.contains("spaced   content"));
-            }
-            _ => panic!("Expected Tool Success"),
-        }
-    }
-
-    #[test]
     fn parse_case_sensitive() {
         // Commands should be case-sensitive
         assert_eq!(Command::parse("QUIT"), Command::Unknown("QUIT"));
         assert_eq!(Command::parse("Clear"), Command::Unknown("Clear"));
         assert_eq!(Command::parse("MODEL"), Command::Unknown("MODEL"));
-    }
-
-    // ========================================================================
-    // ToolCommand equality tests
-    // ========================================================================
-
-    #[test]
-    fn tool_command_eq() {
-        assert_eq!(ToolCommand::Usage, ToolCommand::Usage);
-        assert_eq!(
-            ToolCommand::Success {
-                id: "a",
-                content: "b"
-            },
-            ToolCommand::Success {
-                id: "a",
-                content: "b"
-            }
-        );
-        assert_ne!(
-            ToolCommand::Success {
-                id: "a",
-                content: "b"
-            },
-            ToolCommand::Success {
-                id: "a",
-                content: "c"
-            }
-        );
-        assert_eq!(
-            ToolCommand::Error {
-                id: "x",
-                message: "y"
-            },
-            ToolCommand::Error {
-                id: "x",
-                message: "y"
-            }
-        );
     }
 }

@@ -23,7 +23,7 @@ pub use forge_context::{
     SummarizationScope, TokenCounter, ToolBatchId, ToolJournal, generate_summary,
     summarization_model,
 };
-pub use forge_providers::{self, ApiConfig};
+pub use forge_providers::{self, ApiConfig, gemini::GeminiCache, gemini::GeminiCacheConfig};
 pub use forge_types::{
     ApiKey, CacheHint, CacheableMessage, EmptyStringError, Message, ModelName, ModelNameKind,
     NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort, OpenAIRequestOptions,
@@ -69,7 +69,7 @@ pub(crate) use init::{
 pub const DEFAULT_STREAM_EVENT_BUDGET: usize = 512;
 
 // Re-export public state types
-pub use state::{PendingToolExecution, SummarizationTask};
+pub use state::SummarizationTask;
 
 // Internal state imports
 use errors::format_stream_error;
@@ -257,6 +257,33 @@ impl StreamingMessage {
 }
 
 // ============================================================================
+// Provider-specific system prompts
+// ============================================================================
+
+/// Provider-specific system prompts.
+///
+/// Allows different prompts to be used for different LLM providers.
+/// The prompt is selected at streaming time based on the active provider.
+#[derive(Debug, Clone, Copy)]
+pub struct SystemPrompts {
+    /// Default prompt for Claude and OpenAI.
+    pub default: &'static str,
+    /// Gemini-specific prompt.
+    pub gemini: &'static str,
+}
+
+impl SystemPrompts {
+    /// Get the system prompt for the given provider.
+    #[must_use]
+    pub fn get(&self, provider: Provider) -> &'static str {
+        match provider {
+            Provider::Gemini => self.gemini,
+            Provider::Claude | Provider::OpenAI => self.default,
+        }
+    }
+}
+
+// ============================================================================
 // Constants
 // ============================================================================
 
@@ -269,6 +296,9 @@ pub(crate) const SUMMARIZATION_RETRY_JITTER_MS: u64 = 200;
 pub struct App {
     input: InputState,
     display: Vec<DisplayItem>,
+    /// Version counter for display changes - incremented when display items change.
+    /// Used by TUI to cache rendered output and avoid rebuilding every frame.
+    display_version: usize,
     should_quit: bool,
     /// View state for rendering (scroll, status, modal effects).
     view: ViewState,
@@ -292,8 +322,9 @@ pub struct App {
     cache_enabled: bool,
     /// `OpenAI` request defaults (reasoning/verbosity/truncation).
     openai_options: OpenAIRequestOptions,
-    /// System prompt sent to the LLM with each request.
-    system_prompt: Option<&'static str>,
+    /// Provider-specific system prompts.
+    /// The correct prompt is selected at streaming time based on the active provider.
+    system_prompts: Option<SystemPrompts>,
     /// Cached context usage status (invalidated when history/model changes).
     cached_usage_status: Option<ContextUsageStatus>,
     /// Pending user message awaiting stream completion.
@@ -306,8 +337,6 @@ pub struct App {
     tool_definitions: Vec<ToolDefinition>,
     /// Tool registry for executors.
     tool_registry: std::sync::Arc<tools::ToolRegistry>,
-    /// Tool loop mode.
-    tools_mode: tools::ToolsMode,
     /// Tool settings derived from config.
     tool_settings: tools::ToolSettings,
     /// Tool journal for crash recovery.
@@ -322,6 +351,11 @@ pub struct App {
     autosave_warning_shown: bool,
     /// Whether we've already warned about empty sends.
     empty_send_warning_shown: bool,
+    /// Active Gemini cache (if caching enabled and cache created).
+    /// Uses Arc<Mutex> because cache is created/updated inside async streaming tasks.
+    gemini_cache: std::sync::Arc<tokio::sync::Mutex<Option<GeminiCache>>>,
+    /// Gemini cache configuration.
+    gemini_cache_config: GeminiCacheConfig,
 }
 
 impl App {
@@ -381,19 +415,6 @@ impl App {
             OperationState::Streaming(active) => Some(&active.message),
             _ => None,
         }
-    }
-
-    /// Get pending tool calls if we're in `AwaitingToolResults` state.
-    pub fn pending_tool_calls(&self) -> Option<&[ToolCall]> {
-        match &self.state {
-            OperationState::AwaitingToolResults(pending) => Some(&pending.pending_calls),
-            _ => None,
-        }
-    }
-
-    /// Whether we're waiting for tool results.
-    pub fn is_awaiting_tool_results(&self) -> bool {
-        matches!(self.state, OperationState::AwaitingToolResults(_))
     }
 
     pub fn tool_loop_calls(&self) -> Option<&[ToolCall]> {
@@ -506,7 +527,6 @@ impl App {
             && !matches!(
                 self.state,
                 OperationState::Streaming(_)
-                    | OperationState::AwaitingToolResults(_)
                     | OperationState::ToolLoop(_)
                     | OperationState::ToolRecovery(_)
             )
@@ -514,6 +534,11 @@ impl App {
 
     pub fn display_items(&self) -> &[DisplayItem] {
         &self.display
+    }
+
+    /// Version counter for display changes - used for render caching.
+    pub fn display_version(&self) -> usize {
+        self.display_version
     }
 
     pub fn has_api_key(&self, provider: Provider) -> bool {
@@ -538,7 +563,6 @@ impl App {
         match &self.state {
             OperationState::Idle => None,
             OperationState::Streaming(_) => Some("streaming a response"),
-            OperationState::AwaitingToolResults(_) => Some("waiting for tool results"),
             OperationState::ToolLoop(_) => Some("tool execution in progress"),
             OperationState::ToolRecovery(_) => Some("tool recovery pending"),
             OperationState::Summarizing(_)
@@ -835,8 +859,8 @@ impl App {
         self.input.model_select_index()
     }
 
-    fn model_select_preview_index() -> usize {
-        PredefinedModel::all().len()
+    fn model_select_max_index() -> usize {
+        PredefinedModel::all().len().saturating_sub(1)
     }
 
     fn trigger_model_select_shake(&mut self) {
@@ -857,7 +881,7 @@ impl App {
 
     pub fn model_select_move_down(&mut self) {
         if let InputState::ModelSelect { selected, .. } = &mut self.input {
-            let max_index = Self::model_select_preview_index();
+            let max_index = Self::model_select_max_index();
             if *selected < max_index {
                 *selected += 1;
             }
@@ -866,7 +890,7 @@ impl App {
 
     pub fn model_select_set_index(&mut self, index: usize) {
         if let InputState::ModelSelect { selected, .. } = &mut self.input {
-            let max_index = Self::model_select_preview_index();
+            let max_index = Self::model_select_max_index();
             *selected = index.min(max_index);
         }
     }
@@ -1120,6 +1144,19 @@ impl App {
     /// Jump to bottom and re-enable auto-scroll.
     pub fn scroll_to_bottom(&mut self) {
         self.view.scroll = ScrollState::AutoBottom;
+    }
+
+    /// Scroll up by 20% of total scrollable content.
+    pub fn scroll_up_chunk(&mut self) {
+        let delta = (self.view.scroll_max / 5).max(1);
+        self.view.scroll = match self.view.scroll {
+            ScrollState::AutoBottom => ScrollState::Manual {
+                offset_from_top: self.view.scroll_max.saturating_sub(delta),
+            },
+            ScrollState::Manual { offset_from_top } => ScrollState::Manual {
+                offset_from_top: offset_from_top.saturating_sub(delta),
+            },
+        };
     }
 }
 

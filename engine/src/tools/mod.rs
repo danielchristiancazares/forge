@@ -47,19 +47,20 @@ pub enum ApprovalDecision {
 /// Approval mode policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalMode {
-    Auto,
-    Prompt,
-    Deny,
+    /// Auto-approve most tools, only prompt for high-risk operations.
+    Permissive,
+    /// Prompt for any side-effecting tool unless allowlisted.
+    Default,
+    /// Deny all tools unless explicitly allowlisted.
+    Strict,
 }
 
 /// Policy for tool approval and deny/allow lists.
 #[derive(Debug, Clone)]
 pub struct Policy {
-    pub enabled: bool,
     pub mode: ApprovalMode,
     pub allowlist: HashSet<String>,
     pub denylist: HashSet<String>,
-    pub prompt_side_effects: bool,
 }
 
 impl Policy {
@@ -89,14 +90,6 @@ pub enum PlannedDisposition {
     ExecuteNow,
     RequiresConfirmation(ConfirmationRequest),
     PreResolved(ToolResult),
-}
-
-/// Tool loop mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolsMode {
-    Disabled,
-    ParseOnly,
-    Enabled,
 }
 
 /// Tool events for streaming output.
@@ -150,7 +143,6 @@ pub enum DenialReason {
     Denylisted {
         tool: String,
     },
-    Disabled,
     PathOutsideSandbox {
         attempted: PathBuf,
         resolved: PathBuf,
@@ -168,7 +160,6 @@ impl std::fmt::Display for DenialReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DenialReason::Denylisted { tool } => write!(f, "Tool '{tool}' is denylisted"),
-            DenialReason::Disabled => write!(f, "Tool execution disabled by policy"),
             DenialReason::PathOutsideSandbox {
                 attempted,
                 resolved,
@@ -325,9 +316,6 @@ pub struct ToolTimeouts {
 /// Aggregated tool settings derived from config.
 #[derive(Debug, Clone)]
 pub struct ToolSettings {
-    pub mode: ToolsMode,
-    #[allow(dead_code)]
-    pub allow_parallel: bool,
     pub limits: ToolLimits,
     pub read_limits: ReadFileLimits,
     pub patch_limits: PatchLimits,

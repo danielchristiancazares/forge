@@ -21,8 +21,8 @@ use crate::state::{
 use crate::tools::{self, ConfirmationRequest};
 use crate::util;
 use crate::{
-    ApiConfig, App, DEFAULT_TOOL_CAPACITY_BYTES, Message, NonEmptyString, PendingToolExecution,
-    Provider, QueuedUserMessage, TOOL_EVENT_CHANNEL_CAPACITY, TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
+    ApiConfig, App, DEFAULT_TOOL_CAPACITY_BYTES, Message, NonEmptyString, Provider,
+    QueuedUserMessage, TOOL_EVENT_CHANNEL_CAPACITY, TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
 };
 
 use futures_util::future::AbortHandle;
@@ -66,52 +66,14 @@ impl App {
                 };
         }
 
-        match self.tools_mode {
-            tools::ToolsMode::Disabled => {
-                let mut results = pre_resolved;
-                results.extend(
-                    tool_calls
-                        .iter()
-                        .map(|call| ToolResult::error(call.id.clone(), "Tool execution disabled")),
-                );
-                if batch_id != 0 {
-                    for result in &results {
-                        let _ = self.tool_journal.record_result(batch_id, result);
-                    }
-                }
-                self.commit_tool_batch(
-                    assistant_text,
-                    tool_calls,
-                    results,
-                    model,
-                    step_id,
-                    batch_id,
-                    false,
-                );
-            }
-            tools::ToolsMode::ParseOnly => {
-                let pending = PendingToolExecution {
-                    assistant_text,
-                    pending_calls: tool_calls,
-                    results: pre_resolved,
-                    model,
-                    step_id,
-                    batch_id,
-                };
-                self.state = OperationState::AwaitingToolResults(pending);
-                self.set_status("Waiting for tool results...");
-            }
-            tools::ToolsMode::Enabled => {
-                self.start_tool_loop(
-                    assistant_text,
-                    tool_calls,
-                    pre_resolved,
-                    model,
-                    step_id,
-                    batch_id,
-                );
-            }
-        }
+        self.start_tool_loop(
+            assistant_text,
+            tool_calls,
+            pre_resolved,
+            model,
+            step_id,
+            batch_id,
+        );
     }
 
     fn start_tool_loop(
@@ -252,15 +214,6 @@ impl App {
                 continue;
             }
 
-            if !self.tool_settings.policy.enabled {
-                pre_resolved.push(tool_error_result(
-                    call,
-                    tools::ToolError::SandboxViolation(tools::DenialReason::Disabled),
-                ));
-                pre_resolved_ids.insert(call.id.clone());
-                continue;
-            }
-
             if self.tool_settings.policy.is_denylisted(&call.name) {
                 pre_resolved.push(tool_error_result(
                     call,
@@ -321,7 +274,7 @@ impl App {
                 continue;
             }
 
-            if matches!(self.tool_settings.policy.mode, tools::ApprovalMode::Deny)
+            if matches!(self.tool_settings.policy.mode, tools::ApprovalMode::Strict)
                 && !self.tool_settings.policy.is_allowlisted(&call.name)
             {
                 pre_resolved.push(tool_error_result(
@@ -336,12 +289,10 @@ impl App {
 
             let allowlisted = self.tool_settings.policy.is_allowlisted(&call.name);
             let needs_confirmation = match self.tool_settings.policy.mode {
-                tools::ApprovalMode::Auto | tools::ApprovalMode::Deny => exec.requires_approval(),
-                tools::ApprovalMode::Prompt => {
-                    exec.requires_approval()
-                        || (self.tool_settings.policy.prompt_side_effects
-                            && exec.is_side_effecting()
-                            && !allowlisted)
+                tools::ApprovalMode::Permissive => exec.requires_approval(),
+                tools::ApprovalMode::Strict => true, // All tools require approval
+                tools::ApprovalMode::Default => {
+                    exec.requires_approval() || (exec.is_side_effecting() && !allowlisted)
                 }
             };
 
@@ -713,85 +664,6 @@ impl App {
         );
     }
 
-    /// Submit a tool result. When all results are in, commit messages and return to Idle.
-    ///
-    /// Returns `Ok(true)` if all results are now complete and conversation can resume,
-    /// `Ok(false)` if more results are still needed, or an error if not in the right state.
-    pub fn submit_tool_result(&mut self, result: ToolResult) -> Result<bool, String> {
-        // First, validate and add the result to pending state
-        let (results_count, pending_count, batch_id) = {
-            let pending = match &mut self.state {
-                OperationState::AwaitingToolResults(pending) => pending,
-                _ => return Err("Not awaiting tool results".to_string()),
-            };
-
-            // Verify this result matches a pending call
-            let matching_call = pending
-                .pending_calls
-                .iter()
-                .any(|c| c.id == result.tool_call_id);
-            if !matching_call {
-                return Err(format!(
-                    "No pending tool call with ID '{}'",
-                    result.tool_call_id
-                ));
-            }
-
-            // Check for duplicate result
-            if pending
-                .results
-                .iter()
-                .any(|r| r.tool_call_id == result.tool_call_id)
-            {
-                return Err(format!(
-                    "Result for tool call '{}' already submitted",
-                    result.tool_call_id
-                ));
-            }
-
-            pending.results.push(result);
-            if pending.batch_id != 0 {
-                let _ = self
-                    .tool_journal
-                    .record_result(pending.batch_id, pending.results.last().unwrap());
-            }
-            (
-                pending.results.len(),
-                pending.pending_calls.len(),
-                pending.batch_id,
-            )
-        };
-
-        // Check if all results are in
-        if results_count < pending_count {
-            self.set_status(format!(
-                "Received {results_count}/{pending_count} tool results..."
-            ));
-            return Ok(false);
-        }
-
-        // All results received - commit to history and return to Idle
-        // Take ownership of the pending state
-        let pending = match std::mem::replace(&mut self.state, OperationState::Idle) {
-            OperationState::AwaitingToolResults(p) => p,
-            other => {
-                self.state = other;
-                return Err("State changed unexpectedly".to_string());
-            }
-        };
-
-        self.commit_tool_batch(
-            pending.assistant_text,
-            pending.pending_calls,
-            pending.results,
-            pending.model,
-            pending.step_id,
-            batch_id,
-            false,
-        );
-        Ok(true)
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn commit_tool_batch(
         &mut self,
@@ -856,6 +728,7 @@ impl App {
             let api_key = match model.provider() {
                 Provider::Claude => ApiKey::Claude(api_key),
                 Provider::OpenAI => ApiKey::OpenAI(api_key),
+                Provider::Gemini => ApiKey::Gemini(api_key),
             };
 
             let config = match ApiConfig::new(api_key, model.clone()) {
@@ -1012,7 +885,7 @@ impl App {
             }
         }
 
-        let auto_resume = matches!(self.tools_mode, tools::ToolsMode::Enabled);
+        let auto_resume = true;
         self.commit_tool_batch(
             assistant_text,
             batch.calls,

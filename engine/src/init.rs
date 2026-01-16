@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use forge_types::{OutputLimits, Provider, ToolDefinition};
+use forge_types::{OutputLimits, Provider};
 
 use crate::config::{self, ForgeConfig, OpenAIConfig};
 use crate::state::{DataDir, DataDirSource, OperationState};
@@ -18,7 +18,7 @@ use crate::tools::{self, builtins};
 use crate::ui::InputState;
 use crate::{
     App, ContextManager, OpenAIReasoningEffort, OpenAIRequestOptions, OpenAITextVerbosity,
-    OpenAITruncation, StreamJournal, ToolJournal, UiOptions, ViewState,
+    OpenAITruncation, StreamJournal, SystemPrompts, ToolJournal, UiOptions, ViewState,
 };
 
 // Tool limit defaults
@@ -73,7 +73,7 @@ const DEFAULT_SANDBOX_DENIES: [&str; 21] = [
 ];
 
 impl App {
-    pub fn new(system_prompt: Option<&'static str>) -> anyhow::Result<Self> {
+    pub fn new(system_prompts: Option<SystemPrompts>) -> anyhow::Result<Self> {
         let (config, config_error) = match ForgeConfig::load() {
             Ok(config) => (config, None),
             Err(err) => (None, Some(err)),
@@ -96,6 +96,13 @@ impl App {
                     api_keys.insert(Provider::OpenAI, trimmed.to_string());
                 }
             }
+            if let Some(key) = keys.google.as_ref() {
+                let resolved = config::expand_env_vars(key);
+                let trimmed = resolved.trim();
+                if !trimmed.is_empty() {
+                    api_keys.insert(Provider::Gemini, trimmed.to_string());
+                }
+            }
         }
 
         if let std::collections::hash_map::Entry::Vacant(e) = api_keys.entry(Provider::Claude)
@@ -114,33 +121,37 @@ impl App {
                 e.insert(key);
             }
         }
+        if let std::collections::hash_map::Entry::Vacant(e) = api_keys.entry(Provider::Gemini)
+            && let Ok(key) = std::env::var("GEMINI_API_KEY")
+        {
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                e.insert(key);
+            }
+        }
 
-        let provider = config
+        // Infer provider from model name, or fall back to API key detection
+        let model_raw = config
             .as_ref()
             .and_then(|cfg| cfg.app.as_ref())
-            .and_then(|app| app.provider.as_ref())
-            .and_then(|raw| {
-                let parsed = Provider::parse(raw);
-                if parsed.is_none() {
-                    tracing::warn!("Unknown provider in config: {}", raw);
-                }
-                parsed
-            })
+            .and_then(|app| app.model.as_ref());
+
+        let provider = model_raw
+            .and_then(|m| Provider::from_model_name(m))
             .or_else(|| {
                 if api_keys.contains_key(&Provider::Claude) {
                     Some(Provider::Claude)
                 } else if api_keys.contains_key(&Provider::OpenAI) {
                     Some(Provider::OpenAI)
+                } else if api_keys.contains_key(&Provider::Gemini) {
+                    Some(Provider::Gemini)
                 } else {
                     None
                 }
             })
             .unwrap_or(Provider::Claude);
 
-        let model = config
-            .as_ref()
-            .and_then(|cfg| cfg.app.as_ref())
-            .and_then(|app| app.model.as_ref())
+        let model = model_raw
             .map(|raw| match provider.parse_model(raw) {
                 Ok(model) => model,
                 Err(err) => {
@@ -218,6 +229,17 @@ impl App {
             config.as_ref().and_then(|cfg| cfg.openai.as_ref()),
         );
 
+        // Load Gemini cache config
+        let gemini_config = config.as_ref().and_then(|cfg| cfg.google.as_ref());
+        let gemini_cache_config = crate::GeminiCacheConfig {
+            enabled: gemini_config
+                .and_then(|cfg| cfg.cache_enabled)
+                .unwrap_or(false), // Default disabled - requires explicit opt-in
+            ttl_seconds: gemini_config
+                .and_then(|cfg| cfg.cache_ttl_seconds)
+                .unwrap_or(3600), // Default 1 hour
+        };
+
         let data_dir = Self::data_dir();
 
         Self::ensure_secure_dir(&data_dir.path)?;
@@ -240,12 +262,7 @@ impl App {
             tracing::warn!("Failed to register built-in tools: {e}");
         }
         let tool_registry = std::sync::Arc::new(tool_registry);
-        let config_tool_definitions = Self::load_tool_definitions_from_config(config.as_ref());
-        let tool_definitions = match tool_settings.mode {
-            tools::ToolsMode::Enabled => tool_registry.definitions(),
-            tools::ToolsMode::ParseOnly => config_tool_definitions,
-            tools::ToolsMode::Disabled => Vec::new(),
-        };
+        let tool_definitions = tool_registry.definitions();
 
         let tool_journal_path = data_dir.join("tool_journal.db");
         let tool_journal = ToolJournal::open(&tool_journal_path)?;
@@ -261,6 +278,7 @@ impl App {
         let mut app = Self {
             input: InputState::default(),
             display: Vec::new(),
+            display_version: 0,
             should_quit: false,
             view,
             api_keys,
@@ -274,12 +292,11 @@ impl App {
             output_limits,
             cache_enabled,
             openai_options,
-            system_prompt,
+            system_prompts,
             cached_usage_status: None,
             pending_user_message: None,
             tool_definitions,
             tool_registry,
-            tools_mode: tool_settings.mode,
             tool_settings,
             tool_journal,
             tool_file_cache,
@@ -287,6 +304,8 @@ impl App {
             history_load_warning_shown: false,
             autosave_warning_shown: false,
             empty_send_warning_shown: false,
+            gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            gemini_cache_config,
         };
 
         app.clamp_output_limits_to_model();
@@ -425,31 +444,8 @@ impl App {
         OpenAIRequestOptions::new(reasoning_effort, verbosity, truncation)
     }
 
-    fn load_tool_definitions_from_config(config: Option<&ForgeConfig>) -> Vec<ToolDefinition> {
-        let mut defs = Vec::new();
-        if let Some(tools_cfg) = config.and_then(|cfg| cfg.tools.as_ref()) {
-            for tool_cfg in &tools_cfg.definitions {
-                match tool_cfg.to_tool_definition() {
-                    Ok(tool_def) => {
-                        tracing::debug!("Loaded tool: {}", tool_def.name);
-                        defs.push(tool_def);
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to load tool '{}': {}", tool_cfg.name, e);
-                    }
-                }
-            }
-        }
-        defs
-    }
-
     pub(crate) fn tool_settings_from_config(config: Option<&ForgeConfig>) -> tools::ToolSettings {
         let tools_cfg = config.and_then(|cfg| cfg.tools.as_ref());
-        let has_defs = tools_cfg.is_some_and(|cfg| !cfg.definitions.is_empty());
-        let mode = parse_tools_mode(tools_cfg.and_then(|cfg| cfg.mode.as_deref()), has_defs);
-        let allow_parallel = tools_cfg
-            .and_then(|cfg| cfg.allow_parallel)
-            .unwrap_or(false);
 
         let limits = tools::ToolLimits {
             max_tool_calls_per_batch: tools_cfg
@@ -458,9 +454,7 @@ impl App {
             max_tool_iterations_per_user_turn: tools_cfg
                 .and_then(|cfg| cfg.max_tool_iterations_per_user_turn)
                 .unwrap_or(DEFAULT_MAX_TOOL_ITERATIONS_PER_TURN),
-            max_tool_args_bytes: tools_cfg
-                .and_then(|cfg| cfg.max_tool_args_bytes)
-                .unwrap_or(DEFAULT_MAX_TOOL_ARGS_BYTES),
+            max_tool_args_bytes: DEFAULT_MAX_TOOL_ARGS_BYTES,
         };
 
         let read_limits = tools::ReadFileLimits {
@@ -483,7 +477,6 @@ impl App {
 
         let search_cfg = tools_cfg.and_then(|cfg| cfg.search.as_ref());
         let search = tools::SearchToolConfig {
-            enabled: search_cfg.and_then(|cfg| cfg.enabled).unwrap_or(false),
             binary: search_cfg
                 .and_then(|cfg| cfg.binary.clone())
                 .unwrap_or_else(|| "ugrep".to_string()),
@@ -507,7 +500,6 @@ impl App {
 
         let webfetch_cfg = tools_cfg.and_then(|cfg| cfg.webfetch.as_ref());
         let webfetch = tools::WebFetchToolConfig {
-            enabled: webfetch_cfg.and_then(|cfg| cfg.enabled).unwrap_or(false),
             user_agent: webfetch_cfg.and_then(|cfg| cfg.user_agent.clone()),
             timeout_seconds: webfetch_cfg
                 .and_then(|cfg| cfg.timeout_seconds)
@@ -557,7 +549,6 @@ impl App {
 
         let policy_cfg = tools_cfg.and_then(|cfg| cfg.approval.as_ref());
         let policy = tools::Policy {
-            enabled: policy_cfg.and_then(|cfg| cfg.enabled).unwrap_or(true),
             mode: parse_approval_mode(policy_cfg.and_then(|cfg| cfg.mode.as_deref())),
             allowlist: {
                 let list = policy_cfg
@@ -584,9 +575,6 @@ impl App {
                 };
                 list.into_iter().collect()
             },
-            prompt_side_effects: policy_cfg
-                .and_then(|cfg| cfg.prompt_side_effects)
-                .unwrap_or(true),
         };
 
         let env_patterns: Vec<String> = tools_cfg
@@ -657,8 +645,6 @@ impl App {
         });
 
         tools::ToolSettings {
-            mode,
-            allow_parallel,
             limits,
             read_limits,
             patch_limits,
@@ -674,26 +660,11 @@ impl App {
     }
 }
 
-fn parse_tools_mode(raw: Option<&str>, has_definitions: bool) -> tools::ToolsMode {
-    match raw.map(|s| s.trim().to_ascii_lowercase()) {
-        Some(ref s) if s == "disabled" => tools::ToolsMode::Disabled,
-        Some(ref s) if s == "parse_only" => tools::ToolsMode::ParseOnly,
-        Some(ref s) if s == "enabled" => tools::ToolsMode::Enabled,
-        _ => {
-            if has_definitions {
-                tools::ToolsMode::ParseOnly
-            } else {
-                tools::ToolsMode::Disabled
-            }
-        }
-    }
-}
-
 fn parse_approval_mode(raw: Option<&str>) -> tools::ApprovalMode {
-    match raw.map(|s| s.trim().to_ascii_lowercase()) {
-        Some(ref s) if s == "auto" => tools::ApprovalMode::Auto,
-        Some(ref s) if s == "deny" => tools::ApprovalMode::Deny,
-        Some(ref s) if s == "prompt" => tools::ApprovalMode::Prompt,
-        _ => tools::ApprovalMode::Prompt,
+    match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("permissive" | "auto") => tools::ApprovalMode::Permissive,
+        Some("strict" | "deny") => tools::ApprovalMode::Strict,
+        // "default", "prompt", or anything else
+        _ => tools::ApprovalMode::Default,
     }
 }

@@ -39,16 +39,14 @@ fn test_app() -> App {
         tool_settings.shell.clone(),
     );
     let tool_registry = std::sync::Arc::new(tool_registry);
-    let tool_definitions = match tool_settings.mode {
-        tools::ToolsMode::Enabled => tool_registry.definitions(),
-        tools::ToolsMode::ParseOnly | tools::ToolsMode::Disabled => Vec::new(),
-    };
+    let tool_definitions = tool_registry.definitions();
     let tool_journal = ToolJournal::open_in_memory().expect("in-memory tool journal");
     let tool_file_cache = std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
     App {
         input: InputState::default(),
         display: Vec::new(),
+        display_version: 0,
         should_quit: false,
         view: ViewState::default(),
         api_keys,
@@ -62,12 +60,11 @@ fn test_app() -> App {
         output_limits,
         cache_enabled: false,
         openai_options: OpenAIRequestOptions::default(),
-        system_prompt: None,
+        system_prompts: None,
         cached_usage_status: None,
         pending_user_message: None,
         tool_definitions,
         tool_registry,
-        tools_mode: tool_settings.mode,
         tool_settings,
         tool_journal,
         tool_file_cache,
@@ -75,6 +72,8 @@ fn test_app() -> App {
         history_load_warning_shown: false,
         autosave_warning_shown: false,
         empty_send_warning_shown: false,
+        gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+        gemini_cache_config: crate::GeminiCacheConfig::default(),
     }
 }
 
@@ -606,9 +605,6 @@ fn tool_call_args_overflow_pre_resolved_error() {
 #[tokio::test]
 async fn tool_loop_awaiting_approval_then_deny_all_commits() {
     let mut app = test_app();
-    app.tools_mode = tools::ToolsMode::Enabled;
-    app.tool_settings.mode = tools::ToolsMode::Enabled;
-    app.tool_definitions = app.tool_registry.definitions();
     app.api_keys.clear();
 
     let call = ToolCall::new(
@@ -648,8 +644,6 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
 #[tokio::test]
 async fn tool_loop_preserves_order_after_approval() {
     let mut app = test_app();
-    app.tools_mode = tools::ToolsMode::Enabled;
-    app.tool_settings.mode = tools::ToolsMode::Enabled;
     app.api_keys.clear();
 
     let log = Arc::new(Mutex::new(Vec::new()));
@@ -695,10 +689,7 @@ async fn tool_loop_preserves_order_after_approval() {
 #[tokio::test]
 async fn tool_loop_write_then_read_same_batch() {
     let mut app = test_app();
-    app.tools_mode = tools::ToolsMode::Enabled;
-    app.tool_settings.mode = tools::ToolsMode::Enabled;
-    app.tool_settings.policy.mode = tools::ApprovalMode::Auto;
-    app.tool_definitions = app.tool_registry.definitions();
+    app.tool_settings.policy.mode = tools::ApprovalMode::Permissive;
     app.api_keys.clear();
 
     let temp_dir = tempdir().expect("temp dir");
@@ -724,15 +715,8 @@ async fn tool_loop_write_then_read_same_batch() {
         None,
     );
 
-    match &app.state {
-        OperationState::ToolLoop(state) => match state.phase {
-            ToolLoopPhase::AwaitingApproval(_) => {}
-            ToolLoopPhase::Executing(_) => panic!("expected awaiting approval"),
-        },
-        _ => panic!("expected tool loop state"),
-    }
-
-    app.resolve_tool_approval(tools::ApprovalDecision::ApproveAll);
+    // In Permissive mode, neither write_file nor read_file requires approval,
+    // so the batch should execute directly without awaiting approval.
     drive_tool_loop_to_idle(&mut app).await;
 
     let results: Vec<&ToolResult> = app
@@ -758,49 +742,6 @@ async fn tool_loop_write_then_read_same_batch() {
         .expect("read result");
     assert!(!read_result.is_error);
     assert_eq!(read_result.content, "hello");
-}
-
-#[test]
-fn submit_tool_result_validation_rejects_bad_and_duplicate_ids() {
-    let mut app = test_app();
-    app.tools_mode = tools::ToolsMode::ParseOnly;
-    app.tool_settings.mode = tools::ToolsMode::ParseOnly;
-
-    let calls = vec![
-        ToolCall::new("call-1", "run_command", json!({ "command": "echo 1" })),
-        ToolCall::new("call-2", "run_command", json!({ "command": "echo 2" })),
-    ];
-    app.handle_tool_calls(
-        "assistant".to_string(),
-        calls,
-        Vec::new(),
-        app.model.clone(),
-        1,
-        None,
-    );
-
-    assert!(matches!(app.state, OperationState::AwaitingToolResults(_)));
-
-    let err = app
-        .submit_tool_result(ToolResult::success("unknown", "ok"))
-        .expect_err("unknown id");
-    assert!(err.contains("No pending tool call"));
-
-    let result = app
-        .submit_tool_result(ToolResult::success("call-1", "ok"))
-        .expect("submit first");
-    assert!(!result);
-
-    let err_dup = app
-        .submit_tool_result(ToolResult::success("call-1", "dup"))
-        .expect_err("duplicate result");
-    assert!(err_dup.contains("already submitted"));
-
-    let result = app
-        .submit_tool_result(ToolResult::success("call-2", "ok"))
-        .expect("submit second");
-    assert!(result);
-    assert!(matches!(app.state, OperationState::Idle));
 }
 
 #[tokio::test]
@@ -846,8 +787,6 @@ async fn summarization_failure_sets_retry_with_queued_request() {
 #[test]
 fn tool_loop_max_iterations_short_circuits() {
     let mut app = test_app();
-    app.tools_mode = tools::ToolsMode::Enabled;
-    app.tool_settings.mode = tools::ToolsMode::Enabled;
     app.tool_iterations = app.tool_settings.limits.max_tool_iterations_per_user_turn;
     app.api_keys.clear();
 

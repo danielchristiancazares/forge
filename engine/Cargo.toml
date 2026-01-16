@@ -38,6 +38,7 @@ tracing.workspace = true
 
 unicode-segmentation.workspace = true
 which = "7"
+similar = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

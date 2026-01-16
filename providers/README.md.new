@@ -1,0 +1,71 @@
+# forge-providers
+
+This document provides comprehensive documentation for the `forge-providers` crate - the LLM API client layer for the Forge application. It is intended for developers who want to understand, maintain, or extend the provider functionality.
+
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+| :--- | :--- |
+| 1-22 | Header & TOC |
+| 23-42 | Table of Contents |
+| 43-82 | Overview |
+| 83-160 | Architecture Diagram |
+| 161-240 | Provider System |
+| 241-430 | Type-Driven Design |
+| 431-550 | Claude API Client |
+| 551-765 | OpenAI API Client |
+| 766-825 | Gemini API Client |
+| 826-874 | Public API Reference |
+| 875-1007 | Code Examples |
+| 1008-1050 | Error Handling |
+| 1051-1100 | Dependencies & Safety |
+| 1101-1454 | Extension Guide |
+| 1455-1525 | Advanced Code Examples |
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Architecture Diagram](#architecture-diagram)
+3. [Provider System](#provider-system)
+4. [Type-Driven Design](#type-driven-design)
+5. [Claude API Client](#claude-api-client)
+6. [OpenAI API Client](#openai-api-client)
+7. [Gemini API Client](#gemini-api-client)
+8. [Public API Reference](#public-api-reference)
+9. [Code Examples](#code-examples)
+10. [Error Handling](#error-handling)
+11. [Dependencies & Safety](#dependencies--safety)
+12. [Extension Guide](#extension-guide)
+13. [Advanced Code Examples](#advanced-code-examples)
+
+---
+
+## Overview
+
+The `forge-providers` crate is responsible for all HTTP communication with LLM APIs. It provides a unified streaming interface that abstracts away the differences between provider-specific APIs while preserving provider-specific features like Claude's extended thinking and OpenAI's reasoning controls.
+
+### Key Responsibilities
+
+| Responsibility | Description |
+| :--- | :--- |
+| **HTTP Communication** | Send requests to Claude, OpenAI, and Gemini APIs |
+| **SSE Parsing** | Parse Server-Sent Events streams from all three providers |
+| **Request Building** | Construct provider-specific request payloads |
+| **Event Normalization** | Convert provider-specific events to unified `StreamEvent` |
+| **Context Caching** | Manage Gemini explicit context caches for large prompts |
+| **Configuration Validation** | Ensure API keys match their intended providers |
+
+### Crate Structure
+
+```text
+providers/
+├── Cargo.toml          # Crate manifest
+└── src/
+    └── lib.rs          # All provider implementations
+        ├── SSE parsing functions
+        ├── ApiConfig struct
+        ├── send_message() dispatch
+        ├── claude module
+        ├── openai module
+        └── gemini module
+```

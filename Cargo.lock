@@ -1351,6 +1351,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "similar",
  "tempfile",
  "thiserror 2.0.17",
  "tokio",
@@ -1366,6 +1367,7 @@ name = "forge-providers"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "forge-types",
  "futures-util",
  "reqwest 0.12.28",
@@ -1374,6 +1376,7 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

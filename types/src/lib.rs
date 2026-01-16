@@ -124,6 +124,7 @@ pub enum Provider {
     #[default]
     Claude,
     OpenAI,
+    Gemini,
 }
 
 impl Provider {
@@ -132,6 +133,7 @@ impl Provider {
         match self {
             Provider::Claude => "claude",
             Provider::OpenAI => "openai",
+            Provider::Gemini => "gemini",
         }
     }
 
@@ -140,6 +142,7 @@ impl Provider {
         match self {
             Provider::Claude => "Claude",
             Provider::OpenAI => "GPT",
+            Provider::Gemini => "Gemini",
         }
     }
 
@@ -148,6 +151,7 @@ impl Provider {
         match self {
             Provider::Claude => "ANTHROPIC_API_KEY",
             Provider::OpenAI => "OPENAI_API_KEY",
+            Provider::Gemini => "GEMINI_API_KEY",
         }
     }
 
@@ -156,6 +160,7 @@ impl Provider {
         match self {
             Provider::Claude => ModelName::known(*self, "claude-sonnet-4-5-20250929"),
             Provider::OpenAI => ModelName::known(*self, "gpt-5.2"),
+            Provider::Gemini => ModelName::known(*self, "gemini-3-pro-preview"),
         }
     }
 
@@ -169,6 +174,7 @@ impl Provider {
                 "claude-opus-4-5-20251101",
             ],
             Provider::OpenAI => &["gpt-5.2", "gpt-5.2-2025-12-11"],
+            Provider::Gemini => &["gemini-3-pro-preview"],
         }
     }
 
@@ -183,14 +189,30 @@ impl Provider {
         match s.to_lowercase().as_str() {
             "claude" | "anthropic" => Some(Provider::Claude),
             "openai" | "gpt" | "chatgpt" => Some(Provider::OpenAI),
+            "gemini" | "google" => Some(Provider::Gemini),
             _ => None,
+        }
+    }
+
+    /// Infer provider from model name prefix.
+    #[must_use]
+    pub fn from_model_name(model: &str) -> Option<Self> {
+        let lower = model.trim().to_ascii_lowercase();
+        if lower.starts_with("claude-") {
+            Some(Provider::Claude)
+        } else if lower.starts_with("gpt-") {
+            Some(Provider::OpenAI)
+        } else if lower.starts_with("gemini-") {
+            Some(Provider::Gemini)
+        } else {
+            None
         }
     }
 
     /// Get all available providers.
     #[must_use]
     pub fn all() -> &'static [Provider] {
-        &[Provider::Claude, Provider::OpenAI]
+        &[Provider::Claude, Provider::OpenAI, Provider::Gemini]
     }
 }
 
@@ -210,6 +232,8 @@ pub enum ModelParseError {
     ClaudePrefix(String),
     #[error("OpenAI model must start with gpt-5 (got {0})")]
     OpenAIMinimum(String),
+    #[error("Gemini model must start with gemini- (got {0})")]
+    GeminiPrefix(String),
 }
 
 /// Provider-scoped model name.
@@ -231,12 +255,18 @@ impl ModelName {
             return Err(ModelParseError::Empty);
         }
 
-        if provider == Provider::Claude && !trimmed.to_ascii_lowercase().starts_with("claude-") {
+        let lower = trimmed.to_ascii_lowercase();
+
+        if provider == Provider::Claude && !lower.starts_with("claude-") {
             return Err(ModelParseError::ClaudePrefix(trimmed.to_string()));
         }
 
-        if provider == Provider::OpenAI && !trimmed.to_ascii_lowercase().starts_with("gpt-5") {
+        if provider == Provider::OpenAI && !lower.starts_with("gpt-5") {
             return Err(ModelParseError::OpenAIMinimum(trimmed.to_string()));
+        }
+
+        if provider == Provider::Gemini && !lower.starts_with("gemini-") {
+            return Err(ModelParseError::GeminiPrefix(trimmed.to_string()));
         }
 
         if let Some(known) = provider
@@ -300,6 +330,7 @@ impl std::fmt::Display for ModelName {
 pub enum ApiKey {
     Claude(String),
     OpenAI(String),
+    Gemini(String),
 }
 
 impl ApiKey {
@@ -308,13 +339,14 @@ impl ApiKey {
         match self {
             ApiKey::Claude(_) => Provider::Claude,
             ApiKey::OpenAI(_) => Provider::OpenAI,
+            ApiKey::Gemini(_) => Provider::Gemini,
         }
     }
 
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
-            ApiKey::Claude(key) | ApiKey::OpenAI(key) => key,
+            ApiKey::Claude(key) | ApiKey::OpenAI(key) | ApiKey::Gemini(key) => key,
         }
     }
 }
@@ -870,6 +902,8 @@ mod tests {
         assert_eq!(Provider::parse("Anthropic"), Some(Provider::Claude));
         assert_eq!(Provider::parse("openai"), Some(Provider::OpenAI));
         assert_eq!(Provider::parse("gpt"), Some(Provider::OpenAI));
+        assert_eq!(Provider::parse("gemini"), Some(Provider::Gemini));
+        assert_eq!(Provider::parse("google"), Some(Provider::Gemini));
         assert_eq!(Provider::parse("unknown"), None);
     }
 
@@ -885,6 +919,14 @@ mod tests {
         let provider = Provider::Claude;
         assert!(provider.parse_model("gpt-5.2").is_err());
         assert!(provider.parse_model("claude-sonnet-4-5-20250929").is_ok());
+    }
+
+    #[test]
+    fn model_parse_validates_gemini_prefix() {
+        let provider = Provider::Gemini;
+        assert!(provider.parse_model("gpt-5.2").is_err());
+        assert!(provider.parse_model("claude-opus-4-5-20251101").is_err());
+        assert!(provider.parse_model("gemini-3-pro-preview").is_ok());
     }
 
     #[test]
@@ -910,6 +952,13 @@ mod tests {
         let key = ApiKey::OpenAI("sk-test-xyz".to_string());
         assert_eq!(key.provider(), Provider::OpenAI);
         assert_eq!(key.as_str(), "sk-test-xyz");
+    }
+
+    #[test]
+    fn api_key_provider_gemini() {
+        let key = ApiKey::Gemini("AIza-test-key".to_string());
+        assert_eq!(key.provider(), Provider::Gemini);
+        assert_eq!(key.as_str(), "AIza-test-key");
     }
 
     // ========================================================================

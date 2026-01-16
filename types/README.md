@@ -6,25 +6,25 @@ This crate provides the foundational type system that enforces correctness at co
 
 ## LLM-TOC
 <!-- Auto-generated section map for LLM context -->
-| Lines | Section |
-|-------|---------|
-| 1-21 | Header & TOC |
-| 22-40 | Table of Contents |
-| 41-104 | Design Philosophy |
-| 105-125 | Module Structure |
-| 126-231 | NonEmpty String Types |
-| 232-373 | Provider and Model Types |
-| 374-413 | API Key Types |
-| 414-509 | OpenAI Request Options |
-| 510-595 | Caching and Output Limits |
-| 596-658 | Streaming Events |
-| 659-762 | Tool Calling Types |
-| 763-910 | Message Types |
-| 911-979 | Terminal Sanitization |
-| 980-1024 | Type Relationships |
-| 1025-1039 | Error Types Summary |
-| 1040-1057 | Testing |
-| 1058-1090 | Extending the Crate |
+|Lines|Section|
+|---|---|
+|1-21|Header & TOC|
+|22-40|Table of Contents|
+|41-104|Design Philosophy|
+|105-125|Module Structure|
+|126-231|NonEmpty String Types|
+|232-373|Provider and Model Types|
+|374-413|API Key Types|
+|414-509|OpenAI Request Options|
+|510-595|Caching and Output Limits|
+|596-658|Streaming Events|
+|659-762|Tool Calling Types|
+|763-910|Message Types|
+|911-979|Terminal Sanitization|
+|980-1024|Type Relationships|
+|1025-1039|Error Types Summary|
+|1040-1057|Testing|
+|1058-1090|Extending the Crate|
 
 ## Table of Contents
 
@@ -61,7 +61,8 @@ let s = NonEmptyString::new("")?;  // Err(EmptyStringError)
 let limits = OutputLimits::with_thinking(4096, 5000)?;  // Err: budget >= max
 
 // ModelName: Provider prefix validated during parsing
-let model = Provider::OpenAI.parse_model("gpt-4o")?;  // Err: must be gpt-5+
+let model = Provider::OpenAI.parse_model("gpt-5.2")?;  // Ok
+let model = Provider::Gemini.parse_model("gemini-1.5-pro")?;  // Ok
 ```
 
 ### 2. Provider Scoping
@@ -97,7 +98,7 @@ pub enum Message {
 The crate provides both options depending on use case:
 
 | Type | Validation | Use Case |
-|------|------------|----------|
+| ---- | ---------- | -------- |
 | `NonEmptyStaticStr` | Compile-time (const fn panic) | Static strings, constants |
 | `NonEmptyString` | Runtime (Result) | Dynamic user input |
 
@@ -111,7 +112,7 @@ The crate provides both options depending on use case:
 
 ## Module Structure
 
-```
+```text
 forge-types/
 ├── Cargo.toml
 └── src/
@@ -249,9 +250,10 @@ Enumeration of supported LLM providers with associated metadata.
 **Variants:**
 
 | Variant | Default | Display Name | Env Var |
-|---------|---------|--------------|---------|
+| ------- | ------- | ------------ | ------- |
 | `Claude` | Yes | "Claude" | `ANTHROPIC_API_KEY` |
 | `OpenAI` | No | "GPT" | `OPENAI_API_KEY` |
+| `Gemini` | No | "Gemini" | `GEMINI_API_KEY` |
 
 **Usage:**
 
@@ -275,7 +277,8 @@ assert_eq!(Provider::parse("claude"), Some(Provider::Claude));
 assert_eq!(Provider::parse("Anthropic"), Some(Provider::Claude));
 assert_eq!(Provider::parse("openai"), Some(Provider::OpenAI));
 assert_eq!(Provider::parse("gpt"), Some(Provider::OpenAI));
-assert_eq!(Provider::parse("chatgpt"), Some(Provider::OpenAI));
+assert_eq!(Provider::parse("gemini"), Some(Provider::Gemini));
+assert_eq!(Provider::parse("google"), Some(Provider::Gemini));
 assert_eq!(Provider::parse("unknown"), None);
 
 // Enumerate all providers
@@ -291,12 +294,18 @@ for provider in Provider::all() {
 let model = Provider::Claude.default_model();
 assert_eq!(model.as_str(), "claude-sonnet-4-5-20250929");
 
+let model = Provider::Gemini.default_model();
+assert_eq!(model.as_str(), "gemini-3-pro-preview");
+
 // List available models
 let models: &[&str] = Provider::Claude.available_models();
 // ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001", "claude-opus-4-5-20251101"]
 
 let models: &[&str] = Provider::OpenAI.available_models();
 // ["gpt-5.2", "gpt-5.2-2025-12-11"]
+
+let models: &[&str] = Provider::Gemini.available_models();
+// ["gemini-3-pro-preview"]
 
 // Parse model name with validation
 let model = Provider::Claude.parse_model("claude-sonnet-4-5-20250929")?;
@@ -311,12 +320,13 @@ A provider-scoped model name that prevents mixing models across providers.
 - Always associated with a specific `Provider`
 - Claude models must start with `claude-`
 - OpenAI models must start with `gpt-5`
+- Gemini models must start with `gemini-`
 - Empty model names are rejected
 
 **Fields:**
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ----- | ---- | ----------- |
 | `provider` | `Provider` | The provider this model belongs to |
 | `name` | `Cow<'static, str>` | The model name string |
 | `kind` | `ModelNameKind` | Whether model is known or user-supplied |
@@ -367,7 +377,7 @@ let custom = Provider::Claude.parse_model("claude-custom-v1")?;  // Cow::Owned
 Indicates whether a model name was verified against the known model list.
 
 | Variant | Description |
-|---------|-------------|
+| ------- | ----------- |
 | `Known` | Model exists in `Provider::available_models()` |
 | `Unverified` | User-supplied model name not in known list (default) |
 
@@ -376,10 +386,11 @@ Indicates whether a model name was verified against the known model list.
 Errors that occur when parsing a model name.
 
 | Variant | Condition | Message |
-|---------|-----------|---------|
+| ------- | --------- | ------- |
 | `Empty` | Model name is empty or whitespace-only | "model name cannot be empty" |
 | `ClaudePrefix(String)` | Claude model missing `claude-` prefix | "Claude model must start with claude-" |
 | `OpenAIMinimum(String)` | OpenAI model missing `gpt-5` prefix | "OpenAI model must start with gpt-5" |
+| `GeminiPrefix(String)` | Gemini model missing `gemini-` prefix | "Gemini model must start with gemini-" |
 
 ---
 
@@ -395,6 +406,7 @@ A provider-scoped API key that prevents using a key with the wrong provider.
 pub enum ApiKey {
     Claude(String),
     OpenAI(String),
+    Gemini(String),
 }
 ```
 
@@ -412,6 +424,7 @@ let openai_key = ApiKey::OpenAI("sk-proj-...".into());
 // Access provider
 assert_eq!(claude_key.provider(), Provider::Claude);
 assert_eq!(openai_key.provider(), Provider::OpenAI);
+assert_eq!(gemini_key.provider(), Provider::Gemini);
 
 // Access key string
 assert_eq!(claude_key.as_str(), "sk-ant-api03-...");
@@ -432,7 +445,7 @@ Configuration types for OpenAI-specific request parameters.
 Controls how much reasoning the model should perform before responding.
 
 | Variant | API Value | Description |
-|---------|-----------|-------------|
+| ------- | --------- | ----------- |
 | `None` | "none" | No reasoning |
 | `Low` | "low" | Minimal reasoning |
 | `Medium` | "medium" | Moderate reasoning |
@@ -461,7 +474,7 @@ assert_eq!(OpenAIReasoningEffort::default(), OpenAIReasoningEffort::High);
 Controls response verbosity level.
 
 | Variant | API Value | Description |
-|---------|-----------|-------------|
+| ------- | --------- | ----------- |
 | `Low` | "low" | Concise responses |
 | `Medium` | "medium" | Balanced verbosity |
 | `High` (default) | "high" | Detailed responses |
@@ -479,7 +492,7 @@ assert_eq!(OpenAITextVerbosity::default(), OpenAITextVerbosity::High);
 Controls whether long contexts are automatically truncated.
 
 | Variant | API Value | Description |
-|---------|-----------|-------------|
+| ------- | --------- | ----------- |
 | `Auto` (default) | "auto" | Automatic truncation when needed |
 | `Disabled` | "disabled" | No truncation (may error on overflow) |
 
@@ -526,14 +539,14 @@ assert_eq!(default_opts.truncation(), OpenAITruncation::Auto);
 A hint for whether content should be cached by the provider.
 
 | Variant | Description |
-|---------|-------------|
+| ------- | ----------- |
 | `None` (default) | No caching preference |
 | `Ephemeral` | Content should be cached if supported |
 
 **Provider Behavior:**
 
 | Provider | Caching Mechanism |
-|----------|-------------------|
+| -------- | ----------------- |
 | Claude | Explicit `cache_control: { type: "ephemeral" }` markers |
 | OpenAI | Automatic server-side prefix caching (hints ignored) |
 
@@ -600,7 +613,7 @@ assert!(matches!(result, Err(OutputLimitsError::ThinkingBudgetTooLarge { .. })))
 Errors when constructing invalid output limits.
 
 | Variant | Condition | Message |
-|---------|-----------|---------|
+| ------- | --------- | ------- |
 | `ThinkingBudgetTooSmall` | `thinking_budget < 1024` | "thinking budget must be at least 1024 tokens" |
 | `ThinkingBudgetTooLarge { budget, max_output }` | `thinking_budget >= max_output_tokens` | "thinking budget ({budget}) must be less than max output tokens ({max_output})" |
 
@@ -613,7 +626,7 @@ Errors when constructing invalid output limits.
 Events emitted during streaming API responses.
 
 | Variant | Description |
-|---------|-------------|
+| ------- | ----------- |
 | `TextDelta(String)` | Incremental text content |
 | `ThinkingDelta(String)` | Claude extended thinking content |
 | `ToolCallStart { id, name }` | Tool use content block began |
@@ -653,7 +666,7 @@ fn handle_event(event: StreamEvent, response: &mut String, thinking: &mut String
 Reason why a stream finished.
 
 | Variant | Description |
-|---------|-------------|
+| ------- | ----------- |
 | `Done` | Completed successfully |
 | `Error(String)` | Failed with error message |
 
@@ -680,7 +693,7 @@ Definition of a tool that can be called by the LLM.
 **Fields:**
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ----- | ---- | ----------- |
 | `name` | `String` | The function name |
 | `description` | `String` | What the tool does |
 | `parameters` | `serde_json::Value` | JSON Schema for parameters |
@@ -719,7 +732,7 @@ A tool call requested by the LLM during a response.
 **Fields:**
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ----- | ---- | ----------- |
 | `id` | `String` | Unique identifier (for matching with results) |
 | `name` | `String` | The tool being called |
 | `arguments` | `serde_json::Value` | Parsed JSON arguments |
@@ -748,7 +761,7 @@ The result of executing a tool call.
 **Fields:**
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ----- | ---- | ----------- |
 | `tool_call_id` | `String` | ID of the tool call this result is for |
 | `content` | `String` | The result content |
 | `is_error` | `bool` | Whether execution resulted in an error |
@@ -996,7 +1009,7 @@ assert_eq!(sanitize_terminal_text("A\x00B\x01C"), "ABC");
 
 ## Type Relationships
 
-```
+```text
                     NonEmptyString <------- NonEmptyStaticStr
                           |                     (compile-time)
                           v
@@ -1042,11 +1055,12 @@ OutputLimits (validated invariants)
 ## Error Types Summary
 
 | Error Type | Source | Condition |
-|------------|--------|-----------|
+| ---------- | ------ | --------- |
 | `EmptyStringError` | `NonEmptyString::new()` | Empty or whitespace-only input |
 | `ModelParseError::Empty` | `ModelName::parse()` | Empty model name |
 | `ModelParseError::ClaudePrefix` | `ModelName::parse()` | Claude model without `claude-` prefix |
 | `ModelParseError::OpenAIMinimum` | `ModelName::parse()` | OpenAI model without `gpt-5` prefix |
+| `ModelParseError::GeminiPrefix` | `ModelName::parse()` | Gemini model without `gemini-` prefix |
 | `OutputLimitsError::ThinkingBudgetTooSmall` | `OutputLimits::with_thinking()` | `thinking_budget < 1024` |
 | `OutputLimitsError::ThinkingBudgetTooLarge` | `OutputLimits::with_thinking()` | `thinking_budget >= max_output_tokens` |
 

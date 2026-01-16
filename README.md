@@ -1,13 +1,13 @@
 # Forge
 
-A vim-modal terminal user interface for interacting with Claude and GPT, featuring adaptive context management and an agentic tool execution framework.
+A vim-modal terminal user interface for interacting with Claude, GPT, and Gemini, featuring adaptive context management and an agentic tool execution framework.
 
 Forge brings the efficiency of vim-style modal editing to AI conversation, letting you navigate, compose, and manage conversations without leaving your terminal. With Context Infinity, Forge automatically summarizes older messages to stay within model limits while preserving full conversation history. The Tool Executor Framework enables the LLM to read files, apply patches, and run shell commands - all with interactive approval and crash recovery.
 
 ## LLM-TOC
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
-|-------|---------|
+| --- | --- |
 | 1-12 | Header and Introduction |
 | 13-60 | Features: Core Capabilities, Context Infinity, Tool Executor |
 | 61-100 | Requirements and Installation |
@@ -26,7 +26,7 @@ Forge brings the efficiency of vim-style modal editing to AI conversation, letti
 ### Core Capabilities
 
 - **Vim-style Modal Interface**: Navigate with Normal mode, edit with Insert mode, run commands with Command mode, and switch models with ModelSelect mode
-- **Multi-Provider Support**: Seamless switching between Claude (Anthropic) and GPT (OpenAI) with provider-specific optimizations
+- **Multi-Provider Support**: Seamless switching between Claude (Anthropic), GPT (OpenAI), and Gemini (Google) with provider-specific optimizations
 - **Full/Inline Display Modes**: Full-screen alternate buffer or inline terminal mode that preserves your scrollback
 - **Rich Markdown Rendering**: Tables with box-drawing borders, syntax-highlighted code blocks, lists, and formatting
 - **Streaming Responses**: Real-time token streaming with animated indicators
@@ -58,6 +58,7 @@ Enable the LLM to interact with your local filesystem and execute tasks:
 - **API Keys**: At least one of:
   - `ANTHROPIC_API_KEY` for Claude models
   - `OPENAI_API_KEY` for GPT models
+  - `GEMINI_API_KEY` for Gemini models
 
 ## Installation
 
@@ -97,6 +98,9 @@ export ANTHROPIC_API_KEY="your-key-here"
 
 # For GPT (OpenAI)
 export OPENAI_API_KEY="your-key-here"
+
+# For Gemini (Google)
+export GEMINI_API_KEY="your-key-here"
 ```
 
 Or create a configuration file at `~/.forge/config.toml`:
@@ -105,6 +109,7 @@ Or create a configuration file at `~/.forge/config.toml`:
 [api_keys]
 anthropic = "${ANTHROPIC_API_KEY}"
 openai = "${OPENAI_API_KEY}"
+gemini = "${GEMINI_API_KEY}"
 ```
 
 ### 2. Run Forge
@@ -133,7 +138,7 @@ Create `~/.forge/config.toml` for persistent configuration. All settings are opt
 
 ```toml
 [app]
-provider = "claude"                    # "claude" or "openai"
+provider = "claude"                    # "claude", "openai", or "gemini"
 model = "claude-sonnet-4-5-20250929"   # Model name for the provider
 tui = "full"                           # "full" (alternate screen) or "inline"
 max_output_tokens = 16000              # Limit model output length
@@ -146,6 +151,7 @@ reduced_motion = false                 # Disable modal animations
 [api_keys]
 anthropic = "${ANTHROPIC_API_KEY}"     # Supports environment variable expansion
 openai = "${OPENAI_API_KEY}"
+gemini = "${GEMINI_API_KEY}"
 
 [context]
 infinity = true                        # Enable adaptive context management
@@ -159,6 +165,9 @@ thinking_budget_tokens = 10000         # Token budget for thinking
 reasoning_effort = "high"              # "low", "medium", or "high"
 verbosity = "high"                     # Response detail level
 truncation = "auto"                    # "auto" or "disabled"
+
+[gemini]
+# Gemini-specific settings (preview)
 
 [tools]
 mode = "enabled"                       # "disabled", "parse_only", or "enabled"
@@ -197,9 +206,10 @@ max_patch_bytes = 524288               # 512 KB
 ### Environment Variables
 
 | Variable | Description |
-|----------|-------------|
+| --- | --- |
 | `ANTHROPIC_API_KEY` | Claude API key (fallback if not in config) |
 | `OPENAI_API_KEY` | GPT API key (fallback if not in config) |
+| `GEMINI_API_KEY` | Gemini API key (fallback if not in config) |
 | `FORGE_TUI` | Override TUI mode: `full` or `inline` |
 | `FORGE_CONTEXT_INFINITY` | Override context infinity: `1` or `0` |
 
@@ -208,7 +218,7 @@ max_patch_bytes = 524288               # 512 KB
 ### Normal Mode (Navigation)
 
 | Key | Action |
-|-----|--------|
+| --- | --- |
 | `q` | Quit application |
 | `i` | Enter Insert mode |
 | `a` | Enter Insert mode at end of line |
@@ -223,7 +233,7 @@ max_patch_bytes = 524288               # 512 KB
 ### Insert Mode (Editing)
 
 | Key | Action |
-|-----|--------|
+| ----- | -------- |
 | `Esc` | Return to Normal mode |
 | `Enter` | Send message |
 | `Backspace` | Delete character before cursor |
@@ -236,7 +246,7 @@ max_patch_bytes = 524288               # 512 KB
 ### Command Mode
 
 | Key | Action |
-|-----|--------|
+| ----- | -------- |
 | `Esc` | Cancel and return to Normal mode |
 | `Enter` | Execute command |
 | `Backspace` | Delete last character |
@@ -244,7 +254,7 @@ max_patch_bytes = 524288               # 512 KB
 ### Model Select Mode
 
 | Key | Action |
-|-----|--------|
+| ----- | -------- |
 | `Esc` | Cancel selection |
 | `Enter` | Confirm selection |
 | `j` / `Down` | Move selection down |
@@ -254,7 +264,7 @@ max_patch_bytes = 524288               # 512 KB
 ### Tool Approval Mode
 
 | Key | Action |
-|-----|--------|
+| ----- | -------- |
 | `a` | Approve all tools |
 | `d` | Deny all tools |
 | `Space` | Toggle individual tool |
@@ -267,12 +277,12 @@ max_patch_bytes = 524288               # 512 KB
 Enter Command mode by pressing `:` or `/` in Normal mode.
 
 | Command | Aliases | Description |
-|---------|---------|-------------|
+| --- | --- | --- |
 | `:quit` | `:q` | Exit the application |
 | `:clear` | - | Clear conversation and reset context |
 | `:cancel` | - | Abort active streaming |
 | `:model [name]` | - | Set model or open model selector (no argument) |
-| `:provider [name]` | `:p` | Switch provider (`claude` or `openai`) |
+| `:provider [name]` | `:p` | Switch provider (`claude`, `openai`, or `gemini`) |
 | `:context` | `:ctx` | Show context usage statistics |
 | `:journal` | `:jrnl` | Show stream journal statistics |
 | `:summarize` | `:sum` | Manually trigger summarization |
@@ -285,7 +295,7 @@ Enter Command mode by pressing `:` or `/` in Normal mode.
 
 Forge is organized as a Cargo workspace with focused crates:
 
-```
+```text
 forge/
 ├── cli/            # Binary entry point, terminal session management
 ├── engine/         # Core state machine, commands, streaming orchestration
@@ -301,7 +311,7 @@ forge/
 ### Crate Responsibilities
 
 | Crate | Purpose |
-|-------|---------|
+| --- | --- |
 | `cli` | Application entry point, terminal lifecycle, event loop |
 | `engine` | Input modes, async operations, tool execution, configuration |
 | `tui` | Full-screen and inline rendering, markdown, theming |
@@ -350,6 +360,7 @@ cargo test -p forge-context             # Tests for specific crate
 **Problem**: "Auth error: set ANTHROPIC_API_KEY" or similar
 
 **Solution**: Ensure your API key is set correctly:
+
 ```bash
 # Check if the variable is set
 echo $ANTHROPIC_API_KEY
@@ -359,6 +370,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
 Or add to `~/.forge/config.toml`:
+
 ```toml
 [api_keys]
 anthropic = "sk-ant-your-actual-key"
@@ -369,6 +381,7 @@ anthropic = "sk-ant-your-actual-key"
 **Problem**: "Recent messages exceed budget"
 
 **Solution**: Your recent messages are too large for the model's context window. Options:
+
 1. Start a new conversation with `:clear`
 2. Switch to a model with a larger context window
 3. Write shorter messages
@@ -378,6 +391,7 @@ anthropic = "sk-ant-your-actual-key"
 **Problem**: File operations fail with "outside sandbox"
 
 **Solution**: Ensure the file is within an allowed root:
+
 ```toml
 [tools.sandbox]
 allowed_roots = [".", "/path/to/other/directory"]
@@ -394,6 +408,7 @@ allowed_roots = [".", "/path/to/other/directory"]
 **Problem**: Characters display incorrectly or animations are distracting
 
 **Solution**: Enable accessibility options:
+
 ```toml
 [app]
 ascii_only = true       # Use ASCII-only characters
@@ -404,6 +419,7 @@ high_contrast = true    # Increase contrast
 ### Crash Recovery
 
 If Forge crashes during streaming or tool execution, it will automatically recover on next launch:
+
 - **Stream recovery**: Partial responses are restored with a recovery badge
 - **Tool recovery**: You'll be prompted to resume or discard incomplete tool batches
 
@@ -412,7 +428,7 @@ If Forge crashes during streaming or tool execution, it will automatically recov
 Detailed documentation is available in each crate:
 
 | Document | Description |
-|----------|-------------|
+| -------- | ----------- |
 | [`cli/README.md`](cli/README.md) | CLI entry point and terminal session lifecycle |
 | [`engine/README.md`](engine/README.md) | Core state machine and orchestration |
 | [`tui/README.md`](tui/README.md) | Terminal UI rendering and input handling |
@@ -423,7 +439,7 @@ Detailed documentation is available in each crate:
 ### Design Documents
 
 | Document | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | Type-driven design philosophy |
 | [`docs/CONTEXT_INFINITY_SRD.md`](docs/CONTEXT_INFINITY_SRD.md) | Context Infinity specification |
 | [`docs/TOOL_EXECUTOR_SRD.md`](docs/TOOL_EXECUTOR_SRD.md) | Tool Executor requirements |

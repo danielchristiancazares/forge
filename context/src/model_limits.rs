@@ -139,6 +139,8 @@ const KNOWN_MODELS: &[(&str, ModelLimits)] = &[
     ("claude-haiku-4-5", ModelLimits::new(200_000, 64_000)),
     // GPT 5.2 models
     ("gpt-5.2", ModelLimits::new(400_000, 128_000)),
+    // Gemini 3 Pro (1M context, 65K output)
+    ("gemini-3-pro", ModelLimits::new(1_048_576, 65_536)),
 ];
 
 /// Registry of known model limits with support for custom overrides.
@@ -404,6 +406,17 @@ mod tests {
             let limits = registry.get("gpt-5.2-2025-12-11").limits();
             assert_eq!(limits.context_window(), 400_000);
             assert_eq!(limits.max_output(), 128_000);
+        }
+
+        #[test]
+        fn get_gemini_3_pro_models() {
+            let registry = ModelRegistry::new();
+
+            let resolved = registry.get("gemini-3-pro-preview");
+            assert_eq!(resolved.source(), ModelLimitsSource::Prefix("gemini-3-pro"));
+            let limits = resolved.limits();
+            assert_eq!(limits.context_window(), 1_048_576);
+            assert_eq!(limits.max_output(), 65_536);
         }
 
         #[test]

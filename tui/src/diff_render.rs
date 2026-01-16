@@ -67,6 +67,13 @@ fn diff_style_for_line(line: &str, base_style: Style, palette: &Palette) -> Styl
             .add_modifier(Modifier::BOLD);
     }
 
+    // Gap marker (collapsed context).
+    if line == "..." {
+        return Style::default()
+            .fg(palette.text_muted)
+            .add_modifier(Modifier::ITALIC);
+    }
+
     // Deletions / additions.
     if line.starts_with('-') {
         return Style::default().fg(palette.error); // red
