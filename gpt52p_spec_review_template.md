@@ -8,7 +8,7 @@ Core question: "Can two engineers implement this independently and get compatibl
 ## Placeholders
 
 | Placeholder | Description | Example |
-|-------------|-------------|---------|
+| :--- | :--- | :--- |
 | `{{SPEC_NAME}}` | Specification filename | `WEBFETCH_SRD.md` |
 | `{{SPEC_DESCRIPTION}}` | One-line description | `WebFetch tool for URL fetching with browser fallback` |
 | `{{VERSION_CONTEXT}}` | Version info (optional, for mature specs) | See below |
@@ -125,6 +125,7 @@ Structural improvements: missing appendices, flow diagrams, algorithm specs, cro
 Add these under `{{DOMAIN_QUESTIONS}}` based on what the spec covers.
 
 ### Network / HTTP
+
 ```markdown
 ### On Network Behavior
 - Are timeout values specified for each phase (DNS, connect, TLS, first byte, total)?
@@ -134,6 +135,7 @@ Add these under `{{DOMAIN_QUESTIONS}}` based on what the spec covers.
 ```
 
 ### File System
+
 ```markdown
 ### On Path Handling
 - How are relative vs. absolute paths resolved?
@@ -143,6 +145,7 @@ Add these under `{{DOMAIN_QUESTIONS}}` based on what the spec covers.
 ```
 
 ### Search / Indexing
+
 ```markdown
 ### On Determinism
 - Are algorithms fully specified (hash functions, seeds, bit ordering)?
@@ -152,6 +155,7 @@ Add these under `{{DOMAIN_QUESTIONS}}` based on what the spec covers.
 ```
 
 ### State Machines
+
 ```markdown
 ### On Transitions
 - Are all valid state transitions enumerated?
@@ -161,6 +165,7 @@ Add these under `{{DOMAIN_QUESTIONS}}` based on what the spec covers.
 ```
 
 ### Protocols / APIs
+
 ```markdown
 ### On Contracts
 - Are request/response schemas complete (all fields, types, constraints)?
@@ -183,7 +188,7 @@ Read the changelog before flagging anything.
 ## Documents to Review
 - Primary: docs/WEBFETCH_SRD.md
 - Related: docs/TOOL_EXECUTOR_SRD.md
-- Implementation context: engine/src/tools/mod.rs, engine/src/tools/builtins.rs
+- Implementation context: engine/src/tools/mod.rs, engine/src/tools/builtins.rs, engine/src/tools/webfetch.rs
 - Patterns: docs/DESIGN.md
 
 ## Guiding Questions
@@ -205,7 +210,7 @@ Group findings by subsystem: URL validation, robots.txt, rendering, chunking, ca
 ## Anti-patterns
 
 | Anti-pattern | Problem | Fix |
-|--------------|---------|-----|
+| :--- | :--- | :--- |
 | "Review this spec" | Too vague | Add guiding questions, subsystems |
 | 15+ domain questions | Dilutes focus | Pick 3-5 highest-risk |
 | No "implementer's question" | Loses the voice | Always ask "what would I ask?" |

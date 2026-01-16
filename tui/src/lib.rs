@@ -33,7 +33,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use forge_engine::{
-    App, ContextUsageStatus, DisplayItem, InputMode, Message, PredefinedModel, Provider,
+    App, ContextUsageStatus, DisplayItem, InputMode, Message, PredefinedModel, Provider, UiOptions,
     command_specs,
 };
 use forge_types::{ToolResult, sanitize_terminal_text};
@@ -42,24 +42,34 @@ use self::diff_render::render_tool_result_lines;
 pub use self::markdown::clear_render_cache;
 use self::markdown::render_markdown;
 use self::shared::{
-    ToolCallStatusKind, collect_approval_view, collect_tool_statuses, message_header_parts,
-    wrapped_line_rows,
+    ToolCallStatus, ToolCallStatusKind, collect_approval_view, collect_tool_statuses,
+    message_header_parts, wrapped_line_rows,
 };
 
 /// Cache for rendered message lines to avoid rebuilding every frame.
-/// Only used when idle (no streaming, no tool execution).
+/// Stores static (history/local) content keyed by display + UI options.
 #[derive(Default)]
 struct MessageLinesCache {
-    /// (display_version, width) - cache is valid only when both match
-    key: (usize, u16),
+    /// Cache is valid only when key matches.
+    key: MessageCacheKey,
     lines: Vec<Line<'static>>,
     row_counts: Vec<usize>,
+    total_rows: usize,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct MessageCacheKey {
+    display_version: usize,
+    width: u16,
+    ascii_only: bool,
+    high_contrast: bool,
+    reduced_motion: bool,
 }
 
 impl MessageLinesCache {
-    fn get(&self, display_version: usize, width: u16) -> Option<(&[Line<'static>], &[usize])> {
-        if self.key == (display_version, width) && !self.lines.is_empty() {
-            Some((&self.lines, &self.row_counts))
+    fn get(&self, key: MessageCacheKey) -> Option<(&[Line<'static>], &[usize], usize)> {
+        if self.key == key && !self.lines.is_empty() {
+            Some((&self.lines, &self.row_counts, self.total_rows))
         } else {
             None
         }
@@ -67,19 +77,33 @@ impl MessageLinesCache {
 
     fn set(
         &mut self,
-        display_version: usize,
-        width: u16,
+        key: MessageCacheKey,
         lines: Vec<Line<'static>>,
         row_counts: Vec<usize>,
+        total_rows: usize,
     ) {
-        self.key = (display_version, width);
+        self.key = key;
         self.lines = lines;
         self.row_counts = row_counts;
+        self.total_rows = total_rows;
     }
 
     fn invalidate(&mut self) {
         self.lines.clear();
         self.row_counts.clear();
+        self.total_rows = 0;
+    }
+}
+
+impl MessageCacheKey {
+    fn new(display_version: usize, width: u16, options: UiOptions) -> Self {
+        Self {
+            display_version,
+            width,
+            ascii_only: options.ascii_only,
+            high_contrast: options.high_contrast,
+            reduced_motion: options.reduced_motion,
+        }
     }
 }
 
@@ -101,25 +125,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         _ => 5,
     };
 
-    // Check if we have a status message to show as delineator
-    let has_status = app.status_message().is_some();
-    let status_height = u16::from(has_status);
-
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Min(1),                // Messages
-            Constraint::Length(status_height), // Status delineator (if any)
-            Constraint::Length(input_height),  // Input
+            Constraint::Min(1),               // Messages
+            Constraint::Length(input_height), // Input
         ])
         .split(frame.area());
 
     draw_messages(frame, app, chunks[0], &palette, &glyphs);
-    if has_status {
-        draw_status_delineator(frame, app, chunks[1], &palette);
-    }
-    draw_input(frame, app, chunks[2], &palette, &glyphs);
+    draw_input(frame, app, chunks[1], &palette, &glyphs);
 
     // Draw command palette if in command mode
     if app.input_mode() == InputMode::Command {
@@ -159,49 +175,62 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
     // Calculate inner area early for cache key
     let inner = messages_block.inner(area);
     let display_version = app.display_version();
+    let options = app.ui_options();
+    let cache_width = inner.width.max(1);
+    let cache_key = MessageCacheKey::new(display_version, cache_width, options);
 
-    // Check if we're in a cacheable state (no streaming, no tool execution)
+    let tool_statuses = collect_tool_statuses(app, 80);
     let is_streaming = app.streaming().is_some();
-    let has_tool_activity = collect_tool_statuses(app, 80).is_some();
-    let is_cacheable = !is_streaming && !has_tool_activity;
+    let has_tool_activity = tool_statuses.is_some();
+    let has_dynamic = is_streaming || has_tool_activity;
+    let static_message_count = app.display_items().len();
 
-    // Try to use cache if in cacheable state
-    let (lines, line_rows, total_rows) = if is_cacheable {
-        MESSAGE_CACHE.with(|cache| {
-            let cache_ref = cache.borrow();
-            if let Some((cached_lines, cached_rows)) = cache_ref.get(display_version, inner.width) {
-                // Cache hit - clone the cached data
-                let lines = cached_lines.to_vec();
-                let line_rows = cached_rows.to_vec();
-                let total_rows: usize = line_rows.iter().sum();
-                return (lines, line_rows, total_rows);
-            }
-            drop(cache_ref);
+    // Always cache static content; dynamic sections are appended each frame.
+    let (mut lines, mut line_rows, mut total_rows) = MESSAGE_CACHE.with(|cache| {
+        let cache_ref = cache.borrow();
+        if let Some((cached_lines, cached_rows, cached_total)) = cache_ref.get(cache_key) {
+            // Cache hit - clone the cached data
+            let lines = cached_lines.to_vec();
+            let line_rows = cached_rows.to_vec();
+            return (lines, line_rows, cached_total);
+        }
+        drop(cache_ref);
 
-            // Cache miss - build lines
-            let (lines, line_rows, total_rows) =
-                build_message_lines(app, palette, glyphs, inner.width);
+        // Cache miss - build lines
+        let (lines, line_rows, total_rows) = build_message_lines(app, palette, glyphs, cache_width);
 
-            // Update cache
-            cache.borrow_mut().set(
-                display_version,
-                inner.width,
-                lines.clone(),
-                line_rows.clone(),
-            );
+        // Update cache
+        cache
+            .borrow_mut()
+            .set(cache_key, lines.clone(), line_rows.clone(), total_rows);
 
-            (lines, line_rows, total_rows)
-        })
-    } else {
-        // Not cacheable - invalidate cache and build fresh
-        MESSAGE_CACHE.with(|cache| cache.borrow_mut().invalidate());
-        build_message_lines_with_dynamic(app, palette, glyphs, inner.width)
-    };
+        (lines, line_rows, total_rows)
+    });
+
+    if has_dynamic {
+        let (dynamic_lines, dynamic_rows, dynamic_total) = build_dynamic_message_lines(
+            app,
+            palette,
+            glyphs,
+            cache_width,
+            static_message_count,
+            tool_statuses.as_deref(),
+        );
+        if !dynamic_lines.is_empty() {
+            lines.extend(dynamic_lines);
+            line_rows.extend(dynamic_rows);
+            total_rows = total_rows.saturating_add(dynamic_total);
+        }
+    }
+
+    // Add trailing blank line for visual padding at bottom of content.
+    if !lines.is_empty() {
+        lines.push(Line::from(""));
+        line_rows.push(1);
+        total_rows = total_rows.saturating_add(1);
+    }
 
     // Handle u16 overflow for very long conversations
-    let mut lines = lines;
-    let mut line_rows = line_rows;
-    let mut total_rows = total_rows;
     let max_rows = u16::MAX as usize;
 
     // Ratatui scroll offsets are u16; trim oldest rows if content exceeds that range.
@@ -256,7 +285,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
 }
 
 /// Build message lines for static content only (no streaming, no tool status).
-/// Used for caching when idle.
+/// Used for caching across frames; dynamic sections are appended separately.
 fn build_message_lines(
     app: &App,
     palette: &Palette,
@@ -280,29 +309,22 @@ fn build_message_lines(
     (lines, line_rows, total_rows)
 }
 
-/// Build message lines including dynamic content (streaming, tool status).
-/// Not cached since content changes frequently.
-fn build_message_lines_with_dynamic(
+/// Build message lines for dynamic content (streaming, tool status).
+/// Static history/local content is appended separately from cache.
+fn build_dynamic_message_lines(
     app: &App,
     palette: &Palette,
     glyphs: &Glyphs,
     width: u16,
+    static_message_count: usize,
+    tool_statuses: Option<&[ToolCallStatus]>,
 ) -> (Vec<Line<'static>>, Vec<usize>, usize) {
     let mut lines: Vec<Line> = Vec::new();
-    let mut msg_count = 0;
-
-    // Render complete messages from display items
-    for item in app.display_items() {
-        let msg = match item {
-            DisplayItem::History(id) => app.history().get_entry(*id).message(),
-            DisplayItem::Local(msg) => msg,
-        };
-        render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs);
-    }
+    let has_static = static_message_count > 0;
 
     // Render streaming message if present
     if let Some(streaming) = app.streaming() {
-        if msg_count > 0 {
+        if has_static {
             lines.push(Line::from(""));
             lines.push(Line::from(""));
         }
@@ -345,8 +367,8 @@ fn build_message_lines_with_dynamic(
     }
 
     // Render tool statuses if present
-    if let Some(statuses) = collect_tool_statuses(app, 80) {
-        if msg_count > 0 || app.streaming().is_some() {
+    if let Some(statuses) = tool_statuses {
+        if has_static || app.streaming().is_some() {
             lines.push(Line::from(""));
         }
         let spinner = spinner_frame(app.tick_count(), app.ui_options());
@@ -417,7 +439,7 @@ fn build_message_lines_with_dynamic(
                 ),
             ]));
 
-            if let Some(reason) = status.reason {
+            if let Some(reason) = status.reason.as_ref() {
                 lines.push(Line::from(Span::styled(
                     format!("    ↳ {reason}"),
                     Style::default().fg(palette.text_muted),
@@ -845,45 +867,6 @@ pub(crate) fn draw_input(
     if let Some((cursor_x, cursor_y)) = cursor_pos {
         frame.set_cursor_position((cursor_x, cursor_y));
     }
-}
-
-/// Draw status message as a styled delineator line.
-///
-/// Renders as: `─ Status: message ─────────────────`
-fn draw_status_delineator(frame: &mut Frame, app: &App, area: Rect, palette: &Palette) {
-    let options = app.ui_options();
-    let dash = if options.ascii_only { "-" } else { "─" };
-    let dash_style = Style::default().fg(palette.bg_border);
-
-    let Some(msg) = app.status_message() else {
-        return;
-    };
-
-    let kind = app.status_kind();
-    let (prefix, color) = match kind {
-        forge_engine::StatusKind::Error => ("Error: ", palette.error),
-        forge_engine::StatusKind::Warning => ("Warning: ", palette.warning),
-        forge_engine::StatusKind::Success => ("Success: ", palette.success),
-        forge_engine::StatusKind::Info => ("", palette.text_secondary),
-    };
-    let status_text = format!("{prefix}{msg}");
-    let status_style = Style::default().fg(color);
-
-    // Calculate how many dashes we need for padding
-    // Format: "─ Status: message ─────────"
-    let text_width = status_text.width() + 3; // " Status: message "
-    let remaining = area.width.saturating_sub(text_width as u16) as usize;
-    let trailing_dashes = dash.repeat(remaining.max(1));
-
-    let line = Line::from(vec![
-        Span::styled(dash, dash_style),
-        Span::raw(" "),
-        Span::styled(status_text, status_style),
-        Span::raw(" "),
-        Span::styled(trailing_dashes, dash_style),
-    ]);
-
-    frame.render_widget(Paragraph::new(line), area);
 }
 
 fn draw_command_palette(frame: &mut Frame, app: &App, palette: &Palette) {

@@ -4,7 +4,7 @@
 
 **Version:** 2.4
 **Date:** 2026-01-10
-**Status:** Implementation-Ready
+**Status:** Final
 **Baseline code reference:** `engine/src/tools/webfetch.rs`, `engine/src/tools/mod.rs`
 
 ## LLM-TOC

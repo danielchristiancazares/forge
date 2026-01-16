@@ -3,7 +3,7 @@
 > Note: This is the authoritative ContextInfinity spec; `context/README.md` is implementation notes and may lag behind.
 
 **Document version:** 0.31
-**Status:** Draft
+**Status:** Final
 
 ## LLM-TOC
 <!-- Auto-generated section map for LLM context -->

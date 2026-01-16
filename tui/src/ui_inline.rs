@@ -3,7 +3,7 @@
 use ratatui::prelude::{Backend, Terminal};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::Style,
     text::{Line, Span},
     widgets::{Clear, Paragraph, Widget, Wrap},
@@ -18,7 +18,7 @@ use crate::shared::{
     message_header_parts, tool_status_signature, wrapped_line_count,
 };
 use crate::theme::{Glyphs, Palette, glyphs, palette};
-use crate::{draw_input, draw_model_selector, draw_status_delineator};
+use crate::{draw_input, draw_model_selector};
 
 pub const INLINE_INPUT_HEIGHT: u16 = 5;
 pub const INLINE_VIEWPORT_HEIGHT: u16 = INLINE_INPUT_HEIGHT + 1;
@@ -177,12 +177,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         _ => INLINE_INPUT_HEIGHT,
     };
 
-    // Show status delineator only when there's a status message
-    let has_status = app.status_message().is_some();
-    let status_height = u16::from(has_status);
-
-    let total_height = input_height + status_height;
-    let top_padding = area.height.saturating_sub(total_height);
+    let top_padding = area.height.saturating_sub(input_height);
     let content_area = Rect {
         x: area.x,
         y: area.y.saturating_add(top_padding),
@@ -190,26 +185,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         height: area.height.saturating_sub(top_padding),
     };
 
-    let constraints: Vec<Constraint> = if has_status {
-        vec![
-            Constraint::Length(status_height),
-            Constraint::Length(input_height),
-        ]
-    } else {
-        vec![Constraint::Length(input_height)]
-    };
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(content_area);
-
-    if has_status {
-        draw_status_delineator(frame, app, chunks[0], &palette);
-        draw_input(frame, app, chunks[1], &palette, &glyphs);
-    } else {
-        draw_input(frame, app, chunks[0], &palette, &glyphs);
-    }
+    draw_input(frame, app, content_area, &palette, &glyphs);
 
     // Draw model selector overlay if in model select mode
     if app.input_mode() == InputMode::ModelSelect {

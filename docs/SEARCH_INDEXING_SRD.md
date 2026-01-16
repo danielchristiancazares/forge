@@ -5,7 +5,7 @@
 
 **Version:** 1.9
 **Date:** 2026-01-11
-**Status:** Implementation-Ready
+**Status:** Final
 **Baseline code reference:** `forge-source.zip`
 **Normative baseline spec:** `docs/LOCAL_SEARCH_SRD.md` (v1.2, 2026-01-11)
 

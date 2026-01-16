@@ -4,7 +4,7 @@
 
 **Version:** 1.2
 **Date:** 2026-01-11
-**Status:** Implementation-Ready
+**Status:** Final
 **Baseline code reference:** `forge-source.zip`
 
 ## LLM-TOC

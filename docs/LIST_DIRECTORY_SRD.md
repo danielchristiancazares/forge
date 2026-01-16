@@ -2,10 +2,10 @@
 
 ## Software Requirements Document
 
-**Version:** 1.1
-**Date:** 2026-01-12
-**Status:** Draft
-**Baseline code reference:** `forge-source.zip`
+**Version:** 1.2
+**Date:** 2026-01-16
+**Status:** Implementation Ready
+**Baseline code reference:** `engine/src/tools/builtins.rs`
 
 ---
 
@@ -14,14 +14,13 @@
 | Lines | Section |
 |-------|---------|
 | 1-15 | Header & TOC |
-| 16-24 | 0. Change Log |
-| 25-73 | 1. Introduction |
-| 74-118 | 2. Overall Description |
-| 119-242 | 3. Functional Requirements |
-| 243-267 | 4. Non-Functional Requirements |
-| 268-293 | 5. Configuration |
-| 294-314 | 6. Test and Validation Requirements |
-| 315-320 | 7. Open Questions |
+| 16-30 | 0. Change Log |
+| 31-85 | 1. Introduction |
+| 86-130 | 2. Overall Description |
+| 131-255 | 3. Functional Requirements |
+| 256-280 | 4. Non-Functional Requirements |
+| 281-307 | 5. Configuration |
+| 308-328 | 6. Test and Validation Requirements |
 
 ---
 
@@ -36,6 +35,11 @@
 * Clarified traversal order, truncation behavior, defaults, and output canonicalization.
 * Added error_code semantics and read_dir failure handling.
 * Aligned references and configuration defaults.
+
+### 0.3 Implementation Ready
+
+* Resolved open questions (inode/permissions and unique IDs deferred to future versions).
+* Updated baseline reference and status.
 
 ---
 
@@ -61,6 +65,8 @@ This document specifies requirements for the `list_directory` tool, a built-in t
 * UI rendering changes
 * Provider-specific tool-call adapter behavior
 * Network or remote filesystem listing
+* Inode or permission metadata (deferred to future version)
+* Stable unique identifiers per entry (deferred to future version)
 
 ### 1.3 Definitions
 
@@ -79,7 +85,7 @@ This document specifies requirements for the `list_directory` tool, a built-in t
 | ----------------------------- | -------------------------------------------- |
 | `docs/TOOL_EXECUTOR_SRD.md`   | Tool execution framework requirements        |
 | `engine/README.md`            | Engine state machine constraints             |
-| `docs/DESIGN.md`             | Type-driven design patterns and invariants   |
+| `docs/DESIGN.md`              | Type-driven design patterns and invariants   |
 | RFC 2119 / RFC 8174           | Requirement level keywords                   |
 
 ### 1.5 Requirement Level Keywords
@@ -232,7 +238,7 @@ The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **
 
 * **FR-LD-OUT-01:** After traversal (and any `max_entries` truncation), entries MUST be sorted by `path` using ascending lexical order on the UTF-8 string produced after lossy conversion. Sorting is for output ordering only.
 * **FR-LD-OUT-02:** The output MUST be deterministic for the same filesystem state and inputs, including error_code mapping and lossy conversion.
-* **FR-LD-OUT-02a:** JSON serialization MUST be canonical: object keys in the exact order shown in §3.5, no insignificant whitespace, and standard JSON escaping.
+* **FR-LD-OUT-02a:** JSON serialization MUST be canonical: object keys in the exact order shown in section 3.5, no insignificant whitespace, and standard JSON escaping.
 * **FR-LD-OUT-02b:** `returned` MUST equal `entries.length`. If `truncated=false`, `truncated_reason` MUST be `null`; otherwise it MUST be `max_entries` or `max_output_bytes`.
 
 ### 3.6 Output Size Control (FR-LD-OUT)
@@ -313,7 +319,7 @@ include_other_default = false
 | ID         | Scenario                                                     | Expected Result                                     |
 | ---------- | ------------------------------------------------------------ | --------------------------------------------------- |
 | T-LD-01    | List directory with default args                             | Entries returned, sorted, depth=1                   |
-| T-LD-02    | Path is file                                                  | ExecutionFailed with "path is not a directory"      |
+| T-LD-02    | Path is file                                                 | ExecutionFailed with "path is not a directory"      |
 | T-LD-03    | Path outside sandbox                                         | SandboxViolation                                    |
 | T-LD-04    | Recursive with max_depth                                     | Entries limited to depth <= max_depth               |
 | T-LD-05    | max_entries exceeded by directory size                       | Truncated=true, returned=max_entries, reason=max_entries |
@@ -324,12 +330,5 @@ include_other_default = false
 | T-LD-10    | Per-entry metadata error                                     | Entry included with type=unknown, error_code, and error |
 | T-LD-11    | Hidden directory with include_hidden=false + recursive       | Hidden dir omitted and not traversed                |
 | T-LD-12    | Directory read failure during recursion                      | Entry with type=unknown and error_code=read_dir_failed |
-| T-LD-13    | Output budget too small for minimal JSON                      | ExecutionFailed with clear message                  |
+| T-LD-13    | Output budget too small for minimal JSON                     | ExecutionFailed with clear message                  |
 | T-LD-14    | max_entries hit, then output size truncation                 | reason=max_output_bytes (override)                  |
-
----
-
-## 7. Open Questions
-
-* Should the tool expose optional inode or permission data, or keep output minimal?
-* Should output include a stable unique identifier per entry (not required for MVP)?

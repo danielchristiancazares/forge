@@ -54,9 +54,11 @@ impl App {
                 self.context_manager = loaded_manager;
                 self.rebuild_display_from_history();
                 if count > 0 {
-                    self.set_status_success(format!(
-                        "Loaded {count} messages from previous session"
-                    ));
+                    // Show loaded message in the content pane as a local system message
+                    let msg = format!("Loaded {count} messages from previous session");
+                    if let Ok(content) = NonEmptyString::try_from(msg) {
+                        self.push_local_message(Message::system(content));
+                    }
                 }
             }
             Err(e) => {
