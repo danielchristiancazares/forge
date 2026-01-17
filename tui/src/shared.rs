@@ -4,8 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
+use ratatui::widgets::{Paragraph, Wrap};
 
 use forge_engine::{App, Message, ToolResult, sanitize_terminal_text};
 
@@ -106,115 +105,26 @@ fn first_result_line(result: &ToolResult, max_len: usize) -> Option<String> {
         .map(|line| truncate_with_ellipsis(line, max_len))
 }
 
-struct WrapCounter {
-    width: usize,
-    total: usize,
-    current_width: usize,
-    had_tokens: bool,
-    run_is_whitespace: Option<bool>,
-    run_width: usize,
-}
-
-impl WrapCounter {
-    fn new(width: usize) -> Self {
-        Self {
-            width,
-            total: 0,
-            current_width: 0,
-            had_tokens: false,
-            run_is_whitespace: None,
-            run_width: 0,
-        }
-    }
-
-    fn push_text(&mut self, text: &str) {
-        for grapheme in text.graphemes(true) {
-            self.push_grapheme(grapheme);
-        }
-    }
-
-    fn push_grapheme(&mut self, grapheme: &str) {
-        let grapheme_width = UnicodeWidthStr::width(grapheme);
-        if grapheme_width == 0 {
-            return;
-        }
-
-        let is_whitespace = grapheme.chars().all(char::is_whitespace);
-        if self.run_is_whitespace == Some(is_whitespace) || self.run_is_whitespace.is_none() {
-            self.run_is_whitespace = Some(is_whitespace);
-            self.run_width = self.run_width.saturating_add(grapheme_width);
-        } else {
-            self.flush_run();
-            self.run_is_whitespace = Some(is_whitespace);
-            self.run_width = grapheme_width;
-        }
-    }
-
-    fn flush_run(&mut self) {
-        if self.run_width == 0 {
-            return;
-        }
-        self.had_tokens = true;
-
-        if self.current_width == 0 && self.run_width > self.width {
-            let full_lines = self.run_width / self.width;
-            let rem = self.run_width % self.width;
-            self.total = self.total.saturating_add(full_lines);
-            self.current_width = rem;
-        } else if self.current_width + self.run_width <= self.width {
-            self.current_width = self.current_width.saturating_add(self.run_width);
-        } else {
-            self.total = self.total.saturating_add(1);
-            if self.run_width > self.width {
-                let full_lines = self.run_width / self.width;
-                let rem = self.run_width % self.width;
-                self.total = self.total.saturating_add(full_lines);
-                self.current_width = rem;
-            } else {
-                self.current_width = self.run_width;
-            }
-        }
-        self.run_width = 0;
-    }
-
-    fn finish(mut self) -> usize {
-        self.flush_run();
-        if !self.had_tokens || self.current_width > 0 {
-            self.total = self.total.saturating_add(1);
-        }
-        self.total
-    }
-}
-
-fn wrapped_rows_for_line(line: &Line, width: usize) -> usize {
-    let mut counter = WrapCounter::new(width);
-    for span in &line.spans {
-        counter.push_text(span.content.as_ref());
-    }
-    counter.finish()
+fn wrapped_rows_for_line(line: &Line, width: u16) -> usize {
+    Paragraph::new(line.clone())
+        .wrap(Wrap { trim: false })
+        .line_count(width.max(1))
 }
 
 pub(crate) fn wrapped_line_rows(lines: &[Line], width: u16) -> Vec<usize> {
-    let width = width.max(1) as usize;
-    let mut rows = Vec::with_capacity(lines.len());
-
-    for line in lines {
-        rows.push(wrapped_rows_for_line(line, width));
-    }
-
-    rows
+    let width = width.max(1);
+    lines
+        .iter()
+        .map(|line| wrapped_rows_for_line(line, width))
+        .collect()
 }
 
 pub(crate) fn wrapped_line_count_exact(lines: &[Line], width: u16) -> usize {
-    let width = width.max(1) as usize;
     if lines.is_empty() {
         return 0;
     }
 
-    lines
-        .iter()
-        .map(|line| wrapped_rows_for_line(line, width))
-        .sum()
+    wrapped_line_rows(lines, width).iter().sum()
 }
 
 pub(crate) fn wrapped_line_count(lines: &[Line], width: u16) -> u16 {
@@ -355,4 +265,22 @@ pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<Appro
         any_selected,
         deny_confirm,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrapped_rows_for_line;
+    use ratatui::text::Line;
+
+    #[test]
+    fn wrapped_rows_long_word_uses_remaining_space() {
+        let line = Line::from("hello abcdefghijklmnopqrst");
+        assert_eq!(wrapped_rows_for_line(&line, 10), 3);
+    }
+
+    #[test]
+    fn wrapped_rows_long_word_exact_fill() {
+        let line = Line::from("hello abcdefghijklmn");
+        assert_eq!(wrapped_rows_for_line(&line, 10), 3);
+    }
 }

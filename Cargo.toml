@@ -26,7 +26,7 @@ forge-tui = { path = "tui" }
 forge-webfetch = { path = "webfetch" }
 
 # TUI framework
-ratatui = "0.30"
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = "0.29"
 
 # Async runtime
