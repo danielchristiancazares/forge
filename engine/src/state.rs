@@ -187,6 +187,7 @@ pub(crate) struct ToolPlan {
 /// not encoded in this enum. This prevents implicit feature toggling through state
 /// transitions.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum OperationState {
     Idle,
     Streaming(ActiveStream),

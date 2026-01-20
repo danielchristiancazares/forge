@@ -33,8 +33,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use forge_engine::{
-    App, ContextUsageStatus, DisplayItem, InputMode, Message, PredefinedModel, Provider, UiOptions,
-    command_specs,
+    App, ContextUsageStatus, DisplayItem, InputMode, Message, PredefinedModel, Provider,
+    StatusKind, UiOptions, command_specs,
 };
 use forge_types::{ToolResult, sanitize_terminal_text};
 
@@ -125,17 +125,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         _ => 5,
     };
 
+    let status_height = u16::from(app.status_message().is_some());
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Min(1),               // Messages
-            Constraint::Length(input_height), // Input
+            Constraint::Min(1),                // Messages
+            Constraint::Length(status_height), // Status
+            Constraint::Length(input_height),  // Input
         ])
         .split(frame.area());
 
     draw_messages(frame, app, chunks[0], &palette, &glyphs);
-    draw_input(frame, app, chunks[1], &palette, &glyphs);
+    if status_height > 0 {
+        draw_status(frame, app, chunks[1], &palette);
+    }
+    draw_input(frame, app, chunks[2], &palette, &glyphs);
 
     // Draw command palette if in command mode
     if app.input_mode() == InputMode::Command {
@@ -528,6 +533,33 @@ fn render_message_static(
             lines.extend(rendered);
         }
     }
+}
+
+fn draw_status(frame: &mut Frame, app: &App, area: Rect, palette: &Palette) {
+    let Some(message) = app.status_message() else {
+        return;
+    };
+    let message = sanitize_terminal_text(message).replace('\n', " ");
+    let (label, color) = match app.status_kind() {
+        StatusKind::Info => ("INFO", palette.primary),
+        StatusKind::Success => ("OK", palette.success),
+        StatusKind::Warning => ("WARN", palette.warning),
+        StatusKind::Error => ("ERR", palette.error),
+    };
+    let base_style = Style::default().bg(palette.bg_panel);
+    let label_style = base_style.fg(color).add_modifier(Modifier::BOLD);
+    let message_style = base_style.fg(palette.text_primary);
+    let line = Line::from(vec![
+        Span::styled(format!(" {label} "), label_style),
+        Span::styled(message, message_style),
+    ]);
+    frame.render_widget(Block::default().style(base_style), area);
+    frame.render_widget(
+        Paragraph::new(line)
+            .alignment(Alignment::Left)
+            .wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
 pub(crate) fn draw_input(

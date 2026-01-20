@@ -8,14 +8,18 @@
 use futures_util::future::{AbortHandle, Abortable};
 use tokio::sync::mpsc;
 
+/// Capacity for the bounded stream event channel.
+/// This prevents OOM if the provider sends events faster than we can process them.
+/// 1024 events provides ~10 seconds of buffer at 100 events/sec typical streaming rate.
+const STREAM_EVENT_CHANNEL_CAPACITY: usize = 1024;
+
 use forge_types::Provider;
 
 use super::{
     ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError,
-    DEFAULT_STREAM_EVENT_BUDGET, EMPTY_RESPONSE_BADGE, GeminiCache, GeminiCacheConfig, Librarian,
-    Message, NonEmptyString, OperationState, QueuedUserMessage, StreamEvent, StreamFinishReason,
-    StreamingMessage, SummarizationStart, extract_facts, format_stream_error,
-    sanitize_terminal_text, security,
+    DEFAULT_STREAM_EVENT_BUDGET, EMPTY_RESPONSE_BADGE, GeminiCache, GeminiCacheConfig, Message,
+    NonEmptyString, OperationState, QueuedUserMessage, StreamEvent, StreamFinishReason,
+    StreamingMessage, SummarizationStart, format_stream_error, sanitize_terminal_text, security,
 };
 
 impl super::App {
@@ -68,7 +72,7 @@ impl super::App {
             }
         };
 
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(STREAM_EVENT_CHANNEL_CAPACITY);
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
         let active = ActiveStream {
@@ -164,13 +168,15 @@ impl super::App {
                 tools_ref,
                 gemini_cache.as_ref(),
                 move |event| {
-                    let _ = tx_events.send(event);
+                    // Use try_send with bounded channel - drop events if full.
+                    // This is acceptable for streaming UI updates; the consumer will catch up.
+                    let _ = tx_events.try_send(event);
                 },
             )
             .await;
 
             if let Err(e) = result {
-                let _ = tx.send(StreamEvent::Error(e.to_string()));
+                let _ = tx.try_send(StreamEvent::Error(e.to_string()));
             }
         };
 
@@ -258,11 +264,7 @@ impl super::App {
 
             if journal_error.is_none() {
                 match &event {
-                    StreamEvent::ToolCallStart {
-                        id,
-                        name,
-                        thought_signature,
-                    } => {
+                    StreamEvent::ToolCallStart { id, name, .. } => {
                         if active.tool_batch_id.is_none() {
                             match self
                                 .tool_journal
@@ -277,13 +279,9 @@ impl super::App {
                         if let Some(batch_id) = active.tool_batch_id {
                             let seq = active.tool_call_seq;
                             active.tool_call_seq = active.tool_call_seq.saturating_add(1);
-                            if let Err(e) = self.tool_journal.record_call_start(
-                                batch_id,
-                                seq,
-                                id,
-                                name,
-                                thought_signature.as_deref(),
-                            ) {
+                            if let Err(e) =
+                                self.tool_journal.record_call_start(batch_id, seq, id, name)
+                            {
                                 journal_error = Some(e.to_string());
                             }
                         }
@@ -412,7 +410,38 @@ impl super::App {
         // Capture metadata before consuming the streaming message.
         let model = message.model_name().clone();
 
-        // Check for tool calls before converting to message
+        // SECURITY: Check finish_reason FIRST before processing tool calls.
+        // This prevents tools from executing when the stream ended with an error,
+        // which could happen if partial tool call data accumulated before the error.
+        if let StreamFinishReason::Error(err) = finish_reason {
+            // Discard any pending tool batch - do NOT execute tools on error
+            if let Some(batch_id) = tool_batch_id
+                && let Err(e) = self.tool_journal.discard_batch(batch_id)
+            {
+                tracing::warn!("Failed to discard tool batch on stream error: {e}");
+            }
+
+            // Convert streaming message to completed message (empty content is invalid).
+            let message = message.into_message().ok();
+
+            if let Some(message) = message {
+                // Partial content received - keep both user message and partial response
+                self.pending_user_message = None;
+                self.commit_history_message(message, step_id);
+            } else {
+                // No message content - rollback user message for easy retry
+                self.discard_journal_step(step_id);
+                self.rollback_pending_user_message();
+            }
+            // Use stream's model/provider, not current app settings (user may have changed during stream)
+            let ui_error = format_stream_error(model.provider(), model.as_str(), &err);
+            let system_msg = Message::system(ui_error.message);
+            self.push_local_message(system_msg);
+            self.set_status(ui_error.status);
+            return;
+        }
+
+        // Only process tool calls when stream completed successfully (Done)
         if message.has_tool_calls() {
             let parsed = message.take_tool_calls();
             let assistant_text = message.content().to_string();
@@ -432,30 +461,7 @@ impl super::App {
         }
 
         // Convert streaming message to completed message (empty content is invalid).
-        let message = message.into_message().ok();
-
-        match finish_reason {
-            StreamFinishReason::Error(err) => {
-                if let Some(message) = message {
-                    // Partial content received - keep both user message and partial response
-                    self.pending_user_message = None;
-                    self.commit_history_message(message, step_id);
-                } else {
-                    // No message content - rollback user message for easy retry
-                    self.discard_journal_step(step_id);
-                    self.rollback_pending_user_message();
-                }
-                // Use stream's model/provider, not current app settings (user may have changed during stream)
-                let ui_error = format_stream_error(model.provider(), model.as_str(), &err);
-                let system_msg = Message::system(ui_error.message);
-                self.push_local_message(system_msg);
-                self.set_status(ui_error.status);
-                return;
-            }
-            StreamFinishReason::Done => {}
-        }
-
-        let Some(message) = message else {
+        let Some(message) = message.into_message().ok() else {
             // Stream completed successfully but with empty content - unusual but not an error
             self.pending_user_message = None;
             let empty_badge = NonEmptyString::try_from(EMPTY_RESPONSE_BADGE)
@@ -468,25 +474,9 @@ impl super::App {
             return;
         };
 
-        // Capture user message for extraction BEFORE clearing pending_user_message
-        let user_message_for_extraction = self
-            .pending_user_message
-            .as_ref()
-            .map(|(_, text)| text.clone());
-        let assistant_content = message.content().to_string();
-
         // Stream completed successfully with content
         self.pending_user_message = None;
         self.commit_history_message(message, step_id);
-
-        // Post-turn: Extract facts from this exchange (Context Infinity)
-        if let Some(librarian_arc) = self.librarian.clone()
-            && let Some(user_msg) = user_message_for_extraction
-        {
-            // Collect file paths accessed during this turn for source tracking
-            let source_paths = self.drain_accessed_files();
-            spawn_librarian_extraction(librarian_arc, user_msg, assistant_content, source_paths);
-        }
     }
 }
 
@@ -540,57 +530,4 @@ async fn get_or_create_gemini_cache(
             None
         }
     }
-}
-
-/// Spawn a background task to extract facts from a completed exchange.
-///
-/// This is the post-turn phase of Context Infinity - after an assistant response
-/// completes, we extract structured facts for future retrieval.
-///
-/// `source_paths` are the files that were accessed during this turn - facts
-/// extracted from this exchange will be linked to these files for staleness
-/// detection.
-///
-/// # Send Safety
-/// This function is carefully structured to not hold the MutexGuard across
-/// async await points, because rusqlite::Connection is !Send.
-pub(crate) fn spawn_librarian_extraction(
-    librarian_arc: std::sync::Arc<tokio::sync::Mutex<Librarian>>,
-    user_message: String,
-    assistant_message: String,
-    source_paths: Vec<String>,
-) {
-    tokio::spawn(async move {
-        // Phase 1: Get API key under lock, release immediately
-        let api_key = {
-            let librarian = librarian_arc.lock().await;
-            librarian.api_key().to_string()
-        }; // Lock released here
-
-        // Phase 2: Call async Gemini API without holding the lock
-        let result = match extract_facts(&api_key, &user_message, &assistant_message).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("Librarian extraction failed: {e}");
-                return;
-            }
-        };
-
-        if result.facts.is_empty() {
-            return;
-        }
-
-        // Phase 3: Re-acquire lock to store facts (sync operation)
-        let mut librarian = librarian_arc.lock().await;
-        librarian.increment_turn();
-        if let Err(e) = librarian.store_facts_with_sources(&result.facts, &source_paths) {
-            tracing::warn!("Failed to store extracted facts: {e}");
-        } else {
-            tracing::info!(
-                "Librarian extracted {} facts from exchange (linked to {} files)",
-                result.facts.len(),
-                source_paths.len()
-            );
-        }
-    });
 }

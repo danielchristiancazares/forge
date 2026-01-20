@@ -4,12 +4,12 @@ use ratatui::prelude::{Backend, Terminal};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Clear, Paragraph, Widget, Wrap},
 };
 
-use forge_engine::{App, DisplayItem, InputMode, Message};
+use forge_engine::{App, DisplayItem, InputMode, Message, StatusKind};
 use forge_types::sanitize_terminal_text;
 
 use crate::diff_render::render_tool_result_lines;
@@ -55,6 +55,7 @@ pub struct InlineOutput {
     last_tool_status_signature: Option<String>,
     last_approval_signature: Option<String>,
     last_recovery_active: bool,
+    last_status_signature: Option<String>,
 }
 
 impl InlineOutput {
@@ -67,6 +68,7 @@ impl InlineOutput {
             last_tool_status_signature: None,
             last_approval_signature: None,
             last_recovery_active: false,
+            last_status_signature: None,
         }
     }
 
@@ -77,6 +79,7 @@ impl InlineOutput {
         self.last_tool_status_signature = None;
         self.last_approval_signature = None;
         self.last_recovery_active = false;
+        self.last_status_signature = None;
     }
 
     pub fn flush<B>(&mut self, terminal: &mut Terminal<B>, app: &mut App) -> Result<(), B::Error>
@@ -102,6 +105,28 @@ impl InlineOutput {
             }
 
             self.next_display_index = items.len();
+        }
+
+        let status_signature = app.status_message().map(|message| {
+            let label = status_label(app.status_kind());
+            format!("{label}:{message}")
+        });
+        if status_signature != self.last_status_signature {
+            if let Some(message) = app.status_message() {
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
+                let safe_message = sanitize_terminal_text(message).replace('\n', " ");
+                let (label, color) = status_label_and_color(app.status_kind(), &palette);
+                let label_style = Style::default().fg(color).add_modifier(Modifier::BOLD);
+                let message_style = Style::default().fg(palette.text_primary);
+                let line = Line::from(vec![
+                    Span::styled(format!("[{label}] "), label_style),
+                    Span::styled(safe_message, message_style),
+                ]);
+                lines.push(line);
+            }
+            self.last_status_signature = status_signature;
         }
 
         let tool_statuses = collect_tool_statuses(app, 80);
@@ -369,4 +394,25 @@ fn append_recovery_prompt(lines: &mut Vec<Line>, app: &App, palette: &Palette) {
         Style::default().fg(palette.text_muted),
     )));
     lines.push(Line::from("Press r to resume or d to discard."));
+}
+
+fn status_label(kind: StatusKind) -> &'static str {
+    match kind {
+        StatusKind::Info => "info",
+        StatusKind::Success => "ok",
+        StatusKind::Warning => "warn",
+        StatusKind::Error => "err",
+    }
+}
+
+fn status_label_and_color(
+    kind: StatusKind,
+    palette: &Palette,
+) -> (&'static str, ratatui::style::Color) {
+    match kind {
+        StatusKind::Info => ("INFO", palette.primary),
+        StatusKind::Success => ("OK", palette.success),
+        StatusKind::Warning => ("WARN", palette.warning),
+        StatusKind::Error => ("ERR", palette.error),
+    }
 }

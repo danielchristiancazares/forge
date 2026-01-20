@@ -310,7 +310,7 @@ fn process_stream_events_applies_deltas_and_done() {
     let mut app = test_app();
 
     // Start streaming using the new architecture
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(1024);
     let streaming = StreamingMessage::new(
         app.model.clone(),
         rx,
@@ -330,9 +330,9 @@ fn process_stream_events_applies_deltas_and_done() {
     });
     assert!(app.is_loading());
 
-    tx.send(StreamEvent::TextDelta("hello".to_string()))
+    tx.try_send(StreamEvent::TextDelta("hello".to_string()))
         .expect("send delta");
-    tx.send(StreamEvent::Done).expect("send done");
+    tx.try_send(StreamEvent::Done).expect("send done");
 
     app.process_stream_events();
 
@@ -347,7 +347,7 @@ fn process_stream_events_applies_deltas_and_done() {
 fn process_stream_events_respects_budget() {
     let mut app = test_app();
 
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(1024);
     let streaming = StreamingMessage::new(
         app.model.clone(),
         rx,
@@ -367,8 +367,7 @@ fn process_stream_events_respects_budget() {
     });
 
     for _ in 0..10_000 {
-        tx.send(StreamEvent::TextDelta("x".to_string()))
-            .expect("send delta");
+        let _ = tx.try_send(StreamEvent::TextDelta("x".to_string()));
     }
 
     app.process_stream_events();
@@ -486,7 +485,7 @@ fn rollback_pending_user_message_no_op_when_empty() {
 
 #[test]
 fn streaming_message_apply_text_delta() {
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(1024);
     let model = Provider::Claude.default_model();
     let mut stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
@@ -507,7 +506,7 @@ fn streaming_message_apply_text_delta() {
 
 #[test]
 fn streaming_message_apply_done() {
-    let (_tx, rx) = mpsc::unbounded_channel();
+    let (_tx, rx) = mpsc::channel(1024);
     let model = Provider::Claude.default_model();
     let mut stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
@@ -519,7 +518,7 @@ fn streaming_message_apply_done() {
 
 #[test]
 fn streaming_message_apply_error() {
-    let (_tx, rx) = mpsc::unbounded_channel();
+    let (_tx, rx) = mpsc::channel(1024);
     let model = Provider::Claude.default_model();
     let mut stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
@@ -532,7 +531,7 @@ fn streaming_message_apply_error() {
 
 #[test]
 fn streaming_message_apply_thinking_delta_ignored() {
-    let (_tx, rx) = mpsc::unbounded_channel();
+    let (_tx, rx) = mpsc::channel(1024);
     let model = Provider::Claude.default_model();
     let mut stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
@@ -545,7 +544,7 @@ fn streaming_message_apply_thinking_delta_ignored() {
 
 #[test]
 fn streaming_message_into_message_success() {
-    let (_tx, rx) = mpsc::unbounded_channel();
+    let (_tx, rx) = mpsc::channel(1024);
     let model = Provider::Claude.default_model();
     let mut stream = StreamingMessage::new(model.clone(), rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
@@ -558,7 +557,7 @@ fn streaming_message_into_message_success() {
 
 #[test]
 fn streaming_message_into_message_empty_fails() {
-    let (_tx, rx) = mpsc::unbounded_channel();
+    let (_tx, rx) = mpsc::channel(1024);
     let model = Provider::Claude.default_model();
     let stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
@@ -569,7 +568,7 @@ fn streaming_message_into_message_empty_fails() {
 
 #[test]
 fn streaming_message_provider_and_model() {
-    let (_tx, rx) = mpsc::unbounded_channel();
+    let (_tx, rx) = mpsc::channel(1024);
     let model = ModelName::known(Provider::OpenAI, "gpt-5.2");
     let stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
@@ -579,13 +578,14 @@ fn streaming_message_provider_and_model() {
 
 #[test]
 fn tool_call_args_overflow_pre_resolved_error() {
-    let (_tx, rx) = mpsc::unbounded_channel();
+    let (_tx, rx) = mpsc::channel(1024);
     let model = Provider::Claude.default_model();
     let mut stream = StreamingMessage::new(model, rx, 4);
 
     stream.apply_event(StreamEvent::ToolCallStart {
         id: "call-1".to_string(),
         name: "run_command".to_string(),
+        thought_signature: None,
     });
     stream.apply_event(StreamEvent::ToolCallDelta {
         id: "call-1".to_string(),

@@ -9,7 +9,7 @@ use std::fmt::Write;
 use anyhow::{Result, anyhow};
 use serde_json::json;
 
-use forge_providers::{ApiConfig, http_client_with_timeout};
+use forge_providers::{ApiConfig, http_client_with_timeout, read_capped_error_body};
 use forge_types::{Message, Provider};
 
 use super::MessageId;
@@ -217,7 +217,7 @@ async fn generate_summary_claude(
     conversation_text: &str,
     max_tokens: u32,
 ) -> Result<String> {
-    let client = http_client_with_timeout(SUMMARY_TIMEOUT_SECS);
+    let client = http_client_with_timeout(SUMMARY_TIMEOUT_SECS)?;
 
     let body = json!({
         "model": CLAUDE_SUMMARIZATION_MODEL,
@@ -243,10 +243,7 @@ async fn generate_summary_claude(
 
     if !response.status().is_success() {
         let status = response.status();
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|e| format!("<failed to read error: {e}>"));
+        let error_text = read_capped_error_body(response).await;
         return Err(anyhow!("Claude API error {status}: {error_text}"));
     }
 
@@ -274,7 +271,7 @@ async fn generate_summary_openai(
     conversation_text: &str,
     max_tokens: u32,
 ) -> Result<String> {
-    let client = http_client_with_timeout(SUMMARY_TIMEOUT_SECS);
+    let client = http_client_with_timeout(SUMMARY_TIMEOUT_SECS)?;
 
     // Responses API uses `input` array and `instructions` for system prompt
     let body = json!({
@@ -300,10 +297,7 @@ async fn generate_summary_openai(
 
     if !response.status().is_success() {
         let status = response.status();
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|e| format!("<failed to read error: {e}>"));
+        let error_text = read_capped_error_body(response).await;
         return Err(anyhow!("OpenAI API error {status}: {error_text}"));
     }
 
@@ -332,7 +326,7 @@ async fn generate_summary_gemini(
     conversation_text: &str,
     max_tokens: u32,
 ) -> Result<String> {
-    let client = http_client_with_timeout(SUMMARY_TIMEOUT_SECS);
+    let client = http_client_with_timeout(SUMMARY_TIMEOUT_SECS)?;
 
     // Gemini uses top-level system_instruction and mixed casing
     let body = json!({
@@ -365,10 +359,7 @@ async fn generate_summary_gemini(
 
     if !response.status().is_success() {
         let status = response.status();
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|e| format!("<failed to read error: {e}>"));
+        let error_text = read_capped_error_body(response).await;
         return Err(anyhow!("Gemini API error {status}: {error_text}"));
     }
 
@@ -568,6 +559,7 @@ mod tests {
             id: "call_123".to_string(),
             name: "read_file".to_string(),
             arguments: json!({"path": "/tmp/test.txt"}),
+            thought_signature: None,
         };
 
         let messages = vec![(MessageId::new_for_test(0), Message::ToolUse(tool_call))];
@@ -584,6 +576,7 @@ mod tests {
 
         let result = ToolResult {
             tool_call_id: "call_123".to_string(),
+            tool_name: "read_file".to_string(),
             content: "File contents here".to_string(),
             is_error: false,
         };
@@ -601,6 +594,7 @@ mod tests {
 
         let result = ToolResult {
             tool_call_id: "call_456".to_string(),
+            tool_name: "read_file".to_string(),
             content: "File not found".to_string(),
             is_error: true,
         };

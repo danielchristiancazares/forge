@@ -495,7 +495,9 @@ impl ToolExecutor for ReadFileTool {
                 });
             }
 
-            let resolved = ctx.sandbox.resolve_path(&typed.path, &ctx.working_dir)?;
+            let resolved = ctx
+                .sandbox
+                .resolve_path_for_create(&typed.path, &ctx.working_dir)?;
             let meta = std::fs::metadata(&resolved).map_err(|e| ToolError::ExecutionFailed {
                 tool: "read_file".to_string(),
                 message: e.to_string(),
@@ -957,7 +959,9 @@ impl ToolExecutor for RunCommandTool {
                 use std::os::unix::process::CommandExt;
                 unsafe {
                     command.as_std_mut().pre_exec(|| {
-                        libc::setsid();
+                        if libc::setsid() == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
                         Ok(())
                     });
                 }
@@ -1381,13 +1385,21 @@ impl Drop for ChildGuard {
         {
             if let Some(pid) = child.id() {
                 unsafe {
-                    libc::killpg(pid as i32, libc::SIGKILL);
+                    if libc::killpg(pid as i32, libc::SIGKILL) == -1 {
+                        let _ = child.start_kill();
+                    }
                 }
             }
+            // Reap the zombie process synchronously to prevent zombie accumulation.
+            // This is best-effort - if it fails, the process table entry will be
+            // cleaned up when the parent exits.
+            let _ = child.try_wait();
         }
         #[cfg(windows)]
         {
             let _ = child.start_kill();
+            // Windows doesn't have the same zombie issue, but try_wait is good practice
+            let _ = child.try_wait();
         }
     }
 }

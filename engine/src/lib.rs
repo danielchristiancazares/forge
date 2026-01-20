@@ -107,7 +107,7 @@ struct ParsedToolCalls {
 pub struct StreamingMessage {
     model: ModelName,
     content: String,
-    receiver: mpsc::UnboundedReceiver<StreamEvent>,
+    receiver: mpsc::Receiver<StreamEvent>,
     /// Accumulated tool calls during streaming.
     tool_calls: Vec<ToolCallAccumulator>,
     max_tool_args_bytes: usize,
@@ -117,7 +117,7 @@ impl StreamingMessage {
     #[must_use]
     pub fn new(
         model: ModelName,
-        receiver: mpsc::UnboundedReceiver<StreamEvent>,
+        receiver: mpsc::Receiver<StreamEvent>,
         max_tool_args_bytes: usize,
     ) -> Self {
         Self {
@@ -158,7 +158,7 @@ impl StreamingMessage {
                 // Silently consume thinking content - not displayed for now
                 None
             }
-            StreamEvent::ToolCallStart { id, name } => {
+            StreamEvent::ToolCallStart { id, name, .. } => {
                 self.tool_calls.push(ToolCallAccumulator {
                     id,
                     name,
@@ -203,6 +203,7 @@ impl StreamingMessage {
             if acc.args_exceeded {
                 pre_resolved.push(ToolResult::error(
                     acc.id.clone(),
+                    acc.name.clone(),
                     "Tool arguments exceeded maximum size",
                 ));
                 calls.push(ToolCall::new(
@@ -232,6 +233,7 @@ impl StreamingMessage {
                     );
                     pre_resolved.push(ToolResult::error(
                         acc.id.clone(),
+                        acc.name.clone(),
                         "Invalid tool arguments JSON",
                     ));
                     calls.push(ToolCall::new(

@@ -340,9 +340,10 @@ impl EnvSanitizer {
         let mut builder = globset::GlobSetBuilder::new();
         for pat in patterns {
             let mut glob = globset::GlobBuilder::new(pat);
-            if cfg!(windows) {
-                glob.case_insensitive(true);
-            }
+            // Always use case-insensitive matching for env var patterns.
+            // This ensures security patterns like *_KEY, *_SECRET, *_TOKEN
+            // match regardless of case (API_KEY, api_key, Api_Key, etc.)
+            glob.case_insensitive(true);
             let glob = glob.build().map_err(|e| ToolError::BadArgs {
                 message: format!("Invalid env denylist pattern '{pat}': {e}"),
             })?;

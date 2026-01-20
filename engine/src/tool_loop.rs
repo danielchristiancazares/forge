@@ -88,11 +88,13 @@ impl App {
         let next_iteration = self.tool_iterations.saturating_add(1);
         if next_iteration > self.tool_settings.limits.max_tool_iterations_per_user_turn {
             let mut results = pre_resolved;
-            results.extend(
-                tool_calls
-                    .iter()
-                    .map(|call| ToolResult::error(call.id.clone(), "Max tool iterations reached")),
-            );
+            results.extend(tool_calls.iter().map(|call| {
+                ToolResult::error(
+                    call.id.clone(),
+                    call.name.clone(),
+                    "Max tool iterations reached",
+                )
+            }));
             if batch_id != 0 {
                 for result in &results {
                     let _ = self.tool_journal.record_result(batch_id, result);
@@ -454,7 +456,11 @@ impl App {
                 Ok(Ok(Err(panic_payload))) => {
                     let panic_msg = panic_payload_to_string(&panic_payload);
                     let message = format!("Tool panicked: {panic_msg}");
-                    ToolResult::error(call.id.clone(), tools::sanitize_output(&message))
+                    ToolResult::error(
+                        call.id.clone(),
+                        call.name.clone(),
+                        tools::sanitize_output(&message),
+                    )
                 }
                 Ok(Ok(Ok(inner))) => match inner {
                     Ok(output) => {
@@ -465,7 +471,7 @@ impl App {
                         } else {
                             sanitized
                         };
-                        ToolResult::success(call.id.clone(), final_output)
+                        ToolResult::success(call.id.clone(), call.name.clone(), final_output)
                     }
                     Err(err) => tool_error_result(&call, err),
                 },
@@ -581,16 +587,16 @@ impl App {
                     let result = match joined {
                         Ok(result) => result,
                         Err(err) => {
-                            let call_id = exec
-                                .current_call
-                                .as_ref()
-                                .map_or_else(|| "<unknown>".to_string(), |c| c.id.clone());
+                            let (call_id, call_name) = exec.current_call.as_ref().map_or_else(
+                                || ("<unknown>".to_string(), "<unknown>".to_string()),
+                                |c| (c.id.clone(), c.name.clone()),
+                            );
                             let message = if err.is_cancelled() {
                                 "Tool execution cancelled"
                             } else {
                                 "Tool execution failed"
                             };
-                            ToolResult::error(call_id, message)
+                            ToolResult::error(call_id, call_name, message)
                         }
                     };
                     exec.current_call = None;
@@ -646,7 +652,7 @@ impl App {
             if existing.contains(&call.id) {
                 continue;
             }
-            let result = ToolResult::error(call.id.clone(), "Cancelled by user");
+            let result = ToolResult::error(call.id.clone(), call.name.clone(), "Cancelled by user");
             if batch_id != 0 {
                 let _ = self.tool_journal.record_result(batch_id, &result);
             }
@@ -677,9 +683,11 @@ impl App {
     ) {
         self.state = self.idle_state();
 
+        let mut step_id_recorded = false;
         if let Ok(content) = NonEmptyString::new(assistant_text.clone()) {
             let message = Message::assistant(model.clone(), content);
             self.push_history_message_with_step_id(message, step_id);
+            step_id_recorded = true;
         }
 
         let mut result_map: std::collections::HashMap<String, ToolResult> =
@@ -695,12 +703,21 @@ impl App {
             if let Some(result) = result_map.remove(&call.id) {
                 ordered_results.push(result);
             } else {
-                ordered_results.push(ToolResult::error(call.id.clone(), "Missing tool result"));
+                ordered_results.push(ToolResult::error(
+                    call.id.clone(),
+                    call.name.clone(),
+                    "Missing tool result",
+                ));
             }
         }
 
-        for call in &tool_calls {
-            self.push_history_message(Message::tool_use(call.clone()));
+        for (idx, call) in tool_calls.iter().enumerate() {
+            if !step_id_recorded && idx == 0 {
+                self.push_history_message_with_step_id(Message::tool_use(call.clone()), step_id);
+                step_id_recorded = true;
+            } else {
+                self.push_history_message(Message::tool_use(call.clone()));
+            }
         }
 
         for result in &ordered_results {
@@ -714,6 +731,10 @@ impl App {
             {
                 tracing::warn!("Failed to commit tool batch {}: {e}", batch_id);
             }
+        }
+
+        if !auto_resume {
+            self.pending_user_message = None;
         }
 
         if auto_resume {
@@ -781,6 +802,7 @@ impl App {
             } else {
                 denied_results.push(ToolResult::error(
                     call.id.clone(),
+                    call.name.clone(),
                     "Tool call denied by user",
                 ));
             }
@@ -864,6 +886,7 @@ impl App {
                     if !existing.contains(&call.id) {
                         merged.push(ToolResult::error(
                             call.id.clone(),
+                            call.name.clone(),
                             "Tool result missing after crash",
                         ));
                     }
@@ -874,7 +897,11 @@ impl App {
                 .calls
                 .iter()
                 .map(|call| {
-                    ToolResult::error(call.id.clone(), "Tool results discarded after crash")
+                    ToolResult::error(
+                        call.id.clone(),
+                        call.name.clone(),
+                        "Tool results discarded after crash",
+                    )
                 })
                 .collect(),
         };
@@ -951,7 +978,7 @@ fn preflight_sandbox(
                 .ok_or_else(|| tools::ToolError::BadArgs {
                     message: "path must be a string".to_string(),
                 })?;
-            let _ = sandbox.resolve_path(path, &working_dir)?;
+            let _ = sandbox.resolve_path_for_create(path, &working_dir)?;
         }
         _ => {}
     }
@@ -982,7 +1009,11 @@ pub(crate) fn tool_error_result(call: &ToolCall, err: tools::ToolError) -> ToolR
         }
     };
 
-    ToolResult::error(call.id.clone(), tools::sanitize_output(&message))
+    ToolResult::error(
+        call.id.clone(),
+        call.name.clone(),
+        tools::sanitize_output(&message),
+    )
 }
 
 pub(crate) fn append_tool_output_lines(lines: &mut Vec<String>, chunk: &str, prefix: Option<&str>) {

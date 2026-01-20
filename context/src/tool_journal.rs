@@ -394,10 +394,16 @@ impl ToolJournal {
 
         for row in rows {
             let (id, content, is_error) = row?;
+            // Look up tool name from calls vector
+            let tool_name = calls
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
             let result = if is_error {
-                ToolResult::error(id, content)
+                ToolResult::error(&id, &tool_name, content)
             } else {
-                ToolResult::success(id, content)
+                ToolResult::success(&id, &tool_name, content)
             };
             results.push(result);
         }
@@ -563,7 +569,7 @@ mod tests {
             .begin_batch("test-model", "assistant", &calls)
             .unwrap();
 
-        let result = ToolResult::success("1", "ok");
+        let result = ToolResult::success("1", "test_tool", "ok");
         journal.record_result(batch_id, &result).unwrap();
 
         let recovered = journal.recover().unwrap().expect("should recover");
@@ -634,7 +640,7 @@ mod tests {
             .unwrap();
 
         // Add a result
-        let result = ToolResult::success("1", "done");
+        let result = ToolResult::success("1", "test_tool", "done");
         journal.record_result(batch_id, &result).unwrap();
 
         // Discard the batch
@@ -654,7 +660,7 @@ mod tests {
             .unwrap();
 
         // Record an error result
-        let result = ToolResult::error("1", "Something went wrong");
+        let result = ToolResult::error("1", "test_tool", "Something went wrong");
         journal.record_result(batch_id, &result).unwrap();
 
         let recovered = journal.recover().unwrap().expect("should recover");

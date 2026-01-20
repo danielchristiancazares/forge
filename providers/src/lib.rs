@@ -31,6 +31,12 @@ const STREAM_IDLE_TIMEOUT_SECS: u64 = 60;
 /// Prevents memory exhaustion from malicious/misbehaving servers.
 const MAX_SSE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
+/// Maximum consecutive SSE parse failures before aborting.
+const MAX_SSE_PARSE_ERRORS: usize = 3;
+
+/// Maximum characters of bad SSE payload to include in logs.
+const MAX_SSE_PARSE_ERROR_PREVIEW: usize = 160;
+
 /// Maximum bytes for error body reads (32 KiB).
 /// Prevents memory spikes from large error responses.
 const MAX_ERROR_BODY_BYTES: usize = 32 * 1024;
@@ -53,7 +59,12 @@ pub fn http_client() -> &'static reqwest::Client {
             .redirect(reqwest::redirect::Policy::none())
             .https_only(true)
             .build()
-            .expect("build shared HTTP client")
+            .unwrap_or_else(|e| {
+                // This should never fail in practice (only fails if TLS backend unavailable),
+                // but if it does, log and fall back to a default client rather than panicking.
+                tracing::error!("Failed to build custom HTTP client: {e}. Using default.");
+                reqwest::Client::new()
+            })
     })
 }
 
@@ -61,15 +72,15 @@ pub fn http_client() -> &'static reqwest::Client {
 ///
 /// Use this for non-streaming requests like summarization where you want
 /// to bound the total request time.
-#[must_use]
-pub fn http_client_with_timeout(timeout_secs: u64) -> reqwest::Client {
+///
+/// Returns `Err` if the client cannot be built (e.g., TLS backend unavailable).
+pub fn http_client_with_timeout(timeout_secs: u64) -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .timeout(Duration::from_secs(timeout_secs))
         .redirect(reqwest::redirect::Policy::none())
         .https_only(true)
         .build()
-        .expect("build HTTP client with timeout")
 }
 
 fn find_sse_event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
@@ -113,9 +124,141 @@ fn extract_sse_data(event: &str) -> Option<String> {
     if found { Some(data) } else { None }
 }
 
+// ============================================================================
+// SSE Stream Processing Abstraction
+// ============================================================================
+
+/// Action returned by provider-specific SSE JSON parser.
+enum SseParseAction {
+    /// Continue processing, no event to emit
+    Continue,
+    /// Emit these events and continue
+    Emit(Vec<StreamEvent>),
+    /// Stream is done (message_stop, response.completed, finishReason=STOP)
+    Done,
+    /// Fatal error, stop processing
+    Error(String),
+}
+
+/// Provider-specific SSE JSON parsing.
+trait SseParser {
+    /// Parse a JSON payload and return the action to take.
+    fn parse(&mut self, json: &serde_json::Value) -> SseParseAction;
+
+    /// Provider name for error logging.
+    fn provider_name(&self) -> &'static str;
+}
+
+/// Process an SSE stream using a provider-specific parser.
+///
+/// This handles the common SSE processing logic:
+/// - Timeout handling for idle streams
+/// - Buffer management with size limits
+/// - UTF-8 validation
+/// - Event boundary detection
+/// - `[DONE]` marker handling
+/// - Parse error tracking with threshold
+async fn process_sse_stream<P: SseParser>(
+    response: reqwest::Response,
+    parser: &mut P,
+    on_event: impl Fn(StreamEvent),
+) -> Result<()> {
+    use futures_util::StreamExt;
+
+    let mut stream = response.bytes_stream();
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut parse_errors = 0usize;
+
+    loop {
+        let Ok(next) =
+            tokio::time::timeout(Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS), stream.next())
+                .await
+        else {
+            on_event(StreamEvent::Error("Stream idle timeout".to_string()));
+            return Ok(());
+        };
+
+        let Some(chunk) = next else { break };
+        let chunk = chunk?;
+        buffer.extend_from_slice(&chunk);
+
+        // Security: prevent unbounded buffer growth
+        if buffer.len() > MAX_SSE_BUFFER_BYTES {
+            on_event(StreamEvent::Error(
+                "SSE buffer exceeded maximum size (4 MiB)".to_string(),
+            ));
+            return Ok(());
+        }
+
+        while let Some(event) = drain_next_sse_event(&mut buffer) {
+            if event.is_empty() {
+                continue;
+            }
+
+            let Ok(event) = std::str::from_utf8(&event) else {
+                on_event(StreamEvent::Error(
+                    "Received invalid UTF-8 from SSE stream".to_string(),
+                ));
+                return Ok(());
+            };
+
+            let Some(data) = extract_sse_data(event) else {
+                continue;
+            };
+
+            if data == "[DONE]" {
+                on_event(StreamEvent::Done);
+                return Ok(());
+            }
+
+            match serde_json::from_str::<serde_json::Value>(&data) {
+                Ok(json) => {
+                    parse_errors = 0;
+                    match parser.parse(&json) {
+                        SseParseAction::Continue => {}
+                        SseParseAction::Emit(events) => {
+                            for event in events {
+                                on_event(event);
+                            }
+                        }
+                        SseParseAction::Done => {
+                            on_event(StreamEvent::Done);
+                            return Ok(());
+                        }
+                        SseParseAction::Error(msg) => {
+                            on_event(StreamEvent::Error(msg));
+                            return Ok(());
+                        }
+                    }
+                }
+                Err(e) => {
+                    parse_errors = parse_errors.saturating_add(1);
+                    let preview: String = data.chars().take(MAX_SSE_PARSE_ERROR_PREVIEW).collect();
+                    tracing::warn!(
+                        %e,
+                        preview = %preview,
+                        provider = parser.provider_name(),
+                        "Invalid SSE JSON payload"
+                    );
+                    if parse_errors >= MAX_SSE_PARSE_ERRORS {
+                        on_event(StreamEvent::Error(format!("Invalid stream payload: {e}")));
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    // Premature EOF: connection closed without completion signal
+    on_event(StreamEvent::Error(
+        "Connection closed before stream completed".to_string(),
+    ));
+    Ok(())
+}
+
 /// Read an HTTP error response body with size limits.
 /// Prevents memory exhaustion from large error payloads.
-async fn read_capped_error_body(response: reqwest::Response) -> String {
+pub async fn read_capped_error_body(response: reqwest::Response) -> String {
     use futures_util::StreamExt;
     let mut body = Vec::new();
     let mut stream = response.bytes_stream();
@@ -247,9 +390,9 @@ pub async fn send_message(
 /// Claude/Anthropic API implementation.
 pub mod claude {
     use super::{
-        ApiConfig, CacheHint, CacheableMessage, Duration, MAX_SSE_BUFFER_BYTES, Message,
-        OutputLimits, Result, STREAM_IDLE_TIMEOUT_SECS, StreamEvent, ToolDefinition,
-        drain_next_sse_event, extract_sse_data, http_client, read_capped_error_body,
+        ApiConfig, CacheHint, CacheableMessage, Message, OutputLimits, Result, SseParseAction,
+        SseParser, StreamEvent, ToolDefinition, http_client, process_sse_stream,
+        read_capped_error_body,
     };
     use serde_json::json;
 
@@ -387,6 +530,87 @@ pub mod claude {
         serde_json::Value::Object(body)
     }
 
+    // ========================================================================
+    // Claude SSE Parser
+    // ========================================================================
+
+    /// Parser state for Claude SSE streams.
+    #[derive(Default)]
+    struct ClaudeParser {
+        /// Current tool call ID for streaming tool arguments
+        current_tool_id: Option<String>,
+    }
+
+    impl SseParser for ClaudeParser {
+        fn parse(&mut self, json: &serde_json::Value) -> SseParseAction {
+            let mut events = Vec::new();
+
+            // Handle content_block_start for tool_use
+            if json["type"] == "content_block_start"
+                && let Some(block) = json.get("content_block")
+                && block["type"] == "tool_use"
+            {
+                let id = block["id"].as_str().unwrap_or("").to_string();
+                let name = block["name"].as_str().unwrap_or("").to_string();
+                self.current_tool_id = Some(id.clone());
+                events.push(StreamEvent::ToolCallStart {
+                    id,
+                    name,
+                    thought_signature: None,
+                });
+            }
+
+            if json["type"] == "content_block_delta" {
+                if let Some(delta_type) = json["delta"]["type"].as_str() {
+                    match delta_type {
+                        "text_delta" => {
+                            if let Some(text) = json["delta"]["text"].as_str() {
+                                events.push(StreamEvent::TextDelta(text.to_string()));
+                            }
+                        }
+                        "thinking_delta" => {
+                            if let Some(thinking) = json["delta"]["thinking"].as_str() {
+                                events.push(StreamEvent::ThinkingDelta(thinking.to_string()));
+                            }
+                        }
+                        "input_json_delta" => {
+                            if let Some(json_chunk) = json["delta"]["partial_json"].as_str()
+                                && let Some(ref id) = self.current_tool_id
+                            {
+                                events.push(StreamEvent::ToolCallDelta {
+                                    id: id.clone(),
+                                    arguments: json_chunk.to_string(),
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                } else if let Some(text) = json["delta"]["text"].as_str() {
+                    events.push(StreamEvent::TextDelta(text.to_string()));
+                }
+            }
+
+            // Reset tool ID when content block ends
+            if json["type"] == "content_block_stop" {
+                self.current_tool_id = None;
+            }
+
+            if json["type"] == "message_stop" {
+                return SseParseAction::Done;
+            }
+
+            if events.is_empty() {
+                SseParseAction::Continue
+            } else {
+                SseParseAction::Emit(events)
+            }
+        }
+
+        fn provider_name(&self) -> &'static str {
+            "Claude"
+        }
+    }
+
     pub async fn send_message(
         config: &ApiConfig,
         messages: &[CacheableMessage],
@@ -395,8 +619,6 @@ pub mod claude {
         tools: Option<&[ToolDefinition]>,
         on_event: impl Fn(StreamEvent) + Send + 'static,
     ) -> Result<()> {
-        use futures_util::StreamExt;
-
         let client = http_client();
 
         let body = build_request_body(
@@ -425,115 +647,8 @@ pub mod claude {
             return Ok(());
         }
 
-        // Process SSE stream
-        let mut stream = response.bytes_stream();
-        let mut buffer: Vec<u8> = Vec::new();
-        // Track current tool call ID for streaming tool arguments
-        let mut current_tool_id: Option<String> = None;
-
-        loop {
-            let Ok(next) =
-                tokio::time::timeout(Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS), stream.next())
-                    .await
-            else {
-                on_event(StreamEvent::Error("Stream idle timeout".to_string()));
-                return Ok(());
-            };
-            let Some(chunk) = next else { break };
-            let chunk = chunk?;
-            buffer.extend_from_slice(&chunk);
-
-            // Security: prevent unbounded buffer growth
-            if buffer.len() > MAX_SSE_BUFFER_BYTES {
-                on_event(StreamEvent::Error(
-                    "SSE buffer exceeded maximum size (4 MiB)".to_string(),
-                ));
-                return Ok(());
-            }
-
-            while let Some(event) = drain_next_sse_event(&mut buffer) {
-                if event.is_empty() {
-                    continue;
-                }
-
-                let Ok(event) = std::str::from_utf8(&event) else {
-                    on_event(StreamEvent::Error(
-                        "Received invalid UTF-8 from SSE stream".to_string(),
-                    ));
-                    return Ok(());
-                };
-
-                if let Some(data) = extract_sse_data(event) {
-                    if data == "[DONE]" {
-                        on_event(StreamEvent::Done);
-                        return Ok(());
-                    }
-
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
-                        // Handle content_block_start for tool_use
-                        if json["type"] == "content_block_start"
-                            && let Some(block) = json.get("content_block")
-                            && block["type"] == "tool_use"
-                        {
-                            let id = block["id"].as_str().unwrap_or("").to_string();
-                            let name = block["name"].as_str().unwrap_or("").to_string();
-                            current_tool_id = Some(id.clone());
-                            on_event(StreamEvent::ToolCallStart { id, name });
-                        }
-
-                        if json["type"] == "content_block_delta" {
-                            if let Some(delta_type) = json["delta"]["type"].as_str() {
-                                match delta_type {
-                                    "text_delta" => {
-                                        if let Some(text) = json["delta"]["text"].as_str() {
-                                            on_event(StreamEvent::TextDelta(text.to_string()));
-                                        }
-                                    }
-                                    "thinking_delta" => {
-                                        if let Some(thinking) = json["delta"]["thinking"].as_str() {
-                                            on_event(StreamEvent::ThinkingDelta(
-                                                thinking.to_string(),
-                                            ));
-                                        }
-                                    }
-                                    "input_json_delta" => {
-                                        // Tool arguments streaming
-                                        if let Some(json_chunk) =
-                                            json["delta"]["partial_json"].as_str()
-                                            && let Some(ref id) = current_tool_id
-                                        {
-                                            on_event(StreamEvent::ToolCallDelta {
-                                                id: id.clone(),
-                                                arguments: json_chunk.to_string(),
-                                            });
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            } else if let Some(text) = json["delta"]["text"].as_str() {
-                                on_event(StreamEvent::TextDelta(text.to_string()));
-                            }
-                        }
-
-                        // Reset tool ID when content block ends
-                        if json["type"] == "content_block_stop" {
-                            current_tool_id = None;
-                        }
-
-                        if json["type"] == "message_stop" {
-                            on_event(StreamEvent::Done);
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-        }
-
-        // Premature EOF: connection closed without message_stop or [DONE]
-        on_event(StreamEvent::Error(
-            "Connection closed before stream completed".to_string(),
-        ));
-        Ok(())
+        let mut parser = ClaudeParser::default();
+        process_sse_stream(response, &mut parser, on_event).await
     }
 
     #[cfg(test)]
@@ -589,9 +704,8 @@ pub mod claude {
 /// `OpenAI` API implementation.
 pub mod openai {
     use super::{
-        ApiConfig, CacheableMessage, Duration, MAX_SSE_BUFFER_BYTES, Message, OutputLimits, Result,
-        STREAM_IDLE_TIMEOUT_SECS, StreamEvent, ToolDefinition, drain_next_sse_event,
-        extract_sse_data, http_client, read_capped_error_body,
+        ApiConfig, CacheableMessage, Message, OutputLimits, Result, SseParseAction, SseParser,
+        StreamEvent, ToolDefinition, http_client, process_sse_stream, read_capped_error_body,
     };
     use serde_json::{Value, json};
     use std::collections::{HashMap, HashSet};
@@ -639,123 +753,123 @@ pub mod openai {
         None
     }
 
+    // ========================================================================
+    // OpenAI SSE Parser
+    // ========================================================================
+
+    /// Parser state for OpenAI SSE streams.
     #[derive(Debug, Default)]
-    struct OpenAIStreamState {
+    struct OpenAIParser {
         saw_text_delta: bool,
         item_to_call: HashMap<String, String>,
         call_has_delta: HashSet<String>,
     }
 
-    enum OpenAIStreamAction {
-        Continue,
-        Stop,
-    }
+    impl SseParser for OpenAIParser {
+        fn parse(&mut self, json: &Value) -> SseParseAction {
+            let mut events = Vec::new();
 
-    fn handle_openai_stream_event<F>(
-        json: &Value,
-        state: &mut OpenAIStreamState,
-        on_event: &mut F,
-    ) -> OpenAIStreamAction
-    where
-        F: FnMut(StreamEvent),
-    {
-        match json["type"].as_str().unwrap_or("") {
-            "response.output_item.added" => {
-                let item = json.get("item").or_else(|| json.get("output_item"));
-                if let Some(item) = item
-                    && item.get("type").and_then(|value| value.as_str()) == Some("function_call")
-                {
-                    let item_id = item.get("id").and_then(|v| v.as_str());
-                    let call_id = item.get("call_id").and_then(|v| v.as_str()).or(item_id);
-                    let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    if let Some(call_id) = call_id {
-                        let call_id = call_id.to_string();
-                        if let Some(item_id) = item_id {
-                            state
-                                .item_to_call
-                                .insert(item_id.to_string(), call_id.clone());
+            match json["type"].as_str().unwrap_or("") {
+                "response.output_item.added" => {
+                    let item = json.get("item").or_else(|| json.get("output_item"));
+                    if let Some(item) = item
+                        && item.get("type").and_then(|value| value.as_str())
+                            == Some("function_call")
+                    {
+                        let item_id = item.get("id").and_then(|v| v.as_str());
+                        let call_id = item.get("call_id").and_then(|v| v.as_str()).or(item_id);
+                        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        if let Some(call_id) = call_id {
+                            let call_id = call_id.to_string();
+                            if let Some(item_id) = item_id {
+                                self.item_to_call
+                                    .insert(item_id.to_string(), call_id.clone());
+                            }
+                            events.push(StreamEvent::ToolCallStart {
+                                id: call_id.clone(),
+                                name: name.to_string(),
+                                thought_signature: None,
+                            });
+                            if let Some(arguments) = item.get("arguments").and_then(|v| v.as_str())
+                                && !arguments.is_empty()
+                            {
+                                events.push(StreamEvent::ToolCallDelta {
+                                    id: call_id.clone(),
+                                    arguments: arguments.to_string(),
+                                });
+                                self.call_has_delta.insert(call_id);
+                            }
                         }
-                        on_event(StreamEvent::ToolCallStart {
+                    }
+                }
+                "response.output_text.delta" | "response.refusal.delta" => {
+                    if let Some(delta) = json["delta"].as_str() {
+                        self.saw_text_delta = true;
+                        events.push(StreamEvent::TextDelta(delta.to_string()));
+                    }
+                }
+                "response.output_text.done" => {
+                    if !self.saw_text_delta
+                        && let Some(text) = json["text"].as_str()
+                    {
+                        events.push(StreamEvent::TextDelta(text.to_string()));
+                    }
+                }
+                "response.function_call_arguments.delta" => {
+                    let item_id = json.get("item_id").and_then(|v| v.as_str());
+                    let call_id = json.get("call_id").and_then(|v| v.as_str());
+                    let resolved = resolve_call_id(item_id, call_id, &self.item_to_call);
+                    if let Some(delta) = json.get("delta").and_then(|v| v.as_str())
+                        && let Some(call_id) = resolved
+                    {
+                        events.push(StreamEvent::ToolCallDelta {
                             id: call_id.clone(),
-                            name: name.to_string(),
+                            arguments: delta.to_string(),
                         });
-                        if let Some(arguments) = item.get("arguments").and_then(|v| v.as_str())
-                            && !arguments.is_empty()
-                        {
-                            on_event(StreamEvent::ToolCallDelta {
+                        self.call_has_delta.insert(call_id);
+                    }
+                }
+                "response.function_call_arguments.done" => {
+                    let item_id = json.get("item_id").and_then(|v| v.as_str());
+                    let call_id = json.get("call_id").and_then(|v| v.as_str());
+                    let resolved = resolve_call_id(item_id, call_id, &self.item_to_call);
+                    if let Some(arguments) = json.get("arguments").and_then(|v| v.as_str())
+                        && let Some(call_id) = resolved
+                    {
+                        if !self.call_has_delta.contains(&call_id) && !arguments.is_empty() {
+                            events.push(StreamEvent::ToolCallDelta {
                                 id: call_id.clone(),
                                 arguments: arguments.to_string(),
                             });
-                            state.call_has_delta.insert(call_id);
                         }
+                        self.call_has_delta.insert(call_id);
                     }
                 }
-                OpenAIStreamAction::Continue
-            }
-            "response.output_text.delta" | "response.refusal.delta" => {
-                if let Some(delta) = json["delta"].as_str() {
-                    state.saw_text_delta = true;
-                    on_event(StreamEvent::TextDelta(delta.to_string()));
+                "response.completed" => {
+                    return SseParseAction::Done;
                 }
-                OpenAIStreamAction::Continue
-            }
-            "response.output_text.done" => {
-                if !state.saw_text_delta
-                    && let Some(text) = json["text"].as_str()
-                {
-                    on_event(StreamEvent::TextDelta(text.to_string()));
+                "response.incomplete" => {
+                    let reason = extract_incomplete_reason(json)
+                        .unwrap_or_else(|| "Response incomplete".to_string());
+                    return SseParseAction::Error(reason);
                 }
-                OpenAIStreamAction::Continue
-            }
-            "response.function_call_arguments.delta" => {
-                let item_id = json.get("item_id").and_then(|v| v.as_str());
-                let call_id = json.get("call_id").and_then(|v| v.as_str());
-                let resolved = resolve_call_id(item_id, call_id, &state.item_to_call);
-                if let Some(delta) = json.get("delta").and_then(|v| v.as_str())
-                    && let Some(call_id) = resolved
-                {
-                    on_event(StreamEvent::ToolCallDelta {
-                        id: call_id.clone(),
-                        arguments: delta.to_string(),
-                    });
-                    state.call_has_delta.insert(call_id);
+                "response.failed" | "error" => {
+                    let message = extract_error_message(json)
+                        .unwrap_or_else(|| "Response failed".to_string());
+                    return SseParseAction::Error(message);
                 }
-                OpenAIStreamAction::Continue
+                _ => {}
             }
-            "response.function_call_arguments.done" => {
-                let item_id = json.get("item_id").and_then(|v| v.as_str());
-                let call_id = json.get("call_id").and_then(|v| v.as_str());
-                let resolved = resolve_call_id(item_id, call_id, &state.item_to_call);
-                if let Some(arguments) = json.get("arguments").and_then(|v| v.as_str())
-                    && let Some(call_id) = resolved
-                {
-                    if !state.call_has_delta.contains(&call_id) && !arguments.is_empty() {
-                        on_event(StreamEvent::ToolCallDelta {
-                            id: call_id.clone(),
-                            arguments: arguments.to_string(),
-                        });
-                    }
-                    state.call_has_delta.insert(call_id);
-                }
-                OpenAIStreamAction::Continue
+
+            if events.is_empty() {
+                SseParseAction::Continue
+            } else {
+                SseParseAction::Emit(events)
             }
-            "response.completed" => {
-                on_event(StreamEvent::Done);
-                OpenAIStreamAction::Stop
-            }
-            "response.incomplete" => {
-                let reason = extract_incomplete_reason(json)
-                    .unwrap_or_else(|| "Response incomplete".to_string());
-                on_event(StreamEvent::Error(reason));
-                OpenAIStreamAction::Stop
-            }
-            "response.failed" | "error" => {
-                let message =
-                    extract_error_message(json).unwrap_or_else(|| "Response failed".to_string());
-                on_event(StreamEvent::Error(message));
-                OpenAIStreamAction::Stop
-            }
-            _ => OpenAIStreamAction::Continue,
+        }
+
+        fn provider_name(&self) -> &'static str {
+            "OpenAI"
         }
     }
 
@@ -873,8 +987,6 @@ pub mod openai {
         tools: Option<&[ToolDefinition]>,
         on_event: impl Fn(StreamEvent) + Send + 'static,
     ) -> Result<()> {
-        use futures_util::StreamExt;
-
         let client = http_client();
 
         let body = build_request_body(config, messages, limits, system_prompt, tools);
@@ -896,80 +1008,23 @@ pub mod openai {
             return Ok(());
         }
 
-        let mut stream = response.bytes_stream();
-        let mut buffer: Vec<u8> = Vec::new();
-        let mut state = OpenAIStreamState::default();
-        let mut emit = |event| on_event(event);
-
-        loop {
-            let Ok(next) =
-                tokio::time::timeout(Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS), stream.next())
-                    .await
-            else {
-                on_event(StreamEvent::Error("Stream idle timeout".to_string()));
-                return Ok(());
-            };
-            let Some(chunk) = next else { break };
-            let chunk = chunk?;
-            buffer.extend_from_slice(&chunk);
-
-            // Security: prevent unbounded buffer growth
-            if buffer.len() > MAX_SSE_BUFFER_BYTES {
-                on_event(StreamEvent::Error(
-                    "SSE buffer exceeded maximum size (4 MiB)".to_string(),
-                ));
-                return Ok(());
-            }
-
-            while let Some(event) = drain_next_sse_event(&mut buffer) {
-                if event.is_empty() {
-                    continue;
-                }
-
-                let Ok(event) = std::str::from_utf8(&event) else {
-                    on_event(StreamEvent::Error(
-                        "Received invalid UTF-8 from SSE stream".to_string(),
-                    ));
-                    return Ok(());
-                };
-
-                if let Some(data) = extract_sse_data(event) {
-                    if data == "[DONE]" {
-                        on_event(StreamEvent::Done);
-                        return Ok(());
-                    }
-
-                    if let Ok(json) = serde_json::from_str::<Value>(&data)
-                        && matches!(
-                            handle_openai_stream_event(&json, &mut state, &mut emit),
-                            OpenAIStreamAction::Stop
-                        )
-                    {
-                        return Ok(());
-                    }
-                }
-            }
-        }
-
-        // Premature EOF: connection closed without response.completed or [DONE]
-        on_event(StreamEvent::Error(
-            "Connection closed before stream completed".to_string(),
-        ));
-        Ok(())
+        let mut parser = OpenAIParser::default();
+        process_sse_stream(response, &mut parser, on_event).await
     }
 
     #[cfg(test)]
     mod tests {
+        use super::SseParser;
         use super::*;
         use forge_types::NonEmptyString;
         use forge_types::{ApiKey, Provider};
         use serde_json::json;
 
-        fn collect_events(json: Value, state: &mut OpenAIStreamState) -> Vec<StreamEvent> {
-            let mut events = Vec::new();
-            let mut emit = |event| events.push(event);
-            let _ = handle_openai_stream_event(&json, state, &mut emit);
-            events
+        fn collect_events(json: Value, parser: &mut OpenAIParser) -> Vec<StreamEvent> {
+            match parser.parse(&json) {
+                super::SseParseAction::Emit(events) => events,
+                _ => Vec::new(),
+            }
         }
 
         #[test]
@@ -1016,7 +1071,7 @@ pub mod openai {
 
         #[test]
         fn emits_tool_call_start_and_args_from_output_item() {
-            let mut state = OpenAIStreamState::default();
+            let mut state = OpenAIParser::default();
             let events = collect_events(
                 json!({
                     "type": "response.output_item.added",
@@ -1034,7 +1089,7 @@ pub mod openai {
             assert_eq!(events.len(), 2);
             assert!(matches!(
                 &events[0],
-                StreamEvent::ToolCallStart { id, name }
+                StreamEvent::ToolCallStart { id, name, .. }
                     if id == "call_1" && name == "read_file"
             ));
             assert!(matches!(
@@ -1046,7 +1101,7 @@ pub mod openai {
 
         #[test]
         fn maps_argument_deltas_to_call_id_from_item() {
-            let mut state = OpenAIStreamState::default();
+            let mut state = OpenAIParser::default();
             let _ = collect_events(
                 json!({
                     "type": "response.output_item.added",
@@ -1079,7 +1134,7 @@ pub mod openai {
 
         #[test]
         fn arguments_done_emits_only_when_no_prior_delta() {
-            let mut state = OpenAIStreamState::default();
+            let mut state = OpenAIParser::default();
             let _ = collect_events(
                 json!({
                     "type": "response.output_item.added",
@@ -1112,7 +1167,7 @@ pub mod openai {
             );
             assert!(events.is_empty());
 
-            let mut fresh = OpenAIStreamState::default();
+            let mut fresh = OpenAIParser::default();
             let _ = collect_events(
                 json!({
                     "type": "response.output_item.added",
@@ -1146,9 +1201,8 @@ pub mod openai {
 /// Google Gemini API implementation.
 pub mod gemini {
     use super::{
-        ApiConfig, CacheableMessage, Duration, MAX_SSE_BUFFER_BYTES, Message, OutputLimits, Result,
-        STREAM_IDLE_TIMEOUT_SECS, StreamEvent, ToolDefinition, drain_next_sse_event,
-        extract_sse_data, http_client, read_capped_error_body,
+        ApiConfig, CacheableMessage, Message, OutputLimits, Result, SseParseAction, SseParser,
+        StreamEvent, ToolDefinition, http_client, process_sse_stream, read_capped_error_body,
     };
     use chrono::{DateTime, Utc};
     use serde_json::{Value, json};
@@ -1368,7 +1422,7 @@ pub mod gemini {
                         "role": "user",
                         "parts": [{
                             "functionResponse": {
-                                "name": result.tool_call_id.clone(),
+                                "name": result.tool_name.clone(),
                                 "response": {
                                     "result": result.content
                                 }
@@ -1443,40 +1497,132 @@ pub mod gemini {
         Value::Object(body)
     }
 
-    /// Map Gemini finishReason to StreamEvent.
-    fn handle_finish_reason(reason: &str) -> Option<StreamEvent> {
+    // ========================================================================
+    // Gemini SSE Parser
+    // ========================================================================
+
+    /// Map Gemini finishReason to SseParseAction.
+    fn handle_finish_reason(reason: &str) -> Option<SseParseAction> {
         match reason {
-            "STOP" | "MAX_TOKENS" => Some(StreamEvent::Done),
-            "SAFETY" => Some(StreamEvent::Error(
+            "STOP" | "MAX_TOKENS" => Some(SseParseAction::Done),
+            "SAFETY" => Some(SseParseAction::Error(
                 "Content filtered by safety settings".to_string(),
             )),
-            "RECITATION" => Some(StreamEvent::Error(
+            "RECITATION" => Some(SseParseAction::Error(
                 "Response blocked: recitation".to_string(),
             )),
-            "LANGUAGE" => Some(StreamEvent::Error("Unsupported language".to_string())),
-            "BLOCKLIST" => Some(StreamEvent::Error(
+            "LANGUAGE" => Some(SseParseAction::Error("Unsupported language".to_string())),
+            "BLOCKLIST" => Some(SseParseAction::Error(
                 "Content contains blocked terms".to_string(),
             )),
-            "PROHIBITED_CONTENT" => Some(StreamEvent::Error(
+            "PROHIBITED_CONTENT" => Some(SseParseAction::Error(
                 "Prohibited content detected".to_string(),
             )),
-            "SPII" => Some(StreamEvent::Error("Sensitive PII detected".to_string())),
-            "MALFORMED_FUNCTION_CALL" => Some(StreamEvent::Error(
+            "SPII" => Some(SseParseAction::Error("Sensitive PII detected".to_string())),
+            "MALFORMED_FUNCTION_CALL" => Some(SseParseAction::Error(
                 "Invalid function call generated".to_string(),
             )),
-            "MISSING_THOUGHT_SIGNATURE" => Some(StreamEvent::Error(
+            "MISSING_THOUGHT_SIGNATURE" => Some(SseParseAction::Error(
                 "Missing thought signature in request".to_string(),
             )),
-            "TOO_MANY_TOOL_CALLS" => Some(StreamEvent::Error(
+            "TOO_MANY_TOOL_CALLS" => Some(SseParseAction::Error(
                 "Too many consecutive tool calls".to_string(),
             )),
-            "UNEXPECTED_TOOL_CALL" => Some(StreamEvent::Error(
+            "UNEXPECTED_TOOL_CALL" => Some(SseParseAction::Error(
                 "Tool call but no tools enabled".to_string(),
             )),
-            "OTHER" => Some(StreamEvent::Error(
+            "OTHER" => Some(SseParseAction::Error(
                 "Generation stopped: unknown reason".to_string(),
             )),
             _ => None, // Unknown reason, continue processing
+        }
+    }
+
+    /// Parser state for Gemini SSE streams.
+    #[derive(Default)]
+    struct GeminiParser;
+
+    impl SseParser for GeminiParser {
+        fn parse(&mut self, json: &Value) -> SseParseAction {
+            // Check for error response
+            if let Some(error) = json.get("error") {
+                let message = error
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown error");
+                return SseParseAction::Error(message.to_string());
+            }
+
+            let mut events = Vec::new();
+
+            // Process candidates
+            if let Some(candidates) = json.get("candidates").and_then(|v| v.as_array()) {
+                for candidate in candidates {
+                    // Check finish reason
+                    if let Some(reason) = candidate.get("finishReason").and_then(|v| v.as_str())
+                        && let Some(action) = handle_finish_reason(reason)
+                    {
+                        return action;
+                    }
+
+                    // Process content parts
+                    if let Some(content) = candidate.get("content")
+                        && let Some(parts) = content.get("parts").and_then(|v| v.as_array())
+                    {
+                        for part in parts {
+                            // Check for thinking content
+                            let is_thought =
+                                part.get("thought").and_then(Value::as_bool) == Some(true);
+
+                            // Text content
+                            if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                                if is_thought {
+                                    events.push(StreamEvent::ThinkingDelta(text.to_string()));
+                                } else {
+                                    events.push(StreamEvent::TextDelta(text.to_string()));
+                                }
+                            }
+
+                            // Function call
+                            if let Some(func_call) = part.get("functionCall") {
+                                let name = func_call
+                                    .get("name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let args = func_call.get("args").cloned().unwrap_or(json!({}));
+
+                                // Generate UUID for tool call ID (Gemini doesn't provide one)
+                                let id = format!("call_{}", Uuid::new_v4());
+
+                                events.push(StreamEvent::ToolCallStart {
+                                    id: id.clone(),
+                                    name,
+                                    thought_signature: None,
+                                });
+
+                                // Send arguments as a single delta
+                                if let Ok(args_str) = serde_json::to_string(&args) {
+                                    events.push(StreamEvent::ToolCallDelta {
+                                        id,
+                                        arguments: args_str,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if events.is_empty() {
+                SseParseAction::Continue
+            } else {
+                SseParseAction::Emit(events)
+            }
+        }
+
+        fn provider_name(&self) -> &'static str {
+            "Gemini"
         }
     }
 
@@ -1489,8 +1635,6 @@ pub mod gemini {
         cache: Option<&GeminiCache>,
         on_event: impl Fn(StreamEvent) + Send + 'static,
     ) -> Result<()> {
-        use futures_util::StreamExt;
-
         let client = http_client();
         let model = config.model().as_str();
         let url = format!("{API_BASE}/models/{model}:streamGenerateContent?alt=sse");
@@ -1524,137 +1668,8 @@ pub mod gemini {
             return Ok(());
         }
 
-        // Process SSE stream
-        let mut stream = response.bytes_stream();
-        let mut buffer: Vec<u8> = Vec::new();
-
-        loop {
-            let Ok(next) =
-                tokio::time::timeout(Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS), stream.next())
-                    .await
-            else {
-                on_event(StreamEvent::Error("Stream idle timeout".to_string()));
-                return Ok(());
-            };
-            let Some(chunk) = next else { break };
-            let chunk = chunk?;
-            buffer.extend_from_slice(&chunk);
-
-            // Security: prevent unbounded buffer growth
-            if buffer.len() > MAX_SSE_BUFFER_BYTES {
-                on_event(StreamEvent::Error(
-                    "SSE buffer exceeded maximum size (4 MiB)".to_string(),
-                ));
-                return Ok(());
-            }
-
-            while let Some(event) = drain_next_sse_event(&mut buffer) {
-                if event.is_empty() {
-                    continue;
-                }
-
-                let Ok(event) = std::str::from_utf8(&event) else {
-                    on_event(StreamEvent::Error(
-                        "Received invalid UTF-8 from SSE stream".to_string(),
-                    ));
-                    return Ok(());
-                };
-
-                if let Some(data) = extract_sse_data(event) {
-                    if data == "[DONE]" {
-                        on_event(StreamEvent::Done);
-                        return Ok(());
-                    }
-
-                    if let Ok(json) = serde_json::from_str::<Value>(&data) {
-                        // Check for error response
-                        if let Some(error) = json.get("error") {
-                            let message = error
-                                .get("message")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Unknown error");
-                            on_event(StreamEvent::Error(message.to_string()));
-                            return Ok(());
-                        }
-
-                        // Process candidates
-                        if let Some(candidates) = json.get("candidates").and_then(|v| v.as_array())
-                        {
-                            for candidate in candidates {
-                                // Check finish reason
-                                if let Some(reason) =
-                                    candidate.get("finishReason").and_then(|v| v.as_str())
-                                    && let Some(event) = handle_finish_reason(reason)
-                                {
-                                    on_event(event);
-                                    return Ok(());
-                                }
-
-                                // Process content parts
-                                if let Some(content) = candidate.get("content")
-                                    && let Some(parts) =
-                                        content.get("parts").and_then(|v| v.as_array())
-                                {
-                                    for part in parts {
-                                        // Check for thinking content
-                                        let is_thought = part
-                                            .get("thought")
-                                            .and_then(serde_json::Value::as_bool)
-                                            == Some(true);
-
-                                        // Text content
-                                        if let Some(text) =
-                                            part.get("text").and_then(|v| v.as_str())
-                                        {
-                                            if is_thought {
-                                                on_event(StreamEvent::ThinkingDelta(
-                                                    text.to_string(),
-                                                ));
-                                            } else {
-                                                on_event(StreamEvent::TextDelta(text.to_string()));
-                                            }
-                                        }
-
-                                        // Function call
-                                        if let Some(func_call) = part.get("functionCall") {
-                                            let name = func_call
-                                                .get("name")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("")
-                                                .to_string();
-                                            let args =
-                                                func_call.get("args").cloned().unwrap_or(json!({}));
-
-                                            // Generate UUID for tool call ID (Gemini doesn't provide one)
-                                            let id = format!("call_{}", Uuid::new_v4());
-
-                                            on_event(StreamEvent::ToolCallStart {
-                                                id: id.clone(),
-                                                name,
-                                            });
-
-                                            // Send arguments as a single delta
-                                            if let Ok(args_str) = serde_json::to_string(&args) {
-                                                on_event(StreamEvent::ToolCallDelta {
-                                                    id,
-                                                    arguments: args_str,
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Premature EOF: connection closed without finishReason or [DONE]
-        on_event(StreamEvent::Error(
-            "Connection closed before stream completed".to_string(),
-        ));
-        Ok(())
+        let mut parser = GeminiParser;
+        process_sse_stream(response, &mut parser, on_event).await
     }
 
     #[cfg(test)]
@@ -1795,7 +1810,8 @@ pub mod gemini {
 
         #[test]
         fn maps_tool_result_to_function_response() {
-            let result = forge_types::ToolResult::success("read_file", "file contents here");
+            let result =
+                forge_types::ToolResult::success("call_1", "read_file", "file contents here");
             let messages = vec![CacheableMessage::plain(Message::tool_result(result))];
             let limits = OutputLimits::new(4096);
 
@@ -1809,20 +1825,20 @@ pub mod gemini {
 
         #[test]
         fn handle_finish_reason_stop() {
-            let event = handle_finish_reason("STOP");
-            assert!(matches!(event, Some(StreamEvent::Done)));
+            let action = handle_finish_reason("STOP");
+            assert!(matches!(action, Some(SseParseAction::Done)));
         }
 
         #[test]
         fn handle_finish_reason_safety() {
-            let event = handle_finish_reason("SAFETY");
-            assert!(matches!(event, Some(StreamEvent::Error(_))));
+            let action = handle_finish_reason("SAFETY");
+            assert!(matches!(action, Some(SseParseAction::Error(_))));
         }
 
         #[test]
         fn handle_finish_reason_unknown() {
-            let event = handle_finish_reason("UNKNOWN_REASON");
-            assert!(event.is_none());
+            let action = handle_finish_reason("UNKNOWN_REASON");
+            assert!(action.is_none());
         }
 
         #[test]

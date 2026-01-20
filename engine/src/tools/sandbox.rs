@@ -149,6 +149,78 @@ impl Sandbox {
         Ok(canonical)
     }
 
+    /// Validate and resolve a path within the sandbox, allowing non-existent parents.
+    pub fn resolve_path_for_create(
+        &self,
+        path: &str,
+        working_dir: &Path,
+    ) -> Result<PathBuf, ToolError> {
+        if contains_unsafe_path_chars(path) {
+            return Err(ToolError::BadArgs {
+                message: "path contains invalid control characters".to_string(),
+            });
+        }
+        let input = PathBuf::from(path);
+        if input
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(ToolError::SandboxViolation(
+                DenialReason::PathOutsideSandbox {
+                    attempted: input.clone(),
+                    resolved: input.clone(),
+                },
+            ));
+        }
+        let resolved = if input.is_absolute() {
+            if !self.allow_absolute {
+                return Err(ToolError::SandboxViolation(
+                    DenialReason::PathOutsideSandbox {
+                        attempted: input.clone(),
+                        resolved: input.clone(),
+                    },
+                ));
+            }
+            input
+        } else {
+            working_dir.join(input)
+        };
+
+        if resolved.exists() {
+            return self.resolve_path(path, working_dir);
+        }
+        let (base, suffix) = split_existing_ancestor(&resolved)?;
+        let mut canonical = std::fs::canonicalize(&base).map_err(|_| {
+            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                attempted: resolved.clone(),
+                resolved: resolved.clone(),
+            })
+        })?;
+        for part in suffix {
+            canonical.push(part);
+        }
+
+        if !self.is_within_allowed_roots(&canonical) {
+            return Err(ToolError::SandboxViolation(
+                DenialReason::PathOutsideSandbox {
+                    attempted: resolved,
+                    resolved: canonical,
+                },
+            ));
+        }
+
+        if let Some(pat) = self.matches_denied_pattern(&canonical) {
+            return Err(ToolError::SandboxViolation(
+                DenialReason::DeniedPatternMatched {
+                    attempted: canonical,
+                    pattern: pat,
+                },
+            ));
+        }
+
+        Ok(canonical)
+    }
+
     /// Validate a resolved path (absolute) against sandbox rules.
     pub fn ensure_path_allowed(&self, path: &Path) -> Result<PathBuf, ToolError> {
         let canonical = std::fs::canonicalize(path).map_err(|_| {
@@ -196,6 +268,29 @@ impl Sandbox {
 
 fn normalize_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn split_existing_ancestor(path: &Path) -> Result<(PathBuf, Vec<std::ffi::OsString>), ToolError> {
+    let mut current = path;
+    let mut suffix = Vec::new();
+    loop {
+        if current.exists() {
+            return Ok((current.to_path_buf(), suffix));
+        }
+        let file_name = current.file_name().ok_or_else(|| {
+            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                attempted: path.to_path_buf(),
+                resolved: path.to_path_buf(),
+            })
+        })?;
+        suffix.push(file_name.to_os_string());
+        current = current.parent().ok_or_else(|| {
+            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                attempted: path.to_path_buf(),
+                resolved: path.to_path_buf(),
+            })
+        })?;
+    }
 }
 
 fn contains_unsafe_path_chars(input: &str) -> bool {
