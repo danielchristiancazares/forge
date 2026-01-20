@@ -15,16 +15,14 @@ use crate::util;
 use crate::{App, ContextManager, MessageId};
 
 // Recovery badge constants
-pub(crate) const RECOVERY_COMPLETE_BADGE: NonEmptyStaticStr =
-    NonEmptyStaticStr::new("[Recovered - stream completed but not finalized]");
+pub(crate) const RECOVERY_COMPLETE_BADGE: NonEmptyStaticStr = NonEmptyStaticStr::new("[Recovered]");
 pub(crate) const RECOVERY_INCOMPLETE_BADGE: NonEmptyStaticStr =
-    NonEmptyStaticStr::new("[Recovered - incomplete response from previous session]");
+    NonEmptyStaticStr::new("[Recovered incomplete]");
 pub(crate) const RECOVERY_ERROR_BADGE: NonEmptyStaticStr =
-    NonEmptyStaticStr::new("[Recovered - stream error from previous session]");
-pub(crate) const ABORTED_JOURNAL_BADGE: NonEmptyStaticStr =
-    NonEmptyStaticStr::new("[Aborted - journal write failed]");
+    NonEmptyStaticStr::new("[Recovered error]");
+pub(crate) const ABORTED_JOURNAL_BADGE: NonEmptyStaticStr = NonEmptyStaticStr::new("[Aborted]");
 pub(crate) const EMPTY_RESPONSE_BADGE: NonEmptyStaticStr =
-    NonEmptyStaticStr::new("[Empty response - API returned no content]");
+    NonEmptyStaticStr::new("[Empty response]");
 
 impl App {
     /// Save the conversation history to disk.
@@ -54,8 +52,8 @@ impl App {
                 self.context_manager = loaded_manager;
                 self.rebuild_display_from_history();
                 if count > 0 {
-                    // Show loaded message in the content pane as a local system message
-                    let msg = format!("Loaded {count} messages from previous session");
+                    // Compact loaded message
+                    let msg = format!("History: {count} msgs");
                     if let Ok(content) = NonEmptyString::try_from(msg) {
                         self.push_local_message(Message::system(content));
                     }
@@ -277,7 +275,8 @@ impl App {
             .unwrap_or_else(|| self.model.clone());
 
         // Add the partial response as an assistant message with recovery badge.
-        let mut recovered_content = NonEmptyString::from(recovery_badge);
+        let mut recovered_content =
+            NonEmptyString::try_from(recovery_badge).expect("recovery badge must be non-empty");
         if !partial_text.is_empty() {
             // Sanitize recovered text to prevent stored terminal injection
             let sanitized = sanitize_terminal_text(partial_text);

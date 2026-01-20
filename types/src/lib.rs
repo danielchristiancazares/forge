@@ -108,9 +108,11 @@ impl NonEmptyStaticStr {
     }
 }
 
-impl From<NonEmptyStaticStr> for NonEmptyString {
-    fn from(value: NonEmptyStaticStr) -> Self {
-        Self(value.0.to_string())
+impl TryFrom<NonEmptyStaticStr> for NonEmptyString {
+    type Error = EmptyStringError;
+
+    fn try_from(value: NonEmptyStaticStr) -> Result<Self, Self::Error> {
+        Self::new(value.0)
     }
 }
 
@@ -174,7 +176,7 @@ impl Provider {
                 "claude-opus-4-5-20251101",
             ],
             Provider::OpenAI => &["gpt-5.2", "gpt-5.2-2025-12-11"],
-            Provider::Gemini => &["gemini-3-pro-preview"],
+            Provider::Gemini => &["gemini-3-pro-preview", "gemini-3-flash-preview"],
         }
     }
 
@@ -597,7 +599,11 @@ pub enum StreamEvent {
     /// Thinking/reasoning content delta (Claude extended thinking).
     ThinkingDelta(String),
     /// Tool call started - emitted when a `tool_use` content block begins.
-    ToolCallStart { id: String, name: String },
+    ToolCallStart {
+        id: String,
+        name: String,
+        thought_signature: Option<String>,
+    },
     /// Tool call arguments delta - emitted as JSON arguments stream in.
     ToolCallDelta { id: String, arguments: String },
     /// Stream completed.
@@ -657,6 +663,9 @@ pub struct ToolCall {
     pub name: String,
     /// The arguments to pass to the tool, as parsed JSON.
     pub arguments: serde_json::Value,
+    /// Optional thought signature for providers that require it (Gemini).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
 }
 
 impl ToolCall {
@@ -670,6 +679,22 @@ impl ToolCall {
             id: id.into(),
             name: name.into(),
             arguments,
+            thought_signature: None,
+        }
+    }
+
+    /// Create a new tool call with an optional thought signature.
+    pub fn new_with_thought_signature(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: serde_json::Value,
+        thought_signature: Option<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+            thought_signature,
         }
     }
 }
@@ -679,6 +704,8 @@ impl ToolCall {
 pub struct ToolResult {
     /// The ID of the tool call this result is for.
     pub tool_call_id: String,
+    /// The name of the tool that was called (needed for Gemini's functionResponse).
+    pub tool_name: String,
     /// The result content (typically a string or JSON).
     pub content: String,
     /// Whether the tool execution resulted in an error.
@@ -687,18 +714,28 @@ pub struct ToolResult {
 
 impl ToolResult {
     /// Create a successful tool result.
-    pub fn success(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn success(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self {
             tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
             content: content.into(),
             is_error: false,
         }
     }
 
     /// Create an error tool result.
-    pub fn error(tool_call_id: impl Into<String>, error: impl Into<String>) -> Self {
+    pub fn error(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        error: impl Into<String>,
+    ) -> Self {
         Self {
             tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
             content: error.into(),
             is_error: true,
         }
@@ -1147,47 +1184,18 @@ mod tests {
         );
     }
 
-    // ========================================================================
-    // Bug Proof: NonEmptyStaticStr -> NonEmptyString invariant violation
-    // ========================================================================
-    //
-    // BUG: NonEmptyStaticStr::new only checks !is_empty(), not trim().is_empty()
-    //      but NonEmptyString::new rejects whitespace-only via trim().is_empty()
-    //      The From<NonEmptyStaticStr> impl bypasses this validation.
-    //
-    // This allows creating a NonEmptyString with whitespace-only content,
-    // violating its documented invariant.
-    //
-    // FIX: Either:
-    //   1. NonEmptyStaticStr::new should also reject whitespace-only strings, OR
-    //   2. From<NonEmptyStaticStr> for NonEmptyString should validate with trim()
-
     #[test]
-    fn bug_nonempty_static_str_allows_whitespace_only() {
-        // But NonEmptyStaticStr::new allows them (only checks !is_empty())
+    fn nonempty_static_str_whitespace_is_rejected_on_conversion() {
         const WHITESPACE_ONLY: NonEmptyStaticStr = NonEmptyStaticStr::new("   ");
 
-        // NonEmptyString::new rejects whitespace-only strings
         assert!(
             NonEmptyString::new("   ").is_err(),
             "NonEmptyString::new should reject whitespace-only strings"
         );
 
-        // Verify it really is whitespace-only
-        assert_eq!(WHITESPACE_ONLY.as_str().trim(), "");
-
-        // BUG: This conversion bypasses NonEmptyString's trim() validation
-        let converted: NonEmptyString = WHITESPACE_ONLY.into();
-
-        // The invariant is violated: we have a NonEmptyString that is
-        // effectively "empty" (whitespace-only), which should be impossible
-        assert_eq!(
-            converted.as_str().trim(),
-            "",
-            "BUG: NonEmptyString contains whitespace-only content, violating its invariant"
+        assert!(
+            NonEmptyString::try_from(WHITESPACE_ONLY).is_err(),
+            "NonEmptyStaticStr conversion must preserve NonEmptyString's trim invariant"
         );
-
-        // This would fail if created directly:
-        // NonEmptyString::new(converted.as_str())  // would return Err
     }
 }

@@ -12,9 +12,10 @@ use forge_types::Provider;
 
 use super::{
     ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError,
-    DEFAULT_STREAM_EVENT_BUDGET, EMPTY_RESPONSE_BADGE, GeminiCache, GeminiCacheConfig, Message,
-    NonEmptyString, OperationState, QueuedUserMessage, StreamEvent, StreamFinishReason,
-    StreamingMessage, SummarizationStart, format_stream_error, sanitize_terminal_text, security,
+    DEFAULT_STREAM_EVENT_BUDGET, EMPTY_RESPONSE_BADGE, GeminiCache, GeminiCacheConfig, Librarian,
+    Message, NonEmptyString, OperationState, QueuedUserMessage, StreamEvent, StreamFinishReason,
+    StreamingMessage, SummarizationStart, extract_facts, format_stream_error,
+    sanitize_terminal_text, security,
 };
 
 impl super::App {
@@ -28,6 +29,8 @@ impl super::App {
         let QueuedUserMessage { config } = queued;
         let context_infinity_enabled = self.context_infinity_enabled();
 
+        // When context infinity enabled, use summarization-based context management.
+        // Otherwise, use basic mode.
         let api_messages = if context_infinity_enabled {
             match self.context_manager.prepare() {
                 Ok(prepared) => prepared.api_messages(),
@@ -255,7 +258,11 @@ impl super::App {
 
             if journal_error.is_none() {
                 match &event {
-                    StreamEvent::ToolCallStart { id, name } => {
+                    StreamEvent::ToolCallStart {
+                        id,
+                        name,
+                        thought_signature,
+                    } => {
                         if active.tool_batch_id.is_none() {
                             match self
                                 .tool_journal
@@ -270,9 +277,13 @@ impl super::App {
                         if let Some(batch_id) = active.tool_batch_id {
                             let seq = active.tool_call_seq;
                             active.tool_call_seq = active.tool_call_seq.saturating_add(1);
-                            if let Err(e) =
-                                self.tool_journal.record_call_start(batch_id, seq, id, name)
-                            {
+                            if let Err(e) = self.tool_journal.record_call_start(
+                                batch_id,
+                                seq,
+                                id,
+                                name,
+                                thought_signature.as_deref(),
+                            ) {
                                 journal_error = Some(e.to_string());
                             }
                         }
@@ -331,12 +342,12 @@ impl super::App {
 
                 let model = message.model_name().clone();
                 let partial = message.content().to_string();
+                let aborted_badge = NonEmptyString::try_from(ABORTED_JOURNAL_BADGE)
+                    .expect("ABORTED_JOURNAL_BADGE must be non-empty");
                 let aborted = if partial.is_empty() {
-                    NonEmptyString::from(ABORTED_JOURNAL_BADGE)
+                    aborted_badge
                 } else {
-                    NonEmptyString::from(ABORTED_JOURNAL_BADGE)
-                        .append("\n\n")
-                        .append(partial.as_str())
+                    aborted_badge.append("\n\n").append(partial.as_str())
                 };
                 self.push_local_message(Message::assistant(model, aborted));
                 self.set_status(format!("Journal append failed: {err}"));
@@ -405,7 +416,10 @@ impl super::App {
         if message.has_tool_calls() {
             let parsed = message.take_tool_calls();
             let assistant_text = message.content().to_string();
-            self.pending_user_message = None;
+            // NOTE: We do NOT clear pending_user_message here because:
+            // 1. The user message was already committed to history
+            // 2. We need the user query for Librarian extraction when the turn completes
+            // 3. rollback_pending_user_message() safely fails if it's not the last message
             self.handle_tool_calls(
                 assistant_text,
                 parsed.calls,
@@ -444,7 +458,9 @@ impl super::App {
         let Some(message) = message else {
             // Stream completed successfully but with empty content - unusual but not an error
             self.pending_user_message = None;
-            let empty_msg = Message::assistant(model, NonEmptyString::from(EMPTY_RESPONSE_BADGE));
+            let empty_badge = NonEmptyString::try_from(EMPTY_RESPONSE_BADGE)
+                .expect("EMPTY_RESPONSE_BADGE must be non-empty");
+            let empty_msg = Message::assistant(model, empty_badge);
             self.push_local_message(empty_msg);
             self.set_status("Warning: API returned empty response");
             // Empty response - discard the step (nothing to recover)
@@ -452,9 +468,25 @@ impl super::App {
             return;
         };
 
+        // Capture user message for extraction BEFORE clearing pending_user_message
+        let user_message_for_extraction = self
+            .pending_user_message
+            .as_ref()
+            .map(|(_, text)| text.clone());
+        let assistant_content = message.content().to_string();
+
         // Stream completed successfully with content
         self.pending_user_message = None;
         self.commit_history_message(message, step_id);
+
+        // Post-turn: Extract facts from this exchange (Context Infinity)
+        if let Some(librarian_arc) = self.librarian.clone()
+            && let Some(user_msg) = user_message_for_extraction
+        {
+            // Collect file paths accessed during this turn for source tracking
+            let source_paths = self.drain_accessed_files();
+            spawn_librarian_extraction(librarian_arc, user_msg, assistant_content, source_paths);
+        }
     }
 }
 
@@ -508,4 +540,57 @@ async fn get_or_create_gemini_cache(
             None
         }
     }
+}
+
+/// Spawn a background task to extract facts from a completed exchange.
+///
+/// This is the post-turn phase of Context Infinity - after an assistant response
+/// completes, we extract structured facts for future retrieval.
+///
+/// `source_paths` are the files that were accessed during this turn - facts
+/// extracted from this exchange will be linked to these files for staleness
+/// detection.
+///
+/// # Send Safety
+/// This function is carefully structured to not hold the MutexGuard across
+/// async await points, because rusqlite::Connection is !Send.
+pub(crate) fn spawn_librarian_extraction(
+    librarian_arc: std::sync::Arc<tokio::sync::Mutex<Librarian>>,
+    user_message: String,
+    assistant_message: String,
+    source_paths: Vec<String>,
+) {
+    tokio::spawn(async move {
+        // Phase 1: Get API key under lock, release immediately
+        let api_key = {
+            let librarian = librarian_arc.lock().await;
+            librarian.api_key().to_string()
+        }; // Lock released here
+
+        // Phase 2: Call async Gemini API without holding the lock
+        let result = match extract_facts(&api_key, &user_message, &assistant_message).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Librarian extraction failed: {e}");
+                return;
+            }
+        };
+
+        if result.facts.is_empty() {
+            return;
+        }
+
+        // Phase 3: Re-acquire lock to store facts (sync operation)
+        let mut librarian = librarian_arc.lock().await;
+        librarian.increment_turn();
+        if let Err(e) = librarian.store_facts_with_sources(&result.facts, &source_paths) {
+            tracing::warn!("Failed to store extracted facts: {e}");
+        } else {
+            tracing::info!(
+                "Librarian extracted {} facts from exchange (linked to {} files)",
+                result.facts.len(),
+                source_paths.len()
+            );
+        }
+    });
 }

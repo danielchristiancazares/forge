@@ -546,7 +546,8 @@ impl ContextManager {
         content: NonEmptyString,
         generated_by: String,
     ) -> Result<SummaryId> {
-        let injected = NonEmptyString::from(SUMMARY_PREFIX)
+        let injected = NonEmptyString::try_from(SUMMARY_PREFIX)
+            .expect("SUMMARY_PREFIX must be non-empty")
             .append("\n")
             .append(content.as_str());
         let token_count = self.counter.count_message(&Message::system(injected));
@@ -601,6 +602,29 @@ impl ContextManager {
             manager: self,
             working_context,
         })
+    }
+
+    /// Get only the N most recent messages, bypassing summarization.
+    ///
+    /// This is used when the Librarian is active - instead of summarizing
+    /// old messages, we rely on the Librarian's distilled facts for context.
+    /// This mode sends: system prompt + Librarian facts + recent N messages.
+    ///
+    /// Returns messages in chronological order (oldest first).
+    #[must_use]
+    pub fn recent_messages_only(&self, count: usize) -> Vec<Message> {
+        let entries = self.history.entries();
+        let start = entries.len().saturating_sub(count);
+        entries[start..]
+            .iter()
+            .map(|entry| entry.message().clone())
+            .collect()
+    }
+
+    /// Get the configured preserve_recent count.
+    #[must_use]
+    pub fn preserve_recent_count(&self) -> usize {
+        self.summarization_config.preserve_recent
     }
 
     /// Get current usage statistics with explicit summarization status.
@@ -1050,7 +1074,11 @@ mod tests {
         let id1 = manager.push_message(Message::tool_use(tool_call));
 
         // Add a tool result
-        let result = ToolResult::success("call_123".to_string(), "72°F and sunny".to_string());
+        let result = ToolResult::success(
+            "call_123".to_string(),
+            "get_weather".to_string(),
+            "72°F and sunny".to_string(),
+        );
         let id2 = manager.push_message(Message::tool_result(result));
 
         assert_eq!(manager.history().len(), 2);

@@ -161,7 +161,8 @@ impl WorkingContext {
                 ContextSegment::Summarized { summary_id, .. } => {
                     let summary = history.summary(*summary_id);
                     // Inject summary as a system message.
-                    let content = NonEmptyString::from(SUMMARY_PREFIX)
+                    let content = NonEmptyString::try_from(SUMMARY_PREFIX)
+                        .expect("SUMMARY_PREFIX must be non-empty")
                         .append("\n")
                         .append(summary.content());
                     messages.push(Message::system(content));

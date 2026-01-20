@@ -97,8 +97,10 @@ pub(crate) fn format_stream_error(provider: Provider, model: &str, err: &str) ->
             content.push_str(&detail);
         }
 
-        let message = NonEmptyString::new(content)
-            .unwrap_or_else(|_| NonEmptyString::from(STREAM_ERROR_BADGE));
+        let message = NonEmptyString::new(content).unwrap_or_else(|_| {
+            NonEmptyString::try_from(STREAM_ERROR_BADGE)
+                .expect("STREAM_ERROR_BADGE must be non-empty")
+        });
         return StreamErrorUi {
             status: format!("Auth error: set {env_var}"),
             message,
@@ -130,8 +132,9 @@ pub(crate) fn format_stream_error(provider: Provider, model: &str, err: &str) ->
         content.push_str(&detail_short);
     }
 
-    let message =
-        NonEmptyString::new(content).unwrap_or_else(|_| NonEmptyString::from(STREAM_ERROR_BADGE));
+    let message = NonEmptyString::new(content).unwrap_or_else(|_| {
+        NonEmptyString::try_from(STREAM_ERROR_BADGE).expect("STREAM_ERROR_BADGE must be non-empty")
+    });
     StreamErrorUi {
         status: format!("Stream error: {status_short}"),
         message,
