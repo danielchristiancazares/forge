@@ -28,6 +28,7 @@ const BEL: char = '\x07';
 /// - C0 control characters except `\n`, `\t`, `\r`
 /// - C1 control characters (`\x80`-`\x9F`)
 /// - DEL character (`\x7F`)
+/// - Unicode bidirectional controls (Trojan Source prevention)
 ///
 /// Preserves:
 /// - All printable ASCII and UTF-8 characters
@@ -75,6 +76,8 @@ pub fn sanitize_terminal_text(input: &str) -> Cow<'_, str> {
                 // C1 CSI equivalent - skip following sequence
                 skip_csi_params(&mut chars);
             }
+        } else if is_bidi_control(c) {
+            // Skip Unicode bidirectional controls - can be used for text spoofing
         } else {
             result.push(c);
         }
@@ -91,6 +94,7 @@ fn needs_sanitization(input: &str) -> bool {
             || (is_c0_control(c) && !is_allowed_control(c))
             || is_c1_control(c)
             || c == '\x7f'
+            || is_bidi_control(c)
     })
 }
 
@@ -107,6 +111,21 @@ fn is_allowed_control(c: char) -> bool {
 /// Check if character is a C1 control character (0x80-0x9F).
 fn is_c1_control(c: char) -> bool {
     ('\u{0080}'..='\u{009f}').contains(&c)
+}
+
+/// Check if character is a Unicode bidirectional control character.
+///
+/// These characters can be used for text spoofing attacks (Trojan Source)
+/// by manipulating how text is displayed vs. how it's interpreted.
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}'              // Arabic Letter Mark
+        | '\u{200e}'            // Left-to-Right Mark (LRM)
+        | '\u{200f}'            // Right-to-Left Mark (RLM)
+        | '\u{202a}'..='\u{202e}'  // LRE, RLE, PDF, LRO, RLO
+        | '\u{2066}'..='\u{2069}'  // LRI, RLI, FSI, PDI
+    )
 }
 
 /// Check if C1 character is the CSI equivalent (0x9B).
@@ -331,5 +350,32 @@ mod tests {
     #[test]
     fn empty_string() {
         assert_eq!(sanitize_terminal_text(""), "");
+    }
+
+    #[test]
+    fn strips_bidi_lrm_rlm() {
+        // Left-to-Right Mark and Right-to-Left Mark
+        let input = "Hello\u{200e}World\u{200f}Test";
+        assert_eq!(sanitize_terminal_text(input), "HelloWorldTest");
+    }
+
+    #[test]
+    fn strips_bidi_embedding_overrides() {
+        // LRE, RLE, PDF, LRO, RLO
+        let input = "A\u{202a}B\u{202b}C\u{202c}D\u{202d}E\u{202e}F";
+        assert_eq!(sanitize_terminal_text(input), "ABCDEF");
+    }
+
+    #[test]
+    fn strips_bidi_isolates() {
+        // LRI, RLI, FSI, PDI
+        let input = "X\u{2066}Y\u{2067}Z\u{2068}W\u{2069}V";
+        assert_eq!(sanitize_terminal_text(input), "XYZWV");
+    }
+
+    #[test]
+    fn strips_arabic_letter_mark() {
+        let input = "Hello\u{061c}World";
+        assert_eq!(sanitize_terminal_text(input), "HelloWorld");
     }
 }
