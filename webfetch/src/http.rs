@@ -363,7 +363,17 @@ pub async fn fetch(
 
             let mut body = Vec::new();
             let mut stream = response.bytes_stream();
-            while let Some(chunk) = stream.next().await {
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(timeout_error(TimeoutPhase::Response, config));
+                }
+                let next = tokio::time::timeout(remaining, stream.next())
+                    .await
+                    .map_err(|_| timeout_error(TimeoutPhase::Response, config))?;
+                let Some(chunk) = next else {
+                    break;
+                };
                 let chunk = chunk.map_err(|e| {
                     WebFetchError::new(
                         ErrorCode::Network,
