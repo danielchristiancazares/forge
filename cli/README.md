@@ -711,6 +711,7 @@ tui = "full"
 [api_keys]
 anthropic = "${ANTHROPIC_API_KEY}"
 openai = "${OPENAI_API_KEY}"
+google = "${GEMINI_API_KEY}"
 ```
 
 ---

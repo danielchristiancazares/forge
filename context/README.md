@@ -204,6 +204,7 @@ The reserved output is clamped to the model's `max_output` - requesting more tha
 | `claude-sonnet-4-5` | 200,000 | 64,000 |
 | `claude-haiku-4-5` | 200,000 | 64,000 |
 | `gpt-5.2` | 400,000 | 128,000 |
+| `gemini-3-pro` | 1,048,576 | 65,536 |
 | Unknown | 8,192 | 4,096 |
 
 Model lookup uses **prefix matching** - `claude-sonnet-4-5-20250514` matches `claude-sonnet-4-5`.
@@ -305,7 +306,7 @@ Summarization is triggered when:
 
 1. **Context budget exceeded**: `build_working_context()` returns `SummarizationNeeded`
 2. **Model switch to smaller context**: Switching from 200k to 8k model
-3. **Manual request**: User invokes `:summarize` command
+3. **Manual request**: User invokes `/summarize` command
 
 The decision flow:
 
@@ -360,6 +361,7 @@ Summarization uses cheaper/faster models:
 
 - **Claude**: `claude-haiku-4-5`
 - **OpenAI**: `gpt-5-nano`
+- **Gemini**: `gemini-3-pro-preview`
 
 The prompt instructs the model to:
 
@@ -690,7 +692,7 @@ fn count_message(&self, msg: &Message) -> u32;
 
 ## Limitations
 
-1. **Summarization requires API call**: Summarization uses LLM calls (`claude-haiku-4-5` or `gpt-5-nano`), adding latency and cost.
+1. **Summarization requires API call**: Summarization uses LLM calls (`claude-haiku-4-5`, `gpt-5-nano`, or `gemini-3-pro-preview`), adding latency and cost.
 
 2. **Contiguous ranges only**: Summaries must cover contiguous message ranges. Selective summarization is not supported to maintain chronological coherence.
 

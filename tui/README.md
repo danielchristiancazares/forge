@@ -1389,15 +1389,17 @@ When `/model` is invoked without arguments, the application enters `ModelSelect`
 pub enum PredefinedModel {
     ClaudeOpus,   // "Anthropic Claude Opus 4.5"
     Gpt52,        // "OpenAI GPT 5.2"
+    GeminiPro,    // "Google Gemini 3 Pro"
 }
 
-impl PredefinedModel {
     pub fn to_model_name(&self) -> ModelName {
         match self {
             PredefinedModel::ClaudeOpus => 
                 ModelName::known(Provider::Claude, "claude-opus-4-5-20251101"),
             PredefinedModel::Gpt52 => 
                 ModelName::known(Provider::OpenAI, "gpt-5.2"),
+            PredefinedModel::GeminiPro =>
+                ModelName::known(Provider::Gemini, "gemini-3-pro-preview"),
         }
     }
 }
@@ -1413,7 +1415,7 @@ pub fn enter_model_select_mode(&mut self) {
 }
 ```
 
-The model selector also displays a "Google Gemini 3 Pro" preview entry (muted, non-selectable) to hint at future provider support.
+The model selector displays available high-performance models for each supported provider.
 
 ---
 

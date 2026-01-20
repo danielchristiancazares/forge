@@ -305,7 +305,7 @@ let models: &[&str] = Provider::OpenAI.available_models();
 // ["gpt-5.2", "gpt-5.2-2025-12-11"]
 
 let models: &[&str] = Provider::Gemini.available_models();
-// ["gemini-3-pro-preview"]
+// ["gemini-3-pro-preview", "gemini-3-flash-preview"]
 
 // Parse model name with validation
 let model = Provider::Claude.parse_model("claude-sonnet-4-5-20250929")?;
@@ -629,7 +629,7 @@ Events emitted during streaming API responses.
 | ------- | ----------- |
 | `TextDelta(String)` | Incremental text content |
 | `ThinkingDelta(String)` | Claude extended thinking content |
-| `ToolCallStart { id, name }` | Tool use content block began |
+| `ToolCallStart { id, name, thought_signature }` | Tool use content block began (with optional Gemini signature) |
 | `ToolCallDelta { id, arguments }` | Tool call JSON arguments chunk |
 | `Done` | Stream completed successfully |
 | `Error(String)` | Error occurred during streaming |
@@ -645,7 +645,7 @@ fn handle_event(event: StreamEvent, response: &mut String, thinking: &mut String
         StreamEvent::ThinkingDelta(thought) => {
             thinking.push_str(&thought);
         }
-        StreamEvent::ToolCallStart { id, name } => {
+        StreamEvent::ToolCallStart { id, name, .. } => {
             println!("Tool call started: {} ({})", name, id);
         }
         StreamEvent::ToolCallDelta { id, arguments } => {
@@ -736,6 +736,7 @@ A tool call requested by the LLM during a response.
 | `id` | `String` | Unique identifier (for matching with results) |
 | `name` | `String` | The tool being called |
 | `arguments` | `serde_json::Value` | Parsed JSON arguments |
+| `thought_signature` | `Option<String>` | Optional Gemini thought signature |
 
 ```rust
 use forge_types::ToolCall;
@@ -763,6 +764,7 @@ The result of executing a tool call.
 | Field | Type | Description |
 | ----- | ---- | ----------- |
 | `tool_call_id` | `String` | ID of the tool call this result is for |
+| `tool_name` | `String` | Name of the tool (required for Gemini) |
 | `content` | `String` | The result content |
 | `is_error` | `bool` | Whether execution resulted in an error |
 
@@ -772,6 +774,7 @@ use forge_types::ToolResult;
 // Successful result
 let result = ToolResult::success(
     "call_abc123",
+    "get_weather",
     r#"{"temperature": 72, "conditions": "sunny"}"#,
 );
 assert!(!result.is_error);
@@ -779,6 +782,7 @@ assert!(!result.is_error);
 // Error result
 let result = ToolResult::error(
     "call_abc123",
+    "get_weather",
     "Location not found",
 );
 assert!(result.is_error);

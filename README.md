@@ -44,7 +44,7 @@ Forge's adaptive context management system keeps conversations flowing without h
 
 Enable the LLM to interact with your local filesystem and execute tasks:
 
-- **Built-in Tools**: `read_file`, `write_file`, `apply_patch`, `list_dir`, `glob_files`, `search_content`, `run_command`, `web_fetch`
+- **Built-in Tools**: `read_file`, `write_file`, `apply_patch`, `Glob`, `Search`, `run_command`, `WebFetch`, and various Git tools.
 - **Sandboxed Execution**: Path-based tools are restricted to allowed directories with symlink escape prevention
 - **Interactive Approval**: Review and approve or deny tool calls before execution
 - **Stale File Protection**: Files must be read before patching, with SHA validation to catch external changes
@@ -109,7 +109,7 @@ Or create a configuration file at `~/.forge/config.toml`:
 [api_keys]
 anthropic = "${ANTHROPIC_API_KEY}"
 openai = "${OPENAI_API_KEY}"
-gemini = "${GEMINI_API_KEY}"
+google = "${GEMINI_API_KEY}"
 ```
 
 ### 2. Run Forge
@@ -124,11 +124,11 @@ forge
 
 ### 3. Basic Usage
 
-1. **Start typing**: Press `i` to enter Insert mode, type your message
-2. **Send message**: Press `Enter` to send
-3. **Navigate**: Press `Esc` to return to Normal mode, use `j`/`k` to scroll
-4. **Commands**: Press `:` or `/` to enter Command mode
-5. **Quit**: Type `:q` and press `Enter`, or press `q` in Normal mode
+1. **Start typing**: Press `i` to enter Insert mode, type your message.
+2. **Send message**: Press `Enter` to send.
+3. **Navigate**: Press `Esc` to return to Normal mode, use `j`/`k` to scroll.
+4. **Commands**: Press `/` or `:` to enter Command mode.
+5. **Quit**: Type `/q` and press `Enter`, or press `q` in Normal mode.
 
 ## Configuration
 
@@ -151,7 +151,7 @@ reduced_motion = false                 # Disable modal animations
 [api_keys]
 anthropic = "${ANTHROPIC_API_KEY}"     # Supports environment variable expansion
 openai = "${OPENAI_API_KEY}"
-gemini = "${GEMINI_API_KEY}"
+google = "${GEMINI_API_KEY}"
 
 [context]
 infinity = true                        # Enable adaptive context management
@@ -162,30 +162,28 @@ thinking_enabled = false               # Enable extended thinking
 thinking_budget_tokens = 10000         # Token budget for thinking
 
 [openai]
-reasoning_effort = "high"              # "low", "medium", or "high"
-verbosity = "high"                     # Response detail level
-truncation = "auto"                    # "auto" or "disabled"
+reasoning_effort = "high"              # "low", "medium", or "high" (GPT-5+)
+verbosity = "high"                     # "low", "medium", or "high" (GPT-5+)
+truncation = "auto"                    # "auto", "none" or "preserve"
 
-[gemini]
-# Gemini-specific settings (preview)
+[google]
+thinking_enabled = true                # Enable thinking (for compatible Gemini models)
+cache_enabled = true                   # Enable explicit context caching
+cache_ttl_seconds = 3600               # TTL for cached content
 
 [tools]
-mode = "enabled"                       # "disabled", "parse_only", or "enabled"
-max_tool_calls_per_batch = 8           # Max concurrent tool calls
-max_tool_iterations_per_user_turn = 4  # Max tool loop iterations
-
-[tools.sandbox]
-allowed_roots = ["."]                  # Directories tools can access
-denied_patterns = ["**/.git/**"]       # Glob patterns to block
-allow_absolute = false                 # Allow absolute paths
-include_default_denies = true          # Include default deny patterns
+max_tool_calls_per_batch = 8
+max_tool_iterations_per_user_turn = 4
 
 [tools.approval]
-enabled = true                         # Enable approval workflow
-mode = "prompt"                        # "auto", "prompt", or "deny"
-allowlist = ["read_file"]              # Tools that skip prompting
-denylist = ["run_command"]             # Tools always denied
-prompt_side_effects = true             # Prompt for side-effect tools
+mode = "enabled"                       # "disabled", "parse_only", or "enabled"
+allowlist = ["ReadFile", "Glob"]       # Skip approval for these tools
+denylist = ["RunCommand"]              # Always deny these tools
+
+[tools.sandbox]
+allowed_roots = ["."]                  # Allowed base directories
+denied_patterns = ["**/.git/**"]       # Excluded glob patterns
+allow_absolute = false                 # Block absolute paths
 
 [tools.timeouts]
 default_seconds = 30
@@ -195,12 +193,15 @@ shell_commands_seconds = 300           # 5 minutes for shell commands
 [tools.output]
 max_bytes = 102400                     # 100 KB max output per tool
 
-[tools.read_file]
-max_file_read_bytes = 204800           # 200 KB
-max_scan_bytes = 2097152               # 2 MB for line-range reads
+[tools.webfetch]
+user_agent = "Forge/1.0"               # Custom User-Agent
+timeout_seconds = 30                   # Fetch timeout
+max_download_bytes = 10485760          # 10MB limit
 
-[tools.apply_patch]
-max_patch_bytes = 524288               # 512 KB
+[tools.search]
+backend = "ugrep"                      # ugrep | ripgrep
+max_results = 100                      # Search result limit
+
 ```
 
 ### Environment Variables
@@ -277,19 +278,19 @@ max_patch_bytes = 524288               # 512 KB
 Enter Command mode by pressing `:` or `/` in Normal mode.
 
 | Command | Aliases | Description |
-| --- | --- | --- |
-| `:quit` | `:q` | Exit the application |
-| `:clear` | - | Clear conversation and reset context |
-| `:cancel` | - | Abort active streaming |
-| `:model [name]` | - | Set model or open model selector (no argument) |
-| `:provider [name]` | `:p` | Switch provider (`claude`, `openai`, or `gemini`) |
-| `:context` | `:ctx` | Show context usage statistics |
-| `:journal` | `:jrnl` | Show stream journal statistics |
-| `:summarize` | `:sum` | Manually trigger summarization |
-| `:screen` | - | Toggle between full-screen and inline mode |
-| `:tools` | - | List configured tools |
-| `:tool <id> <result>` | - | Manually submit tool result (parse_only mode) |
-| `:help` | - | Show available commands |
+| :--- | :--- | :--- |
+| `/quit` | `/q` | Exit the application |
+| `/clear` | - | Clear conversation and reset context |
+| `/cancel` | - | Abort active streaming or tool execution |
+| `/model [name]` | - | Set model or open model selector (no argument) |
+| `/provider [name]` | `/p` | Switch provider (`claude`, `openai`, or `gemini`) |
+| `/context` | `/ctx` | Show context usage statistics |
+| `/journal` | `/jrnl` | Show stream journal statistics |
+| `/summarize` | `/sum` | Manually trigger summarization |
+| `/screen` | - | Toggle between full-screen and inline mode |
+| `/tools` | - | List available tools |
+| `/tool <id> <result>` | - | Manually submit tool result |
+| `/help` | - | Show available commands |
 
 ## Workspace Structure
 
@@ -301,7 +302,7 @@ forge/
 ├── engine/         # Core state machine, commands, streaming orchestration
 ├── tui/            # Terminal UI rendering (ratatui), input handling
 ├── context/        # Context Infinity: token counting, summarization, persistence
-├── providers/      # LLM API clients (Claude, OpenAI)
+├── providers/      # LLM API clients (Claude, OpenAI, Gemini)
 ├── types/          # Core domain types (Message, Provider, ModelName)
 ├── webfetch/       # Web page fetching and parsing
 ├── tests/          # Integration tests
@@ -316,7 +317,7 @@ forge/
 | `engine` | Input modes, async operations, tool execution, configuration |
 | `tui` | Full-screen and inline rendering, markdown, theming |
 | `context` | Token budgeting, summarization, crash recovery journals |
-| `providers` | HTTP clients, SSE parsing, provider-specific formatting |
+| `providers` | HTTP clients, SSE parsing, provider-specific formatting (Claude, OpenAI, Gemini) |
 | `types` | Shared types ensuring compile-time correctness |
 | `webfetch` | Chromium-based web fetching for `web_fetch` tool |
 
@@ -382,7 +383,7 @@ anthropic = "sk-ant-your-actual-key"
 
 **Solution**: Your recent messages are too large for the model's context window. Options:
 
-1. Start a new conversation with `:clear`
+1. Start a new conversation with `/clear`
 2. Switch to a model with a larger context window
 3. Write shorter messages
 
@@ -433,7 +434,7 @@ Detailed documentation is available in each crate:
 | [`engine/README.md`](engine/README.md) | Core state machine and orchestration |
 | [`tui/README.md`](tui/README.md) | Terminal UI rendering and input handling |
 | [`context/README.md`](context/README.md) | Context Infinity implementation |
-| [`providers/README.md`](providers/README.md) | LLM API clients (Claude, OpenAI) |
+| [`providers/README.md`](providers/README.md) | LLM API clients (Claude, OpenAI, Gemini) |
 | [`types/README.md`](types/README.md) | Core domain types |
 
 ### Design Documents

@@ -16,9 +16,10 @@ This directory contains the technical specifications, requirements, and architec
 
 | Document | Description |
 | -------- | ----------- |
-| [TOOLS.md](../docs/TOOLS.md) | User guide for configuring and using built-in tools |
-| [LP1.md](../docs/LP1.md) | Specification for the Line Patch (LP1) format |
-| [CLAUDE.md](../docs/CLAUDE.md) | Claude-specific optimizations and features |
+| [TOOLS.md](TOOLS.md) | User guide for configuring and using built-in tools |
+| [LP1.md](LP1.md) | Specification for the Line Patch (LP1) format |
+| [ANTHROPIC_MESSAGES_API.md](ANTHROPIC_MESSAGES_API.md) | Anthropic Messages API reference and Claude features |
+| [OPENAI_RESPONSES_GPT52.md](OPENAI_RESPONSES_GPT52.md) | OpenAI Responses API reference and GPT-5.2 features |
 
 ## Backlog and Research
 

@@ -346,52 +346,82 @@ Different providers handle caching differently:
 
 ## SSE Streaming Infrastructure
 
-### SSE Event Parsing
+### Architecture Overview
 
-The crate includes shared SSE parsing infrastructure used by both provider modules:
+SSE (Server-Sent Events) streaming is abstracted via a trait-based design that separates:
+
+1. **Shared infrastructure**: Buffer management, timeout handling, UTF-8 validation, `[DONE]` detection
+2. **Provider-specific parsing**: JSON event interpretation via `SseParser` trait
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    process_sse_stream()                          │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  Shared: timeout, buffer, UTF-8, [DONE], parse errors     │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                            │                                     │
+│                            ▼                                     │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │              parser.parse(&json) -> SseParseAction         │  │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │  │
+│  │  │ClaudeParser │  │OpenAIParser │  │GeminiParser │        │  │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘        │  │
+│  └───────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### SseParser Trait
+
+Each provider implements this trait for JSON event parsing:
+
+```rust
+/// Action returned by provider-specific SSE JSON parser.
+enum SseParseAction {
+    Continue,                  // No event to emit
+    Emit(Vec<StreamEvent>),    // Emit these events
+    Done,                      // Stream completed
+    Error(String),             // Fatal error
+}
+
+/// Provider-specific SSE JSON parsing.
+trait SseParser {
+    fn parse(&mut self, json: &serde_json::Value) -> SseParseAction;
+    fn provider_name(&self) -> &'static str;
+}
+```
+
+### Shared Stream Processor
+
+The `process_sse_stream` function handles all common SSE logic:
+
+```rust
+async fn process_sse_stream<P: SseParser>(
+    response: reqwest::Response,
+    parser: &mut P,
+    on_event: impl Fn(StreamEvent),
+) -> Result<()>
+```
+
+This function manages:
+
+- Stream timeout handling (idle timeout triggers error)
+- Buffer management with 4 MiB size limit
+- UTF-8 validation
+- Event boundary detection (`\n\n` and `\r\n\r\n`)
+- `[DONE]` marker handling
+- Parse error tracking with threshold (3 consecutive errors = fatal)
+
+### Low-Level SSE Parsing Functions
 
 ```rust
 /// Find the boundary of the next SSE event in the buffer.
-/// Returns (position, delimiter_length) where delimiter is \n\n or \r\n\r\n.
-fn find_sse_event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
-    let lf = buffer.windows(2).position(|w| w == b"\n\n");
-    let crlf = buffer.windows(4).position(|w| w == b"\r\n\r\n");
-    match (lf, crlf) {
-        (Some(a), Some(b)) => Some(if a <= b { (a, 2) } else { (b, 4) }),
-        (Some(a), None) => Some((a, 2)),
-        (None, Some(b)) => Some((b, 4)),
-        (None, None) => None,
-    }
-}
+fn find_sse_event_boundary(buffer: &[u8]) -> Option<(usize, usize)>
 
 /// Drain the next complete SSE event from the buffer.
-fn drain_next_sse_event(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
-    let (pos, delim_len) = find_sse_event_boundary(buffer)?;
-    let event = buffer[..pos].to_vec();
-    buffer.drain(..pos + delim_len);
-    Some(event)
-}
+fn drain_next_sse_event(buffer: &mut Vec<u8>) -> Option<Vec<u8>>
 
 /// Extract the data payload from an SSE event.
-/// Handles multi-line data fields by joining with newlines.
-fn extract_sse_data(event: &str) -> Option<String> {
-    let mut data = String::new();
-    let mut found = false;
-
-    for line in event.lines() {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if let Some(mut rest) = line.strip_prefix("data:") {
-            if let Some(stripped) = rest.strip_prefix(' ') {
-                rest = stripped;
-            }
-            if found { data.push('\n'); }
-            data.push_str(rest);
-            found = true;
-        }
-    }
-
-    if found { Some(data) } else { None }
-}
+fn extract_sse_data(event: &str) -> Option<String>
 ```
 
 ### SSE Event Format
@@ -417,7 +447,7 @@ The parsing handles:
 
 ### StreamEvent - Unified Event Type
 
-Both providers emit events through a unified `StreamEvent` enum:
+All providers emit events through a unified `StreamEvent` enum:
 
 ```rust
 pub enum StreamEvent {
@@ -1085,16 +1115,19 @@ pub enum Provider {
 }
 
 impl Provider {
-    pub fn as_str(&self) -> &'static str {
         match self {
-            // ...existing...
+            Provider::Claude => "claude",
+            Provider::OpenAI => "openai",
+            Provider::Gemini => "gemini",
             Provider::YourProvider => "your_provider",
         }
     }
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            // ...existing...
+            Provider::Claude => "Claude",
+            Provider::OpenAI => "GPT",
+            Provider::Gemini => "Gemini",
             Provider::YourProvider => "YourProvider",
         }
     }
@@ -1122,7 +1155,9 @@ impl Provider {
 
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            // ...existing...
+            "claude" | "anthropic" => Some(Provider::Claude),
+            "openai" | "gpt" | "chatgpt" => Some(Provider::OpenAI),
+            "gemini" | "google" => Some(Provider::Gemini),
             "yourprovider" | "yp" => Some(Provider::YourProvider),
             _ => None,
         }
@@ -1150,7 +1185,7 @@ impl ApiKey {
 
     pub fn as_str(&self) -> &str {
         match self {
-            ApiKey::Claude(key) | ApiKey::OpenAI(key) | ApiKey::YourProvider(key) => key,
+            ApiKey::Claude(key) | ApiKey::OpenAI(key) | ApiKey::Gemini(key) | ApiKey::YourProvider(key) => key,
         }
     }
 }
@@ -1177,7 +1212,11 @@ pub enum ModelParseError {
 ```rust
 /// YourProvider API implementation.
 pub mod your_provider {
-    use super::*;
+    use super::{
+        ApiConfig, CacheableMessage, Message, OutputLimits, Result,
+        SseParseAction, SseParser, StreamEvent, ToolDefinition,
+        http_client, process_sse_stream, read_capped_error_body,
+    };
     use serde_json::json;
 
     const API_URL: &str = "https://api.yourprovider.com/v1/chat";
@@ -1190,7 +1229,7 @@ pub mod your_provider {
     ) -> serde_json::Value {
         // Convert messages to provider-specific format
         let mut api_messages = Vec::new();
-        
+
         // Add system prompt if provided
         if let Some(prompt) = system_prompt {
             api_messages.push(json!({
@@ -1198,7 +1237,7 @@ pub mod your_provider {
                 "content": prompt
             }));
         }
-        
+
         // Add conversation messages
         for cacheable in messages {
             let msg = &cacheable.message;
@@ -1214,6 +1253,34 @@ pub mod your_provider {
             "max_tokens": limits.max_output_tokens(),
             "stream": true
         })
+    }
+
+    // ========================================================================
+    // YourProvider SSE Parser
+    // ========================================================================
+
+    /// Parser state for YourProvider SSE streams.
+    #[derive(Default)]
+    struct YourProviderParser;
+
+    impl SseParser for YourProviderParser {
+        fn parse(&mut self, json: &serde_json::Value) -> SseParseAction {
+            // Check for completion
+            if json["choices"][0]["finish_reason"].as_str() == Some("stop") {
+                return SseParseAction::Done;
+            }
+
+            // Extract text delta
+            if let Some(text) = json["choices"][0]["delta"]["content"].as_str() {
+                return SseParseAction::Emit(vec![StreamEvent::TextDelta(text.to_string())]);
+            }
+
+            SseParseAction::Continue
+        }
+
+        fn provider_name(&self) -> &'static str {
+            "YourProvider"
+        }
     }
 
     pub async fn send_message(
@@ -1242,45 +1309,9 @@ pub mod your_provider {
             return Ok(());
         }
 
-        // Process SSE stream using shared infrastructure
-        use futures_util::StreamExt;
-        let mut stream = response.bytes_stream();
-        let mut buffer: Vec<u8> = Vec::new();
-
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            buffer.extend_from_slice(&chunk);
-
-            while let Some(event) = drain_next_sse_event(&mut buffer) {
-                if event.is_empty() { continue; }
-
-                let event = match std::str::from_utf8(&event) {
-                    Ok(event) => event,
-                    Err(_) => {
-                        on_event(StreamEvent::Error("Invalid UTF-8".to_string()));
-                        return Ok(());
-                    }
-                };
-
-                if let Some(data) = extract_sse_data(event) {
-                    if data == "[DONE]" {
-                        on_event(StreamEvent::Done);
-                        return Ok(());
-                    }
-
-                    // Parse provider-specific event format
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
-                        // Extract text deltas according to provider format
-                        if let Some(text) = json["choices"][0]["delta"]["content"].as_str() {
-                            on_event(StreamEvent::TextDelta(text.to_string()));
-                        }
-                    }
-                }
-            }
-        }
-
-        on_event(StreamEvent::Done);
-        Ok(())
+        // Use shared SSE stream processor with provider-specific parser
+        let mut parser = YourProviderParser;
+        process_sse_stream(response, &mut parser, on_event).await
     }
 }
 ```

@@ -48,9 +48,9 @@ The `forge-engine` crate is the heart of the Forge application - a TUI-agnostic 
 | **Input Mode State Machine** | Vim-style modal editing (Normal, Insert, Command, ModelSelect) |
 | **Async Operation State Machine** | Mutually exclusive states for streaming, tool execution, summarizing, idle |
 | **Streaming Management** | Non-blocking LLM response streaming with crash recovery |
-| **Tool Execution** | Built-in tools (read_file, write_file, apply_patch, etc.) with approval workflow |
+| **Tool Execution** | Built-in tools (ReadFile, WriteFile, ApplyPatch, RunCommand, Glob, Search, WebFetch) |
 | **Context Infinity** | Adaptive context window management with automatic summarization |
-| **Provider Abstraction** | Unified interface for Claude and OpenAI APIs |
+| **Provider Abstraction** | Unified interface for Claude, OpenAI, and Gemini APIs |
 | **History Persistence** | Conversation storage and recovery across sessions |
 
 ### File Structure
@@ -100,7 +100,7 @@ The engine depends on several workspace crates:
 |-------|---------|
 | `forge-types` | Core domain types (Message, Provider, ModelName, ToolCall, etc.) |
 | `forge-context` | Context window management, summarization, persistence |
-| `forge-providers` | LLM API clients (Claude, OpenAI) |
+| `forge-providers` | LLM API clients (Claude, OpenAI, Gemini) |
 | `forge-webfetch` | URL fetching for web-based tools |
 
 ---
@@ -153,8 +153,7 @@ The `OperationState` enum tracks the current async operation status. Each varian
 pub(crate) enum OperationState {
     Idle,                                           // Ready for new operations
     Streaming(ActiveStream),                        // API response in progress
-    AwaitingToolResults(PendingToolExecution),      // Parse-only mode: awaiting manual results
-    ToolLoop(ToolLoopState),                        // Tool execution in progress
+    ToolLoop(ToolLoopState),                        // Tool execution in progress (approval + execution)
     ToolRecovery(ToolRecoveryState),                // Crash recovery: pending user decision
     Summarizing(SummarizationState),                // Background summarization
     SummarizingWithQueued(SummarizingWithQueuedState), // Summarizing + pending request
@@ -581,18 +580,18 @@ The engine provides a slash command system for user actions.
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `:quit` | `:q` | Exit application |
-| `:clear` | - | Clear conversation and history |
-| `:cancel` | - | Abort active stream |
-| `:model [name]` | - | Set model or open picker |
-| `:provider [name]` | `:p` | Switch provider |
-| `:context` | `:ctx` | Show context usage stats |
-| `:journal` | `:jrnl` | Show journal statistics |
-| `:summarize` | `:sum` | Trigger summarization |
-| `:screen` | - | Toggle fullscreen/inline mode |
-| `:tool <id> <result>` | - | Submit tool result (or `:tool error <id> <msg>`) |
-| `:tools` | - | List configured tools |
-| `:help` | - | List available commands |
+| `/quit` | `/q` | Exit application |
+| `/clear` | - | Clear conversation and history |
+| `/cancel` | - | Abort active streaming or tool execution |
+| `/model [name]` | - | Set model or open picker |
+| `/provider [n]` | `/p` | Switch provider |
+| `/context` | `/ctx` | Show context usage stats |
+| `/journal` | `/jrnl` | Show journal statistics |
+| `/summarize` | `/sum` | Trigger summarization |
+| `/screen` | - | Toggle fullscreen/inline mode |
+| `/tool <id> <res>` | - | Submit manual tool result |
+| `/tools` | - | List available tools |
+| `/help` | - | List available commands |
 
 ### Command Enum
 
@@ -708,12 +707,12 @@ pub struct ForgeConfig {
     pub thinking: Option<ThinkingConfig>, // Legacy
     pub anthropic: Option<AnthropicConfig>,
     pub openai: Option<OpenAIConfig>,
+    pub google: Option<GeminiConfig>,
     pub tools: Option<ToolsConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub struct AppConfig {
-    pub provider: Option<String>,
     pub model: Option<String>,
     pub tui: Option<String>,
     pub max_output_tokens: Option<u32>,
@@ -724,18 +723,12 @@ pub struct AppConfig {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ToolsConfig {
-    pub mode: Option<String>,              // disabled | parse_only | enabled
-    pub allow_parallel: Option<bool>,
     pub max_tool_calls_per_batch: Option<usize>,
-    pub max_tool_iterations_per_user_turn: Option<usize>,
-    pub max_tool_args_bytes: Option<usize>,
-    pub sandbox: Option<SandboxConfig>,
-    pub timeouts: Option<TimeoutsConfig>,
-    pub output: Option<OutputConfig>,
-    pub approval: Option<ApprovalConfig>,
-    pub read_file: Option<ReadFileConfig>,
-    pub apply_patch: Option<ApplyPatchConfig>,
-    pub definitions: Option<Vec<ToolDefinition>>,
+    pub max_tool_iterations_per_user_turn: Option<u32>,
+    pub definitions: Vec<ToolDefinitionConfig>,
+    pub sandbox: Option<ToolSandboxConfig>,
+    pub approval: Option<ToolApprovalConfig>,
+    // ... specialized tool configs (read_file, search, etc.)
 }
 ```
 
@@ -781,6 +774,7 @@ reduced_motion = false     # Disable modal animations
 [api_keys]
 anthropic = "${ANTHROPIC_API_KEY}"
 openai = "${OPENAI_API_KEY}"
+google = "${GEMINI_API_KEY}"
 ```
 
 #### [context]
@@ -803,19 +797,30 @@ thinking_budget_tokens = 10000
 
 ```toml
 [openai]
-reasoning_effort = "high"  # low | medium | high
+reasoning_effort = "high"  # low | medium | high | xhigh
 verbosity = "high"         # low | medium | high
-truncation = "auto"        # auto | disabled
+truncation = "auto"        # auto | none | preserve
+```
+
+#### [google]
+
+```toml
+[google]
+thinking_enabled = true    # Enable thinking (Gemini 3+)
+cache_enabled = true       # Enable context caching
+cache_ttl_seconds = 3600   # Cache TTL
 ```
 
 #### [tools]
 
 ```toml
 [tools]
-mode = "enabled"           # disabled | parse_only | enabled
-allow_parallel = false
 max_tool_calls_per_batch = 8
 max_tool_iterations_per_user_turn = 4
+
+[tools.approval]
+mode = "enabled"           # disabled | parse_only | enabled
+```
 max_tool_args_bytes = 262144
 
 [tools.sandbox]
@@ -1093,7 +1098,7 @@ Proof token that a command was entered in command mode. Obtained from `CommandMo
 pub enum InputMode {
     Normal,      // Navigation mode (vim-like)
     Insert,      // Text editing mode
-    Command,     // Slash command entry (e.g., :quit)
+    Command,     // Slash command entry (e.g., /quit)
     ModelSelect, // Model picker overlay
 }
 ```
@@ -1395,6 +1400,7 @@ pub async fn handle_events(app: &mut App) -> Result<bool> {
 pub enum Provider {
     Claude,
     OpenAI,
+    Gemini,
     MyProvider,  // New provider
 }
 
@@ -1403,6 +1409,7 @@ impl Provider {
         match s.to_lowercase().as_str() {
             "claude" | "anthropic" => Some(Self::Claude),
             "openai" | "gpt" => Some(Self::OpenAI),
+            "gemini" | "google" => Some(Self::Gemini),
             "myprovider" | "mp" => Some(Self::MyProvider),  // New parsing
             _ => None,
         }
@@ -1412,6 +1419,7 @@ impl Provider {
         match self {
             Self::Claude => ModelName::known(Self::Claude, "claude-sonnet-4-5-20250929"),
             Self::OpenAI => ModelName::known(Self::OpenAI, "gpt-5.2"),
+            Self::Gemini => ModelName::known(Self::Gemini, "gemini-3-pro-preview"),
             Self::MyProvider => ModelName::known(Self::MyProvider, "my-model-v1"),
         }
     }
@@ -1565,7 +1573,7 @@ The engine re-exports commonly needed types from its dependencies:
 
 | Type | Description |
 |------|-------------|
-| `Provider` | LLM provider enum (Claude, OpenAI) |
+| `Provider` | LLM provider enum (Claude, OpenAI, Gemini) |
 | `ModelName` | Provider-scoped model identifier |
 | `Message` | User/Assistant/System message |
 | `NonEmptyString` | Guaranteed non-empty string |
