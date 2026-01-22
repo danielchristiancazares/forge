@@ -325,6 +325,7 @@ impl App {
             tool_settings,
             tool_journal,
             tool_file_cache,
+            checkpoints: crate::checkpoints::CheckpointStore::default(),
             tool_iterations: 0,
             history_load_warning_shown: false,
             autosave_warning_shown: false,

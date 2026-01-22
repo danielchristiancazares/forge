@@ -85,6 +85,12 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         show_in_help: true,
     },
     CommandSpec {
+        palette_label: "rewind <id|last> [code|conversation|both]",
+        help_label: "rewind",
+        description: "Rewind to an automatic checkpoint",
+        show_in_help: true,
+    },
+    CommandSpec {
         palette_label: "help",
         help_label: "help",
         description: "Show available commands",
@@ -120,6 +126,10 @@ pub(crate) enum Command<'a> {
     Cancel,
     Screen,
     Tools,
+    Rewind {
+        target: Option<&'a str>,
+        scope: Option<&'a str>,
+    },
     Help,
     Unknown(&'a str),
     Empty,
@@ -141,6 +151,10 @@ impl<'a> Command<'a> {
             Some("cancel") => Command::Cancel,
             Some("screen") => Command::Screen,
             Some("tools") => Command::Tools,
+            Some("rewind" | "rw") => Command::Rewind {
+                target: parts.get(1).copied(),
+                scope: parts.get(2).copied(),
+            },
             Some("help") => Command::Help,
             Some(cmd) => Command::Unknown(cmd),
             None => Command::Empty,
@@ -460,6 +474,31 @@ impl super::App {
                     ));
                 }
             }
+            Command::Rewind { target, scope } => {
+                if let Some(reason) = self.busy_reason() {
+                    self.push_notification(format!("Cannot rewind while {reason}."));
+                    return;
+                }
+
+                // /rewind or /rewind list shows available checkpoints
+                if matches!(target, Some("list" | "ls")) || target.is_none() {
+                    self.show_checkpoint_list();
+                    return;
+                }
+
+                let Some(scope) = crate::checkpoints::RewindScope::parse(scope) else {
+                    self.push_notification("Invalid scope. Use: code | conversation | both");
+                    return;
+                };
+
+                let Some(proof) = self.parse_checkpoint_target(target) else {
+                    return;
+                };
+
+                if let Err(msg) = self.apply_rewind(proof, scope) {
+                    self.push_notification(msg);
+                }
+            }
             Command::Help => {
                 // TODO: Make this a modal
                 self.push_notification(command_help_summary());
@@ -572,5 +611,37 @@ mod tests {
         assert_eq!(Command::parse("QUIT"), Command::Unknown("QUIT"));
         assert_eq!(Command::parse("Clear"), Command::Unknown("Clear"));
         assert_eq!(Command::parse("MODEL"), Command::Unknown("MODEL"));
+    }
+
+    #[test]
+    fn parse_rewind_command() {
+        assert_eq!(
+            Command::parse("rewind"),
+            Command::Rewind {
+                target: None,
+                scope: None
+            }
+        );
+        assert_eq!(
+            Command::parse("rewind last code"),
+            Command::Rewind {
+                target: Some("last"),
+                scope: Some("code")
+            }
+        );
+        assert_eq!(
+            Command::parse("rw 3 conversation"),
+            Command::Rewind {
+                target: Some("3"),
+                scope: Some("conversation")
+            }
+        );
+        assert_eq!(
+            Command::parse("rewind list"),
+            Command::Rewind {
+                target: Some("list"),
+                scope: None
+            }
+        );
     }
 }

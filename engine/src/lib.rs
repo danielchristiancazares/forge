@@ -36,6 +36,7 @@ pub use forge_types::{
 mod config;
 pub use config::{AppConfig, ForgeConfig};
 
+mod checkpoints;
 mod tools;
 
 mod commands;
@@ -359,6 +360,8 @@ pub struct App {
     tool_journal: ToolJournal,
     /// File hash cache for tool safety checks.
     tool_file_cache: std::sync::Arc<tokio::sync::Mutex<tools::ToolFileCache>>,
+    /// Checkpoints for rewind (automatic snapshots before tool-driven edits).
+    checkpoints: checkpoints::CheckpointStore,
     /// Tool iterations used in the current user turn.
     tool_iterations: u32,
     /// Whether we've already warned about a failed history load.

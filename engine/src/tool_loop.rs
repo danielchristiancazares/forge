@@ -127,6 +127,12 @@ impl App {
             }
         }
 
+        // Create an automatic checkpoint before any tool-driven file edits.
+        // (QoL: enables /rewind <id> [code|conversation|both])
+        self.maybe_create_checkpoint_for_tool_calls(
+            plan.execute_now.iter().chain(plan.approval_calls.iter()),
+        );
+
         let batch = ToolBatch {
             assistant_text,
             calls: tool_calls,
