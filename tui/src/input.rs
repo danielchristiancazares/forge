@@ -205,6 +205,13 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) {
                 app.start_streaming(queued);
             }
         }
+        // Navigate prompt history (Up/Down)
+        KeyCode::Up => {
+            app.navigate_history_up();
+        }
+        KeyCode::Down => {
+            app.navigate_history_down();
+        }
         _ => {
             let Some(token) = app.insert_token() else {
                 return;
@@ -296,6 +303,13 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
             };
 
             app.process_command(command);
+        }
+        // Navigate command history (Up/Down)
+        KeyCode::Up => {
+            app.navigate_command_history_up();
+        }
+        KeyCode::Down => {
+            app.navigate_command_history_down();
         }
         _ => {
             let Some(token) = app.command_token() else {

@@ -2,13 +2,18 @@
 //!
 //! This module handles:
 //! - Saving and loading conversation history to/from disk
+//! - Saving and loading session state (draft input, input history)
 //! - Crash recovery from incomplete streams
 //! - Journal commit/discard operations
 //! - Message rollback after errors
 
+use std::io::Write;
+
 use forge_context::{RecoveredStream, StepId};
 use forge_types::{Message, NonEmptyStaticStr, NonEmptyString, sanitize_terminal_text};
+use tempfile::NamedTempFile;
 
+use crate::session_state::SessionState;
 use crate::state::{OperationState, ToolRecoveryState};
 use crate::ui::DisplayItem;
 use crate::util;
@@ -114,6 +119,95 @@ impl App {
                     self.push_notification("Autosave failed — changes may not persist.");
                     self.autosave_warning_shown = true;
                 }
+                false
+            }
+        }
+    }
+
+    // ========================================================================
+    // Session state persistence (draft input + input history)
+    // ========================================================================
+
+    /// Save session state (draft input + input history) to disk.
+    pub fn save_session(&self) -> anyhow::Result<()> {
+        let path = self.session_path();
+
+        // Ensure directory exists
+        if let Some(parent) = path.parent() {
+            Self::ensure_secure_dir(parent)?;
+        }
+
+        let state = SessionState::new(self.input.clone(), self.input_history.clone());
+        let json = serde_json::to_string_pretty(&state)?;
+
+        // Atomic write: temp file + fsync + rename
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let mut tmp = NamedTempFile::new_in(parent)?;
+
+        tmp.write_all(json.as_bytes())?;
+        tmp.as_file().sync_all()?;
+
+        // Persist with fallback for Windows
+        if let Err(err) = tmp.persist(&path) {
+            if path.exists() {
+                // Windows: backup-restore pattern
+                let backup_path = path.with_extension("bak");
+                let _ = std::fs::remove_file(&backup_path);
+                std::fs::rename(&path, &backup_path)?;
+
+                if let Err(rename_err) = err.file.persist(&path) {
+                    let _ = std::fs::rename(&backup_path, &path);
+                    return Err(rename_err.error.into());
+                }
+                let _ = std::fs::remove_file(&backup_path);
+            } else {
+                return Err(err.error.into());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Load session state from disk (called during init if file exists).
+    pub(crate) fn load_session(&mut self) {
+        let path = self.session_path();
+        if !path.exists() {
+            return;
+        }
+
+        match std::fs::read_to_string(&path) {
+            Ok(data) => match serde_json::from_str::<SessionState>(&data) {
+                Ok(state) if state.is_compatible() => {
+                    // Restore input state
+                    if let Some(input) = state.input {
+                        self.input = input;
+                    }
+                    // Restore input history
+                    self.input_history = state.history;
+                    tracing::debug!("Loaded session state from {}", path.display());
+                }
+                Ok(_) => {
+                    tracing::debug!(
+                        "Session state version mismatch, starting fresh"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to parse session state: {e}");
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Failed to read session state: {e}");
+            }
+        }
+    }
+
+    /// Save session state to disk (non-fatal on failure).
+    /// Returns true if successful, false if save failed.
+    pub(crate) fn autosave_session(&mut self) -> bool {
+        match self.save_session() {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!("Session autosave failed: {e}");
                 false
             }
         }

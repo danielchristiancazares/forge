@@ -1,5 +1,6 @@
 //! Input mode and draft state for the editor.
 
+use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Input mode for the application.
@@ -15,7 +16,7 @@ pub enum InputMode {
 /// Draft input buffer with cursor tracking.
 ///
 /// Handles text editing with proper Unicode grapheme cluster support.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct DraftInput {
     pub(crate) text: String,
     pub(crate) cursor: usize,
@@ -155,7 +156,7 @@ impl DraftInput {
 /// Internal input state machine.
 ///
 /// Tracks the current input mode along with mode-specific state.
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InputState {
     Normal(DraftInput),
     Insert(DraftInput),

@@ -11,8 +11,8 @@ use tokio::sync::mpsc;
 mod ui;
 use ui::InputState;
 pub use ui::{
-    DisplayItem, InputMode, ModalEffect, ModalEffectKind, PredefinedModel, ScrollState, UiOptions,
-    ViewState,
+    DisplayItem, DraftInput, InputHistory, InputMode, ModalEffect, ModalEffectKind, PredefinedModel,
+    ScrollState, UiOptions, ViewState,
 };
 
 // Re-export from crates for public API
@@ -45,6 +45,7 @@ mod init;
 mod input_modes;
 mod persistence;
 mod security;
+mod session_state;
 mod state;
 mod streaming;
 mod summarization;
@@ -377,6 +378,10 @@ pub struct App {
     /// Uses Arc<Mutex> because it's accessed from async tasks for extraction.
     /// None if context_infinity is disabled or no Gemini API key.
     librarian: Option<std::sync::Arc<tokio::sync::Mutex<Librarian>>>,
+    /// Input history for prompt and command recall.
+    input_history: ui::InputHistory,
+    /// Counter for debouncing session autosave (incremented each tick).
+    session_save_counter: u32,
 }
 
 impl App {
@@ -1052,6 +1057,63 @@ impl App {
 
     pub fn command_cursor_byte_index(&self) -> Option<usize> {
         self.input.command_cursor_byte_index()
+    }
+
+    // ========================================================================
+    // Input history navigation
+    // ========================================================================
+
+    /// Navigate to previous (older) prompt in Insert mode.
+    ///
+    /// On first call, stashes the current draft and shows the most recent prompt.
+    /// Subsequent calls show progressively older prompts.
+    pub fn navigate_history_up(&mut self) {
+        if let InputState::Insert(ref mut draft) = self.input {
+            if let Some(text) = self.input_history.navigate_prompt_up(draft.text()) {
+                draft.set_text(text.to_owned());
+            }
+        }
+    }
+
+    /// Navigate to next (newer) prompt in Insert mode.
+    ///
+    /// When at the newest entry, restores the stashed draft.
+    pub fn navigate_history_down(&mut self) {
+        if let InputState::Insert(ref mut draft) = self.input {
+            if let Some(text) = self.input_history.navigate_prompt_down() {
+                draft.set_text(text.to_owned());
+            }
+        }
+    }
+
+    /// Navigate to previous (older) command in Command mode.
+    pub fn navigate_command_history_up(&mut self) {
+        if let InputState::Command { command, .. } = &mut self.input {
+            if let Some(text) = self.input_history.navigate_command_up(command.text()) {
+                command.set_text(text.to_owned());
+            }
+        }
+    }
+
+    /// Navigate to next (newer) command in Command mode.
+    pub fn navigate_command_history_down(&mut self) {
+        if let InputState::Command { command, .. } = &mut self.input {
+            if let Some(text) = self.input_history.navigate_command_down() {
+                command.set_text(text.to_owned());
+            }
+        }
+    }
+
+    /// Record a submitted prompt to history.
+    pub(crate) fn record_prompt(&mut self, text: &str) {
+        self.input_history.push_prompt(text.to_owned());
+        self.input_history.reset_navigation();
+    }
+
+    /// Record an executed command to history.
+    pub(crate) fn record_command(&mut self, text: &str) {
+        self.input_history.push_command(text.to_owned());
+        self.input_history.reset_navigation();
     }
 
     pub fn update_scroll_max(&mut self, max: u16) {

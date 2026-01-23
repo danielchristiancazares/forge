@@ -2,14 +2,14 @@
 
 This file provides guidance for Claude Code (claude.ai/code) when working with code in this repository.
 
-## Build Commands
+## Build Commands to run after making changes
 
 ```bash
-cargo check              # Fast type-check (use during development)
+cargo check              # Fast type-check
 cargo build              # Debug build
 cargo test               # Run tests
-cargo clippy -- -D warnings  # Lint (run before committing)
-cargo cov                # Coverage report (requires cargo-llvm-cov)
+cargo clippy --workspace --all-targets -- -D warnings  # Lint
+cargo cov                # Coverage report (requires cargo-llvm-cov, coverage should never go down)
 ```
 
 ## Configuration

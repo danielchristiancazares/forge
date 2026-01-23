@@ -332,6 +332,8 @@ impl App {
             gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             gemini_cache_config,
             librarian,
+            input_history: crate::ui::InputHistory::default(),
+            session_save_counter: 0,
         };
 
         app.clamp_output_limits_to_model();
@@ -341,6 +343,8 @@ impl App {
 
         // Load previous session's history if available
         app.load_history_if_exists();
+        // Load session state (draft input + input history)
+        app.load_session();
         app.check_crash_recovery();
         if let Some(err) = config_error {
             let path = err.path().display().to_string();
@@ -418,6 +422,11 @@ impl App {
     /// Get the path to the history file.
     pub(crate) fn history_path(&self) -> PathBuf {
         self.data_dir.join("history.json")
+    }
+
+    /// Get the path to the session state file.
+    pub(crate) fn session_path(&self) -> std::path::PathBuf {
+        self.data_dir.join(crate::session_state::SessionState::FILENAME)
     }
 
     pub(crate) fn context_infinity_enabled_from_env() -> bool {

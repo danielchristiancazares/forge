@@ -4,6 +4,7 @@
 //! These types are intentionally separate from orchestration concerns.
 
 mod display;
+mod history;
 mod input;
 mod modal;
 mod model_select;
@@ -11,6 +12,7 @@ mod scroll;
 mod view_state;
 
 pub use display::DisplayItem;
+pub use history::InputHistory;
 pub use input::{DraftInput, InputMode, InputState};
 pub use modal::{ModalEffect, ModalEffectKind};
 pub use model_select::PredefinedModel;
