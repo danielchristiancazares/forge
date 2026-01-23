@@ -2,6 +2,26 @@
 
 LLM API client layer for the Forge application. Provides streaming HTTP communication with Claude, OpenAI, and Gemini APIs through a unified interface.
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-41 | Header, LLM-TOC, Table of Contents |
+| 42-85 | Overview |
+| 88-151 | Architecture |
+| 154-206 | Provider System |
+| 208-301 | Type-Driven Design |
+| 303-382 | SSE Streaming Infrastructure |
+| 384-444 | Claude API Client |
+| 446-522 | OpenAI API Client |
+| 524-623 | Gemini API Client |
+| 625-673 | Public API Reference |
+| 675-688 | Model Limits |
+| 691-865 | Code Examples |
+| 867-902 | Error Handling |
+| 904-978 | Extension Guide |
+| 980-995 | Quick Reference |
+
 ## Table of Contents
 
 1. [Overview](#overview)

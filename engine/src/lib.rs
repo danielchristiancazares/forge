@@ -21,8 +21,8 @@ pub use forge_context::{
     ExtractionResult, Fact, FactType, FullHistory, Librarian, MessageId, ModelLimits,
     ModelLimitsSource, ModelRegistry, PendingSummarization, PreparedContext, RecoveredStream,
     RecoveredToolBatch, RetrievalResult, StreamJournal, SummarizationNeeded, SummarizationScope,
-    TokenCounter, ToolBatchId, ToolJournal, extract_facts, format_facts_for_context,
-    generate_summary, retrieve_relevant, summarization_model,
+    TokenCounter, ToolBatchId, ToolJournal, generate_summary, retrieve_relevant,
+    summarization_model,
 };
 pub use forge_providers::{self, ApiConfig, gemini::GeminiCache, gemini::GeminiCacheConfig};
 pub use forge_types::{
@@ -468,26 +468,6 @@ impl App {
                 ToolLoopPhase::AwaitingApproval(_) => None,
             },
             _ => None,
-        }
-    }
-
-    /// Drain the list of files accessed during tool execution.
-    ///
-    /// This clears the file cache and returns the paths of all accessed files.
-    /// Used for linking extracted facts to their source files.
-    #[allow(dead_code)] // WIP: will be wired up for librarian extraction
-    fn drain_accessed_files(&self) -> Vec<String> {
-        if let Ok(mut cache) = self.tool_file_cache.try_lock() {
-            let paths: Vec<String> = cache
-                .keys()
-                .map(|p| p.to_string_lossy().to_string())
-                .collect();
-            cache.clear();
-            paths
-        } else {
-            // Cache is locked by tool execution - skip this time
-            tracing::debug!("File cache locked, skipping source tracking");
-            Vec::new()
         }
     }
 

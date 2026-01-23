@@ -5,18 +5,14 @@
 //! - `process_stream_events` - Processes incoming stream events
 //! - `finish_streaming` - Finalizes a streaming session
 
-use std::time::Duration;
-
 use futures_util::future::{AbortHandle, Abortable};
 use tokio::sync::mpsc;
-use tokio::time::timeout;
 
 /// Capacity for the bounded stream event channel.
 /// This prevents OOM if the provider sends events faster than we can process them.
 /// 1024 events provides ~10 seconds of buffer at 100 events/sec typical streaming rate.
 const STREAM_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
-use forge_context::{Librarian, extract_facts};
 use forge_types::Provider;
 
 use super::{
@@ -614,71 +610,4 @@ async fn get_or_create_gemini_cache(
             None
         }
     }
-}
-
-/// Spawn a background task to extract facts from a completed exchange.
-///
-/// This is the post-turn phase of Context Infinity - after an assistant response
-/// completes, we extract structured facts for future retrieval.
-///
-/// `source_paths` are the files that were accessed during this turn - facts
-/// extracted from this exchange will be linked to these files for staleness
-/// detection.
-///
-/// # Send Safety
-/// This function is carefully structured to not hold the MutexGuard across
-/// async await points, because rusqlite::Connection is !Send.
-#[allow(dead_code)] // WIP: will be called after tool loop completion
-pub(crate) fn spawn_librarian_extraction(
-    librarian_arc: std::sync::Arc<tokio::sync::Mutex<Librarian>>,
-    user_message: String,
-    assistant_message: String,
-    source_paths: Vec<String>,
-) {
-    const LOCK_TIMEOUT: Duration = Duration::from_millis(100);
-
-    tokio::spawn(async move {
-        // Phase 1: Get API key under lock, release immediately
-        // Use timeout to avoid blocking under contention
-        let api_key = {
-            let Ok(guard) = timeout(LOCK_TIMEOUT, librarian_arc.lock()).await else {
-                tracing::debug!("Librarian lock contention (Phase 1), skipping extraction");
-                return;
-            };
-            guard.api_key().to_string()
-        }; // Lock released here
-
-        // Phase 2: Call async Gemini API without holding the lock
-        let result = match extract_facts(&api_key, &user_message, &assistant_message).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("Librarian extraction failed: {e}");
-                return;
-            }
-        };
-
-        if result.facts.is_empty() {
-            return;
-        }
-
-        // Phase 3: Re-acquire lock to store facts (sync operation)
-        // Use timeout to avoid blocking under contention
-        let Ok(mut librarian) = timeout(LOCK_TIMEOUT, librarian_arc.lock()).await else {
-            tracing::debug!(
-                "Librarian lock contention (Phase 3), dropping {} extracted facts",
-                result.facts.len()
-            );
-            return;
-        };
-        librarian.increment_turn();
-        if let Err(e) = librarian.store_facts_with_sources(&result.facts, &source_paths) {
-            tracing::warn!("Failed to store extracted facts: {e}");
-        } else {
-            tracing::info!(
-                "Librarian extracted {} facts from exchange (linked to {} files)",
-                result.facts.len(),
-                source_paths.len()
-            );
-        }
-    });
 }

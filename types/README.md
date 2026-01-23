@@ -6,25 +6,24 @@ This crate provides the foundational type system that enforces correctness at co
 
 ## LLM-TOC
 <!-- Auto-generated section map for LLM context -->
-|Lines|Section|
-|---|---|
-|1-21|Header & TOC|
-|22-40|Table of Contents|
-|41-104|Design Philosophy|
-|105-125|Module Structure|
-|126-231|NonEmpty String Types|
-|232-373|Provider and Model Types|
-|374-413|API Key Types|
-|414-509|OpenAI Request Options|
-|510-595|Caching and Output Limits|
-|596-658|Streaming Events|
-|659-762|Tool Calling Types|
-|763-910|Message Types|
-|911-979|Terminal Sanitization|
-|980-1024|Type Relationships|
-|1025-1039|Error Types Summary|
-|1040-1057|Testing|
-|1058-1090|Extending the Crate|
+| Lines | Section |
+|-------|---------|
+| 1-46 | Header, LLM-TOC, Table of Contents |
+| 47-111 | Design Philosophy |
+| 112-131 | Module Structure |
+| 133-241 | NonEmpty String Types |
+| 243-394 | Provider and Model Types |
+| 396-436 | API Key Types |
+| 438-532 | OpenAI Request Options |
+| 534-619 | Caching and Output Limits |
+| 621-686 | Streaming Events |
+| 688-794 | Tool Calling Types |
+| 796-944 | Message Types |
+| 946-1017 | Terminal Sanitization |
+| 1019-1062 | Type Relationships |
+| 1064-1078 | Error Types Summary |
+| 1080-1097 | Testing |
+| 1099-1131 | Extending the Crate |
 
 ## Table of Contents
 

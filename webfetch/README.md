@@ -5,6 +5,35 @@ LLM-friendly Markdown chunks. It implements SSRF protection, robots.txt
 compliance (RFC 9309), HTTP fetching with optional headless browser rendering,
 HTML-to-Markdown extraction, token-aware chunking, and LRU disk caching.
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-36 | Header, Intro, LLM-TOC, Table of Contents |
+| 37-51 | Architecture |
+| 52-156 | Key Types |
+| 157-177 | Public API |
+| 178-274 | How It Works |
+| 275-323 | Configuration |
+| 324-383 | Usage Examples |
+| 384-387 | Integration with Other Crates |
+| 388-400 | Testing |
+| 401-420 | Design Principles |
+
+## Table of Contents
+
+1. [Architecture](#architecture)
+2. [Key Types](#key-types)
+3. [Public API](#public-api)
+4. [How It Works](#how-it-works)
+5. [Configuration](#configuration)
+6. [Usage Examples](#usage-examples)
+7. [Integration with Other Crates](#integration-with-other-crates)
+8. [Testing](#testing)
+9. [Design Principles](#design-principles)
+
+---
+
 ## Architecture
 
 The crate is organized into these modules:

@@ -126,7 +126,7 @@ mode.enter_char('x');  // Now safe to call
 
 ### Type-Driven Design
 
-The codebase enforces correctness through types (see `docs/DESIGN.md`):
+The codebase enforces correctness through types (see `DESIGN.md`):
 
 | Type | Purpose |
 |------|---------|
@@ -232,7 +232,7 @@ All mode styles use `fg(bg_dark)` + `bg(<color>)` + `BOLD` modifier.
 |----------|-------------|
 | `tui/README.md` | Comprehensive TUI system documentation |
 | `context/README.md` | Context management system overview |
-| `docs/DESIGN.md` | Type-driven design patterns |
+| `DESIGN.md` | Type-driven design patterns |
 | `docs/OPENAI_RESPONSES_GPT52.md` | OpenAI Responses API integration |
 | `docs/RUST_2024_REFERENCE.md` | Rust 2024 edition features used |
 

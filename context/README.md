@@ -5,26 +5,36 @@
 Context Infinity™ is Forge's system for managing unlimited conversation context with LLMs. It preserves complete conversation history while automatically summarizing older content to fit within model-specific token limits.
 
 ## LLM-TOC
-<!-- Auto-generated section map for LLM context -->
+<!-- toc:start -->
 | Lines | Section |
-|-------|---------|
-| 1-67 | Overview: core principle, design principles, architecture diagram |
-| 68-130 | Core Concepts: Full History (append-only), HistoryEntry enum, Summaries |
-| 131-215 | Token Budget Calculation: ModelLimits, effective budget formula, output limit config |
-| 216-330 | Context Building Algorithm: 5 phases, error types (SummarizationNeeded, RecentMessagesTooLarge) |
-| 331-420 | Model Switching (Context Adaptation): shrinking vs expanding, ContextAdaptation enum |
-| 421-530 | Stream Journal (Crash Recovery): schema, lifecycle, RAII pattern, commit-and-prune flow |
-| 531-600 | Token Counting: TokenCounter, singleton pattern, accuracy caveats |
-| 601-670 | Usage Statistics and Persistence: ContextUsage, history serialization, journal locations |
-| 671-715 | Type-Driven Design: proof types table, PreparedContext as proof |
-| 716-810 | The Librarian: intelligent context distillation, fact types, lifecycle diagram |
-| 811-870 | Fact Store: SQLite schema, staleness detection, key operations |
-| 871-1010 | Public API - Core Types: ContextManager, PreparedContext, ContextBuildError |
-| 1011-1210 | Public API - History, Model Limits, Token Counting, Stream Journal, Tool Journal |
-| 1211-1385 | Public API - Summarization |
-| 1386-1545 | Public API - Librarian, Fact, FactType, FactStore, StoredFact |
-| 1546-1600 | Public API - Working Context, ContextUsage |
-| 1601-1750 | Complete Workflow Example, Type Relationships, Error Handling, Dependencies, Testing |
+| --- | --- |
+| 7-38 | LLM-TOC |
+| 39-55 | Overview |
+| 56-65 | Design Principles |
+| 66-97 | Architecture |
+| 98-166 | Core Concepts |
+| 167-229 | Token Budget Calculation |
+| 230-320 | Context Building Algorithm |
+| 321-351 | When Summarization Triggers |
+| 352-409 | Summarization Process |
+| 410-439 | Model Switching (Context Adaptation) |
+| 440-545 | Stream Journal (Crash Recovery) |
+| 546-590 | Token Counting |
+| 591-618 | Usage Statistics |
+| 619-643 | Persistence |
+| 644-659 | Configuration |
+| 660-682 | Type-Driven Design |
+| 683-710 | Extension Points |
+| 711-728 | Limitations |
+| 729-825 | The Librarian |
+| 826-885 | Fact Store |
+| 886-1605 | Public API |
+| 1606-1702 | Complete Workflow Example |
+| 1703-1720 | Type Relationships |
+| 1721-1727 | Error Handling |
+| 1728-1736 | Dependencies |
+| 1737-1744 | Testing |
+<!-- toc:end -->
 
 ## Overview
 
@@ -649,7 +659,7 @@ FORGE_CONTEXT_INFINITY=0  # Disable
 
 ## Type-Driven Design
 
-The system follows Forge's type-driven philosophy (see `docs/DESIGN.md`):
+The system follows Forge's type-driven philosophy (see `DESIGN.md`):
 
 | Type | Purpose |
 |------|---------|

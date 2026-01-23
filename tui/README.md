@@ -2,6 +2,29 @@
 
 Terminal user interface rendering and input handling for Forge, built on [ratatui](https://ratatui.rs) and [crossterm](https://github.com/crossterm-rs/crossterm).
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-27 | Header, Intro, LLM-TOC, Table of Contents |
+| 28-39 | Purpose and Responsibility |
+| 40-55 | Module Overview |
+| 56-105 | Full-Screen vs Inline Rendering |
+| 106-476 | Key Modules: lib.rs, ui_inline.rs, input.rs, theme.rs, markdown.rs, effects.rs, shared.rs, tool_display.rs, tool_result_summary.rs, diff_render.rs |
+| 477-509 | Public API |
+| 510-551 | Developer Notes |
+
+## Table of Contents
+
+1. [Purpose and Responsibility](#purpose-and-responsibility)
+2. [Module Overview](#module-overview)
+3. [Full-Screen vs Inline Rendering](#full-screen-vs-inline-rendering)
+4. [Key Modules](#key-modules)
+5. [Public API](#public-api)
+6. [Developer Notes](#developer-notes)
+
+---
+
 ## Purpose and Responsibility
 
 The `forge-tui` crate is responsible for:

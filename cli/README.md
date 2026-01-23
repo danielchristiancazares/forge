@@ -6,18 +6,19 @@ This document provides comprehensive documentation for the `forge` CLI crate - t
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 38-80 | Overview: responsibilities, file structure, dependencies |
-| 81-123 | Architecture Diagram: main() flow, mode switching, terminal session lifecycle |
-| 124-175 | Module Structure: main.rs types and functions, assets.rs constants and statics |
-| 176-270 | Terminal Session Management: TerminalSession, init/cleanup sequences, error handling |
-| 271-363 | UI Mode System: UiMode enum, resolution logic, mode characteristics |
-| 364-547 | Main Event Loops: tick cycle, run_app_full, run_app_inline, transcript clear, yield_now |
-| 548-624 | Asset Management: compile-time embedding, provider-specific prompts, OnceLock initialization |
-| 625-703 | Startup and Shutdown Sequence: initialization order, cleanup guarantees |
-| 704-738 | Configuration Resolution: UI mode config, file location, example |
-| 739-769 | Error Handling: error types, sources, recovery strategy |
-| 770-856 | Extension Guide: adding UI modes, assets, startup flags, modifying event loop |
-| 857-863 | Related Documentation: links to other crate READMEs |
+| 1-37 | Header, Table of Contents |
+| 39-80 | Overview: responsibilities, file structure, dependencies |
+| 82-123 | Architecture Diagram: main() flow, mode switching, terminal session lifecycle |
+| 125-175 | Module Structure: main.rs types and functions, assets.rs constants and statics |
+| 177-270 | Terminal Session Management: TerminalSession, init/cleanup sequences, error handling |
+| 272-363 | UI Mode System: UiMode enum, resolution logic, mode characteristics |
+| 365-547 | Main Event Loops: tick cycle, run_app_full, run_app_inline, transcript clear, yield_now |
+| 549-624 | Asset Management: compile-time embedding, provider-specific prompts, OnceLock initialization |
+| 626-703 | Startup and Shutdown Sequence: initialization order, cleanup guarantees |
+| 705-738 | Configuration Resolution: UI mode config, file location, example |
+| 740-769 | Error Handling: error types, sources, recovery strategy |
+| 771-858 | Extension Guide: adding UI modes, assets, startup flags, modifying event loop |
+| 860-867 | Related Documentation: links to other crate READMEs |
 
 ## Table of Contents
 

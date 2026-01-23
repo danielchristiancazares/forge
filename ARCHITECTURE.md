@@ -93,7 +93,7 @@ mode.enter_char('x');  // Now safe to call
 
 ## Type-Driven Design
 
-The codebase enforces correctness through types (see `docs/DESIGN.md`):
+The codebase enforces correctness through types (see `DESIGN.md`):
 
 | Type | Purpose |
 |------|---------|
@@ -151,7 +151,7 @@ See `tui/README.md` Extension Guide for detailed patterns.
 | `engine/README.md` | Engine state machine and orchestration |
 | `providers/README.md` | LLM API clients and SSE streaming |
 | `context/README.md` | Context management system overview |
-| `docs/DESIGN.md` | Type-driven design patterns |
+| `DESIGN.md` | Type-driven design patterns |
 | `docs/OPENAI_RESPONSES_GPT52.md` | OpenAI Responses API integration |
 
 ## Configuration

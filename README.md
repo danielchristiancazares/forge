@@ -5,21 +5,24 @@ A vim-modal terminal user interface for interacting with Claude, GPT, and Gemini
 Forge brings the efficiency of vim-style modal editing to AI conversation, letting you navigate, compose, and manage conversations without leaving your terminal. With Context Infinity™, Forge automatically summarizes older messages to stay within model limits while preserving full conversation history. The Tool Executor Framework enables the LLM to read files, apply patches, and run shell commands - all with interactive approval and crash recovery.
 
 ## LLM-TOC
-<!-- Auto-generated section map for LLM context -->
+<!-- toc:start -->
 | Lines | Section |
 | --- | --- |
-| 1-12 | Header and Introduction |
-| 13-60 | Features: Core Capabilities, Context Infinity, Tool Executor |
-| 61-100 | Requirements and Installation |
-| 101-160 | Quick Start: First Run, Basic Usage |
-| 161-250 | Configuration: Full Reference |
-| 251-310 | Keyboard Shortcuts: All Modes |
-| 311-370 | Commands Reference |
-| 371-430 | Workspace Structure |
-| 431-470 | Development |
-| 471-510 | Troubleshooting |
-| 511-540 | Documentation Index |
-| 541-560 | Contributing and License |
+| 7-26 | LLM-TOC |
+| 27-55 | Features: Core Capabilities, Context Infinity, Tool Executor |
+| 56-65 | Requirements |
+| 66-91 | Installation |
+| 92-135 | Quick Start: First Run, Basic Usage |
+| 136-222 | Configuration: Full Reference |
+| 223-281 | Keyboard Shortcuts: All Modes |
+| 282-300 | Commands Reference |
+| 301-329 | Workspace Structure |
+| 330-362 | Development |
+| 363-432 | Troubleshooting |
+| 433-455 | Documentation Index |
+| 456-466 | Contributing and License |
+| 467-469 | License |
+<!-- toc:end -->
 
 ## Features
 
@@ -444,7 +447,7 @@ Detailed documentation is available in each crate:
 
 | Document | Description |
 | ---------- | ------------- |
-| [`docs/DESIGN.md`](docs/DESIGN.md) | Type-driven design philosophy |
+| [`DESIGN.md`](DESIGN.md) | Type-driven design philosophy |
 | [`docs/CONTEXT_INFINITY_SRD.md`](docs/CONTEXT_INFINITY_SRD.md) | Context Infinity specification |
 | [`docs/TOOL_EXECUTOR_SRD.md`](docs/TOOL_EXECUTOR_SRD.md) | Tool Executor requirements |
 | [`docs/TOOLS.md`](docs/TOOLS.md) | User guide for tool configuration |

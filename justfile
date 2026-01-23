@@ -44,12 +44,12 @@ pre-commit: fmt-check lint test
 # Create source zip for bug analysis (excludes build artifacts)
 [windows]
 zip:
-    Compress-Archive -Path (Get-ChildItem -Path . -Exclude 'target','*.zip','lcov.info','coverage','sha256.txt' | Where-Object { -not $_.Name.StartsWith('.') }) -DestinationPath forge-source.zip -Force
+    Compress-Archive -Path (Get-ChildItem -Path . -Exclude 'target','docs','scripts','*.zip','lcov.info','coverage','sha256.txt' | Where-Object { -not $_.Name.StartsWith('.') }) -DestinationPath forge-source.zip -Force
     Get-FileHash -Algorithm SHA256 forge-source.zip | ForEach-Object { "{0}  {1}" -f $_.Hash, $_.Path } | Set-Content -NoNewline sha256.txt
 
 [unix]
 zip:
-    zip -r forge-source.zip . -x 'target/*' -x '.*' -x '.*/*' -x '*.zip' -x 'lcov.info' -x 'coverage/*' -x 'sha256.txt'
+    zip -r forge-source.zip . -x 'target/*' -x 'docs/*' -x 'scripts/*' -x '.*' -x '.*/*' -x '*.zip' -x 'lcov.info' -x 'coverage/*' -x 'sha256.txt'
     sha256sum forge-source.zip > sha256.txt || shasum -a 256 forge-source.zip > sha256.txt
 
 # Clean build artifacts
@@ -71,3 +71,20 @@ flatten:
     find . -name '*.rs' -not -path './target/*' | while read f; do cp "$f" "gemini-review/$(echo "${f#./}" | tr '/' '-')"; done
     find . \( -name 'README.md' -o -name 'CLAUDE.md' -o -name 'DESIGN.md' -o -name 'ARCHITECTURE.md' \) -not -path './target/*' | while read f; do cp "$f" "gemini-review/$(echo "${f#./}" | tr '/' '-')"; done
     echo "Flattened $(ls gemini-review | wc -l) files to gemini-review/"
+
+# Update TOC with current line numbers (uses cached descriptions)
+toc file="README.md":
+    cargo run --manifest-path scripts/toc-gen/Cargo.toml -- update {{file}}
+
+# Generate descriptions for new sections via LLM
+toc-generate file="README.md":
+    cargo run --manifest-path scripts/toc-gen/Cargo.toml --features generate -- update {{file}} --generate
+
+# Check if TOC is current (exit 1 if stale)
+toc-check file="README.md":
+    cargo run --manifest-path scripts/toc-gen/Cargo.toml -- check {{file}}
+
+# Update all known TOC files
+toc-all:
+    just toc README.md
+    just toc context/README.md

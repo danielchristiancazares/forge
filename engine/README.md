@@ -6,19 +6,20 @@ This document provides comprehensive documentation for the `forge-engine` crate 
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-107 | Overview: responsibilities, file structure, dependencies |
-| 108-143 | Architecture Diagram: App structure with InputState, OperationState, components |
-| 144-302 | State Machine Design: OperationState enum, states, transition diagrams |
+| 1-39 | Header, Table of Contents |
+| 40-108 | Overview: responsibilities, file structure, dependencies |
+| 109-143 | Architecture Diagram: App structure with InputState, OperationState, components |
+| 145-302 | State Machine Design: OperationState enum, states, transition diagrams |
 | 303-378 | Input Mode System: InputState enum, DraftInput, mode transitions |
-| 379-477 | Type-Driven Design Patterns: proof tokens, InsertToken, CommandToken, mode wrappers |
-| 478-575 | Streaming Orchestration: ActiveStream, StreamingMessage, lifecycle, journal recovery |
-| 576-647 | Command System: built-in commands table, rewind details, Command enum |
-| 648-710 | Context Management Integration: ContextManager, summarization retry, model switch adaptation |
-| 711-882 | Configuration: ForgeConfig structure, loading, env expansion, config sections |
-| 883-1027 | Tool Execution System: ToolRegistry, built-in tools, approval workflow, sandbox |
-| 1028-1261 | Public API Reference: App lifecycle, state queries, mode transitions, streaming ops |
-| 1262-1554 | Extension Guide: adding commands, input modes, providers, async operation states |
-| 1555-1700 | Re-exported Types, Error Handling, Thread Safety, Data Directory |
+| 379-483 | Type-Driven Design Patterns: proof tokens, InsertToken, CommandToken, mode wrappers |
+| 484-580 | Streaming Orchestration: ActiveStream, StreamingMessage, lifecycle, journal recovery |
+| 582-648 | Command System: built-in commands table, rewind details, Command enum |
+| 650-711 | Context Management Integration: ContextManager, summarization retry, model switch adaptation |
+| 713-891 | Configuration: ForgeConfig structure, loading, env expansion, config sections |
+| 893-1042 | Tool Execution System: ToolRegistry, built-in tools, approval workflow, sandbox |
+| 1044-1269 | Public API Reference: App lifecycle, state queries, mode transitions, streaming ops |
+| 1271-1560 | Extension Guide: adding commands, input modes, providers, async operation states |
+| 1562-1695 | Re-exported Types, Error Handling, Thread Safety, Data Directory |
 
 ## Table of Contents
 

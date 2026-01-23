@@ -2,6 +2,21 @@
 
 This directory contains utility scripts for development, testing, and maintenance of the Forge project.
 
+## LLM-TOC
+<!-- Auto-generated section map for LLM context -->
+| Lines | Section |
+|-------|---------|
+| 1-17 | Header, Intro, LLM-TOC, Table of Contents |
+| 18-22 | Available Scripts |
+| 24-34 | Usage |
+
+## Table of Contents
+
+1. [Available Scripts](#available-scripts)
+2. [Usage](#usage)
+
+---
+
 ## Available Scripts
 
 | Script | Language | Description |
