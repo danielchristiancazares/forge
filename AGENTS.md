@@ -42,7 +42,7 @@
 - `cargo check`: fast compile/type-check during development.
 - `cargo build`: debug build.
 - `cargo test`: run tests.
-- `cargo clippy -- -D warnings`: lint and fail on warnings.
+- `cargo clippy --workspace --all-targets -- -D warnings`: lint and fail on warnings.
 - `cargo cov`: coverage via cargo-llvm-cov.
 
 ## Formatting, Linting, and Testing Workflow

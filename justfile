@@ -24,7 +24,7 @@ test:
 
 # Run clippy lints
 lint:
-    cargo clippy -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
 
 # Format code
 fmt:

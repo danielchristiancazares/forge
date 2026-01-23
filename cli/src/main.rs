@@ -186,6 +186,11 @@ async fn main() -> Result<()> {
         eprintln!("Failed to save history: {e}");
     }
 
+    // Save session state (draft input + input history) before exit
+    if let Err(e) = app.save_session() {
+        eprintln!("Failed to save session: {e}");
+    }
+
     Ok(())
 }
 

@@ -599,14 +599,25 @@ The engine provides a slash command system for user actions.
 | `/screen` | - | Toggle fullscreen/inline mode |
 | `/tools` | - | Show tool status and list available tools |
 | `/rewind [id\|last] [scope]` | `/rw` | Rewind to an automatic checkpoint |
+| `/undo` | - | Rewind to the latest turn checkpoint (conversation only) |
+| `/retry` | - | Rewind to the latest turn checkpoint and restore the prompt into the draft |
 | `/help` | - | List available commands |
 
 **Rewind Command Details:**
 - `/rewind` or `/rewind list` - Show available checkpoints
+
 - `/rewind last code` - Rewind last checkpoint, restore only code changes
+
 - `/rewind 3 conversation` - Rewind to checkpoint 3, restore only conversation (alias: `chat`)
+
 - `/rewind last both` - Rewind last checkpoint, restore both code and conversation
+
 - Scopes: `code`, `conversation` (or `chat`), `both` (default: `both`)
+
+**Shortcuts:**
+- `/undo` - Rewind to the latest turn checkpoint (conversation only)
+
+- `/retry` - Rewind to the latest turn checkpoint and restore the prompt into the draft
 
 ### Command Enum
 
@@ -625,6 +636,8 @@ pub(crate) enum Command<'a> {
     Screen,
     Tools,
     Rewind { target: Option<&'a str>, scope: Option<&'a str> },
+    Undo,
+    Retry,
     Help,
     Unknown(&'a str),
     Empty,
@@ -640,6 +653,8 @@ impl<'a> Command<'a> {
                 target: parts.get(1).copied(),
                 scope: parts.get(2).copied(),
             },
+            Some("undo") => Command::Undo,
+            Some("retry") => Command::Retry,
             // ... etc
         }
     }

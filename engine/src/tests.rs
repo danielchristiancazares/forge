@@ -76,16 +76,18 @@ fn test_app() -> App {
         gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         gemini_cache_config: crate::GeminiCacheConfig::default(),
         librarian: None, // No Gemini API key in tests
+        input_history: crate::ui::InputHistory::default(),
+        session_save_counter: 0,
     }
 }
 
 /// Get the last notification text from the display (for test assertions).
 fn last_notification(app: &App) -> Option<&str> {
     for item in app.display.iter().rev() {
-        if let DisplayItem::Local(msg) = item {
-            if msg.role_str() == "system" {
-                return Some(msg.content());
-            }
+        if let DisplayItem::Local(msg) = item
+            && msg.role_str() == "system"
+        {
+            return Some(msg.content());
         }
     }
     None

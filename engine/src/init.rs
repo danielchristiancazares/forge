@@ -426,7 +426,8 @@ impl App {
 
     /// Get the path to the session state file.
     pub(crate) fn session_path(&self) -> std::path::PathBuf {
-        self.data_dir.join(crate::session_state::SessionState::FILENAME)
+        self.data_dir
+            .join(crate::session_state::SessionState::FILENAME)
     }
 
     pub(crate) fn context_infinity_enabled_from_env() -> bool {

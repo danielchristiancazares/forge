@@ -91,6 +91,18 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         show_in_help: true,
     },
     CommandSpec {
+        palette_label: "undo",
+        help_label: "undo",
+        description: "Undo the last user turn (rewind to the last turn checkpoint)",
+        show_in_help: true,
+    },
+    CommandSpec {
+        palette_label: "retry",
+        help_label: "retry",
+        description: "Undo the last user turn and restore its prompt into the input box",
+        show_in_help: true,
+    },
+    CommandSpec {
         palette_label: "help",
         help_label: "help",
         description: "Show available commands",
@@ -130,6 +142,8 @@ pub(crate) enum Command<'a> {
         target: Option<&'a str>,
         scope: Option<&'a str>,
     },
+    Undo,
+    Retry,
     Help,
     Unknown(&'a str),
     Empty,
@@ -155,6 +169,8 @@ impl<'a> Command<'a> {
                 target: parts.get(1).copied(),
                 scope: parts.get(2).copied(),
             },
+            Some("undo") => Command::Undo,
+            Some("retry") => Command::Retry,
             Some("help") => Command::Help,
             Some(cmd) => Command::Unknown(cmd),
             None => Command::Empty,
@@ -233,6 +249,11 @@ impl super::App {
 
     /// Process a slash command entered by the user.
     pub fn process_command(&mut self, command: EnteredCommand) {
+        // Record command to history for Up/Down navigation
+        if !command.raw.is_empty() {
+            self.record_command(&command.raw);
+        }
+
         let parsed = Command::parse(&command.raw);
 
         match parsed {
@@ -499,6 +520,64 @@ impl super::App {
                     self.push_notification(msg);
                 }
             }
+            Command::Undo => {
+                if let Some(reason) = self.busy_reason() {
+                    self.push_notification(format!("Cannot undo while {reason}."));
+                    return;
+                }
+
+                let Some(proof) = self.prepare_latest_turn_checkpoint() else {
+                    return;
+                };
+
+                if let Err(msg) =
+                    self.apply_rewind(proof, crate::checkpoints::RewindScope::Conversation)
+                {
+                    self.push_notification(msg);
+                }
+            }
+            Command::Retry => {
+                if let Some(reason) = self.busy_reason() {
+                    self.push_notification(format!("Cannot retry while {reason}."));
+                    return;
+                }
+
+                let Some(proof) = self.prepare_latest_turn_checkpoint() else {
+                    return;
+                };
+
+                // Capture the user prompt we are about to rewind away (best-effort).
+                let conversation_len = {
+                    let cp = self.checkpoints.checkpoint(proof);
+                    cp.conversation_len()
+                };
+                let prompt = self
+                    .context_manager
+                    .history()
+                    .entries()
+                    .get(conversation_len..)
+                    .and_then(|slice| {
+                        slice.iter().find_map(|entry| match entry.message() {
+                            forge_types::Message::User(_) => {
+                                Some(entry.message().content().to_string())
+                            }
+                            _ => None,
+                        })
+                    });
+
+                if let Err(msg) =
+                    self.apply_rewind(proof, crate::checkpoints::RewindScope::Conversation)
+                {
+                    self.push_notification(msg);
+                    return;
+                }
+
+                // Restore prompt into draft and drop the user into Insert mode.
+                if let Some(text) = prompt {
+                    self.input.draft_mut().set_text(text);
+                    self.input = std::mem::take(&mut self.input).into_insert();
+                }
+            }
             Command::Help => {
                 // TODO: Make this a modal
                 self.push_notification(command_help_summary());
@@ -643,5 +722,11 @@ mod tests {
                 scope: None
             }
         );
+    }
+
+    #[test]
+    fn parse_undo_and_retry_commands() {
+        assert_eq!(Command::parse("undo"), Command::Undo);
+        assert_eq!(Command::parse("retry"), Command::Retry);
     }
 }

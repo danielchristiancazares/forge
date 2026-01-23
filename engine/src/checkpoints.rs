@@ -39,6 +39,24 @@ impl fmt::Display for CheckpointId {
     }
 }
 
+/// Why a checkpoint exists (used for UX like /undo).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckpointKind {
+    /// Automatic checkpoint taken at the start of each user turn.
+    Turn,
+    /// Automatic checkpoint taken before tool-driven workspace edits.
+    ToolEdit,
+}
+
+impl CheckpointKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Turn => "turn",
+            Self::ToolEdit => "tool",
+        }
+    }
+}
+
 /// What to rewind when restoring a checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RewindScope {
@@ -71,6 +89,7 @@ impl RewindScope {
 pub(crate) struct CheckpointSummary {
     pub id: CheckpointId,
     pub created_at: SystemTime,
+    pub kind: CheckpointKind,
     pub has_code: bool,
     pub file_count: usize,
     pub total_bytes: usize,
@@ -83,10 +102,11 @@ impl CheckpointSummary {
             .with_timezone(&Local)
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
+        let kind = self.kind.label();
         let code = if self.has_code { "code+chat" } else { "chat" };
         let size = format_bytes(self.total_bytes);
         format!(
-            "#{id}  {when}  {code}  files:{files}  {size}",
+            "#{id}  {when}  {kind}  {code}  files:{files}  {size}",
             id = self.id,
             files = self.file_count
         )
@@ -98,6 +118,7 @@ impl CheckpointSummary {
 pub(crate) struct Checkpoint {
     id: CheckpointId,
     created_at: SystemTime,
+    kind: CheckpointKind,
     /// Number of history entries present when the checkpoint was created.
     conversation_len: usize,
     /// Present iff this checkpoint supports rewinding the workspace.
@@ -126,6 +147,7 @@ impl Checkpoint {
         CheckpointSummary {
             id: self.id,
             created_at: self.created_at,
+            kind: self.kind,
             has_code,
             file_count,
             total_bytes,
@@ -178,6 +200,8 @@ pub(crate) struct PreparedCodeRewind {
 /// Checkpoint creation outcome.
 #[derive(Debug, Clone)]
 pub(crate) struct CreatedCheckpoint {
+    #[allow(dead_code)]
+    pub kind: CheckpointKind,
     pub id: CheckpointId,
     #[allow(dead_code)]
     pub has_code: bool,
@@ -208,6 +232,14 @@ impl CheckpointStore {
         self.checkpoints.last().map(|c| c.id)
     }
 
+    pub(crate) fn latest_id_of_kind(&self, kind: CheckpointKind) -> Option<CheckpointId> {
+        self.checkpoints
+            .iter()
+            .rev()
+            .find(|c| c.kind == kind)
+            .map(|c| c.id)
+    }
+
     pub(crate) fn summaries(&self) -> Vec<CheckpointSummary> {
         self.checkpoints.iter().map(Checkpoint::summary).collect()
     }
@@ -222,6 +254,10 @@ impl CheckpointStore {
 
     pub(crate) fn prepare_latest(&self) -> Option<PreparedRewind> {
         self.latest_id().and_then(|id| self.prepare(id))
+    }
+
+    pub(crate) fn prepare_latest_of_kind(&self, kind: CheckpointKind) -> Option<PreparedRewind> {
+        self.latest_id_of_kind(kind).and_then(|id| self.prepare(id))
     }
 
     pub(crate) fn prepare_code(&self, rewind: PreparedRewind) -> Option<PreparedCodeRewind> {
@@ -251,6 +287,7 @@ impl CheckpointStore {
     ///   return a warning.
     pub(crate) fn create_for_files(
         &mut self,
+        kind: CheckpointKind,
         conversation_len: usize,
         files: impl IntoIterator<Item = PathBuf>,
     ) -> CreatedCheckpoint {
@@ -283,7 +320,10 @@ impl CheckpointStore {
             }
         }
 
-        let workspace = if warning.is_none() {
+        // Empty target set is intentionally conversation-only (no code snapshot to restore).
+        let workspace = if unique.is_empty() {
+            None
+        } else if warning.is_none() {
             Some(WorkspaceSnapshot {
                 files: snapshots,
                 total_bytes,
@@ -298,6 +338,7 @@ impl CheckpointStore {
         self.checkpoints.push(Checkpoint {
             id,
             created_at,
+            kind,
             conversation_len,
             workspace,
         });
@@ -309,6 +350,7 @@ impl CheckpointStore {
         }
 
         CreatedCheckpoint {
+            kind,
             id,
             has_code,
             file_count,
@@ -483,6 +525,31 @@ fn format_bytes(bytes: usize) -> String {
 // ============================================================================
 
 impl crate::App {
+    /// Create an automatic conversation-only checkpoint at the start of a user turn.
+    ///
+    /// This is intentionally silent (no notification spam). It is discoverable via /rewind list,
+    /// and consumed by /undo and /retry.
+    pub(crate) fn create_turn_checkpoint(&mut self) {
+        let conversation_len = self.context_manager.history().len();
+        let _ = self.checkpoints.create_for_files(
+            CheckpointKind::Turn,
+            conversation_len,
+            Vec::<PathBuf>::new(),
+        );
+    }
+
+    /// Obtain a proof for the latest per-turn checkpoint (used by /undo, /retry).
+    pub(crate) fn prepare_latest_turn_checkpoint(&mut self) -> Option<PreparedRewind> {
+        let Some(proof) = self
+            .checkpoints
+            .prepare_latest_of_kind(CheckpointKind::Turn)
+        else {
+            self.push_notification("No turn checkpoints available");
+            return None;
+        };
+        Some(proof)
+    }
+
     /// Create an automatic checkpoint if the tool batch includes file edits.
     ///
     /// This is called from the tool loop before any side-effecting file write tools run.
@@ -505,7 +572,9 @@ impl crate::App {
         }
 
         let conversation_len = self.context_manager.history().len();
-        let created = self.checkpoints.create_for_files(conversation_len, targets);
+        let created =
+            self.checkpoints
+                .create_for_files(CheckpointKind::ToolEdit, conversation_len, targets);
 
         if let Some(warning) = created.warning {
             self.push_notification(warning);
@@ -523,7 +592,7 @@ impl crate::App {
     pub(crate) fn show_checkpoint_list(&mut self) {
         if self.checkpoints.is_empty() {
             self.push_notification(
-                "No checkpoints yet. Forge creates them automatically before apply_patch/write_file.",
+                "No checkpoints yet. Forge creates them automatically at the start of each turn and before apply_patch/write_file.",
             );
             return;
         }
@@ -543,6 +612,9 @@ impl crate::App {
             lines.push(format!("- {}", s.format_line()));
         }
         lines.push("Usage: /rewind <id|last> [code|conversation|both]".to_string());
+        lines.push(
+            "Shortcuts: /undo (rewind last turn), /retry (undo + restore prompt)".to_string(),
+        );
 
         self.push_notification(lines.join("\n"));
     }
@@ -718,9 +790,10 @@ mod tests {
         assert!(store.latest_id().is_none());
 
         // Create a checkpoint with no files (conversation-only)
-        let created = store.create_for_files(5, Vec::<PathBuf>::new());
+        let created = store.create_for_files(CheckpointKind::Turn, 5, Vec::<PathBuf>::new());
         assert_eq!(created.id, CheckpointId(0));
         assert_eq!(created.file_count, 0);
+        assert!(!created.has_code);
         assert!(!store.is_empty());
         assert_eq!(store.latest_id(), Some(CheckpointId(0)));
 
@@ -735,9 +808,9 @@ mod tests {
         let mut store = CheckpointStore::default();
 
         // Create 3 checkpoints
-        store.create_for_files(1, Vec::<PathBuf>::new());
-        store.create_for_files(2, Vec::<PathBuf>::new());
-        store.create_for_files(3, Vec::<PathBuf>::new());
+        store.create_for_files(CheckpointKind::Turn, 1, Vec::<PathBuf>::new());
+        store.create_for_files(CheckpointKind::Turn, 2, Vec::<PathBuf>::new());
+        store.create_for_files(CheckpointKind::Turn, 3, Vec::<PathBuf>::new());
 
         assert_eq!(store.summaries().len(), 3);
 

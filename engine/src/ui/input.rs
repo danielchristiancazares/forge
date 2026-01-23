@@ -23,10 +23,12 @@ pub struct DraftInput {
 }
 
 impl DraftInput {
+    #[must_use]
     pub fn text(&self) -> &str {
         &self.text
     }
 
+    #[must_use]
     pub fn cursor(&self) -> usize {
         self.cursor
     }
@@ -125,6 +127,7 @@ impl DraftInput {
         }
     }
 
+    #[must_use]
     pub fn grapheme_count(&self) -> usize {
         self.text.graphemes(true).count()
     }
@@ -136,6 +139,7 @@ impl DraftInput {
             .is_some_and(|grapheme| grapheme.chars().all(char::is_whitespace))
     }
 
+    #[must_use]
     pub fn byte_index(&self) -> usize {
         self.byte_index_at(self.cursor)
     }

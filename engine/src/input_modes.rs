@@ -287,11 +287,18 @@ impl InsertMode<'_> {
         };
 
         let raw_content = self.app.input.draft_mut().take_text();
+        // Record prompt to history for Up/Down navigation
+        self.app.record_prompt(&raw_content);
+
         let content = if let Ok(content) = NonEmptyString::new(raw_content.clone()) {
             content
         } else {
             return None;
         };
+
+        // Automatic per-turn checkpoint (conversation rewind). Enables /undo and /retry.
+        // Must happen before we append the user message to history.
+        self.app.create_turn_checkpoint();
 
         // Track user message in context manager (also adds to display)
         let msg_id = self.app.push_history_message(Message::user(content));

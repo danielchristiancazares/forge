@@ -11,8 +11,8 @@ use tokio::sync::mpsc;
 mod ui;
 use ui::InputState;
 pub use ui::{
-    DisplayItem, DraftInput, InputHistory, InputMode, ModalEffect, ModalEffectKind, PredefinedModel,
-    ScrollState, UiOptions, ViewState,
+    DisplayItem, DraftInput, InputHistory, InputMode, ModalEffect, ModalEffectKind,
+    PredefinedModel, ScrollState, UiOptions, ViewState,
 };
 
 // Re-export from crates for public API
@@ -361,7 +361,7 @@ pub struct App {
     tool_journal: ToolJournal,
     /// File hash cache for tool safety checks.
     tool_file_cache: std::sync::Arc<tokio::sync::Mutex<tools::ToolFileCache>>,
-    /// Checkpoints for rewind (automatic snapshots before tool-driven edits).
+    /// Checkpoints for rewind (per-turn conversation checkpoints + tool-edit snapshots).
     checkpoints: checkpoints::CheckpointStore,
     /// Tool iterations used in the current user turn.
     tool_iterations: u32,
@@ -792,6 +792,13 @@ impl App {
         self.poll_summarization();
         self.poll_summarization_retry();
         self.poll_tool_loop();
+
+        // Debounced session autosave (~3 seconds at 100ms poll interval)
+        self.session_save_counter += 1;
+        if self.session_save_counter >= 30 {
+            self.session_save_counter = 0;
+            self.autosave_session();
+        }
     }
 
     /// Get elapsed time since last frame and update timing.
@@ -1068,10 +1075,10 @@ impl App {
     /// On first call, stashes the current draft and shows the most recent prompt.
     /// Subsequent calls show progressively older prompts.
     pub fn navigate_history_up(&mut self) {
-        if let InputState::Insert(ref mut draft) = self.input {
-            if let Some(text) = self.input_history.navigate_prompt_up(draft.text()) {
-                draft.set_text(text.to_owned());
-            }
+        if let InputState::Insert(ref mut draft) = self.input
+            && let Some(text) = self.input_history.navigate_prompt_up(draft.text())
+        {
+            draft.set_text(text.to_owned());
         }
     }
 
@@ -1079,28 +1086,28 @@ impl App {
     ///
     /// When at the newest entry, restores the stashed draft.
     pub fn navigate_history_down(&mut self) {
-        if let InputState::Insert(ref mut draft) = self.input {
-            if let Some(text) = self.input_history.navigate_prompt_down() {
-                draft.set_text(text.to_owned());
-            }
+        if let InputState::Insert(ref mut draft) = self.input
+            && let Some(text) = self.input_history.navigate_prompt_down()
+        {
+            draft.set_text(text.to_owned());
         }
     }
 
     /// Navigate to previous (older) command in Command mode.
     pub fn navigate_command_history_up(&mut self) {
-        if let InputState::Command { command, .. } = &mut self.input {
-            if let Some(text) = self.input_history.navigate_command_up(command.text()) {
-                command.set_text(text.to_owned());
-            }
+        if let InputState::Command { command, .. } = &mut self.input
+            && let Some(text) = self.input_history.navigate_command_up(command.text())
+        {
+            command.set_text(text.to_owned());
         }
     }
 
     /// Navigate to next (newer) command in Command mode.
     pub fn navigate_command_history_down(&mut self) {
-        if let InputState::Command { command, .. } = &mut self.input {
-            if let Some(text) = self.input_history.navigate_command_down() {
-                command.set_text(text.to_owned());
-            }
+        if let InputState::Command { command, .. } = &mut self.input
+            && let Some(text) = self.input_history.navigate_command_down()
+        {
+            command.set_text(text.to_owned());
         }
     }
 

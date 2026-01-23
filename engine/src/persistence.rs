@@ -187,9 +187,7 @@ impl App {
                     tracing::debug!("Loaded session state from {}", path.display());
                 }
                 Ok(_) => {
-                    tracing::debug!(
-                        "Session state version mismatch, starting fresh"
-                    );
+                    tracing::debug!("Session state version mismatch, starting fresh");
                 }
                 Err(e) => {
                     tracing::warn!("Failed to parse session state: {e}");
