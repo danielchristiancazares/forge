@@ -125,6 +125,78 @@ pub fn command_help_summary() -> String {
     format!("Commands: /{}", labels.join(", /"))
 }
 
+// ============================================================================
+// Command name normalization / aliasing (used by parsing + tab completion)
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommandKind {
+    Quit,
+    Clear,
+    Model,
+    Provider,
+    Context,
+    Journal,
+    Summarize,
+    Cancel,
+    Screen,
+    Tools,
+    Rewind,
+    Undo,
+    Retry,
+    Help,
+}
+
+impl CommandKind {
+    pub(crate) fn expects_arg(self) -> bool {
+        matches!(self, Self::Model | Self::Provider | Self::Rewind)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CommandAlias {
+    pub name: &'static str,
+    pub kind: CommandKind,
+}
+
+const COMMAND_ALIASES: &[CommandAlias] = &[
+    CommandAlias { name: "q", kind: CommandKind::Quit },
+    CommandAlias { name: "quit", kind: CommandKind::Quit },
+    CommandAlias { name: "clear", kind: CommandKind::Clear },
+    CommandAlias { name: "model", kind: CommandKind::Model },
+    CommandAlias { name: "p", kind: CommandKind::Provider },
+    CommandAlias { name: "provider", kind: CommandKind::Provider },
+    CommandAlias { name: "ctx", kind: CommandKind::Context },
+    CommandAlias { name: "context", kind: CommandKind::Context },
+    CommandAlias { name: "jrnl", kind: CommandKind::Journal },
+    CommandAlias { name: "journal", kind: CommandKind::Journal },
+    CommandAlias { name: "sum", kind: CommandKind::Summarize },
+    CommandAlias { name: "summarize", kind: CommandKind::Summarize },
+    CommandAlias { name: "cancel", kind: CommandKind::Cancel },
+    CommandAlias { name: "screen", kind: CommandKind::Screen },
+    CommandAlias { name: "tools", kind: CommandKind::Tools },
+    CommandAlias { name: "rw", kind: CommandKind::Rewind },
+    CommandAlias { name: "rewind", kind: CommandKind::Rewind },
+    CommandAlias { name: "undo", kind: CommandKind::Undo },
+    CommandAlias { name: "retry", kind: CommandKind::Retry },
+    CommandAlias { name: "help", kind: CommandKind::Help },
+];
+
+pub(crate) fn command_aliases() -> &'static [CommandAlias] {
+    COMMAND_ALIASES
+}
+
+pub(crate) fn normalize_command_name(raw: &str) -> Option<CommandKind> {
+    let token = raw.trim().trim_start_matches('/');
+    if token.is_empty() {
+        return None;
+    }
+    COMMAND_ALIASES
+        .iter()
+        .find(|alias| alias.name.eq_ignore_ascii_case(token))
+        .map(|alias| alias.kind)
+}
+
 /// Parsed command with typed arguments.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command<'a> {
@@ -151,29 +223,44 @@ pub(crate) enum Command<'a> {
 
 impl<'a> Command<'a> {
     /// Parse a raw command string into a typed Command.
+    ///
+    /// Accepts optional leading `/` and is case-insensitive (e.g., `/Clear`, `MODEL`).
     pub(crate) fn parse(raw: &'a str) -> Self {
         let parts: Vec<&str> = raw.split_whitespace().collect();
 
-        match parts.first().copied() {
-            Some("q" | "quit") => Command::Quit,
-            Some("clear") => Command::Clear,
-            Some("model") => Command::Model(parts.get(1).copied()),
-            Some("provider" | "p") => Command::Provider(parts.get(1).copied()),
-            Some("context" | "ctx") => Command::Context,
-            Some("journal" | "jrnl") => Command::Journal,
-            Some("summarize" | "sum") => Command::Summarize,
-            Some("cancel") => Command::Cancel,
-            Some("screen") => Command::Screen,
-            Some("tools") => Command::Tools,
-            Some("rewind" | "rw") => Command::Rewind {
+        let Some(cmd_raw) = parts.first().copied() else {
+            return Command::Empty;
+        };
+
+        // Treat a bare "/" as empty, since the UI already renders the prefix.
+        let trimmed = cmd_raw.trim();
+        let token = trimmed.trim_start_matches('/');
+        if token.is_empty() {
+            return Command::Empty;
+        }
+
+        let Some(kind) = normalize_command_name(trimmed) else {
+            return Command::Unknown(cmd_raw);
+        };
+
+        match kind {
+            CommandKind::Quit => Command::Quit,
+            CommandKind::Clear => Command::Clear,
+            CommandKind::Model => Command::Model(parts.get(1).copied()),
+            CommandKind::Provider => Command::Provider(parts.get(1).copied()),
+            CommandKind::Context => Command::Context,
+            CommandKind::Journal => Command::Journal,
+            CommandKind::Summarize => Command::Summarize,
+            CommandKind::Cancel => Command::Cancel,
+            CommandKind::Screen => Command::Screen,
+            CommandKind::Tools => Command::Tools,
+            CommandKind::Rewind => Command::Rewind {
                 target: parts.get(1).copied(),
                 scope: parts.get(2).copied(),
             },
-            Some("undo") => Command::Undo,
-            Some("retry") => Command::Retry,
-            Some("help") => Command::Help,
-            Some(cmd) => Command::Unknown(cmd),
-            None => Command::Empty,
+            CommandKind::Undo => Command::Undo,
+            CommandKind::Retry => Command::Retry,
+            CommandKind::Help => Command::Help,
         }
     }
 }
@@ -685,11 +772,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_case_sensitive() {
-        // Commands should be case-sensitive
-        assert_eq!(Command::parse("QUIT"), Command::Unknown("QUIT"));
-        assert_eq!(Command::parse("Clear"), Command::Unknown("Clear"));
-        assert_eq!(Command::parse("MODEL"), Command::Unknown("MODEL"));
+    fn parse_case_insensitive_and_slash_prefix() {
+        // Commands should be case-insensitive
+        assert_eq!(Command::parse("QUIT"), Command::Quit);
+        assert_eq!(Command::parse("Clear"), Command::Clear);
+        assert_eq!(Command::parse("MODEL"), Command::Model(None));
+
+        // Leading slash should be accepted
+        assert_eq!(Command::parse("/quit"), Command::Quit);
+        assert_eq!(Command::parse("/clear"), Command::Clear);
+        assert_eq!(Command::parse("/model gpt-5"), Command::Model(Some("gpt-5")));
+
+        // Bare "/" should be treated as empty
+        assert_eq!(Command::parse("/"), Command::Empty);
     }
 
     #[test]

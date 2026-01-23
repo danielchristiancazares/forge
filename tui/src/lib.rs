@@ -677,6 +677,8 @@ pub(crate) fn draw_input(
         InputMode::Command => vec![
             Span::styled("Enter", styles::key_highlight(palette)),
             Span::styled(" execute  ", styles::key_hint(palette)),
+            Span::styled("Tab", styles::key_highlight(palette)),
+            Span::styled(" complete  ", styles::key_hint(palette)),
             Span::styled("Esc", styles::key_highlight(palette)),
             Span::styled(" cancel ", styles::key_hint(palette)),
         ],

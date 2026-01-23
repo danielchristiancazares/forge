@@ -354,6 +354,10 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     command_mode.clear_line();
                 }
+                // Tab completion
+                KeyCode::Tab => {
+                    command_mode.tab_complete();
+                }
                 // Insert character
                 KeyCode::Char(c) => {
                     command_mode.push_char(c);

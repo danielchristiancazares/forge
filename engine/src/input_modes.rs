@@ -397,6 +397,39 @@ impl CommandMode<'_> {
         command.clear();
     }
 
+    /// Perform shell-style tab completion on the command line.
+    ///
+    /// Completion is conservative: it only inserts additional characters when
+    /// there is a single match or the matches share a longer common prefix.
+    ///
+    /// Supported completions:
+    /// - Command names/aliases (e.g. `cl` -> `clear`)
+    /// - Provider argument for `/provider`
+    /// - Model argument for `/model` (current provider)
+    /// - Rewind targets/scopes for `/rewind`
+    pub fn tab_complete(&mut self) {
+        let Some(line) = self.app.command_text().map(str::to_owned) else {
+            return;
+        };
+        let cursor_byte = self
+            .app
+            .command_cursor_byte_index()
+            .unwrap_or(line.len())
+            .min(line.len());
+
+        let Some(insert) = compute_command_tab_completion(self.app, &line, cursor_byte) else {
+            return;
+        };
+        if insert.is_empty() {
+            return;
+        }
+
+        let Some(command) = self.command_mut() else {
+            return;
+        };
+        command.enter_text(&insert);
+    }
+
     #[must_use]
     pub fn take_command(self) -> Option<EnteredCommand> {
         let input = std::mem::take(&mut self.app.input);
@@ -410,4 +443,173 @@ impl CommandMode<'_> {
             raw: command.take_text(),
         })
     }
+}
+
+// ============================================================================
+// Command tab-completion helpers
+// ============================================================================
+
+fn compute_command_tab_completion(app: &App, line: &str, cursor_byte: usize) -> Option<String> {
+    let cursor_byte = cursor_byte.min(line.len());
+    let before_cursor = &line[..cursor_byte];
+
+    // Identify the current token fragment (from last whitespace to cursor).
+    let token_start = before_cursor
+        .rfind(|c: char| c.is_whitespace())
+        .map(|idx| idx + before_cursor[idx..].chars().next().unwrap_or(' ').len_utf8())
+        .unwrap_or(0);
+
+    let token_index = before_cursor[..token_start].split_whitespace().count();
+    let fragment = &line[token_start..cursor_byte];
+
+    if token_index == 0 {
+        return complete_command_name(fragment, cursor_byte == line.len());
+    }
+
+    // Argument completion depends on the (normalized) command name.
+    let first = line.split_whitespace().next()?;
+    let kind = crate::commands::normalize_command_name(first)?;
+    let arg_index = token_index.saturating_sub(1);
+
+    complete_command_arg(app, kind, arg_index, fragment)
+}
+
+fn complete_command_name(fragment: &str, at_end_of_line: bool) -> Option<String> {
+    let (_prefix, core) = fragment.strip_prefix('/').map_or(("", fragment), |rest| ("/", rest));
+    let core_lower = core.to_ascii_lowercase();
+    let core_chars = core.chars().count();
+
+    let matches: Vec<&crate::commands::CommandAlias> = crate::commands::command_aliases()
+        .iter()
+        .filter(|alias| alias.name.starts_with(&core_lower))
+        .collect();
+
+    if matches.is_empty() {
+        return None;
+    }
+
+    if matches.len() == 1 {
+        let m = matches[0];
+        let mut insert: String = m.name.chars().skip(core_chars).collect();
+        if m.kind.expects_arg() && at_end_of_line {
+            insert.push(' ');
+        }
+        return Some(insert);
+    }
+
+    // Multiple matches: extend to the longest common prefix if it advances the cursor.
+    let names: Vec<&str> = matches.iter().map(|m| m.name).collect();
+    let lcp = longest_common_prefix(&names);
+    if lcp.chars().count() <= core_chars {
+        return None;
+    }
+
+    Some(lcp.chars().skip(core_chars).collect())
+}
+
+fn complete_command_arg(
+    app: &App,
+    kind: crate::commands::CommandKind,
+    arg_index: usize,
+    fragment: &str,
+) -> Option<String> {
+    use crate::commands::CommandKind;
+
+    // Rewind targets accept optional leading '#', because checkpoint lists format ids as #<id>.
+    let (_prefix, core) =
+        if matches!(kind, CommandKind::Rewind) && arg_index == 0 {
+            fragment.strip_prefix('#').map_or(("", fragment), |rest| ("#", rest))
+        } else {
+            ("", fragment)
+        };
+
+    let core_lower = core.to_ascii_lowercase();
+    let core_chars = core.chars().count();
+
+    let candidates: Vec<String> = match (kind, arg_index) {
+        (CommandKind::Provider, 0) => vec![
+            "claude".to_string(),
+            "anthropic".to_string(),
+            "gpt".to_string(),
+            "openai".to_string(),
+            "chatgpt".to_string(),
+            "gemini".to_string(),
+            "google".to_string(),
+        ],
+        (CommandKind::Model, 0) => app
+            .provider()
+            .available_models()
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        (CommandKind::Rewind, 0) => {
+            let mut v = vec![
+                "list".to_string(),
+                "ls".to_string(),
+                "last".to_string(),
+                "latest".to_string(),
+            ];
+            // Checkpoints are cheap (<= 50). Offer all numeric ids for completion.
+            for s in app.checkpoints.summaries() {
+                v.push(s.id.to_string());
+            }
+            v
+        }
+        (CommandKind::Rewind, 1) => vec![
+            "code".to_string(),
+            "conversation".to_string(),
+            "chat".to_string(),
+            "both".to_string(),
+        ],
+        _ => Vec::new(),
+    };
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let matches: Vec<&str> = candidates
+        .iter()
+        .map(String::as_str)
+        .filter(|c| c.to_ascii_lowercase().starts_with(&core_lower))
+        .collect();
+
+    if matches.is_empty() {
+        return None;
+    }
+
+    if matches.len() == 1 {
+        let chosen = matches[0];
+        return Some(chosen.chars().skip(core_chars).collect());
+    }
+
+    let lcp = longest_common_prefix(&matches);
+    if lcp.chars().count() <= core_chars {
+        return None;
+    }
+
+    Some(lcp.chars().skip(core_chars).collect())
+}
+
+fn longest_common_prefix(strings: &[&str]) -> String {
+    let Some(first) = strings.first() else {
+        return String::new();
+    };
+
+    let mut prefix: Vec<char> = first.chars().collect();
+    for s in &strings[1..] {
+        let mut new_len = 0usize;
+        for (a, b) in prefix.iter().zip(s.chars()) {
+            if *a == b {
+                new_len += 1;
+            } else {
+                break;
+            }
+        }
+        prefix.truncate(new_len);
+        if prefix.is_empty() {
+            break;
+        }
+    }
+    prefix.into_iter().collect()
 }
