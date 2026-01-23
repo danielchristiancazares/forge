@@ -160,26 +160,86 @@ pub(crate) struct CommandAlias {
 }
 
 const COMMAND_ALIASES: &[CommandAlias] = &[
-    CommandAlias { name: "q", kind: CommandKind::Quit },
-    CommandAlias { name: "quit", kind: CommandKind::Quit },
-    CommandAlias { name: "clear", kind: CommandKind::Clear },
-    CommandAlias { name: "model", kind: CommandKind::Model },
-    CommandAlias { name: "p", kind: CommandKind::Provider },
-    CommandAlias { name: "provider", kind: CommandKind::Provider },
-    CommandAlias { name: "ctx", kind: CommandKind::Context },
-    CommandAlias { name: "context", kind: CommandKind::Context },
-    CommandAlias { name: "jrnl", kind: CommandKind::Journal },
-    CommandAlias { name: "journal", kind: CommandKind::Journal },
-    CommandAlias { name: "sum", kind: CommandKind::Summarize },
-    CommandAlias { name: "summarize", kind: CommandKind::Summarize },
-    CommandAlias { name: "cancel", kind: CommandKind::Cancel },
-    CommandAlias { name: "screen", kind: CommandKind::Screen },
-    CommandAlias { name: "tools", kind: CommandKind::Tools },
-    CommandAlias { name: "rw", kind: CommandKind::Rewind },
-    CommandAlias { name: "rewind", kind: CommandKind::Rewind },
-    CommandAlias { name: "undo", kind: CommandKind::Undo },
-    CommandAlias { name: "retry", kind: CommandKind::Retry },
-    CommandAlias { name: "help", kind: CommandKind::Help },
+    CommandAlias {
+        name: "q",
+        kind: CommandKind::Quit,
+    },
+    CommandAlias {
+        name: "quit",
+        kind: CommandKind::Quit,
+    },
+    CommandAlias {
+        name: "clear",
+        kind: CommandKind::Clear,
+    },
+    CommandAlias {
+        name: "model",
+        kind: CommandKind::Model,
+    },
+    CommandAlias {
+        name: "p",
+        kind: CommandKind::Provider,
+    },
+    CommandAlias {
+        name: "provider",
+        kind: CommandKind::Provider,
+    },
+    CommandAlias {
+        name: "ctx",
+        kind: CommandKind::Context,
+    },
+    CommandAlias {
+        name: "context",
+        kind: CommandKind::Context,
+    },
+    CommandAlias {
+        name: "jrnl",
+        kind: CommandKind::Journal,
+    },
+    CommandAlias {
+        name: "journal",
+        kind: CommandKind::Journal,
+    },
+    CommandAlias {
+        name: "sum",
+        kind: CommandKind::Summarize,
+    },
+    CommandAlias {
+        name: "summarize",
+        kind: CommandKind::Summarize,
+    },
+    CommandAlias {
+        name: "cancel",
+        kind: CommandKind::Cancel,
+    },
+    CommandAlias {
+        name: "screen",
+        kind: CommandKind::Screen,
+    },
+    CommandAlias {
+        name: "tools",
+        kind: CommandKind::Tools,
+    },
+    CommandAlias {
+        name: "rw",
+        kind: CommandKind::Rewind,
+    },
+    CommandAlias {
+        name: "rewind",
+        kind: CommandKind::Rewind,
+    },
+    CommandAlias {
+        name: "undo",
+        kind: CommandKind::Undo,
+    },
+    CommandAlias {
+        name: "retry",
+        kind: CommandKind::Retry,
+    },
+    CommandAlias {
+        name: "help",
+        kind: CommandKind::Help,
+    },
 ];
 
 pub(crate) fn command_aliases() -> &'static [CommandAlias] {
@@ -781,7 +841,10 @@ mod tests {
         // Leading slash should be accepted
         assert_eq!(Command::parse("/quit"), Command::Quit);
         assert_eq!(Command::parse("/clear"), Command::Clear);
-        assert_eq!(Command::parse("/model gpt-5"), Command::Model(Some("gpt-5")));
+        assert_eq!(
+            Command::parse("/model gpt-5"),
+            Command::Model(Some("gpt-5"))
+        );
 
         // Bare "/" should be treated as empty
         assert_eq!(Command::parse("/"), Command::Empty);

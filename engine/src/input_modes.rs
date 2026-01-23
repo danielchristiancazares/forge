@@ -456,7 +456,13 @@ fn compute_command_tab_completion(app: &App, line: &str, cursor_byte: usize) -> 
     // Identify the current token fragment (from last whitespace to cursor).
     let token_start = before_cursor
         .rfind(|c: char| c.is_whitespace())
-        .map(|idx| idx + before_cursor[idx..].chars().next().unwrap_or(' ').len_utf8())
+        .map(|idx| {
+            idx + before_cursor[idx..]
+                .chars()
+                .next()
+                .unwrap_or(' ')
+                .len_utf8()
+        })
         .unwrap_or(0);
 
     let token_index = before_cursor[..token_start].split_whitespace().count();
@@ -475,7 +481,9 @@ fn compute_command_tab_completion(app: &App, line: &str, cursor_byte: usize) -> 
 }
 
 fn complete_command_name(fragment: &str, at_end_of_line: bool) -> Option<String> {
-    let (_prefix, core) = fragment.strip_prefix('/').map_or(("", fragment), |rest| ("/", rest));
+    let (_prefix, core) = fragment
+        .strip_prefix('/')
+        .map_or(("", fragment), |rest| ("/", rest));
     let core_lower = core.to_ascii_lowercase();
     let core_chars = core.chars().count();
 
@@ -516,12 +524,13 @@ fn complete_command_arg(
     use crate::commands::CommandKind;
 
     // Rewind targets accept optional leading '#', because checkpoint lists format ids as #<id>.
-    let (_prefix, core) =
-        if matches!(kind, CommandKind::Rewind) && arg_index == 0 {
-            fragment.strip_prefix('#').map_or(("", fragment), |rest| ("#", rest))
-        } else {
-            ("", fragment)
-        };
+    let (_prefix, core) = if matches!(kind, CommandKind::Rewind) && arg_index == 0 {
+        fragment
+            .strip_prefix('#')
+            .map_or(("", fragment), |rest| ("#", rest))
+    } else {
+        ("", fragment)
+    };
 
     let core_lower = core.to_ascii_lowercase();
     let core_chars = core.chars().count();
