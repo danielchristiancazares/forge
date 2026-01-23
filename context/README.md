@@ -8,19 +8,23 @@ Context Infinity™ is Forge's system for managing unlimited conversation contex
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-65 | Overview: core principle, design principles, architecture diagram |
-| 66-120 | Core Concepts: Full History (append-only), HistoryEntry enum, Summaries |
-| 121-195 | Token Budget Calculation: ModelLimits, effective budget formula, output limit config |
-| 196-310 | Context Building Algorithm: 5 phases, error types (SummarizationNeeded, RecentMessagesTooLarge) |
-| 311-400 | Model Switching (Context Adaptation): shrinking vs expanding, ContextAdaptation enum |
-| 401-510 | Stream Journal (Crash Recovery): schema, lifecycle, RAII pattern, commit-and-prune flow |
-| 511-580 | Token Counting: TokenCounter, singleton pattern, accuracy caveats |
-| 581-650 | Usage Statistics and Persistence: ContextUsage, history serialization, journal locations |
-| 651-720 | Type-Driven Design: proof types table, PreparedContext as proof |
-| 721-850 | Public API - Core Types: ContextManager, PreparedContext, ContextBuildError |
-| 851-1050 | Public API - History, Model Limits, Token Counting, Stream Journal, Tool Journal |
-| 1051-1150 | Public API - Summarization, Working Context, ContextUsage |
-| 1151-1320 | Complete Workflow Example, Type Relationships, Error Handling, Dependencies, Testing |
+| 1-67 | Overview: core principle, design principles, architecture diagram |
+| 68-130 | Core Concepts: Full History (append-only), HistoryEntry enum, Summaries |
+| 131-215 | Token Budget Calculation: ModelLimits, effective budget formula, output limit config |
+| 216-330 | Context Building Algorithm: 5 phases, error types (SummarizationNeeded, RecentMessagesTooLarge) |
+| 331-420 | Model Switching (Context Adaptation): shrinking vs expanding, ContextAdaptation enum |
+| 421-530 | Stream Journal (Crash Recovery): schema, lifecycle, RAII pattern, commit-and-prune flow |
+| 531-600 | Token Counting: TokenCounter, singleton pattern, accuracy caveats |
+| 601-670 | Usage Statistics and Persistence: ContextUsage, history serialization, journal locations |
+| 671-715 | Type-Driven Design: proof types table, PreparedContext as proof |
+| 716-810 | The Librarian: intelligent context distillation, fact types, lifecycle diagram |
+| 811-870 | Fact Store: SQLite schema, staleness detection, key operations |
+| 871-1010 | Public API - Core Types: ContextManager, PreparedContext, ContextBuildError |
+| 1011-1210 | Public API - History, Model Limits, Token Counting, Stream Journal, Tool Journal |
+| 1211-1385 | Public API - Summarization |
+| 1386-1545 | Public API - Librarian, Fact, FactType, FactStore, StoredFact |
+| 1546-1600 | Public API - Working Context, ContextUsage |
+| 1601-1750 | Complete Workflow Example, Type Relationships, Error Handling, Dependencies, Testing |
 
 ## Overview
 
@@ -61,6 +65,8 @@ WorkingContext -----> API Messages
 | `ModelRegistry` | Model-specific token limits with prefix matching |
 | `WorkingContext` | Derived view of what to send to the API |
 | `StreamJournal` | SQLite-backed crash recovery for streaming responses |
+| `Librarian` | Intelligent fact extraction and retrieval using Gemini Flash |
+| `FactStore` | SQLite-backed persistent storage for extracted facts |
 
 ### Directory Structure
 
@@ -75,6 +81,8 @@ context/src/
   stream_journal.rs   # StreamJournal, ActiveJournal (crash recovery)
   summarization.rs    # LLM-based summarization via cheaper models
   tool_journal.rs     # ToolJournal (tool batch crash recovery)
+  librarian.rs        # Librarian - intelligent fact extraction/retrieval
+  fact_store.rs       # FactStore - SQLite persistence for facts
 ```
 
 ## Core Concepts
@@ -708,6 +716,163 @@ fn count_message(&self, msg: &Message) -> u32;
 
 ---
 
+## The Librarian (Intelligent Context Distillation)
+
+The Librarian is a background component that provides intelligent fact extraction and retrieval, enabling effectively unlimited conversation length while keeping API costs low.
+
+### How It Works
+
+Instead of sending full conversation history to the LLM, the Librarian:
+
+1. **Extracts** structured facts from each conversation exchange (post-turn)
+2. **Retrieves** relevant facts for new queries (pre-flight)
+
+The API call then includes:
+- System prompt
+- Retrieved facts (what Librarian determines is relevant)
+- Recent N messages (immediate context)
+- Current user message
+
+### Model Choice
+
+The Librarian uses **Gemini Flash** (`gemini-3-flash-preview`) for cheap, fast operations. It runs invisibly in the background - users never see it directly.
+
+### Fact Types
+
+The Librarian extracts five types of facts:
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `Entity` | Files, functions, variables, paths, URLs | "File `src/lib.rs` contains the main `App` struct" |
+| `Decision` | Design choices with rationale | "Chose async/await for concurrency because..." |
+| `Constraint` | Limitations or requirements | "Must stay compatible with API v2" |
+| `CodeState` | What was created, modified, deleted | "Added `validate()` method to `User` struct" |
+| `Pinned` | User-explicitly marked important | "Never modify the authentication flow" |
+
+### Fact Structure
+
+```rust
+pub struct Fact {
+    pub fact_type: FactType,
+    pub content: String,
+    pub entities: Vec<String>,  // Searchable keywords
+}
+```
+
+### Lifecycle
+
+```
+User message arrives
+        |
+        v
++------------------+
+| Pre-flight:      |     Librarian.retrieve_context(query)
+| Retrieve facts   | --> Returns relevant facts to inject
++------------------+
+        |
+        v
+Build context with facts + recent messages
+        |
+        v
+Make API call
+        |
+        v
++------------------+
+| Post-turn:       |     Librarian.extract_and_store(user, assistant)
+| Extract facts    | --> Stores new facts for future retrieval
++------------------+
+```
+
+### API Usage
+
+```rust
+use forge_context::{Librarian, Fact, FactType, RetrievalResult};
+
+// Initialize with persistent storage
+let mut librarian = Librarian::open("~/.forge/facts.db", gemini_api_key)?;
+
+// Pre-flight: Get relevant context for a query
+let retrieval: RetrievalResult = librarian.retrieve_context("How do I add tests?").await?;
+let context_text = format_facts_for_context(&retrieval.relevant_facts);
+
+// Post-turn: Extract facts from the exchange
+let extraction = librarian.extract_and_store(
+    "How do I add tests?",
+    "You can add tests by creating a #[test] function..."
+).await?;
+
+// Manual fact pinning (user-requested)
+librarian.pin_fact(
+    "Never delete the migrations directory",
+    &["migrations".to_string()]
+)?;
+
+// Search facts by keyword
+let related = librarian.search("migrations")?;
+```
+
+---
+
+## Fact Store (Persistent Storage)
+
+The `FactStore` provides SQLite-backed persistence for Librarian-extracted facts with source tracking and staleness detection.
+
+### Schema
+
+```sql
+-- Core fact storage
+facts (id, fact_type, content, turn_number, created_at)
+
+-- Searchable entities (many-to-one)
+fact_entities (fact_id, entity)
+
+-- Source file tracking for staleness
+fact_sources (id, file_path, sha256, updated_at)
+
+-- Fact-to-source links (many-to-many)
+fact_source_links (fact_id, source_id)
+```
+
+### Staleness Detection
+
+Facts can be linked to source files. When a file changes (detected via SHA256 comparison), facts derived from it are marked as potentially stale:
+
+```rust
+// Store facts with source tracking
+let fact_ids = store.store_facts(&facts, turn_number)?;
+store.link_facts_to_sources(&fact_ids, &["src/lib.rs".to_string()])?;
+
+// Later: check if facts are stale
+let results = store.search_with_staleness("lib.rs")?;
+for result in results {
+    if result.is_stale() {
+        println!("Fact may be outdated, sources changed: {:?}", result.stale_sources);
+    }
+}
+```
+
+### Key Operations
+
+| Method | Description |
+|--------|-------------|
+| `open(path)` | Open or create persistent store |
+| `open_in_memory()` | Create in-memory store (testing) |
+| `store_facts(facts, turn)` | Store facts with turn number |
+| `get_all_facts()` | Retrieve all stored facts |
+| `search_by_entity(keyword)` | Search facts by entity keyword |
+| `add_pinned_fact(content, entities, turn)` | Add user-pinned fact |
+| `link_facts_to_sources(ids, paths)` | Link facts to source files |
+| `check_staleness(facts)` | Check if source files have changed |
+| `clear()` | Delete all facts (reset) |
+
+### Storage Location
+
+```
+~/.forge/facts.db
+```
+
+---
+
 ## Public API
 
 ### Core Types
@@ -1221,6 +1386,166 @@ The function validates that input doesn't exceed the summarizer model's context 
 |----------|-------|---------------|
 | Claude | `claude-haiku-4-5` | 190,000 tokens |
 | OpenAI | `gpt-5-nano` | 380,000 tokens |
+
+### Librarian
+
+#### `Librarian`
+
+High-level API for intelligent context management:
+
+```rust
+use forge_context::{Librarian, Fact, FactType, RetrievalResult, ExtractionResult};
+
+// Create with persistent storage
+let mut librarian = Librarian::open("~/.forge/facts.db", api_key)?;
+
+// Or in-memory for testing
+let mut librarian = Librarian::open_in_memory(api_key)?;
+
+// Pre-flight: Retrieve relevant facts for a query
+let result: RetrievalResult = librarian.retrieve_context("How do I add tests?").await?;
+println!("Found {} relevant facts (~{} tokens)",
+    result.relevant_facts.len(),
+    result.token_estimate);
+
+// Post-turn: Extract and store facts from exchange
+let extraction: ExtractionResult = librarian.extract_and_store(
+    "user message",
+    "assistant response"
+).await?;
+
+// Manual operations
+librarian.pin_fact("Important constraint", &["keyword".to_string()])?;
+let facts = librarian.search("keyword")?;
+let all_facts = librarian.all_facts()?;
+librarian.clear()?;  // Reset for testing
+```
+
+**Key methods:**
+
+| Method | Description |
+|--------|-------------|
+| `open(path, api_key)` | Create with persistent SQLite storage |
+| `open_in_memory(api_key)` | Create in-memory store (testing) |
+| `retrieve_context(query)` | Async: get relevant facts for pre-flight injection |
+| `extract_and_store(user, assistant)` | Async: extract facts from exchange and store |
+| `store_facts(facts)` | Store pre-extracted facts (sync) |
+| `store_facts_with_sources(facts, paths)` | Store with source file tracking |
+| `pin_fact(content, entities)` | Add user-pinned fact |
+| `search(keyword)` | Search facts by entity keyword |
+| `search_with_staleness(keyword)` | Search with source file staleness info |
+| `all_facts()` | Get all stored facts |
+| `fact_count()` | Number of stored facts |
+| `turn_counter()` | Current turn number |
+| `clear()` | Delete all facts |
+
+#### `Fact`
+
+A distilled fact extracted from conversation:
+
+```rust
+pub struct Fact {
+    pub fact_type: FactType,
+    pub content: String,
+    pub entities: Vec<String>,
+}
+```
+
+#### `FactType`
+
+Category of extracted fact:
+
+```rust
+pub enum FactType {
+    Entity,     // Files, functions, variables, paths, URLs
+    Decision,   // Design choices with rationale
+    Constraint, // Limitations or requirements
+    CodeState,  // What was created, modified, deleted
+    Pinned,     // User-explicitly marked important
+}
+```
+
+#### `ExtractionResult`
+
+Result from post-turn fact extraction:
+
+```rust
+pub struct ExtractionResult {
+    pub facts: Vec<Fact>,
+}
+```
+
+#### `RetrievalResult`
+
+Result from pre-flight fact retrieval:
+
+```rust
+pub struct RetrievalResult {
+    pub relevant_facts: Vec<Fact>,
+    pub token_estimate: u32,
+}
+```
+
+#### `format_facts_for_context`
+
+Helper to format facts for context injection:
+
+```rust
+use forge_context::format_facts_for_context;
+
+let formatted = format_facts_for_context(&facts);
+// Returns markdown with emoji prefixes:
+// ## Relevant Context
+// 📁 File src/lib.rs contains the App struct
+// 🔧 Chose async/await for concurrency
+```
+
+### Fact Store
+
+#### `FactStore`
+
+Low-level SQLite storage (used internally by Librarian):
+
+```rust
+use forge_context::{FactStore, StoredFact, FactId};
+
+let mut store = FactStore::open("~/.forge/facts.db")?;
+
+// Store facts
+let ids: Vec<FactId> = store.store_facts(&facts, turn_number)?;
+
+// Query
+let all: Vec<StoredFact> = store.get_all_facts()?;
+let matches: Vec<StoredFact> = store.search_by_entity("keyword")?;
+```
+
+#### `StoredFact`
+
+A fact with persistence metadata:
+
+```rust
+pub struct StoredFact {
+    pub id: FactId,
+    pub fact: Fact,
+    pub turn_number: u64,
+    pub created_at: String,
+}
+```
+
+#### `FactWithStaleness`
+
+A fact with source file change detection:
+
+```rust
+pub struct FactWithStaleness {
+    pub fact: StoredFact,
+    pub stale_sources: Vec<String>,  // Changed source files
+}
+
+impl FactWithStaleness {
+    fn is_stale(&self) -> bool;  // True if any sources changed
+}
+```
 
 ### Working Context
 

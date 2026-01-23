@@ -404,9 +404,7 @@ fn truncate_json_payload(payload: &mut Value, max_bytes: usize) {
 
     for _ in 0..10 {
         // Max 10 iterations to prevent infinite loop
-        let current_size = serde_json::to_string(payload)
-            .map(|s| s.len())
-            .unwrap_or(0);
+        let current_size = serde_json::to_string(payload).map(|s| s.len()).unwrap_or(0);
 
         if current_size <= max_bytes {
             return;

@@ -6,18 +6,18 @@ This document provides comprehensive documentation for the `forge` CLI crate - t
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 38-76 | Overview: responsibilities, file structure, dependencies |
-| 77-119 | Architecture Diagram: main() flow, mode switching, terminal session lifecycle |
-| 120-169 | Module Structure: main.rs types and functions, assets.rs constants and statics |
-| 170-264 | Terminal Session Management: TerminalSession, init/cleanup sequences, error handling |
-| 265-357 | UI Mode System: UiMode enum, resolution logic, mode characteristics |
-| 358-541 | Main Event Loops: tick cycle, run_app_full, run_app_inline, transcript clear, yield_now |
-| 542-602 | Asset Management: compile-time embedding, system prompt content, OnceLock initialization |
-| 603-681 | Startup and Shutdown Sequence: initialization order, cleanup guarantees |
-| 682-716 | Configuration Resolution: UI mode config, file location, example |
-| 717-747 | Error Handling: error types, sources, recovery strategy |
-| 748-834 | Extension Guide: adding UI modes, assets, startup flags, modifying event loop |
-| 835-841 | Related Documentation: links to other crate READMEs |
+| 38-80 | Overview: responsibilities, file structure, dependencies |
+| 81-123 | Architecture Diagram: main() flow, mode switching, terminal session lifecycle |
+| 124-175 | Module Structure: main.rs types and functions, assets.rs constants and statics |
+| 176-270 | Terminal Session Management: TerminalSession, init/cleanup sequences, error handling |
+| 271-363 | UI Mode System: UiMode enum, resolution logic, mode characteristics |
+| 364-547 | Main Event Loops: tick cycle, run_app_full, run_app_inline, transcript clear, yield_now |
+| 548-624 | Asset Management: compile-time embedding, provider-specific prompts, OnceLock initialization |
+| 625-703 | Startup and Shutdown Sequence: initialization order, cleanup guarantees |
+| 704-738 | Configuration Resolution: UI mode config, file location, example |
+| 739-769 | Error Handling: error types, sources, recovery strategy |
+| 770-856 | Extension Guide: adding UI modes, assets, startup flags, modifying event loop |
+| 857-863 | Related Documentation: links to other crate READMEs |
 
 ## Table of Contents
 
@@ -48,26 +48,30 @@ The `forge` CLI crate is the application entry point that orchestrates terminal 
 | **UI Mode Selection** | Resolution of full-screen vs inline mode from config and environment |
 | **Event Loop Execution** | Tick-based loop coordinating async tasks, streaming, rendering, and input |
 | **Mode Switching** | Runtime toggling between full-screen and inline modes |
-| **Asset Loading** | Compile-time embedding and runtime initialization of system prompt |
+| **Asset Loading** | Compile-time embedding and runtime initialization of provider-specific system prompts |
 
 ### File Structure
 
 ```
 cli/
-├── Cargo.toml              # Binary manifest (package name: "forge")
+├── Cargo.toml                              # Binary manifest (package name: "forge")
 ├── assets/
-│   └── prompt.md           # System prompt embedded at compile time
+│   ├── prompt.md                           # Default system prompt (Claude, OpenAI)
+│   ├── gemini_prompt.md                    # Gemini-specific system prompt
+│   ├── contextinfinity_extraction.md       # Context Infinity extraction prompt
+│   └── contextinfinity_retrieval.md        # Context Infinity retrieval prompt
 └── src/
-    ├── main.rs             # Entry point, event loops, terminal session
-    └── assets.rs           # Compile-time asset embedding
+    ├── main.rs                             # Entry point, event loops, terminal session
+    └── assets.rs                           # Compile-time asset embedding
 ```
 
 ### Dependencies
 
 | Crate | Purpose |
 |-------|---------|
-| `forge-engine` | Application state machine (`App`, `ForgeConfig`) |
+| `forge-engine` | Application state machine (`App`, `ForgeConfig`, `SystemPrompts`) |
 | `forge-tui` | Rendering functions (`draw`, `draw_inline`, `handle_events`) |
+| `forge-types` | Core domain types |
 | `ratatui` | Terminal UI framework |
 | `crossterm` | Cross-platform terminal manipulation |
 | `tokio` | Async runtime |
@@ -78,42 +82,42 @@ cli/
 ## Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                              main()                                      │
-│  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │  1. Initialize tracing                                              │ │
-│  │  2. Load assets (system prompt)                                     │ │
-│  │  3. Load ForgeConfig                                                │ │
-│  │  4. Resolve UiMode (config -> env -> default)                       │ │
-│  │  5. Create App with system prompt                                   │ │
-│  └────────────────────────────────────────────────────────────────────┘ │
-│                                │                                         │
-│                                v                                         │
-│  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │                     Main Loop (mode switching)                      │ │
-│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
-│  │  │  TerminalSession::new(ui_mode)  ← RAII terminal setup        │  │ │
-│  │  └──────────────────────────────────────────────────────────────┘  │ │
-│  │                                │                                    │ │
-│  │          ┌─────────────────────┴─────────────────────┐             │ │
-│  │          v                                           v              │ │
-│  │  ┌──────────────────┐                    ┌──────────────────────┐  │ │
-│  │  │  run_app_full()  │                    │  run_app_inline()    │  │ │
-│  │  │  (alternate scr) │                    │  (inline viewport)   │  │ │
-│  │  └──────────────────┘                    └──────────────────────┘  │ │
-│  │          │                                           │              │ │
-│  │          └─────────────────────┬─────────────────────┘             │ │
-│  │                                v                                    │ │
-│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
-│  │  │  RunResult::Quit | RunResult::SwitchMode                     │  │ │
-│  │  └──────────────────────────────────────────────────────────────┘  │ │
-│  └────────────────────────────────────────────────────────────────────┘ │
-│                                │                                         │
-│                                v                                         │
-│  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │  app.save_history()  ← Persist conversation on exit                 │ │
-│  └────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------------------+
+|                              main()                                      |
+|  +--------------------------------------------------------------------+ |
+|  |  1. Initialize tracing                                              | |
+|  |  2. Load assets (provider-specific system prompts)                  | |
+|  |  3. Load ForgeConfig                                                | |
+|  |  4. Resolve UiMode (config -> env -> default)                       | |
+|  |  5. Create App with system prompts                                  | |
+|  +--------------------------------------------------------------------+ |
+|                                |                                         |
+|                                v                                         |
+|  +--------------------------------------------------------------------+ |
+|  |                     Main Loop (mode switching)                      | |
+|  |  +--------------------------------------------------------------+  | |
+|  |  |  TerminalSession::new(ui_mode)  <- RAII terminal setup       |  | |
+|  |  +--------------------------------------------------------------+  | |
+|  |                                |                                    | |
+|  |          +---------------------+---------------------+              | |
+|  |          v                                           v              | |
+|  |  +------------------+                    +----------------------+   | |
+|  |  |  run_app_full()  |                    |  run_app_inline()    |   | |
+|  |  |  (alternate scr) |                    |  (inline viewport)   |   | |
+|  |  +------------------+                    +----------------------+   | |
+|  |          |                                           |              | |
+|  |          +---------------------+---------------------+              | |
+|  |                                v                                    | |
+|  |  +--------------------------------------------------------------+  | |
+|  |  |  RunResult::Quit | RunResult::SwitchMode                     |  | |
+|  |  +--------------------------------------------------------------+  | |
+|  +--------------------------------------------------------------------+ |
+|                                |                                         |
+|                                v                                         |
+|  +--------------------------------------------------------------------+ |
+|  |  app.save_history()  <- Persist conversation on exit               | |
+|  +--------------------------------------------------------------------+ |
++-------------------------------------------------------------------------+
 ```
 
 ---
@@ -145,26 +149,28 @@ Note: The generic bound `B` requires `Backend + Write` with `B::Error: Send + Sy
 
 ### `assets.rs`
 
-Asset management module for compile-time embedded resources.
+Asset management module for compile-time embedded resources with provider-specific prompt support.
 
 #### Constants
 
 | Constant | Description |
 |----------|-------------|
-| `SYSTEM_PROMPT_RAW` | Raw system prompt loaded via `include_str!` at compile time |
+| `DEFAULT_PROMPT_RAW` | Default system prompt loaded via `include_str!` at compile time |
+| `GEMINI_PROMPT_RAW` | Gemini-specific system prompt loaded via `include_str!` at compile time |
 
 #### Statics
 
 | Static | Type | Description |
 |--------|------|-------------|
-| `SYSTEM_PROMPT` | `OnceLock<String>` | Lazily initialized system prompt |
+| `DEFAULT_PROMPT` | `OnceLock<String>` | Lazily initialized default system prompt |
+| `GEMINI_PROMPT` | `OnceLock<String>` | Lazily initialized Gemini-specific system prompt |
 
 #### Functions
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `init` | `fn init()` | Pre-initialize the system prompt (called at startup) |
-| `system_prompt` | `fn system_prompt() -> &'static str` | Get the shared system prompt reference |
+| `init` | `fn init()` | Pre-initialize all system prompts (called at startup) |
+| `system_prompts` | `fn system_prompts() -> SystemPrompts` | Get provider-specific system prompts struct |
 
 ---
 
@@ -252,7 +258,7 @@ loop {
         }
         // Session drops here, terminal state restored
     };
-    
+
     match run_result {
         Ok(RunResult::SwitchMode) => ui_mode = ui_mode.toggle(),
         Ok(RunResult::Quit) => break,
@@ -363,62 +369,62 @@ Both event loops follow the same structure but differ in rendering and output ha
 ### Event Loop Structure
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Event Loop                                │
-│                                                                  │
-│   ┌──────────────────────────────────────────────────────────┐  │
-│   │  1. app.tick()                                            │  │
-│   │     - Increment animation counter                         │  │
-│   │     - Poll background tasks (summarization)               │  │
-│   └──────────────────────────────────────────────────────────┘  │
-│                              │                                   │
-│                              v                                   │
-│   ┌──────────────────────────────────────────────────────────┐  │
-│   │  2. tokio::task::yield_now().await                        │  │
-│   │     - Critical: allows async tasks to progress            │  │
-│   │     - crossterm::event::poll() is blocking                │  │
-│   └──────────────────────────────────────────────────────────┘  │
-│                              │                                   │
-│                              v                                   │
-│   ┌──────────────────────────────────────────────────────────┐  │
-│   │  3. app.process_stream_events()                           │  │
-│   │     - Drain streaming chunks from channel                 │  │
-│   │     - Apply text/tool deltas to UI state                  │  │
-│   └──────────────────────────────────────────────────────────┘  │
-│                              │                                   │
-│                              v                                   │
-│   ┌──────────────────────────────────────────────────────────┐  │
-│   │  4. Check transcript clear flag                           │  │
-│   │     - app.take_clear_transcript()                         │  │
-│   │     - Full mode: terminal.clear()                         │  │
-│   │     - Inline mode: clear_inline_transcript() + reset      │  │
-│   └──────────────────────────────────────────────────────────┘  │
-│                              │                                   │
-│                              v                                   │
-│   ┌──────────────────────────────────────────────────────────┐  │
-│   │  5. terminal.draw() / output.flush()                      │  │
-│   │     - Render current state to terminal                    │  │
-│   │     - (Inline mode: flush new output above viewport)      │  │
-│   └──────────────────────────────────────────────────────────┘  │
-│                              │                                   │
-│                              v                                   │
-│   ┌──────────────────────────────────────────────────────────┐  │
-│   │  6. Check mode switch / quit flags                        │  │
-│   │     - app.take_toggle_screen_mode()                       │  │
-│   │     - handle_events() returns quit signal                 │  │
-│   └──────────────────────────────────────────────────────────┘  │
-│                              │                                   │
-│                              v                                   │
-│   ┌──────────────────────────────────────────────────────────┐  │
-│   │  7. handle_events(app).await                              │  │
-│   │     - Poll for keyboard events (100ms timeout)            │  │
-│   │     - Dispatch to mode-specific handler                   │  │
-│   │     - Returns true if app should quit                     │  │
-│   └──────────────────────────────────────────────────────────┘  │
-│                              │                                   │
-│                              v                                   │
-│                        Loop continues                            │
-└─────────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------------+
+|                        Event Loop                                  |
+|                                                                    |
+|   +------------------------------------------------------------+  |
+|   |  1. app.tick()                                              |  |
+|   |     - Increment animation counter                           |  |
+|   |     - Poll background tasks (summarization)                 |  |
+|   +------------------------------------------------------------+  |
+|                              |                                     |
+|                              v                                     |
+|   +------------------------------------------------------------+  |
+|   |  2. tokio::task::yield_now().await                          |  |
+|   |     - Critical: allows async tasks to progress              |  |
+|   |     - crossterm::event::poll() is blocking                  |  |
+|   +------------------------------------------------------------+  |
+|                              |                                     |
+|                              v                                     |
+|   +------------------------------------------------------------+  |
+|   |  3. app.process_stream_events()                             |  |
+|   |     - Drain streaming chunks from channel                   |  |
+|   |     - Apply text/tool deltas to UI state                    |  |
+|   +------------------------------------------------------------+  |
+|                              |                                     |
+|                              v                                     |
+|   +------------------------------------------------------------+  |
+|   |  4. Check transcript clear flag                             |  |
+|   |     - app.take_clear_transcript()                           |  |
+|   |     - Full mode: terminal.clear()                           |  |
+|   |     - Inline mode: clear_inline_transcript() + reset        |  |
+|   +------------------------------------------------------------+  |
+|                              |                                     |
+|                              v                                     |
+|   +------------------------------------------------------------+  |
+|   |  5. terminal.draw() / output.flush()                        |  |
+|   |     - Render current state to terminal                      |  |
+|   |     - (Inline mode: flush new output above viewport)        |  |
+|   +------------------------------------------------------------+  |
+|                              |                                     |
+|                              v                                     |
+|   +------------------------------------------------------------+  |
+|   |  6. Check mode switch / quit flags                          |  |
+|   |     - app.take_toggle_screen_mode()                         |  |
+|   |     - handle_events() returns quit signal                   |  |
+|   +------------------------------------------------------------+  |
+|                              |                                     |
+|                              v                                     |
+|   +------------------------------------------------------------+  |
+|   |  7. handle_events(app).await                                |  |
+|   |     - Poll for keyboard events (100ms timeout)              |  |
+|   |     - Dispatch to mode-specific handler                     |  |
+|   |     - Returns true if app should quit                       |  |
+|   +------------------------------------------------------------+  |
+|                              |                                     |
+|                              v                                     |
+|                        Loop continues                              |
++-------------------------------------------------------------------+
 ```
 
 ### Full-Screen Event Loop
@@ -482,7 +488,7 @@ where
             clear_inline_transcript(terminal)?;
             output.reset();
         }
-        
+
         // Flush completed messages above the viewport
         output.flush(terminal, app)?;
 
@@ -542,62 +548,79 @@ The `tokio::task::yield_now().await` call is essential because:
 
 ## Asset Management
 
-The `assets.rs` module handles compile-time embedding of static resources.
+The `assets.rs` module handles compile-time embedding of static resources with support for provider-specific system prompts.
 
 ### System Prompt Loading
 
-The system prompt is embedded at compile time using `include_str!`:
+System prompts are embedded at compile time using `include_str!`:
 
 ```rust
-const SYSTEM_PROMPT_RAW: &str =
+const DEFAULT_PROMPT_RAW: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/prompt.md"));
+
+const GEMINI_PROMPT_RAW: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/gemini_prompt.md"
+));
 ```
 
 This ensures:
 
-- The prompt is always available (no runtime file I/O)
+- Prompts are always available (no runtime file I/O)
 - The binary is self-contained
-- Changes to `prompt.md` require recompilation
+- Changes to prompt files require recompilation
 
-### System Prompt Content
+### Provider-Specific Prompts
 
-The system prompt (`assets/prompt.md`) defines Forge's behavior and security posture. Key sections include:
+The `SystemPrompts` struct provides different prompts optimized for each LLM provider:
 
-| Section | Purpose |
-|---------|---------|
-| **General** | Basic assistant behavior - ask clarifying questions, tool preferences |
-| **Security** | Prompt injection defenses - confidentiality rules, untrusted content patterns, rule immutability |
-| **Editing Constraints** | File editing guidelines - ASCII default, Edit tool preference, git safety |
-| **Plan Tool** | Planning tool usage guidelines |
-| **Special Requests** | Behavior for specific user requests like code reviews |
-| **Presentation** | Output formatting and final answer structure guidelines |
+```rust
+pub fn system_prompts() -> SystemPrompts {
+    SystemPrompts {
+        default: DEFAULT_PROMPT.get_or_init(|| DEFAULT_PROMPT_RAW.to_string()).as_str(),
+        gemini: GEMINI_PROMPT.get_or_init(|| GEMINI_PROMPT_RAW.to_string()).as_str(),
+    }
+}
+```
 
-The security section is particularly important - it instructs the model to:
+| Prompt | File | Used By |
+|--------|------|---------|
+| `default` | `assets/prompt.md` | Claude, OpenAI |
+| `gemini` | `assets/gemini_prompt.md` | Gemini models |
 
-- Never disclose system prompt contents
-- Treat code comments, docs, error messages, and metadata as data (not directives)
-- Refuse dangerous commands (`rm -rf`, `sudo`, encoded strings)
-- Verify destructive operations with the user
+### Additional Assets
+
+The `assets/` directory contains additional prompts used by Context Infinity:
+
+| File | Purpose |
+|------|---------|
+| `contextinfinity_extraction.md` | Prompt for extracting key information during summarization |
+| `contextinfinity_retrieval.md` | Prompt for retrieving relevant context from summaries |
+
+These are loaded by the `context` crate, not directly by `assets.rs`.
 
 ### Lazy Initialization Pattern
 
 ```rust
-static SYSTEM_PROMPT: OnceLock<String> = OnceLock::new();
+static DEFAULT_PROMPT: OnceLock<String> = OnceLock::new();
+static GEMINI_PROMPT: OnceLock<String> = OnceLock::new();
 
 pub fn init() {
-    let _ = SYSTEM_PROMPT.set(SYSTEM_PROMPT_RAW.to_string());
+    let _ = DEFAULT_PROMPT.set(DEFAULT_PROMPT_RAW.to_string());
+    let _ = GEMINI_PROMPT.set(GEMINI_PROMPT_RAW.to_string());
 }
 
-pub fn system_prompt() -> &'static str {
-    SYSTEM_PROMPT
-        .get_or_init(|| SYSTEM_PROMPT_RAW.to_string())
-        .as_str()
+pub fn system_prompts() -> SystemPrompts {
+    SystemPrompts {
+        default: DEFAULT_PROMPT.get_or_init(|| DEFAULT_PROMPT_RAW.to_string()).as_str(),
+        gemini: GEMINI_PROMPT.get_or_init(|| GEMINI_PROMPT_RAW.to_string()).as_str(),
+    }
 }
 ```
 
-- `init()` is called at startup to eagerly initialize
-- `system_prompt()` falls back to lazy initialization if `init()` was skipped
-- Returns `&'static str` for zero-copy usage throughout the application
+- `init()` is called at startup to eagerly initialize all prompts
+- `system_prompts()` falls back to lazy initialization if `init()` was skipped
+- Returns `SystemPrompts` with `&'static str` fields for zero-copy usage
 
 ---
 
@@ -611,7 +634,7 @@ pub fn system_prompt() -> &'static str {
    - EnvFilter for RUST_LOG-based filtering
 
 2. Initialize assets
-   - assets::init() - eagerly load system prompt
+   - assets::init() - eagerly load all system prompts
 
 3. Load configuration
    - ForgeConfig::load() - parse ~/.forge/config.toml
@@ -620,7 +643,7 @@ pub fn system_prompt() -> &'static str {
    - UiMode::from_config() || UiMode::from_env() || UiMode::Full
 
 5. Create application
-   - App::new(Some(assets::system_prompt()))
+   - App::new(Some(assets::system_prompts()))
    - Initializes state machine, providers, context manager
 
 6. Enter main loop
@@ -786,7 +809,7 @@ async fn main() -> Result<()> {
 
    ```rust
    static MY_ASSET: OnceLock<String> = OnceLock::new();
-   
+
    pub fn my_asset() -> &'static str {
        MY_ASSET.get_or_init(|| MY_ASSET_RAW.to_string()).as_str()
    }

@@ -1,33 +1,11 @@
 # forge-providers
 
-This document provides comprehensive documentation for the `forge-providers` crate - the LLM API client layer for the Forge application. It is intended for developers who want to understand, maintain, or extend the provider functionality.
-
-## LLM-TOC
-<!-- Auto-generated section map for LLM context -->
-| Lines | Section |
-| :--- | :--- |
-| 1-42 | Header & TOC |
-| 43-82 | Overview |
-| 83-160 | Architecture Diagram |
-| 161-213 | Provider System |
-| 214-341 | Type-Driven Design |
-| 342-430 | SSE Streaming Infrastructure |
-| 431-550 | Claude API Client |
-| 551-705 | OpenAI API Client |
-| 706-765 | Implementation: Error Handling |
-| 766-825 | Gemini API Client |
-| 826-874 | Public API Reference |
-| 875-1008 | Code Examples |
-| 1009-1050 | Error Handling |
-| 1051-1100 | Dependencies & Safety |
-| 1101-1355 | Extension Guide |
-| 1356-1493 | Advanced Code Examples |
-| 1494-1525 | Crate Design Summary |
+LLM API client layer for the Forge application. Provides streaming HTTP communication with Claude, OpenAI, and Gemini APIs through a unified interface.
 
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Architecture Diagram](#architecture-diagram)
+2. [Architecture](#architecture)
 3. [Provider System](#provider-system)
 4. [Type-Driven Design](#type-driven-design)
 5. [SSE Streaming Infrastructure](#sse-streaming-infrastructure)
@@ -35,18 +13,16 @@ This document provides comprehensive documentation for the `forge-providers` cra
 7. [OpenAI API Client](#openai-api-client)
 8. [Gemini API Client](#gemini-api-client)
 9. [Public API Reference](#public-api-reference)
-10. [Code Examples](#code-examples)
-11. [Error Handling](#error-handling)
-12. [Dependencies & Safety](#dependencies--safety)
+10. [Model Limits](#model-limits)
+11. [Code Examples](#code-examples)
+12. [Error Handling](#error-handling)
 13. [Extension Guide](#extension-guide)
-14. [Advanced Code Examples](#advanced-code-examples)
-15. [Crate Design Summary](#crate-design-summary)
 
 ---
 
 ## Overview
 
-The `forge-providers` crate is responsible for all HTTP communication with LLM APIs. It provides a unified streaming interface that abstracts away the differences between provider-specific APIs while preserving provider-specific features like Claude's extended thinking and OpenAI's reasoning controls.
+The `forge-providers` crate handles all HTTP communication with LLM APIs. It provides a unified streaming interface that abstracts provider differences while preserving provider-specific features like Claude's extended thinking and OpenAI's reasoning controls.
 
 ### Key Responsibilities
 
@@ -69,9 +45,9 @@ providers/
         ├── SSE parsing functions
         ├── ApiConfig struct
         ├── send_message() dispatch
-        ├── claude module
-        ├── openai module
-        └── gemini module
+        ├── pub mod claude
+        ├── pub mod openai
+        └── pub mod gemini
 ```
 
 ### Dependencies
@@ -81,13 +57,16 @@ providers/
 | `forge-types` | Core domain types (Provider, ModelName, Message, etc.) |
 | `reqwest` | HTTP client with streaming support |
 | `futures-util` | Async stream utilities for SSE processing |
+| `tokio` | Async runtime with timeout support |
 | `serde` / `serde_json` | JSON serialization for API payloads |
+| `chrono` | DateTime handling for Gemini cache expiry |
+| `uuid` | Generate tool call IDs for Gemini |
 | `anyhow` / `thiserror` | Error handling |
-| `tracing` | Logging infrastructure |
+| `tracing` | Structured logging |
 
 ---
 
-## Architecture Diagram
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -100,41 +79,41 @@ providers/
 │   │   CacheableMessage[] ───────────────────────────────────────────►   │   │
 │   │   OutputLimits ─────────────────────────────────────────────────►   │   │
 │   │   system_prompt ────────────────────────────────────────────────►   │   │
-│   │   stream event sender ──────────────────────────────────────────►   │   │
+│   │   tools ────────────────────────────────────────────────────────►   │   │
+│   │   gemini_cache ─────────────────────────────────────────────────►   │   │
+│   │   tx: mpsc::Sender<StreamEvent> ────────────────────────────────►   │   │
 │   └─────────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       │ match config.provider()
                                       ▼
-             ┌────────────────────────┴────────────────────────┬────────────────────────┐
-             │                        │                        │                        │
-             ▼                        ▼                        ▼                        ▼
-┌─────────────────────────┐  ┌─────────────────────────┐  ┌─────────────────────────┐  ┌─────────────────────────┐
-│  claude::send_message   │  │  openai::send_message   │  │  gemini::send_message   │  │      YourProvider       │
-│                         │  │                         │  │                         │  │        (future)         │
-│ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │  └─────────────────────────┘
+             ┌────────────────────────┴────────────────────────┐
+             │                        │                        │
+             ▼                        ▼                        ▼
+┌─────────────────────────┐  ┌─────────────────────────┐  ┌─────────────────────────┐
+│  claude::send_message   │  │  openai::send_message   │  │  gemini::send_message   │
+│                         │  │                         │  │                         │
+│ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │
 │ │build_request_body() │ │  │ │build_request_body() │ │  │ │build_request_body() │ │
 │ │- System blocks      │ │  │ │- input items        │ │  │ │- system_instruction │ │
-│ │- Messages array     │ │  │ │- instructions       │ │  │ │- cachedContent ref │ │
-│ │- Cache control      │ │  │ │- reasoning.effort   │ │  └─────────────────────┘ │
-│ └─────────────────────┘ │  └─────────────────────┘ │             │             │
-│            │            │            │            │             ▼             │
-│            ▼            │            ▼            │  ┌─────────────────────┐  │
-│ ┌─────────────────────┐ │  ┌─────────────────────┐ │  │    POST to API      │  │
-│ │   POST to API       │ │  │   POST to API       │ │  │ googleapis.com      │  │
-│ │ api.anthropic.com   │ │  │ api.openai.com      │ │  │ /v1beta/models      │  │
-│ │ /v1/messages        │ │  │ /v1/responses       │ │  └─────────────────────┘  │
-│ └─────────────────────┘ │  └─────────────────────┘ │             │             │
-│            │            │            │            │             ▼             │
-│            ▼            │            ▼            │  ┌─────────────────────┐  │
-│ ┌─────────────────────┐ │  ┌─────────────────────┐ │  │   SSE Stream Loop   │  │
-│ │  SSE Stream Loop    │ │  │  SSE Stream Loop    │ │  │ - drain_next_event  │  │
-│ │ - drain_next_event  │ │  │ - drain_next_event  │ │  │ - Gemini deltas    │  │
-│ │ - Claude deltas     │ │  │ - OpenAI response   │ │  │ - Emit StreamEvent  │  │
-│ │ - Emit StreamEvent  │ │  │ - Emit StreamEvent  │ │  └─────────────────────┘  │
-│ └─────────────────────┘ │  └─────────────────────┘ │                           │
-└─────────────────────────┘  └─────────────────────────┘                           ┘
-             │                        │                        │
+│ │- Messages array     │ │  │ │- instructions       │ │  │ │- contents array     │ │
+│ │- Cache control      │ │  │ │- reasoning.effort   │ │  │ │- cachedContent ref  │ │
+│ │- Thinking config    │ │  │ │- text.verbosity     │ │  │ │- thinkingConfig     │ │
+│ └─────────────────────┘ │  │ └─────────────────────┘ │  │ └─────────────────────┘ │
+│            │            │  │            │            │  │            │            │
+│            ▼            │  │            ▼            │  │            ▼            │
+│ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │
+│ │   POST to API       │ │  │ │   POST to API       │ │  │ │   POST to API       │ │
+│ │ api.anthropic.com   │ │  │ │ api.openai.com      │ │  │ │ googleapis.com      │ │
+│ │ /v1/messages        │ │  │ │ /v1/responses       │ │  │ │ /v1beta/models/...  │ │
+│ └─────────────────────┘ │  │ └─────────────────────┘ │  │ └─────────────────────┘ │
+│            │            │  │            │            │  │            │            │
+│            ▼            │  │            ▼            │  │            ▼            │
+│ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │
+│ │process_sse_stream() │ │  │ │process_sse_stream() │ │  │ │process_sse_stream() │ │
+│ │  + ClaudeParser     │ │  │ │  + OpenAIParser     │ │  │ │  + GeminiParser     │ │
+│ └─────────────────────┘ │  │ └─────────────────────┘ │  │ └─────────────────────┘ │
+└─────────────────────────┘  └─────────────────────────┘  └─────────────────────────┘
              │                        │                        │
              └────────────────────────┴──────────┬─────────────┘
                                                  │
@@ -144,6 +123,8 @@ providers/
                                     │                         │
                                     │  StreamEvent::TextDelta │
                                     │  StreamEvent::ThinkingDelta │
+                                    │  StreamEvent::ToolCallStart │
+                                    │  StreamEvent::ToolCallDelta │
                                     │  StreamEvent::Done      │
                                     │  StreamEvent::Error     │
                                     └─────────────────────────┘
@@ -154,8 +135,6 @@ providers/
 ## Provider System
 
 ### Provider Enum (from forge-types)
-
-The `Provider` enum represents supported LLM providers:
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -175,14 +154,11 @@ Key methods:
 | `display_name()` | `&'static str` | UI display name ("Claude", "GPT", "Gemini") |
 | `env_var()` | `&'static str` | Environment variable for API key |
 | `default_model()` | `ModelName` | Default model for provider |
-| `available_models()` | `&'static [&'static str]` | Known models for provider |
 | `parse_model(raw)` | `Result<ModelName, ModelParseError>` | Validate and parse model name |
-| `parse(s)` | `Option<Provider>` | Parse provider from string |
-| `all()` | `&'static [Provider]` | All available providers |
 
-### Provider Dispatch Pattern
+### Provider Dispatch
 
-The `send_message` function dispatches to provider-specific implementations based on the `ApiConfig`:
+The `send_message` function dispatches to provider-specific implementations:
 
 ```rust
 pub async fn send_message(
@@ -195,15 +171,9 @@ pub async fn send_message(
     tx: mpsc::Sender<StreamEvent>,
 ) -> Result<()> {
     match config.provider() {
-        Provider::Claude => {
-            claude::send_message(config, messages, limits, system_prompt, tools, tx).await
-        }
-        Provider::OpenAI => {
-            openai::send_message(config, messages, limits, system_prompt, tools, tx).await
-        }
-        Provider::Gemini => {
-            gemini::send_message(config, messages, limits, system_prompt, tools, gemini_cache, tx).await
-        }
+        Provider::Claude => claude::send_message(...).await,
+        Provider::OpenAI => openai::send_message(...).await,
+        Provider::Gemini => gemini::send_message(...).await,
     }
 }
 ```
@@ -230,7 +200,7 @@ pub struct ApiConfig {
 }
 ```
 
-**Construction validation:**
+Construction validates provider consistency:
 
 ```rust
 impl ApiConfig {
@@ -248,7 +218,7 @@ impl ApiConfig {
 }
 ```
 
-This design makes it impossible to create an `ApiConfig` with a Claude API key and an OpenAI model.
+This makes it impossible to create an `ApiConfig` with a Claude API key and an OpenAI model.
 
 ### ApiKey - Provider-Scoped Keys
 
@@ -258,19 +228,9 @@ pub enum ApiKey {
     OpenAI(String),
     Gemini(String),
 }
-
-impl ApiKey {
-    pub fn provider(&self) -> Provider {
-        match self {
-            ApiKey::Claude(_) => Provider::Claude,
-            ApiKey::OpenAI(_) => Provider::OpenAI,
-            ApiKey::Gemini(_) => Provider::Gemini,
-        }
-    }
-}
 ```
 
-The `ApiKey` enum prevents the invalid state of using an API key with the wrong provider. The key's provider is encoded in its type, not as a separate field that could become inconsistent.
+The key's provider is encoded in its type, preventing the invalid state of using an API key with the wrong provider.
 
 ### ModelName - Provider-Scoped Models
 
@@ -280,24 +240,17 @@ pub struct ModelName {
     name: Cow<'static, str>,
     kind: ModelNameKind,
 }
-
-pub enum ModelNameKind {
-    Known,      // Verified model name from available_models()
-    Unverified, // User-supplied, potentially unknown model
-}
 ```
 
-**Validation rules by provider:**
+Validation rules by provider:
 
-| Provider | Prefix Requirement | Example Valid | Example Invalid |
-| :--- | :--- | :--- | :--- |
-| Claude | Must start with `claude-` | `claude-sonnet-4-5-20250929` | `gpt-5.2` |
-| OpenAI | Must start with `gpt-5` | `gpt-5.2`, `gpt-5.2-2025-12-11` | `gpt-4o` |
-| Gemini | Must start with `gemini-` | `gemini-3-pro`, `gemini-3-flash` | `claude-3` |
+| Provider | Prefix Requirement | Example Valid |
+| :--- | :--- | :--- |
+| Claude | Must start with `claude-` | `claude-sonnet-4-5-20250929` |
+| OpenAI | Must start with `gpt-5` | `gpt-5.2`, `gpt-5.2-2025-12-11` |
+| Gemini | Must start with `gemini-` | `gemini-3-pro-preview` |
 
-The OpenAI prefix requirement (`gpt-5`) ensures compatibility with the OpenAI Responses API.
-
-### OutputLimits - Validated Token Budgets
+### OutputLimits - Token Budgets
 
 ```rust
 pub struct OutputLimits {
@@ -311,23 +264,7 @@ Construction enforces invariants:
 - If thinking is enabled, `thinking_budget >= 1024`
 - If thinking is enabled, `thinking_budget < max_output_tokens`
 
-```rust
-impl OutputLimits {
-    pub fn with_thinking(max_output_tokens: u32, thinking_budget: u32) 
-        -> Result<Self, OutputLimitsError> 
-    {
-        if thinking_budget < 1024 {
-            return Err(OutputLimitsError::ThinkingBudgetTooSmall);
-        }
-        if thinking_budget >= max_output_tokens {
-            return Err(OutputLimitsError::ThinkingBudgetTooLarge { ... });
-        }
-        Ok(Self { max_output_tokens, thinking_budget: Some(thinking_budget) })
-    }
-}
-```
-
-### CacheHint - Provider Caching Hints
+### CacheHint - Provider Caching
 
 ```rust
 pub enum CacheHint {
@@ -340,42 +277,17 @@ Different providers handle caching differently:
 
 - **Claude**: Explicit `cache_control: { type: "ephemeral" }` markers on content blocks
 - **OpenAI**: Automatic server-side prefix caching (hints are ignored)
-- **Gemini**: Explicit context caching via `cachedContents` API for system prompts > 1024/4096 tokens
+- **Gemini**: Explicit context caching via `cachedContents` API for large system prompts
 
 ---
 
 ## SSE Streaming Infrastructure
-
-### Architecture Overview
-
-SSE (Server-Sent Events) streaming is abstracted via a trait-based design that separates:
-
-1. **Shared infrastructure**: Buffer management, timeout handling, UTF-8 validation, `[DONE]` detection
-2. **Provider-specific parsing**: JSON event interpretation via `SseParser` trait
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    process_sse_stream()                          │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  Shared: timeout, buffer, UTF-8, [DONE], parse errors     │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                            │                                     │
-│                            ▼                                     │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │              parser.parse(&json) -> SseParseAction         │  │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │  │
-│  │  │ClaudeParser │  │OpenAIParser │  │GeminiParser │        │  │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘        │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-```
 
 ### SseParser Trait
 
 Each provider implements this trait for JSON event parsing:
 
 ```rust
-/// Action returned by provider-specific SSE JSON parser.
 enum SseParseAction {
     Continue,                  // No event to emit
     Emit(Vec<StreamEvent>),    // Emit these events
@@ -383,7 +295,6 @@ enum SseParseAction {
     Error(String),             // Fatal error
 }
 
-/// Provider-specific SSE JSON parsing.
 trait SseParser {
     fn parse(&mut self, json: &serde_json::Value) -> SseParseAction;
     fn provider_name(&self) -> &'static str;
@@ -404,59 +315,48 @@ async fn process_sse_stream<P: SseParser>(
 
 This function manages:
 
-- Stream timeout handling (idle timeout triggers error; override via `FORGE_STREAM_IDLE_TIMEOUT_SECS`)
-- Buffer management with 4 MiB size limit
-- UTF-8 validation
-- Event boundary detection (`\n\n` and `\r\n\r\n`)
-- `[DONE]` marker handling
-- Parse error tracking with threshold (3 consecutive errors = fatal)
+| Feature | Behavior |
+| :--- | :--- |
+| Idle timeout | Default 60s, override via `FORGE_STREAM_IDLE_TIMEOUT_SECS` |
+| Buffer limit | 4 MiB maximum to prevent memory exhaustion |
+| UTF-8 validation | Invalid UTF-8 triggers error event |
+| Event boundaries | Handles both `\n\n` and `\r\n\r\n` delimiters |
+| `[DONE]` marker | Emits `StreamEvent::Done` |
+| Parse errors | 3 consecutive failures trigger abort |
 
-### Low-Level SSE Parsing Functions
+### Low-Level SSE Functions
 
 ```rust
-/// Find the boundary of the next SSE event in the buffer.
+/// Find event boundary position and delimiter length
 fn find_sse_event_boundary(buffer: &[u8]) -> Option<(usize, usize)>
 
-/// Drain the next complete SSE event from the buffer.
+/// Drain next complete event from buffer
 fn drain_next_sse_event(buffer: &mut Vec<u8>) -> Option<Vec<u8>>
 
-/// Extract the data payload from an SSE event.
+/// Extract data payload from SSE event text
 fn extract_sse_data(event: &str) -> Option<String>
 ```
 
-### SSE Event Format
-
-SSE events follow this format:
-
-```
-event: message_start
-data: {"type":"message_start",...}
-
-event: content_block_delta
-data: {"type":"content_block_delta","delta":{"text":"Hello"}}
-
-data: [DONE]
-```
-
-The parsing handles:
-
-- Both `\n\n` and `\r\n\r\n` delimiters
-- Optional `event:` lines (ignored)
-- Multi-line `data:` fields
-- The `[DONE]` sentinel
-
 ### StreamEvent - Unified Event Type
-
-All providers emit events through a unified `StreamEvent` enum:
 
 ```rust
 pub enum StreamEvent {
-    TextDelta(String),                           // Text content chunk
-    ThinkingDelta(String),                       // Claude extended thinking chunk
-    ToolCallStart { id: String, name: String, thought_signature: Option<String> },  // Tool call started
-    ToolCallDelta { id: String, arguments: String }, // Tool call arguments chunk
-    Done,                                        // Stream completed successfully
-    Error(String),                               // Stream failed with error
+    /// Text content chunk
+    TextDelta(String),
+    /// Claude extended thinking chunk
+    ThinkingDelta(String),
+    /// Tool call started
+    ToolCallStart {
+        id: String,
+        name: String,
+        thought_signature: Option<String>,
+    },
+    /// Tool call arguments chunk
+    ToolCallDelta { id: String, arguments: String },
+    /// Stream completed successfully
+    Done,
+    /// Stream failed with error
+    Error(String),
 }
 ```
 
@@ -464,37 +364,18 @@ pub enum StreamEvent {
 
 ## Claude API Client
 
-### Claude API Client Endpoint
+### Endpoint and Authentication
 
 ```rust
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
-```
 
-### Claude API Client Authentication
-
-Claude uses an `x-api-key` header:
-
-```rust
 client.post(API_URL)
     .header("x-api-key", config.api_key())
     .header("anthropic-version", "2023-06-01")
     .header("content-type", "application/json")
 ```
 
-### Claude API Client Request Building
-
-The Claude client transforms `CacheableMessage` arrays into the Anthropic Messages API format:
-
-```rust
-fn build_request_body(
-    model: &str,
-    messages: &[CacheableMessage],
-    limits: OutputLimits,
-    system_prompt: Option<&str>,
-) -> serde_json::Value
-```
-
-**Request structure:**
+### Request Structure
 
 ```json
 {
@@ -508,113 +389,56 @@ fn build_request_body(
     { "role": "user", "content": [{ "type": "text", "text": "Hello" }] },
     { "role": "assistant", "content": "Hi there!" }
   ],
+  "tools": [
+    { "name": "read_file", "description": "...", "input_schema": {...} }
+  ],
   "thinking": { "type": "enabled", "budget_tokens": 4096 }
 }
 ```
 
-**Key transformations:**
+### Message Transformations
 
 | Input | API Format |
-|-------|------------|
+| :--- | :--- |
 | System prompt (parameter) | First system block with `cache_control: ephemeral` |
-| `Message::System` | Additional system blocks (hoisted from messages) |
+| `Message::System` | Additional system blocks |
 | `Message::User` | User message with content blocks |
 | `Message::Assistant` | Assistant message as plain string |
-| `CacheHint::Ephemeral` | `cache_control: { type: "ephemeral" }` |
-| `OutputLimits::thinking_budget` | `thinking: { type: "enabled", budget_tokens: N }` |
+| `Message::ToolUse` | Assistant message with `tool_use` content block |
+| `Message::ToolResult` | User message with `tool_result` content block |
 
-**Content blocks:**
+### Thinking Mode Constraints
 
-```rust
-fn content_block(text: &str, cache_hint: CacheHint) -> serde_json::Value {
-    match cache_hint {
-        CacheHint::None => json!({ "type": "text", "text": text }),
-        CacheHint::Ephemeral => json!({
-            "type": "text",
-            "text": text,
-            "cache_control": { "type": "ephemeral" }
-        }),
-    }
-}
-```
+**Important**: Thinking is automatically disabled when the conversation history contains `Message::Assistant` or `Message::ToolUse` messages. This is because Claude's API requires assistant messages to start with thinking/redacted_thinking blocks when thinking is enabled, but Forge doesn't store thinking content in history.
 
-### Claude API Client Response Parsing
-
-Claude SSE events follow this structure:
+### Response Parsing
 
 | Event Type | Action |
-|------------|--------|
-| `content_block_delta` with `text_delta` | Emit `StreamEvent::TextDelta` |
-| `content_block_delta` with `thinking_delta` | Emit `StreamEvent::ThinkingDelta` |
-| `message_stop` | Emit `StreamEvent::Done` |
-| `data: [DONE]` | Emit `StreamEvent::Done` |
-
-```rust
-if json["type"] == "content_block_delta" {
-    if let Some(delta_type) = json["delta"]["type"].as_str() {
-        match delta_type {
-            "text_delta" => {
-                if let Some(text) = json["delta"]["text"].as_str() {
-                    let _ = tx.send(StreamEvent::TextDelta(text.to_string())).await;
-                }
-            }
-            "thinking_delta" => {
-                if let Some(thinking) = json["delta"]["thinking"].as_str() {
-                    let _ = tx.send(StreamEvent::ThinkingDelta(thinking.to_string())).await;
-                }
-            }
-            "input_json_delta" => {
-                // Tool arguments streaming
-                if let Some(json_chunk) = json["delta"]["partial_json"].as_str()
-                    && let Some(ref id) = current_tool_id
-                {
-                    let _ = tx.send(StreamEvent::ToolCallDelta {
-                        id: id.clone(),
-                        arguments: json_chunk.to_string(),
-                    })
-                    .await;
-                }
-            }
-            _ => {}
-        }
-    }
-}
-```
+| :--- | :--- |
+| `content_block_start` with `tool_use` | Emit `ToolCallStart` |
+| `content_block_delta` with `text_delta` | Emit `TextDelta` |
+| `content_block_delta` with `thinking_delta` | Emit `ThinkingDelta` |
+| `content_block_delta` with `input_json_delta` | Emit `ToolCallDelta` |
+| `content_block_stop` | Reset current tool ID |
+| `message_stop` | Emit `Done` |
 
 ---
 
 ## OpenAI API Client
 
-### OpenAI API Client Endpoint
+### Endpoint and Authentication
 
 ```rust
 const API_URL: &str = "https://api.openai.com/v1/responses";
-```
 
-Note: This uses the OpenAI Responses API (not the Chat Completions API) for GPT-5.2 support.
-
-### OpenAI API Client Authentication
-
-OpenAI uses Bearer token authentication:
-
-```rust
 client.post(API_URL)
     .header("Authorization", format!("Bearer {}", config.api_key()))
     .header("content-type", "application/json")
 ```
 
-### OpenAI API Client Request Building
+Note: This uses the OpenAI Responses API (not Chat Completions) for GPT-5.2 support.
 
-```rust
-fn build_request_body(
-    config: &ApiConfig,
-    messages: &[CacheableMessage],
-    limits: OutputLimits,
-    system_prompt: Option<&str>,
-) -> serde_json::Value
-```
-
-**Request structure:**
+### Request Structure
 
 ```json
 {
@@ -622,243 +446,160 @@ fn build_request_body(
   "input": [
     { "role": "developer", "content": "Context summary" },
     { "role": "user", "content": "Hello" },
-    { "role": "assistant", "content": "Hi there!" }
+    { "type": "function_call", "call_id": "...", "name": "...", "arguments": "..." },
+    { "type": "function_call_output", "call_id": "...", "output": "..." }
   ],
   "instructions": "System prompt",
   "max_output_tokens": 4096,
   "stream": true,
   "truncation": "auto",
   "reasoning": { "effort": "high" },
-  "text": { "verbosity": "high" }
+  "text": { "verbosity": "high" },
+  "tools": [
+    { "type": "function", "name": "...", "description": "...", "parameters": {...} }
+  ]
 }
 ```
 
-**Role mapping:**
+### Role Mapping
 
 Per the OpenAI Model Spec authority hierarchy:
 
 | Message Type | OpenAI Role | Rationale |
 | :--- | :--- | :--- |
-| `Message::System` | `"developer"` | "System" is reserved for OpenAI runtime injections |
+| `Message::System` | `"developer"` | "System" is reserved for OpenAI runtime |
 | `Message::User` | `"user"` | Standard user role |
 | `Message::Assistant` | `"assistant"` | Standard assistant role |
+| `Message::ToolUse` | `function_call` item | Tool invocation record |
+| `Message::ToolResult` | `function_call_output` item | Tool result record |
 
-```rust
-fn openai_role(msg: &Message) -> &'static str {
-    match msg {
-        Message::System(_) => "developer",
-        Message::User(_) => "user",
-        Message::Assistant(_) => "assistant",
-    }
-}
-```
-
-**GPT-5.2 specific options:**
+### GPT-5 Options
 
 For models starting with `gpt-5`, additional parameters are included:
 
 ```rust
-if model.starts_with("gpt-5") {
-    body.insert("reasoning", json!({ "effort": options.reasoning_effort().as_str() }));
-    body.insert("text", json!({ "verbosity": options.verbosity().as_str() }));
-}
-```
-
-### OpenAI Request Options
-
-```rust
 pub struct OpenAIRequestOptions {
-    reasoning_effort: OpenAIReasoningEffort,
-    verbosity: OpenAITextVerbosity,
-    truncation: OpenAITruncation,
+    reasoning_effort: OpenAIReasoningEffort,  // none, low, medium, high, xhigh
+    verbosity: OpenAITextVerbosity,           // low, medium, high
+    truncation: OpenAITruncation,             // auto, disabled
 }
 ```
 
-| Option | Values | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `reasoning_effort` | none, low, medium, high, xhigh | high | Control reasoning depth |
-| `verbosity` | low, medium, high | high | Control output length/structure |
-| `truncation` | auto, disabled | auto | Context truncation strategy |
-
-### OpenAI API Client Response Parsing
-
-OpenAI Responses API uses different event types:
+### Response Parsing
 
 | Event Type | Action |
-|------------|--------|
-| `response.output_text.delta` | Emit `StreamEvent::TextDelta` |
-| `response.refusal.delta` | Emit `StreamEvent::TextDelta` (model refused) |
-| `response.output_text.done` | Emit remaining text if no deltas received |
-| `response.completed` | Emit `StreamEvent::Done` |
-| `response.incomplete` | Emit `StreamEvent::Error` with reason |
-| `response.failed` | Emit `StreamEvent::Error` with message |
-| `error` | Emit `StreamEvent::Error` with message |
+| :--- | :--- |
+| `response.output_item.added` with `function_call` | Emit `ToolCallStart` (and initial args if present) |
+| `response.output_text.delta` | Emit `TextDelta` |
+| `response.refusal.delta` | Emit `TextDelta` (model refused) |
+| `response.function_call_arguments.delta` | Emit `ToolCallDelta` |
+| `response.function_call_arguments.done` | Emit `ToolCallDelta` (if no prior deltas) |
+| `response.completed` | Emit `Done` |
+| `response.incomplete` | Emit `Error` with reason |
+| `response.failed` / `error` | Emit `Error` with message |
 
-```rust
-match json["type"].as_str().unwrap_or("") {
-    "response.output_text.delta" => {
-        if let Some(delta) = json["delta"].as_str() {
-            saw_delta = true;
-            let _ = tx.send(StreamEvent::TextDelta(delta.to_string())).await;
-        }
-    }
-    "response.completed" => {
-        let _ = tx.send(StreamEvent::Done).await;
-        return Ok(());
-    }
-    "response.incomplete" => {
-        let reason = extract_incomplete_reason(&json)
-            .unwrap_or_else(|| "Response incomplete".to_string());
-        let _ = tx.send(StreamEvent::Error(reason)).await;
-        return Ok(());
-    }
-    // ...
-}
-```
-
-**Error extraction:**
-
-```rust
-fn extract_error_message(payload: &Value) -> Option<String> {
-    // Try error.message first
-    payload.get("error")
-        .and_then(|error| error.get("message"))
-        .and_then(|value| value.as_str())
-    // Fall back to response.error.message
-        .or_else(|| {
-            payload.get("response")
-                .and_then(|response| response.get("error"))
-                .and_then(|error| error.get("message"))
-                .and_then(|value| value.as_str())
-        })
-        .map(|s| s.to_string())
-}
-```
-
----
-
-## Implementation: Error Handling
-
-### ApiConfigError
-
-Configuration validation errors:
-
-```rust
-#[derive(Debug, thiserror::Error)]
-pub enum ApiConfigError {
-    #[error("API key provider {key:?} does not match model provider {model:?}")]
-    ProviderMismatch { key: Provider, model: Provider },
-}
-```
-
-### HTTP Error Handling
-
-Non-2xx responses are converted to `StreamEvent::Error`:
-
-```rust
-if !response.status().is_success() {
-    let status = response.status();
-    let error_text = response
-        .text()
-        .await
-        .unwrap_or_else(|e| format!("<failed to read error body: {e}>"));
-    let _ = tx
-        .send(StreamEvent::Error(format!("API error {}: {}", status, error_text)))
-        .await;
-    return Ok(());
-}
-```
-
-### Stream Error Recovery
-
-UTF-8 decoding errors terminate the stream gracefully:
-
-```rust
-let event = match std::str::from_utf8(&event) {
-    Ok(event) => event,
-    Err(_) => {
-        let _ = tx
-            .send(StreamEvent::Error(
-                "Received invalid UTF-8 from SSE stream".to_string(),
-            ))
-            .await;
-        return Ok(());
-    }
-};
-```
-
-### Error Propagation Pattern
-
-The providers use a channel-based error pattern rather than Result types for streaming errors:
-
-```rust
-// Errors during streaming are delivered as events
-let _ = tx.send(StreamEvent::Error(error_message)).await;
-return Ok(()); // Function succeeds, error is communicated via channel
-
-// Only return Err for unrecoverable failures (network errors, etc.)
-let chunk = chunk?; // This propagates network errors
-```
+The parser maintains state to map `item_id` to `call_id` and tracks which calls have received deltas to avoid duplicate emissions.
 
 ---
 
 ## Gemini API Client
 
-### Gemini API Client Endpoint
+### Endpoint and Authentication
 
 ```rust
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
-```
 
-The Gemini client uses the `streamGenerateContent` endpoint with the `alt=sse` parameter.
+let url = format!("{API_BASE}/models/{model}:streamGenerateContent?alt=sse");
 
-### Gemini API Client Authentication
-
-Gemini uses the `x-goog-api-key` header:
-
-```rust
 client.post(&url)
     .header("x-goog-api-key", config.api_key())
     .header("content-type", "application/json")
 ```
 
-### Gemini API Client Request Building
+### Request Structure
 
-The Gemini client transformations:
+Note: Gemini API uses mixed casing (`system_instruction` snake_case, `generationConfig` camelCase).
 
-| Input | Gemini API Format |
-| :--- | :--- |
-| `system_prompt` | `system_instruction` with content parts |
-| `Message::System` | User role message (hoisted if possible) |
-| `Message::User` | User role message with parts |
-| `Message::Assistant` | Model role message with parts |
-| `GeminiCache` | `cachedContent` reference (disables `system_instruction`) |
-
-### Context Caching
-
-Gemini provides explicit context caching for large prompts. This is useful for long-running conversations with large system instructions or reference materials.
-
-1. **Create Cache**: Use `gemini::create_cache` to upload the system prompt and get a cache name.
-2. **Reference Cache**: Pass the `GeminiCache` reference in `send_message`.
-
-```rust
-pub struct GeminiCache {
-    pub name: String,
-    pub expire_time: DateTime<Utc>,
-    pub system_prompt_hash: u64,
+```json
+{
+  "system_instruction": {
+    "parts": [{ "text": "System prompt" }]
+  },
+  "contents": [
+    { "role": "user", "parts": [{ "text": "Hello" }] },
+    { "role": "model", "parts": [{ "text": "Hi there" }] },
+    { "role": "model", "parts": [{ "functionCall": { "name": "...", "args": {...} } }] },
+    { "role": "user", "parts": [{ "functionResponse": { "name": "...", "response": {...} } }] }
+  ],
+  "generationConfig": {
+    "maxOutputTokens": 8192,
+    "temperature": 1.0,
+    "thinkingConfig": {
+      "thinkingLevel": "high",
+      "includeThoughts": true
+    }
+  },
+  "tools": [{
+    "functionDeclarations": [
+      { "name": "...", "description": "...", "parameters": {...} }
+    ]
+  }]
 }
 ```
 
-### Gemini API Client Response Parsing
+### Message Grouping
 
-Gemini SSE events follow the `streamGenerateContent` response format:
+Gemini requires consecutive tool calls and tool results to be grouped:
+
+- Multiple consecutive `Message::ToolUse` become a single `model` content entry with multiple `functionCall` parts
+- Multiple consecutive `Message::ToolResult` become a single `user` content entry with multiple `functionResponse` parts
+
+### Thought Signatures
+
+Gemini requires `thoughtSignature` on tool calls when thinking mode was used. This is preserved from `ToolCall.thought_signature`.
+
+### Schema Sanitization
+
+The `additionalProperties` field is recursively removed from tool parameter schemas, as Gemini doesn't support it.
+
+### Context Caching
+
+Gemini supports explicit context caching for large system prompts:
+
+```rust
+pub struct GeminiCache {
+    pub name: String,                    // "cachedContents/abc123"
+    pub expire_time: DateTime<Utc>,
+    pub system_prompt_hash: u64,
+}
+
+pub async fn create_cache(
+    api_key: &str,
+    model: &str,
+    system_prompt: &str,
+    ttl_seconds: u32,
+) -> Result<GeminiCache>
+```
+
+**Minimum token requirements**:
+
+- Gemini 3 Pro: 4,096 tokens (~16,384 characters)
+- Gemini Flash models: 1,024 tokens (~4,096 characters)
+
+When a cache is provided, the request uses `cachedContent` instead of `system_instruction`.
+
+### Response Parsing
 
 | Condition | Action |
 | :--- | :--- |
-| `candidates[].content.parts[].text` | Emit `StreamEvent::TextDelta` |
-| `candidates[].content.parts[].thought` | Emit `StreamEvent::ThinkingDelta` |
-| `finishReason` is `STOP` or `MAX_TOKENS` | Emit `StreamEvent::Done` |
-| `error` field present | Emit `StreamEvent::Error` |
+| `candidates[].content.parts[].text` | Emit `TextDelta` |
+| `candidates[].content.parts[].thought == true` | Emit `ThinkingDelta` |
+| `candidates[].content.parts[].functionCall` | Emit `ToolCallStart` + `ToolCallDelta` |
+| `finishReason` is `STOP` or `MAX_TOKENS` | Emit `Done` |
+| `finishReason` is `SAFETY`, `RECITATION`, etc. | Emit `Error` |
+| `error` field present | Emit `Error` |
+
+Gemini doesn't provide tool call IDs, so the parser generates UUIDs: `call_{uuid}`.
 
 ---
 
@@ -867,19 +608,6 @@ Gemini SSE events follow the `streamGenerateContent` response format:
 ### Primary Function
 
 ```rust
-/// Send a chat request and stream the response.
-///
-/// # Arguments
-/// * `config` - API configuration (key, model, options)
-/// * `messages` - Conversation history with cache hints
-/// * `limits` - Output token limits (with optional thinking budget)
-/// * `system_prompt` - Optional system prompt to inject
-/// * `tools` - Optional tool definitions for function calling
-/// * `tx` - Channel sender for streaming events
-///
-/// # Returns
-/// `Ok(())` on completion (success or error delivered via channel)
-/// `Err(...)` only for unrecoverable failures (network errors)
 pub async fn send_message(
     config: &ApiConfig,
     messages: &[CacheableMessage],
@@ -891,21 +619,33 @@ pub async fn send_message(
 ) -> Result<()>
 ```
 
+Returns `Ok(())` on completion. Errors are delivered through `StreamEvent::Error`. Only returns `Err(...)` for unrecoverable failures (network errors).
+
 ### ApiConfig Methods
 
 | Method | Return Type | Description |
 | :--- | :--- | :--- |
-| `new(api_key, model)` | `Result<Self, ApiConfigError>` | Create config with validation |
-| `with_openai_options(options)` | `Self` | Builder for OpenAI-specific options |
+| `new(api_key, model)` | `Result<Self, ApiConfigError>` | Create with validation |
+| `with_openai_options(options)` | `Self` | Builder for OpenAI options |
 | `provider()` | `Provider` | Get the provider |
 | `api_key()` | `&str` | Get the API key string |
-| `api_key_owned()` | `ApiKey` | Clone the API key |
 | `model()` | `&ModelName` | Get the model name |
 | `openai_options()` | `OpenAIRequestOptions` | Get OpenAI options |
 
-### Re-exports
+### HTTP Client Functions
 
-The crate re-exports `forge_types` for caller convenience:
+```rust
+/// Shared HTTP client for streaming requests (no total timeout)
+pub fn http_client() -> &'static reqwest::Client
+
+/// HTTP client with timeout for synchronous operations
+pub fn http_client_with_timeout(timeout_secs: u64) -> Result<reqwest::Client, reqwest::Error>
+
+/// Read error body with 32 KiB limit
+pub async fn read_capped_error_body(response: reqwest::Response) -> String
+```
+
+### Re-exports
 
 ```rust
 pub use forge_types;
@@ -913,556 +653,67 @@ pub use forge_types;
 
 ---
 
+## Model Limits
+
+Token limits are defined in `forge-context/src/model_limits.rs`:
+
+| Model Prefix | Context Window | Max Output |
+| :--- | :--- | :--- |
+| `claude-opus-4-5` | 200,000 | 64,000 |
+| `claude-sonnet-4-5` | 200,000 | 64,000 |
+| `claude-haiku-4-5` | 200,000 | 64,000 |
+| `gpt-5.2` | 400,000 | 128,000 |
+| `gemini-3-pro` | 1,048,576 | 65,536 |
+| `gemini-3-flash` | 1,048,576 | 65,536 |
+| Unknown models | 8,192 | 4,096 |
+
+---
+
 ## Code Examples
-
-### Basic Streaming Request (Claude)
-
-```rust
-use forge_providers::{ApiConfig, send_message, forge_types::*};
-
-async fn chat_with_claude() -> anyhow::Result<()> {
-    // Create provider-scoped types
-    let api_key = ApiKey::Claude(std::env::var("ANTHROPIC_API_KEY")?);
-    let model = Provider::Claude.default_model();
-    
-    // ApiConfig validates provider consistency
-    let config = ApiConfig::new(api_key, model)?;
-    
-    // Build conversation
-    let user_msg = Message::try_user("What is the capital of France?")?;
-    let messages = vec![CacheableMessage::plain(user_msg)];
-    
-    // Output limits (no thinking)
-    let limits = OutputLimits::new(4096);
-    
-    // Stream response
-    send_message(
-        &config,
-        &messages,
-        limits,
-        Some("You are a helpful assistant."),
-        None, // No tools
-        None, // No gemini cache
-        |event| {
-            match event {
-                StreamEvent::TextDelta(text) => print!("{}", text),
-                StreamEvent::Done => println!("\n[Done]"),
-                StreamEvent::Error(e) => eprintln!("Error: {}", e),
-                _ => {}
-            }
-        },
-    ).await?;
-    
-    Ok(())
-}
-```
-
-### OpenAI Reasoning Example
-
-```rust
-use forge_providers::{ApiConfig, send_message, forge_types::*};
-
-async fn chat_with_gpt5() -> anyhow::Result<()> {
-    let api_key = ApiKey::OpenAI(std::env::var("OPENAI_API_KEY")?);
-    let model = Provider::OpenAI.parse_model("gpt-5.2")?;
-    
-    // Configure OpenAI-specific options
-    let options = OpenAIRequestOptions::new(
-        OpenAIReasoningEffort::High,
-        OpenAITextVerbosity::Medium,
-        OpenAITruncation::Auto,
-    );
-    
-    let config = ApiConfig::new(api_key, model)?
-        .with_openai_options(options);
-    
-    let messages = vec![
-        CacheableMessage::plain(Message::try_user("Explain quantum entanglement.")?)
-    ];
-    
-    send_message(
-        &config,
-        &messages,
-        OutputLimits::new(8192),
-        None,
-        None,
-        None,
-        |event| { /* handle events */ },
-    ).await
-}
-```
-
-### Claude Thinking Example
-
-```rust
-use forge_providers::{ApiConfig, send_message, forge_types::*};
-
-async fn thinking_mode() -> anyhow::Result<()> {
-    let config = ApiConfig::new(
-        ApiKey::Claude("...".into()),
-        Provider::Claude.parse_model("claude-opus-4-5-20251101")?,
-    )?;
-    
-    // Enable thinking with 4096 token budget
-    // Total output: 16384, of which up to 4096 can be thinking
-    let limits = OutputLimits::with_thinking(16384, 4096)?;
-    
-    send_message(
-        &config,
-        &[CacheableMessage::plain(Message::try_user("Solve this step by step...")?)],
-        limits,
-        None,
-        None,
-        None,
-        |event| {
-            match event {
-                StreamEvent::ThinkingDelta(thought) => {
-                    // Internal reasoning (typically hidden from user)
-                    eprint!("{}", thought);
-                }
-                StreamEvent::TextDelta(text) => {
-                    // Final response
-                    print!("{}", text);
-                }
-                _ => {}
-            }
-        },
-    ).await
-}
-```
-
-### Context Caching Example
-
-```rust
-use forge_providers::forge_types::*;
-
-fn prepare_messages(history: Vec<Message>) -> Vec<CacheableMessage> {
-    let len = history.len();
-    history
-        .into_iter()
-        .enumerate()
-        .map(|(i, msg)| {
-            // Cache all but the last message (which is new)
-            if i < len - 1 {
-                CacheableMessage::cached(msg)
-            } else {
-                CacheableMessage::plain(msg)
-            }
-        })
-        .collect()
-}
-```
-
----
-
-## Error Handling
-
-The crate uses `anyhow::Result` for most operations, with specific error types where meaningful:
-
-| Error Type | Cause |
-| :--- | :--- |
-| `ApiConfigError::ProviderMismatch` | API key and model belong to different providers |
-| HTTP errors (via `reqwest`) | Network failures, timeouts |
-| `StreamEvent::Error` | API errors (rate limits, invalid requests, etc.) |
-
-API errors are delivered through the `StreamEvent::Error` variant rather than as `Result::Err`, allowing partial responses to be captured before an error occurs.
-
----
-
-## Dependencies & Safety
-
-### Dependencies
-
-| Crate | Purpose |
-| :--- | :--- |
-| `forge-types` | Domain types (Provider, Message, StreamEvent, etc.) |
-| `reqwest` | HTTP client with streaming support |
-| `futures-util` | `StreamExt` for async byte stream iteration |
-| `serde` / `serde_json` | JSON serialization for API payloads |
-| `anyhow` | Error handling |
-| `thiserror` | Custom error type derivation |
-| `tracing` | Structured logging (warnings for unexpected messages) |
-
-### Thread Safety
-
-- `ApiConfig` is `Clone + Send + Sync`
-- The stream event sender must be `Send + 'static` for cross-task delivery
-- A shared static HTTP client (`http_client()`) is reused across all requests for connection pooling efficiency
-
-### Testing
-
-```bash
-cargo test -p forge-providers
-```
-
-Tests verify:
-
-- `ApiConfig` rejects mismatched provider/key combinations
-- `ApiConfig` accepts matching provider/key combinations
-
----
-
-## Extension Guide
-
-### Adding a New Provider
-
-Adding a new LLM provider requires changes in multiple locations:
-
-**Step 1: Extend Provider enum (in `forge-types/src/lib.rs`)**
-
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum Provider {
-    #[default]
-    Claude,
-    OpenAI,
-    YourProvider,  // New provider
-}
-
-impl Provider {
-        match self {
-            Provider::Claude => "claude",
-            Provider::OpenAI => "openai",
-            Provider::Gemini => "gemini",
-            Provider::YourProvider => "your_provider",
-        }
-    }
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Provider::Claude => "Claude",
-            Provider::OpenAI => "GPT",
-            Provider::Gemini => "Gemini",
-            Provider::YourProvider => "YourProvider",
-        }
-    }
-
-    pub fn env_var(&self) -> &'static str {
-        match self {
-            // ...existing...
-            Provider::YourProvider => "YOUR_PROVIDER_API_KEY",
-        }
-    }
-
-    pub fn default_model(&self) -> ModelName {
-        match self {
-            // ...existing...
-            Provider::YourProvider => ModelName::known(Self::YourProvider, "your-model-v1"),
-        }
-    }
-
-    pub fn available_models(&self) -> &'static [&'static str] {
-        match self {
-            // ...existing...
-            Provider::YourProvider => &["your-model-v1", "your-model-v2"],
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "claude" | "anthropic" => Some(Provider::Claude),
-            "openai" | "gpt" | "chatgpt" => Some(Provider::OpenAI),
-            "gemini" | "google" => Some(Provider::Gemini),
-            "yourprovider" | "yp" => Some(Provider::YourProvider),
-            _ => None,
-        }
-    }
-}
-```
-
-**Step 2: Extend ApiKey enum (in `forge-types/src/lib.rs`)**
-
-```rust
-pub enum ApiKey {
-    Claude(String),
-    OpenAI(String),
-    YourProvider(String),
-}
-
-impl ApiKey {
-    pub fn provider(&self) -> Provider {
-        match self {
-            ApiKey::Claude(_) => Provider::Claude,
-            ApiKey::OpenAI(_) => Provider::OpenAI,
-            ApiKey::YourProvider(_) => Provider::YourProvider,
-        }
-    }
-
-    pub fn as_str(&self) -> &str {
-        match self {
-            ApiKey::Claude(key) | ApiKey::OpenAI(key) | ApiKey::Gemini(key) | ApiKey::YourProvider(key) => key,
-        }
-    }
-}
-```
-
-**Step 3: Add ModelParseError variant (if needed)**
-
-```rust
-#[derive(Debug, Error)]
-pub enum ModelParseError {
-    #[error("model name cannot be empty")]
-    Empty,
-    #[error("Claude model must start with claude- (got {0})")]
-    ClaudePrefix(String),
-    #[error("OpenAI model must start with gpt-5 (got {0})")]
-    OpenAIMinimum(String),
-    #[error("YourProvider model must start with your- (got {0})")]
-    YourProviderPrefix(String),
-}
-```
-
-**Step 4: Add provider module (in `providers/src/lib.rs`)**
-
-```rust
-/// YourProvider API implementation.
-pub mod your_provider {
-    use super::{
-        ApiConfig, CacheableMessage, Message, OutputLimits, Result,
-        SseParseAction, SseParser, StreamEvent, ToolDefinition,
-        http_client, process_sse_stream, read_capped_error_body,
-    };
-    use serde_json::json;
-
-    const API_URL: &str = "https://api.yourprovider.com/v1/chat";
-
-    fn build_request_body(
-        config: &ApiConfig,
-        messages: &[CacheableMessage],
-        limits: OutputLimits,
-        system_prompt: Option<&str>,
-    ) -> serde_json::Value {
-        // Convert messages to provider-specific format
-        let mut api_messages = Vec::new();
-
-        // Add system prompt if provided
-        if let Some(prompt) = system_prompt {
-            api_messages.push(json!({
-                "role": "system",
-                "content": prompt
-            }));
-        }
-
-        // Add conversation messages
-        for cacheable in messages {
-            let msg = &cacheable.message;
-            api_messages.push(json!({
-                "role": msg.role_str(),
-                "content": msg.content()
-            }));
-        }
-
-        json!({
-            "model": config.model().as_str(),
-            "messages": api_messages,
-            "max_tokens": limits.max_output_tokens(),
-            "stream": true
-        })
-    }
-
-    // ========================================================================
-    // YourProvider SSE Parser
-    // ========================================================================
-
-    /// Parser state for YourProvider SSE streams.
-    #[derive(Default)]
-    struct YourProviderParser;
-
-    impl SseParser for YourProviderParser {
-        fn parse(&mut self, json: &serde_json::Value) -> SseParseAction {
-            // Check for completion
-            if json["choices"][0]["finish_reason"].as_str() == Some("stop") {
-                return SseParseAction::Done;
-            }
-
-            // Extract text delta
-            if let Some(text) = json["choices"][0]["delta"]["content"].as_str() {
-                return SseParseAction::Emit(vec![StreamEvent::TextDelta(text.to_string())]);
-            }
-
-            SseParseAction::Continue
-        }
-
-        fn provider_name(&self) -> &'static str {
-            "YourProvider"
-        }
-    }
-
-    pub async fn send_message(
-        config: &ApiConfig,
-        messages: &[CacheableMessage],
-        limits: OutputLimits,
-        system_prompt: Option<&str>,
-        tx: mpsc::Sender<StreamEvent>,
-    ) -> Result<()> {
-        let client = http_client();
-
-        let body = build_request_body(config, messages, limits, system_prompt);
-
-        let response = client
-            .post(API_URL)
-            .header("Authorization", format!("Bearer {}", config.api_key()))
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = read_capped_error_body(response).await;
-            let _ = tx
-                .send(StreamEvent::Error(format!("API error {}: {}", status, error_text)))
-                .await;
-            return Ok(());
-        }
-
-        // Use shared SSE stream processor with provider-specific parser
-        let mut parser = YourProviderParser;
-        process_sse_stream(response, &mut parser, &tx).await
-    }
-}
-```
-
-**Step 5: Update send_message dispatch**
-
-```rust
-pub async fn send_message(
-    config: &ApiConfig,
-    messages: &[CacheableMessage],
-    limits: OutputLimits,
-    system_prompt: Option<&str>,
-    tx: mpsc::Sender<StreamEvent>,
-) -> Result<()> {
-    match config.provider() {
-        Provider::Claude => {
-            claude::send_message(config, messages, limits, system_prompt, tx).await
-        }
-        Provider::OpenAI => {
-            openai::send_message(config, messages, limits, system_prompt, tx).await
-        }
-        Provider::YourProvider => {
-            your_provider::send_message(config, messages, limits, system_prompt, tx).await
-        }
-    }
-}
-```
-
-**Step 6: Update engine configuration (in `forge-engine/src/config.rs`)**
-
-Add API key loading for the new provider in the config structure and `App::new()`.
-
-### Adding Provider-Specific Features
-
-To add provider-specific request options (like OpenAI's reasoning controls):
-
-**Step 1: Define options struct (in `forge-types/src/lib.rs`)**
-
-```rust
-#[derive(Debug, Clone, Copy, Default)]
-pub struct YourProviderOptions {
-    pub feature_a: bool,
-    pub feature_b: YourProviderFeatureB,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub enum YourProviderFeatureB {
-    #[default]
-    Low,
-    Medium,
-    High,
-}
-```
-
-**Step 2: Add to ApiConfig**
-
-```rust
-pub struct ApiConfig {
-    api_key: ApiKey,
-    model: ModelName,
-    openai_options: OpenAIRequestOptions,
-    your_provider_options: YourProviderOptions,  // New
-}
-
-impl ApiConfig {
-    pub fn with_your_provider_options(mut self, options: YourProviderOptions) -> Self {
-        self.your_provider_options = options;
-        self
-    }
-}
-```
-
-**Step 3: Use in request building**
-
-```rust
-fn build_request_body(config: &ApiConfig, ...) -> serde_json::Value {
-    let mut body = json!({ ... });
-    
-    let options = config.your_provider_options();
-    if options.feature_a {
-        body["feature_a"] = json!(true);
-    }
-    body["feature_b"] = json!(options.feature_b.as_str());
-    
-    body
-}
-```
-
----
-
-## Advanced Code Examples
 
 ### Basic Streaming Request
 
 ```rust
 use forge_providers::{ApiConfig, send_message, forge_types::*};
+use tokio::sync::mpsc;
 
-async fn chat() -> anyhow::Result<()> {
+async fn chat_with_claude() -> anyhow::Result<()> {
     let api_key = ApiKey::Claude(std::env::var("ANTHROPIC_API_KEY")?);
     let model = Provider::Claude.default_model();
     let config = ApiConfig::new(api_key, model)?;
-    
+
     let messages = vec![
-        CacheableMessage::plain(Message::try_user("Hello!")?),
+        CacheableMessage::plain(Message::try_user("What is the capital of France?")?)
     ];
-    
-    send_message(
-        &config,
-        &messages,
-        OutputLimits::new(4096),
-        Some("You are a helpful assistant."),
-        None, // No tools
-        None, // No gemini cache
-        |event| match event {
+
+    let (tx, mut rx) = mpsc::channel(32);
+
+    // Spawn the streaming request
+    let handle = tokio::spawn(async move {
+        send_message(
+            &config,
+            &messages,
+            OutputLimits::new(4096),
+            Some("You are a helpful assistant."),
+            None, // No tools
+            None, // No gemini cache
+            tx,
+        ).await
+    });
+
+    // Process events
+    while let Some(event) = rx.recv().await {
+        match event {
             StreamEvent::TextDelta(text) => print!("{}", text),
-            StreamEvent::Done => println!("\n[Complete]"),
+            StreamEvent::Done => println!("\n[Done]"),
             StreamEvent::Error(e) => eprintln!("Error: {}", e),
             _ => {}
-        },
-    ).await
-}
-```
-
-### Extended Thinking Mode (Claude)
-
-```rust
-let limits = OutputLimits::with_thinking(16384, 4096)?;
-
-send_message(
-    &config,
-    &messages,
-    limits,
-    None,
-    None,
-    None,
-    |event| match event {
-        StreamEvent::ThinkingDelta(thought) => {
-            // Internal reasoning (typically hidden)
-            eprint!("[thinking] {}", thought);
         }
-        StreamEvent::TextDelta(text) => print!("{}", text),
-        _ => {}
-    },
-).await?;
+    }
+
+    handle.await??;
+    Ok(())
+}
 ```
 
 ### OpenAI with Reasoning Options
@@ -1481,7 +732,36 @@ let config = ApiConfig::new(api_key, model)?
     .with_openai_options(options);
 ```
 
-### Tool Calling Example
+### Claude Extended Thinking
+
+```rust
+let config = ApiConfig::new(
+    ApiKey::Claude("...".into()),
+    Provider::Claude.parse_model("claude-opus-4-5-20251101")?,
+)?;
+
+// Enable thinking with 4096 token budget
+let limits = OutputLimits::with_thinking(16384, 4096)?;
+
+let (tx, mut rx) = mpsc::channel(32);
+
+tokio::spawn(async move {
+    send_message(&config, &messages, limits, None, None, None, tx).await
+});
+
+while let Some(event) = rx.recv().await {
+    match event {
+        StreamEvent::ThinkingDelta(thought) => {
+            // Internal reasoning (typically hidden)
+            eprint!("[thinking] {}", thought);
+        }
+        StreamEvent::TextDelta(text) => print!("{}", text),
+        _ => {}
+    }
+}
+```
+
+### Tool Calling
 
 ```rust
 use serde_json::json;
@@ -1492,96 +772,204 @@ let read_file_tool = ToolDefinition::new(
     json!({
         "type": "object",
         "properties": {
-            "path": {
-                "type": "string",
-                "description": "The file path to read"
-            }
+            "path": { "type": "string", "description": "File path" }
         },
         "required": ["path"]
     }),
 );
 
-let mut tool_call_id = String::new();
-let mut tool_arguments = String::new();
+let (tx, mut rx) = mpsc::channel(32);
+let mut tool_calls: HashMap<String, (String, String)> = HashMap::new();
 
-send_message(
-    &config,
-    &messages,
-    OutputLimits::new(4096),
-    None,
-    Some(&[read_file_tool]),
-    None,
-    |event| match event {
-        StreamEvent::ToolCallStart {
-            id,
-            name,
-            thought_signature: _,
-        } => {
-            tool_call_id = id;
-            println!("Tool call: {}", name);
+tokio::spawn(async move {
+    send_message(
+        &config,
+        &messages,
+        OutputLimits::new(4096),
+        None,
+        Some(&[read_file_tool]),
+        None,
+        tx,
+    ).await
+});
+
+while let Some(event) = rx.recv().await {
+    match event {
+        StreamEvent::ToolCallStart { id, name, .. } => {
+            tool_calls.insert(id, (name, String::new()));
         }
         StreamEvent::ToolCallDelta { id, arguments } => {
-            if id == tool_call_id {
-                tool_arguments.push_str(&arguments);
+            if let Some((_, args)) = tool_calls.get_mut(&id) {
+                args.push_str(&arguments);
             }
         }
         StreamEvent::Done => {
-            // Parse tool_arguments as JSON and execute
+            for (id, (name, args)) in &tool_calls {
+                println!("Tool: {} Args: {}", name, args);
+            }
         }
         _ => {}
-    },
-).await?;
+    }
+}
 ```
 
-### Cache Hints Example
+### Gemini Context Caching
 
 ```rust
-fn prepare_messages(history: Vec<Message>) -> Vec<CacheableMessage> {
-    let len = history.len();
-    history
-        .into_iter()
-        .enumerate()
-        .map(|(i, msg)| {
-            // Cache all but the last message (which is new)
-            if i < len - 1 {
-                CacheableMessage::cached(msg)
-            } else {
-                CacheableMessage::plain(msg)
-            }
-        })
-        .collect()
+use forge_providers::gemini::{create_cache, GeminiCache};
+
+// Create cache for large system prompt (>16K chars for Pro models)
+let cache = create_cache(
+    &api_key,
+    "gemini-3-pro-preview",
+    &large_system_prompt,
+    3600, // TTL in seconds
+).await?;
+
+// Use cache in subsequent requests
+send_message(
+    &config,
+    &messages,
+    limits,
+    None, // System prompt is in cache
+    tools,
+    Some(&cache),
+    tx,
+).await?;
+
+// Check cache validity
+if cache.is_expired() || !cache.matches_prompt(&system_prompt) {
+    // Recreate cache
 }
 ```
 
 ---
 
-## Crate Design Summary
+## Error Handling
 
-The `forge-providers` crate provides a robust, type-safe interface for LLM API communication:
+### ApiConfigError
 
-### Architectural Strengths
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum ApiConfigError {
+    #[error("API key provider {key:?} does not match model provider {model:?}")]
+    ProviderMismatch { key: Provider, model: Provider },
+}
+```
 
-| Strength | Implementation |
-| :--- | :--- |
-| **Provider isolation** | Each provider in its own module with specific API handling |
-| **Type safety** | `ApiConfig` validation prevents provider/key mismatches |
-| **Unified interface** | Single `send_message` function for all providers |
-| **Streaming abstraction** | Common `StreamEvent` type normalizes provider differences |
-| **Shared infrastructure** | SSE parsing code reused across providers |
+### Error Propagation Pattern
 
-### Key Design Patterns
+Streaming errors are delivered as events rather than `Result::Err`:
 
-| Pattern | Purpose | Example |
-| :--- | :--- | :--- |
-| Provider Dispatch | Route to correct implementation | `match config.provider()` |
-| Type-Encoded Provider | Prevent key/model mismatches | `ApiKey::Claude(...)` |
-| Channel-Based Streaming | Deliver events without blocking | `tx.send(StreamEvent::TextDelta(...))` |
-| Builder Pattern | Construct configs fluently | `ApiConfig::new(...).with_openai_options(...)` |
+```rust
+// Errors during streaming → delivered via channel
+let _ = tx.send(StreamEvent::Error(error_message)).await;
+return Ok(()); // Function succeeds, error communicated via channel
 
-### Quick Reference
+// Only return Err for unrecoverable failures
+let chunk = chunk?; // Network errors propagate
+```
 
-| Provider | API Endpoint | Auth Header | Key Event Types |
+This allows partial responses to be captured before an error occurs.
+
+### Error Body Reading
+
+Error responses are capped at 32 KiB to prevent memory exhaustion:
+
+```rust
+pub async fn read_capped_error_body(response: reqwest::Response) -> String
+```
+
+---
+
+## Extension Guide
+
+### Adding a New Provider
+
+1. **Extend Provider enum** (in `forge-types/src/lib.rs`):
+   - Add variant to `Provider`
+   - Implement all `Provider` methods
+
+2. **Extend ApiKey enum** (in `forge-types/src/lib.rs`):
+   - Add variant to `ApiKey`
+   - Update `provider()` and `as_str()` methods
+
+3. **Add model limits** (in `forge-context/src/model_limits.rs`):
+   - Add entry to `KNOWN_MODELS` array
+
+4. **Add provider module** (in `providers/src/lib.rs`):
+
+```rust
+pub mod your_provider {
+    use super::*;
+
+    const API_URL: &str = "https://api.yourprovider.com/v1/chat";
+
+    #[derive(Default)]
+    struct YourProviderParser;
+
+    impl SseParser for YourProviderParser {
+        fn parse(&mut self, json: &serde_json::Value) -> SseParseAction {
+            // Parse provider-specific JSON events
+        }
+        fn provider_name(&self) -> &'static str { "YourProvider" }
+    }
+
+    fn build_request_body(...) -> serde_json::Value {
+        // Build provider-specific request
+    }
+
+    pub async fn send_message(
+        config: &ApiConfig,
+        messages: &[CacheableMessage],
+        limits: OutputLimits,
+        system_prompt: Option<&str>,
+        tools: Option<&[ToolDefinition]>,
+        tx: mpsc::Sender<StreamEvent>,
+    ) -> Result<()> {
+        let body = build_request_body(...);
+        let response = http_client()
+            .post(API_URL)
+            .header("Authorization", format!("Bearer {}", config.api_key()))
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = read_capped_error_body(response).await;
+            let _ = tx.send(StreamEvent::Error(format!("API error: {}", error_text))).await;
+            return Ok(());
+        }
+
+        let mut parser = YourProviderParser;
+        process_sse_stream(response, &mut parser, &tx).await
+    }
+}
+```
+
+5. **Update send_message dispatch**:
+
+```rust
+match config.provider() {
+    // ... existing providers ...
+    Provider::YourProvider => your_provider::send_message(...).await,
+}
+```
+
+---
+
+## Quick Reference
+
+| Provider | Endpoint | Auth Header | Key SSE Events |
 | :--- | :--- | :--- | :--- |
 | Claude | `api.anthropic.com/v1/messages` | `x-api-key` | `content_block_delta`, `message_stop` |
 | OpenAI | `api.openai.com/v1/responses` | `Authorization: Bearer` | `response.output_text.delta`, `response.completed` |
-| Gemini | `googleapis.com/v1beta/models/...` | `x-goog-api-key` | `candidates[].content.parts[]`, `[DONE]` |
+| Gemini | `googleapis.com/v1beta/models/...` | `x-goog-api-key` | `candidates[].content.parts[]` |
+
+| Constant | Value | Purpose |
+| :--- | :--- | :--- |
+| `CONNECT_TIMEOUT_SECS` | 30 | HTTP connection timeout |
+| `DEFAULT_STREAM_IDLE_TIMEOUT_SECS` | 60 | SSE idle timeout |
+| `MAX_SSE_BUFFER_BYTES` | 4 MiB | Buffer size limit |
+| `MAX_SSE_PARSE_ERRORS` | 3 | Consecutive parse error threshold |
+| `MAX_ERROR_BODY_BYTES` | 32 KiB | Error response size limit |

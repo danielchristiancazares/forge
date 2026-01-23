@@ -217,8 +217,8 @@ const GREETING: NonEmptyStaticStr = NonEmptyStaticStr::new("Hello");
 // Access (all methods are const)
 let s: &'static str = GREETING.as_str();
 
-// Convert to runtime NonEmptyString (infallible)
-let runtime: NonEmptyString = GREETING.into();
+// Convert to runtime NonEmptyString (fallible - whitespace-only would fail)
+let runtime: NonEmptyString = NonEmptyString::try_from(GREETING)?;
 ```
 
 **Use Cases:**
@@ -882,6 +882,7 @@ let tool_use = Message::tool_use(ToolCall::new(
 
 let tool_result = Message::tool_result(ToolResult::success(
     "call_123",
+    "get_time",
     "2024-01-15T10:30:00Z",
 ));
 ```
@@ -968,6 +969,7 @@ Sanitizes text for safe terminal display.
 - C0 control characters (`0x00`-`0x1F`) except `\n`, `\t`, `\r`
 - C1 control characters (`0x80`-`0x9F`)
 - DEL character (`0x7F`)
+- Unicode bidirectional controls (Trojan Source prevention): LRM, RLM, LRE, RLE, PDF, LRO, RLO, LRI, RLI, FSI, PDI, Arabic Letter Mark
 
 **Preserves:**
 

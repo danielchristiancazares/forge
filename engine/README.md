@@ -12,13 +12,13 @@ This document provides comprehensive documentation for the `forge-engine` crate 
 | 303-378 | Input Mode System: InputState enum, DraftInput, mode transitions |
 | 379-477 | Type-Driven Design Patterns: proof tokens, InsertToken, CommandToken, mode wrappers |
 | 478-575 | Streaming Orchestration: ActiveStream, StreamingMessage, lifecycle, journal recovery |
-| 576-631 | Command System: built-in commands table, processing flow |
-| 632-694 | Context Management Integration: ContextManager, summarization retry, model switch adaptation |
-| 695-866 | Configuration: ForgeConfig structure, loading, env expansion, config sections |
-| 867-1011 | Tool Execution System: ToolRegistry, built-in tools, approval workflow, sandbox |
-| 1012-1245 | Public API Reference: App lifecycle, state queries, mode transitions, streaming ops |
-| 1246-1538 | Extension Guide: adding commands, input modes, providers, async operation states |
-| 1539-1670 | Re-exported Types, Error Handling, Thread Safety, Data Directory |
+| 576-647 | Command System: built-in commands table, rewind details, Command enum |
+| 648-710 | Context Management Integration: ContextManager, summarization retry, model switch adaptation |
+| 711-882 | Configuration: ForgeConfig structure, loading, env expansion, config sections |
+| 883-1027 | Tool Execution System: ToolRegistry, built-in tools, approval workflow, sandbox |
+| 1028-1261 | Public API Reference: App lifecycle, state queries, mode transitions, streaming ops |
+| 1262-1554 | Extension Guide: adding commands, input modes, providers, async operation states |
+| 1555-1700 | Re-exported Types, Error Handling, Thread Safety, Data Directory |
 
 ## Table of Contents
 
@@ -589,44 +589,56 @@ The engine provides a slash command system for user actions.
 |---------|---------|-------------|
 | `/quit` | `/q` | Exit application |
 | `/clear` | - | Clear conversation and history |
-| `/cancel` | - | Abort active streaming or tool execution |
+| `/cancel` | - | Cancel streaming, tool execution, or summarization |
 | `/model [name]` | - | Set model or open picker |
 | `/provider [n]` | `/p` | Switch provider |
 | `/context` | `/ctx` | Show context usage stats |
 | `/journal` | `/jrnl` | Show journal statistics |
 | `/summarize` | `/sum` | Trigger summarization |
 | `/screen` | - | Toggle fullscreen/inline mode |
-| `/tool <id> <res>` | - | Submit manual tool result |
-| `/tools` | - | List available tools |
+| `/tools` | - | Show tool status and list available tools |
+| `/rewind [id\|last] [scope]` | `/rw` | Rewind to an automatic checkpoint |
 | `/help` | - | List available commands |
+
+**Rewind Command Details:**
+- `/rewind` or `/rewind list` - Show available checkpoints
+- `/rewind last code` - Rewind last checkpoint, restore only code changes
+- `/rewind 3 conversation` - Rewind to checkpoint 3, restore only conversation (alias: `chat`)
+- `/rewind last both` - Rewind last checkpoint, restore both code and conversation
+- Scopes: `code`, `conversation` (or `chat`), `both` (default: `both`)
 
 ### Command Enum
 
 The `Command` enum provides typed command parsing:
 
 ```rust
-pub(crate) enum Command {
+pub(crate) enum Command<'a> {
     Quit,
     Clear,
     Cancel,
-    Model(Option<String>),
-    Provider(Option<String>),
+    Model(Option<&'a str>),
+    Provider(Option<&'a str>),
     Context,
     Journal,
     Summarize,
     Screen,
-    Tool { id: String, result: ToolResultInput },
     Tools,
+    Rewind { target: Option<&'a str>, scope: Option<&'a str> },
     Help,
-    Unknown(String),
+    Unknown(&'a str),
+    Empty,
 }
 
-impl Command {
-    pub fn parse(raw: &str) -> Self {
+impl<'a> Command<'a> {
+    pub fn parse(raw: &'a str) -> Self {
         let parts: Vec<&str> = raw.split_whitespace().collect();
         match parts.first().copied() {
             Some("q" | "quit") => Command::Quit,
             Some("clear") => Command::Clear,
+            Some("rewind" | "rw") => Command::Rewind {
+                target: parts.get(1).copied(),
+                scope: parts.get(2).copied(),
+            },
             // ... etc
         }
     }

@@ -150,7 +150,7 @@ pub async fn fetch(
 
 ### SSRF Protection
 
-The HTTP module implements comprehensive SSRF protection:
+The HTTP module (`http.rs`) implements comprehensive SSRF protection:
 
 - **Scheme validation**: Only `http` and `https` allowed
 - **Userinfo rejection**: No credentials in URLs
@@ -158,14 +158,17 @@ The HTTP module implements comprehensive SSRF protection:
 - **Non-canonical IP detection**: Rejects octal/hex IP forms
 - **Port allowlist**: Default ports 80, 443 (configurable)
 - **CIDR blocking**: Default blocks for private/reserved ranges:
-  - `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
-  - `169.254.0.0/16`, `::1/128`, `fc00::/7`, `fe80::/10`, etc.
+  - IPv4: `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
+  - IPv4: `169.254.0.0/16`, `0.0.0.0/8`, `100.64.0.0/10`
+  - IPv4: `192.0.0.0/24`, `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`
+  - IPv4: `224.0.0.0/4`, `240.0.0.0/4`, `255.255.255.255/32`
+  - IPv6: `::1/128`, `::/128`, `fc00::/7`, `fe80::/10`, `ff00::/8`, `2001:db8::/32`
 - **DNS pinning**: Resolved IPs pinned to prevent rebinding attacks
 - **Redirect validation**: Each redirect hop is SSRF-checked
 
 ### robots.txt Compliance
 
-RFC 9309 compliant parser with:
+RFC 9309 compliant parser (`robots.rs`) with:
 
 - **User-agent matching**: Case-insensitive substring match; most specific wins
 - **Rule evaluation**: Longest matching rule wins; Allow beats Disallow on ties
@@ -174,28 +177,29 @@ RFC 9309 compliant parser with:
 - **Origin caching**: In-memory cache with configurable TTL and entry limit
 - **Fail-open option**: Proceed on robots.txt fetch failure (adds note)
 - **Redirect handling**: Allows http to https upgrade, same host only
+- **Size limit**: Maximum 512 KiB robots.txt file size
 
 ### Browser Rendering
 
-Optional headless Chromium rendering via CDP (Chrome DevTools Protocol):
+Optional headless Chromium rendering via CDP (`browser.rs`):
 
-- **Isolated profiles**: Temporary user-data-dir per session (auto-cleaned)
+- **Isolated profiles**: Temporary user-data-dir per session (auto-cleaned on drop)
 - **Request interception**: All subrequests SSRF-validated via Fetch API
 - **Method restrictions**: Only GET/HEAD allowed for subrequests
-- **Resource blocking**: Configurable blocking (images, fonts, media)
-- **Subresource budget**: Limits total bytes from subrequests
-- **DOM size limit**: Truncates if rendered DOM exceeds limit
-- **Network idle detection**: Waits for 500ms of network quiet
-- **SPA detection**: Auto-fallback to browser for minimal HTML shells
+- **Resource blocking**: Configurable blocking (default: images, fonts, media)
+- **Subresource budget**: Limits total bytes from subrequests (default: 20 MiB)
+- **DOM size limit**: Truncates if rendered DOM exceeds limit (default: 5 MiB)
+- **Network idle detection**: Waits for 500ms of network quiet before extraction
+- **Redirect limit**: Enforced for main document navigation
 
 Chromium is discovered via:
-1. Explicit path in config
-2. `PATH` environment search
-3. Platform-specific default locations
+1. Explicit path in config (`chromium_path`)
+2. `PATH` environment search (`chromium`, `chrome`, etc.)
+3. Platform-specific default locations (Windows, macOS, Linux)
 
 ### HTML Extraction
 
-Content extraction with intelligent boilerplate removal:
+Content extraction (`extract.rs`) with intelligent boilerplate removal:
 
 - **Root detection cascade**: `<main>`, `<article>`, `[role="main"]`, `#content`, `.content`, `<body>`
 - **Tag-level filtering**: Removes `<script>`, `<style>`, `<nav>`, `<footer>`, `<aside>`, etc.
@@ -217,22 +221,22 @@ Markdown conversion supports:
 
 ### Token-Aware Chunking
 
-Content is split respecting structure and token budgets:
+Content is split (`chunk.rs`) respecting structure and token budgets:
 
 - **Block-based splitting**: Paragraphs, code fences, lists treated as units
 - **Heading state machine**: Tracks current heading for chunk context
 - **Code block atomicity**: Keeps fenced code blocks together when possible
 - **Overflow handling**: Sentence > whitespace > character boundaries
 - **List splitting**: Splits at item boundaries, preserves continuations
-- **tiktoken counting**: Accurate token counts via tiktoken-rs
+- **Token counting**: Accurate token counts via `forge-context::TokenCounter`
 
 ### Disk Caching
 
-LRU cache with dual-limit eviction:
+LRU cache (`cache.rs`) with dual-limit eviction:
 
 - **Key derivation**: SHA256 of `canonical_url + "\n" + rendering_method`
 - **Path layout**: `{cache_dir}/{first2hex}/{keyhex}.json`
-- **Versioned entries**: Format version check; stale versions deleted
+- **Versioned entries**: Format version check (v2); stale versions deleted
 - **TTL expiration**: Configurable days; expired entries treated as miss
 - **Dual limits**: Evicts by entry count AND total bytes (whichever exceeded first)
 - **LRU tracking**: `last_accessed_at` updated on read (no TTL sliding)
@@ -384,7 +388,3 @@ and eliminating `Option` handling in the hot path.
 - SSRF protection enabled with sensible defaults
 - robots.txt compliance required (fail-closed by default)
 - Browser requests fully intercepted and validated
-
-## Specification
-
-For complete behavioral specification, see `docs/WEBFETCH_SRD.md`.
