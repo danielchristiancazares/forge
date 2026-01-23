@@ -622,3 +622,74 @@ fn longest_common_prefix(strings: &[&str]) -> String {
     }
     prefix.into_iter().collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn longest_common_prefix_empty() {
+        assert_eq!(longest_common_prefix(&[]), "");
+    }
+
+    #[test]
+    fn longest_common_prefix_single() {
+        assert_eq!(longest_common_prefix(&["hello"]), "hello");
+    }
+
+    #[test]
+    fn longest_common_prefix_multiple_full_match() {
+        assert_eq!(longest_common_prefix(&["test", "test"]), "test");
+    }
+
+    #[test]
+    fn longest_common_prefix_partial() {
+        assert_eq!(longest_common_prefix(&["provider", "provide"]), "provide");
+        assert_eq!(longest_common_prefix(&["clear", "context"]), "c");
+        assert_eq!(longest_common_prefix(&["quit", "query"]), "qu");
+    }
+
+    #[test]
+    fn longest_common_prefix_no_match() {
+        assert_eq!(longest_common_prefix(&["abc", "xyz"]), "");
+    }
+
+    #[test]
+    fn complete_command_name_unique_match() {
+        // "cle" uniquely matches "clear"
+        assert_eq!(complete_command_name("cle", true), Some("ar".to_string()));
+        // "mo" uniquely matches "model", adds space since it expects arg
+        assert_eq!(complete_command_name("mo", true), Some("del ".to_string()));
+    }
+
+    #[test]
+    fn complete_command_name_with_slash_prefix() {
+        // Leading slash should be stripped for matching
+        assert_eq!(complete_command_name("/cle", true), Some("ar".to_string()));
+    }
+
+    #[test]
+    fn complete_command_name_ambiguous_extends_to_lcp() {
+        // "con" matches "context" and "cancel" - no common prefix beyond "c"
+        // Actually "con" only matches "context", let me check...
+        // "c" matches "clear", "cancel", "context", "ctx" - lcp is "c", no extension
+        assert_eq!(complete_command_name("c", true), None);
+    }
+
+    #[test]
+    fn complete_command_name_no_match() {
+        assert_eq!(complete_command_name("xyz", true), None);
+    }
+
+    #[test]
+    fn complete_command_name_exact_match() {
+        // Already complete, nothing to add (except space for commands expecting args)
+        assert_eq!(complete_command_name("clear", true), Some(String::new()));
+    }
+
+    #[test]
+    fn complete_command_name_case_insensitive() {
+        assert_eq!(complete_command_name("CLE", true), Some("ar".to_string()));
+        assert_eq!(complete_command_name("QU", true), Some("it".to_string()));
+    }
+}
