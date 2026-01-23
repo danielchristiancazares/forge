@@ -93,17 +93,14 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Enter insert mode
         KeyCode::Char('i') => {
             app.enter_insert_mode();
-            app.clear_status();
         }
         // Enter insert mode at end
         KeyCode::Char('a') => {
             app.enter_insert_mode_at_end();
-            app.clear_status();
         }
         // Enter insert mode with new line
         KeyCode::Char('o') => {
             app.enter_insert_mode_with_clear();
-            app.clear_status();
         }
         // Enter command mode
         KeyCode::Char(':' | '/') => {

@@ -7,16 +7,6 @@ use std::time::Instant;
 
 use super::{ModalEffect, ScrollState};
 
-/// Severity for status messages shown in the UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum StatusKind {
-    #[default]
-    Info,
-    Success,
-    Warning,
-    Error,
-}
-
 /// UI configuration options derived from config/environment.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UiOptions {
@@ -40,10 +30,6 @@ pub struct ViewState {
     pub toggle_screen_mode: bool,
     /// Request to clear the visible transcript (handled by the UI).
     pub clear_transcript: bool,
-    /// Status message displayed in the status bar.
-    pub status_message: Option<String>,
-    /// Severity for the status message (if any).
-    pub status_kind: StatusKind,
     /// Active modal animation effect.
     pub modal_effect: Option<ModalEffect>,
     /// UI options (theme, motion, glyphs).
@@ -59,8 +45,6 @@ impl Default for ViewState {
             scroll_max: 0,
             toggle_screen_mode: false,
             clear_transcript: false,
-            status_message: None,
-            status_kind: StatusKind::Info,
             modal_effect: None,
             ui_options: UiOptions::default(),
             last_frame: Instant::now(),

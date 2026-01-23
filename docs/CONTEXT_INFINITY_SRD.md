@@ -311,7 +311,7 @@ The system stores a normalized transcript for analysis, replay, indexing, and to
 #[derive(Clone, Debug)]
 enum TranscriptItem {
     AssistantMessage { blocks: Vec<ContentBlock> },
-    ToolCall { call_id: String, name: String, arguments: Json },
+    ToolCall { call_id: String, name: String, arguments: Json, thought_signature: Option<String> },
     ToolOutput { call_id: String, output: Json },
     ReasoningItem { encrypted_content: Option<String>, raw: Option<Json> },
     Metadata { key: String, value: String },

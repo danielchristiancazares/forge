@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
+use forge_context::StepId;
 use futures_util::future::AbortHandle;
 use serde_json::json;
 use tempfile::tempdir;
@@ -71,10 +72,22 @@ fn test_app() -> App {
         tool_iterations: 0,
         history_load_warning_shown: false,
         autosave_warning_shown: false,
-        empty_send_warning_shown: false,
         gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         gemini_cache_config: crate::GeminiCacheConfig::default(),
+        librarian: None, // No Gemini API key in tests
     }
+}
+
+/// Get the last notification text from the display (for test assertions).
+fn last_notification(app: &App) -> Option<&str> {
+    for item in app.display.iter().rev() {
+        if let DisplayItem::Local(msg) = item {
+            if msg.role_str() == "system" {
+                return Some(msg.content());
+            }
+        }
+    }
+    None
 }
 
 #[derive(Debug)]
@@ -256,7 +269,7 @@ fn process_command_clear_resets_conversation() {
     app.process_command(command);
 
     assert!(app.is_empty());
-    assert_eq!(app.status_message(), Some("Conversation cleared"));
+    assert_eq!(last_notification(&app), Some("Conversation cleared"));
     assert_eq!(app.input_mode(), InputMode::Normal);
 }
 
@@ -299,7 +312,7 @@ fn process_command_provider_switch_sets_status_when_no_key() {
     assert_eq!(app.provider(), Provider::OpenAI);
     assert_eq!(app.model(), Provider::OpenAI.default_model().as_str());
     assert_eq!(
-        app.status_message(),
+        last_notification(&app),
         Some("Switched to GPT - No API key! Set OPENAI_API_KEY")
     );
     assert_eq!(app.input_mode(), InputMode::Normal);
@@ -327,6 +340,8 @@ fn process_stream_events_applies_deltas_and_done() {
         abort_handle,
         tool_batch_id: None,
         tool_call_seq: 0,
+        tool_args_journal_bytes: std::collections::HashMap::new(),
+        turn: crate::input_modes::TurnContext::new_for_tests(),
     });
     assert!(app.is_loading());
 
@@ -364,6 +379,8 @@ fn process_stream_events_respects_budget() {
         abort_handle,
         tool_batch_id: None,
         tool_call_seq: 0,
+        tool_args_journal_bytes: std::collections::HashMap::new(),
+        turn: crate::input_modes::TurnContext::new_for_tests(),
     });
 
     for _ in 0..10_000 {
@@ -390,7 +407,7 @@ fn submit_message_without_key_sets_status_and_does_not_queue() {
     let queued = app.insert_mode(token).queue_message();
     assert!(queued.is_none());
     assert_eq!(
-        app.status_message(),
+        last_notification(&app),
         Some("No API key configured. Set ANTHROPIC_API_KEY environment variable.")
     );
     assert!(app.is_empty());
@@ -432,7 +449,7 @@ async fn summarization_not_needed_starts_queued_request() {
         .queue_message()
         .expect("queued message");
 
-    let result = app.start_summarization_with_attempt(Some(queued.config), 1);
+    let result = app.start_summarization_with_attempt(Some(queued), 1);
 
     assert_eq!(result, SummarizationStart::NotNeeded);
     assert!(matches!(app.state, OperationState::Streaming(_)));
@@ -619,8 +636,9 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
         vec![call],
         Vec::new(),
         app.model.clone(),
-        1,
+        StepId::new(1),
         None,
+        crate::input_modes::TurnContext::new_for_tests(),
     );
 
     match &app.state {
@@ -665,8 +683,9 @@ async fn tool_loop_preserves_order_after_approval() {
         calls,
         Vec::new(),
         app.model.clone(),
-        1,
+        StepId::new(1),
         None,
+        crate::input_modes::TurnContext::new_for_tests(),
     );
 
     match &app.state {
@@ -711,8 +730,9 @@ async fn tool_loop_write_then_read_same_batch() {
         calls,
         Vec::new(),
         app.model.clone(),
-        1,
+        StepId::new(1),
         None,
+        crate::input_modes::TurnContext::new_for_tests(),
     );
 
     // In Permissive mode, neither write_file nor read_file requires approval,
@@ -767,7 +787,10 @@ async fn summarization_failure_sets_retry_with_queued_request() {
     };
     app.state = OperationState::SummarizingWithQueued(SummarizationWithQueuedState {
         task,
-        queued: config.clone(),
+        queued: QueuedUserMessage {
+            config: config.clone(),
+            turn: crate::input_modes::TurnContext::new_for_tests(),
+        },
     });
 
     let before = Instant::now();
@@ -778,7 +801,10 @@ async fn summarization_failure_sets_retry_with_queued_request() {
         OperationState::SummarizationRetryWithQueued(state) => {
             assert_eq!(state.retry.attempt, 2);
             assert!(state.retry.ready_at >= before);
-            assert_eq!(state.queued.model().as_str(), config.model().as_str());
+            assert_eq!(
+                state.queued.config.model().as_str(),
+                config.model().as_str()
+            );
         }
         _ => panic!("expected retry with queued"),
     }
@@ -800,8 +826,9 @@ fn tool_loop_max_iterations_short_circuits() {
         vec![call],
         Vec::new(),
         app.model.clone(),
-        1,
+        StepId::new(1),
         None,
+        crate::input_modes::TurnContext::new_for_tests(),
     );
 
     assert!(matches!(app.state, OperationState::Idle));

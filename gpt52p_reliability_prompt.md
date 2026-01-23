@@ -13,16 +13,24 @@ Constraints / environment
 Repository structure (key areas to review)
 
 - Entry/loop: cli/src/main.rs
-- State machines + commands: engine/src/lib.rs
+- State machines + commands: engine/src/lib.rs, engine/src/state.rs, engine/src/commands.rs, engine/src/tool_loop.rs, engine/src/streaming.rs,
+  engine/src/ui/input.rs, engine/src/input_modes.rs
 - Config parsing & env expansion: engine/src/config.rs
 - Provider streaming/HTTP/SSE: providers/src/lib.rs (containing claude, openai, and gemini modules)
 - Context management & persistence: context/src/manager.rs, context/src/history.rs, context/src/stream_journal.rs, context/src/tool_journal.rs,
-  context/src/working_context.rs, context/src/summarization.rs, context/src/model_limits.rs, context/src/token_counter.rs
+  context/src/working_context.rs, context/src/summarization.rs, context/src/model_limits.rs, context/src/token_counter.rs,
+  context/src/fact_store.rs, context/src/librarian.rs
 - Tool execution framework: engine/src/tools/mod.rs, engine/src/tools/builtins.rs, engine/src/tools/sandbox.rs, engine/src/tools/lp1.rs,
-  engine/src/tools/git.rs, engine/src/tools/search.rs, engine/src/tools/shell.rs, engine/src/tools/webfetch.rs
+  engine/src/tools/git.rs, engine/src/tools/search.rs, engine/src/tools/shell.rs, engine/src/tools/webfetch.rs,
+  engine/src/tools/recall.rs
 - TUI rendering & input: tui/src/lib.rs, tui/src/ui_inline.rs, tui/src/input.rs, tui/src/markdown.rs, tui/src/theme.rs, tui/src/effects.rs
 - Domain types & validations: types/src/lib.rs, types/src/sanitize.rs
-- Docs for reference: docs/DESIGN.md, docs/OPENAI_RESPONSES_GPT52.md, docs/TOOL_EXECUTOR_SRD.md, docs/LP1.md, docs/TOOLS.md
+- Webfetch reliability: webfetch/src/lib.rs, webfetch/src/http.rs, webfetch/src/robots.rs, webfetch/src/cache.rs, webfetch/src/extract.rs
+- Docs for reference: docs/DESIGN.md, docs/OPENAI_RESPONSES_GPT52.md, docs/TOOL_EXECUTOR_SRD.md, docs/LP1.md, docs/TOOLS.md,
+  docs/CONTEXT_INFINITY_SRD.md, docs/BUILD_TOOL_SRD.md, docs/SEARCH_INDEXING_SRD.md, docs/WEBFETCH_SRD.md,
+  docs/WEBFETCH_CHANGELOG.md, docs/SECURITY_TESTING.md, docs/INVARIANT_FIRST_ARCHITECTURE.md, docs/ANTHROPIC_MESSAGES_API.md,
+  docs/READ_FILE_SRD.md, docs/WRITE_FILE_SRD.md, docs/LIST_DIRECTORY_SRD.md, docs/GIT_TOOLS_SRD.md, docs/GLOB_SRD.md,
+  docs/PWSH_TOOL_SRD.md, docs/OUTLINE_TOOL_SRD.md, docs/SMART_FILE_EDIT_SRD.md, docs/TEST_TOOL_SRD.md, docs/DELETE_FILE_SRD.md
 - Crate READMEs: cli/README.md, engine/README.md, providers/README.md, tui/README.md, types/README.md, context/README.md
 - Dependencies: Cargo.toml, Cargo.lock
 

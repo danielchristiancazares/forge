@@ -14,6 +14,7 @@ use std::path::Path;
 use forge_types::{Message, NonEmptyString};
 use tempfile::NamedTempFile;
 
+use super::StepId;
 use super::history::{FullHistory, MessageId, Summary, SummaryId};
 use super::model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry};
 use super::token_counter::TokenCounter;
@@ -210,7 +211,7 @@ impl ContextManager {
     pub fn push_message_with_step_id(
         &mut self,
         message: Message,
-        stream_step_id: i64,
+        stream_step_id: StepId,
     ) -> MessageId {
         let token_count = self.counter.count_message(&message);
         self.history
@@ -222,7 +223,7 @@ impl ContextManager {
     /// Used for idempotent crash recovery - if history already contains
     /// an entry with this `step_id`, we should not recover it again.
     #[must_use]
-    pub fn has_step_id(&self, step_id: i64) -> bool {
+    pub fn has_step_id(&self, step_id: StepId) -> bool {
         self.history.has_step_id(step_id)
     }
 
@@ -1051,12 +1052,14 @@ mod tests {
         let mut manager = ContextManager::new("claude-opus-4-5-20251101");
 
         // Push with step ID
-        let _id = manager
-            .push_message_with_step_id(Message::try_user("Hello").expect("non-empty"), 12345);
+        let _id = manager.push_message_with_step_id(
+            Message::try_user("Hello").expect("non-empty"),
+            StepId::new(12345),
+        );
 
         // Check step ID exists
-        assert!(manager.has_step_id(12345));
-        assert!(!manager.has_step_id(99999));
+        assert!(manager.has_step_id(StepId::new(12345)));
+        assert!(!manager.has_step_id(StepId::new(99999)));
     }
 
     #[test]

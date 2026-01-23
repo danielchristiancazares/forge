@@ -2,10 +2,10 @@
 
 ## Software Requirements Document
 
-**Version:** 1.0  
-**Date:** 2026-01-08  
-**Status:** Draft  
-**Baseline code reference:** `forge-source.zip`
+**Version:** 1.1
+**Date:** 2026-01-16
+**Status:** Implementation Ready
+**Baseline code reference:** `engine/src/tools/builtins.rs`
 
 ## LLM-TOC
 <!-- Auto-generated section map for LLM context -->
@@ -22,6 +22,10 @@
 ---
 
 ## 0. Change Log
+
+### 0.2 Implementation Ready
+
+* Updated baseline reference and status.
 
 ### 0.1 Initial draft
 

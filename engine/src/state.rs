@@ -11,10 +11,10 @@ use futures_util::future::AbortHandle;
 use tokio::sync::mpsc;
 
 use forge_context::{RecoveredToolBatch, StepId, SummarizationScope, ToolBatchId};
-use forge_providers::ApiConfig;
 use forge_types::{ModelName, ToolCall, ToolResult};
 
 use crate::StreamingMessage;
+use crate::input_modes::{ChangeRecorder, TurnContext};
 use crate::tools::{self, ConfirmationRequest};
 
 // ============================================================================
@@ -45,6 +45,8 @@ impl DataDir {
 
 use crate::ActiveJournal;
 
+use std::collections::HashMap;
+
 #[derive(Debug)]
 pub(crate) struct ActiveStream {
     pub(crate) message: StreamingMessage,
@@ -52,6 +54,10 @@ pub(crate) struct ActiveStream {
     pub(crate) abort_handle: AbortHandle,
     pub(crate) tool_batch_id: Option<ToolBatchId>,
     pub(crate) tool_call_seq: usize,
+    /// Tracks bytes of tool arguments written to journal per call ID.
+    /// When a call exceeds the limit, we stop appending to the journal.
+    pub(crate) tool_args_journal_bytes: HashMap<String, usize>,
+    pub(crate) turn: TurnContext,
 }
 
 // ============================================================================
@@ -92,7 +98,7 @@ pub(crate) struct SummarizationState {
 #[derive(Debug)]
 pub(crate) struct SummarizationWithQueuedState {
     pub(crate) task: SummarizationTask,
-    pub(crate) queued: ApiConfig,
+    pub(crate) queued: crate::QueuedUserMessage,
 }
 
 #[derive(Debug)]
@@ -103,7 +109,7 @@ pub(crate) struct SummarizationRetryState {
 #[derive(Debug)]
 pub(crate) struct SummarizationRetryWithQueuedState {
     pub(crate) retry: SummarizationRetry,
-    pub(crate) queued: ApiConfig,
+    pub(crate) queued: crate::QueuedUserMessage,
 }
 
 // ============================================================================
@@ -117,11 +123,12 @@ pub(crate) struct ToolBatch {
     pub(crate) results: Vec<ToolResult>,
     pub(crate) model: ModelName,
     pub(crate) step_id: StepId,
-    pub(crate) batch_id: ToolBatchId,
-    pub(crate) iteration: u32,
+    /// Journal batch ID. None if journaling failed or was disabled.
+    pub(crate) batch_id: Option<ToolBatchId>,
     pub(crate) execute_now: Vec<ToolCall>,
     pub(crate) approval_calls: Vec<ToolCall>,
     pub(crate) approval_requests: Vec<ConfirmationRequest>,
+    pub(crate) turn: TurnContext,
 }
 
 #[derive(Debug)]
@@ -142,6 +149,7 @@ pub(crate) struct ActiveToolExecution {
     pub(crate) abort_handle: Option<AbortHandle>,
     pub(crate) output_lines: Vec<String>,
     pub(crate) remaining_capacity_bytes: usize,
+    pub(crate) turn_recorder: ChangeRecorder,
 }
 
 #[derive(Debug)]
@@ -191,7 +199,7 @@ pub(crate) struct ToolPlan {
 pub(crate) enum OperationState {
     Idle,
     Streaming(ActiveStream),
-    ToolLoop(ToolLoopState),
+    ToolLoop(Box<ToolLoopState>),
     ToolRecovery(ToolRecoveryState),
     Summarizing(SummarizationState),
     SummarizingWithQueued(SummarizationWithQueuedState),

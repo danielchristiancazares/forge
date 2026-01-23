@@ -12,11 +12,6 @@ use crate::{config, util};
 
 const STREAM_ERROR_BADGE: NonEmptyStaticStr = NonEmptyStaticStr::new("[Stream error]");
 
-pub(crate) struct StreamErrorUi {
-    pub(crate) status: String,
-    pub(crate) message: NonEmptyString,
-}
-
 pub(crate) fn split_api_error(raw: &str) -> Option<(String, String)> {
     let rest = raw.strip_prefix("API error ")?;
     let (status, body) = rest.split_once(": ")?;
@@ -58,7 +53,8 @@ pub(crate) fn is_auth_error(raw: &str) -> bool {
         || (has_code && lower.contains("unauthorized"))
 }
 
-pub(crate) fn format_stream_error(provider: Provider, model: &str, err: &str) -> StreamErrorUi {
+/// Format a stream error into a user-friendly message.
+pub(crate) fn format_stream_error(provider: Provider, model: &str, err: &str) -> NonEmptyString {
     let trimmed = err.trim();
     let (status, body) =
         split_api_error(trimmed).unwrap_or_else(|| (String::new(), trimmed.to_string()));
@@ -97,14 +93,10 @@ pub(crate) fn format_stream_error(provider: Provider, model: &str, err: &str) ->
             content.push_str(&detail);
         }
 
-        let message = NonEmptyString::new(content).unwrap_or_else(|_| {
+        return NonEmptyString::new(content).unwrap_or_else(|_| {
             NonEmptyString::try_from(STREAM_ERROR_BADGE)
                 .expect("STREAM_ERROR_BADGE must be non-empty")
         });
-        return StreamErrorUi {
-            status: format!("Auth error: set {env_var}"),
-            message,
-        };
     }
 
     let detail = if !extracted.trim().is_empty() {
@@ -115,8 +107,6 @@ pub(crate) fn format_stream_error(provider: Provider, model: &str, err: &str) ->
         "unknown error".to_string()
     };
     let detail_short = util::truncate_with_ellipsis(&detail, 200);
-    let status_source = detail.lines().next().unwrap_or("");
-    let status_short = util::truncate_with_ellipsis(status_source, 80);
     let mut content = String::new();
     content.push_str(STREAM_ERROR_BADGE.as_str());
     content.push_str("\n\n");
@@ -132,11 +122,7 @@ pub(crate) fn format_stream_error(provider: Provider, model: &str, err: &str) ->
         content.push_str(&detail_short);
     }
 
-    let message = NonEmptyString::new(content).unwrap_or_else(|_| {
+    NonEmptyString::new(content).unwrap_or_else(|_| {
         NonEmptyString::try_from(STREAM_ERROR_BADGE).expect("STREAM_ERROR_BADGE must be non-empty")
-    });
-    StreamErrorUi {
-        status: format!("Stream error: {status_short}"),
-        message,
-    }
+    })
 }

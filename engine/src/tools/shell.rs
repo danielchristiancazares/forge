@@ -12,7 +12,7 @@ pub struct DetectedShell {
     /// Arguments to pass before the command (e.g., `["-c"]` or `["/C"]`).
     pub args: Vec<String>,
     /// Human-readable name for logging.
-    pub name: &'static str,
+    pub name: String,
 }
 
 impl std::fmt::Display for DetectedShell {
@@ -35,7 +35,7 @@ pub fn detect_shell(config: Option<&ShellConfig>) -> DetectedShell {
         return DetectedShell {
             binary: PathBuf::from(binary),
             args,
-            name: "configured",
+            name: "configured".into(),
         };
     }
 
@@ -68,7 +68,7 @@ fn detect_platform_shell() -> DetectedShell {
         return DetectedShell {
             binary: "pwsh".into(),
             args: vec!["-NoProfile".to_string(), "-Command".to_string()],
-            name: "pwsh",
+            name: "pwsh".into(),
         };
     }
 
@@ -77,7 +77,7 @@ fn detect_platform_shell() -> DetectedShell {
         return DetectedShell {
             binary: "powershell".into(),
             args: vec!["-NoProfile".to_string(), "-Command".to_string()],
-            name: "powershell",
+            name: "powershell".into(),
         };
     }
 
@@ -85,7 +85,7 @@ fn detect_platform_shell() -> DetectedShell {
     DetectedShell {
         binary: "cmd.exe".into(),
         args: vec!["/C".to_string()],
-        name: "cmd",
+        name: "cmd".into(),
     }
 }
 
@@ -99,9 +99,8 @@ fn detect_platform_shell() -> DetectedShell {
             let name = path
                 .file_name()
                 .and_then(|s| s.to_str())
-                .unwrap_or("user-shell");
-            // Leak the string to get a &'static str (acceptable for startup-only code)
-            let name: &'static str = Box::leak(name.to_string().into_boxed_str());
+                .unwrap_or("user-shell")
+                .to_string();
             return DetectedShell {
                 binary: PathBuf::from(&shell),
                 args: vec!["-c".to_string()],
@@ -115,7 +114,7 @@ fn detect_platform_shell() -> DetectedShell {
         return DetectedShell {
             binary: "bash".into(),
             args: vec!["-c".to_string()],
-            name: "bash",
+            name: "bash".into(),
         };
     }
 
@@ -123,7 +122,7 @@ fn detect_platform_shell() -> DetectedShell {
     DetectedShell {
         binary: "sh".into(),
         args: vec!["-c".to_string()],
-        name: "sh",
+        name: "sh".into(),
     }
 }
 

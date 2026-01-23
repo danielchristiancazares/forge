@@ -88,7 +88,7 @@ pub enum Message {
     System(SystemMessage),      // content, timestamp
     User(UserMessage),          // content, timestamp  
     Assistant(AssistantMessage), // content, timestamp, model
-    ToolUse(ToolCall),          // id, name, arguments
+    ToolUse(ToolCall),          // id, name, arguments, optional thought_signature
     ToolResult(ToolResult),     // tool_call_id, content, is_error
 }
 ```
@@ -629,7 +629,7 @@ Events emitted during streaming API responses.
 | ------- | ----------- |
 | `TextDelta(String)` | Incremental text content |
 | `ThinkingDelta(String)` | Claude extended thinking content |
-| `ToolCallStart { id, name, thought_signature }` | Tool use content block began (with optional Gemini signature) |
+| `ToolCallStart { id, name, thought_signature }` | Tool use content block began |
 | `ToolCallDelta { id, arguments }` | Tool call JSON arguments chunk |
 | `Done` | Stream completed successfully |
 | `Error(String)` | Error occurred during streaming |
@@ -645,7 +645,11 @@ fn handle_event(event: StreamEvent, response: &mut String, thinking: &mut String
         StreamEvent::ThinkingDelta(thought) => {
             thinking.push_str(&thought);
         }
-        StreamEvent::ToolCallStart { id, name, .. } => {
+        StreamEvent::ToolCallStart {
+            id,
+            name,
+            thought_signature: _,
+        } => {
             println!("Tool call started: {} ({})", name, id);
         }
         StreamEvent::ToolCallDelta { id, arguments } => {
@@ -736,7 +740,7 @@ A tool call requested by the LLM during a response.
 | `id` | `String` | Unique identifier (for matching with results) |
 | `name` | `String` | The tool being called |
 | `arguments` | `serde_json::Value` | Parsed JSON arguments |
-| `thought_signature` | `Option<String>` | Optional Gemini thought signature |
+| `thought_signature` | `Option<String>` | Optional thought signature (Gemini) |
 
 ```rust
 use forge_types::ToolCall;

@@ -3,6 +3,8 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+use forge_webfetch::{Note, TruncationReason, WebFetchOutput};
+
 use super::{
     RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, redact_summary, sanitize_output,
 };
@@ -130,6 +132,7 @@ impl ToolExecutor for WebFetchTool {
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
+            ctx.allow_truncation = false;
             let typed: WebFetchArgs =
                 serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
                     message: e.to_string(),
@@ -169,23 +172,85 @@ impl ToolExecutor for WebFetchTool {
                 }
             })?;
 
-            // Serialize output
-            let json = serde_json::to_string(&output).map_err(|e| ToolError::ExecutionFailed {
-                tool: WEBFETCH_TOOL_NAME.to_string(),
-                message: e.to_string(),
-            })?;
-
-            // Truncate if needed
+            // Trim to fit output budget while preserving valid JSON.
             let effective_max = ctx.max_output_bytes.min(ctx.available_capacity_bytes);
-            let output_str = if json.len() > effective_max {
-                super::truncate_output(json, effective_max)
-            } else {
-                json
-            };
-
+            let output_str = shrink_output_to_fit(output, effective_max)?;
             Ok(sanitize_output(&output_str))
         })
     }
+}
+
+fn serialize_output(output: &WebFetchOutput) -> Result<String, ToolError> {
+    serde_json::to_string(output).map_err(|e| ToolError::ExecutionFailed {
+        tool: WEBFETCH_TOOL_NAME.to_string(),
+        message: e.to_string(),
+    })
+}
+
+fn mark_tool_truncation(output: &mut WebFetchOutput) {
+    output.truncated = true;
+    output.truncation_reason = Some(TruncationReason::ToolOutputLimit);
+    if !output.notes.contains(&Note::ToolOutputLimit) {
+        output.notes.push(Note::ToolOutputLimit);
+        output.notes.sort_by_key(Note::order);
+    }
+}
+
+fn shrink_output_to_fit(mut output: WebFetchOutput, max_bytes: usize) -> Result<String, ToolError> {
+    if max_bytes == 0 {
+        return Err(ToolError::ExecutionFailed {
+            tool: WEBFETCH_TOOL_NAME.to_string(),
+            message: "Output budget too small to serialize WebFetch result".to_string(),
+        });
+    }
+
+    let mut json = serialize_output(&output)?;
+    if json.len() <= max_bytes {
+        return Ok(json);
+    }
+
+    mark_tool_truncation(&mut output);
+
+    while !output.chunks.is_empty() {
+        output.chunks.pop();
+        json = serialize_output(&output)?;
+        if json.len() <= max_bytes {
+            return Ok(json);
+        }
+    }
+
+    let mut reduced = true;
+    while json.len() > max_bytes && reduced {
+        reduced = false;
+        if output.title.take().is_some() || output.language.take().is_some() {
+            reduced = true;
+        } else if !output.notes.is_empty() {
+            output.notes.clear();
+            reduced = true;
+        } else if !output.fetched_at.is_empty() {
+            output.fetched_at.clear();
+            reduced = true;
+        } else if !output.requested_url.is_empty() {
+            output.requested_url.clear();
+            reduced = true;
+        } else if !output.final_url.is_empty() {
+            output.final_url.clear();
+            reduced = true;
+        }
+
+        if reduced {
+            json = serialize_output(&output)?;
+        }
+    }
+
+    if json.len() > max_bytes {
+        return Err(ToolError::ExecutionFailed {
+            tool: WEBFETCH_TOOL_NAME.to_string(),
+            message: "Output budget too small to serialize WebFetch result".to_string(),
+        });
+    }
+
+    Ok(json)
 }
 
 #[cfg(test)]
@@ -197,5 +262,44 @@ mod tests {
         let config = WebFetchToolConfig::default();
         assert_eq!(config.timeout_seconds, 20);
         assert_eq!(config.default_max_chunk_tokens, 600);
+    }
+
+    #[test]
+    fn shrink_output_to_fit_preserves_valid_json() {
+        let chunks = vec![
+            forge_webfetch::FetchChunk {
+                heading: "Header 1".to_string(),
+                text: "A".repeat(120),
+                token_count: 120,
+            },
+            forge_webfetch::FetchChunk {
+                heading: "Header 2".to_string(),
+                text: "B".repeat(120),
+                token_count: 120,
+            },
+            forge_webfetch::FetchChunk {
+                heading: "Header 3".to_string(),
+                text: "C".repeat(120),
+                token_count: 120,
+            },
+        ];
+
+        let output = WebFetchOutput {
+            requested_url: "https://example.com".to_string(),
+            final_url: "https://example.com".to_string(),
+            fetched_at: "2025-01-01T00:00:00Z".to_string(),
+            title: Some("Example".to_string()),
+            language: Some("en".to_string()),
+            chunks,
+            rendering_method: forge_webfetch::RenderingMethod::Http,
+            truncated: false,
+            truncation_reason: None,
+            notes: Vec::new(),
+        };
+
+        let json = shrink_output_to_fit(output, 200).expect("shrink output");
+        assert!(json.len() <= 200);
+        let parsed: WebFetchOutput = serde_json::from_str(&json).expect("valid json");
+        assert!(parsed.truncated);
     }
 }

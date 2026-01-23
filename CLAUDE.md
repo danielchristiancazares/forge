@@ -155,7 +155,7 @@ The codebase enforces correctness through types (see `docs/DESIGN.md`):
 
 Adding a provider: extend `Provider` enum, implement all match arms, add module in `providers/src/`.
 
-### Context Infinity (`context/`)
+### Context Infinity™ (`context/`)
 
 Adaptive context management with automatic summarization:
 
@@ -210,6 +210,21 @@ Robust tool execution with crash recovery and user approval:
 | Add modal animation | `ModalEffect` in `engine/src/lib.rs`, apply in `tui/src/effects.rs` |
 
 See `tui/README.md` Extension Guide for detailed patterns.
+
+### UI Design Patterns
+
+**Mode Labels**: Each input mode has a colored label in the input area's top-left border. The label uses dark text on a colored background, where the background matches that mode's chrome/border color.
+
+| Mode | Style Function | Background | Border |
+|------|----------------|------------|--------|
+| Normal | `styles::mode_normal()` | `text_secondary` (tan) | `text_muted` |
+| Insert | `styles::mode_insert()` | `green` | `green` |
+| Command | `styles::mode_command()` | `yellow` | `yellow` |
+| Model | `styles::mode_model()` | `primary` (purple) | `primary` |
+
+All mode styles use `fg(bg_dark)` + `bg(<color>)` + `BOLD` modifier.
+
+**Inline vs Fullscreen**: Inline mode transforms the input area for overlays (Command palette, Model selector) rather than spawning floating popups. Fullscreen mode uses centered floating overlays with animations.
 
 ## Documentation
 

@@ -570,7 +570,9 @@ Non-2xx responses emit `StreamEvent::Error` with status and body:
 if !response.status().is_success() {
     let status = response.status();
     let error_text = response.text().await...;
-    on_event(StreamEvent::Error(format!("API error {}: {}", status, error_text)));
+    let _ = tx
+        .send(StreamEvent::Error(format!("API error {}: {}", status, error_text)))
+        .await;
 }
 ```
 

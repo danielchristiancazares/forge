@@ -27,27 +27,35 @@ impl super::App {
 
     pub(crate) fn start_summarization_with_attempt(
         &mut self,
-        queued_request: Option<ApiConfig>,
+        queued_request: Option<QueuedUserMessage>,
         attempt: u8,
     ) -> SummarizationStart {
+        // Helper to rollback when failing with a queued request
+        let fail_with_rollback = |app: &mut Self, queued: Option<QueuedUserMessage>| {
+            if let Some(queued) = queued {
+                app.rollback_pending_user_message();
+                app.finish_turn(queued.turn);
+            }
+            SummarizationStart::Failed
+        };
+
         if !self.context_infinity_enabled() {
-            self.set_status_warning("ContextInfinity disabled: summarization unavailable");
-            return SummarizationStart::Failed;
+            self.push_notification("ContextInfinity disabled: summarization unavailable");
+            return fail_with_rollback(self, queued_request);
         }
         if attempt > MAX_SUMMARIZATION_ATTEMPTS {
-            return SummarizationStart::Failed;
+            return fail_with_rollback(self, queued_request);
         }
 
-        if let Some(reason) = self.busy_reason() {
-            self.set_status_warning(format!("Cannot summarize: {reason}"));
-            return SummarizationStart::Failed;
+        if self.busy_reason().is_some() {
+            return fail_with_rollback(self, queued_request);
         }
 
         // Try to build working context to see if summarization is needed
         let message_ids = match self.context_manager.prepare() {
             Ok(_) => {
-                if let Some(config) = queued_request {
-                    self.start_streaming(QueuedUserMessage { config });
+                if let Some(queued) = queued_request {
+                    self.start_streaming(queued);
                 }
                 return SummarizationStart::NotNeeded;
             }
@@ -57,16 +65,16 @@ impl super::App {
                 budget_tokens,
                 message_count,
             }) => {
-                self.set_status_error(format!(
+                self.push_notification(format!(
                     "Recent {message_count} messages ({required_tokens} tokens) exceed budget ({budget_tokens} tokens). Reduce input or use larger model."
                 ));
-                return SummarizationStart::Failed;
+                return fail_with_rollback(self, queued_request);
             }
         };
 
         // Prepare summarization request
         let Some(pending) = self.context_manager.prepare_summarization(&message_ids) else {
-            return SummarizationStart::Failed;
+            return fail_with_rollback(self, queued_request);
         };
 
         let PendingSummarization {
@@ -83,13 +91,13 @@ impl super::App {
         } else {
             format!("Summarizing ~{original_tokens} tokens → ~{target_tokens} tokens...")
         };
-        self.set_status(status);
+        self.push_notification(status);
 
         // Build API config for summarization.
         // When a request is queued, use its config (key + model) to ensure provider
         // consistency even if the user switches providers during summarization.
-        let (api_key, model) = if let Some(config) = queued_request.as_ref() {
-            (config.api_key_owned(), config.model().clone())
+        let (api_key, model) = if let Some(queued) = queued_request.as_ref() {
+            (queued.config.api_key_owned(), queued.config.model().clone())
         } else {
             let key = if let Some(key) = self.current_api_key().cloned() {
                 match self.model.provider() {
@@ -98,7 +106,7 @@ impl super::App {
                     Provider::Gemini => ApiKey::Gemini(key),
                 }
             } else {
-                self.set_status_warning("Cannot summarize: no API key configured");
+                self.push_notification("Cannot summarize: no API key configured");
                 return SummarizationStart::Failed;
             };
             (key, self.model.clone())
@@ -107,7 +115,13 @@ impl super::App {
         let config = match ApiConfig::new(api_key, model) {
             Ok(config) => config,
             Err(e) => {
-                self.set_status_error(format!("Cannot summarize: {e}"));
+                self.push_notification(format!("Cannot summarize: {e}"));
+                // Rollback if we have a queued request (shouldn't happen in practice
+                // since queued request already has a valid config, but be defensive)
+                if let Some(queued) = queued_request {
+                    self.rollback_pending_user_message();
+                    self.finish_turn(queued.turn);
+                }
                 return SummarizationStart::Failed;
             }
         };
@@ -127,11 +141,8 @@ impl super::App {
             attempt,
         };
 
-        self.state = if let Some(config) = queued_request {
-            OperationState::SummarizingWithQueued(SummarizationWithQueuedState {
-                task,
-                queued: config,
-            })
+        self.state = if let Some(queued) = queued_request {
+            OperationState::SummarizingWithQueued(SummarizationWithQueuedState { task, queued })
         } else {
             OperationState::Summarizing(SummarizationState { task })
         };
@@ -208,12 +219,12 @@ impl super::App {
                     return;
                 }
                 self.invalidate_usage_cache();
-                self.set_status_success("Summarization complete");
+                self.push_notification("Summarization complete");
                 self.autosave_history(); // Persist summarized history immediately
 
                 // If a request was queued waiting for summarization, start it now.
-                if let Some(config) = queued_request {
-                    self.start_streaming(QueuedUserMessage { config });
+                if let Some(queued) = queued_request {
+                    self.start_streaming(queued);
                 }
             }
             Some(Ok(Err(e))) => {
@@ -241,7 +252,7 @@ impl super::App {
         &mut self,
         attempt: u8,
         error: String,
-        queued_request: Option<ApiConfig>,
+        queued_request: Option<QueuedUserMessage>,
     ) {
         self.state = OperationState::Idle;
         let next_attempt = attempt.saturating_add(1);
@@ -253,15 +264,15 @@ impl super::App {
                 attempt: next_attempt,
                 ready_at: Instant::now() + delay,
             };
-            self.state = if let Some(config) = queued_request {
+            self.state = if let Some(queued) = queued_request {
                 OperationState::SummarizationRetryWithQueued(SummarizationRetryWithQueuedState {
                     retry,
-                    queued: config,
+                    queued,
                 })
             } else {
                 OperationState::SummarizationRetry(SummarizationRetryState { retry })
             };
-            self.set_status_warning(format!(
+            self.push_notification(format!(
                 "Summarization failed (attempt {}/{}): {}. Retrying in {}ms...",
                 attempt,
                 MAX_SUMMARIZATION_ATTEMPTS,
@@ -271,12 +282,17 @@ impl super::App {
             return;
         }
 
+        // Max attempts exceeded - rollback and finish turn if we had a queued request
+        if let Some(queued) = queued_request {
+            self.rollback_pending_user_message();
+            self.finish_turn(queued.turn);
+        }
         let suffix = if had_pending {
             " Cancelled queued request."
         } else {
             ""
         };
-        self.set_status_error(format!(
+        self.push_notification(format!(
             "Summarization failed after {MAX_SUMMARIZATION_ATTEMPTS} attempts: {error}.{suffix}"
         ));
     }
@@ -320,7 +336,7 @@ impl super::App {
             } else {
                 ""
             };
-            self.set_status_error(format!(
+            self.push_notification(format!(
                 "Summarization retry could not start (attempt {attempt}/{MAX_SUMMARIZATION_ATTEMPTS}).{suffix}"
             ));
         }

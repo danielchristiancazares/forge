@@ -2,10 +2,10 @@
 
 ## Software Requirements Document
 
-**Version:** 1.0  
-**Date:** 2026-01-08  
-**Status:** Draft  
-**Baseline code reference:** `forge-source.zip`
+**Version:** 1.1
+**Date:** 2026-01-16
+**Status:** Implementation Ready
+**Baseline code reference:** `../tools/src/tools/outline.rs`
 
 ## LLM-TOC
 <!-- Auto-generated section map for LLM context -->
@@ -22,6 +22,11 @@
 ---
 
 ## 0. Change Log
+
+### 0.2 Implementation Ready
+
+* Added `include_private` parameter from reference implementation.
+* Updated baseline reference and status.
 
 ### 0.1 Initial draft
 
@@ -67,15 +72,25 @@ Out of scope:
 **FR-OUT-02:** Request schema MUST include:
 
 * `path` (string, required)
+* `include_private` (boolean, optional, default false)
 
 ### 2.2 Behavior
 
 **FR-OUT-03:** The tool MUST parse the file using tree-sitter-cpp and extract:
 
-* class/struct names
+* namespaces
+* class/struct names with base classes
+* enum specifiers (including enum class)
 * method/function signatures
+* type definitions and aliases
+* template declarations
+* preprocessor includes and conditionals
 
-**FR-OUT-04:** The tool MUST return a structured outline and a human-readable summary.
+**FR-OUT-04:** When `include_private` is false (default), the tool MUST omit private members from class outlines.
+
+**FR-OUT-05:** The tool MUST preserve doc comments (`///` and `/**`) preceding declarations.
+
+**FR-OUT-06:** The tool MUST return the outline as human-readable indented text.
 
 ---
 

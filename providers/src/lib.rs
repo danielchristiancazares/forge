@@ -14,6 +14,7 @@ use forge_types::{
 };
 use std::sync::OnceLock;
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 // Re-export types that callers need
 pub use forge_types;
@@ -25,7 +26,7 @@ pub use forge_types;
 /// Connection timeout for API requests.
 const CONNECT_TIMEOUT_SECS: u64 = 30;
 /// Max idle time between SSE chunks before aborting.
-const STREAM_IDLE_TIMEOUT_SECS: u64 = 60;
+const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 60;
 
 /// Maximum bytes for SSE buffer before aborting (4 MiB).
 /// Prevents memory exhaustion from malicious/misbehaving servers.
@@ -158,10 +159,26 @@ trait SseParser {
 /// - Event boundary detection
 /// - `[DONE]` marker handling
 /// - Parse error tracking with threshold
+fn stream_idle_timeout() -> Duration {
+    static TIMEOUT: OnceLock<Duration> = OnceLock::new();
+    *TIMEOUT.get_or_init(|| {
+        let timeout = std::env::var("FORGE_STREAM_IDLE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_STREAM_IDLE_TIMEOUT_SECS);
+        Duration::from_secs(timeout)
+    })
+}
+
+async fn send_event(tx: &mpsc::Sender<StreamEvent>, event: StreamEvent) -> bool {
+    tx.send(event).await.is_ok()
+}
+
 async fn process_sse_stream<P: SseParser>(
     response: reqwest::Response,
     parser: &mut P,
-    on_event: impl Fn(StreamEvent),
+    tx: &mpsc::Sender<StreamEvent>,
 ) -> Result<()> {
     use futures_util::StreamExt;
 
@@ -170,11 +187,8 @@ async fn process_sse_stream<P: SseParser>(
     let mut parse_errors = 0usize;
 
     loop {
-        let Ok(next) =
-            tokio::time::timeout(Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS), stream.next())
-                .await
-        else {
-            on_event(StreamEvent::Error("Stream idle timeout".to_string()));
+        let Ok(next) = tokio::time::timeout(stream_idle_timeout(), stream.next()).await else {
+            let _ = send_event(tx, StreamEvent::Error("Stream idle timeout".to_string())).await;
             return Ok(());
         };
 
@@ -184,9 +198,11 @@ async fn process_sse_stream<P: SseParser>(
 
         // Security: prevent unbounded buffer growth
         if buffer.len() > MAX_SSE_BUFFER_BYTES {
-            on_event(StreamEvent::Error(
-                "SSE buffer exceeded maximum size (4 MiB)".to_string(),
-            ));
+            let _ = send_event(
+                tx,
+                StreamEvent::Error("SSE buffer exceeded maximum size (4 MiB)".to_string()),
+            )
+            .await;
             return Ok(());
         }
 
@@ -196,9 +212,11 @@ async fn process_sse_stream<P: SseParser>(
             }
 
             let Ok(event) = std::str::from_utf8(&event) else {
-                on_event(StreamEvent::Error(
-                    "Received invalid UTF-8 from SSE stream".to_string(),
-                ));
+                let _ = send_event(
+                    tx,
+                    StreamEvent::Error("Received invalid UTF-8 from SSE stream".to_string()),
+                )
+                .await;
                 return Ok(());
             };
 
@@ -207,7 +225,7 @@ async fn process_sse_stream<P: SseParser>(
             };
 
             if data == "[DONE]" {
-                on_event(StreamEvent::Done);
+                let _ = send_event(tx, StreamEvent::Done).await;
                 return Ok(());
             }
 
@@ -218,15 +236,17 @@ async fn process_sse_stream<P: SseParser>(
                         SseParseAction::Continue => {}
                         SseParseAction::Emit(events) => {
                             for event in events {
-                                on_event(event);
+                                if !send_event(tx, event).await {
+                                    return Ok(());
+                                }
                             }
                         }
                         SseParseAction::Done => {
-                            on_event(StreamEvent::Done);
+                            let _ = send_event(tx, StreamEvent::Done).await;
                             return Ok(());
                         }
                         SseParseAction::Error(msg) => {
-                            on_event(StreamEvent::Error(msg));
+                            let _ = send_event(tx, StreamEvent::Error(msg)).await;
                             return Ok(());
                         }
                     }
@@ -241,7 +261,11 @@ async fn process_sse_stream<P: SseParser>(
                         "Invalid SSE JSON payload"
                     );
                     if parse_errors >= MAX_SSE_PARSE_ERRORS {
-                        on_event(StreamEvent::Error(format!("Invalid stream payload: {e}")));
+                        let _ = send_event(
+                            tx,
+                            StreamEvent::Error(format!("Invalid stream payload: {e}")),
+                        )
+                        .await;
                         return Ok(());
                     }
                 }
@@ -250,9 +274,11 @@ async fn process_sse_stream<P: SseParser>(
     }
 
     // Premature EOF: connection closed without completion signal
-    on_event(StreamEvent::Error(
-        "Connection closed before stream completed".to_string(),
-    ));
+    let _ = send_event(
+        tx,
+        StreamEvent::Error("Connection closed before stream completed".to_string()),
+    )
+    .await;
     Ok(())
 }
 
@@ -355,7 +381,7 @@ impl ApiConfig {
 /// * `system_prompt` - Optional system prompt to inject
 /// * `tools` - Optional list of tool definitions for function calling
 /// * `gemini_cache` - Optional Gemini cache reference (ignored for other providers)
-/// * `on_event` - Callback for streaming events
+/// * `tx` - Channel sender for streaming events
 pub async fn send_message(
     config: &ApiConfig,
     messages: &[CacheableMessage],
@@ -363,14 +389,14 @@ pub async fn send_message(
     system_prompt: Option<&str>,
     tools: Option<&[ToolDefinition]>,
     gemini_cache: Option<&gemini::GeminiCache>,
-    on_event: impl Fn(StreamEvent) + Send + 'static,
+    tx: mpsc::Sender<StreamEvent>,
 ) -> Result<()> {
     match config.provider() {
         Provider::Claude => {
-            claude::send_message(config, messages, limits, system_prompt, tools, on_event).await
+            claude::send_message(config, messages, limits, system_prompt, tools, tx).await
         }
         Provider::OpenAI => {
-            openai::send_message(config, messages, limits, system_prompt, tools, on_event).await
+            openai::send_message(config, messages, limits, system_prompt, tools, tx).await
         }
         Provider::Gemini => {
             gemini::send_message(
@@ -380,7 +406,7 @@ pub async fn send_message(
                 system_prompt,
                 tools,
                 gemini_cache,
-                on_event,
+                tx,
             )
             .await
         }
@@ -391,8 +417,8 @@ pub async fn send_message(
 pub mod claude {
     use super::{
         ApiConfig, CacheHint, CacheableMessage, Message, OutputLimits, Result, SseParseAction,
-        SseParser, StreamEvent, ToolDefinition, http_client, process_sse_stream,
-        read_capped_error_body,
+        SseParser, StreamEvent, ToolDefinition, http_client, mpsc, process_sse_stream,
+        read_capped_error_body, send_event,
     };
     use serde_json::json;
 
@@ -617,7 +643,7 @@ pub mod claude {
         limits: OutputLimits,
         system_prompt: Option<&str>,
         tools: Option<&[ToolDefinition]>,
-        on_event: impl Fn(StreamEvent) + Send + 'static,
+        tx: mpsc::Sender<StreamEvent>,
     ) -> Result<()> {
         let client = http_client();
 
@@ -641,14 +667,16 @@ pub mod claude {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = read_capped_error_body(response).await;
-            on_event(StreamEvent::Error(format!(
-                "API error {status}: {error_text}"
-            )));
+            let _ = send_event(
+                &tx,
+                StreamEvent::Error(format!("API error {status}: {error_text}")),
+            )
+            .await;
             return Ok(());
         }
 
         let mut parser = ClaudeParser::default();
-        process_sse_stream(response, &mut parser, on_event).await
+        process_sse_stream(response, &mut parser, &tx).await
     }
 
     #[cfg(test)]
@@ -705,7 +733,8 @@ pub mod claude {
 pub mod openai {
     use super::{
         ApiConfig, CacheableMessage, Message, OutputLimits, Result, SseParseAction, SseParser,
-        StreamEvent, ToolDefinition, http_client, process_sse_stream, read_capped_error_body,
+        StreamEvent, ToolDefinition, http_client, mpsc, process_sse_stream, read_capped_error_body,
+        send_event,
     };
     use serde_json::{Value, json};
     use std::collections::{HashMap, HashSet};
@@ -778,27 +807,40 @@ pub mod openai {
                     {
                         let item_id = item.get("id").and_then(|v| v.as_str());
                         let call_id = item.get("call_id").and_then(|v| v.as_str()).or(item_id);
-                        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                        if let Some(call_id) = call_id {
-                            let call_id = call_id.to_string();
-                            if let Some(item_id) = item_id {
-                                self.item_to_call
-                                    .insert(item_id.to_string(), call_id.clone());
-                            }
-                            events.push(StreamEvent::ToolCallStart {
+                        let name = item.get("name").and_then(|v| v.as_str());
+                        let Some(call_id) = call_id else {
+                            return SseParseAction::Error(
+                                "OpenAI tool call missing id".to_string(),
+                            );
+                        };
+                        let Some(name) = name.filter(|value| !value.trim().is_empty()) else {
+                            return SseParseAction::Error(
+                                "OpenAI tool call missing name".to_string(),
+                            );
+                        };
+                        let call_id = call_id.to_string();
+                        if call_id.trim().is_empty() {
+                            return SseParseAction::Error(
+                                "OpenAI tool call missing id".to_string(),
+                            );
+                        }
+                        if let Some(item_id) = item_id {
+                            self.item_to_call
+                                .insert(item_id.to_string(), call_id.clone());
+                        }
+                        events.push(StreamEvent::ToolCallStart {
+                            id: call_id.clone(),
+                            name: name.to_string(),
+                            thought_signature: None,
+                        });
+                        if let Some(arguments) = item.get("arguments").and_then(|v| v.as_str())
+                            && !arguments.is_empty()
+                        {
+                            events.push(StreamEvent::ToolCallDelta {
                                 id: call_id.clone(),
-                                name: name.to_string(),
-                                thought_signature: None,
+                                arguments: arguments.to_string(),
                             });
-                            if let Some(arguments) = item.get("arguments").and_then(|v| v.as_str())
-                                && !arguments.is_empty()
-                            {
-                                events.push(StreamEvent::ToolCallDelta {
-                                    id: call_id.clone(),
-                                    arguments: arguments.to_string(),
-                                });
-                                self.call_has_delta.insert(call_id);
-                            }
+                            self.call_has_delta.insert(call_id);
                         }
                     }
                 }
@@ -827,6 +869,10 @@ pub mod openai {
                             arguments: delta.to_string(),
                         });
                         self.call_has_delta.insert(call_id);
+                    } else if json.get("delta").and_then(|v| v.as_str()).is_some() {
+                        return SseParseAction::Error(
+                            "OpenAI tool call delta missing id".to_string(),
+                        );
                     }
                 }
                 "response.function_call_arguments.done" => {
@@ -843,6 +889,10 @@ pub mod openai {
                             });
                         }
                         self.call_has_delta.insert(call_id);
+                    } else if json.get("arguments").and_then(|v| v.as_str()).is_some() {
+                        return SseParseAction::Error(
+                            "OpenAI tool call args missing id".to_string(),
+                        );
                     }
                 }
                 "response.completed" => {
@@ -985,7 +1035,7 @@ pub mod openai {
         limits: OutputLimits,
         system_prompt: Option<&str>,
         tools: Option<&[ToolDefinition]>,
-        on_event: impl Fn(StreamEvent) + Send + 'static,
+        tx: mpsc::Sender<StreamEvent>,
     ) -> Result<()> {
         let client = http_client();
 
@@ -1002,14 +1052,16 @@ pub mod openai {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = read_capped_error_body(response).await;
-            on_event(StreamEvent::Error(format!(
-                "API error {status}: {error_text}"
-            )));
+            let _ = send_event(
+                &tx,
+                StreamEvent::Error(format!("API error {status}: {error_text}")),
+            )
+            .await;
             return Ok(());
         }
 
         let mut parser = OpenAIParser::default();
-        process_sse_stream(response, &mut parser, on_event).await
+        process_sse_stream(response, &mut parser, &tx).await
     }
 
     #[cfg(test)]
@@ -1202,7 +1254,8 @@ pub mod openai {
 pub mod gemini {
     use super::{
         ApiConfig, CacheableMessage, Message, OutputLimits, Result, SseParseAction, SseParser,
-        StreamEvent, ToolDefinition, http_client, process_sse_stream, read_capped_error_body,
+        StreamEvent, ToolDefinition, http_client, mpsc, process_sse_stream, read_capped_error_body,
+        send_event,
     };
     use chrono::{DateTime, Utc};
     use serde_json::{Value, json};
@@ -1381,8 +1434,9 @@ pub mod gemini {
     ) -> Value {
         let mut contents: Vec<Value> = Vec::new();
 
-        for cacheable in messages {
-            let msg = &cacheable.message;
+        let mut index = 0;
+        while index < messages.len() {
+            let msg = &messages[index].message;
             match msg {
                 Message::System(_) => {
                     // System messages go into contents as user messages for Gemini
@@ -1391,43 +1445,72 @@ pub mod gemini {
                         "role": "user",
                         "parts": [text_part(msg.content())]
                     }));
+                    index += 1;
                 }
                 Message::User(_) => {
                     contents.push(json!({
                         "role": "user",
                         "parts": [text_part(msg.content())]
                     }));
+                    index += 1;
                 }
                 Message::Assistant(_) => {
                     contents.push(json!({
                         "role": "model",
                         "parts": [text_part(msg.content())]
                     }));
+                    index += 1;
                 }
-                Message::ToolUse(call) => {
-                    // Function call from the model
+                Message::ToolUse(_) => {
+                    // Group consecutive tool calls into a single model content entry.
+                    let mut parts: Vec<Value> = Vec::new();
+                    while index < messages.len() {
+                        match &messages[index].message {
+                            Message::ToolUse(call) => {
+                                let mut part = serde_json::Map::new();
+                                part.insert(
+                                    "functionCall".into(),
+                                    json!({
+                                        "name": call.name,
+                                        "args": call.arguments
+                                    }),
+                                );
+                                if let Some(signature) = call.thought_signature.as_ref() {
+                                    part.insert("thoughtSignature".into(), json!(signature));
+                                }
+                                parts.push(Value::Object(part));
+                                index += 1;
+                            }
+                            _ => break,
+                        }
+                    }
                     contents.push(json!({
                         "role": "model",
-                        "parts": [{
-                            "functionCall": {
-                                "name": call.name,
-                                "args": call.arguments
-                            }
-                        }]
+                        "parts": parts
                     }));
                 }
-                Message::ToolResult(result) => {
-                    // Function response sent as user message
+                Message::ToolResult(_) => {
+                    // Group consecutive tool results into a single user content entry.
+                    let mut parts: Vec<Value> = Vec::new();
+                    while index < messages.len() {
+                        match &messages[index].message {
+                            Message::ToolResult(result) => {
+                                parts.push(json!({
+                                    "functionResponse": {
+                                        "name": result.tool_name.clone(),
+                                        "response": {
+                                            "result": result.content
+                                        }
+                                    }
+                                }));
+                                index += 1;
+                            }
+                            _ => break,
+                        }
+                    }
                     contents.push(json!({
                         "role": "user",
-                        "parts": [{
-                            "functionResponse": {
-                                "name": result.tool_name.clone(),
-                                "response": {
-                                    "result": result.content
-                                }
-                            }
-                        }]
+                        "parts": parts
                     }));
                 }
             }
@@ -1633,7 +1716,7 @@ pub mod gemini {
         system_prompt: Option<&str>,
         tools: Option<&[ToolDefinition]>,
         cache: Option<&GeminiCache>,
-        on_event: impl Fn(StreamEvent) + Send + 'static,
+        tx: mpsc::Sender<StreamEvent>,
     ) -> Result<()> {
         let client = http_client();
         let model = config.model().as_str();
@@ -1662,14 +1745,16 @@ pub mod gemini {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = read_capped_error_body(response).await;
-            on_event(StreamEvent::Error(format!(
-                "API error {status}: {error_text}"
-            )));
+            let _ = send_event(
+                &tx,
+                StreamEvent::Error(format!("API error {status}: {error_text}")),
+            )
+            .await;
             return Ok(());
         }
 
         let mut parser = GeminiParser;
-        process_sse_stream(response, &mut parser, on_event).await
+        process_sse_stream(response, &mut parser, &tx).await
     }
 
     #[cfg(test)]
@@ -1809,6 +1894,55 @@ pub mod gemini {
         }
 
         #[test]
+        fn groups_tool_calls_and_preserves_thought_signature() {
+            let call = forge_types::ToolCall::new_with_thought_signature(
+                "call_1",
+                "read_file",
+                json!({"path": "foo"}),
+                Some("sig_1".to_string()),
+            );
+            let second = forge_types::ToolCall::new("call_2", "list_dir", json!({}));
+            let messages = vec![
+                CacheableMessage::plain(Message::tool_use(call)),
+                CacheableMessage::plain(Message::tool_use(second)),
+            ];
+            let limits = OutputLimits::new(4096);
+
+            let body = build_request_body(&messages, limits, None, None, false, None);
+
+            let contents = body.get("contents").unwrap().as_array().unwrap();
+            assert_eq!(contents.len(), 1);
+            let parts = contents[0]["parts"].as_array().unwrap();
+            assert_eq!(parts.len(), 2);
+            assert_eq!(parts[0]["thoughtSignature"], "sig_1");
+            assert!(parts[1].get("thoughtSignature").is_none());
+        }
+
+        #[test]
+        fn groups_tool_results_into_single_user_message() {
+            let result_a =
+                forge_types::ToolResult::success("call_1", "read_file", "file contents here");
+            let result_b =
+                forge_types::ToolResult::success("call_2", "list_dir", "dir contents here");
+            let messages = vec![
+                CacheableMessage::plain(Message::tool_result(result_a)),
+                CacheableMessage::plain(Message::tool_result(result_b)),
+            ];
+            let limits = OutputLimits::new(4096);
+
+            let body = build_request_body(&messages, limits, None, None, false, None);
+
+            let contents = body.get("contents").unwrap().as_array().unwrap();
+            assert_eq!(contents.len(), 1);
+            assert_eq!(contents[0]["role"], "user");
+            let parts = contents[0]["parts"].as_array().unwrap();
+            assert_eq!(parts.len(), 2);
+            // Gemini uses tool_name for functionResponse.name
+            assert_eq!(parts[0]["functionResponse"]["name"], "read_file");
+            assert_eq!(parts[1]["functionResponse"]["name"], "list_dir");
+        }
+
+        #[test]
         fn maps_tool_result_to_function_response() {
             let result =
                 forge_types::ToolResult::success("call_1", "read_file", "file contents here");
@@ -1820,6 +1954,7 @@ pub mod gemini {
             let contents = body.get("contents").unwrap().as_array().unwrap();
             assert_eq!(contents[0]["role"], "user");
             let func_resp = &contents[0]["parts"][0]["functionResponse"];
+            // Gemini uses tool_name for functionResponse.name
             assert_eq!(func_resp["name"], "read_file");
         }
 

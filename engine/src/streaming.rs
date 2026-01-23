@@ -5,32 +5,36 @@
 //! - `process_stream_events` - Processes incoming stream events
 //! - `finish_streaming` - Finalizes a streaming session
 
+use std::time::Duration;
+
 use futures_util::future::{AbortHandle, Abortable};
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 
 /// Capacity for the bounded stream event channel.
 /// This prevents OOM if the provider sends events faster than we can process them.
 /// 1024 events provides ~10 seconds of buffer at 100 events/sec typical streaming rate.
 const STREAM_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
+use forge_context::{Librarian, extract_facts};
 use forge_types::Provider;
 
 use super::{
     ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError,
     DEFAULT_STREAM_EVENT_BUDGET, EMPTY_RESPONSE_BADGE, GeminiCache, GeminiCacheConfig, Message,
     NonEmptyString, OperationState, QueuedUserMessage, StreamEvent, StreamFinishReason,
-    StreamingMessage, SummarizationStart, format_stream_error, sanitize_terminal_text, security,
+    StreamingMessage, SummarizationStart, sanitize_terminal_text, security,
 };
+use crate::errors::format_stream_error;
 
 impl super::App {
     /// Start streaming response from the API.
     pub fn start_streaming(&mut self, queued: QueuedUserMessage) {
-        if let Some(reason) = self.busy_reason() {
-            self.set_status(format!("Busy: {reason}"));
+        if self.busy_reason().is_some() {
             return;
         }
 
-        let QueuedUserMessage { config } = queued;
+        let QueuedUserMessage { config, turn } = queued;
         let context_infinity_enabled = self.context_infinity_enabled();
 
         // When context infinity enabled, use summarization-based context management.
@@ -39,13 +43,16 @@ impl super::App {
             match self.context_manager.prepare() {
                 Ok(prepared) => prepared.api_messages(),
                 Err(ContextBuildError::SummarizationNeeded(needed)) => {
-                    self.set_status(format!(
+                    self.push_notification(format!(
                         "{} (excess ~{} tokens)",
                         needed.suggestion, needed.excess_tokens
                     ));
-                    let start_result = self.start_summarization_with_attempt(Some(config), 1);
+                    let queued = QueuedUserMessage { config, turn };
+                    let start_result = self.start_summarization_with_attempt(Some(queued), 1);
                     if !matches!(start_result, SummarizationStart::Started) {
-                        self.set_status("Cannot start: summarization did not start");
+                        self.push_notification("Cannot start: summarization did not start");
+                        // Note: rollback is handled inside start_summarization_with_attempt
+                        // when it fails with a queued request
                     }
                     return;
                 }
@@ -54,9 +61,12 @@ impl super::App {
                     budget_tokens,
                     message_count,
                 }) => {
-                    self.set_status(format!(
+                    self.push_notification(format!(
                         "Recent {message_count} messages ({required_tokens} tokens) exceed budget ({budget_tokens} tokens). Reduce input or use larger model."
                     ));
+                    // Rollback the pending user message so user can retry with smaller input
+                    self.rollback_pending_user_message();
+                    self.finish_turn(turn);
                     return;
                 }
             }
@@ -67,7 +77,10 @@ impl super::App {
         let journal = match self.stream_journal.begin_session(config.model().as_str()) {
             Ok(session) => session,
             Err(e) => {
-                self.set_status(format!("Cannot start stream: journal unavailable ({e})"));
+                self.push_notification(format!("Cannot start stream: journal unavailable ({e})"));
+                // Rollback the pending user message so user can retry
+                self.rollback_pending_user_message();
+                self.finish_turn(turn);
                 return;
             }
         };
@@ -85,6 +98,8 @@ impl super::App {
             abort_handle,
             tool_batch_id: None,
             tool_call_seq: 0,
+            tool_args_journal_bytes: std::collections::HashMap::new(),
+            turn,
         };
 
         self.state = OperationState::Streaming(active);
@@ -135,7 +150,6 @@ impl super::App {
         let is_gemini = config.provider() == Provider::Gemini;
 
         let task = async move {
-            let tx_events = tx.clone();
             // Convert tools to Option<&[ToolDefinition]>
             let tools_ref = if tools.is_empty() {
                 None
@@ -167,16 +181,12 @@ impl super::App {
                 system_prompt,
                 tools_ref,
                 gemini_cache.as_ref(),
-                move |event| {
-                    // Use try_send with bounded channel - drop events if full.
-                    // This is acceptable for streaming UI updates; the consumer will catch up.
-                    let _ = tx_events.try_send(event);
-                },
+                tx.clone(),
             )
             .await;
 
             if let Err(e) = result {
-                let _ = tx.try_send(StreamEvent::Error(e.to_string()));
+                let _ = tx.send(StreamEvent::Error(e.to_string())).await;
             }
         };
 
@@ -197,9 +207,16 @@ impl super::App {
         }
 
         // Process all available events.
+        // Consecutive TextDelta events are coalesced to reduce processing overhead
+        // and minimize the risk of unbounded channel growth under slow consumption.
         let mut processed = 0usize;
+        let mut pending_event: Option<StreamEvent> = None;
+
         loop {
-            let event = {
+            // First check if there's a pending event from a previous coalescing pass
+            let event = if let Some(event) = pending_event.take() {
+                event
+            } else {
                 let active = match &mut self.state {
                     OperationState::Streaming(active) => active,
                     _ => return,
@@ -215,24 +232,58 @@ impl super::App {
                 }
             };
 
-            let event = match event {
-                StreamEvent::TextDelta(text) => {
-                    // Sanitize untrusted model output to prevent terminal injection
-                    StreamEvent::TextDelta(sanitize_terminal_text(&text).into_owned())
+            // Coalesce consecutive TextDelta events to reduce processing overhead.
+            // This merges multiple text deltas into one before journaling/displaying.
+            // We count ALL coalesced events towards the budget to prevent bypassing it.
+            let already_counted = if let StreamEvent::TextDelta(mut text) = event {
+                // Count the initial event towards the budget
+                processed = processed.saturating_add(1);
+                // Try to coalesce more TextDelta events (up to remaining budget)
+                while processed < max_events {
+                    let active = match &mut self.state {
+                        OperationState::Streaming(active) => active,
+                        _ => break,
+                    };
+                    match active.message.try_recv_event() {
+                        Ok(StreamEvent::TextDelta(more_text)) => {
+                            text.push_str(&more_text);
+                            processed = processed.saturating_add(1);
+                        }
+                        Ok(other) => {
+                            // Non-TextDelta event - save for next iteration
+                            pending_event = Some(other);
+                            break;
+                        }
+                        Err(_) => break, // Empty or disconnected
+                    }
                 }
-                StreamEvent::ThinkingDelta(text) => {
-                    // Also sanitize thinking deltas
-                    StreamEvent::ThinkingDelta(sanitize_terminal_text(&text).into_owned())
-                }
-                StreamEvent::Error(msg) => {
-                    StreamEvent::Error(security::sanitize_stream_error(&msg))
-                }
-                other => other,
+                // Sanitize untrusted model output to prevent terminal injection
+                (
+                    StreamEvent::TextDelta(sanitize_terminal_text(&text).into_owned()),
+                    true, // Already counted in budget
+                )
+            } else {
+                let sanitized = match event {
+                    StreamEvent::ThinkingDelta(text) => {
+                        // Also sanitize thinking deltas
+                        StreamEvent::ThinkingDelta(sanitize_terminal_text(&text).into_owned())
+                    }
+                    StreamEvent::Error(msg) => {
+                        StreamEvent::Error(security::sanitize_stream_error(&msg))
+                    }
+                    other => other,
+                };
+                (sanitized, false) // Not yet counted in budget
             };
+            let (event, already_counted) = already_counted;
 
             let mut journal_error: Option<String> = None;
             let mut finish_reason: Option<StreamFinishReason> = None;
-            let update_assistant_text = matches!(event, StreamEvent::TextDelta(_));
+            // Capture text delta for tool journal append (before event is consumed)
+            let text_delta_for_tool_journal = match &event {
+                StreamEvent::TextDelta(text) => Some(text.clone()),
+                _ => None,
+            };
 
             let mut active = match std::mem::replace(&mut self.state, OperationState::Idle) {
                 OperationState::Streaming(active) => active,
@@ -264,7 +315,11 @@ impl super::App {
 
             if journal_error.is_none() {
                 match &event {
-                    StreamEvent::ToolCallStart { id, name, .. } => {
+                    StreamEvent::ToolCallStart {
+                        id,
+                        name,
+                        thought_signature,
+                    } => {
                         if active.tool_batch_id.is_none() {
                             match self
                                 .tool_journal
@@ -279,19 +334,37 @@ impl super::App {
                         if let Some(batch_id) = active.tool_batch_id {
                             let seq = active.tool_call_seq;
                             active.tool_call_seq = active.tool_call_seq.saturating_add(1);
-                            if let Err(e) =
-                                self.tool_journal.record_call_start(batch_id, seq, id, name)
-                            {
+                            if let Err(e) = self.tool_journal.record_call_start(
+                                batch_id,
+                                seq,
+                                id,
+                                name,
+                                thought_signature.as_deref(),
+                            ) {
                                 journal_error = Some(e.to_string());
                             }
                         }
                     }
                     StreamEvent::ToolCallDelta { id, arguments } => {
-                        if let Some(batch_id) = active.tool_batch_id
-                            && let Err(e) =
-                                self.tool_journal.append_call_args(batch_id, id, arguments)
-                        {
-                            journal_error = Some(e.to_string());
+                        if let Some(batch_id) = active.tool_batch_id {
+                            // Check size cap before appending to journal
+                            let max_bytes = self.tool_settings.limits.max_tool_args_bytes;
+                            let current_bytes =
+                                active.tool_args_journal_bytes.get(id).copied().unwrap_or(0);
+                            let new_total = current_bytes.saturating_add(arguments.len());
+
+                            if new_total <= max_bytes {
+                                // Under limit: append to journal and update tracker
+                                if let Err(e) =
+                                    self.tool_journal.append_call_args(batch_id, id, arguments)
+                                {
+                                    journal_error = Some(e.to_string());
+                                } else {
+                                    active.tool_args_journal_bytes.insert(id.clone(), new_total);
+                                }
+                            }
+                            // Over limit: silently skip appending to journal
+                            // (StreamingMessage will mark as exceeded via apply_event)
                         }
                     }
                     _ => {}
@@ -300,11 +373,10 @@ impl super::App {
 
             if journal_error.is_none() {
                 finish_reason = active.message.apply_event(event);
-                if update_assistant_text
+                // Append text delta to tool journal (if tool batch active and we have a delta)
+                if let Some(ref delta) = text_delta_for_tool_journal
                     && let Some(batch_id) = active.tool_batch_id
-                    && let Err(e) = self
-                        .tool_journal
-                        .update_assistant_text(batch_id, active.message.content())
+                    && let Err(e) = self.tool_journal.append_assistant_delta(batch_id, delta)
                 {
                     journal_error = Some(e.to_string());
                 }
@@ -326,10 +398,16 @@ impl super::App {
                     message,
                     journal,
                     abort_handle,
+                    tool_batch_id,
                     ..
                 } = active;
 
                 abort_handle.abort();
+
+                // Discard any in-progress tool batch to prevent stale recovery
+                if let Some(batch_id) = tool_batch_id {
+                    let _ = self.tool_journal.discard_batch(batch_id);
+                }
 
                 let step_id = journal.step_id();
                 if let Err(seal_err) = journal.seal(&mut self.stream_journal) {
@@ -348,7 +426,7 @@ impl super::App {
                     aborted_badge.append("\n\n").append(partial.as_str())
                 };
                 self.push_local_message(Message::assistant(model, aborted));
-                self.set_status(format!("Journal append failed: {err}"));
+                self.push_notification(format!("Journal append failed: {err}"));
                 return;
             }
 
@@ -357,7 +435,10 @@ impl super::App {
                 return;
             }
 
-            processed = processed.saturating_add(1);
+            // Increment processed only if not already counted (e.g., by TextDelta coalescing)
+            if !already_counted {
+                processed = processed.saturating_add(1);
+            }
             if processed >= max_events {
                 break;
             }
@@ -393,6 +474,7 @@ impl super::App {
             journal,
             abort_handle,
             tool_batch_id,
+            turn,
             ..
         } = active;
 
@@ -434,10 +516,10 @@ impl super::App {
                 self.rollback_pending_user_message();
             }
             // Use stream's model/provider, not current app settings (user may have changed during stream)
-            let ui_error = format_stream_error(model.provider(), model.as_str(), &err);
-            let system_msg = Message::system(ui_error.message);
+            let error_msg = format_stream_error(model.provider(), model.as_str(), &err);
+            let system_msg = Message::system(error_msg);
             self.push_local_message(system_msg);
-            self.set_status(ui_error.status);
+            self.finish_turn(turn);
             return;
         }
 
@@ -456,6 +538,7 @@ impl super::App {
                 model,
                 step_id,
                 tool_batch_id,
+                turn,
             );
             return;
         }
@@ -468,15 +551,16 @@ impl super::App {
                 .expect("EMPTY_RESPONSE_BADGE must be non-empty");
             let empty_msg = Message::assistant(model, empty_badge);
             self.push_local_message(empty_msg);
-            self.set_status("Warning: API returned empty response");
             // Empty response - discard the step (nothing to recover)
             self.discard_journal_step(step_id);
+            self.finish_turn(turn);
             return;
         };
 
         // Stream completed successfully with content
         self.pending_user_message = None;
         self.commit_history_message(message, step_id);
+        self.finish_turn(turn);
     }
 }
 
@@ -530,4 +614,71 @@ async fn get_or_create_gemini_cache(
             None
         }
     }
+}
+
+/// Spawn a background task to extract facts from a completed exchange.
+///
+/// This is the post-turn phase of Context Infinity - after an assistant response
+/// completes, we extract structured facts for future retrieval.
+///
+/// `source_paths` are the files that were accessed during this turn - facts
+/// extracted from this exchange will be linked to these files for staleness
+/// detection.
+///
+/// # Send Safety
+/// This function is carefully structured to not hold the MutexGuard across
+/// async await points, because rusqlite::Connection is !Send.
+#[allow(dead_code)] // WIP: will be called after tool loop completion
+pub(crate) fn spawn_librarian_extraction(
+    librarian_arc: std::sync::Arc<tokio::sync::Mutex<Librarian>>,
+    user_message: String,
+    assistant_message: String,
+    source_paths: Vec<String>,
+) {
+    const LOCK_TIMEOUT: Duration = Duration::from_millis(100);
+
+    tokio::spawn(async move {
+        // Phase 1: Get API key under lock, release immediately
+        // Use timeout to avoid blocking under contention
+        let api_key = {
+            let Ok(guard) = timeout(LOCK_TIMEOUT, librarian_arc.lock()).await else {
+                tracing::debug!("Librarian lock contention (Phase 1), skipping extraction");
+                return;
+            };
+            guard.api_key().to_string()
+        }; // Lock released here
+
+        // Phase 2: Call async Gemini API without holding the lock
+        let result = match extract_facts(&api_key, &user_message, &assistant_message).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Librarian extraction failed: {e}");
+                return;
+            }
+        };
+
+        if result.facts.is_empty() {
+            return;
+        }
+
+        // Phase 3: Re-acquire lock to store facts (sync operation)
+        // Use timeout to avoid blocking under contention
+        let Ok(mut librarian) = timeout(LOCK_TIMEOUT, librarian_arc.lock()).await else {
+            tracing::debug!(
+                "Librarian lock contention (Phase 3), dropping {} extracted facts",
+                result.facts.len()
+            );
+            return;
+        };
+        librarian.increment_turn();
+        if let Err(e) = librarian.store_facts_with_sources(&result.facts, &source_paths) {
+            tracing::warn!("Failed to store extracted facts: {e}");
+        } else {
+            tracing::info!(
+                "Librarian extracted {} facts from exchange (linked to {} files)",
+                result.facts.len(),
+                source_paths.len()
+            );
+        }
+    });
 }

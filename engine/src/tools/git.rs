@@ -353,7 +353,10 @@ impl ToolExecutor for GitTool {
 
     fn execute<'a>(&'a self, args: Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
-            let payload = match self.kind {
+            // Disable generic truncation - we handle it ourselves to preserve JSON validity
+            ctx.allow_truncation = false;
+
+            let mut payload = match self.kind {
                 GitToolKind::Status => handle_git_status(ctx, args).await?,
                 GitToolKind::Diff => handle_git_diff(ctx, args).await?,
                 GitToolKind::Restore => handle_git_restore(ctx, args).await?,
@@ -367,6 +370,10 @@ impl ToolExecutor for GitTool {
                 GitToolKind::Blame => handle_git_blame(ctx, args).await?,
             };
 
+            // Ensure JSON output fits within capacity by shrinking large fields
+            let max_bytes = effective_max_bytes(ctx);
+            truncate_json_payload(&mut payload, max_bytes);
+
             let json = serde_json::to_string(&payload).map_err(|e| ToolError::ExecutionFailed {
                 tool: self.kind.name().to_string(),
                 message: e.to_string(),
@@ -374,6 +381,84 @@ impl ToolExecutor for GitTool {
 
             Ok(sanitize_output(&json))
         })
+    }
+}
+
+/// Truncate large string fields in a JSON payload to fit within a byte budget.
+///
+/// This preserves JSON validity by shrinking `stdout`, `stderr`, and `text` fields
+/// (inside `content` array) rather than cutting the JSON string mid-token.
+fn truncate_json_payload(payload: &mut Value, max_bytes: usize) {
+    const TRUNCATION_MARKER: &str = "\n... [truncated for size]";
+
+    // First, check if we're already within budget
+    if let Ok(json) = serde_json::to_string(payload)
+        && json.len() <= max_bytes
+    {
+        return;
+    }
+
+    // Iteratively shrink large fields until we fit
+    // Priority: stdout (largest), then stderr, then content text
+    let fields_to_shrink = ["stdout", "stderr"];
+
+    for _ in 0..10 {
+        // Max 10 iterations to prevent infinite loop
+        let current_size = serde_json::to_string(payload)
+            .map(|s| s.len())
+            .unwrap_or(0);
+
+        if current_size <= max_bytes {
+            return;
+        }
+
+        let excess = current_size.saturating_sub(max_bytes);
+
+        // Find the largest shrinkable field and reduce it
+        let obj = match payload.as_object_mut() {
+            Some(obj) => obj,
+            None => return,
+        };
+
+        let mut best_field: Option<(&str, usize)> = None;
+        for field in fields_to_shrink {
+            if let Some(Value::String(s)) = obj.get(field) {
+                let len = s.len();
+                if len > TRUNCATION_MARKER.len() + 100 {
+                    // Only consider if meaningful content
+                    if best_field.is_none() || len > best_field.unwrap().1 {
+                        best_field = Some((field, len));
+                    }
+                }
+            }
+        }
+
+        match best_field {
+            Some((field, current_len)) => {
+                // Shrink by at least the excess, but leave some meaningful content
+                let reduction = excess.max(current_len / 4);
+                let new_len = current_len
+                    .saturating_sub(reduction)
+                    .max(TRUNCATION_MARKER.len() + 100);
+
+                if let Some(Value::String(s)) = obj.get_mut(field) {
+                    // Truncate at a safe UTF-8 boundary
+                    let truncate_at = s
+                        .char_indices()
+                        .take_while(|(i, _)| *i < new_len.saturating_sub(TRUNCATION_MARKER.len()))
+                        .last()
+                        .map(|(i, c)| i + c.len_utf8())
+                        .unwrap_or(0);
+
+                    s.truncate(truncate_at);
+                    s.push_str(TRUNCATION_MARKER);
+                }
+            }
+            None => {
+                // No more fields to shrink, we've done our best
+                return;
+            }
+        }
     }
 }
 
@@ -1053,7 +1138,9 @@ async fn handle_git_diff(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
         req.to_ref.as_ref(),
         req.output_dir.as_ref(),
     ) {
-        let output_dir = ctx.sandbox.resolve_path(output_dir, &working_dir)?;
+        let output_dir = ctx
+            .sandbox
+            .resolve_path_for_create(output_dir, &working_dir)?;
         let summary =
             write_patches_to_dir(ctx, &working_dir, from_ref, to_ref, &output_dir, timeout_ms)
                 .await?;

@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 use forge_context::{ContextUsageStatus, StepId, ToolBatchId};
 use forge_types::{ApiKey, ModelName, ToolCall, ToolResult, sanitize_terminal_text};
 
+use crate::input_modes::{ChangeRecorder, TurnChangeReport, TurnContext};
 use crate::state::{
     ActiveToolExecution, ApprovalState, OperationState, ToolBatch, ToolLoopPhase, ToolLoopState,
     ToolPlan, ToolRecoveryDecision, ToolRecoveryState,
@@ -28,6 +29,7 @@ use crate::{
 use futures_util::future::AbortHandle;
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_tool_calls(
         &mut self,
         assistant_text: String,
@@ -36,32 +38,33 @@ impl App {
         model: ModelName,
         step_id: StepId,
         tool_batch_id: Option<ToolBatchId>,
+        turn: TurnContext,
     ) {
         if tool_calls.is_empty() {
+            self.finish_turn(turn);
             return;
         }
 
-        let mut batch_id = tool_batch_id.unwrap_or(0);
-        if batch_id != 0
-            && let Err(e) = self
-                .tool_journal
-                .update_assistant_text(batch_id, &assistant_text)
+        // Try to update existing batch or create new one
+        let mut batch_id = tool_batch_id;
+        if let Some(id) = batch_id
+            && let Err(e) = self.tool_journal.update_assistant_text(id, &assistant_text)
         {
             tracing::warn!("Tool journal update failed: {e}");
-            self.set_status(format!("Tool journal error: {e}"));
-            batch_id = 0;
+            self.push_notification(format!("Tool journal error: {e}"));
+            batch_id = None;
         }
-        if batch_id == 0 {
+        if batch_id.is_none() {
             batch_id =
                 match self
                     .tool_journal
                     .begin_batch(model.as_str(), &assistant_text, &tool_calls)
                 {
-                    Ok(id) => id,
+                    Ok(id) => Some(id),
                     Err(e) => {
                         tracing::warn!("Tool journal begin failed: {e}");
-                        self.set_status(format!("Tool journal error: {e}"));
-                        0
+                        self.push_notification(format!("Tool journal error: {e}"));
+                        None
                     }
                 };
         }
@@ -73,9 +76,11 @@ impl App {
             model,
             step_id,
             batch_id,
+            turn,
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_tool_loop(
         &mut self,
         assistant_text: String,
@@ -83,7 +88,8 @@ impl App {
         pre_resolved: Vec<ToolResult>,
         model: ModelName,
         step_id: StepId,
-        batch_id: ToolBatchId,
+        batch_id: Option<ToolBatchId>,
+        turn: TurnContext,
     ) {
         let next_iteration = self.tool_iterations.saturating_add(1);
         if next_iteration > self.tool_settings.limits.max_tool_iterations_per_user_turn {
@@ -95,9 +101,9 @@ impl App {
                     "Max tool iterations reached",
                 )
             }));
-            if batch_id != 0 {
+            if let Some(id) = batch_id {
                 for result in &results {
-                    let _ = self.tool_journal.record_result(batch_id, result);
+                    let _ = self.tool_journal.record_result(id, result);
                 }
             }
             self.commit_tool_batch(
@@ -108,15 +114,16 @@ impl App {
                 step_id,
                 batch_id,
                 true,
+                turn,
             );
             return;
         }
         self.tool_iterations = next_iteration;
 
         let plan = self.plan_tool_calls(&tool_calls, pre_resolved);
-        if batch_id != 0 {
+        if let Some(id) = batch_id {
             for result in &plan.pre_resolved {
-                let _ = self.tool_journal.record_result(batch_id, result);
+                let _ = self.tool_journal.record_result(id, result);
             }
         }
 
@@ -127,14 +134,11 @@ impl App {
             model,
             step_id,
             batch_id,
-            iteration: next_iteration,
             execute_now: plan.execute_now,
             approval_calls: plan.approval_calls,
             approval_requests: plan.approval_requests.clone(),
+            turn,
         };
-        let iteration = batch.iteration;
-        let max_iterations = self.tool_settings.limits.max_tool_iterations_per_user_turn;
-
         let remaining_capacity_bytes = self.remaining_tool_capacity(&batch);
 
         if !plan.approval_requests.is_empty() {
@@ -145,13 +149,10 @@ impl App {
                 deny_confirm: false,
                 expanded: None,
             };
-            self.state = OperationState::ToolLoop(ToolLoopState {
+            self.state = OperationState::ToolLoop(Box::new(ToolLoopState {
                 batch,
                 phase: ToolLoopPhase::AwaitingApproval(approval),
-            });
-            self.set_status_warning(format!(
-                "Tool approval required (iteration {iteration}/{max_iterations})"
-            ));
+            }));
             return;
         }
 
@@ -165,18 +166,17 @@ impl App {
                 batch.step_id,
                 batch.batch_id,
                 true,
+                batch.turn,
             );
             return;
         }
 
-        let exec = self.spawn_tool_execution(queue, remaining_capacity_bytes);
-        self.state = OperationState::ToolLoop(ToolLoopState {
+        let exec =
+            self.spawn_tool_execution(queue, remaining_capacity_bytes, batch.turn.recorder());
+        self.state = OperationState::ToolLoop(Box::new(ToolLoopState {
             batch,
             phase: ToolLoopPhase::Executing(exec),
-        });
-        self.set_status(format!(
-            "Running tools (iteration {iteration}/{max_iterations})"
-        ));
+        }));
     }
 
     fn plan_tool_calls(&self, calls: &[ToolCall], mut pre_resolved: Vec<ToolResult>) -> ToolPlan {
@@ -363,6 +363,7 @@ impl App {
         &self,
         queue: Vec<ToolCall>,
         initial_capacity_bytes: usize,
+        turn_recorder: ChangeRecorder,
     ) -> ActiveToolExecution {
         let mut exec = ActiveToolExecution {
             queue: VecDeque::from(queue),
@@ -372,6 +373,7 @@ impl App {
             abort_handle: None,
             output_lines: Vec::new(),
             remaining_capacity_bytes: initial_capacity_bytes,
+            turn_recorder,
         };
         self.start_next_tool_call(&mut exec);
         exec
@@ -394,8 +396,10 @@ impl App {
         let registry = self.tool_registry.clone();
         let settings = self.tool_settings.clone();
         let file_cache = self.tool_file_cache.clone();
+        let librarian = self.librarian.clone();
         let working_dir = settings.sandbox.working_dir();
         let remaining_capacity = exec.remaining_capacity_bytes;
+        let turn_recorder = exec.turn_recorder.clone();
 
         let handle = tokio::spawn(async move {
             use futures_util::FutureExt;
@@ -437,6 +441,8 @@ impl App {
                 working_dir,
                 env_sanitizer: settings.env_sanitizer.clone(),
                 file_cache,
+                turn_changes: turn_recorder,
+                librarian,
             };
 
             let timeout = exec_ref.timeout().unwrap_or(ctx.default_timeout);
@@ -494,7 +500,7 @@ impl App {
         use futures_util::future::FutureExt;
 
         let state = match std::mem::replace(&mut self.state, OperationState::Idle) {
-            OperationState::ToolLoop(state) => state,
+            OperationState::ToolLoop(state) => *state,
             other => {
                 self.state = other;
                 return;
@@ -587,7 +593,7 @@ impl App {
                     let result = match joined {
                         Ok(result) => result,
                         Err(err) => {
-                            let (call_id, call_name) = exec.current_call.as_ref().map_or_else(
+                            let (call_id, tool_name) = exec.current_call.as_ref().map_or_else(
                                 || ("<unknown>".to_string(), "<unknown>".to_string()),
                                 |c| (c.id.clone(), c.name.clone()),
                             );
@@ -596,7 +602,7 @@ impl App {
                             } else {
                                 "Tool execution failed"
                             };
-                            ToolResult::error(call_id, call_name, message)
+                            ToolResult::error(call_id, tool_name, message)
                         }
                     };
                     exec.current_call = None;
@@ -604,10 +610,8 @@ impl App {
                 }
 
                 if let Some(result) = completed.take() {
-                    if state.batch.batch_id != 0 {
-                        let _ = self
-                            .tool_journal
-                            .record_result(state.batch.batch_id, &result);
+                    if let Some(id) = state.batch.batch_id {
+                        let _ = self.tool_journal.record_result(id, &result);
                     }
                     exec.remaining_capacity_bytes = exec
                         .remaining_capacity_bytes
@@ -632,12 +636,14 @@ impl App {
                 state.batch.step_id,
                 state.batch.batch_id,
                 true,
+                state.batch.turn,
             );
         } else {
-            self.state = OperationState::ToolLoop(state);
+            self.state = OperationState::ToolLoop(Box::new(state));
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn cancel_tool_batch(
         &mut self,
         assistant_text: String,
@@ -645,7 +651,8 @@ impl App {
         mut results: Vec<ToolResult>,
         model: ModelName,
         step_id: StepId,
-        batch_id: ToolBatchId,
+        batch_id: Option<ToolBatchId>,
+        turn: TurnContext,
     ) {
         let existing: HashSet<String> = results.iter().map(|r| r.tool_call_id.clone()).collect();
         for call in &calls {
@@ -653,8 +660,8 @@ impl App {
                 continue;
             }
             let result = ToolResult::error(call.id.clone(), call.name.clone(), "Cancelled by user");
-            if batch_id != 0 {
-                let _ = self.tool_journal.record_result(batch_id, &result);
+            if let Some(id) = batch_id {
+                let _ = self.tool_journal.record_result(id, &result);
             }
             results.push(result);
         }
@@ -667,6 +674,7 @@ impl App {
             step_id,
             batch_id,
             false,
+            turn,
         );
     }
 
@@ -678,8 +686,9 @@ impl App {
         results: Vec<ToolResult>,
         model: ModelName,
         step_id: StepId,
-        batch_id: ToolBatchId,
+        batch_id: Option<ToolBatchId>,
         auto_resume: bool,
+        turn: TurnContext,
     ) {
         self.state = self.idle_state();
 
@@ -724,12 +733,13 @@ impl App {
             self.push_history_message(Message::tool_result(result.clone()));
         }
 
-        if self.autosave_history() {
+        let autosave_succeeded = self.autosave_history();
+        if autosave_succeeded {
             self.finalize_journal_commit(step_id);
-            if batch_id != 0
-                && let Err(e) = self.tool_journal.commit_batch(batch_id)
+            if let Some(id) = batch_id
+                && let Err(e) = self.tool_journal.commit_batch(id)
             {
-                tracing::warn!("Failed to commit tool batch {}: {e}", batch_id);
+                tracing::warn!("Failed to commit tool batch {id}: {e}");
             }
         }
 
@@ -737,12 +747,23 @@ impl App {
             self.pending_user_message = None;
         }
 
+        // Only auto_resume if autosave succeeded - otherwise the journal step
+        // remains uncommitted and would cause recovery issues on restart
+        if auto_resume && !autosave_succeeded {
+            self.push_notification(
+                "Cannot continue tool loop: history save failed. Stopping to prevent data loss.",
+            );
+            self.finish_turn(turn);
+            return;
+        }
+
         if auto_resume {
             let Some(api_key) = self.api_keys.get(&model.provider()).cloned() else {
-                self.set_status(format!(
+                self.push_notification(format!(
                     "Cannot resume: no API key for {}",
                     model.provider().display_name()
                 ));
+                self.finish_turn(turn);
                 return;
             };
 
@@ -755,18 +776,22 @@ impl App {
             let config = match ApiConfig::new(api_key, model.clone()) {
                 Ok(config) => config.with_openai_options(self.openai_options),
                 Err(e) => {
-                    self.set_status(format!("Cannot resume after tools: {e}"));
+                    self.push_notification(format!("Cannot resume after tools: {e}"));
+                    self.finish_turn(turn);
                     return;
                 }
             };
 
-            self.start_streaming(QueuedUserMessage { config });
+            self.start_streaming(QueuedUserMessage { config, turn });
+            return;
         }
+
+        self.finish_turn(turn);
     }
 
     pub(crate) fn resolve_tool_approval(&mut self, decision: tools::ApprovalDecision) {
         let state = match std::mem::replace(&mut self.state, OperationState::Idle) {
-            OperationState::ToolLoop(state) => state,
+            OperationState::ToolLoop(state) => *state,
             other => {
                 self.state = other;
                 return;
@@ -775,7 +800,7 @@ impl App {
 
         let ToolLoopState { mut batch, phase } = state;
         let ToolLoopPhase::AwaitingApproval(_approval) = phase else {
-            self.state = OperationState::ToolLoop(ToolLoopState { batch, phase });
+            self.state = OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
             return;
         };
 
@@ -808,9 +833,9 @@ impl App {
             }
         }
 
-        if batch.batch_id != 0 {
+        if let Some(id) = batch.batch_id {
             for result in &denied_results {
-                let _ = self.tool_journal.record_result(batch.batch_id, result);
+                let _ = self.tool_journal.record_result(id, result);
             }
         }
         batch.results.extend(denied_results);
@@ -840,17 +865,17 @@ impl App {
                 batch.step_id,
                 batch.batch_id,
                 true,
+                batch.turn,
             );
             return;
         }
 
         let remaining_capacity = self.remaining_tool_capacity(&batch);
-        let exec = self.spawn_tool_execution(queue, remaining_capacity);
-        self.state = OperationState::ToolLoop(ToolLoopState {
+        let exec = self.spawn_tool_execution(queue, remaining_capacity, batch.turn.recorder());
+        self.state = OperationState::ToolLoop(Box::new(ToolLoopState {
             batch,
             phase: ToolLoopPhase::Executing(exec),
-        });
-        self.set_status("Running tools...");
+        }));
     }
 
     pub(crate) fn resolve_tool_recovery(&mut self, decision: ToolRecoveryDecision) {
@@ -906,10 +931,9 @@ impl App {
                 .collect(),
         };
 
-        if batch.batch_id != 0 {
-            for result in &results {
-                let _ = self.tool_journal.record_result(batch.batch_id, result);
-            }
+        // RecoveredToolBatch always has a valid batch_id from the journal
+        for result in &results {
+            let _ = self.tool_journal.record_result(batch.batch_id, result);
         }
 
         let auto_resume = true;
@@ -919,18 +943,30 @@ impl App {
             results,
             model,
             step_id,
-            batch.batch_id,
+            Some(batch.batch_id),
             auto_resume,
+            TurnContext::new_for_recovery(),
         );
 
         match decision {
             ToolRecoveryDecision::Resume => {
-                self.set_status("Recovered tool batch resumed");
+                self.push_notification("Recovered tool batch resumed");
             }
             ToolRecoveryDecision::Discard => {
-                self.set_status("Tool results discarded after crash");
+                self.push_notification("Tool results discarded after crash");
             }
         }
+    }
+
+    /// Finish a user turn and report any file changes.
+    pub(crate) fn finish_turn(&mut self, turn: TurnContext) {
+        let working_dir = self.tool_settings.sandbox.working_dir();
+        let report = turn.finish(&working_dir);
+        if let TurnChangeReport::Changes(summary) = report {
+            let msg = summary.into_message();
+            self.push_local_message(Message::system(msg));
+        }
+        self.pending_user_message = None;
     }
 }
 

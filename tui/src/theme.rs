@@ -40,6 +40,11 @@ mod colors {
     pub const WARNING: Color = YELLOW;
     pub const ERROR: Color = RED;
     pub const PEACH: Color = ORANGE;
+
+    // === Provider Colors ===
+    pub const PROVIDER_CLAUDE: Color = Color::Rgb(204, 85, 0); // burnt orange
+    pub const PROVIDER_OPENAI: Color = Color::Rgb(255, 255, 255); // white
+    pub const PROVIDER_GEMINI: Color = Color::Rgb(66, 133, 244); // Google blue
 }
 
 /// Resolved theme palette used by the UI.
@@ -64,6 +69,10 @@ pub struct Palette {
     pub green: Color,
     pub yellow: Color,
     pub red: Color,
+    // Provider colors
+    pub provider_claude: Color,
+    pub provider_openai: Color,
+    pub provider_gemini: Color,
 }
 
 impl Palette {
@@ -89,6 +98,9 @@ impl Palette {
             green: colors::GREEN,
             yellow: colors::YELLOW,
             red: colors::RED,
+            provider_claude: colors::PROVIDER_CLAUDE,
+            provider_openai: colors::PROVIDER_OPENAI,
+            provider_gemini: colors::PROVIDER_GEMINI,
         }
     }
 
@@ -114,6 +126,9 @@ impl Palette {
             green: Color::Green,
             yellow: Color::Yellow,
             red: Color::Red,
+            provider_claude: Color::Yellow,
+            provider_openai: Color::White,
+            provider_gemini: Color::Cyan,
         }
     }
 }
@@ -136,6 +151,7 @@ pub struct Glyphs {
     pub tool: &'static str,
     pub tool_result_ok: &'static str,
     pub tool_result_err: &'static str,
+    pub tree_connector: &'static str,
     pub status_ready: &'static str,
     pub status_missing: &'static str,
     pub pending: &'static str,
@@ -164,6 +180,7 @@ pub fn glyphs(options: UiOptions) -> Glyphs {
             tool: "T",
             tool_result_ok: "OK",
             tool_result_err: "ERR",
+            tree_connector: "L",
             status_ready: "*",
             status_missing: "o",
             pending: "*",
@@ -182,10 +199,11 @@ pub fn glyphs(options: UiOptions) -> Glyphs {
         Glyphs {
             system: "●",
             user: "○",
-            assistant: "◆",
-            tool: "⚙",
+            assistant: "◇",
+            tool: "⊙",
             tool_result_ok: "✓",
             tool_result_err: "✗",
+            tree_connector: "└",
             status_ready: "●",
             status_missing: "○",
             pending: "•",
@@ -255,6 +273,14 @@ pub mod styles {
         Style::default()
             .fg(palette.bg_dark)
             .bg(palette.yellow)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    #[must_use]
+    pub fn mode_model(palette: &Palette) -> Style {
+        Style::default()
+            .fg(palette.bg_dark)
+            .bg(palette.primary)
             .add_modifier(Modifier::BOLD)
     }
 

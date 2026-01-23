@@ -49,11 +49,25 @@ pub struct AppConfig {
     pub reduced_motion: Option<bool>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Deserialize)]
 pub struct ApiKeys {
     pub anthropic: Option<String>,
     pub openai: Option<String>,
     pub google: Option<String>,
+}
+
+// Manual Debug impl to prevent leaking API keys in logs.
+impl std::fmt::Debug for ApiKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn mask(opt: Option<&String>) -> &'static str {
+            if opt.is_some() { "[REDACTED]" } else { "None" }
+        }
+        f.debug_struct("ApiKeys")
+            .field("anthropic", &mask(self.anthropic.as_ref()))
+            .field("openai", &mask(self.openai.as_ref()))
+            .field("google", &mask(self.google.as_ref()))
+            .finish()
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -583,6 +597,29 @@ google = "AIza-test"
     }
 
     #[test]
+    fn api_keys_debug_redacts_values() {
+        let keys = ApiKeys {
+            anthropic: Some("sk-ant-secret123".to_string()),
+            openai: Some("sk-secret456".to_string()),
+            google: Some("AIzaSyC789".to_string()),
+        };
+        let debug_output = format!("{keys:?}");
+        // Should show [REDACTED] instead of actual keys
+        assert!(debug_output.contains("[REDACTED]"));
+        assert!(!debug_output.contains("sk-ant-secret123"));
+        assert!(!debug_output.contains("sk-secret456"));
+        assert!(!debug_output.contains("AIzaSyC789"));
+    }
+
+    #[test]
+    fn api_keys_debug_shows_none() {
+        let keys = ApiKeys::default();
+        let debug_output = format!("{keys:?}");
+        assert!(debug_output.contains("None"));
+        assert!(!debug_output.contains("[REDACTED]"));
+    }
+
+    #[test]
     fn parse_context_config() {
         let toml_str = r"
 [context]
@@ -639,11 +676,11 @@ cache_ttl_seconds = 7200
 
     #[test]
     fn parse_tools_config() {
-        let toml_str = r#"
+        let toml_str = r"
 [tools]
 max_tool_calls_per_batch = 10
 max_tool_iterations_per_user_turn = 25
-"#;
+";
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         let tools = config.tools.unwrap();
         assert_eq!(tools.max_tool_calls_per_batch, Some(10));

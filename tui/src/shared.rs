@@ -2,14 +2,23 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 
-use forge_engine::{App, Message, ToolResult, sanitize_terminal_text};
+use forge_engine::{App, Message, Provider, ToolResult, sanitize_terminal_text};
 
 use crate::theme::{Glyphs, Palette, styles};
 use crate::tool_display;
+
+/// Get the color for a given provider.
+pub(crate) fn provider_color(provider: Provider, palette: &Palette) -> Color {
+    match provider {
+        Provider::Claude => palette.provider_claude,
+        Provider::OpenAI => palette.provider_openai,
+        Provider::Gemini => palette.provider_gemini,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolCallStatusKind {
@@ -124,7 +133,9 @@ pub(crate) fn wrapped_line_count_exact(lines: &[Line], width: u16) -> usize {
         return 0;
     }
 
-    wrapped_line_rows(lines, width).iter().sum()
+    Paragraph::new(lines.to_vec())
+        .wrap(Wrap { trim: false })
+        .line_count(width.max(1))
 }
 
 pub(crate) fn wrapped_line_count(lines: &[Line], width: u16) -> u16 {
@@ -157,14 +168,17 @@ pub(crate) fn message_header_parts(
         ),
         Message::User(_) => (
             glyphs.user.to_string(),
-            "You".to_string(),
+            String::new(),
             styles::user_name(palette),
         ),
-        Message::Assistant(m) => (
-            glyphs.assistant.to_string(),
-            m.provider().display_name().to_string(),
-            styles::assistant_name(palette),
-        ),
+        Message::Assistant(m) => {
+            let color = provider_color(m.provider(), palette);
+            (
+                glyphs.assistant.to_string(),
+                String::new(), // No name label - color encodes provider
+                Style::default().fg(color),
+            )
+        }
         Message::ToolUse(call) => {
             let compact = tool_display::format_tool_call_compact(&call.name, &call.arguments);
             let compact = sanitize_terminal_text(&compact).into_owned();

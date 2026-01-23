@@ -48,12 +48,14 @@ impl ToolJournal {
             tool_call_id TEXT NOT NULL,
             tool_name TEXT NOT NULL,
             arguments_json TEXT NOT NULL,
+            thought_signature TEXT,
             PRIMARY KEY (batch_id, seq)
         );
 
         CREATE TABLE IF NOT EXISTS tool_results (
             batch_id INTEGER NOT NULL,
             tool_call_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
             content TEXT NOT NULL,
             is_error INTEGER NOT NULL,
             created_at TEXT NOT NULL,
@@ -100,6 +102,8 @@ impl ToolJournal {
             .context("Failed to set tool journal pragmas")?;
         db.execute_batch(Self::SCHEMA)
             .context("Failed to create tool journal schema")?;
+        ensure_tool_calls_signature(&db)?;
+        ensure_tool_results_name(&db)?;
         Ok(Self { db })
     }
 
@@ -135,9 +139,16 @@ impl ToolJournal {
             let args_json = serde_json::to_string(&call.arguments)
                 .context("Failed to serialize tool call arguments")?;
             tx.execute(
-                "INSERT INTO tool_calls (batch_id, seq, tool_call_id, tool_name, arguments_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![batch_id, seq as i64, &call.id, &call.name, args_json],
+                "INSERT INTO tool_calls (batch_id, seq, tool_call_id, tool_name, arguments_json, thought_signature)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    batch_id,
+                    seq as i64,
+                    &call.id,
+                    &call.name,
+                    args_json,
+                    call.thought_signature.as_deref()
+                ],
             )
             .with_context(|| format!("Failed to insert tool call {}", call.id))?;
         }
@@ -185,12 +196,13 @@ impl ToolJournal {
         seq: usize,
         tool_call_id: &str,
         tool_name: &str,
+        thought_signature: Option<&str>,
     ) -> Result<()> {
         self.db
             .execute(
-                "INSERT INTO tool_calls (batch_id, seq, tool_call_id, tool_name, arguments_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![batch_id, seq as i64, tool_call_id, tool_name, ""],
+                "INSERT INTO tool_calls (batch_id, seq, tool_call_id, tool_name, arguments_json, thought_signature)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![batch_id, seq as i64, tool_call_id, tool_name, "", thought_signature],
             )
             .with_context(|| format!("Failed to insert tool call {tool_call_id}"))?;
         Ok(())
@@ -218,7 +230,9 @@ impl ToolJournal {
         Ok(())
     }
 
-    /// Update assistant text for a streaming batch.
+    /// Update assistant text for a streaming batch (full replacement).
+    ///
+    /// Use `append_assistant_delta` instead for streaming deltas to avoid O(n²) rewrites.
     pub fn update_assistant_text(
         &mut self,
         batch_id: ToolBatchId,
@@ -237,16 +251,35 @@ impl ToolJournal {
         Ok(())
     }
 
+    /// Append a text delta to the assistant text for a streaming batch.
+    ///
+    /// Uses SQL concatenation (`||`) to avoid rewriting the full text on every delta,
+    /// improving performance from O(n²) to O(n).
+    pub fn append_assistant_delta(&mut self, batch_id: ToolBatchId, delta: &str) -> Result<()> {
+        let updated = self
+            .db
+            .execute(
+                "UPDATE tool_batches SET assistant_text = assistant_text || ?1 WHERE batch_id = ?2",
+                params![delta, batch_id],
+            )
+            .with_context(|| format!("Failed to append assistant delta for batch {batch_id}"))?;
+        if updated == 0 {
+            bail!("No tool batch found for id {batch_id}");
+        }
+        Ok(())
+    }
+
     /// Record a tool result for a batch.
     pub fn record_result(&mut self, batch_id: ToolBatchId, result: &ToolResult) -> Result<()> {
         let created_at = system_time_to_iso8601(SystemTime::now());
         self.db
             .execute(
-                "INSERT INTO tool_results (batch_id, tool_call_id, content, is_error, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO tool_results (batch_id, tool_call_id, tool_name, content, is_error, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     batch_id,
                     &result.tool_call_id,
+                    &result.tool_name,
                     &result.content,
                     i32::from(result.is_error),
                     created_at,
@@ -322,6 +355,9 @@ impl ToolJournal {
 
     /// Recover the most recent incomplete tool batch, if any.
     pub fn recover(&self) -> Result<Option<RecoveredToolBatch>> {
+        // Maximum args size to parse during recovery (prevents OOM on corrupted/malicious data)
+        const RECOVERY_MAX_ARGS_BYTES: usize = 1024 * 1024; // 1MB
+
         let batch_id: Option<ToolBatchId> = self
             .db
             .query_row(
@@ -349,7 +385,7 @@ impl ToolJournal {
         let mut stmt = self
             .db
             .prepare(
-                "SELECT tool_call_id, tool_name, arguments_json
+                "SELECT tool_call_id, tool_name, arguments_json, thought_signature
                  FROM tool_calls WHERE batch_id = ?1 ORDER BY seq ASC",
             )
             .context("Failed to prepare tool calls query")?;
@@ -358,13 +394,22 @@ impl ToolJournal {
                 let id: String = row.get(0)?;
                 let name: String = row.get(1)?;
                 let args_json: String = row.get(2)?;
-                Ok((id, name, args_json))
+                let thought_signature: Option<String> = row.get(3)?;
+                Ok((id, name, args_json, thought_signature))
             })
             .context("Failed to query tool calls")?;
 
         for row in rows {
-            let (id, name, args_json) = row?;
+            let (id, name, args_json, thought_signature) = row?;
             let args = if args_json.trim().is_empty() {
+                serde_json::Value::Object(serde_json::Map::new())
+            } else if args_json.len() > RECOVERY_MAX_ARGS_BYTES {
+                // Skip parsing excessively large arguments
+                tracing::warn!(
+                    "Tool call {} has oversized arguments ({} bytes), using empty object",
+                    id,
+                    args_json.len()
+                );
                 serde_json::Value::Object(serde_json::Map::new())
             } else {
                 match serde_json::from_str(&args_json) {
@@ -372,38 +417,38 @@ impl ToolJournal {
                     Err(_) => serde_json::Value::Object(serde_json::Map::new()),
                 }
             };
-            calls.push(ToolCall::new(id, name, args));
+            calls.push(ToolCall::new_with_thought_signature(
+                id,
+                name,
+                args,
+                thought_signature,
+            ));
         }
 
         let mut results: Vec<ToolResult> = Vec::new();
         let mut stmt = self
             .db
             .prepare(
-                "SELECT tool_call_id, content, is_error
+                "SELECT tool_call_id, tool_name, content, is_error
                  FROM tool_results WHERE batch_id = ?1",
             )
             .context("Failed to prepare tool results query")?;
         let rows = stmt
             .query_map(params![batch_id], |row| {
                 let id: String = row.get(0)?;
-                let content: String = row.get(1)?;
-                let is_error: i32 = row.get(2)?;
-                Ok((id, content, is_error != 0))
+                let tool_name: String = row.get(1)?;
+                let content: String = row.get(2)?;
+                let is_error: i32 = row.get(3)?;
+                Ok((id, tool_name, content, is_error != 0))
             })
             .context("Failed to query tool results")?;
 
         for row in rows {
-            let (id, content, is_error) = row?;
-            // Look up tool name from calls vector
-            let tool_name = calls
-                .iter()
-                .find(|c| c.id == id)
-                .map(|c| c.name.clone())
-                .unwrap_or_default();
+            let (id, tool_name, content, is_error) = row?;
             let result = if is_error {
-                ToolResult::error(&id, &tool_name, content)
+                ToolResult::error(id, tool_name, content)
             } else {
-                ToolResult::success(&id, &tool_name, content)
+                ToolResult::success(id, tool_name, content)
             };
             results.push(result);
         }
@@ -429,6 +474,62 @@ impl ToolJournal {
             .context("Failed to query pending tool batch")?;
         Ok(batch_id)
     }
+}
+
+fn ensure_tool_calls_signature(db: &Connection) -> Result<()> {
+    if tool_calls_has_signature(db)? {
+        return Ok(());
+    }
+    db.execute(
+        "ALTER TABLE tool_calls ADD COLUMN thought_signature TEXT",
+        [],
+    )
+    .context("Failed to add thought_signature column to tool_calls")?;
+    Ok(())
+}
+
+fn tool_calls_has_signature(db: &Connection) -> Result<bool> {
+    let mut stmt = db
+        .prepare("PRAGMA table_info(tool_calls)")
+        .context("Failed to inspect tool_calls schema")?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .context("Failed to query tool_calls columns")?;
+    for name in rows {
+        if name? == "thought_signature" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Migration: add tool_name column to tool_results table for existing databases.
+fn ensure_tool_results_name(db: &Connection) -> Result<()> {
+    if tool_results_has_name(db)? {
+        return Ok(());
+    }
+    // Add the column with a default value for existing rows
+    db.execute(
+        "ALTER TABLE tool_results ADD COLUMN tool_name TEXT NOT NULL DEFAULT ''",
+        [],
+    )
+    .context("Failed to add tool_name column to tool_results")?;
+    Ok(())
+}
+
+fn tool_results_has_name(db: &Connection) -> Result<bool> {
+    let mut stmt = db
+        .prepare("PRAGMA table_info(tool_results)")
+        .context("Failed to inspect tool_results schema")?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .context("Failed to query tool_results columns")?;
+    for name in rows {
+        if name? == "tool_name" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn system_time_to_iso8601(time: SystemTime) -> String {
@@ -569,11 +670,12 @@ mod tests {
             .begin_batch("test-model", "assistant", &calls)
             .unwrap();
 
-        let result = ToolResult::success("1", "test_tool", "ok");
+        let result = ToolResult::success("1", "read_file", "ok");
         journal.record_result(batch_id, &result).unwrap();
 
         let recovered = journal.recover().unwrap().expect("should recover");
         assert_eq!(recovered.results.len(), 1);
+        assert_eq!(recovered.results[0].tool_name, "read_file");
 
         journal.commit_batch(batch_id).unwrap();
         assert!(journal.recover().unwrap().is_none());
@@ -604,7 +706,7 @@ mod tests {
 
         // Record tool call start
         journal
-            .record_call_start(batch_id, 0, "call_1", "read_file")
+            .record_call_start(batch_id, 0, "call_1", "read_file", None)
             .unwrap();
 
         // Append arguments in chunks
@@ -640,7 +742,7 @@ mod tests {
             .unwrap();
 
         // Add a result
-        let result = ToolResult::success("1", "test_tool", "done");
+        let result = ToolResult::success("1", "test", "done");
         journal.record_result(batch_id, &result).unwrap();
 
         // Discard the batch
@@ -660,12 +762,13 @@ mod tests {
             .unwrap();
 
         // Record an error result
-        let result = ToolResult::error("1", "test_tool", "Something went wrong");
+        let result = ToolResult::error("1", "test", "Something went wrong");
         journal.record_result(batch_id, &result).unwrap();
 
         let recovered = journal.recover().unwrap().expect("should recover");
         assert_eq!(recovered.results.len(), 1);
         assert!(recovered.results[0].is_error);
+        assert_eq!(recovered.results[0].tool_name, "test");
         assert_eq!(recovered.results[0].content, "Something went wrong");
     }
 
@@ -695,7 +798,7 @@ mod tests {
 
         let batch_id = journal.begin_streaming_batch("test-model").unwrap();
         journal
-            .record_call_start(batch_id, 0, "call_1", "test_tool")
+            .record_call_start(batch_id, 0, "call_1", "test_tool", None)
             .unwrap();
         // Don't append any arguments - leave it empty
 
@@ -711,7 +814,7 @@ mod tests {
 
         let batch_id = journal.begin_streaming_batch("test-model").unwrap();
         journal
-            .record_call_start(batch_id, 0, "call_1", "test_tool")
+            .record_call_start(batch_id, 0, "call_1", "test_tool", None)
             .unwrap();
         // Append invalid JSON
         journal

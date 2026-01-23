@@ -1,34 +1,90 @@
 //! Stream Journal - Streaming durability system for crash recovery
 //!
-//! This module ensures that streaming deltas are persisted to `SQLite` BEFORE
-//! being displayed to the user. This guarantees that after a crash, we can
-//! recover the partial response and resume or replay.
+//! This module provides crash recovery for streaming responses by persisting
+//! deltas to SQLite. After a crash, we can recover the partial response.
 //!
-//! # Key Invariant
+//! # Buffering Semantics
 //!
-//! **Deltas MUST be persisted BEFORE being displayed to the user.**
+//! Deltas are buffered in memory and flushed to SQLite under these conditions:
+//! 1. **First content** - Ensures crash recovery has content immediately
+//! 2. **Buffer threshold** - When accumulated deltas reach the flush threshold
+//! 3. **Time interval** - When the flush interval has elapsed since last flush
 //!
-//! This write-ahead logging approach ensures durability at the cost of
-//! slightly higher latency per delta.
+//! This means a crash can lose up to the flush threshold deltas if they arrived
+//! within the flush interval. The time-based flush bounds this window.
+//!
+//! The flush threshold/interval can be tuned via:
+//!
+//! - `FORGE_STREAM_JOURNAL_FLUSH_THRESHOLD`
+//!
+//! - `FORGE_STREAM_JOURNAL_FLUSH_INTERVAL_MS`
 //!
 //! # Performance Consideration
 //!
-//! Currently, `SQLite` writes are synchronous and run in the async UI loop.
-//! For high-frequency deltas on slow disks, this could cause UI stutter.
-//! Future optimization: move journaling to a dedicated thread with channel-based
-//! event submission, batching commits per N deltas or time interval.
+//! SQLite writes are synchronous in the async UI loop. Buffering reduces write
+//! frequency for better responsiveness. Future optimization could move journaling
+//! to a dedicated thread with channel-based event submission.
 
 #[cfg(test)]
 use anyhow::anyhow;
 use anyhow::{Context, Result, bail};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{
+    Connection, OptionalExtension, params,
+    types::{FromSql, FromSqlResult, ToSql, ToSqlOutput, ValueRef},
+};
+use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::path::Path;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Unique identifier for a streaming step/session
-pub type StepId = i64;
+/// Unique identifier for a streaming step/session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct StepId(i64);
+
+impl StepId {
+    #[must_use]
+    pub const fn new(value: i64) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn value(self) -> i64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for StepId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<i64> for StepId {
+    fn from(value: i64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<StepId> for i64 {
+    fn from(value: StepId) -> Self {
+        value.0
+    }
+}
+
+impl ToSql for StepId {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(ToSqlOutput::from(self.0))
+    }
+}
+
+impl FromSql for StepId {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        i64::column_result(value).map(Self)
+    }
+}
 
 /// A single delta event in a streaming response.
 ///
@@ -79,15 +135,64 @@ impl StreamDelta {
     }
 }
 
+/// Default number of deltas to buffer before automatic flush.
+/// Kept relatively low to balance responsiveness with crash recovery granularity.
+const DEFAULT_BUFFER_FLUSH_THRESHOLD: usize = 25;
+
+/// Default maximum time between flushes in milliseconds.
+/// Ensures deltas are persisted even with slow streaming.
+const DEFAULT_FLUSH_INTERVAL_MS: u128 = 200;
+
+fn journal_flush_threshold() -> usize {
+    static THRESHOLD: OnceLock<usize> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("FORGE_STREAM_JOURNAL_FLUSH_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_BUFFER_FLUSH_THRESHOLD)
+    })
+}
+
+fn journal_flush_interval_ms() -> u128 {
+    static INTERVAL: OnceLock<u128> = OnceLock::new();
+    *INTERVAL.get_or_init(|| {
+        std::env::var("FORGE_STREAM_JOURNAL_FLUSH_INTERVAL_MS")
+            .ok()
+            .and_then(|value| value.parse::<u128>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_FLUSH_INTERVAL_MS)
+    })
+}
+
 /// Active streaming journal.
 ///
 /// Possessing this type is the proof that a stream is in-flight.
+/// Text deltas are buffered in memory and flushed periodically to reduce
+/// SQLite write frequency and improve UI responsiveness.
+///
+/// # Crash Recovery Semantics
+///
+/// Deltas are flushed when:
+/// 1. First content arrives (immediate persistence)
+/// 2. Buffer reaches the flush threshold
+/// 3. More than the flush interval has elapsed since the last flush
+///
+/// This means up to the flush threshold deltas may be lost in a crash
+/// if they arrived within the flush interval. The time-based flush ensures
+/// the loss window is bounded.
 #[derive(Debug)]
 pub struct ActiveJournal {
     journal_id: u64,
     step_id: StepId,
     next_seq: u64,
     model_name: String,
+    /// Buffered deltas waiting to be flushed to the database.
+    pending_deltas: Vec<StreamDelta>,
+    /// Whether we've flushed at least once (ensures first content is persisted).
+    has_flushed: bool,
+    /// Timestamp of last flush for time-based persistence.
+    last_flush: std::time::Instant,
 }
 
 impl ActiveJournal {
@@ -102,31 +207,78 @@ impl ActiveJournal {
         &self.model_name
     }
 
+    /// Buffer a text delta for later persistence.
+    ///
+    /// Text deltas are accumulated in memory to reduce SQLite write frequency.
+    /// Flushing occurs when:
+    /// - First content arrives (immediate crash recovery)
+    /// - Buffer reaches threshold
+    /// - Time since last flush exceeds interval
     pub fn append_text(
         &mut self,
         journal: &mut StreamJournal,
         content: impl Into<String>,
     ) -> Result<()> {
-        journal.append_event(self, StreamDeltaEvent::TextDelta(content.into()))
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        let delta = StreamDelta::new(
+            self.step_id,
+            seq,
+            StreamDeltaEvent::TextDelta(content.into()),
+        );
+        self.pending_deltas.push(delta);
+
+        // Flush conditions:
+        // 1. First write (ensure crash recovery has content)
+        // 2. Buffer full (prevent unbounded memory growth)
+        // 3. Time elapsed (bound the data loss window)
+        let flush_threshold = journal_flush_threshold();
+        let flush_interval_ms = journal_flush_interval_ms();
+        let time_elapsed = self.last_flush.elapsed().as_millis() >= flush_interval_ms;
+        if !self.has_flushed || self.pending_deltas.len() >= flush_threshold || time_elapsed {
+            self.flush(journal)?;
+        }
+        Ok(())
     }
 
+    /// Flush buffered deltas to the database.
+    ///
+    /// This writes all pending deltas in a single transaction for efficiency.
+    pub fn flush(&mut self, journal: &mut StreamJournal) -> Result<()> {
+        if self.pending_deltas.is_empty() {
+            return Ok(());
+        }
+        journal.flush_deltas(&self.pending_deltas)?;
+        self.pending_deltas.clear();
+        self.has_flushed = true;
+        self.last_flush = std::time::Instant::now();
+        Ok(())
+    }
+
+    /// Append a Done event (terminal - flushes buffer first).
     pub fn append_done(&mut self, journal: &mut StreamJournal) -> Result<()> {
+        self.flush(journal)?;
         journal.append_event(self, StreamDeltaEvent::Done)
     }
 
+    /// Append an Error event (terminal - flushes buffer first).
     pub fn append_error(
         &mut self,
         journal: &mut StreamJournal,
         message: impl Into<String>,
     ) -> Result<()> {
+        self.flush(journal)?;
         journal.append_event(self, StreamDeltaEvent::Error(message.into()))
     }
 
-    pub fn seal(self, journal: &mut StreamJournal) -> Result<String> {
+    pub fn seal(mut self, journal: &mut StreamJournal) -> Result<String> {
+        self.flush(journal)?;
         journal.seal_active(self)
     }
 
-    pub fn discard(self, journal: &mut StreamJournal) -> Result<u64> {
+    pub fn discard(mut self, journal: &mut StreamJournal) -> Result<u64> {
+        // Discard buffered deltas - no need to flush since we're discarding
+        self.pending_deltas.clear();
         journal.discard_active(self)
     }
 }
@@ -298,6 +450,9 @@ impl StreamJournal {
             step_id,
             next_seq: 1,
             model_name,
+            pending_deltas: Vec::new(),
+            has_flushed: false,
+            last_flush: std::time::Instant::now(),
         })
     }
 
@@ -466,6 +621,42 @@ impl StreamJournal {
         let delta = StreamDelta::new(session.step_id, seq, event);
         append_delta(&self.db, &delta)?;
         session.next_seq += 1;
+        Ok(())
+    }
+
+    /// Flush multiple buffered deltas to the database in a single transaction.
+    fn flush_deltas(&mut self, deltas: &[StreamDelta]) -> Result<()> {
+        if deltas.is_empty() {
+            return Ok(());
+        }
+
+        let tx = self
+            .db
+            .transaction()
+            .context("Failed to begin flush transaction")?;
+        for delta in deltas {
+            let created_at = system_time_to_iso8601(delta.timestamp);
+            let seq_i64 = i64::try_from(delta.seq).context("seq overflow")?;
+
+            tx.execute(
+                "INSERT INTO stream_journal (step_id, seq, event_type, content, created_at, sealed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                params![
+                    delta.step_id,
+                    seq_i64,
+                    delta.event.event_type(),
+                    delta.event.content(),
+                    created_at
+                ],
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to insert delta for step {} seq {}",
+                    delta.step_id, delta.seq
+                )
+            })?;
+        }
+        tx.commit().context("Failed to commit flush transaction")?;
         Ok(())
     }
 
@@ -935,16 +1126,16 @@ mod tests {
         let id2 = journal.next_step_id().unwrap();
         let id3 = journal.next_step_id().unwrap();
 
-        assert_eq!(id1, 1);
-        assert_eq!(id2, 2);
-        assert_eq!(id3, 3);
+        assert_eq!(id1, StepId::new(1));
+        assert_eq!(id2, StepId::new(2));
+        assert_eq!(id3, StepId::new(3));
     }
 
     #[test]
     fn test_begin_session_returns_active_journal() {
         let mut journal = StreamJournal::open_in_memory().unwrap();
         let active = journal.begin_session("test-model").unwrap();
-        assert_eq!(active.step_id(), 1);
+        assert_eq!(active.step_id(), StepId::new(1));
     }
 
     #[test]
@@ -1012,9 +1203,11 @@ mod tests {
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
             let mut active = journal.begin_session("test-model").unwrap();
+            // First write is flushed immediately for crash safety
             active.append_text(&mut journal, "Partial").unwrap();
+            // Second write is buffered (will be lost on crash)
             active.append_text(&mut journal, " response").unwrap();
-            // Drop without sealing to simulate a crash.
+            // Drop without sealing to simulate a crash - buffered content lost
         }
 
         let journal = StreamJournal::open(&db_path).unwrap();
@@ -1026,9 +1219,11 @@ mod tests {
                 last_seq,
                 ..
             } => {
-                assert_eq!(recovered_step, 1);
-                assert_eq!(partial_text, "Partial response");
-                assert_eq!(last_seq, 2);
+                assert_eq!(recovered_step, StepId::new(1));
+                // Only first (flushed) content is recovered; buffered content lost
+                assert!(partial_text.starts_with("Partial"), "got: {partial_text}");
+                // First write was flushed immediately
+                assert_eq!(last_seq, 1);
             }
             _ => panic!("Expected incomplete recovery"),
         }
@@ -1127,14 +1322,17 @@ mod tests {
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
             let mut active = journal.begin_session("test-model").unwrap();
+            // First write is flushed immediately
             active.append_text(&mut journal, "Discard me").unwrap();
+            // Second write is buffered and lost when session is dropped
             active.append_text(&mut journal, "!").unwrap();
-            // Drop without sealing.
+            // Drop without sealing - buffered content lost
         }
 
         let mut journal = StreamJournal::open(&db_path).unwrap();
-        let deleted = journal.discard_unsealed(1).unwrap();
-        assert_eq!(deleted, 2);
+        let deleted = journal.discard_unsealed(StepId::new(1)).unwrap();
+        // Only 1 entry was flushed (first write); buffered content was lost
+        assert_eq!(deleted, 1);
         assert!(journal.recover().unwrap().is_none());
 
         let _ = fs::remove_file(&db_path);
@@ -1217,7 +1415,7 @@ mod tests {
                     ..
                 } => {
                     assert_eq!(partial_text, "Persisted");
-                    assert_eq!(step_id, 1);
+                    assert_eq!(step_id, StepId::new(1));
                 }
                 _ => panic!("Expected incomplete recovery"),
             }
@@ -1274,15 +1472,15 @@ mod tests {
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
-            assert_eq!(journal.next_step_id().unwrap(), 1);
-            assert_eq!(journal.next_step_id().unwrap(), 2);
-            assert_eq!(journal.next_step_id().unwrap(), 3);
+            assert_eq!(journal.next_step_id().unwrap(), StepId::new(1));
+            assert_eq!(journal.next_step_id().unwrap(), StepId::new(2));
+            assert_eq!(journal.next_step_id().unwrap(), StepId::new(3));
         }
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
-            assert_eq!(journal.next_step_id().unwrap(), 4);
-            assert_eq!(journal.next_step_id().unwrap(), 5);
+            assert_eq!(journal.next_step_id().unwrap(), StepId::new(4));
+            assert_eq!(journal.next_step_id().unwrap(), StepId::new(5));
         }
 
         let _ = fs::remove_file(&db_path);

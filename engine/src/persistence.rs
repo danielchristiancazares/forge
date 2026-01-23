@@ -62,7 +62,7 @@ impl App {
             Err(e) => {
                 tracing::warn!("Failed to load history: {e}");
                 if !self.history_load_warning_shown {
-                    self.set_status_warning("Failed to load history.json — starting fresh.");
+                    self.push_notification("Failed to load history.json — starting fresh.");
                     self.history_load_warning_shown = true;
                 }
             }
@@ -111,7 +111,7 @@ impl App {
             Err(e) => {
                 tracing::warn!("Autosave failed: {e}");
                 if !self.autosave_warning_shown {
-                    self.set_status_warning("Autosave failed — changes may not persist.");
+                    self.push_notification("Autosave failed — changes may not persist.");
                     self.autosave_warning_shown = true;
                 }
                 false
@@ -122,6 +122,18 @@ impl App {
     pub(crate) fn push_local_message(&mut self, message: Message) {
         self.display.push(DisplayItem::Local(message));
         self.display_version = self.display_version.wrapping_add(1);
+    }
+
+    /// Push a system notification message to the display.
+    ///
+    /// This adds a system message that appears in the content pane, visible to
+    /// the user but not sent to the model. Used for confirmations, warnings,
+    /// and transient feedback.
+    pub(crate) fn push_notification(&mut self, message: impl Into<String>) {
+        let text = message.into();
+        if let Ok(content) = NonEmptyString::new(text) {
+            self.push_local_message(Message::system(content));
+        }
     }
 
     /// Check for and recover from a crashed streaming session.
@@ -139,7 +151,7 @@ impl App {
             let stream_recovered = match self.stream_journal.recover() {
                 Ok(recovered) => recovered,
                 Err(e) => {
-                    self.set_status_error(format!("Recovery failed: {e}"));
+                    self.push_notification(format!("Recovery failed: {e}"));
                     return None;
                 }
             };
@@ -188,17 +200,34 @@ impl App {
                 .unwrap_or_else(|| self.model.clone());
 
             if let Some(step_id) = step_id {
+                // Idempotency guard: if history already contains this step_id,
+                // the response was already committed - just clean up stale journals
+                if self.context_manager.has_step_id(step_id) {
+                    let _ = self.tool_journal.discard_batch(recovered_batch.batch_id);
+                    if self.autosave_history() {
+                        self.finalize_journal_commit(step_id);
+                    } else {
+                        tracing::warn!(
+                            "Tool batch already in history but autosave failed; keeping step {step_id} recoverable"
+                        );
+                    }
+                    self.push_notification(
+                        "Tool batch already committed; cleaned up stale journals",
+                    );
+                    return stream_recovered;
+                }
+
                 self.state = OperationState::ToolRecovery(ToolRecoveryState {
                     batch: recovered_batch,
                     step_id,
                     model,
                 });
-                self.set_status_warning("Recovered tool batch. Press R to resume or D to discard.");
+                self.push_notification("Recovered tool batch. Press R to resume or D to discard.");
                 return stream_recovered;
             }
 
             tracing::warn!("Tool batch recovery found but no stream journal step.");
-            self.set_status_warning("Recovered tool batch but stream journal missing; discarding");
+            self.push_notification("Recovered tool batch but stream journal missing; discarding");
             let _ = self.tool_journal.discard_batch(recovered_batch.batch_id);
             return None;
         }
@@ -207,7 +236,7 @@ impl App {
             Ok(Some(recovered)) => recovered,
             Ok(None) => return None,
             Err(e) => {
-                self.set_status_error(format!("Recovery failed: {e}"));
+                self.push_notification(format!("Recovery failed: {e}"));
                 return None;
             }
         };
@@ -262,7 +291,7 @@ impl App {
             if self.autosave_history() {
                 self.finalize_journal_commit(step_id);
             } else {
-                self.set_status_warning(format!(
+                self.push_notification(format!(
                     "Recovery already in history, but autosave failed; keeping step {step_id} recoverable"
                 ));
             }
@@ -312,7 +341,7 @@ impl App {
                     last_seq
                 );
             } else {
-                self.set_status_success(format!(
+                self.push_notification(format!(
                     "Recovered {} bytes from crashed session",
                     partial_text.len(),
                 ));
@@ -325,7 +354,7 @@ impl App {
                 last_seq
             );
         } else {
-            self.set_status_warning(format!(
+            self.push_notification(format!(
                 "Recovered {} bytes but autosave failed; recovery will retry",
                 partial_text.len(),
             ));

@@ -2,7 +2,7 @@
 
 > Note: This is an implementation-focused overview of the current summarization system; the authoritative spec is `docs/CONTEXT_INFINITY_SRD.md`.
 
-Context Infinity is Forge's system for managing unlimited conversation context with LLMs. It preserves complete conversation history while automatically summarizing older content to fit within model-specific token limits.
+Context Infinity™ is Forge's system for managing unlimited conversation context with LLMs. It preserves complete conversation history while automatically summarizing older content to fit within model-specific token limits.
 
 ## LLM-TOC
 <!-- Auto-generated section map for LLM context -->
@@ -1179,7 +1179,7 @@ For tool batches created during streaming (before arguments are complete):
 let batch_id = journal.begin_streaming_batch("claude-sonnet-4")?;
 
 // Record call start as stream events arrive
-journal.record_call_start(batch_id, 0, "call_1", "read_file")?;
+journal.record_call_start(batch_id, 0, "call_1", "read_file", None)?;
 
 // Append arguments as they stream in
 journal.append_call_args(batch_id, "call_1", r#"{"path":"#)?;

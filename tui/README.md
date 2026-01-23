@@ -206,7 +206,6 @@ pub struct App {
     // Application flags
     should_quit: bool,
     toggle_screen_mode: bool,
-    status_message: Option<String>,
 
     // Provider configuration
     api_keys: HashMap<Provider, String>,
@@ -284,7 +283,7 @@ enum OperationState {
     Idle,
     Streaming(ActiveStream),
     AwaitingToolResults(PendingToolExecution),
-    ToolLoop(ToolLoopState),
+    ToolLoop(Box<ToolLoopState>),
     ToolRecovery(ToolRecoveryState),
     Summarizing(SummarizationState),
     SummarizingWithQueued(SummarizationWithQueuedState),
@@ -468,15 +467,21 @@ A proof type that a user message has been validated and is ready to send:
 #[derive(Debug)]
 pub struct QueuedUserMessage {
     config: ApiConfig,  // Contains validated API key and model
+    turn: TurnContext,  // Tracks per-turn changes
 }
 ```
 
 This type can only be created by `InsertMode::queue_message()`, which:
 
 1. Validates the draft is non-empty
+
 2. Validates an API key exists
+
 3. Constructs the API configuration
-4. Adds the user message to history
+
+4. Creates a turn context for change tracking
+
+5. Adds the user message to history
 
 ```rust
 impl<'a> InsertMode<'a> {
@@ -490,7 +495,7 @@ impl<'a> InsertMode<'a> {
         self.app.push_history_message(Message::user(content));
         self.app.enter_normal_mode();
         
-        Some(QueuedUserMessage { config })
+        Some(QueuedUserMessage { config, turn })
     }
 }
 ```
@@ -595,7 +600,7 @@ enum OperationState {
     Idle,
     Streaming(ActiveStream),
     AwaitingToolResults(PendingToolExecution),
-    ToolLoop(ToolLoopState),
+    ToolLoop(Box<ToolLoopState>),
     ToolRecovery(ToolRecoveryState),
     Summarizing(SummarizationState),
     SummarizingWithQueued(SummarizationWithQueuedState),

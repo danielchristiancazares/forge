@@ -2,7 +2,7 @@
 
 A vim-modal terminal user interface for interacting with Claude, GPT, and Gemini, featuring adaptive context management and an agentic tool execution framework.
 
-Forge brings the efficiency of vim-style modal editing to AI conversation, letting you navigate, compose, and manage conversations without leaving your terminal. With Context Infinity, Forge automatically summarizes older messages to stay within model limits while preserving full conversation history. The Tool Executor Framework enables the LLM to read files, apply patches, and run shell commands - all with interactive approval and crash recovery.
+Forge brings the efficiency of vim-style modal editing to AI conversation, letting you navigate, compose, and manage conversations without leaving your terminal. With Context Infinity™, Forge automatically summarizes older messages to stay within model limits while preserving full conversation history. The Tool Executor Framework enables the LLM to read files, apply patches, and run shell commands - all with interactive approval and crash recovery.
 
 ## LLM-TOC
 <!-- Auto-generated section map for LLM context -->
@@ -31,7 +31,7 @@ Forge brings the efficiency of vim-style modal editing to AI conversation, letti
 - **Rich Markdown Rendering**: Tables with box-drawing borders, syntax-highlighted code blocks, lists, and formatting
 - **Streaming Responses**: Real-time token streaming with animated indicators
 
-### Context Infinity
+### Context Infinity™
 
 Forge's adaptive context management system keeps conversations flowing without hitting model limits:
 
@@ -213,6 +213,9 @@ max_results = 100                      # Search result limit
 | `GEMINI_API_KEY` | Gemini API key (fallback if not in config) |
 | `FORGE_TUI` | Override TUI mode: `full` or `inline` |
 | `FORGE_CONTEXT_INFINITY` | Override context infinity: `1` or `0` |
+| `FORGE_STREAM_IDLE_TIMEOUT_SECS` | Override streaming idle timeout in seconds (default: 60) |
+| `FORGE_STREAM_JOURNAL_FLUSH_THRESHOLD` | Override stream journal flush threshold in deltas (default: 25) |
+| `FORGE_STREAM_JOURNAL_FLUSH_INTERVAL_MS` | Override stream journal flush interval in ms (default: 200) |
 
 ## Keyboard Shortcuts
 

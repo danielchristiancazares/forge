@@ -7,9 +7,11 @@ use serde_json::Value;
 
 /// Format a tool call in compact function-call style.
 ///
-/// Returns format like `Search("pattern")` or just `git_status` for tools without
+/// Returns format like `Read(src/main.rs)` or just `GitStatus` for tools without
 /// a displayable primary argument.
 pub fn format_tool_call_compact(name: &str, args: &Value) -> String {
+    let display_name = canonical_tool_name(name);
+
     // Special case: apply_patch displays as Edit(path) without quotes
     if name.eq_ignore_ascii_case("apply_patch") || name.eq_ignore_ascii_case("applypatch") {
         if let Some(obj) = args.as_object()
@@ -21,8 +23,56 @@ pub fn format_tool_call_compact(name: &str, args: &Value) -> String {
     }
 
     match extract_primary_arg(name, args) {
-        Some(val) => format!("{}(\"{}\")", name, truncate(&val, 60)),
-        None => name.to_string(),
+        Some(val) => format!("{}({})", display_name, truncate(&val, 60)),
+        None => display_name.to_string(),
+    }
+}
+
+/// Map raw tool names to canonical display names.
+pub(crate) fn canonical_tool_name(name: &str) -> std::borrow::Cow<'static, str> {
+    use std::borrow::Cow;
+
+    match name.to_lowercase().as_str() {
+        // File tools (including patch tools that display as Edit)
+        "read" | "read_file" | "readfile" => Cow::Borrowed("Read"),
+        "write" | "write_file" | "writefile" => Cow::Borrowed("Write"),
+        "edit" | "apply_patch" | "applypatch" => Cow::Borrowed("Edit"),
+        "delete" => Cow::Borrowed("Delete"),
+        "move" => Cow::Borrowed("Move"),
+        "copy" => Cow::Borrowed("Copy"),
+        "listdir" | "list_dir" => Cow::Borrowed("ListDir"),
+        "outline" => Cow::Borrowed("Outline"),
+
+        // Search tools
+        "glob" => Cow::Borrowed("Glob"),
+        "search" | "rg" | "ripgrep" | "ugrep" | "ug" => Cow::Borrowed("Search"),
+
+        // Git tools
+        "gitstatus" | "git_status" => Cow::Borrowed("GitStatus"),
+        "gitdiff" | "git_diff" => Cow::Borrowed("GitDiff"),
+        "gitadd" | "git_add" => Cow::Borrowed("GitAdd"),
+        "gitcommit" | "git_commit" => Cow::Borrowed("GitCommit"),
+        "gitstash" | "git_stash" => Cow::Borrowed("GitStash"),
+        "gitrestore" | "git_restore" => Cow::Borrowed("GitRestore"),
+        "gitbranch" | "git_branch" => Cow::Borrowed("GitBranch"),
+        "gitcheckout" | "git_checkout" => Cow::Borrowed("GitCheckout"),
+        "gitshow" | "git_show" => Cow::Borrowed("GitShow"),
+        "gitlog" | "git_log" => Cow::Borrowed("GitLog"),
+        "gitblame" | "git_blame" => Cow::Borrowed("GitBlame"),
+
+        // Shell/command tools
+        "pwsh" => Cow::Borrowed("Pwsh"),
+        "bash" | "run_command" | "runcommand" => Cow::Borrowed("Bash"),
+
+        // Web tools
+        "webfetch" | "web_fetch" => Cow::Borrowed("WebFetch"),
+
+        // Build tools
+        "build" => Cow::Borrowed("Build"),
+        "test" => Cow::Borrowed("Test"),
+
+        // Pass through unknown tools as-is
+        _ => Cow::Owned(name.to_string()),
     }
 }
 
@@ -313,32 +363,36 @@ mod tests {
         let args = json!({"pattern": "foo.*bar"});
         assert_eq!(
             format_tool_call_compact("Search", &args),
-            r#"Search("foo.*bar")"#
+            "Search(foo.*bar)"
         );
     }
 
     #[test]
     fn test_glob_tool() {
         let args = json!({"pattern": "**/*.rs", "path": "/src"});
-        assert_eq!(
-            format_tool_call_compact("Glob", &args),
-            r#"Glob("**/*.rs")"#
-        );
+        assert_eq!(format_tool_call_compact("Glob", &args), "Glob(**/*.rs)");
     }
 
     #[test]
     fn test_read_file() {
         let args = json!({"path": "src/main.rs"});
+        assert_eq!(format_tool_call_compact("Read", &args), "Read(src/main.rs)");
+    }
+
+    #[test]
+    fn test_read_file_snake_case() {
+        // Test that read_file maps to Read
+        let args = json!({"path": "src/main.rs"});
         assert_eq!(
-            format_tool_call_compact("Read", &args),
-            r#"Read("src/main.rs")"#
+            format_tool_call_compact("read_file", &args),
+            "Read(src/main.rs)"
         );
     }
 
     #[test]
     fn test_git_status_no_args() {
         let args = json!({});
-        assert_eq!(format_tool_call_compact("git_status", &args), "git_status");
+        assert_eq!(format_tool_call_compact("git_status", &args), "GitStatus");
     }
 
     #[test]
@@ -350,7 +404,7 @@ mod tests {
         });
         assert_eq!(
             format_tool_call_compact("git_commit", &args),
-            r#"git_commit("feat(tui): add compact display")"#
+            "GitCommit(feat(tui): add compact display)"
         );
     }
 
@@ -362,7 +416,7 @@ mod tests {
         });
         assert_eq!(
             format_tool_call_compact("git_commit", &args),
-            r#"git_commit("fix: resolve bug")"#
+            "GitCommit(fix: resolve bug)"
         );
     }
 
@@ -374,7 +428,7 @@ mod tests {
         });
         assert_eq!(
             format_tool_call_compact("git_diff", &args),
-            r#"git_diff("main..feature")"#
+            "GitDiff(main..feature)"
         );
     }
 
@@ -383,17 +437,14 @@ mod tests {
         let args = json!({"cached": true});
         assert_eq!(
             format_tool_call_compact("git_diff", &args),
-            r#"git_diff("--cached")"#
+            "GitDiff(--cached)"
         );
     }
 
     #[test]
     fn test_git_add_all() {
         let args = json!({"all": true});
-        assert_eq!(
-            format_tool_call_compact("git_add", &args),
-            r#"git_add("-A")"#
-        );
+        assert_eq!(format_tool_call_compact("git_add", &args), "GitAdd(-A)");
     }
 
     #[test]
@@ -401,7 +452,7 @@ mod tests {
         let args = json!({"paths": ["a.rs", "b.rs", "c.rs"]});
         assert_eq!(
             format_tool_call_compact("git_add", &args),
-            r#"git_add("3 file(s)")"#
+            "GitAdd(3 file(s))"
         );
     }
 
@@ -410,7 +461,7 @@ mod tests {
         let args = json!({"action": "pop"});
         assert_eq!(
             format_tool_call_compact("git_stash", &args),
-            r#"git_stash("pop")"#
+            "GitStash(pop)"
         );
     }
 
@@ -419,7 +470,7 @@ mod tests {
         let args = json!({"create": "feature-x"});
         assert_eq!(
             format_tool_call_compact("git_branch", &args),
-            r#"git_branch("create feature-x")"#
+            "GitBranch(create feature-x)"
         );
     }
 
@@ -428,7 +479,7 @@ mod tests {
         let args = json!({"branch": "main"});
         assert_eq!(
             format_tool_call_compact("git_checkout", &args),
-            r#"git_checkout("main")"#
+            "GitCheckout(main)"
         );
     }
 
@@ -437,17 +488,14 @@ mod tests {
         let args = json!({"url": "https://example.com/api"});
         assert_eq!(
             format_tool_call_compact("WebFetch", &args),
-            r#"WebFetch("https://example.com/api")"#
+            "WebFetch(https://example.com/api)"
         );
     }
 
     #[test]
     fn test_pwsh_command() {
         let args = json!({"command": "Get-Process"});
-        assert_eq!(
-            format_tool_call_compact("Pwsh", &args),
-            r#"Pwsh("Get-Process")"#
-        );
+        assert_eq!(format_tool_call_compact("Pwsh", &args), "Pwsh(Get-Process)");
     }
 
     #[test]
@@ -455,7 +503,7 @@ mod tests {
         let args = json!({"query": "SELECT * FROM users"});
         assert_eq!(
             format_tool_call_compact("CustomTool", &args),
-            r#"CustomTool("SELECT * FROM users")"#
+            "CustomTool(SELECT * FROM users)"
         );
     }
 

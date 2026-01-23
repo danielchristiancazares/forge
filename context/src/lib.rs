@@ -19,7 +19,9 @@
 //! └── working_context: WorkingContext (derived view for API)
 //! ```
 
+mod fact_store;
 mod history;
+mod librarian;
 mod manager;
 mod model_limits;
 mod stream_journal;
@@ -28,7 +30,12 @@ mod token_counter;
 mod tool_journal;
 mod working_context;
 
+pub use fact_store::{FactId, FactStore, FactWithStaleness, StoredFact};
 pub use history::{FullHistory, HistoryEntry, MessageId, Summary, SummaryId};
+pub use librarian::{
+    ExtractionResult, Fact, FactType, Librarian, RetrievalResult, extract_facts,
+    format_facts_for_context, retrieve_relevant,
+};
 pub use manager::{
     ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus, PendingSummarization,
     PreparedContext, SummarizationNeeded, SummarizationScope,

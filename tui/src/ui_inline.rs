@@ -1,39 +1,34 @@
 //! Inline TUI mode - minimal viewport for shell integration.
 
+use std::collections::HashMap;
+
 use ratatui::prelude::{Backend, Terminal};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Clear, Paragraph, Widget, Wrap},
 };
 
-use forge_engine::{App, DisplayItem, InputMode, Message, StatusKind};
+use forge_engine::{App, DisplayItem, InputMode, Message};
 use forge_types::sanitize_terminal_text;
 
-use crate::diff_render::render_tool_result_lines;
+use crate::draw_input;
 use crate::shared::{
     ApprovalView, ToolCallStatus, ToolCallStatusKind, collect_approval_view, collect_tool_statuses,
     message_header_parts, tool_status_signature, wrapped_line_count,
 };
 use crate::theme::{Glyphs, Palette, glyphs, palette};
-use crate::{draw_input, draw_model_selector};
+use crate::tool_result_summary::{ToolCallMeta, ToolResultRender, tool_result_render_decision};
 
 pub const INLINE_INPUT_HEIGHT: u16 = 5;
 pub const INLINE_VIEWPORT_HEIGHT: u16 = INLINE_INPUT_HEIGHT + 1;
 
-/// Height needed for the model selector overlay in inline mode.
-/// Calculated as: inner content + borders + padding.
-pub const INLINE_MODEL_SELECTOR_HEIGHT: u16 = 18;
-
-/// Returns the viewport height needed for inline mode based on current input mode.
+/// Returns the viewport height needed for inline mode.
 #[must_use]
-pub fn inline_viewport_height(mode: InputMode) -> u16 {
-    match mode {
-        InputMode::ModelSelect => INLINE_MODEL_SELECTOR_HEIGHT,
-        _ => INLINE_VIEWPORT_HEIGHT,
-    }
+pub fn inline_viewport_height(_mode: InputMode) -> u16 {
+    INLINE_VIEWPORT_HEIGHT
 }
 
 pub fn clear_inline_viewport<B>(terminal: &mut Terminal<B>) -> Result<(), B::Error>
@@ -55,7 +50,7 @@ pub struct InlineOutput {
     last_tool_status_signature: Option<String>,
     last_approval_signature: Option<String>,
     last_recovery_active: bool,
-    last_status_signature: Option<String>,
+    tool_calls: HashMap<String, ToolCallMeta>,
 }
 
 impl InlineOutput {
@@ -68,7 +63,7 @@ impl InlineOutput {
             last_tool_status_signature: None,
             last_approval_signature: None,
             last_recovery_active: false,
-            last_status_signature: None,
+            tool_calls: HashMap::new(),
         }
     }
 
@@ -79,7 +74,7 @@ impl InlineOutput {
         self.last_tool_status_signature = None;
         self.last_approval_signature = None;
         self.last_recovery_active = false;
-        self.last_status_signature = None;
+        self.tool_calls.clear();
     }
 
     pub fn flush<B>(&mut self, terminal: &mut Terminal<B>, app: &mut App) -> Result<(), B::Error>
@@ -101,32 +96,43 @@ impl InlineOutput {
                     DisplayItem::Local(msg) => msg,
                 };
 
-                append_message_lines(&mut lines, msg, &mut msg_count, &palette, &glyphs);
+                match msg {
+                    Message::ToolUse(call) => {
+                        self.tool_calls
+                            .insert(call.id.clone(), ToolCallMeta::from_call(call));
+                        append_message_lines(
+                            &mut lines,
+                            msg,
+                            &mut msg_count,
+                            &palette,
+                            &glyphs,
+                            None,
+                        );
+                    }
+                    Message::ToolResult(result) => {
+                        let meta = self.tool_calls.get(&result.tool_call_id);
+                        append_message_lines(
+                            &mut lines,
+                            msg,
+                            &mut msg_count,
+                            &palette,
+                            &glyphs,
+                            meta,
+                        );
+                        self.tool_calls.remove(&result.tool_call_id);
+                    }
+                    _ => append_message_lines(
+                        &mut lines,
+                        msg,
+                        &mut msg_count,
+                        &palette,
+                        &glyphs,
+                        None,
+                    ),
+                }
             }
 
             self.next_display_index = items.len();
-        }
-
-        let status_signature = app.status_message().map(|message| {
-            let label = status_label(app.status_kind());
-            format!("{label}:{message}")
-        });
-        if status_signature != self.last_status_signature {
-            if let Some(message) = app.status_message() {
-                if !lines.is_empty() {
-                    lines.push(Line::from(""));
-                }
-                let safe_message = sanitize_terminal_text(message).replace('\n', " ");
-                let (label, color) = status_label_and_color(app.status_kind(), &palette);
-                let label_style = Style::default().fg(color).add_modifier(Modifier::BOLD);
-                let message_style = Style::default().fg(palette.text_primary);
-                let line = Line::from(vec![
-                    Span::styled(format!("[{label}] "), label_style),
-                    Span::styled(safe_message, message_style),
-                ]);
-                lines.push(line);
-            }
-            self.last_status_signature = status_signature;
         }
 
         let tool_statuses = collect_tool_statuses(app, 80);
@@ -210,12 +216,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         height: area.height.saturating_sub(top_padding),
     };
 
-    draw_input(frame, app, content_area, &palette, &glyphs);
-
-    // Draw model selector overlay if in model select mode
-    if app.input_mode() == InputMode::ModelSelect {
-        draw_model_selector(frame, app, &palette, &glyphs);
-    }
+    draw_input(frame, app, content_area, &palette, &glyphs, true);
 }
 
 fn append_message_lines(
@@ -224,60 +225,144 @@ fn append_message_lines(
     msg_count: &mut usize,
     palette: &Palette,
     glyphs: &Glyphs,
+    tool_call_meta: Option<&ToolCallMeta>,
 ) {
-    if *msg_count > 0 {
-        lines.push(Line::from(""));
+    // Single blank line between messages, but not before tool results (they attach to their call)
+    let is_tool_result = matches!(msg, Message::ToolResult(_));
+    if *msg_count > 0 && !is_tool_result {
         lines.push(Line::from(""));
     }
     *msg_count += 1;
 
     let (icon, name, name_style) = message_header_parts(msg, palette, glyphs);
 
-    let header_line = Line::from(vec![
-        Span::styled(format!(" {icon} "), name_style),
-        Span::styled(name, name_style),
-    ]);
-    lines.push(header_line);
-    lines.push(Line::from(""));
-
-    // Message content - render based on type
     match msg {
+        Message::User(_) => {
+            let content_style = Style::default().fg(palette.text_primary);
+            let content = sanitize_terminal_text(msg.content());
+            let mut first = true;
+
+            for content_line in content.lines() {
+                if first {
+                    // First line gets the icon
+                    if content_line.is_empty() {
+                        lines.push(Line::from(vec![Span::styled(
+                            format!(" {icon} "),
+                            name_style,
+                        )]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::styled(format!(" {icon} "), name_style),
+                            Span::styled(content_line.to_string(), content_style),
+                        ]));
+                    }
+                    first = false;
+                } else {
+                    // Subsequent lines with 2-space indent
+                    if content_line.is_empty() {
+                        lines.push(Line::from(""));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(content_line.to_string(), content_style),
+                        ]));
+                    }
+                }
+            }
+
+            if first {
+                // Message was empty
+                lines.push(Line::from(vec![Span::styled(
+                    format!(" {icon} "),
+                    name_style,
+                )]));
+            }
+        }
         Message::ToolUse(_) => {
-            // Compact format: args are in the header line, no body needed
+            // Tool call: icon + compact name (args already in name)
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {icon} "), name_style),
+                Span::styled(name, name_style),
+            ]));
         }
         Message::ToolResult(result) => {
-            // Render result content with diff-aware coloring
-            let content_style = if result.is_error {
-                Style::default().fg(palette.error)
-            } else {
-                Style::default().fg(palette.text_secondary)
-            };
             let content = sanitize_terminal_text(&result.content);
-            lines.extend(render_tool_result_lines(
-                content.as_ref(),
-                content_style,
-                palette,
-                "    ",
-            ));
+
+            match tool_result_render_decision(tool_call_meta, &content, result.is_error, 60) {
+                ToolResultRender::Full { diff_aware } => {
+                    let content_style = if result.is_error {
+                        Style::default().fg(palette.error)
+                    } else {
+                        Style::default().fg(palette.text_secondary)
+                    };
+                    for raw_line in content.lines() {
+                        if raw_line.is_empty() {
+                            lines.push(Line::from(""));
+                            continue;
+                        }
+                        let style = if diff_aware {
+                            diff_style_for_line(raw_line, content_style, palette)
+                        } else {
+                            content_style
+                        };
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(raw_line.to_string(), style),
+                        ]));
+                    }
+                }
+                ToolResultRender::Summary(summary) => {
+                    let style = if result.is_error {
+                        Style::default().fg(palette.error)
+                    } else {
+                        Style::default().fg(palette.text_muted)
+                    };
+                    let connector = glyphs.tree_connector;
+                    lines.push(Line::from(vec![
+                        Span::styled(format!(" {connector} "), style),
+                        Span::styled(summary, style),
+                    ]));
+                }
+            }
         }
-        _ => {
-            // Regular messages
+        Message::System(_) | Message::Assistant(_) => {
+            // Inline content with icon (no header line)
             let content_style = match msg {
-                Message::User(_) => Style::default().fg(palette.text_primary),
                 Message::Assistant(_) => Style::default().fg(palette.text_secondary),
                 _ => Style::default().fg(palette.text_muted),
             };
-
             let content = sanitize_terminal_text(msg.content());
+            let mut first = true;
+
             for content_line in content.lines() {
-                if content_line.is_empty() {
+                if first {
+                    if content_line.is_empty() {
+                        lines.push(Line::from(vec![Span::styled(
+                            format!(" {icon} "),
+                            name_style,
+                        )]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::styled(format!(" {icon} "), name_style),
+                            Span::styled(content_line.to_string(), content_style),
+                        ]));
+                    }
+                    first = false;
+                } else if content_line.is_empty() {
                     lines.push(Line::from(""));
                 } else {
                     lines.push(Line::from(vec![
-                        Span::raw("    "),
+                        Span::raw("  "),
                         Span::styled(content_line.to_string(), content_style),
                     ]));
                 }
+            }
+
+            if first {
+                lines.push(Line::from(vec![Span::styled(
+                    format!(" {icon} "),
+                    name_style,
+                )]));
             }
         }
     }
@@ -396,23 +481,44 @@ fn append_recovery_prompt(lines: &mut Vec<Line>, app: &App, palette: &Palette) {
     lines.push(Line::from("Press r to resume or d to discard."));
 }
 
-fn status_label(kind: StatusKind) -> &'static str {
-    match kind {
-        StatusKind::Info => "info",
-        StatusKind::Success => "ok",
-        StatusKind::Warning => "warn",
-        StatusKind::Error => "err",
-    }
-}
+/// Get the style for a diff line.
+fn diff_style_for_line(line: &str, base_style: Style, palette: &Palette) -> Style {
+    use ratatui::style::Modifier;
 
-fn status_label_and_color(
-    kind: StatusKind,
-    palette: &Palette,
-) -> (&'static str, ratatui::style::Color) {
-    match kind {
-        StatusKind::Info => ("INFO", palette.primary),
-        StatusKind::Success => ("OK", palette.success),
-        StatusKind::Warning => ("WARN", palette.warning),
-        StatusKind::Error => ("ERR", palette.error),
+    // File headers
+    if line.starts_with("+++")
+        || line.starts_with("---")
+        || line.starts_with("diff --git")
+        || line.starts_with("index ")
+        || line.starts_with("new file mode")
+        || line.starts_with("deleted file mode")
+    {
+        return Style::default()
+            .fg(palette.text_muted)
+            .add_modifier(Modifier::BOLD);
     }
+
+    // Hunk headers
+    if line.starts_with("@@") {
+        return Style::default()
+            .fg(palette.accent)
+            .add_modifier(Modifier::BOLD);
+    }
+
+    // Gap marker
+    if line == "..." {
+        return Style::default()
+            .fg(palette.text_muted)
+            .add_modifier(Modifier::ITALIC);
+    }
+
+    // Deletions / additions
+    if line.starts_with('-') {
+        return Style::default().fg(palette.error);
+    }
+    if line.starts_with('+') {
+        return Style::default().fg(palette.success);
+    }
+
+    base_style
 }

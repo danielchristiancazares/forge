@@ -24,6 +24,7 @@ tiktoken-rs.workspace = true
 rusqlite.workspace = true
 dirs.workspace = true
 tempfile.workspace = true
+sha2.workspace = true
 
 tracing.workspace = true
 

@@ -328,11 +328,24 @@ impl std::fmt::Display for ModelName {
 /// Provider-scoped API key.
 ///
 /// This prevents the invalid state "`OpenAI` key used with Claude" from being representable.
-#[derive(Debug, Clone)]
+///
+/// Note: `Debug` is manually implemented to redact the key value, preventing accidental
+/// credential disclosure in logs or error messages.
+#[derive(Clone)]
 pub enum ApiKey {
     Claude(String),
     OpenAI(String),
     Gemini(String),
+}
+
+impl std::fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApiKey::Claude(_) => write!(f, "ApiKey::Claude(<redacted>)"),
+            ApiKey::OpenAI(_) => write!(f, "ApiKey::OpenAI(<redacted>)"),
+            ApiKey::Gemini(_) => write!(f, "ApiKey::Gemini(<redacted>)"),
+        }
+    }
 }
 
 impl ApiKey {

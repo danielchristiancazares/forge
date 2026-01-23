@@ -3,13 +3,158 @@
 //! This module provides proof-token types and mode wrappers that ensure
 //! operations are only performed when the app is in the correct mode.
 
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
 use super::ui::{DraftInput, InputState};
 use super::{ApiConfig, ApiKey, App, Message, NonEmptyString, OperationState, Provider};
+
+// ============================================================================
+// Turn change tracking
+// ============================================================================
+
+/// Proof that a user turn is active.
+#[derive(Debug)]
+pub(crate) struct TurnContext {
+    changes: Arc<Mutex<TurnChangeLog>>,
+}
+
+#[derive(Debug, Default)]
+struct TurnChangeLog {
+    created: BTreeSet<PathBuf>,
+    modified: BTreeSet<PathBuf>,
+}
+
+/// Capability token that allows tool executors to record changes.
+#[derive(Debug, Clone)]
+pub(crate) struct ChangeRecorder {
+    changes: Arc<Mutex<TurnChangeLog>>,
+}
+
+#[derive(Debug)]
+pub(crate) enum TurnChangeReport {
+    NoChanges,
+    Changes(TurnChangeSummary),
+}
+
+#[derive(Debug)]
+pub(crate) struct TurnChangeSummary {
+    content: NonEmptyString,
+}
+
+impl TurnContext {
+    fn new() -> Self {
+        Self {
+            changes: Arc::new(Mutex::new(TurnChangeLog::default())),
+        }
+    }
+
+    pub(crate) fn new_for_recovery() -> Self {
+        Self::new()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_tests() -> Self {
+        Self::new()
+    }
+
+    pub(crate) fn recorder(&self) -> ChangeRecorder {
+        ChangeRecorder {
+            changes: Arc::clone(&self.changes),
+        }
+    }
+
+    pub(crate) fn finish(self, working_dir: &Path) -> TurnChangeReport {
+        let mut log = self.changes.lock().expect("mutex poisoned");
+        let log = std::mem::take(&mut *log);
+        log.into_report(working_dir)
+    }
+}
+
+impl ChangeRecorder {
+    pub(crate) fn record_created(&self, path: PathBuf) {
+        let mut log = self.changes.lock().expect("mutex poisoned");
+        log.record_created(path);
+    }
+
+    pub(crate) fn record_modified(&self, path: PathBuf) {
+        let mut log = self.changes.lock().expect("mutex poisoned");
+        log.record_modified(path);
+    }
+}
+
+impl TurnChangeSummary {
+    pub(crate) fn into_message(self) -> NonEmptyString {
+        self.content
+    }
+}
+
+impl TurnChangeLog {
+    fn record_created(&mut self, path: PathBuf) {
+        self.modified.remove(&path);
+        self.created.insert(path);
+    }
+
+    fn record_modified(&mut self, path: PathBuf) {
+        if !self.created.contains(&path) {
+            self.modified.insert(path);
+        }
+    }
+
+    fn into_report(self, working_dir: &Path) -> TurnChangeReport {
+        if self.created.is_empty() && self.modified.is_empty() {
+            return TurnChangeReport::NoChanges;
+        }
+
+        let created = format_paths(&self.created, working_dir);
+        let modified = format_paths(&self.modified, working_dir);
+        TurnChangeReport::Changes(TurnChangeSummary::new(created, modified))
+    }
+}
+
+fn format_paths(paths: &BTreeSet<PathBuf>, working_dir: &Path) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| format_path(path, working_dir))
+        .collect()
+}
+
+fn format_path(path: &Path, working_dir: &Path) -> String {
+    path.strip_prefix(working_dir)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string()
+}
+
+impl TurnChangeSummary {
+    fn new(created: Vec<String>, modified: Vec<String>) -> Self {
+        let mut lines: Vec<String> = Vec::new();
+
+        if !created.is_empty() {
+            lines.push(format!("Created files ({}):", created.len()));
+            lines.extend(created.into_iter().map(|path| format!("- {path}")));
+        }
+
+        if !modified.is_empty() {
+            if !lines.is_empty() {
+                lines.push(String::new());
+            }
+            lines.push(format!("Modified files ({}):", modified.len()));
+            lines.extend(modified.into_iter().map(|path| format!("- {path}")));
+        }
+
+        let content = NonEmptyString::new(lines.join("\n"))
+            .expect("summary must be non-empty when changes exist");
+        Self { content }
+    }
+}
 
 /// Proof that a user message was validated and queued for sending.
 #[derive(Debug)]
 pub struct QueuedUserMessage {
     pub(crate) config: ApiConfig,
+    pub(crate) turn: TurnContext,
 }
 
 /// Proof that a command line was entered in Command mode.
@@ -121,43 +266,20 @@ impl InsertMode<'_> {
     /// begin a new stream.
     #[must_use]
     pub fn queue_message(self) -> Option<QueuedUserMessage> {
-        match &self.app.state {
-            OperationState::Streaming(_) => {
-                self.app.set_status_warning("Already streaming a response");
-                return None;
-            }
-            OperationState::ToolLoop(_) => {
-                self.app
-                    .set_status_warning("Busy: tool execution in progress");
-                return None;
-            }
-            OperationState::ToolRecovery(_) => {
-                self.app.set_status_warning("Busy: tool recovery pending");
-                return None;
-            }
-            OperationState::Summarizing(_)
-            | OperationState::SummarizingWithQueued(_)
-            | OperationState::SummarizationRetry(_)
-            | OperationState::SummarizationRetryWithQueued(_) => {
-                self.app
-                    .set_status_warning("Busy: summarization in progress");
-                return None;
-            }
-            OperationState::Idle => {}
+        // Can't send while busy with another operation
+        if !matches!(self.app.state, OperationState::Idle) {
+            return None;
         }
 
+        // Ignore empty input
         if self.app.draft_text().trim().is_empty() {
-            if !self.app.empty_send_warning_shown {
-                self.app.set_status_warning("Type a message to send.");
-                self.app.empty_send_warning_shown = true;
-            }
             return None;
         }
 
         let api_key = if let Some(key) = self.app.current_api_key().cloned() {
             key
         } else {
-            self.app.set_status_warning(format!(
+            self.app.push_notification(format!(
                 "No API key configured. Set {} environment variable.",
                 self.app.provider().env_var()
             ));
@@ -168,7 +290,6 @@ impl InsertMode<'_> {
         let content = if let Ok(content) = NonEmptyString::new(raw_content.clone()) {
             content
         } else {
-            self.app.set_status_warning("Cannot send empty message");
             return None;
         };
 
@@ -192,12 +313,15 @@ impl InsertMode<'_> {
             Ok(config) => config.with_openai_options(self.app.openai_options),
             Err(e) => {
                 self.app
-                    .set_status_error(format!("Cannot queue request: {e}"));
+                    .push_notification(format!("Cannot queue request: {e}"));
                 return None;
             }
         };
 
-        Some(QueuedUserMessage { config })
+        Some(QueuedUserMessage {
+            config,
+            turn: TurnContext::new(),
+        })
     }
 }
 

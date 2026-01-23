@@ -20,6 +20,7 @@ use super::{
 };
 use crate::tools::git;
 use crate::tools::lp1::{self, FileContent};
+use crate::tools::recall::RecallTool;
 use crate::tools::search::SearchTool;
 use crate::tools::webfetch::WebFetchTool;
 
@@ -462,6 +463,9 @@ impl ToolExecutor for ReadFileTool {
     }
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
+        // Optimization threshold: skip hashing for range reads on files larger than this
+        const HASH_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024; // 10MB
+
         Box::pin(async move {
             let typed: ReadFileArgs =
                 serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
@@ -545,8 +549,13 @@ impl ToolExecutor for ReadFileTool {
                 read_text_range(&resolved, start, end, self.limits.max_scan_bytes)?
             };
 
-            // Update file cache with SHA-256 of full content.
-            if let Ok(sha) = compute_sha256(&resolved) {
+            // Update file cache with SHA-256 for stale-file protection in apply_patch.
+            // Optimization: skip hashing for range reads on large files (> 10MB) to avoid
+            // expensive O(file_size) work. Full-file reads and smaller files are always hashed.
+            let is_range_read = typed.start_line.is_some() || typed.end_line.is_some();
+            let should_hash = !is_range_read || meta.len() <= HASH_THRESHOLD_BYTES;
+
+            if should_hash && let Ok(sha) = compute_sha256(&resolved) {
                 let mut cache = ctx.file_cache.lock().await;
                 cache.insert(
                     resolved.clone(),
@@ -631,29 +640,8 @@ impl ToolExecutor for ApplyPatchTool {
                 let resolved = ctx
                     .sandbox
                     .resolve_path(&file_patch.path, &ctx.working_dir)?;
-                // Stale file protection
-                let entry = {
-                    let cache = ctx.file_cache.lock().await;
-                    cache.get(&resolved).cloned()
-                };
-                let Some(entry) = entry else {
-                    return Err(ToolError::StaleFile {
-                        file: resolved.clone(),
-                        reason: "File was not read before patching".to_string(),
-                    });
-                };
 
-                let current_sha = compute_sha256(&resolved).map_err(|_| ToolError::StaleFile {
-                    file: resolved.clone(),
-                    reason: "File content changed since last read".to_string(),
-                })?;
-                if current_sha != entry.sha256 {
-                    return Err(ToolError::StaleFile {
-                        file: resolved.clone(),
-                        reason: "File content changed since last read".to_string(),
-                    });
-                }
-
+                // Check if file exists FIRST (before stale check)
                 let (existed, permissions) = match std::fs::metadata(&resolved) {
                     Ok(meta) => {
                         if meta.is_dir() {
@@ -672,6 +660,33 @@ impl ToolExecutor for ApplyPatchTool {
                         });
                     }
                 };
+
+                // Stale file protection - only for EXISTING files
+                // New files don't need stale check (there's nothing to go stale)
+                if existed {
+                    let entry = {
+                        let cache = ctx.file_cache.lock().await;
+                        cache.get(&resolved).cloned()
+                    };
+                    let Some(entry) = entry else {
+                        return Err(ToolError::StaleFile {
+                            file: resolved.clone(),
+                            reason: "File was not read before patching".to_string(),
+                        });
+                    };
+
+                    let current_sha =
+                        compute_sha256(&resolved).map_err(|_| ToolError::StaleFile {
+                            file: resolved.clone(),
+                            reason: "File content changed since last read".to_string(),
+                        })?;
+                    if current_sha != entry.sha256 {
+                        return Err(ToolError::StaleFile {
+                            file: resolved.clone(),
+                            reason: "File content changed since last read".to_string(),
+                        });
+                    }
+                }
 
                 let original_bytes = if existed {
                     std::fs::read(&resolved).map_err(|e| ToolError::PatchFailed {
@@ -750,6 +765,11 @@ impl ToolExecutor for ApplyPatchTool {
                         continue;
                     }
                     if file.existed {
+                        ctx.turn_changes.record_modified(file.path.clone());
+                    } else {
+                        ctx.turn_changes.record_created(file.path.clone());
+                    }
+                    if file.existed {
                         summary_lines.push(format!("modified: {}", file.path.display()));
                     } else {
                         summary_lines.push(format!("created: {}", file.path.display()));
@@ -821,7 +841,10 @@ impl ToolExecutor for WriteFileTool {
                 });
             }
 
-            let resolved = ctx.sandbox.resolve_path(&typed.path, &ctx.working_dir)?;
+            // Use resolve_path_for_create to allow creating files in new directories
+            let resolved = ctx
+                .sandbox
+                .resolve_path_for_create(&typed.path, &ctx.working_dir)?;
             if let Some(parent) = resolved.parent()
                 && !parent.as_os_str().is_empty()
                 && !parent.exists()
@@ -868,6 +891,10 @@ impl ToolExecutor for WriteFileTool {
                     tool: "write_file".to_string(),
                     message: format!("failed to write {}: {e}", resolved.display()),
                 })?;
+            file.flush().await.map_err(|e| ToolError::ExecutionFailed {
+                tool: "write_file".to_string(),
+                message: format!("failed to flush {}: {e}", resolved.display()),
+            })?;
 
             if let Ok(sha) = compute_sha256(&resolved) {
                 let mut cache = ctx.file_cache.lock().await;
@@ -879,6 +906,8 @@ impl ToolExecutor for WriteFileTool {
                     },
                 );
             }
+
+            ctx.turn_changes.record_created(resolved.clone());
 
             let output = format!("Created {} ({} bytes)", resolved.display(), bytes.len());
             Ok(sanitize_output(&output))
@@ -1060,6 +1089,7 @@ pub fn register_builtins(
         registry.register(Box::new(SearchTool::with_name(name, search_config.clone())))?;
     }
     registry.register(Box::new(WebFetchTool::new(webfetch_config)))?;
+    registry.register(Box::new(RecallTool))?;
     Ok(())
 }
 

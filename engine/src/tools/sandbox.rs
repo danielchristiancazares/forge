@@ -149,7 +149,11 @@ impl Sandbox {
         Ok(canonical)
     }
 
-    /// Validate and resolve a path within the sandbox, allowing non-existent parents.
+    /// Validate and resolve a path for file creation, allowing non-existent directories.
+    ///
+    /// Unlike `resolve_path`, this method handles paths where parent directories don't
+    /// exist yet (as long as they would be within the sandbox). This is used by
+    /// `write_file` to allow creating files in new directories.
     pub fn resolve_path_for_create(
         &self,
         path: &str,
@@ -186,19 +190,56 @@ impl Sandbox {
             working_dir.join(input)
         };
 
-        if resolved.exists() {
-            return self.resolve_path(path, working_dir);
-        }
-        let (base, suffix) = split_existing_ancestor(&resolved)?;
-        let mut canonical = std::fs::canonicalize(&base).map_err(|_| {
-            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
-                attempted: resolved.clone(),
-                resolved: resolved.clone(),
-            })
-        })?;
-        for part in suffix {
-            canonical.push(part);
-        }
+        // Find the nearest existing ancestor and canonicalize it
+        let canonical = if resolved.exists() {
+            std::fs::canonicalize(&resolved).map_err(|_| {
+                ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                    attempted: resolved.clone(),
+                    resolved: resolved.clone(),
+                })
+            })?
+        } else {
+            // Walk up to find the nearest existing ancestor
+            let mut existing_ancestor = resolved.parent();
+            let mut non_existent_parts: Vec<&std::ffi::OsStr> = Vec::new();
+
+            // Collect the file name first
+            if let Some(file_name) = resolved.file_name() {
+                non_existent_parts.push(file_name);
+            }
+
+            // Find existing ancestor
+            while let Some(ancestor) = existing_ancestor {
+                if ancestor.exists() {
+                    break;
+                }
+                if let Some(dir_name) = ancestor.file_name() {
+                    non_existent_parts.push(dir_name);
+                }
+                existing_ancestor = ancestor.parent();
+            }
+
+            let existing = existing_ancestor.ok_or_else(|| {
+                ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                    attempted: resolved.clone(),
+                    resolved: resolved.clone(),
+                })
+            })?;
+
+            let canon_existing = std::fs::canonicalize(existing).map_err(|_| {
+                ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                    attempted: resolved.clone(),
+                    resolved: resolved.clone(),
+                })
+            })?;
+
+            // Rejoin non-existent parts in reverse order (they were collected bottom-up)
+            let mut result = canon_existing;
+            for part in non_existent_parts.into_iter().rev() {
+                result = result.join(part);
+            }
+            result
+        };
 
         if !self.is_within_allowed_roots(&canonical) {
             return Err(ToolError::SandboxViolation(
@@ -270,6 +311,7 @@ fn normalize_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+#[allow(dead_code)] // Available for alternative path resolution strategy
 fn split_existing_ancestor(path: &Path) -> Result<(PathBuf, Vec<std::ffi::OsString>), ToolError> {
     let mut current = path;
     let mut suffix = Vec::new();

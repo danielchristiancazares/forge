@@ -182,8 +182,9 @@ fn parse_op(lines: &[String], start: usize) -> Result<(Op, usize), PatchError> {
     if line.is_empty() {
         return Err(err("Unexpected blank line in op"));
     }
-    let cmd = line.chars().next().unwrap();
-    let rest = line[1..].trim();
+    let mut chars = line.chars();
+    let cmd = chars.next().unwrap();
+    let rest = chars.as_str().trim();
     match cmd {
         'R' => {
             let occ = parse_occ(rest)?;

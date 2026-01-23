@@ -29,6 +29,8 @@ pub fn parse_model_name_from_string(name: &str) -> Option<ModelName> {
         Provider::Claude
     } else if trimmed.to_ascii_lowercase().starts_with("gpt-") {
         Provider::OpenAI
+    } else if trimmed.to_ascii_lowercase().starts_with("gemini-") {
+        Provider::Gemini
     } else {
         // Unknown provider - can't parse
         return None;
@@ -82,6 +84,23 @@ mod tests {
         assert!(model.is_some());
         let model = model.unwrap();
         assert_eq!(model.provider(), Provider::OpenAI);
+    }
+
+    #[test]
+    fn parse_model_name_gemini() {
+        let model = parse_model_name_from_string("gemini-3-pro-preview");
+        assert!(model.is_some());
+        let model = model.unwrap();
+        assert_eq!(model.provider(), Provider::Gemini);
+    }
+
+    #[test]
+    fn parse_model_name_gemini_with_date() {
+        // Test the format from the original bug report
+        let model = parse_model_name_from_string("gemini-2.5-pro-preview-05-06");
+        assert!(model.is_some());
+        let model = model.unwrap();
+        assert_eq!(model.provider(), Provider::Gemini);
     }
 
     #[test]

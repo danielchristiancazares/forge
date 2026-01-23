@@ -339,7 +339,7 @@ mod tests {
             budget_tokens: 0,
             summarized_segments: 0,
         };
-        assert_eq!(usage.percentage(), 0.0);
+        assert!(usage.percentage().abs() < 0.01);
     }
 
     #[test]

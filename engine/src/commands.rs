@@ -4,7 +4,9 @@
 
 use super::{
     ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, ModelNameKind, Provider,
-    state::{OperationState, SummarizationStart, ToolLoopPhase, ToolRecoveryDecision},
+    state::{
+        OperationState, SummarizationStart, ToolLoopPhase, ToolLoopState, ToolRecoveryDecision,
+    },
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -31,7 +33,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec {
         palette_label: "cancel",
         help_label: "cancel",
-        description: "Cancel streaming or tool execution",
+        description: "Cancel streaming, tool execution, or summarization",
         show_in_help: true,
     },
     CommandSpec {
@@ -154,37 +156,64 @@ impl super::App {
             OperationState::Streaming(active) => {
                 active.abort_handle.abort();
 
+                // Clean up tool batch if streaming had started tool calls
+                if let Some(batch_id) = active.tool_batch_id {
+                    let _ = self.tool_journal.discard_batch(batch_id);
+                }
+
                 // Clean up journal state
                 let _ = active.journal.discard(&mut self.stream_journal);
-                self.set_status_warning("Streaming cancelled");
+
+                // Rollback the user message since no response was generated
+                self.rollback_pending_user_message();
+
+                self.push_notification("Streaming cancelled");
                 true
             }
             OperationState::ToolLoop(state) => {
-                if let ToolLoopPhase::Executing(exec) = &state.phase
+                let ToolLoopState { batch, phase } = *state;
+                if let ToolLoopPhase::Executing(exec) = &phase
                     && let Some(handle) = &exec.abort_handle
                 {
                     handle.abort();
                 }
                 self.cancel_tool_batch(
-                    state.batch.assistant_text,
-                    state.batch.calls,
-                    state.batch.results,
-                    state.batch.model,
-                    state.batch.step_id,
-                    state.batch.batch_id,
+                    batch.assistant_text,
+                    batch.calls,
+                    batch.results,
+                    batch.model,
+                    batch.step_id,
+                    batch.batch_id,
+                    batch.turn,
                 );
-                self.set_status_warning("Tool execution cancelled");
+                self.push_notification("Tool execution cancelled");
                 true
             }
             OperationState::ToolRecovery(state) => {
                 self.commit_recovered_tool_batch(state, ToolRecoveryDecision::Discard);
                 true
             }
-            other => {
-                self.state = other;
-                self.set_status_warning("No active stream to cancel");
-                false
+            OperationState::Summarizing(state) => {
+                state.task.handle.abort();
+                self.push_notification("Summarization cancelled");
+                true
             }
+            OperationState::SummarizingWithQueued(state) => {
+                state.task.handle.abort();
+                self.rollback_pending_user_message();
+                self.push_notification("Summarization cancelled");
+                true
+            }
+            OperationState::SummarizationRetry(_) => {
+                self.push_notification("Summarization retry cancelled");
+                true
+            }
+            OperationState::SummarizationRetryWithQueued(_) => {
+                self.rollback_pending_user_message();
+                self.push_notification("Summarization retry cancelled");
+                true
+            }
+            OperationState::Idle => false,
         }
     }
 
@@ -201,23 +230,27 @@ impl super::App {
                 match state {
                     OperationState::Streaming(active) => {
                         active.abort_handle.abort();
+                        // Clean up tool batch if streaming had started tool calls
+                        if let Some(batch_id) = active.tool_batch_id {
+                            let _ = self.tool_journal.discard_batch(batch_id);
+                        }
                         let _ = active.journal.discard(&mut self.stream_journal);
                     }
                     OperationState::ToolLoop(state) => {
-                        if let ToolLoopPhase::Executing(exec) = &state.phase
+                        let ToolLoopState { batch, phase } = *state;
+                        if let ToolLoopPhase::Executing(exec) = &phase
                             && let Some(handle) = &exec.abort_handle
                         {
                             handle.abort();
                         }
-                        if state.batch.batch_id != 0 {
-                            let _ = self.tool_journal.discard_batch(state.batch.batch_id);
+                        if let Some(id) = batch.batch_id {
+                            let _ = self.tool_journal.discard_batch(id);
                         }
-                        self.discard_journal_step(state.batch.step_id);
+                        self.discard_journal_step(batch.step_id);
                     }
                     OperationState::ToolRecovery(state) => {
-                        if state.batch.batch_id != 0 {
-                            let _ = self.tool_journal.discard_batch(state.batch.batch_id);
-                        }
+                        // RecoveredToolBatch always has a valid batch_id from the journal
+                        let _ = self.tool_journal.discard_batch(state.batch.batch_id);
                         self.discard_journal_step(state.step_id);
                     }
                     OperationState::Summarizing(state) => {
@@ -233,15 +266,22 @@ impl super::App {
 
                 self.display.clear();
                 self.display_version = self.display_version.wrapping_add(1);
+                self.pending_user_message = None; // Clear pending message tracking
                 self.context_manager = ContextManager::new(self.model.as_str());
                 self.context_manager
                     .set_output_limit(self.output_limits.max_output_tokens());
                 self.invalidate_usage_cache();
                 self.autosave_history(); // Persist cleared state immediately
-                self.set_status_success("Conversation cleared");
+                self.push_notification("Conversation cleared");
                 self.view.clear_transcript = true;
             }
             Command::Model(model_arg) => {
+                if let Some(reason) = self.busy_reason() {
+                    self.push_notification(format!(
+                        "Cannot change model while {reason}. Cancel or wait for it to finish."
+                    ));
+                    return;
+                }
                 if let Some(model_name) = model_arg {
                     let provider = self.provider();
                     match provider.parse_model(model_name) {
@@ -252,13 +292,13 @@ impl super::App {
                                 ModelNameKind::Known => "",
                                 ModelNameKind::Unverified => " (unverified; limits may fallback)",
                             };
-                            self.set_status_success(format!(
+                            self.push_notification(format!(
                                 "Model set to: {}{}",
                                 self.model, suffix
                             ));
                         }
                         Err(e) => {
-                            self.set_status_error(format!("Invalid model: {e}"));
+                            self.push_notification(format!("Invalid model: {e}"));
                         }
                     }
                 } else {
@@ -268,6 +308,12 @@ impl super::App {
             }
             Command::Provider(provider_arg) => {
                 if let Some(provider_str) = provider_arg {
+                    if let Some(reason) = self.busy_reason() {
+                        self.push_notification(format!(
+                            "Cannot change provider while {reason}. Cancel or wait for it to finish."
+                        ));
+                        return;
+                    }
                     if let Some(provider) = Provider::parse(provider_str) {
                         self.set_provider(provider);
                         let has_key = self.current_api_key().is_some();
@@ -280,13 +326,9 @@ impl super::App {
                                 provider.env_var()
                             )
                         };
-                        if has_key {
-                            self.set_status_success(status);
-                        } else {
-                            self.set_status_warning(status);
-                        }
+                        self.push_notification(status);
                     } else {
-                        self.set_status_error(format!("Unknown provider: {provider_str}"));
+                        self.push_notification(format!("Unknown provider: {provider_str}"));
                     }
                 } else {
                     let provider = self.provider();
@@ -294,7 +336,7 @@ impl super::App {
                         .iter()
                         .map(forge_types::Provider::as_str)
                         .collect();
-                    self.set_status(format!(
+                    self.push_notification(format!(
                         "Current: {} ({}) │ Providers: {} │ Models: {}",
                         provider.display_name(),
                         self.model,
@@ -349,7 +391,7 @@ impl super::App {
                         )
                     })
                 };
-                self.set_status(format!(
+                self.push_notification(format!(
                     "ContextInfinity: {} │ Context: {remaining:.0}% left │ Used: {} │ Budget(effective): {} │ Window(raw): {} │ Max output: {} │ Model: {} │ Limits: {}{}",
                     context_flag,
                     format_k(usage.used_tokens),
@@ -371,7 +413,7 @@ impl super::App {
                     } else {
                         "idle"
                     };
-                    self.set_status(format!(
+                    self.push_notification(format!(
                         "Journal: {} │ Total: {} │ Sealed: {} │ Unsealed: {} │ Steps: {}",
                         state_desc,
                         stats.total_entries,
@@ -381,19 +423,19 @@ impl super::App {
                     ));
                 }
                 Err(e) => {
-                    self.set_status_error(format!("Journal error: {e}"));
+                    self.push_notification(format!("Journal error: {e}"));
                 }
             },
             Command::Summarize => {
                 if self.context_infinity_enabled() {
-                    self.set_status("Summarizing older messages...");
+                    self.push_notification("Summarizing older messages...");
                     let result = self.start_summarization_with_attempt(None, 1);
                     if matches!(result, SummarizationStart::NotNeeded) {
-                        self.set_status("No messages need summarization");
+                        self.push_notification("No messages need summarization");
                     }
                     // If Failed, start_summarization_with_attempt already set status
                 } else {
-                    self.set_status_warning("ContextInfinity disabled: summarization unavailable");
+                    self.push_notification("ContextInfinity disabled: summarization unavailable");
                 }
             }
             Command::Cancel => {
@@ -404,14 +446,14 @@ impl super::App {
             }
             Command::Tools => {
                 if self.tool_definitions.is_empty() {
-                    self.set_status_warning("No tools configured. Add tools to config.toml");
+                    self.push_notification("No tools configured. Add tools to config.toml");
                 } else {
                     let tools_list: Vec<&str> = self
                         .tool_definitions
                         .iter()
                         .map(|t| t.name.as_str())
                         .collect();
-                    self.set_status(format!(
+                    self.push_notification(format!(
                         "Tools ({}): {}",
                         self.tool_definitions.len(),
                         tools_list.join(", ")
@@ -419,10 +461,11 @@ impl super::App {
                 }
             }
             Command::Help => {
-                self.set_status(command_help_summary());
+                // TODO: Make this a modal
+                self.push_notification(command_help_summary());
             }
             Command::Unknown(cmd) => {
-                self.set_status_warning(format!("Unknown command: {cmd}"));
+                self.push_notification(format!("Unknown command: {cmd}"));
             }
             Command::Empty => {}
         }

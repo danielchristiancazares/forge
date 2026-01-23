@@ -3,6 +3,7 @@
 pub mod builtins;
 pub mod git;
 pub mod lp1;
+pub mod recall;
 pub mod sandbox;
 pub mod search;
 pub mod shell;
@@ -15,11 +16,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use forge_context::Librarian;
 use forge_types::{ToolDefinition, ToolResult, sanitize_terminal_text};
 use jsonschema::JSONSchema;
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 
+use crate::input_modes::ChangeRecorder;
 use sandbox::Sandbox;
 pub use search::SearchToolConfig;
 pub use shell::DetectedShell;
@@ -268,7 +271,10 @@ pub struct ToolCtx {
     pub allow_truncation: bool,
     pub working_dir: PathBuf,
     pub env_sanitizer: EnvSanitizer,
-    pub file_cache: Arc<tokio::sync::Mutex<ToolFileCache>>,
+    pub file_cache: Arc<Mutex<ToolFileCache>>,
+    pub turn_changes: ChangeRecorder,
+    /// The Librarian for fact recall (Context Infinity).
+    pub librarian: Option<Arc<Mutex<Librarian>>>,
 }
 
 /// Shared batch-level tool context.

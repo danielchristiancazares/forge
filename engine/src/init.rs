@@ -17,8 +17,9 @@ use crate::state::{DataDir, DataDirSource, OperationState};
 use crate::tools::{self, builtins};
 use crate::ui::InputState;
 use crate::{
-    App, ContextManager, OpenAIReasoningEffort, OpenAIRequestOptions, OpenAITextVerbosity,
-    OpenAITruncation, StreamJournal, SystemPrompts, ToolJournal, UiOptions, ViewState,
+    App, ContextManager, Librarian, OpenAIReasoningEffort, OpenAIRequestOptions,
+    OpenAITextVerbosity, OpenAITruncation, StreamJournal, SystemPrompts, ToolJournal, UiOptions,
+    ViewState,
 };
 
 // Tool limit defaults
@@ -242,6 +243,30 @@ impl App {
 
         let data_dir = Self::data_dir();
 
+        // Initialize Librarian for Context Infinity (if enabled and Gemini API key available)
+        let librarian = if context_infinity_enabled {
+            if let Some(gemini_key) = api_keys.get(&Provider::Gemini).cloned() {
+                let librarian_path = data_dir.join("librarian.db");
+                match Librarian::open(&librarian_path, gemini_key) {
+                    Ok(lib) => {
+                        tracing::info!("Librarian initialized with {} facts", lib.fact_count());
+                        Some(std::sync::Arc::new(tokio::sync::Mutex::new(lib)))
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to initialize Librarian: {e}");
+                        None
+                    }
+                }
+            } else {
+                tracing::info!(
+                    "Context Infinity enabled but no Gemini API key - Librarian disabled"
+                );
+                None
+            }
+        } else {
+            None
+        };
+
         Self::ensure_secure_dir(&data_dir.path)?;
 
         // Initialize stream journal (required for streaming durability).
@@ -303,9 +328,9 @@ impl App {
             tool_iterations: 0,
             history_load_warning_shown: false,
             autosave_warning_shown: false,
-            empty_send_warning_shown: false,
             gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             gemini_cache_config,
+            librarian,
         };
 
         app.clamp_output_limits_to_model();
@@ -326,17 +351,11 @@ impl App {
                     format!("Couldn't read {path} ({source}). Using defaults.")
                 }
             };
-            app.set_status_warning(message);
+            app.push_notification(message);
         }
 
-        if app.view.status_message.is_none() && app.current_api_key().is_some() {
-            let provider = app.provider().display_name();
-            app.set_status_success(format!("API key detected for {provider}"));
-        }
-        if app.view.status_message.is_none()
-            && matches!(app.data_dir.source, DataDirSource::Fallback)
-        {
-            app.set_status_warning(format!(
+        if matches!(app.data_dir.source, DataDirSource::Fallback) {
+            app.push_notification(format!(
                 "Using fallback data dir: {}",
                 app.data_dir.path.display()
             ));

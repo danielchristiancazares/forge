@@ -11,17 +11,18 @@ use tokio::sync::mpsc;
 mod ui;
 use ui::InputState;
 pub use ui::{
-    DisplayItem, InputMode, ModalEffect, ModalEffectKind, PredefinedModel, ScrollState, StatusKind,
-    UiOptions, ViewState,
+    DisplayItem, InputMode, ModalEffect, ModalEffectKind, PredefinedModel, ScrollState, UiOptions,
+    ViewState,
 };
 
 // Re-export from crates for public API
 pub use forge_context::{
     ActiveJournal, ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus,
-    FullHistory, MessageId, ModelLimits, ModelLimitsSource, ModelRegistry, PendingSummarization,
-    PreparedContext, RecoveredStream, RecoveredToolBatch, StreamJournal, SummarizationNeeded,
-    SummarizationScope, TokenCounter, ToolBatchId, ToolJournal, generate_summary,
-    summarization_model,
+    ExtractionResult, Fact, FactType, FullHistory, Librarian, MessageId, ModelLimits,
+    ModelLimitsSource, ModelRegistry, PendingSummarization, PreparedContext, RecoveredStream,
+    RecoveredToolBatch, RetrievalResult, StreamJournal, SummarizationNeeded, SummarizationScope,
+    TokenCounter, ToolBatchId, ToolJournal, extract_facts, format_facts_for_context,
+    generate_summary, retrieve_relevant, summarization_model,
 };
 pub use forge_providers::{self, ApiConfig, gemini::GeminiCache, gemini::GeminiCacheConfig};
 pub use forge_types::{
@@ -72,7 +73,6 @@ pub const DEFAULT_STREAM_EVENT_BUDGET: usize = 512;
 pub use state::SummarizationTask;
 
 // Internal state imports
-use errors::format_stream_error;
 use state::{
     ActiveStream, DataDir, OperationState, SummarizationRetry, SummarizationRetryState,
     SummarizationRetryWithQueuedState, SummarizationStart, SummarizationState,
@@ -92,6 +92,7 @@ struct ToolCallAccumulator {
     id: String,
     name: String,
     arguments_json: String,
+    thought_signature: Option<String>,
     args_exceeded: bool,
 }
 
@@ -158,11 +159,16 @@ impl StreamingMessage {
                 // Silently consume thinking content - not displayed for now
                 None
             }
-            StreamEvent::ToolCallStart { id, name, .. } => {
+            StreamEvent::ToolCallStart {
+                id,
+                name,
+                thought_signature,
+            } => {
                 self.tool_calls.push(ToolCallAccumulator {
                     id,
                     name,
                     arguments_json: String::new(),
+                    thought_signature,
                     args_exceeded: false,
                 });
                 None
@@ -206,25 +212,32 @@ impl StreamingMessage {
                     acc.name.clone(),
                     "Tool arguments exceeded maximum size",
                 ));
-                calls.push(ToolCall::new(
+                calls.push(ToolCall::new_with_thought_signature(
                     acc.id,
                     acc.name,
                     serde_json::Value::Object(serde_json::Map::new()),
+                    acc.thought_signature,
                 ));
                 continue;
             }
 
             if acc.arguments_json.trim().is_empty() {
-                calls.push(ToolCall::new(
+                calls.push(ToolCall::new_with_thought_signature(
                     acc.id,
                     acc.name,
                     serde_json::Value::Object(serde_json::Map::new()),
+                    acc.thought_signature,
                 ));
                 continue;
             }
 
             match serde_json::from_str(&acc.arguments_json) {
-                Ok(arguments) => calls.push(ToolCall::new(acc.id, acc.name, arguments)),
+                Ok(arguments) => calls.push(ToolCall::new_with_thought_signature(
+                    acc.id,
+                    acc.name,
+                    arguments,
+                    acc.thought_signature,
+                )),
                 Err(e) => {
                     tracing::warn!(
                         "Failed to parse tool call arguments for '{}': {}",
@@ -236,10 +249,11 @@ impl StreamingMessage {
                         acc.name.clone(),
                         "Invalid tool arguments JSON",
                     ));
-                    calls.push(ToolCall::new(
+                    calls.push(ToolCall::new_with_thought_signature(
                         acc.id,
                         acc.name,
                         serde_json::Value::Object(serde_json::Map::new()),
+                        acc.thought_signature,
                     ));
                 }
             }
@@ -351,13 +365,15 @@ pub struct App {
     history_load_warning_shown: bool,
     /// Whether we've already warned about autosave failures.
     autosave_warning_shown: bool,
-    /// Whether we've already warned about empty sends.
-    empty_send_warning_shown: bool,
     /// Active Gemini cache (if caching enabled and cache created).
     /// Uses Arc<Mutex> because cache is created/updated inside async streaming tasks.
     gemini_cache: std::sync::Arc<tokio::sync::Mutex<Option<GeminiCache>>>,
     /// Gemini cache configuration.
     gemini_cache_config: GeminiCacheConfig,
+    /// The Librarian for fact extraction and retrieval (Context Infinity).
+    /// Uses Arc<Mutex> because it's accessed from async tasks for extraction.
+    /// None if context_infinity is disabled or no Gemini API key.
+    librarian: Option<std::sync::Arc<tokio::sync::Mutex<Librarian>>>,
 }
 
 impl App {
@@ -382,14 +398,6 @@ impl App {
     /// Check if a transcript clear was requested and clear the flag.
     pub fn take_clear_transcript(&mut self) -> bool {
         std::mem::take(&mut self.view.clear_transcript)
-    }
-
-    pub fn status_message(&self) -> Option<&str> {
-        self.view.status_message.as_deref()
-    }
-
-    pub fn status_kind(&self) -> StatusKind {
-        self.view.status_kind
     }
 
     pub fn ui_options(&self) -> UiOptions {
@@ -460,6 +468,26 @@ impl App {
         }
     }
 
+    /// Drain the list of files accessed during tool execution.
+    ///
+    /// This clears the file cache and returns the paths of all accessed files.
+    /// Used for linking extracted facts to their source files.
+    #[allow(dead_code)] // WIP: will be wired up for librarian extraction
+    fn drain_accessed_files(&self) -> Vec<String> {
+        if let Ok(mut cache) = self.tool_file_cache.try_lock() {
+            let paths: Vec<String> = cache
+                .keys()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+            cache.clear();
+            paths
+        } else {
+            // Cache is locked by tool execution - skip this time
+            tracing::debug!("File cache locked, skipping source tracking");
+            Vec::new()
+        }
+    }
+
     pub fn tool_approval_requests(&self) -> Option<&[tools::ConfirmationRequest]> {
         match &self.state {
             OperationState::ToolLoop(state) => match &state.phase {
@@ -525,7 +553,12 @@ impl App {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.display.is_empty()
+        // Check if there are no History items (real conversation content)
+        // Local items (notifications) don't count towards "empty"
+        !self
+            .display
+            .iter()
+            .any(|item| matches!(item, DisplayItem::History(_)))
             && !matches!(
                 self.state,
                 OperationState::Streaming(_)
@@ -635,11 +668,11 @@ impl App {
         }
 
         if truncated {
-            self.set_status_warning(
+            self.push_notification(
                 "ContextInfinity disabled: truncating history to fit model budget",
             );
         } else if oversize {
-            self.set_status_error("ContextInfinity disabled: last message exceeds model budget");
+            self.push_notification("ContextInfinity disabled: last message exceeds model budget");
         }
 
         selected_rev.reverse();
@@ -738,7 +771,7 @@ impl App {
                 new_budget,
                 needs_summarization: true,
             } => {
-                self.set_status_warning(format!(
+                self.push_notification(format!(
                     "Context budget shrank {}k → {}k; summarizing...",
                     old_budget / 1000,
                     new_budget / 1000
@@ -753,7 +786,7 @@ impl App {
                 if can_restore > 0 {
                     let restored = self.context_manager.try_restore_messages();
                     if restored > 0 {
-                        self.set_status_success(format!(
+                        self.push_notification(format!(
                             "Context budget expanded {}k → {}k; restored {} messages",
                             old_budget / 1000,
                             new_budget / 1000,
@@ -788,32 +821,6 @@ impl App {
 
     pub fn clear_modal_effect(&mut self) {
         self.view.modal_effect = None;
-    }
-
-    pub fn set_status(&mut self, message: impl Into<String>) {
-        self.set_status_kind(StatusKind::Info, message);
-    }
-
-    pub fn clear_status(&mut self) {
-        self.view.status_message = None;
-        self.view.status_kind = StatusKind::Info;
-    }
-
-    pub fn set_status_kind(&mut self, kind: StatusKind, message: impl Into<String>) {
-        self.view.status_message = Some(message.into());
-        self.view.status_kind = kind;
-    }
-
-    pub fn set_status_success(&mut self, message: impl Into<String>) {
-        self.set_status_kind(StatusKind::Success, message);
-    }
-
-    pub fn set_status_warning(&mut self, message: impl Into<String>) {
-        self.set_status_kind(StatusKind::Warning, message);
-    }
-
-    pub fn set_status_error(&mut self, message: impl Into<String>) {
-        self.set_status_kind(StatusKind::Error, message);
     }
 
     pub fn input_mode(&self) -> InputMode {
@@ -909,7 +916,7 @@ impl App {
         };
         let model = predefined.to_model_name();
         self.set_model(model);
-        self.set_status_success(format!("Model set to: {}", predefined.display_name()));
+        self.push_notification(format!("Model set to: {}", predefined.display_name()));
         self.enter_normal_mode();
     }
 

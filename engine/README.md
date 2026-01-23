@@ -81,7 +81,8 @@ engine/
     │   ├── sandbox.rs          # Sandbox path resolution and enforcement
     │   ├── search.rs           # Search tool (ugrep/ripgrep backend)
     │   ├── shell.rs            # Shell detection and command execution
-    │   └── webfetch.rs         # WebFetch tool for URL fetching
+    │   ├── webfetch.rs         # WebFetch tool for URL fetching
+    │   └── recall.rs           # Recall tool for Context Infinity fact queries
     └── ui/
         ├── mod.rs              # UI types re-exports
         ├── display.rs          # DisplayItem enum
@@ -89,7 +90,7 @@ engine/
         ├── modal.rs            # ModalEffect animations
         ├── model_select.rs     # PredefinedModel enum
         ├── scroll.rs           # ScrollState tracking
-        └── view_state.rs       # ViewState, StatusKind for UI state
+        └── view_state.rs       # ViewState, UiOptions for UI state
 ```
 
 ### Dependencies
@@ -153,7 +154,7 @@ The `OperationState` enum tracks the current async operation status. Each varian
 pub(crate) enum OperationState {
     Idle,                                           // Ready for new operations
     Streaming(ActiveStream),                        // API response in progress
-    ToolLoop(ToolLoopState),                        // Tool execution in progress (approval + execution)
+    ToolLoop(Box<ToolLoopState>),                   // Tool execution in progress (approval + execution)
     ToolRecovery(ToolRecoveryState),                // Crash recovery: pending user decision
     Summarizing(SummarizationState),                // Background summarization
     SummarizingWithQueued(SummarizingWithQueuedState), // Summarizing + pending request
@@ -448,15 +449,21 @@ impl<'a> InsertMode<'a> {
 #[derive(Debug)]
 pub struct QueuedUserMessage {
     config: ApiConfig,
+    turn: TurnContext,
 }
 ```
 
 This type proves:
 
 1. The draft text was validated as non-empty
+
 2. An API key is available for the current provider
+
 3. The `ApiConfig` was successfully constructed
-4. The user message was added to history
+
+4. A turn context was created for per-turn change tracking
+
+5. The user message was added to history
 
 Only `InsertMode::queue_message()` can create this type, ensuring all preconditions are met.
 
@@ -644,7 +651,7 @@ let api_messages = match self.context_manager.prepare() {
         return;
     }
     Err(ContextBuildError::RecentMessagesTooLarge { .. }) => {
-        self.set_status("Recent messages exceed budget");
+        self.push_notification("Recent messages exceed budget");
         return;
     }
 };
@@ -675,13 +682,13 @@ fn handle_context_adaptation(&mut self) {
     match adaptation {
         ContextAdaptation::NoChange => {}
         ContextAdaptation::Shrinking { needs_summarization: true, .. } => {
-            self.set_status("Context budget shrank; summarizing...");
+            self.push_notification("Context budget shrank; summarizing...");
             self.start_summarization();
         }
         ContextAdaptation::Expanding { can_restore, .. } => {
             if can_restore > 0 {
                 let restored = self.context_manager.try_restore_messages();
-                self.set_status(format!("Restored {} messages", restored));
+                self.push_notification(format!("Restored {} messages", restored));
             }
         }
         _ => {}
@@ -821,6 +828,7 @@ max_tool_iterations_per_user_turn = 4
 [tools.approval]
 mode = "enabled"           # disabled | parse_only | enabled
 ```
+
 max_tool_args_bytes = 262144
 
 [tools.sandbox]
@@ -856,6 +864,7 @@ name = "custom_tool"
 description = "A custom tool"
 [tools.definitions.parameters]
 type = "object"
+
 ```
 
 ### Configuration Precedence
@@ -896,13 +905,19 @@ impl ToolRegistry {
 All tools implement the `ToolExecutor` trait:
 
 ```rust
-pub trait ToolExecutor: Send + Sync + UnwindSafe {
+pub trait ToolExecutor: Send + Sync + std::panic::UnwindSafe {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn schema(&self) -> serde_json::Value;
     fn is_side_effecting(&self) -> bool;
     fn requires_approval(&self) -> bool { false }
-    fn risk_level(&self) -> RiskLevel { ... }
+    fn risk_level(&self) -> RiskLevel {
+        if self.is_side_effecting() {
+            RiskLevel::Medium
+        } else {
+            RiskLevel::Low
+        }
+    }
     fn approval_summary(&self, args: &Value) -> Result<String, ToolError>;
     fn timeout(&self) -> Option<Duration> { None }
     fn execute<'a>(&'a self, args: Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
@@ -922,6 +937,7 @@ pub trait ToolExecutor: Send + Sync + UnwindSafe {
 | `Glob` | Find files matching glob patterns | No |
 | `Search` | Search file contents with regex (aliases: `search`, `rg`, `ripgrep`, `ugrep`, `ug`) | No |
 | `WebFetch` | Fetch and parse web page content | No |
+| `recall` | Query Librarian fact store for past context (Context Infinity) | No |
 
 #### Git Tools
 
@@ -945,21 +961,19 @@ The approval system provides three modes:
 
 ```rust
 pub enum ApprovalMode {
-    Auto,     // Execute without asking
-    Prompt,   // Ask user for each tool call
-    Deny,     // Reject all tool calls
+    Permissive,  // Auto-approve most tools, only prompt for high-risk
+    Default,     // Prompt for side-effecting tools unless allowlisted
+    Strict,      // Deny all tools unless explicitly allowlisted
 }
 ```
 
-Approval configuration:
+Approval policy:
 
 ```rust
-pub struct ApprovalConfig {
-    pub enabled: bool,
+pub struct Policy {
     pub mode: ApprovalMode,
-    pub allowlist: Vec<String>,      // Tools that skip approval
-    pub denylist: Vec<String>,       // Tools always denied
-    pub prompt_side_effects: bool,   // Prompt only for side-effect tools
+    pub allowlist: HashSet<String>,  // Tools that skip approval
+    pub denylist: HashSet<String>,   // Tools always denied
 }
 ```
 
@@ -977,6 +991,7 @@ pub struct SandboxConfig {
 ```
 
 Default denied patterns:
+
 - `**/.git/**` - Git internals
 - `**/node_modules/**` - Node dependencies
 - `**/.env*` - Environment files
@@ -1121,16 +1136,10 @@ pub enum DisplayItem {
 }
 ```
 
-#### `StatusKind`
+#### Notifications
 
-```rust
-pub enum StatusKind {
-    Normal,   // Standard status message
-    Error,    // Error status (red)
-    Success,  // Success status (green)
-    Warning,  // Warning status (yellow)
-}
-```
+Notifications are local system messages pushed with `push_notification()`. They render
+in the content pane and are not sent to the model.
 
 #### `PredefinedModel`
 
@@ -1162,7 +1171,6 @@ let progress = effect.progress();     // 0.0 to 1.0
 let finished = effect.is_finished();
 let kind = effect.kind();
 ```
-
 
 ### App Lifecycle
 
@@ -1255,27 +1263,28 @@ let kind = effect.kind();
 1. **Add command variant to `Command` enum** (`engine/src/commands.rs`):
 
 ```rust
-pub(crate) enum Command {
+// Command uses a lifetime parameter for efficiency (borrows from input)
+pub(crate) enum Command<'a> {
     // ... existing commands ...
-    MyCommand(Option<String>),
+    MyCommand(Option<&'a str>),
 }
 
-impl Command {
-    pub fn parse(raw: &str) -> Self {
+impl<'a> Command<'a> {
+    pub fn parse(raw: &'a str) -> Self {
         let parts: Vec<&str> = raw.split_whitespace().collect();
         match parts.first().copied() {
             // ... existing matches ...
             Some("mycommand" | "mc") => {
-                Command::MyCommand(parts.get(1).map(|s| s.to_string()))
+                Command::MyCommand(parts.get(1).copied())
             }
-            Some(cmd) => Command::Unknown(cmd.to_string()),
-            None => Command::Unknown(String::new()),
+            Some(cmd) => Command::Unknown(cmd),
+            None => Command::Empty,
         }
     }
 }
 ```
 
-2. **Handle command in `process_command()`** (`engine/src/lib.rs`):
+1. **Handle command in `process_command()`** (`engine/src/lib.rs`):
 
 ```rust
 pub fn process_command(&mut self, command: EnteredCommand) {
@@ -1283,20 +1292,20 @@ pub fn process_command(&mut self, command: EnteredCommand) {
         // ... existing handlers ...
         Command::MyCommand(arg) => {
             if let Some(value) = arg {
-                self.set_status(format!("MyCommand executed with: {value}"));
+                self.push_notification(format!("MyCommand executed with: {value}"));
             } else {
-                self.set_status("Usage: :mycommand <arg>");
+                self.push_notification("Usage: :mycommand <arg>");
             }
         }
     }
 }
 ```
 
-3. **Update help text**:
+1. **Update help text**:
 
 ```rust
 Command::Help => {
-    self.set_status(
+    self.push_notification(
         "Commands: /q(uit), /clear, /mycommand, ..."  // Add new command
     );
 }
@@ -1316,7 +1325,7 @@ pub(crate) enum InputState {
 }
 ```
 
-2. **Add mode enum variant** (`engine/src/input_modes.rs`):
+1. **Add mode enum variant** (`engine/src/input_modes.rs`):
 
 ```rust
 pub enum InputMode {
@@ -1328,7 +1337,7 @@ pub enum InputMode {
 }
 ```
 
-3. **Add transition method**:
+1. **Add transition method**:
 
 ```rust
 impl InputState {
@@ -1352,7 +1361,7 @@ impl App {
 }
 ```
 
-4. **Add proof token pattern** (optional):
+1. **Add proof token pattern** (optional):
 
 ```rust
 pub struct MyModeToken(());
@@ -1378,7 +1387,7 @@ impl<'a> MyMode<'a> {
 }
 ```
 
-5. **Handle in TUI input handler** (`tui/src/input.rs`):
+1. **Handle in TUI input handler** (`tui/src/input.rs`):
 
 ```rust
 pub async fn handle_events(app: &mut App) -> Result<bool> {
@@ -1426,9 +1435,9 @@ impl Provider {
 }
 ```
 
-2. **Add API client** (`providers/src/my_provider.rs`)
+1. **Add API client** (`providers/src/my_provider.rs`)
 
-3. **Update config structure** (`engine/src/config.rs`):
+2. **Update config structure** (`engine/src/config.rs`):
 
 ```rust
 pub struct ApiKeys {
@@ -1438,7 +1447,7 @@ pub struct ApiKeys {
 }
 ```
 
-4. **Update key loading in `App::new()`** (`engine/src/init.rs`)
+1. **Update key loading in `App::new()`** (`engine/src/init.rs`)
 
 ### Adding a New Built-in Tool
 
@@ -1486,19 +1495,13 @@ impl ToolExecutor for MyTool {
 }
 ```
 
-2. **Register in `register_builtins()`** (`engine/src/tools/builtins.rs`):
+1. **Register in `App::new()`** (`engine/src/init.rs`):
+
+Tool registration occurs during application initialization. Add your tool to the registry setup in `init.rs`:
 
 ```rust
-pub fn register_builtins(
-    registry: &mut ToolRegistry,
-    // ... existing parameters ...
-) -> Result<(), ToolError> {
-    registry.register(Box::new(ReadFileTool::new(read_limits)))?;
-    registry.register(Box::new(ApplyPatchTool::new(patch_limits)))?;
-    // ... existing tools ...
-    registry.register(Box::new(MyTool))?;  // New tool
-    Ok(())
-}
+// In App::new() initialization
+registry.register(Box::new(MyTool))?;
 ```
 
 ### Adding a New Async Operation State
@@ -1515,7 +1518,7 @@ pub(crate) enum OperationState {
 }
 ```
 
-2. **Add state transition guards**:
+1. **Add state transition guards**:
 
 ```rust
 pub fn start_my_operation(&mut self) {
@@ -1525,13 +1528,13 @@ pub fn start_my_operation(&mut self) {
             self.state = OperationState::MyOperation(state);
         }
         _ => {
-            self.set_status("Cannot start: busy with other operation");
+            self.push_notification("Cannot start: busy with other operation");
         }
     }
 }
 ```
 
-3. **Add polling in `tick()`**:
+1. **Add polling in `tick()`**:
 
 ```rust
 pub fn tick(&mut self) {
@@ -1594,20 +1597,23 @@ The engine re-exports commonly needed types from its dependencies:
 The engine formats API errors with context-aware messages:
 
 ```rust
-fn format_stream_error(provider: Provider, model: &str, err: &str) -> StreamErrorUi {
+fn format_stream_error(provider: Provider, model: &str, err: &str) -> NonEmptyString {
     // Detects auth errors and provides actionable guidance
     if is_auth_error(&extracted) {
-        return StreamErrorUi {
-            status: format!("Auth error: set {env_var}"),
-            message: format!("Fix: Set {} (env) or add to config.toml", env_var),
-        };
+        return NonEmptyString::new(format!(
+            "[Stream error]\n\n{} authentication failed for model {}.",
+            provider.display_name(),
+            model
+        ))
+        .unwrap();
     }
 
     // Generic error formatting with truncation
-    StreamErrorUi {
-        status: truncate_with_ellipsis(&detail, 80),
-        message: format!("Request failed. Details: {}", detail),
-    }
+    NonEmptyString::new(format!(
+        "[Stream error]\n\nRequest failed. Details: {}",
+        detail
+    ))
+    .unwrap()
 }
 ```
 

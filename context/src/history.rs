@@ -11,6 +11,8 @@ use std::time::SystemTime;
 
 use forge_types::{Message, NonEmptyString};
 
+use crate::StepId;
+
 /// Unique identifier for a message in history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MessageId(u64);
@@ -59,7 +61,7 @@ pub enum HistoryEntry {
         token_count: u32,
         created_at: SystemTime,
         /// Stream journal step ID for crash recovery linkage (assistant messages only)
-        stream_step_id: Option<i64>,
+        stream_step_id: Option<StepId>,
     },
     Summarized {
         id: MessageId,
@@ -68,7 +70,7 @@ pub enum HistoryEntry {
         summary_id: SummaryId,
         created_at: SystemTime,
         /// Stream journal step ID for crash recovery linkage (assistant messages only)
-        stream_step_id: Option<i64>,
+        stream_step_id: Option<StepId>,
     },
 }
 
@@ -82,7 +84,7 @@ struct HistoryEntrySerde {
     created_at: SystemTime,
     /// Stream journal step ID for crash recovery linkage
     #[serde(default)]
-    stream_step_id: Option<i64>,
+    stream_step_id: Option<StepId>,
 }
 
 impl From<&HistoryEntry> for HistoryEntrySerde {
@@ -192,7 +194,7 @@ impl HistoryEntry {
         id: MessageId,
         message: Message,
         token_count: u32,
-        stream_step_id: i64,
+        stream_step_id: StepId,
     ) -> Self {
         HistoryEntry::Original {
             id,
@@ -237,7 +239,7 @@ impl HistoryEntry {
 
     /// Get the stream journal step ID if this entry was created from a stream.
     #[must_use]
-    pub fn stream_step_id(&self) -> Option<i64> {
+    pub fn stream_step_id(&self) -> Option<StepId> {
         match self {
             HistoryEntry::Original { stream_step_id, .. }
             | HistoryEntry::Summarized { stream_step_id, .. } => *stream_step_id,
@@ -514,7 +516,7 @@ impl FullHistory {
         &mut self,
         message: Message,
         token_count: u32,
-        stream_step_id: i64,
+        stream_step_id: StepId,
     ) -> MessageId {
         let id = MessageId::new(self.next_message_id);
         self.next_message_id += 1;
@@ -532,7 +534,7 @@ impl FullHistory {
     /// Used for idempotent crash recovery - if history already contains
     /// an entry with this `step_id`, we should not recover it again.
     #[must_use]
-    pub fn has_step_id(&self, step_id: i64) -> bool {
+    pub fn has_step_id(&self, step_id: StepId) -> bool {
         self.entries
             .iter()
             .any(|e| e.stream_step_id() == Some(step_id))

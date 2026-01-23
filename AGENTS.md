@@ -186,7 +186,7 @@ pub(crate) enum OperationState {
     Idle,
     Streaming(ActiveStream),
     AwaitingToolResults(PendingToolExecution),
-    ToolLoop(ToolLoopState),
+    ToolLoop(Box<ToolLoopState>),
     ToolRecovery(ToolRecoveryState),
     Summarizing(SummarizationState),
     SummarizingWithQueued(SummarizationWithQueuedState),
@@ -205,7 +205,7 @@ Tool calls are streamed as `StreamEvent::ToolCallStart`/`ToolCallDelta` and accu
 
 - `ToolsMode::Disabled`: emit error results and commit immediately.
 - `ToolsMode::ParseOnly`: enter `OperationState::AwaitingToolResults(PendingToolExecution)` and wait for `/tool ...` results via `submit_tool_result()`.
-- `ToolsMode::Enabled`: enter `OperationState::ToolLoop(ToolLoopState)`:
+- `ToolsMode::Enabled`: enter `OperationState::ToolLoop(Box<ToolLoopState>)`:
   - `ToolLoopPhase::AwaitingApproval(ApprovalState)` when approvals are required.
   - `ToolLoopPhase::Executing(ActiveToolExecution)` while tools run.
 
@@ -251,7 +251,7 @@ queue_message() → start_streaming() → process_stream_events() → finish_str
 pub enum StreamEvent {
     TextDelta(String),      // Content chunk - persisted
     ThinkingDelta(String),  // Reasoning content - NOT persisted, not displayed
-    ToolCallStart { id: String, name: String }, // Tool call started (recorded to tool journal)
+    ToolCallStart { id: String, name: String, thought_signature: Option<String> }, // Tool call started (recorded to tool journal)
     ToolCallDelta { id: String, arguments: String }, // Tool call args chunk (recorded to tool journal)
     Done,                   // Stream completed - persisted
     Error(String),          // Stream failed - persisted

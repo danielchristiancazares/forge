@@ -7,17 +7,19 @@ pub mod markdown;
 mod shared;
 mod theme;
 mod tool_display;
+mod tool_result_summary;
 mod ui_inline;
 
 pub use effects::apply_modal_effect;
 pub use input::handle_events;
 pub use theme::{Glyphs, Palette, glyphs, palette, spinner_frame, styles};
 pub use ui_inline::{
-    INLINE_INPUT_HEIGHT, INLINE_MODEL_SELECTOR_HEIGHT, INLINE_VIEWPORT_HEIGHT, InlineOutput,
-    clear_inline_viewport, draw as draw_inline, inline_viewport_height,
+    INLINE_INPUT_HEIGHT, INLINE_VIEWPORT_HEIGHT, InlineOutput, clear_inline_viewport,
+    draw as draw_inline, inline_viewport_height,
 };
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use ratatui::{
     Frame,
@@ -33,8 +35,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use forge_engine::{
-    App, ContextUsageStatus, DisplayItem, InputMode, Message, PredefinedModel, Provider,
-    StatusKind, UiOptions, command_specs,
+    App, ContextUsageStatus, DisplayItem, InputMode, Message, PredefinedModel, Provider, UiOptions,
+    command_specs,
 };
 use forge_types::{ToolResult, sanitize_terminal_text};
 
@@ -43,8 +45,9 @@ pub use self::markdown::clear_render_cache;
 use self::markdown::render_markdown;
 use self::shared::{
     ToolCallStatus, ToolCallStatusKind, collect_approval_view, collect_tool_statuses,
-    message_header_parts, wrapped_line_rows,
+    message_header_parts, provider_color, wrapped_line_count_exact, wrapped_line_rows,
 };
+use self::tool_result_summary::{ToolCallMeta, ToolResultRender, tool_result_render_decision};
 
 /// Cache for rendered message lines to avoid rebuilding every frame.
 /// Stores static (history/local) content keyed by display + UI options.
@@ -53,7 +56,6 @@ struct MessageLinesCache {
     /// Cache is valid only when key matches.
     key: MessageCacheKey,
     lines: Vec<Line<'static>>,
-    row_counts: Vec<usize>,
     total_rows: usize,
 }
 
@@ -67,30 +69,22 @@ struct MessageCacheKey {
 }
 
 impl MessageLinesCache {
-    fn get(&self, key: MessageCacheKey) -> Option<(&[Line<'static>], &[usize], usize)> {
+    fn get(&self, key: MessageCacheKey) -> Option<(&[Line<'static>], usize)> {
         if self.key == key && !self.lines.is_empty() {
-            Some((&self.lines, &self.row_counts, self.total_rows))
+            Some((&self.lines, self.total_rows))
         } else {
             None
         }
     }
 
-    fn set(
-        &mut self,
-        key: MessageCacheKey,
-        lines: Vec<Line<'static>>,
-        row_counts: Vec<usize>,
-        total_rows: usize,
-    ) {
+    fn set(&mut self, key: MessageCacheKey, lines: Vec<Line<'static>>, total_rows: usize) {
         self.key = key;
         self.lines = lines;
-        self.row_counts = row_counts;
         self.total_rows = total_rows;
     }
 
     fn invalidate(&mut self) {
         self.lines.clear();
-        self.row_counts.clear();
         self.total_rows = 0;
     }
 }
@@ -125,22 +119,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         _ => 5,
     };
 
-    let status_height = u16::from(app.status_message().is_some());
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Min(1),                // Messages
-            Constraint::Length(status_height), // Status
-            Constraint::Length(input_height),  // Input
+            Constraint::Min(1),               // Messages
+            Constraint::Length(input_height), // Input
         ])
         .split(frame.area());
 
     draw_messages(frame, app, chunks[0], &palette, &glyphs);
-    if status_height > 0 {
-        draw_status(frame, app, chunks[1], &palette);
-    }
-    draw_input(frame, app, chunks[2], &palette, &glyphs);
+    draw_input(frame, app, chunks[1], &palette, &glyphs, false);
 
     // Draw command palette if in command mode
     if app.input_mode() == InputMode::Command {
@@ -191,29 +180,26 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
     let static_message_count = app.display_items().len();
 
     // Always cache static content; dynamic sections are appended each frame.
-    let (mut lines, mut line_rows, mut total_rows) = MESSAGE_CACHE.with(|cache| {
+    let (mut lines, mut total_rows) = MESSAGE_CACHE.with(|cache| {
         let cache_ref = cache.borrow();
-        if let Some((cached_lines, cached_rows, cached_total)) = cache_ref.get(cache_key) {
+        if let Some((cached_lines, cached_total)) = cache_ref.get(cache_key) {
             // Cache hit - clone the cached data
             let lines = cached_lines.to_vec();
-            let line_rows = cached_rows.to_vec();
-            return (lines, line_rows, cached_total);
+            return (lines, cached_total);
         }
         drop(cache_ref);
 
         // Cache miss - build lines
-        let (lines, line_rows, total_rows) = build_message_lines(app, palette, glyphs, cache_width);
+        let (lines, total_rows) = build_message_lines(app, palette, glyphs, cache_width);
 
         // Update cache
-        cache
-            .borrow_mut()
-            .set(cache_key, lines.clone(), line_rows.clone(), total_rows);
+        cache.borrow_mut().set(cache_key, lines.clone(), total_rows);
 
-        (lines, line_rows, total_rows)
+        (lines, total_rows)
     });
 
     if has_dynamic {
-        let (dynamic_lines, dynamic_rows, dynamic_total) = build_dynamic_message_lines(
+        let (dynamic_lines, dynamic_total) = build_dynamic_message_lines(
             app,
             palette,
             glyphs,
@@ -223,7 +209,6 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
         );
         if !dynamic_lines.is_empty() {
             lines.extend(dynamic_lines);
-            line_rows.extend(dynamic_rows);
             total_rows = total_rows.saturating_add(dynamic_total);
         }
     }
@@ -231,7 +216,6 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
     // Add trailing blank line for visual padding at bottom of content.
     if !lines.is_empty() {
         lines.push(Line::from(""));
-        line_rows.push(1);
         total_rows = total_rows.saturating_add(1);
     }
 
@@ -240,16 +224,18 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
 
     // Ratatui scroll offsets are u16; trim oldest rows if content exceeds that range.
     if total_rows > max_rows {
+        let line_rows = wrapped_line_rows(&lines, cache_width);
         let mut drop_count = 0;
-        while total_rows > max_rows && drop_count < line_rows.len() {
-            total_rows = total_rows.saturating_sub(line_rows[drop_count]);
+        let mut trimmed_rows = total_rows;
+        while trimmed_rows > max_rows && drop_count < line_rows.len() {
+            trimmed_rows = trimmed_rows.saturating_sub(line_rows[drop_count]);
             drop_count += 1;
         }
 
         if drop_count > 0 {
             lines.drain(0..drop_count);
-            line_rows.drain(0..drop_count);
         }
+        total_rows = trimmed_rows;
     }
 
     let visible_height = inner.height as usize;
@@ -296,22 +282,32 @@ fn build_message_lines(
     palette: &Palette,
     glyphs: &Glyphs,
     width: u16,
-) -> (Vec<Line<'static>>, Vec<usize>, usize) {
+) -> (Vec<Line<'static>>, usize) {
     let mut lines: Vec<Line> = Vec::new();
     let mut msg_count = 0;
+    let mut tool_calls: HashMap<&str, ToolCallMeta> = HashMap::new();
 
     for item in app.display_items() {
         let msg = match item {
             DisplayItem::History(id) => app.history().get_entry(*id).message(),
             DisplayItem::Local(msg) => msg,
         };
-        render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs);
+        match msg {
+            Message::ToolUse(call) => {
+                tool_calls.insert(call.id.as_str(), ToolCallMeta::from_call(call));
+                render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs, None);
+            }
+            Message::ToolResult(result) => {
+                let meta = tool_calls.get(result.tool_call_id.as_str());
+                render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs, meta);
+            }
+            _ => render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs, None),
+        }
     }
 
-    let line_rows = wrapped_line_rows(&lines, width);
-    let total_rows: usize = line_rows.iter().sum();
+    let total_rows = wrapped_line_count_exact(&lines, width);
 
-    (lines, line_rows, total_rows)
+    (lines, total_rows)
 }
 
 /// Build message lines for dynamic content (streaming, tool status).
@@ -323,51 +319,58 @@ fn build_dynamic_message_lines(
     width: u16,
     static_message_count: usize,
     tool_statuses: Option<&[ToolCallStatus]>,
-) -> (Vec<Line<'static>>, Vec<usize>, usize) {
+) -> (Vec<Line<'static>>, usize) {
     let mut lines: Vec<Line> = Vec::new();
     let has_static = static_message_count > 0;
 
     // Render streaming message if present
     if let Some(streaming) = app.streaming() {
+        // Single blank line separator (reduced from 2)
         if has_static {
             lines.push(Line::from(""));
-            lines.push(Line::from(""));
         }
 
-        let (icon, name, name_style) = (
-            glyphs.assistant,
-            streaming.provider().display_name(),
-            styles::assistant_name(palette),
-        );
+        let icon = glyphs.assistant;
+        let provider = streaming.provider();
+        let color = provider_color(provider, palette);
+        let name_style = Style::default().fg(color);
         let is_empty = streaming.content().is_empty();
-        let mut header_spans = vec![
-            Span::styled(format!(" {icon} "), name_style),
-            Span::styled(name, name_style),
-        ];
-        if !is_empty {
-            let spinner = spinner_frame(app.tick_count(), app.ui_options());
-            header_spans.push(Span::styled(
-                format!("  {spinner} streaming"),
-                Style::default()
-                    .fg(palette.text_muted)
-                    .add_modifier(Modifier::ITALIC),
-            ));
-        }
-        lines.push(Line::from(header_spans));
-        lines.push(Line::from(""));
 
         if is_empty {
+            // Show thinking spinner inline with icon
             let spinner = spinner_frame(app.tick_count(), app.ui_options());
             lines.push(Line::from(vec![
-                Span::raw("    "),
+                Span::styled(format!(" {icon} "), name_style),
                 Span::styled(spinner, Style::default().fg(palette.primary)),
                 Span::styled(" Thinking...", Style::default().fg(palette.text_muted)),
             ]));
         } else {
+            // Inline content with icon and streaming indicator
             let content_style = Style::default().fg(palette.text_secondary);
             let content = sanitize_terminal_text(streaming.content());
-            let rendered = render_markdown(content.as_ref(), content_style, palette);
-            lines.extend(rendered);
+            let mut rendered = render_markdown(content.as_ref(), content_style, palette);
+
+            if rendered.is_empty() {
+                lines.push(Line::from(vec![Span::styled(
+                    format!(" {icon} "),
+                    name_style,
+                )]));
+            } else {
+                // Add streaming indicator to first line
+                let spinner = spinner_frame(app.tick_count(), app.ui_options());
+                let first_line = &mut rendered[0];
+                if !first_line.spans.is_empty() && first_line.spans[0].content == "    " {
+                    first_line.spans.remove(0);
+                }
+                first_line
+                    .spans
+                    .insert(0, Span::styled(format!(" {icon} "), name_style));
+                first_line.spans.push(Span::styled(
+                    format!(" {spinner}"),
+                    Style::default().fg(palette.text_muted),
+                ));
+                lines.extend(rendered);
+            }
         }
     }
 
@@ -470,10 +473,9 @@ fn build_dynamic_message_lines(
         }
     }
 
-    let line_rows = wrapped_line_rows(&lines, width);
-    let total_rows: usize = line_rows.iter().sum();
+    let total_rows = wrapped_line_count_exact(&lines, width);
 
-    (lines, line_rows, total_rows)
+    (lines, total_rows)
 }
 
 /// Render a single message to lines (static helper for both cached and uncached paths).
@@ -483,10 +485,11 @@ fn render_message_static(
     msg_count: &mut usize,
     palette: &Palette,
     glyphs: &Glyphs,
+    tool_call_meta: Option<&ToolCallMeta>,
 ) {
-    // Add spacing between messages (except first)
-    if *msg_count > 0 {
-        lines.push(Line::from(""));
+    // Single blank line between messages, but not before tool results (they attach to their call)
+    let is_tool_result = matches!(msg, Message::ToolResult(_));
+    if *msg_count > 0 && !is_tool_result {
         lines.push(Line::from(""));
     }
     *msg_count += 1;
@@ -494,72 +497,104 @@ fn render_message_static(
     // Message header with role icon and name
     let (icon, name, name_style) = message_header_parts(msg, palette, glyphs);
 
-    let header_line = Line::from(vec![
-        Span::styled(format!(" {icon} "), name_style),
-        Span::styled(name, name_style),
-    ]);
-    lines.push(header_line);
-    lines.push(Line::from("")); // Space after header
-
-    // Message content - render based on type
     match msg {
+        Message::User(_) => {
+            let content_style = Style::default().fg(palette.text_primary);
+            let content = sanitize_terminal_text(msg.content());
+            let mut rendered = render_markdown(content.as_ref(), content_style, palette);
+
+            if rendered.is_empty() {
+                lines.push(Line::from(vec![Span::styled(
+                    format!(" {icon} "),
+                    name_style,
+                )]));
+            } else {
+                // Inline icon with first line, reduce indent
+                let first_line = &mut rendered[0];
+                if !first_line.spans.is_empty() && first_line.spans[0].content == "    " {
+                    first_line.spans.remove(0);
+                }
+                first_line
+                    .spans
+                    .insert(0, Span::styled(format!(" {icon} "), name_style));
+                lines.extend(rendered);
+            }
+        }
         Message::ToolUse(_) => {
-            // Compact format: args are in the header line, no body needed
+            // Tool call: icon + compact name (args already in name)
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {icon} "), name_style),
+                Span::styled(name, name_style),
+            ]));
         }
         Message::ToolResult(result) => {
-            // Render result content with diff-aware coloring
-            let content_style = if result.is_error {
-                Style::default().fg(palette.error)
-            } else {
-                Style::default().fg(palette.text_secondary)
-            };
             let content = sanitize_terminal_text(&result.content);
-            lines.extend(render_tool_result_lines(
-                content.as_ref(),
-                content_style,
-                palette,
-                "  ",
-            ));
+
+            match tool_result_render_decision(tool_call_meta, &content, result.is_error, 80) {
+                ToolResultRender::Full { diff_aware } => {
+                    let content_style = if result.is_error {
+                        Style::default().fg(palette.error)
+                    } else {
+                        Style::default().fg(palette.text_secondary)
+                    };
+                    if diff_aware {
+                        lines.extend(render_tool_result_lines(
+                            content.as_ref(),
+                            content_style,
+                            palette,
+                            "  ",
+                        ));
+                    } else {
+                        // Plain full output (no diff coloring)
+                        for line in content.lines() {
+                            lines.push(Line::from(vec![
+                                Span::raw("  "),
+                                Span::styled(line.to_string(), content_style),
+                            ]));
+                        }
+                    }
+                }
+                ToolResultRender::Summary(summary) => {
+                    let style = if result.is_error {
+                        Style::default().fg(palette.error)
+                    } else {
+                        Style::default().fg(palette.text_muted)
+                    };
+                    let connector = glyphs.tree_connector;
+                    lines.push(Line::from(vec![
+                        Span::styled(format!(" {connector} "), style),
+                        Span::styled(summary, style),
+                    ]));
+                }
+            }
         }
-        _ => {
-            // Regular messages - render as markdown
+        Message::System(_) | Message::Assistant(_) => {
+            // Inline content with icon (no separate header line)
             let content_style = match msg {
-                Message::User(_) => Style::default().fg(palette.text_primary),
                 Message::Assistant(_) => Style::default().fg(palette.text_secondary),
                 _ => Style::default().fg(palette.text_muted),
             };
             let content = sanitize_terminal_text(msg.content());
-            let rendered = render_markdown(content.as_ref(), content_style, palette);
-            lines.extend(rendered);
+            let mut rendered = render_markdown(content.as_ref(), content_style, palette);
+
+            if rendered.is_empty() {
+                lines.push(Line::from(vec![Span::styled(
+                    format!(" {icon} "),
+                    name_style,
+                )]));
+            } else {
+                // Inline icon with first line
+                let first_line = &mut rendered[0];
+                if !first_line.spans.is_empty() && first_line.spans[0].content == "    " {
+                    first_line.spans.remove(0);
+                }
+                first_line
+                    .spans
+                    .insert(0, Span::styled(format!(" {icon} "), name_style));
+                lines.extend(rendered);
+            }
         }
     }
-}
-
-fn draw_status(frame: &mut Frame, app: &App, area: Rect, palette: &Palette) {
-    let Some(message) = app.status_message() else {
-        return;
-    };
-    let message = sanitize_terminal_text(message).replace('\n', " ");
-    let (label, color) = match app.status_kind() {
-        StatusKind::Info => ("INFO", palette.primary),
-        StatusKind::Success => ("OK", palette.success),
-        StatusKind::Warning => ("WARN", palette.warning),
-        StatusKind::Error => ("ERR", palette.error),
-    };
-    let base_style = Style::default().bg(palette.bg_panel);
-    let label_style = base_style.fg(color).add_modifier(Modifier::BOLD);
-    let message_style = base_style.fg(palette.text_primary);
-    let line = Line::from(vec![
-        Span::styled(format!(" {label} "), label_style),
-        Span::styled(message, message_style),
-    ]);
-    frame.render_widget(Block::default().style(base_style), area);
-    frame.render_widget(
-        Paragraph::new(line)
-            .alignment(Alignment::Left)
-            .wrap(Wrap { trim: true }),
-        area,
-    );
 }
 
 pub(crate) fn draw_input(
@@ -568,8 +603,16 @@ pub(crate) fn draw_input(
     area: Rect,
     palette: &Palette,
     glyphs: &Glyphs,
+    inline_mode: bool,
 ) {
     let mode = app.input_mode();
+
+    // In inline mode, ModelSelect transforms the input area entirely
+    if inline_mode && mode == InputMode::ModelSelect {
+        draw_inline_model_selector(frame, app, area, palette, glyphs);
+        return;
+    }
+
     let options = app.ui_options();
     // Clone command text to avoid borrow conflict with mutable context_usage_status()
     let (command_line, command_cursor_byte_index) = if mode == InputMode::Command {
@@ -980,6 +1023,116 @@ fn draw_command_palette(frame: &mut Frame, app: &App, palette: &Palette) {
     );
 
     frame.render_widget(palette, palette_area);
+}
+
+/// Draws the model selector inline, replacing the input area (inline mode only).
+fn draw_inline_model_selector(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    palette: &Palette,
+    glyphs: &Glyphs,
+) {
+    let selected_index = app.model_select_index().unwrap_or(0);
+    let models = PredefinedModel::all();
+
+    // Build model list lines
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, model) in models.iter().enumerate() {
+        let is_selected = i == selected_index;
+        let marker = if is_selected { glyphs.selected } else { " " };
+        let num = i + 1;
+
+        let style = if is_selected {
+            Style::default()
+                .fg(palette.text_primary)
+                .bg(palette.bg_highlight)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(palette.text_secondary)
+        };
+
+        lines.push(Line::from(vec![Span::styled(
+            format!(" {marker} {num}  {}", model.display_name()),
+            style,
+        )]));
+    }
+
+    // Build keybindings for top-right title
+    let keybindings = Line::from(vec![
+        Span::styled("↑↓", styles::key_highlight(palette)),
+        Span::styled(" select  ", styles::key_hint(palette)),
+        Span::styled("1-9", styles::key_highlight(palette)),
+        Span::styled(" pick  ", styles::key_hint(palette)),
+        Span::styled("Enter", styles::key_highlight(palette)),
+        Span::styled(" confirm  ", styles::key_hint(palette)),
+        Span::styled("Esc", styles::key_highlight(palette)),
+        Span::styled(" cancel ", styles::key_hint(palette)),
+    ]);
+
+    // Model info for bottom-left (same as draw_input)
+    let (model_text, model_style) = if app.is_loading() {
+        let spinner = spinner_frame(app.tick_count(), app.ui_options());
+        (
+            format!("{spinner} {}", app.model()),
+            Style::default().fg(palette.primary),
+        )
+    } else if app.current_api_key().is_some() {
+        (
+            format!("{} {}", glyphs.status_ready, app.model()),
+            Style::default().fg(palette.success),
+        )
+    } else {
+        (
+            format!("{} No API key", glyphs.status_missing),
+            Style::default().fg(palette.error),
+        )
+    };
+
+    // Context usage for bottom-right (same as draw_input)
+    let usage_status = app.context_usage_status();
+    let (usage, severity_override) = match &usage_status {
+        ContextUsageStatus::Ready(usage) => (usage, 0),
+        ContextUsageStatus::NeedsSummarization { usage, .. } => (usage, 1),
+        ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => (usage, 2),
+    };
+    let pct = usage.percentage();
+    let remaining = (100.0 - pct).clamp(0.0, 100.0);
+    let base_usage = format!("Context {remaining:.0}% left");
+    let usage_str = match severity_override {
+        2 => format!("{base_usage} !!"),
+        1 => format!("{base_usage} !"),
+        _ => base_usage,
+    };
+    let usage_color = match severity_override {
+        1 | 2 => palette.red,
+        _ => match usage.severity() {
+            0 => palette.green,
+            1 => palette.yellow,
+            _ => palette.red,
+        },
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette.primary))
+        .title_top(Line::from(vec![Span::styled(
+            " MODEL ",
+            styles::mode_model(palette),
+        )]))
+        .title_top(keybindings.alignment(Alignment::Right))
+        .title_bottom(Line::from(vec![Span::styled(model_text, model_style)]))
+        .title_bottom(
+            Line::from(vec![Span::styled(
+                usage_str,
+                Style::default().fg(usage_color),
+            )])
+            .alignment(Alignment::Right),
+        );
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
 }
 
 pub fn draw_model_selector(frame: &mut Frame, app: &mut App, palette: &Palette, glyphs: &Glyphs) {

@@ -116,7 +116,7 @@ The codebase enforces correctness through types (see `docs/DESIGN.md`):
 
 Adding a provider: extend `Provider` enum, implement all match arms, add module in `providers/src/`.
 
-## Context Infinity (`context/`)
+## Context Infinity™ (`context/`)
 
 Adaptive context management with automatic summarization:
 

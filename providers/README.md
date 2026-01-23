@@ -100,7 +100,7 @@ providers/
 │   │   CacheableMessage[] ───────────────────────────────────────────►   │   │
 │   │   OutputLimits ─────────────────────────────────────────────────►   │   │
 │   │   system_prompt ────────────────────────────────────────────────►   │   │
-│   │   on_event callback ────────────────────────────────────────────►   │   │
+│   │   stream event sender ──────────────────────────────────────────►   │   │
 │   └─────────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
@@ -140,7 +140,7 @@ providers/
                                                  │
                                                  ▼
                                     ┌─────────────────────────┐
-                                    │     on_event(event)     │
+                                    │      tx.send(event)     │
                                     │                         │
                                     │  StreamEvent::TextDelta │
                                     │  StreamEvent::ThinkingDelta │
@@ -192,17 +192,17 @@ pub async fn send_message(
     system_prompt: Option<&str>,
     tools: Option<&[ToolDefinition]>,
     gemini_cache: Option<&gemini::GeminiCache>,
-    on_event: impl Fn(StreamEvent) + Send + 'static,
+    tx: mpsc::Sender<StreamEvent>,
 ) -> Result<()> {
     match config.provider() {
         Provider::Claude => {
-            claude::send_message(config, messages, limits, system_prompt, tools, on_event).await
+            claude::send_message(config, messages, limits, system_prompt, tools, tx).await
         }
         Provider::OpenAI => {
-            openai::send_message(config, messages, limits, system_prompt, tools, on_event).await
+            openai::send_message(config, messages, limits, system_prompt, tools, tx).await
         }
         Provider::Gemini => {
-            gemini::send_message(config, messages, limits, system_prompt, tools, gemini_cache, on_event).await
+            gemini::send_message(config, messages, limits, system_prompt, tools, gemini_cache, tx).await
         }
     }
 }
@@ -398,13 +398,13 @@ The `process_sse_stream` function handles all common SSE logic:
 async fn process_sse_stream<P: SseParser>(
     response: reqwest::Response,
     parser: &mut P,
-    on_event: impl Fn(StreamEvent),
+    tx: &mpsc::Sender<StreamEvent>,
 ) -> Result<()>
 ```
 
 This function manages:
 
-- Stream timeout handling (idle timeout triggers error)
+- Stream timeout handling (idle timeout triggers error; override via `FORGE_STREAM_IDLE_TIMEOUT_SECS`)
 - Buffer management with 4 MiB size limit
 - UTF-8 validation
 - Event boundary detection (`\n\n` and `\r\n\r\n`)
@@ -453,7 +453,7 @@ All providers emit events through a unified `StreamEvent` enum:
 pub enum StreamEvent {
     TextDelta(String),                           // Text content chunk
     ThinkingDelta(String),                       // Claude extended thinking chunk
-    ToolCallStart { id: String, name: String },  // Tool call started
+    ToolCallStart { id: String, name: String, thought_signature: Option<String> },  // Tool call started
     ToolCallDelta { id: String, arguments: String }, // Tool call arguments chunk
     Done,                                        // Stream completed successfully
     Error(String),                               // Stream failed with error
@@ -555,12 +555,12 @@ if json["type"] == "content_block_delta" {
         match delta_type {
             "text_delta" => {
                 if let Some(text) = json["delta"]["text"].as_str() {
-                    on_event(StreamEvent::TextDelta(text.to_string()));
+                    let _ = tx.send(StreamEvent::TextDelta(text.to_string())).await;
                 }
             }
             "thinking_delta" => {
                 if let Some(thinking) = json["delta"]["thinking"].as_str() {
-                    on_event(StreamEvent::ThinkingDelta(thinking.to_string()));
+                    let _ = tx.send(StreamEvent::ThinkingDelta(thinking.to_string())).await;
                 }
             }
             "input_json_delta" => {
@@ -568,10 +568,11 @@ if json["type"] == "content_block_delta" {
                 if let Some(json_chunk) = json["delta"]["partial_json"].as_str()
                     && let Some(ref id) = current_tool_id
                 {
-                    on_event(StreamEvent::ToolCallDelta {
+                    let _ = tx.send(StreamEvent::ToolCallDelta {
                         id: id.clone(),
                         arguments: json_chunk.to_string(),
-                    });
+                    })
+                    .await;
                 }
             }
             _ => {}
@@ -698,17 +699,17 @@ match json["type"].as_str().unwrap_or("") {
     "response.output_text.delta" => {
         if let Some(delta) = json["delta"].as_str() {
             saw_delta = true;
-            on_event(StreamEvent::TextDelta(delta.to_string()));
+            let _ = tx.send(StreamEvent::TextDelta(delta.to_string())).await;
         }
     }
     "response.completed" => {
-        on_event(StreamEvent::Done);
+        let _ = tx.send(StreamEvent::Done).await;
         return Ok(());
     }
     "response.incomplete" => {
         let reason = extract_incomplete_reason(&json)
             .unwrap_or_else(|| "Response incomplete".to_string());
-        on_event(StreamEvent::Error(reason));
+        let _ = tx.send(StreamEvent::Error(reason)).await;
         return Ok(());
     }
     // ...
@@ -761,7 +762,9 @@ if !response.status().is_success() {
         .text()
         .await
         .unwrap_or_else(|e| format!("<failed to read error body: {e}>"));
-    on_event(StreamEvent::Error(format!("API error {}: {}", status, error_text)));
+    let _ = tx
+        .send(StreamEvent::Error(format!("API error {}: {}", status, error_text)))
+        .await;
     return Ok(());
 }
 ```
@@ -774,9 +777,11 @@ UTF-8 decoding errors terminate the stream gracefully:
 let event = match std::str::from_utf8(&event) {
     Ok(event) => event,
     Err(_) => {
-        on_event(StreamEvent::Error(
-            "Received invalid UTF-8 from SSE stream".to_string(),
-        ));
+        let _ = tx
+            .send(StreamEvent::Error(
+                "Received invalid UTF-8 from SSE stream".to_string(),
+            ))
+            .await;
         return Ok(());
     }
 };
@@ -784,12 +789,12 @@ let event = match std::str::from_utf8(&event) {
 
 ### Error Propagation Pattern
 
-The providers use a callback-based error pattern rather than Result types for streaming errors:
+The providers use a channel-based error pattern rather than Result types for streaming errors:
 
 ```rust
 // Errors during streaming are delivered as events
-on_event(StreamEvent::Error(error_message));
-return Ok(()); // Function succeeds, error is communicated via callback
+let _ = tx.send(StreamEvent::Error(error_message)).await;
+return Ok(()); // Function succeeds, error is communicated via channel
 
 // Only return Err for unrecoverable failures (network errors, etc.)
 let chunk = chunk?; // This propagates network errors
@@ -870,10 +875,10 @@ Gemini SSE events follow the `streamGenerateContent` response format:
 /// * `limits` - Output token limits (with optional thinking budget)
 /// * `system_prompt` - Optional system prompt to inject
 /// * `tools` - Optional tool definitions for function calling
-/// * `on_event` - Callback for streaming events
+/// * `tx` - Channel sender for streaming events
 ///
 /// # Returns
-/// `Ok(())` on completion (success or error delivered via callback)
+/// `Ok(())` on completion (success or error delivered via channel)
 /// `Err(...)` only for unrecoverable failures (network errors)
 pub async fn send_message(
     config: &ApiConfig,
@@ -882,7 +887,7 @@ pub async fn send_message(
     system_prompt: Option<&str>,
     tools: Option<&[ToolDefinition]>,
     gemini_cache: Option<&gemini::GeminiCache>,
-    on_event: impl Fn(StreamEvent) + Send + 'static,
+    tx: mpsc::Sender<StreamEvent>,
 ) -> Result<()>
 ```
 
@@ -1081,7 +1086,7 @@ API errors are delivered through the `StreamEvent::Error` variant rather than as
 ### Thread Safety
 
 - `ApiConfig` is `Clone + Send + Sync`
-- The `on_event` callback must be `Send + 'static` for cross-task delivery
+- The stream event sender must be `Send + 'static` for cross-task delivery
 - A shared static HTTP client (`http_client()`) is reused across all requests for connection pooling efficiency
 
 ### Testing
@@ -1288,7 +1293,7 @@ pub mod your_provider {
         messages: &[CacheableMessage],
         limits: OutputLimits,
         system_prompt: Option<&str>,
-        on_event: impl Fn(StreamEvent) + Send + 'static,
+        tx: mpsc::Sender<StreamEvent>,
     ) -> Result<()> {
         let client = http_client();
 
@@ -1305,13 +1310,15 @@ pub mod your_provider {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = read_capped_error_body(response).await;
-            on_event(StreamEvent::Error(format!("API error {}: {}", status, error_text)));
+            let _ = tx
+                .send(StreamEvent::Error(format!("API error {}: {}", status, error_text)))
+                .await;
             return Ok(());
         }
 
         // Use shared SSE stream processor with provider-specific parser
         let mut parser = YourProviderParser;
-        process_sse_stream(response, &mut parser, on_event).await
+        process_sse_stream(response, &mut parser, &tx).await
     }
 }
 ```
@@ -1324,17 +1331,17 @@ pub async fn send_message(
     messages: &[CacheableMessage],
     limits: OutputLimits,
     system_prompt: Option<&str>,
-    on_event: impl Fn(StreamEvent) + Send + 'static,
+    tx: mpsc::Sender<StreamEvent>,
 ) -> Result<()> {
     match config.provider() {
         Provider::Claude => {
-            claude::send_message(config, messages, limits, system_prompt, on_event).await
+            claude::send_message(config, messages, limits, system_prompt, tx).await
         }
         Provider::OpenAI => {
-            openai::send_message(config, messages, limits, system_prompt, on_event).await
+            openai::send_message(config, messages, limits, system_prompt, tx).await
         }
         Provider::YourProvider => {
-            your_provider::send_message(config, messages, limits, system_prompt, on_event).await
+            your_provider::send_message(config, messages, limits, system_prompt, tx).await
         }
     }
 }
@@ -1505,7 +1512,11 @@ send_message(
     Some(&[read_file_tool]),
     None,
     |event| match event {
-        StreamEvent::ToolCallStart { id, name } => {
+        StreamEvent::ToolCallStart {
+            id,
+            name,
+            thought_signature: _,
+        } => {
             tool_call_id = id;
             println!("Tool call: {}", name);
         }
@@ -1564,7 +1575,7 @@ The `forge-providers` crate provides a robust, type-safe interface for LLM API c
 | :--- | :--- | :--- |
 | Provider Dispatch | Route to correct implementation | `match config.provider()` |
 | Type-Encoded Provider | Prevent key/model mismatches | `ApiKey::Claude(...)` |
-| Callback-Based Streaming | Deliver events without blocking | `on_event(StreamEvent::TextDelta(...))` |
+| Channel-Based Streaming | Deliver events without blocking | `tx.send(StreamEvent::TextDelta(...))` |
 | Builder Pattern | Construct configs fluently | `ApiConfig::new(...).with_openai_options(...)` |
 
 ### Quick Reference
