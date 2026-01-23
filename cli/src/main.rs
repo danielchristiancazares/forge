@@ -38,11 +38,8 @@ impl UiMode {
     }
 }
 
-/// Result of running the app loop.
 enum RunResult {
-    /// User requested quit.
     Quit,
-    /// User requested to switch screen mode.
     SwitchMode,
 }
 
@@ -161,7 +158,6 @@ async fn main() -> Result<()> {
     loop {
         let run_result = {
             let mut session = TerminalSession::new(ui_mode)?;
-            // Session drops here, restoring terminal state
             match ui_mode {
                 UiMode::Full => run_app_full(&mut session.terminal, &mut app).await,
                 UiMode::Inline => run_app_inline(&mut session.terminal, &mut app).await,
@@ -171,7 +167,6 @@ async fn main() -> Result<()> {
         match run_result {
             Ok(RunResult::SwitchMode) => {
                 ui_mode = ui_mode.toggle();
-                // Continue loop with new mode
             }
             Ok(RunResult::Quit) => break,
             Err(err) => {
@@ -181,12 +176,10 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Save history before exit
     if let Err(e) = app.save_history() {
         eprintln!("Failed to save history: {e}");
     }
 
-    // Save session state (draft input + input history) before exit
     if let Err(e) = app.save_session() {
         eprintln!("Failed to save session: {e}");
     }

@@ -15,10 +15,6 @@ use std::borrow::Cow;
 use std::time::SystemTime;
 use thiserror::Error;
 
-// ============================================================================
-// NonEmpty String Types
-// ============================================================================
-
 /// A string guaranteed to be non-empty (after trimming).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -116,11 +112,6 @@ impl TryFrom<NonEmptyStaticStr> for NonEmptyString {
     }
 }
 
-// ============================================================================
-// Provider & Model Types
-// ============================================================================
-
-/// Supported LLM providers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum Provider {
     #[default]
@@ -321,10 +312,6 @@ impl std::fmt::Display for ModelName {
     }
 }
 
-// ============================================================================
-// API Key Types
-// ============================================================================
-
 /// Provider-scoped API key.
 ///
 /// This prevents the invalid state "`OpenAI` key used with Claude" from being representable.
@@ -365,10 +352,6 @@ impl ApiKey {
         }
     }
 }
-
-// ============================================================================
-// OpenAI Request Options
-// ============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OpenAIReasoningEffort {
@@ -507,10 +490,6 @@ impl Default for OpenAIRequestOptions {
     }
 }
 
-// ============================================================================
-// Caching & Output Limits
-// ============================================================================
-
 /// Hint for whether content should be cached by the provider.
 ///
 /// Different providers handle caching differently:
@@ -600,11 +579,6 @@ impl OutputLimits {
     }
 }
 
-// ============================================================================
-// Streaming Events
-// ============================================================================
-
-/// Streaming event from the API.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     /// Text content delta.
@@ -632,13 +606,6 @@ pub enum StreamFinishReason {
     Error(String),
 }
 
-// ============================================================================
-// Tool Calling Types
-// ============================================================================
-
-/// Definition of a tool that can be called by the LLM.
-///
-/// This follows the standard function calling schema used by Claude and `OpenAI`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
     /// The name of the tool (function name).
@@ -664,10 +631,6 @@ impl ToolDefinition {
     }
 }
 
-/// A tool call requested by the LLM.
-///
-/// Contains the tool ID (for matching with results), the tool name,
-/// and the arguments as a JSON value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     /// Unique identifier for this tool call (used to match results).
@@ -712,7 +675,6 @@ impl ToolCall {
     }
 }
 
-/// The result of executing a tool call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     /// The ID of the tool call this result is for.
@@ -754,10 +716,6 @@ impl ToolResult {
         }
     }
 }
-
-// ============================================================================
-// Message Types
-// ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemMessage {

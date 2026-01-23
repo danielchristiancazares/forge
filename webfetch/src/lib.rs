@@ -42,7 +42,6 @@ use cache::{Cache, CacheEntry, CacheResult, CacheWriteError};
 use resolved::{CachePolicy, ResolvedConfig, ResolvedRequest};
 use robots::RobotsResult;
 
-// Re-export public API
 pub use types::{
     BrowserConfig, ErrorCode, ErrorDetails, FetchChunk, HttpConfig, Note, RenderingMethod,
     RobotsConfig, SecurityConfig, TruncationReason, WebFetchConfig, WebFetchError, WebFetchInput,
@@ -86,27 +85,21 @@ pub async fn fetch(
         cache::RenderingMethod::Http
     };
 
-    // Step 1: Check cache (unless no_cache)
     if !request.no_cache
         && let Some(output) = check_cache(&request, &resolved, cache_lookup_method)?
     {
         return Ok(output);
     }
 
-    // Step 2: Validate URL for SSRF protection
     let resolved_ips = http::validate_url(&request.requested_url, &request.url, &resolved).await?;
 
-    // Step 3: Check robots.txt compliance
     check_robots(&request.url, &resolved, &mut notes).await?;
 
-    // Step 4: Fetch content (HTTP or browser)
     let (html, final_url, used_browser, dom_truncated, blocked_non_get, charset_fallback) =
         fetch_content(&request, &resolved, &resolved_ips, &mut notes).await?;
 
-    // Step 5: Extract markdown from HTML
     let extracted = extract::extract(&html, &final_url)?;
 
-    // Step 6: Chunk the content
     let chunks = chunk::chunk(&extracted.markdown, max_chunk_tokens);
 
     // Determine final rendering method
@@ -121,7 +114,6 @@ pub async fn fetch(
         cache_lookup_method
     };
 
-    // Step 7: Write to cache (non-fatal on failure)
     let mut fetched_at = cache::format_rfc3339(std::time::SystemTime::now());
     if let CachePolicy::Enabled(settings) = &resolved.cache {
         let cache_entry = CacheEntry::new(
@@ -152,7 +144,6 @@ pub async fn fetch(
     notes.sort_by_key(types::Note::order);
     notes.dedup();
 
-    // Build output
     Ok(WebFetchOutput {
         requested_url: request.requested_url,
         final_url: canonicalize_url(&final_url),
@@ -171,7 +162,6 @@ pub async fn fetch(
     })
 }
 
-/// Check cache for a hit and return output if found.
 fn check_cache(
     request: &ResolvedRequest,
     config: &ResolvedConfig,
@@ -215,7 +205,6 @@ fn check_cache(
     }
 }
 
-/// Check robots.txt and fail if disallowed.
 async fn check_robots(
     url: &url::Url,
     config: &ResolvedConfig,
@@ -238,9 +227,6 @@ async fn check_robots(
     }
 }
 
-/// Fetch content via HTTP or browser.
-///
-/// Returns: (html, `final_url`, `used_browser`, `dom_truncated`, `blocked_non_get`, `charset_fallback`)
 async fn fetch_content(
     input: &ResolvedRequest,
     config: &ResolvedConfig,
@@ -284,21 +270,18 @@ async fn fetch_content(
                 charset_fallback,
             ));
         }
-        // Browser failed, continue with HTTP response
     }
 
-    // HTTP response (no browser used)
     Ok((
         html,
         response.final_url,
         false,
-        false, // dom_truncated
-        false, // blocked_non_get
+        false,
+        false,
         charset_fallback,
     ))
 }
 
-/// Decode response body to string.
 fn decode_body(body: &[u8], charset: Option<&str>) -> Result<String, WebFetchError> {
     match charset {
         Some("utf-8" | "UTF-8") | None => String::from_utf8(body.to_vec()).map_err(|e| {
@@ -352,7 +335,6 @@ fn strip_html_tags(s: &str) -> String {
     result
 }
 
-/// Write entry to cache.
 fn write_to_cache(
     url: &url::Url,
     method: cache::RenderingMethod,
@@ -377,10 +359,7 @@ fn canonicalize_url(url: &url::Url) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_module_structure() {
-        // Verify modules compile
-    }
+    fn test_module_structure() {}
 
     #[test]
     fn test_canonicalize_url() {

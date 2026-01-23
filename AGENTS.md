@@ -31,6 +31,10 @@
   - `src/working_context.rs`: active context window
 - `providers/`: provider HTTP/SSE implementations
   - `src/lib.rs`: Claude/OpenAI clients + streaming
+- `webfetch/`: WebFetch tool implementation
+  - `src/lib.rs`: main fetch pipeline + public API
+  - `src/http.rs`: HTTP fetching + SSRF validation
+  - `src/browser.rs`: browser fallback
 - `types/`: shared domain types
   - `src/lib.rs`: Provider/ModelName/error types
 - `tests/`: integration suites + snapshot fixtures
@@ -56,6 +60,8 @@
 
 ## Additional Coding Guidelines
 
+- Use String::new() over "".to_string()
+- Use .map(ToString::to_string) over .map(|m| m.to_string())
 - Always collapse if statements per https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_if
 - Always inline format! args when possible per https://rust-lang.github.io/rust-clippy/master/index.html#uninlined_format_args
 - Use method references over closures when possible per https://rust-lang.github.io/rust-clippy/master/index.html#redundant_closure_for_method_calls
@@ -269,6 +275,7 @@ pub enum StreamEvent {
 | Add key binding | `handle_*_mode()` functions in `tui/src/input.rs` |
 | Add UI overlay | `draw_*` function in `tui/src/lib.rs`, call from `draw()` |
 | Add provider | `Provider` enum in `types/src/lib.rs`, client in `providers/src/` |
+| Modify WebFetch behavior | `webfetch/src/lib.rs` + module-specific file under `webfetch/src/` |
 | Change colors | `colors::` module in `tui/src/theme.rs` |
 | Change styles | `styles::` module in `tui/src/theme.rs` |
 | Add modal animation | `ModalEffect` in `engine/src/ui/modal.rs`, apply via `tui/src/effects.rs` |
@@ -279,6 +286,7 @@ pub enum StreamEvent {
 ---
 
 ## Common Patterns
+
 
 ### Sending a Message (from Insert Mode)
 

@@ -25,7 +25,6 @@ const MAX_SUMMARY_RATIO: f32 = 0.95;
 const MIN_SUMMARY_TOKENS: u32 = 64;
 const MAX_SUMMARY_TOKENS: u32 = 2048;
 
-/// Configuration for summarization behavior.
 #[derive(Debug, Clone)]
 pub struct SummarizationConfig {
     /// Target compression ratio (e.g., 0.15 = 15% of original size).
@@ -43,7 +42,6 @@ impl Default for SummarizationConfig {
     }
 }
 
-/// Error indicating context cannot be built within budget.
 #[derive(Debug)]
 pub enum ContextBuildError {
     /// Older messages need summarization to fit within budget.
@@ -57,7 +55,6 @@ pub enum ContextBuildError {
     },
 }
 
-/// Details about summarization needed to proceed.
 #[derive(Debug, Clone)]
 pub struct SummarizationNeeded {
     pub excess_tokens: u32,
@@ -65,14 +62,12 @@ pub struct SummarizationNeeded {
     pub suggestion: String,
 }
 
-/// A contiguous set of message IDs to summarize.
 #[derive(Debug, Clone)]
 pub struct SummarizationScope {
     ids: Vec<MessageId>,
     range: std::ops::Range<MessageId>,
 }
 
-/// Result of switching models.
 #[derive(Debug)]
 pub enum ContextAdaptation {
     /// No change in effective budget.
@@ -92,7 +87,6 @@ pub enum ContextAdaptation {
     },
 }
 
-/// Pending summarization request for async processing.
 #[derive(Debug)]
 pub struct PendingSummarization {
     pub scope: SummarizationScope,
@@ -101,7 +95,6 @@ pub struct PendingSummarization {
     pub target_tokens: u32,
 }
 
-/// Proof that a working context was successfully built.
 #[derive(Debug)]
 pub struct PreparedContext<'a> {
     manager: &'a ContextManager,
@@ -122,7 +115,6 @@ impl PreparedContext<'_> {
     }
 }
 
-/// Usage state for the current model.
 #[derive(Debug, Clone)]
 pub enum ContextUsageStatus {
     Ready(ContextUsage),
@@ -137,22 +129,14 @@ pub enum ContextUsageStatus {
     },
 }
 
-/// The main context manager.
 #[derive(Debug)]
 pub struct ContextManager {
-    /// Complete history - never discarded.
     history: FullHistory,
-    /// Token counter.
     counter: TokenCounter,
-    /// Model registry.
     registry: ModelRegistry,
-    /// Current model name.
     current_model: String,
-    /// Current model's limits.
     current_limits: ModelLimits,
-    /// Where the current limits came from.
     current_limits_source: ModelLimitsSource,
-    /// Summarization configuration.
     summarization_config: SummarizationConfig,
     /// Configured output limit (if set, allows more input context).
     configured_output_limit: Option<u32>,

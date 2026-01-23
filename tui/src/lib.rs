@@ -105,12 +105,10 @@ thread_local! {
     static MESSAGE_CACHE: RefCell<MessageLinesCache> = RefCell::new(MessageLinesCache::default());
 }
 
-/// Main draw function
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let options = app.ui_options();
     let palette = palette(options);
     let glyphs = glyphs(options);
-    // Clear with background color
     let bg_block = Block::default().style(Style::default().bg(palette.bg_dark));
     frame.render_widget(bg_block, frame.area());
 
@@ -122,21 +120,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
-        .constraints([
-            Constraint::Min(1),               // Messages
-            Constraint::Length(input_height), // Input
-        ])
+        .constraints([Constraint::Min(1), Constraint::Length(input_height)])
         .split(frame.area());
 
     draw_messages(frame, app, chunks[0], &palette, &glyphs);
     draw_input(frame, app, chunks[1], &palette, &glyphs, false);
 
-    // Draw command palette if in command mode
     if app.input_mode() == InputMode::Command {
         draw_command_palette(frame, app, &palette);
     }
 
-    // Draw model selector if in model select mode
     if app.input_mode() == InputMode::ModelSelect {
         draw_model_selector(frame, app, &palette, &glyphs);
     }
@@ -157,7 +150,6 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
         .border_style(Style::default().fg(palette.text_muted))
         .padding(Padding::horizontal(1));
 
-    // Show welcome screen if no messages
     if app.is_empty() {
         app.update_scroll_max(0);
         MESSAGE_CACHE.with(|cache| cache.borrow_mut().invalidate());
@@ -166,7 +158,6 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
         return;
     }
 
-    // Calculate inner area early for cache key
     let inner = messages_block.inner(area);
     let display_version = app.display_version();
     let options = app.ui_options();
@@ -179,7 +170,6 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
     let has_dynamic = is_streaming || has_tool_activity;
     let static_message_count = app.display_items().len();
 
-    // Always cache static content; dynamic sections are appended each frame.
     let (mut lines, mut total_rows) = MESSAGE_CACHE.with(|cache| {
         let cache_ref = cache.borrow();
         if let Some((cached_lines, cached_total)) = cache_ref.get(cache_key) {
@@ -189,10 +179,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
         }
         drop(cache_ref);
 
-        // Cache miss - build lines
         let (lines, total_rows) = build_message_lines(app, palette, glyphs, cache_width);
 
-        // Update cache
         cache.borrow_mut().set(cache_key, lines.clone(), total_rows);
 
         (lines, total_rows)
@@ -213,7 +201,6 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
         }
     }
 
-    // Add trailing blank line for visual padding at bottom of content.
     if !lines.is_empty() {
         lines.push(Line::from(""));
         total_rows = total_rows.saturating_add(1);
@@ -250,7 +237,6 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
 
     frame.render_widget(messages, area);
 
-    // Only render scrollbar when content exceeds viewport
     if max_scroll > 0 {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some(glyphs.arrow_up))
@@ -323,9 +309,7 @@ fn build_dynamic_message_lines(
     let mut lines: Vec<Line> = Vec::new();
     let has_static = static_message_count > 0;
 
-    // Render streaming message if present
     if let Some(streaming) = app.streaming() {
-        // Single blank line separator (reduced from 2)
         if has_static {
             lines.push(Line::from(""));
         }
@@ -356,7 +340,6 @@ fn build_dynamic_message_lines(
                     name_style,
                 )]));
             } else {
-                // Add streaming indicator to first line
                 let spinner = spinner_frame(app.tick_count(), app.ui_options());
                 let first_line = &mut rendered[0];
                 if !first_line.spans.is_empty() && first_line.spans[0].content == "    " {
@@ -374,7 +357,6 @@ fn build_dynamic_message_lines(
         }
     }
 
-    // Render tool statuses if present
     if let Some(statuses) = tool_statuses {
         if has_static || app.streaming().is_some() {
             lines.push(Line::from(""));
@@ -487,7 +469,6 @@ fn render_message_static(
     glyphs: &Glyphs,
     tool_call_meta: Option<&ToolCallMeta>,
 ) {
-    // Single blank line between messages, but not before tool results (they attach to their call)
     let is_tool_result = matches!(msg, Message::ToolResult(_));
     if *msg_count > 0 && !is_tool_result {
         lines.push(Line::from(""));
@@ -509,7 +490,6 @@ fn render_message_static(
                     name_style,
                 )]));
             } else {
-                // Inline icon with first line, reduce indent
                 let first_line = &mut rendered[0];
                 if !first_line.spans.is_empty() && first_line.spans[0].content == "    " {
                     first_line.spans.remove(0);
@@ -545,7 +525,6 @@ fn render_message_static(
                             "  ",
                         ));
                     } else {
-                        // Plain full output (no diff coloring)
                         for line in content.lines() {
                             lines.push(Line::from(vec![
                                 Span::raw("  "),
@@ -569,7 +548,6 @@ fn render_message_static(
             }
         }
         Message::System(_) | Message::Assistant(_) => {
-            // Inline content with icon (no separate header line)
             let content_style = match msg {
                 Message::Assistant(_) => Style::default().fg(palette.text_secondary),
                 _ => Style::default().fg(palette.text_muted),
@@ -583,7 +561,6 @@ fn render_message_static(
                     name_style,
                 )]));
             } else {
-                // Inline icon with first line
                 let first_line = &mut rendered[0];
                 if !first_line.spans.is_empty() && first_line.spans[0].content == "    " {
                     first_line.spans.remove(0);
@@ -902,7 +879,6 @@ pub(crate) fn draw_input(
         vec![Line::from(spans)]
     };
 
-    // Model info for bottom-left chrome
     let (model_text, model_style) = if app.is_loading() {
         let spinner = spinner_frame(app.tick_count(), app.ui_options());
         (
@@ -948,8 +924,6 @@ pub(crate) fn draw_input(
 
 fn draw_command_palette(frame: &mut Frame, app: &App, palette: &Palette) {
     let area = frame.area();
-
-    // Center the palette
     let palette_width = 50.min(area.width.saturating_sub(4));
     let palette_height = 14;
 
@@ -960,7 +934,6 @@ fn draw_command_palette(frame: &mut Frame, app: &App, palette: &Palette) {
         height: palette_height,
     };
 
-    // Clear background
     frame.render_widget(Clear, palette_area);
 
     let filter_raw = app.command_text().unwrap_or("").trim();
@@ -1038,7 +1011,6 @@ fn draw_inline_model_selector(
     let selected_index = app.model_select_index().unwrap_or(0);
     let models = PredefinedModel::all();
 
-    // Build model list lines
     let mut lines: Vec<Line> = Vec::new();
     for (i, model) in models.iter().enumerate() {
         let is_selected = i == selected_index;
@@ -1060,7 +1032,6 @@ fn draw_inline_model_selector(
         )]));
     }
 
-    // Build keybindings for top-right title
     let keybindings = Line::from(vec![
         Span::styled("↑↓", styles::key_highlight(palette)),
         Span::styled(" select  ", styles::key_hint(palette)),
@@ -1072,7 +1043,6 @@ fn draw_inline_model_selector(
         Span::styled(" cancel ", styles::key_hint(palette)),
     ]);
 
-    // Model info for bottom-left (same as draw_input)
     let (model_text, model_style) = if app.is_loading() {
         let spinner = spinner_frame(app.tick_count(), app.ui_options());
         (
@@ -1091,7 +1061,6 @@ fn draw_inline_model_selector(
         )
     };
 
-    // Context usage for bottom-right (same as draw_input)
     let usage_status = app.context_usage_status();
     let (usage, severity_override) = match &usage_status {
         ContextUsageStatus::Ready(usage) => (usage, 0),
@@ -1141,7 +1110,6 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App, palette: &Palette, 
     let area = frame.area();
     let selected_index = app.model_select_index().unwrap_or(0);
 
-    // Center the selector over the input area
     let selector_width = 60.min(area.width.saturating_sub(4)).max(40);
     let content_width = selector_width.saturating_sub(4).max(1) as usize; // borders + padding
 
@@ -1259,7 +1227,6 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App, palette: &Palette, 
         app.clear_modal_effect();
     }
 
-    // Clear background
     frame.render_widget(Clear, selector_area);
 
     let block = Block::default()
