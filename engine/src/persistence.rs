@@ -30,7 +30,6 @@ pub(crate) const EMPTY_RESPONSE_BADGE: NonEmptyStaticStr =
     NonEmptyStaticStr::new("[Empty response]");
 
 impl App {
-
     pub fn save_history(&self) -> anyhow::Result<()> {
         let path = self.history_path();
 
@@ -200,7 +199,6 @@ impl App {
     }
 
     /// Save session state to disk (non-fatal on failure).
-
     pub(crate) fn autosave_session(&mut self) -> bool {
         match self.save_session() {
             Ok(()) => true,

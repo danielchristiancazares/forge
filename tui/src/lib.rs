@@ -327,7 +327,11 @@ fn build_dynamic_message_lines(
         let indent = "   ";
 
         if has_thinking {
-            let header_tail = if is_empty { " Thinking..." } else { " Thinking" };
+            let header_tail = if is_empty {
+                " Thinking..."
+            } else {
+                " Thinking"
+            };
 
             let mut header_spans = vec![Span::styled(format!(" {icon} "), name_style)];
             if is_empty {

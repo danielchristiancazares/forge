@@ -90,7 +90,10 @@ impl super::App {
                 rx,
                 self.tool_settings.limits.max_tool_args_bytes,
                 self.ui_options().show_thinking
-                    && matches!(config.model().provider(), Provider::Claude | Provider::Gemini),
+                    && matches!(
+                        config.model().provider(),
+                        Provider::Claude | Provider::Gemini
+                    ),
             ),
             journal,
             abort_handle,

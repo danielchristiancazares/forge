@@ -200,13 +200,11 @@ impl InputHistory {
         self.command_stash = None;
     }
 
-
     #[cfg(test)]
     #[must_use]
     pub fn prompt_count(&self) -> usize {
         self.prompts.len()
     }
-
 
     #[cfg(test)]
     #[must_use]
