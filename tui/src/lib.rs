@@ -318,36 +318,93 @@ fn build_dynamic_message_lines(
         let provider = streaming.provider();
         let color = provider_color(provider, palette);
         let name_style = Style::default().fg(color);
+
+        let show_thinking = app.ui_options().show_thinking;
+        let has_thinking = show_thinking
+            && matches!(provider, Provider::Claude | Provider::Gemini)
+            && !streaming.thinking().is_empty();
         let is_empty = streaming.content().is_empty();
+        let indent = "   ";
+
+        if has_thinking {
+            let header_tail = if is_empty { " Thinking..." } else { " Thinking" };
+
+            let mut header_spans = vec![Span::styled(format!(" {icon} "), name_style)];
+            if is_empty {
+                let spinner = spinner_frame(app.tick_count(), app.ui_options());
+                header_spans.push(Span::styled(spinner, Style::default().fg(palette.primary)));
+            }
+            header_spans.push(Span::styled(
+                header_tail,
+                Style::default()
+                    .fg(palette.text_muted)
+                    .add_modifier(Modifier::ITALIC),
+            ));
+            lines.push(Line::from(header_spans));
+
+            let thinking_style = Style::default()
+                .fg(palette.text_muted)
+                .add_modifier(Modifier::ITALIC);
+            let thinking = sanitize_terminal_text(streaming.thinking());
+            let mut rendered_thinking = render_markdown(thinking.as_ref(), thinking_style, palette);
+
+            if !rendered_thinking.is_empty() {
+                let first_line = &mut rendered_thinking[0];
+                if !first_line.spans.is_empty() && first_line.spans[0].content == "    " {
+                    first_line.spans.remove(0);
+                }
+                for line in &mut rendered_thinking {
+                    line.spans.insert(0, Span::raw(indent));
+                }
+                lines.extend(rendered_thinking);
+            }
+
+            if !is_empty {
+                lines.push(Line::from(""));
+            }
+        }
 
         if is_empty {
-            // Show thinking spinner inline with icon
-            let spinner = spinner_frame(app.tick_count(), app.ui_options());
-            lines.push(Line::from(vec![
-                Span::styled(format!(" {icon} "), name_style),
-                Span::styled(spinner, Style::default().fg(palette.primary)),
-                Span::styled(" Thinking...", Style::default().fg(palette.text_muted)),
-            ]));
+            if !has_thinking {
+                let spinner = spinner_frame(app.tick_count(), app.ui_options());
+                lines.push(Line::from(vec![
+                    Span::styled(format!(" {icon} "), name_style),
+                    Span::styled(spinner, Style::default().fg(palette.primary)),
+                    Span::styled(" Thinking...", Style::default().fg(palette.text_muted)),
+                ]));
+            }
         } else {
-            // Inline content with icon and streaming indicator
             let content_style = Style::default().fg(palette.text_secondary);
             let content = sanitize_terminal_text(streaming.content());
             let mut rendered = render_markdown(content.as_ref(), content_style, palette);
 
             if rendered.is_empty() {
-                lines.push(Line::from(vec![Span::styled(
-                    format!(" {icon} "),
-                    name_style,
-                )]));
+                if has_thinking {
+                    lines.push(Line::from(Span::raw(indent)));
+                } else {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!(" {icon} "),
+                        name_style,
+                    )]));
+                }
             } else {
                 let spinner = spinner_frame(app.tick_count(), app.ui_options());
                 let first_line = &mut rendered[0];
                 if !first_line.spans.is_empty() && first_line.spans[0].content == "    " {
                     first_line.spans.remove(0);
                 }
-                first_line
-                    .spans
-                    .insert(0, Span::styled(format!(" {icon} "), name_style));
+
+                if has_thinking {
+                    for line in &mut rendered {
+                        line.spans.insert(0, Span::raw(indent));
+                    }
+                } else {
+                    first_line
+                        .spans
+                        .insert(0, Span::styled(format!(" {icon} "), name_style));
+                }
+
+                let first_line = &mut rendered[0];
                 first_line.spans.push(Span::styled(
                     format!(" {spinner}"),
                     Style::default().fg(palette.text_muted),

@@ -47,6 +47,10 @@ pub struct AppConfig {
     pub high_contrast: Option<bool>,
     /// Disable modal animations and motion effects.
     pub reduced_motion: Option<bool>,
+    /// Render provider thinking/reasoning deltas in the UI (if available).
+    ///
+    /// Default: false.
+    pub show_thinking: Option<bool>,
 }
 
 #[derive(Default, Deserialize)]

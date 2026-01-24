@@ -101,6 +101,14 @@ struct ParsedToolCalls {
 pub struct StreamingMessage {
     model: ModelName,
     content: String,
+    /// Provider thinking/reasoning deltas (if captured).
+    thinking: String,
+    /// Whether we should capture thinking deltas at all (default: false).
+    ///
+    /// This keeps the default behavior (discard thinking) while allowing
+    /// opt-in UI rendering without forcing a breaking change in the rest of
+    /// the engine.
+    capture_thinking: bool,
     receiver: mpsc::Receiver<StreamEvent>,
     /// Accumulated tool calls during streaming.
     tool_calls: Vec<ToolCallAccumulator>,
@@ -114,9 +122,24 @@ impl StreamingMessage {
         receiver: mpsc::Receiver<StreamEvent>,
         max_tool_args_bytes: usize,
     ) -> Self {
+        Self::new_with_thinking_capture(model, receiver, max_tool_args_bytes, false)
+    }
+
+    /// Construct a streaming message, optionally capturing provider thinking deltas.
+    ///
+    /// When `capture_thinking` is `false`, thinking events are discarded (current default).
+    #[must_use]
+    pub fn new_with_thinking_capture(
+        model: ModelName,
+        receiver: mpsc::Receiver<StreamEvent>,
+        max_tool_args_bytes: usize,
+        capture_thinking: bool,
+    ) -> Self {
         Self {
             model,
             content: String::new(),
+            thinking: String::new(),
+            capture_thinking,
             receiver,
             tool_calls: Vec::new(),
             max_tool_args_bytes,
@@ -138,6 +161,12 @@ impl StreamingMessage {
         &self.content
     }
 
+    /// Provider thinking/reasoning content received during streaming (if captured).
+    #[must_use]
+    pub fn thinking(&self) -> &str {
+        &self.thinking
+    }
+
     pub fn try_recv_event(&mut self) -> Result<StreamEvent, mpsc::error::TryRecvError> {
         self.receiver.try_recv()
     }
@@ -148,8 +177,10 @@ impl StreamingMessage {
                 self.content.push_str(&text);
                 None
             }
-            StreamEvent::ThinkingDelta(_) => {
-                // Silently consume thinking content - not displayed for now
+            StreamEvent::ThinkingDelta(thinking) => {
+                if self.capture_thinking {
+                    self.thinking.push_str(&thinking);
+                }
                 None
             }
             StreamEvent::ToolCallStart {

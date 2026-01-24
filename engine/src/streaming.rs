@@ -85,10 +85,12 @@ impl super::App {
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
         let active = ActiveStream {
-            message: StreamingMessage::new(
+            message: StreamingMessage::new_with_thinking_capture(
                 config.model().clone(),
                 rx,
                 self.tool_settings.limits.max_tool_args_bytes,
+                self.ui_options().show_thinking
+                    && matches!(config.model().provider(), Provider::Claude | Provider::Gemini),
             ),
             journal,
             abort_handle,
@@ -228,50 +230,72 @@ impl super::App {
                 }
             };
 
-            // Coalesce consecutive TextDelta events to reduce processing overhead.
-            // This merges multiple text deltas into one before journaling/displaying.
+            // Coalesce consecutive TextDelta / ThinkingDelta events to reduce processing overhead.
+            // This merges multiple deltas into one before journaling/displaying.
             // We count ALL coalesced events towards the budget to prevent bypassing it.
-            let already_counted = if let StreamEvent::TextDelta(mut text) = event {
-                // Count the initial event towards the budget
-                processed = processed.saturating_add(1);
-                // Try to coalesce more TextDelta events (up to remaining budget)
-                while processed < max_events {
-                    let active = match &mut self.state {
-                        OperationState::Streaming(active) => active,
-                        _ => break,
-                    };
-                    match active.message.try_recv_event() {
-                        Ok(StreamEvent::TextDelta(more_text)) => {
-                            text.push_str(&more_text);
-                            processed = processed.saturating_add(1);
+            let (event, already_counted) = match event {
+                StreamEvent::TextDelta(mut text) => {
+                    // Count the initial event towards the budget
+                    processed = processed.saturating_add(1);
+                    // Try to coalesce more TextDelta events (up to remaining budget)
+                    while processed < max_events {
+                        let active = match &mut self.state {
+                            OperationState::Streaming(active) => active,
+                            _ => break,
+                        };
+                        match active.message.try_recv_event() {
+                            Ok(StreamEvent::TextDelta(more_text)) => {
+                                text.push_str(&more_text);
+                                processed = processed.saturating_add(1);
+                            }
+                            Ok(other) => {
+                                // Non-TextDelta event - save for next iteration
+                                pending_event = Some(other);
+                                break;
+                            }
+                            Err(_) => break, // Empty or disconnected
                         }
-                        Ok(other) => {
-                            // Non-TextDelta event - save for next iteration
-                            pending_event = Some(other);
-                            break;
-                        }
-                        Err(_) => break, // Empty or disconnected
                     }
+                    // Sanitize untrusted model output to prevent terminal injection
+                    (
+                        StreamEvent::TextDelta(sanitize_terminal_text(&text).into_owned()),
+                        true, // Already counted in budget
+                    )
                 }
-                // Sanitize untrusted model output to prevent terminal injection
-                (
-                    StreamEvent::TextDelta(sanitize_terminal_text(&text).into_owned()),
-                    true, // Already counted in budget
-                )
-            } else {
-                let sanitized = match event {
-                    StreamEvent::ThinkingDelta(text) => {
-                        // Also sanitize thinking deltas
-                        StreamEvent::ThinkingDelta(sanitize_terminal_text(&text).into_owned())
+                StreamEvent::ThinkingDelta(mut thinking) => {
+                    processed = processed.saturating_add(1);
+                    while processed < max_events {
+                        let active = match &mut self.state {
+                            OperationState::Streaming(active) => active,
+                            _ => break,
+                        };
+                        match active.message.try_recv_event() {
+                            Ok(StreamEvent::ThinkingDelta(more_thinking)) => {
+                                thinking.push_str(&more_thinking);
+                                processed = processed.saturating_add(1);
+                            }
+                            Ok(other) => {
+                                pending_event = Some(other);
+                                break;
+                            }
+                            Err(_) => break,
+                        }
                     }
-                    StreamEvent::Error(msg) => {
-                        StreamEvent::Error(security::sanitize_stream_error(&msg))
-                    }
-                    other => other,
-                };
-                (sanitized, false) // Not yet counted in budget
+                    (
+                        StreamEvent::ThinkingDelta(sanitize_terminal_text(&thinking).into_owned()),
+                        true,
+                    )
+                }
+                other => {
+                    let sanitized = match other {
+                        StreamEvent::Error(msg) => {
+                            StreamEvent::Error(security::sanitize_stream_error(&msg))
+                        }
+                        other => other,
+                    };
+                    (sanitized, false) // Not yet counted in budget
+                }
             };
-            let (event, already_counted) = already_counted;
 
             let mut journal_error: Option<String> = None;
             let mut finish_reason: Option<StreamFinishReason> = None;
