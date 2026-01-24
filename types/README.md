@@ -70,7 +70,7 @@ Types that belong to a provider carry that association, preventing cross-provide
 
 ```rust
 // ModelName is bound to its provider
-let model = Provider::Claude.parse_model("claude-sonnet-4-5-20250929")?;
+let model = Provider::Claude.parse_model("claude-opus-4-5-20251101")?;
 assert_eq!(model.provider(), Provider::Claude);
 
 // ApiKey variants are provider-specific
@@ -291,14 +291,14 @@ for provider in Provider::all() {
 ```rust
 // Get default model for provider
 let model = Provider::Claude.default_model();
-assert_eq!(model.as_str(), "claude-sonnet-4-5-20250929");
+assert_eq!(model.as_str(), "claude-opus-4-5-20251101");
 
 let model = Provider::Gemini.default_model();
 assert_eq!(model.as_str(), "gemini-3-pro-preview");
 
 // List available models
 let models: &[&str] = Provider::Claude.available_models();
-// ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001", "claude-opus-4-5-20251101"]
+// ["claude-opus-4-5-20251101", "claude-haiku-4-5-20251001"]
 
 let models: &[&str] = Provider::OpenAI.available_models();
 // ["gpt-5.2", "gpt-5.2-2025-12-11"]
@@ -307,7 +307,7 @@ let models: &[&str] = Provider::Gemini.available_models();
 // ["gemini-3-pro-preview", "gemini-3-flash-preview"]
 
 // Parse model name with validation
-let model = Provider::Claude.parse_model("claude-sonnet-4-5-20250929")?;
+let model = Provider::Claude.parse_model("claude-opus-4-5-20251101")?;
 ```
 
 ### ModelName
@@ -336,9 +336,9 @@ A provider-scoped model name that prevents mixing models across providers.
 use forge_types::{Provider, ModelName, ModelNameKind, ModelParseError};
 
 // Parse from user input (validates prefix, checks known list)
-let model = Provider::Claude.parse_model("claude-sonnet-4-5-20250929")?;
+let model = Provider::Claude.parse_model("claude-opus-4-5-20251101")?;
 assert_eq!(model.provider(), Provider::Claude);
-assert_eq!(model.as_str(), "claude-sonnet-4-5-20250929");
+assert_eq!(model.as_str(), "claude-opus-4-5-20251101");
 assert_eq!(model.kind(), ModelNameKind::Known);
 
 // Unknown models are accepted but marked as Unverified
@@ -356,7 +356,7 @@ let result = Provider::OpenAI.parse_model("");
 assert!(matches!(result, Err(ModelParseError::Empty)));
 
 // Create known model directly (for internal/const use)
-const SONNET: ModelName = ModelName::known(Provider::Claude, "claude-sonnet-4-5-20250929");
+const OPUS: ModelName = ModelName::known(Provider::Claude, "claude-opus-4-5-20251101");
 ```
 
 **Memory Optimization:**
@@ -836,7 +836,7 @@ let msg = AssistantMessage::new(model, content);
 
 assert_eq!(msg.content(), "Hello! How can I help you today?");
 assert_eq!(msg.provider(), Provider::Claude);
-assert_eq!(msg.model().as_str(), "claude-sonnet-4-5-20250929");
+assert_eq!(msg.model().as_str(), "claude-opus-4-5-20251101");
 ```
 
 **Fields:** `content: NonEmptyString`, `timestamp: SystemTime`, `model: ModelName`

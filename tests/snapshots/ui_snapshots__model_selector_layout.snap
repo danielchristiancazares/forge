@@ -1,5 +1,5 @@
 ---
-source: tests/ui_snapshots.rs
+source: cli/../tests/ui_snapshots.rs
 expression: terminal.backend().to_string()
 ---
 
@@ -11,7 +11,7 @@ expression: terminal.backend().to_string()
 
           ╭ Select Model ────────────────────────╮
           │                                      │
-          │▸ 1 Claude Sonnet                     │
+          │▸ 1 Claude Opus                       │
           │  2 GPT-5.1                           │
           │                                      │
           ╰──────────────────────────────────────╯

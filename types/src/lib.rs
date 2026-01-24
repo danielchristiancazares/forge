@@ -151,7 +151,7 @@ impl Provider {
     #[must_use]
     pub fn default_model(&self) -> ModelName {
         match self {
-            Provider::Claude => ModelName::known(*self, "claude-sonnet-4-5-20250929"),
+            Provider::Claude => ModelName::known(*self, "claude-opus-4-5-20251101"),
             Provider::OpenAI => ModelName::known(*self, "gpt-5.2"),
             Provider::Gemini => ModelName::known(*self, "gemini-3-pro-preview"),
         }
@@ -161,11 +161,7 @@ impl Provider {
     #[must_use]
     pub fn available_models(&self) -> &'static [&'static str] {
         match self {
-            Provider::Claude => &[
-                "claude-sonnet-4-5-20250929",
-                "claude-haiku-4-5-20251001",
-                "claude-opus-4-5-20251101",
-            ],
+            Provider::Claude => &["claude-opus-4-5-20251101", "claude-haiku-4-5-20251001"],
             Provider::OpenAI => &["gpt-5.2", "gpt-5.2-2025-12-11"],
             Provider::Gemini => &["gemini-3-pro-preview", "gemini-3-flash-preview"],
         }
@@ -926,7 +922,7 @@ mod tests {
     fn model_parse_validates_claude_prefix() {
         let provider = Provider::Claude;
         assert!(provider.parse_model("gpt-5.2").is_err());
-        assert!(provider.parse_model("claude-sonnet-4-5-20250929").is_ok());
+        assert!(provider.parse_model("claude-opus-4-5-20251101").is_ok());
     }
 
     #[test]

@@ -135,7 +135,6 @@ const DEFAULT_LIMITS: ModelLimits = ModelLimits::new(8192, 4096);
 const KNOWN_MODELS: &[(&str, ModelLimits)] = &[
     // Claude 4.5 models (most specific first)
     ("claude-opus-4-5", ModelLimits::new(200_000, 64_000)),
-    ("claude-sonnet-4-5", ModelLimits::new(200_000, 64_000)),
     ("claude-haiku-4-5", ModelLimits::new(200_000, 64_000)),
     // GPT 5.2 models
     ("gpt-5.2", ModelLimits::new(400_000, 128_000)),
@@ -154,7 +153,7 @@ const KNOWN_MODELS: &[(&str, ModelLimits)] = &[
 /// # Prefix Matching
 ///
 /// Model names are matched using prefix comparison. For example:
-/// - `"claude-sonnet-4-20250514"` matches prefix `"claude-sonnet-4"`
+/// - `"claude-opus-4-5-20251101"` matches prefix `"claude-opus-4-5"`
 /// - `"gpt-5.2-2025-12-11"` matches prefix `"gpt-5"`
 ///
 /// # Example
@@ -165,7 +164,7 @@ const KNOWN_MODELS: &[(&str, ModelLimits)] = &[
 /// let mut registry = ModelRegistry::new();
 ///
 /// // Get limits for a known model
-/// let claude_limits = registry.get("claude-sonnet-4-20250514").limits();
+/// let claude_limits = registry.get("claude-opus-4-5-20251101").limits();
 /// assert_eq!(claude_limits.context_window(), 200_000);
 ///
 /// // Custom overrides can be added via ModelRegistry when enabled in tests.
@@ -353,20 +352,7 @@ mod tests {
             assert_eq!(limits.context_window(), 200_000);
             assert_eq!(limits.max_output(), 64_000);
 
-            let limits = registry.get("claude-opus-4-5-20250514").limits();
-            assert_eq!(limits.context_window(), 200_000);
-            assert_eq!(limits.max_output(), 64_000);
-        }
-
-        #[test]
-        fn get_claude_sonnet_4_5_models() {
-            let registry = ModelRegistry::new();
-
-            let limits = registry.get("claude-sonnet-4-5").limits();
-            assert_eq!(limits.context_window(), 200_000);
-            assert_eq!(limits.max_output(), 64_000);
-
-            let limits = registry.get("claude-sonnet-4-5-20250514").limits();
+            let limits = registry.get("claude-opus-4-5-20251101").limits();
             assert_eq!(limits.context_window(), 200_000);
             assert_eq!(limits.max_output(), 64_000);
         }
@@ -474,24 +460,24 @@ mod tests {
             let mut registry = ModelRegistry::new();
 
             // Before override, uses prefix matching
-            let limits = registry.get("claude-sonnet-4-5-custom").limits();
+            let limits = registry.get("claude-opus-4-5-custom").limits();
             assert_eq!(limits.context_window(), 200_000);
 
             // Set override
             registry.set_override(
-                "claude-sonnet-4-5-custom".to_string(),
+                "claude-opus-4-5-custom".to_string(),
                 ModelLimits::new(50_000, 8000),
             );
 
             // After override, uses custom limits
-            let resolved = registry.get("claude-sonnet-4-5-custom");
+            let resolved = registry.get("claude-opus-4-5-custom");
             assert_eq!(resolved.source(), ModelLimitsSource::Override);
             let limits = resolved.limits();
             assert_eq!(limits.context_window(), 50_000);
             assert_eq!(limits.max_output(), 8000);
 
-            // Other claude-sonnet-4-5 models still use defaults
-            let limits = registry.get("claude-sonnet-4-5-20250514").limits();
+            // Other claude-opus-4-5 models still use defaults
+            let limits = registry.get("claude-opus-4-5-20251101").limits();
             assert_eq!(limits.context_window(), 200_000);
         }
 
@@ -536,8 +522,8 @@ mod tests {
 
             // Both should return same limits for any model
             assert_eq!(
-                new_registry.get("claude-sonnet-4-5"),
-                default_registry.get("claude-sonnet-4-5")
+                new_registry.get("claude-opus-4-5"),
+                default_registry.get("claude-opus-4-5")
             );
             assert_eq!(new_registry.get("unknown"), default_registry.get("unknown"));
         }

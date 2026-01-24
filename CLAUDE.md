@@ -18,8 +18,9 @@ Config: `~/.forge/config.toml` (supports `${ENV_VAR}` expansion)
 
 ```toml
 [app]
-model = "claude-sonnet-4-5-20250929"  # Provider inferred from model prefix
+model = "claude-opus-4-5-20251101"  # Provider inferred from model prefix
 tui = "full"               # or "inline"
+show_thinking = false      # Render provider thinking/reasoning in UI
 ascii_only = false         # ASCII-only glyphs for icons/spinners
 high_contrast = false      # High-contrast color palette
 reduced_motion = false     # Disable modal animations
@@ -155,7 +156,7 @@ The codebase enforces correctness through types (see `DESIGN.md`):
 
 | Provider | Default Model | Context | Output |
 |----------|---------------|---------|--------|
-| Claude | `claude-sonnet-4-5-20250929` | 200K | 16K |
+| Claude | `claude-opus-4-5-20251101` | 200K | 128K |
 | OpenAI | `gpt-5.2` | 1M | 100K |
 | Gemini | `gemini-3-pro-preview` | 1M | 65K |
 
@@ -281,6 +282,26 @@ cargo test --test integration_test      # Integration tests only
 - Journal commit+prune must be atomic (single transaction)
 - Only commit journal if history save succeeds
 - Always discard or commit steps in error paths (prevent session brick)
+
+### Shell Commands (Claude Code on Windows)
+
+This repo uses PowerShell via a wrapper. Some bash patterns don't work:
+
+- **No `2>&1` redirection**: Use PowerShell's native error handling or just run the command without redirection
+- **No `cd dir && command`**: The wrapper doesn't support chained commands with directory changes. Instead, commands run from the working directory automatically, or use `--manifest-path` for cargo
+- **No `Push-Location`/`Set-Location` with semicolons**: The wrapper can't parse these. Just run commands directly—they execute in the repo root by default
+
+```bash
+# Won't work:
+cargo check 2>&1 | head -50
+cd /path && cargo test
+Push-Location /path; cargo check; Pop-Location
+
+# Works:
+cargo check
+cargo test
+cargo clippy --workspace --all-targets -- -D warnings
+```
 
 ## Commit Style
 

@@ -44,7 +44,7 @@ fn provider_env_vars() {
 
 #[test]
 fn model_name_parse_known() {
-    let model = ModelName::parse(Provider::Claude, "claude-sonnet-4-5-20250929").unwrap();
+    let model = ModelName::parse(Provider::Claude, "claude-opus-4-5-20251101").unwrap();
     assert_eq!(model.kind(), ModelNameKind::Known);
     assert_eq!(model.provider(), Provider::Claude);
 }
@@ -140,6 +140,6 @@ fn provider_available_models_not_empty() {
 
 #[test]
 fn model_name_display() {
-    let model = ModelName::known(Provider::Claude, "claude-sonnet-4-5-20250929");
-    assert_eq!(format!("{model}"), "claude-sonnet-4-5-20250929");
+    let model = ModelName::known(Provider::Claude, "claude-opus-4-5-20251101");
+    assert_eq!(format!("{model}"), "claude-opus-4-5-20251101");
 }

@@ -728,8 +728,7 @@ The configuration file is located at `~/.forge/config.toml`. The `ForgeConfig::l
 
 ```toml
 [app]
-provider = "claude"
-model = "claude-sonnet-4-5-20250929"
+model = "claude-opus-4-5-20251101"
 tui = "full"
 
 [api_keys]

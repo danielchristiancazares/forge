@@ -8,20 +8,19 @@ Forge brings the efficiency of vim-style modal editing to AI conversation, letti
 <!-- toc:start -->
 | Lines | Section |
 | --- | --- |
-| 7-26 | LLM-TOC |
-| 27-55 | Features: Core Capabilities, Context Infinity, Tool Executor |
-| 56-65 | Requirements |
-| 66-91 | Installation |
-| 92-135 | Quick Start: First Run, Basic Usage |
-| 136-222 | Configuration: Full Reference |
-| 223-281 | Keyboard Shortcuts: All Modes |
-| 282-300 | Commands Reference |
-| 301-329 | Workspace Structure |
-| 330-362 | Development |
-| 363-432 | Troubleshooting |
-| 433-455 | Documentation Index |
-| 456-466 | Contributing and License |
-| 467-469 | License |
+| 7-25 | LLM-TOC |
+| 26-60 | Features: Core Capabilities, Context Infinity, Tool Executor |
+| 61-70 | Requirements |
+| 71-96 | Installation |
+| 97-140 | Quick Start: First Run, Basic Usage |
+| 141-248 | Configuration: Full Reference |
+| 249-326 | Keyboard Shortcuts: All Modes |
+| 327-347 | Commands Reference |
+| 348-376 | Workspace Structure |
+| 377-409 | Development |
+| 410-479 | Troubleshooting |
+| 480-512 | Documentation Index |
+| 513-527 | Contributing and License |
 <!-- toc:end -->
 
 ## Features
@@ -47,7 +46,13 @@ Forge's adaptive context management system keeps conversations flowing without h
 
 Enable the LLM to interact with your local filesystem and execute tasks:
 
-- **Built-in Tools**: `read_file`, `write_file`, `apply_patch`, `Glob`, `Search`, `run_command`, `WebFetch`, and various Git tools.
+- **Built-in Tools**:
+  - File operations: `read_file`, `write_file`, `apply_patch`, `Glob`
+  - Search: `search` (ugrep/ripgrep backend)
+  - Shell: `run_command`
+  - Web: `web_fetch`
+  - Context: `recall` (retrieve facts from conversation)
+  - Git: `git_status`, `git_diff`, `git_add`, `git_commit`, `git_log`, `git_branch`, `git_checkout`, `git_stash`, `git_show`, `git_blame`, `git_restore`
 - **Sandboxed Execution**: Path-based tools are restricted to allowed directories with symlink escape prevention
 - **Interactive Approval**: Review and approve or deny tool calls before execution
 - **Stale File Protection**: Files must be read before patching, with SHA validation to catch external changes
@@ -141,10 +146,10 @@ Create `~/.forge/config.toml` for persistent configuration. All settings are opt
 
 ```toml
 [app]
-provider = "claude"                    # "claude", "openai", or "gemini"
-model = "claude-sonnet-4-5-20250929"   # Model name for the provider
+model = "claude-opus-4-5-20251101"   # Model name (provider inferred from prefix)
 tui = "full"                           # "full" (alternate screen) or "inline"
 max_output_tokens = 16000              # Limit model output length
+show_thinking = false                  # Render provider thinking/reasoning in UI
 
 # Accessibility options
 ascii_only = false                     # Use ASCII-only glyphs (no Unicode icons)
@@ -179,14 +184,15 @@ max_tool_calls_per_batch = 8
 max_tool_iterations_per_user_turn = 4
 
 [tools.approval]
-mode = "enabled"                       # "disabled", "parse_only", or "enabled"
-allowlist = ["ReadFile", "Glob"]       # Skip approval for these tools
-denylist = ["RunCommand"]              # Always deny these tools
+mode = "default"                       # "permissive", "default", or "strict"
+allowlist = ["read_file", "Glob"]      # Skip approval for these tools
+denylist = ["run_command"]             # Always deny these tools
 
 [tools.sandbox]
 allowed_roots = ["."]                  # Allowed base directories
 denied_patterns = ["**/.git/**"]       # Excluded glob patterns
 allow_absolute = false                 # Block absolute paths
+include_default_denies = true          # Include built-in deny patterns
 
 [tools.timeouts]
 default_seconds = 30
@@ -200,10 +206,30 @@ max_bytes = 102400                     # 100 KB max output per tool
 user_agent = "Forge/1.0"               # Custom User-Agent
 timeout_seconds = 30                   # Fetch timeout
 max_download_bytes = 10485760          # 10MB limit
+max_redirects = 5                      # Max HTTP redirects
+default_max_chunk_tokens = 2000        # Token budget per chunk
+cache_dir = "/tmp/webfetch"            # Cache directory
+cache_ttl_days = 7                     # Cache TTL in days
 
 [tools.search]
-backend = "ugrep"                      # ugrep | ripgrep
-max_results = 100                      # Search result limit
+binary = "ug"                          # Search binary: "ug" (ugrep) or "rg" (ripgrep)
+fallback_binary = "rg"                 # Fallback if primary not found
+default_max_results = 100              # Search result limit
+default_timeout_ms = 5000              # Search timeout
+max_matches_per_file = 50              # Max matches per file
+max_files = 1000                       # Max files to search
+max_file_size_bytes = 1048576          # Skip files larger than 1MB
+
+[tools.shell]
+binary = "pwsh"                        # Override shell binary
+args = ["-NoProfile", "-Command"]      # Override shell args
+
+[tools.read_file]
+max_file_read_bytes = 1048576          # Max bytes to read per file
+max_scan_bytes = 10485760              # Max bytes to scan for line counting
+
+[tools.apply_patch]
+max_patch_bytes = 1048576              # Max patch size in bytes
 
 ```
 
@@ -231,18 +257,23 @@ max_results = 100                      # Search result limit
 | `a` | Enter Insert mode at end of line |
 | `o` | Enter Insert mode with cleared line |
 | `:` or `/` | Enter Command mode |
-| `Tab` | Open model selector |
+| `s` | Toggle screen mode (fullscreen/inline) |
 | `j` or `Down` | Scroll down |
 | `k` or `Up` | Scroll up |
+| `PageDown` or `Ctrl+D` | Scroll page down |
+| `PageUp` or `Ctrl+U` | Scroll page up |
 | `g` | Scroll to top |
-| `G` or `End` | Scroll to bottom |
+| `G`, `End`, or `Right` | Scroll to bottom |
+| `Left` | Scroll up by chunk (20%) |
 
 ### Insert Mode (Editing)
 
 | Key | Action |
-| ----- | -------- |
+| --- | --- |
 | `Esc` | Return to Normal mode |
 | `Enter` | Send message |
+| `Ctrl+Enter`, `Shift+Enter`, `Ctrl+J` | Insert newline (multiline input) |
+| `Up` / `Down` | Navigate prompt history |
 | `Backspace` | Delete character before cursor |
 | `Delete` | Delete character after cursor |
 | `Left` / `Right` | Move cursor |
@@ -253,31 +284,45 @@ max_results = 100                      # Search result limit
 ### Command Mode
 
 | Key | Action |
-| ----- | -------- |
+| --- | --- |
 | `Esc` | Cancel and return to Normal mode |
 | `Enter` | Execute command |
+| `Up` / `Down` | Navigate command history |
+| `Tab` | Tab completion |
 | `Backspace` | Delete last character |
+| `Left` / `Right` | Move cursor |
+| `Home` / `End` | Jump to start/end of line |
+| `Ctrl+A` / `Ctrl+E` | Jump to start/end of line |
+| `Ctrl+U` | Clear line |
+| `Ctrl+W` | Delete word backwards |
 
 ### Model Select Mode
 
 | Key | Action |
-| ----- | -------- |
+| --- | --- |
 | `Esc` | Cancel selection |
 | `Enter` | Confirm selection |
 | `j` / `Down` | Move selection down |
 | `k` / `Up` | Move selection up |
-| `1`, `2` | Direct selection by index |
+| `1`-`9` | Direct selection by index |
 
 ### Tool Approval Mode
 
 | Key | Action |
-| ----- | -------- |
+| --- | --- |
 | `a` | Approve all tools |
-| `d` | Deny all tools |
+| `d` or `Esc` | Deny all tools |
 | `Space` | Toggle individual tool |
-| `j` / `k` | Navigate tools |
+| `Tab` | Toggle tool details |
+| `j` / `k` or `Up` / `Down` | Navigate tools |
 | `Enter` | Confirm selection |
-| `Esc` | Deny all and cancel |
+
+### Tool Recovery Mode
+
+| Key | Action |
+| --- | --- |
+| `r` or `R` | Resume interrupted tool batch |
+| `d`, `D`, or `Esc` | Discard interrupted tool batch |
 
 ## Commands Reference
 
@@ -287,15 +332,17 @@ Enter Command mode by pressing `:` or `/` in Normal mode.
 | :--- | :--- | :--- |
 | `/quit` | `/q` | Exit the application |
 | `/clear` | - | Clear conversation and reset context |
-| `/cancel` | - | Abort active streaming or tool execution |
+| `/cancel` | - | Abort active streaming, tool execution, or summarization |
 | `/model [name]` | - | Set model or open model selector (no argument) |
-| `/provider [name]` | `/p` | Switch provider (`claude`, `openai`, or `gemini`) |
+| `/provider [name]` | `/p` | Switch provider (`claude`, `openai`, `gemini`, `gpt`, `anthropic`, `google`) |
 | `/context` | `/ctx` | Show context usage statistics |
 | `/journal` | `/jrnl` | Show stream journal statistics |
 | `/summarize` | `/sum` | Manually trigger summarization |
 | `/screen` | - | Toggle between full-screen and inline mode |
 | `/tools` | - | List available tools |
-| `/tool <id> <result>` | - | Manually submit tool result |
+| `/rewind [id\|last] [scope]` | `/rw` | Rewind to an automatic checkpoint (scope: `code`, `conversation`, or `both`) |
+| `/undo` | - | Undo the last user turn (rewind to last turn checkpoint) |
+| `/retry` | - | Undo the last user turn and restore its prompt into the input box |
 | `/help` | - | Show available commands |
 
 ## Workspace Structure
@@ -336,7 +383,8 @@ cargo check              # Fast type-check (use during development)
 cargo build              # Debug build
 cargo build --release    # Optimized release build
 cargo test               # Run all tests
-cargo clippy -- -D warnings  # Lint (run before committing)
+cargo clippy --workspace --all-targets -- -D warnings  # Lint (run before committing)
+cargo cov                # Coverage report (requires cargo-llvm-cov)
 ```
 
 ### Test Coverage
@@ -442,16 +490,26 @@ Detailed documentation is available in each crate:
 | [`context/README.md`](context/README.md) | Context Infinity implementation |
 | [`providers/README.md`](providers/README.md) | LLM API clients (Claude, OpenAI, Gemini) |
 | [`types/README.md`](types/README.md) | Core domain types |
+| [`webfetch/README.md`](webfetch/README.md) | Web page fetching and HTML-to-markdown |
 
 ### Design Documents
 
 | Document | Description |
-| ---------- | ------------- |
+| -------- | ----------- |
 | [`DESIGN.md`](DESIGN.md) | Type-driven design philosophy |
-| [`docs/CONTEXT_INFINITY_SRD.md`](docs/CONTEXT_INFINITY_SRD.md) | Context Infinity specification |
-| [`docs/TOOL_EXECUTOR_SRD.md`](docs/TOOL_EXECUTOR_SRD.md) | Tool Executor requirements |
-| [`docs/TOOLS.md`](docs/TOOLS.md) | User guide for tool configuration |
 | [`docs/LP1.md`](docs/LP1.md) | Line Patch v1 format specification |
+| [`docs/ANTHROPIC_MESSAGES_API.md`](docs/ANTHROPIC_MESSAGES_API.md) | Claude API reference |
+| [`docs/OPENAI_RESPONSES_GPT52.md`](docs/OPENAI_RESPONSES_GPT52.md) | OpenAI Responses API integration |
+| [`docs/RUST_2024_REFERENCE.md`](docs/RUST_2024_REFERENCE.md) | Rust 2024 edition features |
+
+### Additional Specs
+
+| Document | Description |
+| -------- | ----------- |
+| [`docs/SEARCH_SRS.md`](docs/SEARCH_SRS.md) | Search tool specification |
+| [`docs/FILEOPS_SRS.md`](docs/FILEOPS_SRS.md) | File operations specification |
+| [`docs/PWSH_TOOL_SRS.md`](docs/PWSH_TOOL_SRS.md) | PowerShell tool specification |
+| [`docs/COLOR_SCHEME.md`](docs/COLOR_SCHEME.md) | Color scheme documentation |
 
 ## Contributing
 
@@ -459,7 +517,7 @@ Contributions are welcome! Please ensure:
 
 1. **Code compiles**: `cargo check` passes
 2. **Tests pass**: `cargo test` succeeds
-3. **Linting passes**: `cargo clippy -- -D warnings` reports no errors
+3. **Linting passes**: `cargo clippy --workspace --all-targets -- -D warnings` reports no errors
 4. **Commit style**: Use conventional commits with type and scope
    - Example: `feat(context): add token budget display`
    - Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`

@@ -794,8 +794,7 @@ pub fn expand_env_vars(value: &str) -> String {
 
 ```toml
 [app]
-provider = "claude"        # or "openai"
-model = "claude-sonnet-4-5-20250929"
+model = "claude-opus-4-5-20251101"  # Provider inferred from prefix
 tui = "full"               # or "inline"
 max_output_tokens = 16000
 ascii_only = false         # ASCII-only glyphs for icons/spinners
@@ -1454,7 +1453,7 @@ impl Provider {
 
     pub fn default_model(&self) -> ModelName {
         match self {
-            Self::Claude => ModelName::known(Self::Claude, "claude-sonnet-4-5-20250929"),
+            Self::Claude => ModelName::known(Self::Claude, "claude-opus-4-5-20251101"),
             Self::OpenAI => ModelName::known(Self::OpenAI, "gpt-5.2"),
             Self::Gemini => ModelName::known(Self::Gemini, "gemini-3-pro-preview"),
             Self::MyProvider => ModelName::known(Self::MyProvider, "my-model-v1"),

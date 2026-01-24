@@ -1,7 +1,7 @@
 ---
-source: tests/ui_snapshots.rs
+source: cli/../tests/ui_snapshots.rs
 expression: terminal.backend().to_string()
 ---
 
 
- NORMAL  claude-sonnet-4 │ 142 / 128k (0%)
+ NORMAL  claude-opus-4 │ 142 / 128k (0%)

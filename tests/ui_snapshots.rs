@@ -90,10 +90,7 @@ fn snapshot_model_selector_layout() {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled("1 ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    "Claude Sonnet",
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
+                Span::styled("Claude Opus", Style::default().add_modifier(Modifier::BOLD)),
             ]),
             Line::from(vec![
                 Span::raw("  "),
@@ -135,7 +132,7 @@ fn snapshot_status_bar() {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
-            Span::styled("claude-sonnet-4", Style::default().fg(Color::Cyan)),
+            Span::styled("claude-opus-4", Style::default().fg(Color::Cyan)),
             Span::raw(" │ "),
             Span::styled("142 / 128k (0%)", Style::default().fg(Color::Green)),
         ]);

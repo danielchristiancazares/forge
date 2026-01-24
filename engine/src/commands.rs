@@ -761,8 +761,8 @@ mod tests {
     fn parse_model_command() {
         assert_eq!(Command::parse("model"), Command::Model(None));
         assert_eq!(
-            Command::parse("model claude-sonnet-4-5-20250929"),
-            Command::Model(Some("claude-sonnet-4-5-20250929"))
+            Command::parse("model claude-opus-4-5-20251101"),
+            Command::Model(Some("claude-opus-4-5-20251101"))
         );
         assert_eq!(
             Command::parse("model gpt-5.2"),

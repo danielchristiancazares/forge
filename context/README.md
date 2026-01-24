@@ -183,7 +183,7 @@ The **effective input budget** is calculated as:
 effective_budget = context_window - max_output - (5% safety margin)
 ```
 
-Example for Claude Sonnet 4.5 (200k context, 64k output):
+Example for Claude Opus 4.5 (200k context, 64k output):
 
 ```
 available = 200,000 - 64,000 = 136,000
@@ -202,7 +202,7 @@ The 5% safety margin accounts for:
 When a user configures a smaller output limit than the model's maximum, more tokens become available for input context. Use `set_output_limit()` to adjust:
 
 ```rust
-let mut manager = ContextManager::new("claude-sonnet-4-5-20250514");
+let mut manager = ContextManager::new("claude-opus-4-5-20251101");
 
 // Model has 64k max output, but user configured 16k
 manager.set_output_limit(16_000);
@@ -219,13 +219,12 @@ The reserved output is clamped to the model's `max_output` - requesting more tha
 | Model Prefix | Context Window | Max Output |
 |--------------|---------------|------------|
 | `claude-opus-4-5` | 200,000 | 64,000 |
-| `claude-sonnet-4-5` | 200,000 | 64,000 |
 | `claude-haiku-4-5` | 200,000 | 64,000 |
 | `gpt-5.2` | 400,000 | 128,000 |
 | `gemini-3-pro` | 1,048,576 | 65,536 |
 | Unknown | 8,192 | 4,096 |
 
-Model lookup uses **prefix matching** - `claude-sonnet-4-5-20250514` matches `claude-sonnet-4-5`.
+Model lookup uses **prefix matching** - `claude-opus-4-5-20251101` matches `claude-opus-4-5`.
 
 ## Context Building Algorithm
 
@@ -625,7 +624,7 @@ pub fn severity(&self) -> u8 {
 context_manager.save("~/.forge/history.json")?;
 
 // Load
-let manager = ContextManager::load("~/.forge/history.json", "claude-sonnet-4")?;
+let manager = ContextManager::load("~/.forge/history.json", "claude-opus-4")?;
 ```
 
 The serialization format validates:
@@ -895,7 +894,7 @@ The main orchestrator for context management.
 use forge_context::{ContextManager, PreparedContext, ContextBuildError, SummarizationNeeded};
 
 // Create a manager for a specific model
-let mut manager = ContextManager::new("claude-sonnet-4-5-20250514");
+let mut manager = ContextManager::new("claude-opus-4-5-20251101");
 
 // Add messages to history
 let msg_id = manager.push_message(Message::try_user("Hello!")?);
@@ -1135,10 +1134,10 @@ use forge_context::{ModelRegistry, ModelLimits, ResolvedModelLimits};
 let registry = ModelRegistry::new();
 
 // Lookup by exact name or prefix
-let resolved: ResolvedModelLimits = registry.get("claude-sonnet-4-20250514");
+let resolved: ResolvedModelLimits = registry.get("claude-opus-4-20250514");
 
 match resolved.source() {
-    ModelLimitsSource::Prefix("claude-sonnet-4") => { /* matched prefix */ }
+    ModelLimitsSource::Prefix("claude-opus-4") => { /* matched prefix */ }
     ModelLimitsSource::DefaultFallback => { /* unknown model */ }
     ModelLimitsSource::Override => { /* custom override */ }
 }
@@ -1154,7 +1153,6 @@ println!("Effective input budget: {}", limits.effective_input_budget());
 | Prefix | Context Window | Max Output |
 |--------|---------------|------------|
 | `claude-opus-4-5` | 200,000 | 64,000 |
-| `claude-sonnet-4-5` | 200,000 | 64,000 |
 | `claude-haiku-4-5` | 200,000 | 64,000 |
 | `gpt-5.2` | 400,000 | 128,000 |
 
@@ -1228,7 +1226,7 @@ if let Some(recovered) = journal.recover()? {
 }
 
 // Begin streaming session (model name stored for recovery attribution)
-let mut active: ActiveJournal = journal.begin_session("claude-sonnet-4-5")?;
+let mut active: ActiveJournal = journal.begin_session("claude-opus-4-5")?;
 
 // Persist each delta BEFORE displaying to user
 active.append_text(&mut journal, "Hello")?;
@@ -1319,7 +1317,7 @@ if let Some(recovered) = journal.recover()? {
 
 // Begin a new tool batch
 let calls = vec![ToolCall::new("call_1", "read_file", json!({"path": "foo.rs"}))];
-let batch_id: ToolBatchId = journal.begin_batch("claude-sonnet-4", "assistant text", &calls)?;
+let batch_id: ToolBatchId = journal.begin_batch("claude-opus-4", "assistant text", &calls)?;
 
 // Record results as tools execute
 let result = ToolResult::success("call_1", "file contents...");
@@ -1351,7 +1349,7 @@ For tool batches created during streaming (before arguments are complete):
 
 ```rust
 // Begin streaming batch with empty calls
-let batch_id = journal.begin_streaming_batch("claude-sonnet-4")?;
+let batch_id = journal.begin_streaming_batch("claude-opus-4")?;
 
 // Record call start as stream events arrive
 journal.record_call_start(batch_id, 0, "call_1", "read_file", None)?;
@@ -1613,7 +1611,7 @@ use forge_context::{
 use forge_types::Message;
 
 // Initialize
-let mut manager = ContextManager::new("claude-sonnet-4-5");
+let mut manager = ContextManager::new("claude-opus-4-5");
 let mut journal = StreamJournal::open("~/.forge/journal.db")?;
 let counter = TokenCounter::new();
 
@@ -1676,7 +1674,7 @@ let prepared = match manager.prepare() {
 
 // Make API call with streaming
 let api_messages = prepared.api_messages();
-let mut active = journal.begin_session("claude-sonnet-4-5")?;
+let mut active = journal.begin_session("claude-opus-4-5")?;
 let step_id = active.step_id();
 
 for chunk in stream_response(&api_messages).await {

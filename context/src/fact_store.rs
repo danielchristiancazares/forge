@@ -353,7 +353,6 @@ impl FactStore {
     pub fn upsert_source(&mut self, file_path: &str, sha256: &str) -> Result<i64> {
         let updated_at = system_time_to_iso8601(SystemTime::now());
 
-        // Try to update existing record first
         let updated = self
             .db
             .execute(
@@ -363,7 +362,6 @@ impl FactStore {
             .context("Failed to update source")?;
 
         if updated > 0 {
-            // Record existed, get its ID
             let id: i64 = self
                 .db
                 .query_row(
@@ -375,7 +373,6 @@ impl FactStore {
             return Ok(id);
         }
 
-        // Insert new record
         self.db
             .execute(
                 "INSERT INTO fact_sources (file_path, sha256, updated_at) VALUES (?1, ?2, ?3)",
