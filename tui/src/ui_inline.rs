@@ -438,7 +438,6 @@ fn append_approval_lines(lines: &mut Vec<Line>, view: &ApprovalView, palette: &P
         }
     }
 
-    // Submit and Deny buttons
     let submit_cursor = view.items.len();
     let deny_cursor = view.items.len() + 1;
     let submit_pointer = if cursor == submit_cursor { ">" } else { " " };
@@ -485,7 +484,6 @@ fn append_recovery_prompt(lines: &mut Vec<Line>, app: &App, palette: &Palette) {
 fn diff_style_for_line(line: &str, base_style: Style, palette: &Palette) -> Style {
     use ratatui::style::Modifier;
 
-    // File headers
     if line.starts_with("+++")
         || line.starts_with("---")
         || line.starts_with("diff --git")
@@ -498,21 +496,18 @@ fn diff_style_for_line(line: &str, base_style: Style, palette: &Palette) -> Styl
             .add_modifier(Modifier::BOLD);
     }
 
-    // Hunk headers
     if line.starts_with("@@") {
         return Style::default()
             .fg(palette.accent)
             .add_modifier(Modifier::BOLD);
     }
 
-    // Gap marker
     if line == "..." {
         return Style::default()
             .fg(palette.text_muted)
             .add_modifier(Modifier::ITALIC);
     }
 
-    // Deletions / additions
     if line.starts_with('-') {
         return Style::default().fg(palette.error);
     }

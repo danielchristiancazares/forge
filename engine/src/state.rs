@@ -17,10 +17,6 @@ use crate::StreamingMessage;
 use crate::input_modes::{ChangeRecorder, TurnContext};
 use crate::tools::{self, ConfirmationRequest};
 
-// ============================================================================
-// Data Directory
-// ============================================================================
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DataDirSource {
     System,
@@ -39,10 +35,6 @@ impl DataDir {
     }
 }
 
-// ============================================================================
-// Streaming State
-// ============================================================================
-
 use crate::ActiveJournal;
 
 use std::collections::HashMap;
@@ -59,10 +51,6 @@ pub(crate) struct ActiveStream {
     pub(crate) tool_args_journal_bytes: HashMap<String, usize>,
     pub(crate) turn: TurnContext,
 }
-
-// ============================================================================
-// Summarization State
-// ============================================================================
 
 /// A background summarization task.
 ///
@@ -111,10 +99,6 @@ pub(crate) struct SummarizationRetryWithQueuedState {
     pub(crate) retry: SummarizationRetry,
     pub(crate) queued: crate::QueuedUserMessage,
 }
-
-// ============================================================================
-// Tool Execution State
-// ============================================================================
 
 #[derive(Debug)]
 pub(crate) struct ToolBatch {
@@ -185,15 +169,6 @@ pub(crate) struct ToolPlan {
     pub(crate) pre_resolved: Vec<ToolResult>,
 }
 
-// ============================================================================
-// Main Operation State
-// ============================================================================
-
-/// Operation state - what the app is currently doing.
-///
-/// Note: `ContextInfinity` enablement is tracked separately via `App.context_infinity`,
-/// not encoded in this enum. This prevents implicit feature toggling through state
-/// transitions.
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum OperationState {

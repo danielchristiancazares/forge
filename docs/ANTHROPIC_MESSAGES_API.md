@@ -31,7 +31,7 @@ This document provides a reference for the Anthropic Messages API as used by For
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `model` | string | Model ID (e.g., `claude-sonnet-4-5-20250929`, `claude-opus-4-5-20251101`) |
+| `model` | string | Model ID (e.g., `claude-opus-4-5-20251101`, `claude-opus-4-5-20251101`) |
 | `max_tokens` | number | Maximum tokens to generate |
 | `messages` | array | Conversation messages with alternating `user`/`assistant` roles |
 
@@ -212,7 +212,7 @@ All types support `disable_parallel_tool_use: true` to prevent multiple simultan
 {
   "type": "message",
   "id": "msg_...",
-  "model": "claude-sonnet-4-5-20250929",
+  "model": "claude-opus-4-5-20251101",
   "role": "assistant",
   "content": [
     {
@@ -268,7 +268,7 @@ data: {
     "type": "message",
     "role": "assistant",
     "content": [],
-    "model": "claude-sonnet-4-5-20250929",
+    "model": "claude-opus-4-5-20251101",
     "stop_reason": null,
     "usage": {"input_tokens": 25, "output_tokens": 1}
   }
@@ -415,7 +415,7 @@ Cache reads cost 0.1x base input price.
 | Model | Minimum Tokens |
 |-------|----------------|
 | Claude Opus 4.5 | 4096 |
-| Claude Opus 4.1/4, Sonnet 4.5/4 | 1024 |
+| Claude Opus 4.5/4.1/4 | 1024 |
 | Claude Haiku 4.5 | 4096 |
 | Claude Haiku 3.5/3 | 2048 |
 
@@ -584,7 +584,7 @@ curl https://api.anthropic.com/v1/messages \
   -H "x-api-key: $ANTHROPIC_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
-    "model": "claude-sonnet-4-5-20250929",
+    "model": "claude-opus-4-5-20251101",
     "max_tokens": 1024,
     "stream": true,
     "system": [

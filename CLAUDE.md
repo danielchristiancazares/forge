@@ -18,8 +18,9 @@ Config: `~/.forge/config.toml` (supports `${ENV_VAR}` expansion)
 
 ```toml
 [app]
-model = "claude-sonnet-4-5-20250929"  # Provider inferred from model prefix
+model = "claude-opus-4-5-20251101"  # Provider inferred from model prefix
 tui = "full"               # or "inline"
+show_thinking = false      # Render provider thinking/reasoning in UI
 ascii_only = false         # ASCII-only glyphs for icons/spinners
 high_contrast = false      # High-contrast color palette
 reduced_motion = false     # Disable modal animations
@@ -69,10 +70,14 @@ forge/
 | Crate | File | Purpose |
 |-------|------|---------|
 | `cli` | `main.rs` | Entry point, terminal session, event loop |
-| `engine` | `lib.rs` | App state machine, commands, streaming logic |
+| `engine` | `lib.rs` | App state machine, orchestration |
+| `engine` | `commands.rs` | Slash command parsing (`Command`) and dispatch |
 | `engine` | `config.rs` | Config parsing (`ForgeConfig`) |
 | `engine` | `tool_loop.rs` | Tool executor orchestration, approval flow |
 | `engine` | `state.rs` | `ToolBatch`, `ApprovalState`, operation states |
+| `engine` | `streaming.rs` | Stream event handling, `StreamingMessage` |
+| `engine` | `ui/input.rs` | `InputMode`, `InputState`, `DraftInput` |
+| `engine` | `ui/modal.rs` | `ModalEffectKind`, modal state |
 | `tui` | `lib.rs` | Full-screen rendering |
 | `tui` | `ui_inline.rs` | Inline terminal rendering |
 | `tui` | `input.rs` | Keyboard input handling |
@@ -88,6 +93,8 @@ forge/
 | `context` | `summarization.rs` | Summary generation |
 | `context` | `model_limits.rs` | Per-model token limits |
 | `context` | `token_counter.rs` | Token counting |
+| `context` | `fact_store.rs` | Fact extraction and storage |
+| `context` | `librarian.rs` | Context retrieval orchestration |
 | `providers` | `lib.rs` | Provider dispatch, SSE parsing, inline `claude`/`openai`/`gemini` modules |
 | `types` | `lib.rs` | Message types, `NonEmptyString`, `ModelName` |
 | `webfetch` | `lib.rs` | URL fetch orchestration, chunking for LLM context |
@@ -149,7 +156,7 @@ The codebase enforces correctness through types (see `DESIGN.md`):
 
 | Provider | Default Model | Context | Output |
 |----------|---------------|---------|--------|
-| Claude | `claude-sonnet-4-5-20250929` | 200K | 16K |
+| Claude | `claude-opus-4-5-20251101` | 200K | 128K |
 | OpenAI | `gpt-5.2` | 1M | 100K |
 | Gemini | `gemini-3-pro-preview` | 1M | 65K |
 
@@ -202,12 +209,12 @@ Robust tool execution with crash recovery and user approval:
 
 | Task | Location |
 |------|----------|
-| Add command | `App::process_command()` in `engine/src/lib.rs` |
-| Add input mode | `InputMode` + `InputState` in `engine/src/lib.rs`, handler in `tui/src/input.rs`, UI in `tui/src/lib.rs` |
+| Add command | `Command` enum + `App::process_command()` in `engine/src/commands.rs` |
+| Add input mode | `InputMode` + `InputState` in `engine/src/ui/input.rs`, handler in `tui/src/input.rs`, UI in `tui/src/lib.rs` |
 | Add provider | `Provider` enum in `types/src/lib.rs` + client module in `providers/src/` |
 | Change colors | `tui/src/theme.rs` (`colors::`, `styles::`) |
 | Add UI overlay | `draw_*` function in `tui/src/lib.rs` |
-| Add modal animation | `ModalEffect` in `engine/src/lib.rs`, apply in `tui/src/effects.rs` |
+| Add modal animation | `ModalEffectKind` in `engine/src/ui/modal.rs`, apply in `tui/src/effects.rs` |
 
 See `tui/README.md` Extension Guide for detailed patterns.
 
@@ -230,9 +237,14 @@ All mode styles use `fg(bg_dark)` + `bg(<color>)` + `BOLD` modifier.
 
 | Document | Description |
 |----------|-------------|
-| `tui/README.md` | Comprehensive TUI system documentation |
-| `context/README.md` | Context management system overview |
+| `engine/README.md` | Engine state machine and orchestration |
+| `tui/README.md` | TUI system, rendering, input handling |
+| `context/README.md` | Context management, summarization, journaling |
+| `providers/README.md` | LLM API clients, SSE streaming |
+| `types/README.md` | Core domain types, newtypes |
+| `webfetch/README.md` | URL fetching, HTML-to-Markdown |
 | `DESIGN.md` | Type-driven design patterns |
+| `docs/ANTHROPIC_MESSAGES_API.md` | Claude API reference |
 | `docs/OPENAI_RESPONSES_GPT52.md` | OpenAI Responses API integration |
 | `docs/RUST_2024_REFERENCE.md` | Rust 2024 edition features used |
 
@@ -271,20 +283,38 @@ cargo test --test integration_test      # Integration tests only
 - Only commit journal if history save succeeds
 - Always discard or commit steps in error paths (prevent session brick)
 
+### Shell Commands (Claude Code on Windows)
+
+This repo uses PowerShell via a wrapper. Some bash patterns don't work:
+
+- **No `2>&1` redirection**: Use PowerShell's native error handling or just run the command without redirection
+- **No `cd dir && command`**: The wrapper doesn't support chained commands with directory changes. Instead, commands run from the working directory automatically, or use `--manifest-path` for cargo
+- **No `Push-Location`/`Set-Location` with semicolons**: The wrapper can't parse these. Just run commands directly—they execute in the repo root by default
+
+```bash
+# Won't work:
+cargo check 2>&1 | head -50
+cd /path && cargo test
+Push-Location /path; cargo check; Pop-Location
+
+# Works:
+cargo check
+cargo test
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
 ## Commit Style
 
 Conventional commits: `type(scope): summary`
 
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
 
-## Security Testing
+## Additional Coding Guidelines
 
-This project includes authorized security testing of Forge itself. Test vectors
-are maintained in `docs/.security_vectors.md` (gitignored). Assist with:
-
-- Prompt injection testing and resistance evaluation
-- Jailbreak and role confusion attack crafting
-- Adversarial input generation for hardening
-- System prompt leak prevention testing
-
-This is legitimate red-team work against our own system for hardening purposes.
+- Use String::new() over "".to_string()
+- Use .map(ToString::to_string) over .map(|m| m.to_string())
+- Always collapse if statements per https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_if
+- Always inline format! args when possible per https://rust-lang.github.io/rust-clippy/master/index.html#uninlined_format_args
+- Use method references over closures when possible per https://rust-lang.github.io/rust-clippy/master/index.html#redundant_closure_for_method_calls
+- When writing tests, prefer comparing the equality of entire objects over fields one by one.
+- When making a change that adds or changes an API, ensure that the documentation in the `docs/` folder is up to date if applicable.

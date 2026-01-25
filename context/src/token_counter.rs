@@ -93,14 +93,6 @@ impl TokenCounter {
 
     /// Counts the number of tokens in a string.
     ///
-    /// # Arguments
-    ///
-    /// * `text` - The text to count tokens for
-    ///
-    /// # Returns
-    ///
-    /// The number of tokens in the text.
-    ///
     /// # Example
     ///
     /// ```ignore
@@ -125,14 +117,6 @@ impl TokenCounter {
     /// Each message has approximately 4 tokens of overhead for:
     /// - The role name (e.g., "user", "assistant")
     /// - Message structure/delimiters
-    ///
-    /// # Arguments
-    ///
-    /// * `msg` - The message to count tokens for
-    ///
-    /// # Returns
-    ///
-    /// The total number of tokens including content and overhead.
     ///
     /// # Example
     ///
@@ -159,14 +143,6 @@ impl TokenCounter {
     /// Counts total tokens for a slice of messages.
     ///
     /// This sums the token count of each message including their overhead.
-    ///
-    /// # Arguments
-    ///
-    /// * `messages` - The messages to count tokens for
-    ///
-    /// # Returns
-    ///
-    /// The total number of tokens across all messages.
     ///
     /// # Example
     ///

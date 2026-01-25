@@ -625,6 +625,8 @@ impl crate::App {
         target: Option<&str>,
     ) -> Option<PreparedRewind> {
         let target = target?.trim();
+        // Accept '#<id>' as well as '<id>' for convenience (checkpoint lists are formatted as '#<id>').
+        let target = target.strip_prefix('#').unwrap_or(target);
         if target.is_empty() {
             return self.checkpoints.prepare_latest();
         }

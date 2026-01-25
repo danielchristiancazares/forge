@@ -13,6 +13,8 @@ pub struct UiOptions {
     pub ascii_only: bool,
     pub high_contrast: bool,
     pub reduced_motion: bool,
+    /// Whether to render provider thinking/reasoning deltas (if available).
+    pub show_thinking: bool,
 }
 
 /// State related to rendering and UI display.

@@ -839,6 +839,17 @@ impl App {
             }
         }
 
+        // When DenyAll, also deny auto-approved tools - "deny all" means deny all
+        if matches!(decision, tools::ApprovalDecision::DenyAll) {
+            for call in batch.execute_now.drain(..) {
+                denied_results.push(ToolResult::error(
+                    call.id.clone(),
+                    call.name.clone(),
+                    "Tool call denied by user",
+                ));
+            }
+        }
+
         if let Some(id) = batch.batch_id {
             for result in &denied_results {
                 let _ = self.tool_journal.record_result(id, result);

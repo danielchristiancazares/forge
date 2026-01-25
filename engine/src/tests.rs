@@ -563,6 +563,20 @@ fn streaming_message_apply_thinking_delta_ignored() {
 }
 
 #[test]
+fn streaming_message_apply_thinking_delta_captured_when_enabled() {
+    let (_tx, rx) = mpsc::channel(1024);
+    let model = Provider::Claude.default_model();
+    let mut stream =
+        StreamingMessage::new_with_thinking_capture(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES, true);
+
+    stream.apply_event(StreamEvent::TextDelta("visible".to_string()));
+    stream.apply_event(StreamEvent::ThinkingDelta("thinking...".to_string()));
+
+    assert_eq!(stream.content(), "visible");
+    assert_eq!(stream.thinking(), "thinking...");
+}
+
+#[test]
 fn streaming_message_into_message_success() {
     let (_tx, rx) = mpsc::channel(1024);
     let model = Provider::Claude.default_model();

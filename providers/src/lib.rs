@@ -19,11 +19,6 @@ use tokio::sync::mpsc;
 // Re-export types that callers need
 pub use forge_types;
 
-// ============================================================================
-// Shared HTTP Client
-// ============================================================================
-
-/// Connection timeout for API requests.
 const CONNECT_TIMEOUT_SECS: u64 = 30;
 /// Max idle time between SSE chunks before aborting.
 const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 60;
@@ -125,11 +120,6 @@ fn extract_sse_data(event: &str) -> Option<String> {
     if found { Some(data) } else { None }
 }
 
-// ============================================================================
-// SSE Stream Processing Abstraction
-// ============================================================================
-
-/// Action returned by provider-specific SSE JSON parser.
 enum SseParseAction {
     /// Continue processing, no event to emit
     Continue,
@@ -141,7 +131,6 @@ enum SseParseAction {
     Error(String),
 }
 
-/// Provider-specific SSE JSON parsing.
 trait SseParser {
     /// Parse a JSON payload and return the action to take.
     fn parse(&mut self, json: &serde_json::Value) -> SseParseAction;
@@ -300,10 +289,6 @@ pub async fn read_capped_error_body(response: reqwest::Response) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
-// ============================================================================
-// API Configuration
-// ============================================================================
-
 /// Configuration for API requests.
 #[derive(Debug, Clone)]
 pub struct ApiConfig {
@@ -367,10 +352,6 @@ impl ApiConfig {
         self.openai_options
     }
 }
-
-// ============================================================================
-// Streaming API
-// ============================================================================
 
 /// Send a chat request and stream the response.
 ///
@@ -560,7 +541,6 @@ pub mod claude {
     // Claude SSE Parser
     // ========================================================================
 
-    /// Parser state for Claude SSE streams.
     #[derive(Default)]
     struct ClaudeParser {
         /// Current tool call ID for streaming tool arguments
@@ -786,8 +766,7 @@ pub mod openai {
     // OpenAI SSE Parser
     // ========================================================================
 
-    /// Parser state for OpenAI SSE streams.
-    #[derive(Debug, Default)]
+    #[derive(Default)]
     struct OpenAIParser {
         saw_text_delta: bool,
         item_to_call: HashMap<String, String>,

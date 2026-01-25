@@ -375,6 +375,7 @@ impl App {
             ascii_only: app.and_then(|cfg| cfg.ascii_only).unwrap_or(false),
             high_contrast: app.and_then(|cfg| cfg.high_contrast).unwrap_or(false),
             reduced_motion: app.and_then(|cfg| cfg.reduced_motion).unwrap_or(false),
+            show_thinking: app.and_then(|cfg| cfg.show_thinking).unwrap_or(false),
         }
     }
 

@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     fn parse_model_name_claude() {
-        let model = parse_model_name_from_string("claude-sonnet-4-5-20250929");
+        let model = parse_model_name_from_string("claude-opus-4-5-20251101");
         assert!(model.is_some());
         let model = model.unwrap();
         assert_eq!(model.provider(), Provider::Claude);

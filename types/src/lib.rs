@@ -15,10 +15,6 @@ use std::borrow::Cow;
 use std::time::SystemTime;
 use thiserror::Error;
 
-// ============================================================================
-// NonEmpty String Types
-// ============================================================================
-
 /// A string guaranteed to be non-empty (after trimming).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -116,11 +112,6 @@ impl TryFrom<NonEmptyStaticStr> for NonEmptyString {
     }
 }
 
-// ============================================================================
-// Provider & Model Types
-// ============================================================================
-
-/// Supported LLM providers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum Provider {
     #[default]
@@ -160,7 +151,7 @@ impl Provider {
     #[must_use]
     pub fn default_model(&self) -> ModelName {
         match self {
-            Provider::Claude => ModelName::known(*self, "claude-sonnet-4-5-20250929"),
+            Provider::Claude => ModelName::known(*self, "claude-opus-4-5-20251101"),
             Provider::OpenAI => ModelName::known(*self, "gpt-5.2"),
             Provider::Gemini => ModelName::known(*self, "gemini-3-pro-preview"),
         }
@@ -170,11 +161,7 @@ impl Provider {
     #[must_use]
     pub fn available_models(&self) -> &'static [&'static str] {
         match self {
-            Provider::Claude => &[
-                "claude-sonnet-4-5-20250929",
-                "claude-haiku-4-5-20251001",
-                "claude-opus-4-5-20251101",
-            ],
+            Provider::Claude => &["claude-opus-4-5-20251101", "claude-haiku-4-5-20251001"],
             Provider::OpenAI => &["gpt-5.2", "gpt-5.2-2025-12-11"],
             Provider::Gemini => &["gemini-3-pro-preview", "gemini-3-flash-preview"],
         }
@@ -321,10 +308,6 @@ impl std::fmt::Display for ModelName {
     }
 }
 
-// ============================================================================
-// API Key Types
-// ============================================================================
-
 /// Provider-scoped API key.
 ///
 /// This prevents the invalid state "`OpenAI` key used with Claude" from being representable.
@@ -365,10 +348,6 @@ impl ApiKey {
         }
     }
 }
-
-// ============================================================================
-// OpenAI Request Options
-// ============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OpenAIReasoningEffort {
@@ -507,10 +486,6 @@ impl Default for OpenAIRequestOptions {
     }
 }
 
-// ============================================================================
-// Caching & Output Limits
-// ============================================================================
-
 /// Hint for whether content should be cached by the provider.
 ///
 /// Different providers handle caching differently:
@@ -600,11 +575,6 @@ impl OutputLimits {
     }
 }
 
-// ============================================================================
-// Streaming Events
-// ============================================================================
-
-/// Streaming event from the API.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     /// Text content delta.
@@ -632,13 +602,6 @@ pub enum StreamFinishReason {
     Error(String),
 }
 
-// ============================================================================
-// Tool Calling Types
-// ============================================================================
-
-/// Definition of a tool that can be called by the LLM.
-///
-/// This follows the standard function calling schema used by Claude and `OpenAI`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
     /// The name of the tool (function name).
@@ -664,10 +627,6 @@ impl ToolDefinition {
     }
 }
 
-/// A tool call requested by the LLM.
-///
-/// Contains the tool ID (for matching with results), the tool name,
-/// and the arguments as a JSON value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     /// Unique identifier for this tool call (used to match results).
@@ -712,7 +671,6 @@ impl ToolCall {
     }
 }
 
-/// The result of executing a tool call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     /// The ID of the tool call this result is for.
@@ -754,10 +712,6 @@ impl ToolResult {
         }
     }
 }
-
-// ============================================================================
-// Message Types
-// ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemMessage {
@@ -968,7 +922,7 @@ mod tests {
     fn model_parse_validates_claude_prefix() {
         let provider = Provider::Claude;
         assert!(provider.parse_model("gpt-5.2").is_err());
-        assert!(provider.parse_model("claude-sonnet-4-5-20250929").is_ok());
+        assert!(provider.parse_model("claude-opus-4-5-20251101").is_ok());
     }
 
     #[test]

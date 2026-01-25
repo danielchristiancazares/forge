@@ -85,7 +85,7 @@ pub async fn mount_claude_response(server: &MockServer, response_content: &str) 
             "type": "text",
             "text": response_content
         }],
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-opus-4-5-20251101",
         "stop_reason": "end_turn",
         "usage": {
             "input_tokens": 10,

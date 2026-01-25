@@ -307,6 +307,7 @@ mod tests {
             ascii_only: false,
             high_contrast: false,
             reduced_motion: false,
+            show_thinking: false,
         };
         let frame0 = spinner_frame(0, options);
         let frame1 = spinner_frame(1, options);
@@ -319,6 +320,7 @@ mod tests {
             ascii_only: false,
             high_contrast: false,
             reduced_motion: true,
+            show_thinking: false,
         };
         let frame0 = spinner_frame(0, options);
         let frame1 = spinner_frame(1, options);
@@ -336,6 +338,7 @@ mod tests {
             ascii_only: true,
             high_contrast: false,
             reduced_motion: true,
+            show_thinking: false,
         };
         let frame0 = spinner_frame(0, options);
         let frame1 = spinner_frame(1, options);
