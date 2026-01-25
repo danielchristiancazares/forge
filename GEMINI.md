@@ -146,3 +146,7 @@ infinity = true
 [tools.sandbox]
 allowed_roots = ["."]
 ```
+
+## Agent Guidelines
+
+- **Shell Commands:** This project runs in a Windows environment using PowerShell. You MUST use `;` to separate commands (e.g., `git add .; git commit ...`). Do NOT use `&&`.
