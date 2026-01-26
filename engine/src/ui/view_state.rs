@@ -38,6 +38,8 @@ pub struct ViewState {
     pub ui_options: UiOptions,
     /// Timestamp of last frame (for animation timing).
     pub last_frame: Instant,
+    /// Whether the files panel is visible.
+    pub files_panel_visible: bool,
 }
 
 impl Default for ViewState {
@@ -50,6 +52,7 @@ impl Default for ViewState {
             modal_effect: None,
             ui_options: UiOptions::default(),
             last_frame: Instant::now(),
+            files_panel_visible: false,
         }
     }
 }

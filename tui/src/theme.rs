@@ -165,6 +165,8 @@ pub struct Glyphs {
     pub thumb: &'static str,
     pub selected: &'static str,
     pub spinner_frames: &'static [&'static str],
+    pub add: &'static str,
+    pub modified: &'static str,
 }
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -194,6 +196,8 @@ pub fn glyphs(options: UiOptions) -> Glyphs {
             thumb: "#",
             selected: ">",
             spinner_frames: SPINNER_FRAMES_ASCII,
+            add: "+",
+            modified: "~",
         }
     } else {
         Glyphs {
@@ -217,6 +221,8 @@ pub fn glyphs(options: UiOptions) -> Glyphs {
             thumb: "█",
             selected: "▸",
             spinner_frames: SPINNER_FRAMES,
+            add: "+",
+            modified: "~",
         }
     }
 }

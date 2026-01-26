@@ -65,10 +65,19 @@ impl TurnContext {
         }
     }
 
-    pub(crate) fn finish(self, working_dir: &Path) -> TurnChangeReport {
+    /// Finish the turn and return both the report and the raw path sets.
+    ///
+    /// The raw sets are used for session-wide aggregation in the files panel.
+    pub(crate) fn finish(
+        self,
+        working_dir: &Path,
+    ) -> (TurnChangeReport, BTreeSet<PathBuf>, BTreeSet<PathBuf>) {
         let mut log = self.changes.lock().expect("mutex poisoned");
         let log = std::mem::take(&mut *log);
-        log.into_report(working_dir)
+        let created = log.created.clone();
+        let modified = log.modified.clone();
+        let report = log.into_report(working_dir);
+        (report, created, modified)
     }
 }
 

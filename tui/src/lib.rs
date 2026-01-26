@@ -117,14 +117,30 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         _ => 5,
     };
 
+    // Horizontal split for files panel when visible
+    let (main_area, files_panel_area) = if app.files_panel_visible() {
+        let h_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .margin(1)
+            .constraints([Constraint::Min(40), Constraint::Length(35)])
+            .split(frame.area());
+        (h_chunks[0], Some(h_chunks[1]))
+    } else {
+        (frame.area().inner(Margin::new(1, 1)), None)
+    };
+
+    // Vertical split within main area for messages + input
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(1)
         .constraints([Constraint::Min(1), Constraint::Length(input_height)])
-        .split(frame.area());
+        .split(main_area);
 
     draw_messages(frame, app, chunks[0], &palette, &glyphs);
     draw_input(frame, app, chunks[1], &palette, &glyphs, false);
+
+    if let Some(panel_area) = files_panel_area {
+        draw_files_panel(frame, app, panel_area, &palette, &glyphs);
+    }
 
     if app.input_mode() == InputMode::Command {
         draw_command_palette(frame, app, &palette);
@@ -699,6 +715,8 @@ pub(crate) fn draw_input(
             Span::styled(" insert  ", styles::key_hint(palette)),
             Span::styled("/", styles::key_highlight(palette)),
             Span::styled(" command  ", styles::key_hint(palette)),
+            Span::styled("f", styles::key_highlight(palette)),
+            Span::styled(" files  ", styles::key_hint(palette)),
             Span::styled("PgUp/PgDn", styles::key_highlight(palette)),
             Span::styled(" scroll  ", styles::key_hint(palette)),
             Span::styled("q", styles::key_highlight(palette)),
@@ -1165,6 +1183,101 @@ fn draw_inline_model_selector(
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
+}
+
+fn draw_files_panel(frame: &mut Frame, app: &App, area: Rect, palette: &Palette, glyphs: &Glyphs) {
+    let changes = app.session_changes();
+    let mut lines: Vec<Line> = Vec::new();
+    let inner_width = area.width.saturating_sub(4) as usize; // borders + padding
+
+    if changes.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "  No files modified",
+            Style::default().fg(palette.text_muted),
+        ));
+    } else {
+        // Created section (green)
+        if !changes.created.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::styled(
+                format!("  Created ({})", changes.created.len()),
+                Style::default().fg(palette.success),
+            ));
+            for path in &changes.created {
+                let display = truncate_path_display(path, inner_width.saturating_sub(4));
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {}", glyphs.add),
+                        Style::default().fg(palette.success),
+                    ),
+                    Span::styled(display, Style::default().fg(palette.text_secondary)),
+                ]));
+            }
+        }
+
+        // Modified section (yellow/warning)
+        if !changes.modified.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::styled(
+                format!("  Modified ({})", changes.modified.len()),
+                Style::default().fg(palette.warning),
+            ));
+            for path in &changes.modified {
+                let display = truncate_path_display(path, inner_width.saturating_sub(4));
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {}", glyphs.modified),
+                        Style::default().fg(palette.warning),
+                    ),
+                    Span::styled(display, Style::default().fg(palette.text_secondary)),
+                ]));
+            }
+        }
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette.text_muted))
+        .title(" Files ")
+        .title_style(Style::default().fg(palette.text_secondary))
+        .style(Style::default().bg(palette.bg_dark));
+
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Truncate a path for display, keeping the filename and as much of the parent as fits.
+fn truncate_path_display(path: &std::path::Path, max_width: usize) -> String {
+    let display = path.display().to_string();
+    if display.width() <= max_width {
+        return display;
+    }
+    // Path doesn't fit - try to show just the filename
+    if let Some(name) = path.file_name() {
+        let name_str = name.to_string_lossy();
+        // Check if filename alone fits
+        if name_str.width() <= max_width {
+            return name_str.into_owned();
+        }
+        // Filename doesn't fit - truncate it
+        if max_width > 3 {
+            let truncated: String = name_str
+                .graphemes(true)
+                .take(max_width.saturating_sub(3))
+                .collect();
+            return format!("{truncated}...");
+        }
+    }
+    // Fallback: truncate from the right
+    if max_width > 3 {
+        let truncated: String = display
+            .graphemes(true)
+            .take(max_width.saturating_sub(3))
+            .collect();
+        return format!("{truncated}...");
+    }
+    display
 }
 
 pub fn draw_model_selector(frame: &mut Frame, app: &mut App, palette: &Palette, glyphs: &Glyphs) {

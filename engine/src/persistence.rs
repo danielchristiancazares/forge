@@ -136,7 +136,11 @@ impl App {
             Self::ensure_secure_dir(parent)?;
         }
 
-        let state = SessionState::new(self.input.clone(), self.input_history.clone());
+        let state = SessionState::new(
+            self.input.clone(),
+            self.input_history.clone(),
+            self.session_changes.clone(),
+        );
         let json = serde_json::to_string_pretty(&state)?;
 
         // Atomic write: temp file + fsync + rename
@@ -183,6 +187,8 @@ impl App {
                     }
                     // Restore input history
                     self.input_history = state.history;
+                    // Restore modified files
+                    self.session_changes = state.modified_files;
                     tracing::debug!("Loaded session state from {}", path.display());
                 }
                 Ok(_) => {

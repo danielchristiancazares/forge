@@ -43,6 +43,7 @@ mod input_modes;
 mod persistence;
 mod security;
 mod session_state;
+pub use session_state::SessionChangeLog;
 mod state;
 mod streaming;
 mod summarization;
@@ -403,6 +404,8 @@ pub struct App {
     input_history: ui::InputHistory,
     /// Counter for debouncing session autosave (incremented each tick).
     session_save_counter: u32,
+    /// Session-wide log of files created and modified.
+    session_changes: SessionChangeLog,
 }
 
 impl App {
@@ -431,6 +434,21 @@ impl App {
 
     pub fn ui_options(&self) -> UiOptions {
         self.view.ui_options
+    }
+
+    /// Toggle visibility of the files panel.
+    pub fn toggle_files_panel(&mut self) {
+        self.view.files_panel_visible = !self.view.files_panel_visible;
+    }
+
+    /// Check if the files panel is visible.
+    pub fn files_panel_visible(&self) -> bool {
+        self.view.files_panel_visible
+    }
+
+    /// Get the session-wide file change log.
+    pub fn session_changes(&self) -> &SessionChangeLog {
+        &self.session_changes
     }
 
     pub fn provider(&self) -> Provider {

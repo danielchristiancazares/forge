@@ -334,6 +334,7 @@ impl App {
             librarian,
             input_history: crate::ui::InputHistory::default(),
             session_save_counter: 0,
+            session_changes: crate::session_state::SessionChangeLog::default(),
         };
 
         app.clamp_output_limits_to_model();

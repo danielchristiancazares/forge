@@ -19,6 +19,29 @@ use super::{
     ToolExecutor, ToolFut, ToolRegistry, WebFetchToolConfig, redact_summary, sanitize_output,
 };
 use crate::tools::git;
+
+/// Display a path without the Windows extended-length prefix (`\\?\`).
+fn display_path(path: &Path) -> String {
+    path_string_without_verbatim_prefix(path)
+}
+
+fn display_path_relative(path: &Path, root: &Path) -> String {
+    let path = PathBuf::from(path_string_without_verbatim_prefix(path));
+    let root = PathBuf::from(path_string_without_verbatim_prefix(root));
+    if let Ok(rel) = path.strip_prefix(&root) {
+        return rel.to_string_lossy().to_string();
+    }
+    path.to_string_lossy().to_string()
+}
+
+fn path_string_without_verbatim_prefix(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    #[cfg(windows)]
+    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        return stripped.to_string();
+    }
+    s.to_string()
+}
 use crate::tools::lp1::{self, FileContent};
 use crate::tools::recall::RecallTool;
 use crate::tools::search::SearchTool;
@@ -103,7 +126,7 @@ const MAX_GLOB_LIMIT: usize = 10_000;
 /// - 1 line of context around each change
 /// - `...` between changes separated by >3 unchanged lines
 /// - Red (`-`) for deletions, green (`+`) for additions
-fn format_unified_diff(path: &str, old_bytes: &[u8], new_bytes: &[u8], existed: bool) -> String {
+fn format_unified_diff(_path: &str, old_bytes: &[u8], new_bytes: &[u8], _existed: bool) -> String {
     let old_text = std::str::from_utf8(old_bytes).unwrap_or("");
     let new_text = std::str::from_utf8(new_bytes).unwrap_or("");
 
@@ -111,17 +134,10 @@ fn format_unified_diff(path: &str, old_bytes: &[u8], new_bytes: &[u8], existed: 
 
     let mut out = String::new();
 
-    // File header
-    out.push_str(&format!(
-        "--- {}\n",
-        if existed { path } else { "/dev/null" }
-    ));
-    out.push_str(&format!("+++ {path}\n"));
-
     // Collect all changes with their line indices
     let changes: Vec<_> = diff.iter_all_changes().collect();
     if changes.is_empty() {
-        return out;
+        return String::new();
     }
 
     // Group changes into hunks with 1 line of context, collapsing gaps >3 lines
@@ -325,7 +341,7 @@ impl ToolExecutor for GlobTool {
                     continue;
                 }
 
-                files.push(path.display().to_string());
+                files.push(display_path(path));
 
                 if files.len() >= limit {
                     truncated = true;
@@ -738,12 +754,11 @@ impl ToolExecutor for ApplyPatchTool {
                 let changed = new_bytes != original_bytes;
 
                 if changed {
-                    diff_sections.push(format_unified_diff(
-                        &file_patch.path,
-                        &original_bytes,
-                        &new_bytes,
-                        existed,
-                    ));
+                    let diff =
+                        format_unified_diff(&file_patch.path, &original_bytes, &new_bytes, existed);
+                    if !diff.is_empty() {
+                        diff_sections.push(diff);
+                    }
                 }
 
                 staged.push(StagedFile {
@@ -769,10 +784,11 @@ impl ToolExecutor for ApplyPatchTool {
                     } else {
                         ctx.turn_changes.record_created(file.path.clone());
                     }
+                    let rel_path = display_path_relative(&file.path, &ctx.working_dir);
                     if file.existed {
-                        summary_lines.push(format!("modified: {}", file.path.display()));
+                        summary_lines.push(format!("modified: {rel_path}"));
                     } else {
-                        summary_lines.push(format!("created: {}", file.path.display()));
+                        summary_lines.push(format!("created: {rel_path}"));
                     }
                 }
             } else {
@@ -909,7 +925,11 @@ impl ToolExecutor for WriteFileTool {
 
             ctx.turn_changes.record_created(resolved.clone());
 
-            let output = format!("Created {} ({} bytes)", resolved.display(), bytes.len());
+            let output = format!(
+                "Created {} ({} bytes)",
+                display_path(&resolved),
+                bytes.len()
+            );
             Ok(sanitize_output(&output))
         })
     }

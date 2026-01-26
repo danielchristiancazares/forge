@@ -78,6 +78,7 @@ fn test_app() -> App {
         librarian: None, // No Gemini API key in tests
         input_history: crate::ui::InputHistory::default(),
         session_save_counter: 0,
+        session_changes: crate::session_state::SessionChangeLog::default(),
     }
 }
 

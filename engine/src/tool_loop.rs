@@ -978,7 +978,11 @@ impl App {
     /// Finish a user turn and report any file changes.
     pub(crate) fn finish_turn(&mut self, turn: TurnContext) {
         let working_dir = self.tool_settings.sandbox.working_dir();
-        let report = turn.finish(&working_dir);
+        let (report, created, modified) = turn.finish(&working_dir);
+
+        // Aggregate turn changes into session-wide log
+        self.session_changes.merge_turn(&created, &modified);
+
         if let TurnChangeReport::Changes(summary) = report {
             let msg = summary.into_message();
             self.push_local_message(Message::system(msg));
