@@ -803,12 +803,12 @@ async fn summarization_failure_sets_retry_with_queued_request() {
         handle,
         attempt: 1,
     };
-    app.state = OperationState::SummarizingWithQueued(SummarizationWithQueuedState {
+    app.state = OperationState::Summarizing(SummarizationState {
         task,
-        queued: QueuedUserMessage {
+        queued: Some(QueuedUserMessage {
             config: config.clone(),
             turn: crate::input_modes::TurnContext::new_for_tests(),
-        },
+        }),
     });
 
     let before = Instant::now();
@@ -816,15 +816,13 @@ async fn summarization_failure_sets_retry_with_queued_request() {
     app.poll_summarization();
 
     match &app.state {
-        OperationState::SummarizationRetryWithQueued(state) => {
+        OperationState::SummarizationRetry(state) => {
             assert_eq!(state.retry.attempt, 2);
             assert!(state.retry.ready_at >= before);
-            assert_eq!(
-                state.queued.config.model().as_str(),
-                config.model().as_str()
-            );
+            let queued = state.queued.as_ref().expect("queued request");
+            assert_eq!(queued.config.model().as_str(), config.model().as_str());
         }
-        _ => panic!("expected retry with queued"),
+        _ => panic!("expected SummarizationRetry with queued"),
     }
 }
 

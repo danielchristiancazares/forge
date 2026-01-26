@@ -126,9 +126,8 @@ The engine depends on several workspace crates:
 │  ┌───────────────────────────────────────────────────────────────────┐  │
 │  │                     OperationState                                 │  │
 │  │   ┌─────────────────────────────────────────────────────────────┐ │  │
-│  │   │ Idle | Streaming | AwaitingToolResults | ToolLoop |         │ │  │
-│  │   │ ToolRecovery | Summarizing | SummarizingWithQueued |        │ │  │
-│  │   │ SummarizationRetry | SummarizationRetryWithQueued           │ │  │
+│  │   │ Idle | Streaming | ToolLoop | ToolRecovery |                │ │  │
+│  │   │ Summarizing | SummarizationRetry                            │ │  │
 │  │   └─────────────────────────────────────────────────────────────┘ │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 │                                                                          │
@@ -160,10 +159,8 @@ pub(crate) enum OperationState {
     Streaming(ActiveStream),                        // API response in progress
     ToolLoop(Box<ToolLoopState>),                   // Tool execution in progress (approval + execution)
     ToolRecovery(ToolRecoveryState),                // Crash recovery: pending user decision
-    Summarizing(SummarizationState),                // Background summarization
-    SummarizingWithQueued(SummarizingWithQueuedState), // Summarizing + pending request
-    SummarizationRetry(SummarizationRetryState),    // Retry after failure
-    SummarizationRetryWithQueued(SummarizationRetryWithQueuedState),
+    Summarizing(SummarizationState),                // Background summarization (queued: Option<...>)
+    SummarizationRetry(SummarizationRetryState),    // Retry after failure (queued: Option<...>)
 }
 ```
 

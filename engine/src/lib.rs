@@ -85,8 +85,7 @@ pub use state::SummarizationTask;
 
 use state::{
     ActiveStream, DataDir, OperationState, SummarizationRetry, SummarizationRetryState,
-    SummarizationRetryWithQueuedState, SummarizationStart, SummarizationState,
-    SummarizationWithQueuedState, ToolLoopPhase, ToolRecoveryDecision,
+    SummarizationStart, SummarizationState, ToolLoopPhase, ToolRecoveryDecision,
 };
 
 /// Accumulator for a single tool call during streaming.
@@ -829,10 +828,9 @@ impl App {
             OperationState::Streaming(_) => Some("streaming a response"),
             OperationState::ToolLoop(_) => Some("tool execution in progress"),
             OperationState::ToolRecovery(_) => Some("tool recovery pending"),
-            OperationState::Summarizing(_)
-            | OperationState::SummarizingWithQueued(_)
-            | OperationState::SummarizationRetry(_)
-            | OperationState::SummarizationRetryWithQueued(_) => Some("summarization in progress"),
+            OperationState::Summarizing(_) | OperationState::SummarizationRetry(_) => {
+                Some("summarization in progress")
+            }
         }
     }
 

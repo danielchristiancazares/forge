@@ -434,12 +434,7 @@ impl super::App {
                     OperationState::Summarizing(state) => {
                         state.task.handle.abort();
                     }
-                    OperationState::SummarizingWithQueued(state) => {
-                        state.task.handle.abort();
-                    }
-                    OperationState::SummarizationRetry(_)
-                    | OperationState::SummarizationRetryWithQueued(_)
-                    | OperationState::Idle => {}
+                    OperationState::SummarizationRetry(_) | OperationState::Idle => {}
                 }
 
                 self.display.clear();
