@@ -2,7 +2,7 @@
 
 use ratatui::layout::Rect;
 
-use forge_engine::{ModalEffect, ModalEffectKind};
+use forge_engine::{ModalEffect, ModalEffectKind, PanelEffect, PanelEffectKind};
 
 /// Apply a modal effect to transform the base rectangle.
 #[must_use]
@@ -42,6 +42,23 @@ pub fn apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> R
             Rect { x, ..base }
         }
     }
+}
+
+/// Apply a panel effect to the files panel.
+#[must_use]
+pub fn apply_files_panel_effect(effect: &PanelEffect, base: Rect) -> Rect {
+    match effect.kind() {
+        PanelEffectKind::SlideOutRight => slide_panel_right(base, 1.0 - effect.progress()),
+        PanelEffectKind::SlideInRight => slide_panel_right(base, effect.progress()),
+    }
+}
+
+fn slide_panel_right(base: Rect, progress: f32) -> Rect {
+    let t = ease_out_cubic(progress);
+    let width = (f32::from(base.width) * t).round() as u16;
+    let width = width.min(base.width);
+    let x = base.x.saturating_add(base.width.saturating_sub(width));
+    Rect { x, width, ..base }
 }
 
 fn scale_rect(base: Rect, scale: f32) -> Rect {

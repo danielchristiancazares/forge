@@ -10,8 +10,8 @@ use tokio::sync::mpsc;
 mod ui;
 use ui::InputState;
 pub use ui::{
-    DisplayItem, DraftInput, InputHistory, InputMode, ModalEffect, ModalEffectKind,
-    PredefinedModel, ScrollState, UiOptions, ViewState,
+    DisplayItem, DraftInput, InputHistory, InputMode, ModalEffect, ModalEffectKind, PanelEffect,
+    PanelEffectKind, PredefinedModel, ScrollState, UiOptions, ViewState,
 };
 
 pub use forge_context::{
@@ -438,12 +438,45 @@ impl App {
 
     /// Toggle visibility of the files panel.
     pub fn toggle_files_panel(&mut self) {
-        self.view.files_panel_visible = !self.view.files_panel_visible;
+        if self.view.ui_options.reduced_motion {
+            self.view.files_panel_effect = None;
+            self.view.files_panel_visible = !self.view.files_panel_visible;
+            return;
+        }
+
+        if self.view.files_panel_visible {
+            self.view.files_panel_effect =
+                Some(PanelEffect::slide_out_right(Duration::from_millis(180)));
+            self.view.last_frame = Instant::now();
+        } else {
+            self.view.files_panel_visible = true;
+            self.view.files_panel_effect =
+                Some(PanelEffect::slide_in_right(Duration::from_millis(180)));
+            self.view.last_frame = Instant::now();
+        }
     }
 
     /// Check if the files panel is visible.
     pub fn files_panel_visible(&self) -> bool {
         self.view.files_panel_visible
+    }
+
+    /// Get mutable reference to files panel effect for UI processing.
+    pub fn files_panel_effect_mut(&mut self) -> Option<&mut PanelEffect> {
+        self.view.files_panel_effect.as_mut()
+    }
+
+    pub fn clear_files_panel_effect(&mut self) {
+        self.view.files_panel_effect = None;
+    }
+
+    pub fn finish_files_panel_effect(&mut self) {
+        if let Some(effect) = &self.view.files_panel_effect
+            && effect.kind() == PanelEffectKind::SlideOutRight
+        {
+            self.view.files_panel_visible = false;
+        }
+        self.view.files_panel_effect = None;
     }
 
     /// Get the session-wide file change log.

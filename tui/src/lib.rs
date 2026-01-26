@@ -20,6 +20,7 @@ pub use ui_inline::{
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::time::Duration;
 
 use ratatui::{
     Frame,
@@ -117,16 +118,40 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         _ => 5,
     };
 
-    // Horizontal split for files panel when visible
-    let (main_area, files_panel_area) = if app.files_panel_visible() {
-        let h_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .margin(1)
-            .constraints([Constraint::Min(40), Constraint::Length(35)])
-            .split(frame.area());
-        (h_chunks[0], Some(h_chunks[1]))
+    let elapsed = app.frame_elapsed();
+
+    let panel_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .margin(1)
+        .constraints([Constraint::Min(40), Constraint::Length(35)])
+        .split(frame.area());
+    let base_panel_area = panel_layout[1];
+    let full_main_area = frame.area().inner(Margin::new(1, 1));
+
+    let mut files_panel_area = None;
+    if let Some(effect) = app.files_panel_effect_mut() {
+        effect.advance(elapsed);
+        let animated = effects::apply_files_panel_effect(effect, base_panel_area);
+        if animated.width > 0 && animated.height > 0 {
+            files_panel_area = Some(animated);
+        }
+        if effect.is_finished() {
+            app.finish_files_panel_effect();
+        }
+    } else if app.files_panel_visible() {
+        files_panel_area = Some(base_panel_area);
+    }
+
+    let main_area = if let Some(panel_area) = files_panel_area {
+        let width = panel_area.x.saturating_sub(full_main_area.x).max(1);
+        Rect {
+            x: full_main_area.x,
+            y: full_main_area.y,
+            width,
+            height: full_main_area.height,
+        }
     } else {
-        (frame.area().inner(Margin::new(1, 1)), None)
+        full_main_area
     };
 
     // Vertical split within main area for messages + input
@@ -147,7 +172,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if app.input_mode() == InputMode::ModelSelect {
-        draw_model_selector(frame, app, &palette, &glyphs);
+        draw_model_selector(frame, app, &palette, &glyphs, elapsed);
     }
 
     if app.tool_approval_requests().is_some() {
@@ -1280,7 +1305,13 @@ fn truncate_path_display(path: &std::path::Path, max_width: usize) -> String {
     display
 }
 
-pub fn draw_model_selector(frame: &mut Frame, app: &mut App, palette: &Palette, glyphs: &Glyphs) {
+pub fn draw_model_selector(
+    frame: &mut Frame,
+    app: &mut App,
+    palette: &Palette,
+    glyphs: &Glyphs,
+    elapsed: Duration,
+) {
     let area = frame.area();
     let selected_index = app.model_select_index().unwrap_or(0);
 
@@ -1386,7 +1417,6 @@ pub fn draw_model_selector(frame: &mut Frame, app: &mut App, palette: &Palette, 
         height: selector_height,
     };
 
-    let elapsed = app.frame_elapsed();
     let (selector_area, effect_done) = if let Some(effect) = app.modal_effect_mut() {
         effect.advance(elapsed);
         (

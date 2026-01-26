@@ -66,6 +66,8 @@ engine/
     ├── state.rs                # OperationState enum and state transitions
     ├── input_modes.rs          # Proof tokens (InsertToken, CommandToken, etc.)
     ├── commands.rs             # Command enum and typed parsing
+    ├── checkpoints.rs          # Checkpoint management for rewind/undo
+    ├── session_state.rs        # Session state management (turn tracking)
     ├── streaming.rs            # start_streaming, process_stream_events
     ├── summarization.rs        # Summarization task spawn and retry logic
     ├── tool_loop.rs            # Tool execution loop, approval workflow
@@ -74,6 +76,7 @@ engine/
     ├── persistence.rs          # History save/load logic
     ├── security.rs             # Input sanitization and security checks
     ├── util.rs                 # Utility functions
+    ├── tests.rs                # Integration tests for engine logic
     ├── tools/
     │   ├── mod.rs              # ToolRegistry, ToolExecutor trait, ToolError
     │   ├── builtins.rs         # Built-in tool implementations

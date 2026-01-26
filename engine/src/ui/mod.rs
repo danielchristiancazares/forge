@@ -8,6 +8,7 @@ mod history;
 mod input;
 mod modal;
 mod model_select;
+mod panel;
 mod scroll;
 mod view_state;
 
@@ -16,5 +17,6 @@ pub use history::InputHistory;
 pub use input::{DraftInput, InputMode, InputState};
 pub use modal::{ModalEffect, ModalEffectKind};
 pub use model_select::PredefinedModel;
+pub use panel::{PanelEffect, PanelEffectKind};
 pub use scroll::ScrollState;
 pub use view_state::{UiOptions, ViewState};

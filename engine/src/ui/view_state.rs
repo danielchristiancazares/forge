@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use super::{ModalEffect, ScrollState};
+use super::{ModalEffect, PanelEffect, ScrollState};
 
 /// UI configuration options derived from config/environment.
 #[derive(Debug, Clone, Copy, Default)]
@@ -34,6 +34,8 @@ pub struct ViewState {
     pub clear_transcript: bool,
     /// Active modal animation effect.
     pub modal_effect: Option<ModalEffect>,
+    /// Active files panel animation effect.
+    pub files_panel_effect: Option<PanelEffect>,
     /// UI options (theme, motion, glyphs).
     pub ui_options: UiOptions,
     /// Timestamp of last frame (for animation timing).
@@ -50,6 +52,7 @@ impl Default for ViewState {
             toggle_screen_mode: false,
             clear_transcript: false,
             modal_effect: None,
+            files_panel_effect: None,
             ui_options: UiOptions::default(),
             last_frame: Instant::now(),
             files_panel_visible: false,
