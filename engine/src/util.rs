@@ -32,11 +32,9 @@ pub fn parse_model_name_from_string(name: &str) -> Option<ModelName> {
     } else if trimmed.to_ascii_lowercase().starts_with("gemini-") {
         Provider::Gemini
     } else {
-        // Unknown provider - can't parse
         return None;
     };
 
-    // Use the standard parse method
     ModelName::parse(provider, trimmed).ok()
 }
 

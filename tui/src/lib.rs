@@ -36,8 +36,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use forge_engine::{
-    App, ContextUsageStatus, DisplayItem, InputMode, Message, PredefinedModel, Provider, UiOptions,
-    command_specs,
+    App, ChangeKind, ContextUsageStatus, DisplayItem, FileDiff, InputMode, Message,
+    PredefinedModel, Provider, UiOptions, command_specs,
 };
 use forge_types::{ToolResult, sanitize_terminal_text};
 
@@ -120,10 +120,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let elapsed = app.frame_elapsed();
 
+    // Panel width depends on expansion state: 35 chars collapsed, 50% expanded
+    let panel_constraint = if app.files_panel_expanded() {
+        Constraint::Percentage(50)
+    } else {
+        Constraint::Length(35)
+    };
     let panel_layout = Layout::default()
         .direction(Direction::Horizontal)
         .margin(1)
-        .constraints([Constraint::Min(40), Constraint::Length(35)])
+        .constraints([Constraint::Min(40), panel_constraint])
         .split(frame.area());
     let base_panel_area = panel_layout[1];
     let full_main_area = frame.area().inner(Margin::new(1, 1));
@@ -1211,55 +1217,15 @@ fn draw_inline_model_selector(
 }
 
 fn draw_files_panel(frame: &mut Frame, app: &App, area: Rect, palette: &Palette, glyphs: &Glyphs) {
-    let changes = app.session_changes();
-    let mut lines: Vec<Line> = Vec::new();
-    let inner_width = area.width.saturating_sub(4) as usize; // borders + padding
+    let files = app.ordered_files();
+    let panel = app.files_panel_state().clone();
+    let is_expanded = panel.expanded.is_some();
 
-    if changes.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::styled(
-            "  No files modified",
-            Style::default().fg(palette.text_muted),
-        ));
+    let hint = if is_expanded {
+        " Tab/S-Tab │ Enter: collapse │ C-D/U "
     } else {
-        // Created section (green)
-        if !changes.created.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(Line::styled(
-                format!("  Created ({})", changes.created.len()),
-                Style::default().fg(palette.success),
-            ));
-            for path in &changes.created {
-                let display = truncate_path_display(path, inner_width.saturating_sub(4));
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  {}", glyphs.add),
-                        Style::default().fg(palette.success),
-                    ),
-                    Span::styled(display, Style::default().fg(palette.text_secondary)),
-                ]));
-            }
-        }
-
-        // Modified section (yellow/warning)
-        if !changes.modified.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(Line::styled(
-                format!("  Modified ({})", changes.modified.len()),
-                Style::default().fg(palette.warning),
-            ));
-            for path in &changes.modified {
-                let display = truncate_path_display(path, inner_width.saturating_sub(4));
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  {}", glyphs.modified),
-                        Style::default().fg(palette.warning),
-                    ),
-                    Span::styled(display, Style::default().fg(palette.text_secondary)),
-                ]));
-            }
-        }
-    }
+        " Tab: cycle files "
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1267,14 +1233,167 @@ fn draw_files_panel(frame: &mut Frame, app: &App, area: Rect, palette: &Palette,
         .border_style(Style::default().fg(palette.text_muted))
         .title(" Files ")
         .title_style(Style::default().fg(palette.text_secondary))
+        .title_bottom(
+            Line::from(hint)
+                .centered()
+                .style(Style::default().fg(palette.text_muted)),
+        )
         .style(Style::default().bg(palette.bg_dark));
 
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if files.is_empty() {
+        let text = Paragraph::new(Line::styled(
+            "  No files modified",
+            Style::default().fg(palette.text_muted),
+        ));
+        frame.render_widget(text, inner);
+        return;
+    }
+
+    // Split inner area: file list (top) and diff (bottom, if expanded)
+    let (list_area, diff_area) = if is_expanded {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(files.len() as u16 + 1),
+                Constraint::Min(3),
+            ])
+            .split(inner);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (inner, None)
+    };
+
+    draw_file_list(frame, list_area, &files, &panel, palette, glyphs);
+
+    if let Some(diff_area) = diff_area {
+        draw_diff_view(frame, diff_area, app, &panel, palette);
+    }
+}
+
+fn draw_file_list(
+    frame: &mut Frame,
+    area: Rect,
+    files: &[(std::path::PathBuf, ChangeKind)],
+    panel: &forge_engine::FilesPanelState,
+    palette: &Palette,
+    _glyphs: &Glyphs,
+) {
+    let inner_width = area.width.saturating_sub(2) as usize;
+
+    let lines: Vec<Line> = files
+        .iter()
+        .enumerate()
+        .map(|(i, (path, kind))| {
+            let display = truncate_path_display(path, inner_width.saturating_sub(4));
+            let is_selected = i == panel.selected;
+            let is_file_expanded = panel.expanded.as_ref() == Some(path);
+
+            let prefix = if is_selected {
+                if is_file_expanded {
+                    " ▶ ".to_string()
+                } else {
+                    " › ".to_string()
+                }
+            } else {
+                "   ".to_string()
+            };
+
+            let kind_color = match kind {
+                ChangeKind::Modified => palette.warning,
+                ChangeKind::Created => palette.success,
+            };
+
+            let style = if is_selected {
+                Style::default()
+                    .fg(kind_color)
+                    .bg(palette.bg_highlight)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(kind_color)
+            };
+
+            Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(display, style),
+            ])
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn draw_diff_view(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    panel: &forge_engine::FilesPanelState,
+    palette: &Palette,
+) {
+    // Horizontal divider at top
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(area);
+
+    let divider_str: String = "─".repeat(area.width as usize);
+    let divider =
+        Paragraph::new(Line::from(divider_str)).style(Style::default().fg(palette.text_muted));
+    frame.render_widget(divider, chunks[0]);
+
+    let diff_area = chunks[1];
+
+    match app.files_panel_diff() {
+        Some(FileDiff::Diff(text) | FileDiff::Created(text)) => {
+            let lines = render_tool_result_lines(&text, Style::default(), palette, " ");
+            let total_lines = lines.len();
+
+            let max_scroll = total_lines.saturating_sub(diff_area.height as usize);
+            let scroll = panel.diff_scroll.min(max_scroll);
+
+            let visible: Vec<Line> = lines
+                .into_iter()
+                .skip(scroll)
+                .take(diff_area.height as usize)
+                .collect();
+
+            frame.render_widget(Paragraph::new(visible), diff_area);
+        }
+        Some(FileDiff::Deleted) => {
+            let text = Paragraph::new(Line::styled(
+                " File no longer exists",
+                Style::default().fg(palette.text_muted),
+            ));
+            frame.render_widget(text, diff_area);
+        }
+        Some(FileDiff::Binary(size)) => {
+            let text = Paragraph::new(Line::styled(
+                format!(" Binary file ({size} bytes)"),
+                Style::default().fg(palette.text_muted),
+            ));
+            frame.render_widget(text, diff_area);
+        }
+        Some(FileDiff::Error(e)) => {
+            let text = Paragraph::new(Line::styled(
+                format!(" Error: {e}"),
+                Style::default().fg(palette.error),
+            ));
+            frame.render_widget(text, diff_area);
+        }
+        None => {}
+    }
+}
+
+/// Strip the Windows extended-length path prefix (`\\?\`) for display.
+fn strip_windows_prefix(path: &str) -> String {
+    path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
 }
 
 /// Truncate a path for display, keeping the filename and as much of the parent as fits.
 fn truncate_path_display(path: &std::path::Path, max_width: usize) -> String {
-    let display = path.display().to_string();
+    let display = strip_windows_prefix(&path.display().to_string());
     if display.width() <= max_width {
         return display;
     }

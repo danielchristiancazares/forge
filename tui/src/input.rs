@@ -118,13 +118,21 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::PageDown => {
             app.scroll_page_down();
         }
-        // Page up (Ctrl+U)
+        // Page up (Ctrl+U) - context-sensitive: scroll diff when expanded
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.scroll_page_up();
+            if app.files_panel_expanded() {
+                app.files_panel_scroll_diff_up();
+            } else {
+                app.scroll_page_up();
+            }
         }
-        // Page down (Ctrl+D)
+        // Page down (Ctrl+D) - context-sensitive: scroll diff when expanded
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.scroll_page_down();
+            if app.files_panel_expanded() {
+                app.files_panel_scroll_diff_down();
+            } else {
+                app.scroll_page_down();
+            }
         }
         // Scroll down
         KeyCode::Char('j') | KeyCode::Down => {
@@ -153,6 +161,24 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Scroll up by 20% chunk
         KeyCode::Left => {
             app.scroll_up_chunk();
+        }
+        // Files panel: Tab cycles to next file
+        KeyCode::Tab => {
+            if app.files_panel_visible() {
+                app.files_panel_next();
+            }
+        }
+        // Files panel: Shift+Tab cycles to previous file
+        KeyCode::BackTab => {
+            if app.files_panel_visible() {
+                app.files_panel_prev();
+            }
+        }
+        // Files panel: Enter or Esc collapses diff
+        KeyCode::Enter | KeyCode::Esc => {
+            if app.files_panel_expanded() {
+                app.files_panel_collapse();
+            }
         }
         _ => {}
     }

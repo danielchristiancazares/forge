@@ -347,7 +347,6 @@ fn write_to_cache(
     cache.put(url, method, entry)
 }
 
-/// Get cache directory from config or default.
 /// Canonicalize URL by removing fragment.
 fn canonicalize_url(url: &url::Url) -> String {
     let mut url = url.clone();
@@ -358,8 +357,6 @@ fn canonicalize_url(url: &url::Url) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn test_module_structure() {}
 
     #[test]
     fn test_canonicalize_url() {

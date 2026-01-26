@@ -19,4 +19,4 @@ pub use modal::{ModalEffect, ModalEffectKind};
 pub use model_select::PredefinedModel;
 pub use panel::{PanelEffect, PanelEffectKind};
 pub use scroll::ScrollState;
-pub use view_state::{UiOptions, ViewState};
+pub use view_state::{ChangeKind, FilesPanelState, UiOptions, ViewState};

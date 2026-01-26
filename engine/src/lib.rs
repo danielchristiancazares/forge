@@ -10,8 +10,9 @@ use tokio::sync::mpsc;
 mod ui;
 use ui::InputState;
 pub use ui::{
-    DisplayItem, DraftInput, InputHistory, InputMode, ModalEffect, ModalEffectKind, PanelEffect,
-    PanelEffectKind, PredefinedModel, ScrollState, UiOptions, ViewState,
+    ChangeKind, DisplayItem, DraftInput, FilesPanelState, InputHistory, InputMode, ModalEffect,
+    ModalEffectKind, PanelEffect, PanelEffectKind, PredefinedModel, ScrollState, UiOptions,
+    ViewState,
 };
 
 pub use forge_context::{
@@ -65,6 +66,21 @@ pub(crate) use init::{
 /// Maximum number of stream events to process per UI tick.
 pub const DEFAULT_STREAM_EVENT_BUDGET: usize = 512;
 
+/// Result of diff generation for panel display.
+#[derive(Debug, Clone)]
+pub enum FileDiff {
+    /// Unified diff between baseline and current.
+    Diff(String),
+    /// File was created (no baseline) - show full content as additions.
+    Created(String),
+    /// File no longer exists on disk.
+    Deleted,
+    /// Binary file - show size only.
+    Binary(usize),
+    /// Error reading file.
+    Error(String),
+}
+
 pub use state::SummarizationTask;
 
 use state::{
@@ -72,10 +88,6 @@ use state::{
     SummarizationRetryWithQueuedState, SummarizationStart, SummarizationState,
     SummarizationWithQueuedState, ToolLoopPhase, ToolRecoveryDecision,
 };
-
-// ============================================================================
-// StreamingMessage - async message being streamed
-// ============================================================================
 
 /// Accumulator for a single tool call during streaming.
 ///
@@ -111,7 +123,6 @@ pub struct StreamingMessage {
     /// the engine.
     capture_thinking: bool,
     receiver: mpsc::Receiver<StreamEvent>,
-    /// Accumulated tool calls during streaming.
     tool_calls: Vec<ToolCallAccumulator>,
     max_tool_args_bytes: usize,
 }
@@ -297,10 +308,6 @@ impl StreamingMessage {
     }
 }
 
-// ============================================================================
-// Provider-specific system prompts
-// ============================================================================
-
 /// Provider-specific system prompts.
 ///
 /// Allows different prompts to be used for different LLM providers.
@@ -323,10 +330,6 @@ impl SystemPrompts {
         }
     }
 }
-
-// ============================================================================
-// Constants
-// ============================================================================
 
 pub(crate) const MAX_SUMMARIZATION_ATTEMPTS: u8 = 5;
 pub(crate) const SUMMARIZATION_RETRY_BASE_MS: u64 = 500;
@@ -438,18 +441,24 @@ impl App {
 
     /// Toggle visibility of the files panel.
     pub fn toggle_files_panel(&mut self) {
+        let panel = &mut self.view.files_panel;
         if self.view.ui_options.reduced_motion {
             self.view.files_panel_effect = None;
-            self.view.files_panel_visible = !self.view.files_panel_visible;
+            panel.visible = !panel.visible;
+            if !panel.visible {
+                // Reset state when hiding
+                panel.expanded = None;
+                panel.diff_scroll = 0;
+            }
             return;
         }
 
-        if self.view.files_panel_visible {
+        if panel.visible {
             self.view.files_panel_effect =
                 Some(PanelEffect::slide_out_right(Duration::from_millis(180)));
             self.view.last_frame = Instant::now();
         } else {
-            self.view.files_panel_visible = true;
+            panel.visible = true;
             self.view.files_panel_effect =
                 Some(PanelEffect::slide_in_right(Duration::from_millis(180)));
             self.view.last_frame = Instant::now();
@@ -458,7 +467,7 @@ impl App {
 
     /// Check if the files panel is visible.
     pub fn files_panel_visible(&self) -> bool {
-        self.view.files_panel_visible
+        self.view.files_panel.visible
     }
 
     /// Get mutable reference to files panel effect for UI processing.
@@ -474,7 +483,11 @@ impl App {
         if let Some(effect) = &self.view.files_panel_effect
             && effect.kind() == PanelEffectKind::SlideOutRight
         {
-            self.view.files_panel_visible = false;
+            let panel = &mut self.view.files_panel;
+            panel.visible = false;
+            // Reset state when hiding
+            panel.expanded = None;
+            panel.diff_scroll = 0;
         }
         self.view.files_panel_effect = None;
     }
@@ -482,6 +495,162 @@ impl App {
     /// Get the session-wide file change log.
     pub fn session_changes(&self) -> &SessionChangeLog {
         &self.session_changes
+    }
+
+    /// Get ordered list of changed files: modified first (alphabetical), then created.
+    /// Filters out files that no longer exist on disk.
+    pub fn ordered_files(&self) -> Vec<(std::path::PathBuf, ChangeKind)> {
+        let changes = &self.session_changes;
+        changes
+            .modified
+            .iter()
+            .map(|p| (p.clone(), ChangeKind::Modified))
+            .chain(
+                changes
+                    .created
+                    .iter()
+                    .map(|p| (p.clone(), ChangeKind::Created)),
+            )
+            .filter(|(p, _)| p.exists())
+            .collect()
+    }
+
+    fn files_panel_count(&self) -> usize {
+        self.ordered_files().len()
+    }
+
+    /// Cycle to the next file in the panel (wrapping).
+    pub fn files_panel_next(&mut self) {
+        let count = self.files_panel_count();
+        if count == 0 {
+            return;
+        }
+        let new_selected = (self.view.files_panel.selected + 1) % count;
+        let expanded_path = self
+            .ordered_files()
+            .get(new_selected)
+            .map(|(p, _)| p.clone());
+
+        let panel = &mut self.view.files_panel;
+        panel.selected = new_selected;
+        panel.diff_scroll = 0;
+        panel.expanded = expanded_path;
+    }
+
+    /// Cycle to the previous file in the panel (wrapping).
+    pub fn files_panel_prev(&mut self) {
+        let count = self.files_panel_count();
+        if count == 0 {
+            return;
+        }
+        let new_selected = if self.view.files_panel.selected == 0 {
+            count - 1
+        } else {
+            self.view.files_panel.selected - 1
+        };
+        let expanded_path = self
+            .ordered_files()
+            .get(new_selected)
+            .map(|(p, _)| p.clone());
+
+        let panel = &mut self.view.files_panel;
+        panel.selected = new_selected;
+        panel.diff_scroll = 0;
+        panel.expanded = expanded_path;
+    }
+
+    /// Check if a diff is currently expanded.
+    pub fn files_panel_expanded(&self) -> bool {
+        self.view.files_panel.expanded.is_some()
+    }
+
+    /// Get the current files panel state.
+    pub fn files_panel_state(&self) -> &FilesPanelState {
+        &self.view.files_panel
+    }
+
+    /// Collapse the expanded diff.
+    pub fn files_panel_collapse(&mut self) {
+        self.view.files_panel.expanded = None;
+        self.view.files_panel.diff_scroll = 0;
+    }
+
+    /// Sync the files panel selection index with the expanded path.
+    ///
+    /// Called after files are added/removed to ensure the selected index
+    /// correctly corresponds to the expanded file path.
+    pub fn files_panel_sync_selection(&mut self) {
+        let panel = &mut self.view.files_panel;
+        let files = self
+            .session_changes
+            .modified
+            .iter()
+            .cloned()
+            .chain(self.session_changes.created.iter().cloned())
+            .filter(|p| p.exists())
+            .collect::<Vec<_>>();
+
+        if let Some(expanded_path) = &panel.expanded {
+            // Find the new index for the expanded path
+            if let Some(new_idx) = files.iter().position(|p| p == expanded_path) {
+                panel.selected = new_idx;
+            } else {
+                // Expanded file no longer in list - collapse and reset
+                panel.expanded = None;
+                panel.diff_scroll = 0;
+                panel.selected = panel.selected.min(files.len().saturating_sub(1));
+            }
+        } else {
+            // No expansion - just clamp selected to valid range
+            panel.selected = panel.selected.min(files.len().saturating_sub(1));
+        }
+    }
+
+    /// Scroll the diff view down.
+    pub fn files_panel_scroll_diff_down(&mut self) {
+        self.view.files_panel.diff_scroll += 10;
+    }
+
+    /// Scroll the diff view up.
+    pub fn files_panel_scroll_diff_up(&mut self) {
+        self.view.files_panel.diff_scroll = self.view.files_panel.diff_scroll.saturating_sub(10);
+    }
+
+    /// Generate diff for the currently expanded file in the panel.
+    pub fn files_panel_diff(&self) -> Option<FileDiff> {
+        let path = self.view.files_panel.expanded.as_ref()?;
+
+        let current = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Some(FileDiff::Deleted);
+            }
+            Err(e) => return Some(FileDiff::Error(e.to_string())),
+        };
+
+        // Check for binary content (contains null bytes in first 8KB)
+        if current.iter().take(8192).any(|&b| b == 0) {
+            return Some(FileDiff::Binary(current.len()));
+        }
+
+        let baseline = self
+            .checkpoints
+            .find_baseline_for_file(path)
+            .and_then(|proof| self.checkpoints.baseline_content(proof, path));
+
+        if let Some(old_bytes) = baseline {
+            let diff = tools::builtins::format_unified_diff(
+                &path.to_string_lossy(),
+                old_bytes,
+                &current,
+                true,
+            );
+            Some(FileDiff::Diff(diff))
+        } else {
+            let content = String::from_utf8_lossy(&current);
+            let lines: Vec<_> = content.lines().map(|l| format!("+{l}")).collect();
+            Some(FileDiff::Created(lines.join("\n")))
+        }
     }
 
     pub fn provider(&self) -> Provider {

@@ -56,7 +56,6 @@ impl App {
                 self.context_manager = loaded_manager;
                 self.rebuild_display_from_history();
                 if count > 0 {
-                    // Compact loaded message
                     let msg = format!("History: {count} msgs");
                     if let Ok(content) = NonEmptyString::try_from(msg) {
                         self.push_local_message(Message::system(content));
@@ -122,10 +121,6 @@ impl App {
             }
         }
     }
-
-    // ========================================================================
-    // Session state persistence (draft input + input history)
-    // ========================================================================
 
     /// Save session state (draft input + input history) to disk.
     pub fn save_session(&self) -> anyhow::Result<()> {
@@ -504,7 +499,6 @@ impl App {
             return;
         };
 
-        // Remove from history
         if self.context_manager.rollback_last_message(msg_id).is_some() {
             // Remove from display (should be the last History item)
             if let Some(DisplayItem::History(display_id)) = self.display.last()

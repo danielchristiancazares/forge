@@ -81,23 +81,17 @@ pub(crate) enum SummarizationStart {
 #[derive(Debug)]
 pub(crate) struct SummarizationState {
     pub(crate) task: SummarizationTask,
-}
-
-#[derive(Debug)]
-pub(crate) struct SummarizationWithQueuedState {
-    pub(crate) task: SummarizationTask,
-    pub(crate) queued: crate::QueuedUserMessage,
+    /// When present, a validated user request is waiting to be streamed once
+    /// summarization completes.
+    pub(crate) queued: Option<crate::QueuedUserMessage>,
 }
 
 #[derive(Debug)]
 pub(crate) struct SummarizationRetryState {
     pub(crate) retry: SummarizationRetry,
-}
-
-#[derive(Debug)]
-pub(crate) struct SummarizationRetryWithQueuedState {
-    pub(crate) retry: SummarizationRetry,
-    pub(crate) queued: crate::QueuedUserMessage,
+    /// When present, a validated user request is waiting to be streamed once
+    /// summarization completes.
+    pub(crate) queued: Option<crate::QueuedUserMessage>,
 }
 
 #[derive(Debug)]
@@ -177,7 +171,5 @@ pub(crate) enum OperationState {
     ToolLoop(Box<ToolLoopState>),
     ToolRecovery(ToolRecoveryState),
     Summarizing(SummarizationState),
-    SummarizingWithQueued(SummarizationWithQueuedState),
     SummarizationRetry(SummarizationRetryState),
-    SummarizationRetryWithQueued(SummarizationRetryWithQueuedState),
 }

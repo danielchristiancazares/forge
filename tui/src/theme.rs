@@ -69,7 +69,6 @@ pub struct Palette {
     pub green: Color,
     pub yellow: Color,
     pub red: Color,
-    // Provider colors
     pub provider_claude: Color,
     pub provider_openai: Color,
     pub provider_gemini: Color,

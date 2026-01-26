@@ -11,9 +11,8 @@ use super::{
     ApiConfig, ApiKey, ContextBuildError, MAX_SUMMARIZATION_ATTEMPTS, NonEmptyString,
     OperationState, PendingSummarization, Provider, QueuedUserMessage, SUMMARIZATION_RETRY_BASE_MS,
     SUMMARIZATION_RETRY_JITTER_MS, SUMMARIZATION_RETRY_MAX_MS, SummarizationRetry,
-    SummarizationRetryState, SummarizationRetryWithQueuedState, SummarizationStart,
-    SummarizationState, SummarizationTask, SummarizationWithQueuedState, TokenCounter,
-    generate_summary, summarization_model,
+    SummarizationRetryState, SummarizationStart, SummarizationState, SummarizationTask,
+    TokenCounter, generate_summary, summarization_model,
 };
 
 impl super::App {
@@ -141,11 +140,10 @@ impl super::App {
             attempt,
         };
 
-        self.state = if let Some(queued) = queued_request {
-            OperationState::SummarizingWithQueued(SummarizationWithQueuedState { task, queued })
-        } else {
-            OperationState::Summarizing(SummarizationState { task })
-        };
+        self.state = OperationState::Summarizing(SummarizationState {
+            task,
+            queued: queued_request,
+        });
         SummarizationStart::Started
     }
 
@@ -163,7 +161,6 @@ impl super::App {
 
         let finished = match &self.state {
             OperationState::Summarizing(state) => state.task.handle.is_finished(),
-            OperationState::SummarizingWithQueued(state) => state.task.handle.is_finished(),
             _ => return,
         };
 
@@ -175,8 +172,7 @@ impl super::App {
         // Take ownership of the task
         let (task, queued_request) = match std::mem::replace(&mut self.state, OperationState::Idle)
         {
-            OperationState::Summarizing(state) => (state.task, None),
-            OperationState::SummarizingWithQueued(state) => (state.task, Some(state.queued)),
+            OperationState::Summarizing(state) => (state.task, state.queued),
             other => {
                 self.state = other;
                 return;
@@ -264,14 +260,10 @@ impl super::App {
                 attempt: next_attempt,
                 ready_at: Instant::now() + delay,
             };
-            self.state = if let Some(queued) = queued_request {
-                OperationState::SummarizationRetryWithQueued(SummarizationRetryWithQueuedState {
-                    retry,
-                    queued,
-                })
-            } else {
-                OperationState::SummarizationRetry(SummarizationRetryState { retry })
-            };
+            self.state = OperationState::SummarizationRetry(SummarizationRetryState {
+                retry,
+                queued: queued_request,
+            });
             self.push_notification(format!(
                 "Summarization failed (attempt {}/{}): {}. Retrying in {}ms...",
                 attempt,
@@ -304,9 +296,6 @@ impl super::App {
 
         let ready = match &self.state {
             OperationState::SummarizationRetry(state) => state.retry.ready_at <= Instant::now(),
-            OperationState::SummarizationRetryWithQueued(state) => {
-                state.retry.ready_at <= Instant::now()
-            }
             _ => return,
         };
 
@@ -316,10 +305,7 @@ impl super::App {
 
         let (retry, queued_request) = match std::mem::replace(&mut self.state, OperationState::Idle)
         {
-            OperationState::SummarizationRetry(state) => (state.retry, None),
-            OperationState::SummarizationRetryWithQueued(state) => {
-                (state.retry, Some(state.queued))
-            }
+            OperationState::SummarizationRetry(state) => (state.retry, state.queued),
             other => {
                 self.state = other;
                 return;

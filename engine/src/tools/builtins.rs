@@ -126,7 +126,12 @@ const MAX_GLOB_LIMIT: usize = 10_000;
 /// - 1 line of context around each change
 /// - `...` between changes separated by >3 unchanged lines
 /// - Red (`-`) for deletions, green (`+`) for additions
-fn format_unified_diff(_path: &str, old_bytes: &[u8], new_bytes: &[u8], _existed: bool) -> String {
+pub(crate) fn format_unified_diff(
+    _path: &str,
+    old_bytes: &[u8],
+    new_bytes: &[u8],
+    _existed: bool,
+) -> String {
     let old_text = std::str::from_utf8(old_bytes).unwrap_or("");
     let new_text = std::str::from_utf8(new_bytes).unwrap_or("");
 
@@ -770,8 +775,8 @@ impl ToolExecutor for ApplyPatchTool {
                 });
             }
 
-            let mut summary_lines: Vec<String> = Vec::new();
             let any_changed = staged.iter().any(|s| s.changed);
+            let changed_count = staged.iter().filter(|s| s.changed).count();
 
             if any_changed {
                 apply_staged_files(&staged)?;
@@ -784,6 +789,22 @@ impl ToolExecutor for ApplyPatchTool {
                     } else {
                         ctx.turn_changes.record_created(file.path.clone());
                     }
+                }
+            }
+
+            // Build output: skip summary for single-file edits (redundant with tool header)
+            let output = if !any_changed {
+                "No changes applied.".to_string()
+            } else if changed_count == 1 && !diff_sections.is_empty() {
+                // Single file: just show the diff
+                diff_sections.join("\n\n")
+            } else {
+                // Multiple files: show summary then diffs
+                let mut summary_lines: Vec<String> = Vec::new();
+                for file in &staged {
+                    if !file.changed {
+                        continue;
+                    }
                     let rel_path = display_path_relative(&file.path, &ctx.working_dir);
                     if file.existed {
                         summary_lines.push(format!("modified: {rel_path}"));
@@ -791,15 +812,13 @@ impl ToolExecutor for ApplyPatchTool {
                         summary_lines.push(format!("created: {rel_path}"));
                     }
                 }
-            } else {
-                summary_lines.push("No changes applied.".to_string());
-            }
-
-            let mut output = summary_lines.join("\n");
-            if any_changed && !diff_sections.is_empty() {
-                output.push_str("\n\n");
-                output.push_str(&diff_sections.join("\n\n"));
-            }
+                let mut out = summary_lines.join("\n");
+                if !diff_sections.is_empty() {
+                    out.push_str("\n\n");
+                    out.push_str(&diff_sections.join("\n\n"));
+                }
+                out
+            };
 
             Ok(sanitize_output(&output))
         })

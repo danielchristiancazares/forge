@@ -5,8 +5,6 @@
 
 use std::collections::HashMap;
 
-/// Token limits for a specific model.
-///
 /// Each model has a maximum context window (input tokens) and maximum output tokens.
 /// The effective input budget accounts for output reservation and a safety margin.
 ///

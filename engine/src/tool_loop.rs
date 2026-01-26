@@ -983,6 +983,9 @@ impl App {
         // Aggregate turn changes into session-wide log
         self.session_changes.merge_turn(&created, &modified);
 
+        // Sync files panel selection after file list changes
+        self.files_panel_sync_selection();
+
         if let TurnChangeReport::Changes(summary) = report {
             let msg = summary.into_message();
             self.push_local_message(Message::system(msg));

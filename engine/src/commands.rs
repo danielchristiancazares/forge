@@ -373,21 +373,16 @@ impl super::App {
             }
             OperationState::Summarizing(state) => {
                 state.task.handle.abort();
+                if state.queued.is_some() {
+                    self.rollback_pending_user_message();
+                }
                 self.push_notification("Summarization cancelled");
                 true
             }
-            OperationState::SummarizingWithQueued(state) => {
-                state.task.handle.abort();
-                self.rollback_pending_user_message();
-                self.push_notification("Summarization cancelled");
-                true
-            }
-            OperationState::SummarizationRetry(_) => {
-                self.push_notification("Summarization retry cancelled");
-                true
-            }
-            OperationState::SummarizationRetryWithQueued(_) => {
-                self.rollback_pending_user_message();
+            OperationState::SummarizationRetry(state) => {
+                if state.queued.is_some() {
+                    self.rollback_pending_user_message();
+                }
                 self.push_notification("Summarization retry cancelled");
                 true
             }

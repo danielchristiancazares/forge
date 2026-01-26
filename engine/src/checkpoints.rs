@@ -197,6 +197,12 @@ pub(crate) struct PreparedCodeRewind {
     id: CheckpointId,
 }
 
+/// Proof that a file baseline exists in a checkpoint.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PreparedFileBaseline {
+    checkpoint_id: CheckpointId,
+}
+
 /// Checkpoint creation outcome.
 #[derive(Debug, Clone)]
 pub(crate) struct CreatedCheckpoint {
@@ -368,6 +374,57 @@ impl CheckpointStore {
             self.checkpoints.truncate(pos + 1);
         }
     }
+
+    /// Find the most recent ToolEdit checkpoint containing a snapshot of `path`.
+    pub(crate) fn find_baseline_for_file(&self, path: &Path) -> Option<PreparedFileBaseline> {
+        let normalized = normalize_path(path);
+
+        for checkpoint in self.checkpoints.iter().rev() {
+            if checkpoint.kind == CheckpointKind::ToolEdit
+                && let Some(ws) = &checkpoint.workspace
+            {
+                let has_file = ws
+                    .files
+                    .keys()
+                    .any(|stored| stored == path || normalize_path(stored) == normalized);
+                if has_file {
+                    return Some(PreparedFileBaseline {
+                        checkpoint_id: checkpoint.id,
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    /// Get file content from a checkpoint, given a baseline proof.
+    /// Returns None if file was marked as Missing (didn't exist at checkpoint time).
+    pub(crate) fn baseline_content(
+        &self,
+        proof: PreparedFileBaseline,
+        path: &Path,
+    ) -> Option<&[u8]> {
+        let cp = self.get(proof.checkpoint_id)?;
+        let ws = cp.workspace.as_ref()?;
+
+        let normalized = normalize_path(path);
+        let snapshot = ws.files.get(path).or_else(|| {
+            ws.files
+                .iter()
+                .find(|(k, _)| normalize_path(k) == normalized)
+                .map(|(_, v)| v)
+        })?;
+
+        match snapshot {
+            FileSnapshot::Existed { bytes, .. } => Some(bytes),
+            FileSnapshot::Missing => None,
+        }
+    }
+}
+
+/// Normalize path for comparison.
+fn normalize_path(path: &Path) -> PathBuf {
+    path.components().collect()
 }
 
 /// Collect file targets that will be edited by tool calls.

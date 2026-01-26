@@ -9,10 +9,6 @@ use std::path::PathBuf;
 use thiserror::Error;
 use url::Url;
 
-// ============================================================================
-// Input Types
-// ============================================================================
-
 /// Input parameters for a `WebFetch` request.
 ///
 /// Per FR-WF-02, the request schema includes:
@@ -138,10 +134,6 @@ impl WebFetchInput {
     }
 }
 
-// ============================================================================
-// Output Types
-// ============================================================================
-
 /// Successful response from `WebFetch`.
 ///
 /// Per FR-WF-03, contains fetched content as structured chunks.
@@ -261,10 +253,6 @@ impl Note {
         }
     }
 }
-
-// ============================================================================
-// Configuration Types
-// ============================================================================
 
 /// `WebFetch` tool configuration.
 ///
@@ -460,10 +448,6 @@ pub struct RobotsConfig {
     pub fail_open: bool,
 }
 
-// ============================================================================
-// Error Types
-// ============================================================================
-
 /// `WebFetch` error with structured details.
 ///
 /// Per FR-WF-18 and FR-WF-18a, errors contain:
@@ -606,10 +590,6 @@ impl ErrorCode {
 #[derive(Debug, Clone, Default)]
 pub struct ErrorDetails(pub Vec<(String, String)>);
 
-// ============================================================================
-// Timeout Phase (FR-WF-ERR-TIMEOUT-PHASE)
-// ============================================================================
-
 /// Timeout phase for detailed error reporting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -633,10 +613,6 @@ pub enum TimeoutPhase {
     /// Timeout during robots.txt fetch.
     Robots,
 }
-
-// ============================================================================
-// SSRF Types
-// ============================================================================
 
 /// Result of SSRF validation.
 #[derive(Debug, Clone)]

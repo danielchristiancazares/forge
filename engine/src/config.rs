@@ -161,28 +161,17 @@ pub struct GeminiConfig {
 pub struct ToolsConfig {
     /// Maximum tool calls per batch.
     pub max_tool_calls_per_batch: Option<usize>,
-    /// Maximum tool iterations per user turn.
     pub max_tool_iterations_per_user_turn: Option<u32>,
-    /// List of tool definitions.
     #[serde(default)]
     pub definitions: Vec<ToolDefinitionConfig>,
-    /// Sandbox config.
     pub sandbox: Option<ToolSandboxConfig>,
-    /// Timeout config.
     pub timeouts: Option<ToolTimeoutsConfig>,
-    /// Output config.
     pub output: Option<ToolOutputConfig>,
-    /// Environment sanitization config.
     pub environment: Option<ToolEnvironmentConfig>,
-    /// Approval policy config.
     pub approval: Option<ToolApprovalConfig>,
-    /// `read_file` limits.
     pub read_file: Option<ReadFileConfig>,
-    /// `apply_patch` limits.
     pub apply_patch: Option<ApplyPatchConfig>,
-    /// search limits.
     pub search: Option<SearchConfig>,
-    /// webfetch limits.
     pub webfetch: Option<WebFetchConfig>,
     /// Shell configuration for `run_command`.
     pub shell: Option<ShellConfig>,
