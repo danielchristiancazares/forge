@@ -4,6 +4,7 @@
 
 use super::{
     ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, ModelNameKind, Provider,
+    SessionChangeLog,
     state::{
         OperationState, SummarizationStart, ToolLoopPhase, ToolLoopState, ToolRecoveryDecision,
     },
@@ -449,6 +450,7 @@ impl super::App {
                 self.display.clear();
                 self.display_version = self.display_version.wrapping_add(1);
                 self.pending_user_message = None; // Clear pending message tracking
+                self.session_changes = SessionChangeLog::default();
                 self.context_manager = ContextManager::new(self.model.as_str());
                 self.context_manager
                     .set_output_limit(self.output_limits.max_output_tokens());

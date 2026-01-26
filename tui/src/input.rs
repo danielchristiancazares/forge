@@ -142,6 +142,14 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('s') => {
             app.request_toggle_screen_mode();
         }
+        // Toggle files panel
+        KeyCode::Char('f') => {
+            app.toggle_files_panel();
+        }
+        // Open model picker
+        KeyCode::Char('m') => {
+            app.enter_model_select_mode();
+        }
         // Scroll up by 20% chunk
         KeyCode::Left => {
             app.scroll_up_chunk();
@@ -212,6 +220,14 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Down => {
             app.navigate_history_down();
         }
+        // Backspace: exit insert mode if empty, otherwise delete char
+        KeyCode::Backspace => {
+            if app.draft_text().is_empty() {
+                app.enter_normal_mode();
+            } else if let Some(token) = app.insert_token() {
+                app.insert_mode(token).delete_char();
+            }
+        }
         _ => {
             let Some(token) = app.insert_token() else {
                 return;
@@ -219,10 +235,6 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) {
             let mut insert = app.insert_mode(token);
 
             match key.code {
-                // Delete character
-                KeyCode::Backspace => {
-                    insert.delete_char();
-                }
                 // Delete character forward
                 KeyCode::Delete => {
                     insert.delete_char_forward();
@@ -311,6 +323,14 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Down => {
             app.navigate_command_history_down();
         }
+        // Backspace: exit command mode if empty, otherwise delete char
+        KeyCode::Backspace => {
+            if app.command_text().is_some_and(str::is_empty) {
+                app.enter_normal_mode();
+            } else if let Some(token) = app.command_token() {
+                app.command_mode(token).backspace();
+            }
+        }
         _ => {
             let Some(token) = app.command_token() else {
                 return;
@@ -318,10 +338,6 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
             let mut command_mode = app.command_mode(token);
 
             match key.code {
-                // Delete character
-                KeyCode::Backspace => {
-                    command_mode.backspace();
-                }
                 // Move cursor left
                 KeyCode::Left => {
                     command_mode.move_cursor_left();
