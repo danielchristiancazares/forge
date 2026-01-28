@@ -385,6 +385,38 @@ impl OpenAIReasoningEffort {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OpenAIReasoningSummary {
+    #[default]
+    None,
+    Auto,
+    Concise,
+    Detailed,
+}
+
+impl OpenAIReasoningSummary {
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "auto" => Some(Self::Auto),
+            "concise" => Some(Self::Concise),
+            "detailed" => Some(Self::Detailed),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Auto => "auto",
+            Self::Concise => "concise",
+            Self::Detailed => "detailed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OpenAITextVerbosity {
     Low,
     Medium,
@@ -442,6 +474,7 @@ impl OpenAITruncation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpenAIRequestOptions {
     reasoning_effort: OpenAIReasoningEffort,
+    reasoning_summary: OpenAIReasoningSummary,
     verbosity: OpenAITextVerbosity,
     truncation: OpenAITruncation,
 }
@@ -450,11 +483,13 @@ impl OpenAIRequestOptions {
     #[must_use]
     pub fn new(
         reasoning_effort: OpenAIReasoningEffort,
+        reasoning_summary: OpenAIReasoningSummary,
         verbosity: OpenAITextVerbosity,
         truncation: OpenAITruncation,
     ) -> Self {
         Self {
             reasoning_effort,
+            reasoning_summary,
             verbosity,
             truncation,
         }
@@ -463,6 +498,11 @@ impl OpenAIRequestOptions {
     #[must_use]
     pub fn reasoning_effort(self) -> OpenAIReasoningEffort {
         self.reasoning_effort
+    }
+
+    #[must_use]
+    pub fn reasoning_summary(self) -> OpenAIReasoningSummary {
+        self.reasoning_summary
     }
 
     #[must_use]
@@ -480,6 +520,7 @@ impl Default for OpenAIRequestOptions {
     fn default() -> Self {
         Self::new(
             OpenAIReasoningEffort::default(),
+            OpenAIReasoningSummary::default(),
             OpenAITextVerbosity::default(),
             OpenAITruncation::default(),
         )
@@ -579,7 +620,7 @@ impl OutputLimits {
 pub enum StreamEvent {
     /// Text content delta.
     TextDelta(String),
-    /// Thinking/reasoning content delta (Claude extended thinking).
+    /// Provider reasoning content delta (Claude extended thinking or OpenAI summaries).
     ThinkingDelta(String),
     /// Tool call started - emitted when a `tool_use` content block begins.
     ToolCallStart {
@@ -1085,6 +1126,35 @@ mod tests {
     }
 
     #[test]
+    fn openai_reasoning_summary_parse() {
+        assert_eq!(
+            OpenAIReasoningSummary::parse("auto"),
+            Some(OpenAIReasoningSummary::Auto)
+        );
+        assert_eq!(
+            OpenAIReasoningSummary::parse("CONCISE"),
+            Some(OpenAIReasoningSummary::Concise)
+        );
+        assert_eq!(
+            OpenAIReasoningSummary::parse("Detailed"),
+            Some(OpenAIReasoningSummary::Detailed)
+        );
+        assert_eq!(
+            OpenAIReasoningSummary::parse("none"),
+            Some(OpenAIReasoningSummary::None)
+        );
+        assert_eq!(OpenAIReasoningSummary::parse("invalid"), None);
+    }
+
+    #[test]
+    fn openai_reasoning_summary_as_str() {
+        assert_eq!(OpenAIReasoningSummary::None.as_str(), "none");
+        assert_eq!(OpenAIReasoningSummary::Auto.as_str(), "auto");
+        assert_eq!(OpenAIReasoningSummary::Concise.as_str(), "concise");
+        assert_eq!(OpenAIReasoningSummary::Detailed.as_str(), "detailed");
+    }
+
+    #[test]
     fn openai_text_verbosity_parse() {
         assert_eq!(
             OpenAITextVerbosity::parse("low"),
@@ -1118,6 +1188,7 @@ mod tests {
     fn openai_request_options_default() {
         let options = OpenAIRequestOptions::default();
         assert_eq!(options.reasoning_effort(), OpenAIReasoningEffort::High);
+        assert_eq!(options.reasoning_summary(), OpenAIReasoningSummary::None);
         assert_eq!(options.verbosity(), OpenAITextVerbosity::High);
         assert_eq!(options.truncation(), OpenAITruncation::Auto);
     }
@@ -1126,10 +1197,12 @@ mod tests {
     fn openai_request_options_custom() {
         let options = OpenAIRequestOptions::new(
             OpenAIReasoningEffort::Low,
+            OpenAIReasoningSummary::Concise,
             OpenAITextVerbosity::Medium,
             OpenAITruncation::Disabled,
         );
         assert_eq!(options.reasoning_effort(), OpenAIReasoningEffort::Low);
+        assert_eq!(options.reasoning_summary(), OpenAIReasoningSummary::Concise);
         assert_eq!(options.verbosity(), OpenAITextVerbosity::Medium);
         assert_eq!(options.truncation(), OpenAITruncation::Disabled);
     }

@@ -468,6 +468,29 @@ assert_eq!(OpenAIReasoningEffort::XHigh.as_str(), "xhigh");
 assert_eq!(OpenAIReasoningEffort::default(), OpenAIReasoningEffort::High);
 ```
 
+### OpenAIReasoningSummary
+
+Controls whether OpenAI returns a reasoning summary (for supported models).
+
+| Variant | API Value | Description |
+| ------- | --------- | ----------- |
+| `None` (default) | "none" | Do not request a reasoning summary |
+| `Auto` | "auto" | Request the most detailed summary available |
+| `Concise` | "concise" | Request a concise summary |
+| `Detailed` | "detailed" | Request a detailed summary |
+
+```rust
+use forge_types::OpenAIReasoningSummary;
+
+assert_eq!(OpenAIReasoningSummary::parse("auto"), Some(OpenAIReasoningSummary::Auto));
+assert_eq!(OpenAIReasoningSummary::parse("CONCISE"), Some(OpenAIReasoningSummary::Concise));
+assert_eq!(OpenAIReasoningSummary::parse("detailed"), Some(OpenAIReasoningSummary::Detailed));
+assert_eq!(OpenAIReasoningSummary::parse("invalid"), None);
+
+assert_eq!(OpenAIReasoningSummary::Auto.as_str(), "auto");
+assert_eq!(OpenAIReasoningSummary::default(), OpenAIReasoningSummary::None);
+```
+
 ### OpenAITextVerbosity
 
 Controls response verbosity level.
@@ -508,23 +531,29 @@ assert_eq!(OpenAITruncation::default(), OpenAITruncation::Auto);
 Combines all OpenAI-specific request configuration into a single type.
 
 ```rust
-use forge_types::{OpenAIRequestOptions, OpenAIReasoningEffort, OpenAITextVerbosity, OpenAITruncation};
+use forge_types::{
+    OpenAIReasoningEffort, OpenAIReasoningSummary, OpenAIRequestOptions, OpenAITextVerbosity,
+    OpenAITruncation,
+};
 
 // Create with specific options
 let opts = OpenAIRequestOptions::new(
     OpenAIReasoningEffort::High,
+    OpenAIReasoningSummary::Auto,
     OpenAITextVerbosity::Medium,
     OpenAITruncation::Auto,
 );
 
 // Access individual settings
 assert_eq!(opts.reasoning_effort(), OpenAIReasoningEffort::High);
+assert_eq!(opts.reasoning_summary(), OpenAIReasoningSummary::Auto);
 assert_eq!(opts.verbosity(), OpenAITextVerbosity::Medium);
 assert_eq!(opts.truncation(), OpenAITruncation::Auto);
 
 // Default configuration
 let default_opts = OpenAIRequestOptions::default();
 assert_eq!(default_opts.reasoning_effort(), OpenAIReasoningEffort::High);
+assert_eq!(default_opts.reasoning_summary(), OpenAIReasoningSummary::None);
 assert_eq!(default_opts.verbosity(), OpenAITextVerbosity::High);
 assert_eq!(default_opts.truncation(), OpenAITruncation::Auto);
 ```
@@ -627,7 +656,7 @@ Events emitted during streaming API responses.
 | Variant | Description |
 | ------- | ----------- |
 | `TextDelta(String)` | Incremental text content |
-| `ThinkingDelta(String)` | Claude extended thinking content |
+| `ThinkingDelta(String)` | Provider reasoning content (Claude extended thinking or OpenAI summaries) |
 | `ToolCallStart { id, name, thought_signature }` | Tool use content block began |
 | `ToolCallDelta { id, arguments }` | Tool call JSON arguments chunk |
 | `Done` | Stream completed successfully |

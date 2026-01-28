@@ -18,7 +18,6 @@ crossterm.workspace = true
 unicode-width.workspace = true
 unicode-segmentation.workspace = true
 pulldown-cmark.workspace = true
-arboard.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 

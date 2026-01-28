@@ -322,7 +322,9 @@ impl InsertMode<'_> {
         let api_key = crate::util::wrap_api_key(self.app.model.provider(), api_key);
 
         let config = match ApiConfig::new(api_key, self.app.model.clone()) {
-            Ok(config) => config.with_openai_options(self.app.openai_options),
+            Ok(config) => config
+                .with_openai_options(self.app.openai_options)
+                .with_gemini_thinking_enabled(self.app.gemini_thinking_enabled),
             Err(e) => {
                 self.app
                     .push_notification(format!("Cannot queue request: {e}"));

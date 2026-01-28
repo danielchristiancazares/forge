@@ -74,6 +74,7 @@ fn test_app() -> App {
         history_load_warning_shown: false,
         autosave_warning_shown: false,
         gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+        gemini_thinking_enabled: false,
         gemini_cache_config: crate::GeminiCacheConfig::default(),
         librarian: None, // No Gemini API key in tests
         input_history: crate::ui::InputHistory::default(),
@@ -779,7 +780,8 @@ async fn tool_loop_write_then_read_same_batch() {
         .find(|result| result.tool_call_id == "call-read")
         .expect("read result");
     assert!(!read_result.is_error);
-    assert_eq!(read_result.content, "hello");
+    // read_file now shows line numbers by default
+    assert_eq!(read_result.content, "1| hello");
 }
 
 #[tokio::test]

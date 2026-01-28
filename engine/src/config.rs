@@ -117,12 +117,14 @@ pub struct AnthropicConfig {
 /// ```toml
 /// [openai]
 /// reasoning_effort = "high"
+/// reasoning_summary = "auto"
 /// verbosity = "high"
 /// truncation = "auto"
 /// ```
 #[derive(Debug, Default, Deserialize)]
 pub struct OpenAIConfig {
     pub reasoning_effort: Option<String>,
+    pub reasoning_summary: Option<String>,
     pub verbosity: Option<String>,
     pub truncation: Option<String>,
 }

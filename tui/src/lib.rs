@@ -388,7 +388,10 @@ fn build_dynamic_message_lines(
 
         let show_thinking = app.ui_options().show_thinking;
         let has_thinking = show_thinking
-            && matches!(provider, Provider::Claude | Provider::Gemini)
+            && matches!(
+                provider,
+                Provider::Claude | Provider::Gemini | Provider::OpenAI
+            )
             && !streaming.thinking().is_empty();
         let is_empty = streaming.content().is_empty();
         let indent = "   ";

@@ -171,6 +171,7 @@ thinking_budget_tokens = 10000         # Token budget for thinking
 
 [openai]
 reasoning_effort = "high"              # "low", "medium", or "high" (GPT-5+)
+reasoning_summary = "auto"             # "none", "auto", "concise", "detailed" (GPT-5+, shown when show_thinking=true)
 verbosity = "high"                     # "low", "medium", or "high" (GPT-5+)
 truncation = "auto"                    # "auto", "none" or "preserve"
 

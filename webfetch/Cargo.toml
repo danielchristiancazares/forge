@@ -19,13 +19,12 @@ tokio = { workspace = true, features = ["rt", "time", "sync", "net", "process", 
 futures-util = { workspace = true }
 
 # HTTP
-reqwest = { workspace = true, features = ["cookies", "gzip", "brotli", "deflate"] }
+reqwest = { workspace = true, features = ["gzip", "brotli", "deflate"] }
 url = { workspace = true }
 chromiumoxide = { workspace = true }
 
 # HTML processing
 scraper = { workspace = true }
-pulldown-cmark = { workspace = true }
 
 # Serialization
 serde = { workspace = true }

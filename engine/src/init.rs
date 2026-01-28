@@ -17,9 +17,9 @@ use crate::state::{DataDir, DataDirSource, OperationState};
 use crate::tools::{self, builtins};
 use crate::ui::InputState;
 use crate::{
-    App, ContextManager, Librarian, OpenAIReasoningEffort, OpenAIRequestOptions,
-    OpenAITextVerbosity, OpenAITruncation, StreamJournal, SystemPrompts, ToolJournal, UiOptions,
-    ViewState,
+    App, ContextManager, Librarian, OpenAIReasoningEffort, OpenAIReasoningSummary,
+    OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation, StreamJournal, SystemPrompts,
+    ToolJournal, UiOptions, ViewState,
 };
 
 // Tool limit defaults
@@ -240,6 +240,9 @@ impl App {
                 .and_then(|cfg| cfg.cache_ttl_seconds)
                 .unwrap_or(3600), // Default 1 hour
         };
+        let gemini_thinking_enabled = gemini_config
+            .and_then(|cfg| cfg.thinking_enabled)
+            .unwrap_or(false);
 
         let data_dir = Self::data_dir();
 
@@ -330,6 +333,7 @@ impl App {
             history_load_warning_shown: false,
             autosave_warning_shown: false,
             gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            gemini_thinking_enabled,
             gemini_cache_config,
             librarian,
             input_history: crate::ui::InputHistory::default(),
@@ -453,6 +457,16 @@ impl App {
             })
             .unwrap_or_default();
 
+        let reasoning_summary = config
+            .and_then(|cfg| cfg.reasoning_summary.as_deref())
+            .map(|raw| {
+                OpenAIReasoningSummary::parse(raw).unwrap_or_else(|| {
+                    tracing::warn!("Unknown OpenAI reasoning_summary in config: {raw}");
+                    OpenAIReasoningSummary::default()
+                })
+            })
+            .unwrap_or_default();
+
         let verbosity = config
             .and_then(|cfg| cfg.verbosity.as_deref())
             .map(|raw| {
@@ -473,7 +487,7 @@ impl App {
             })
             .unwrap_or_default();
 
-        OpenAIRequestOptions::new(reasoning_effort, verbosity, truncation)
+        OpenAIRequestOptions::new(reasoning_effort, reasoning_summary, verbosity, truncation)
     }
 
     pub(crate) fn tool_settings_from_config(config: Option<&ForgeConfig>) -> tools::ToolSettings {

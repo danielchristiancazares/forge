@@ -11,7 +11,7 @@ use ratatui::{
     widgets::{Clear, Paragraph, Widget, Wrap},
 };
 
-use forge_engine::{App, DisplayItem, InputMode, Message};
+use forge_engine::{App, DisplayItem, InputMode, Message, PredefinedModel};
 use forge_types::sanitize_terminal_text;
 
 use crate::draw_input;
@@ -25,10 +25,30 @@ use crate::tool_result_summary::{ToolCallMeta, ToolResultRender, tool_result_ren
 pub const INLINE_INPUT_HEIGHT: u16 = 5;
 pub const INLINE_VIEWPORT_HEIGHT: u16 = INLINE_INPUT_HEIGHT + 1;
 
+fn inline_input_height(mode: InputMode) -> u16 {
+    match mode {
+        // Keep normal mode compact in inline view.
+        InputMode::Normal => 3,
+        // The inline model selector needs enough rows to show every entry.
+        //
+        // `draw_inline_model_selector()` renders a bordered block with the model options as
+        // paragraph lines. The block consumes 2 rows for borders, so we need:
+        //   model_count + 2
+        //
+        // We also clamp to `INLINE_INPUT_HEIGHT` so other overlays keep their baseline.
+        InputMode::ModelSelect => {
+            let model_count = u16::try_from(PredefinedModel::all().len()).unwrap_or(0);
+            (model_count + 2).max(INLINE_INPUT_HEIGHT)
+        }
+        _ => INLINE_INPUT_HEIGHT,
+    }
+}
+
 /// Returns the viewport height needed for inline mode.
 #[must_use]
-pub fn inline_viewport_height(_mode: InputMode) -> u16 {
-    INLINE_VIEWPORT_HEIGHT
+pub fn inline_viewport_height(mode: InputMode) -> u16 {
+    // +1 line above the input for a minimal output/status line.
+    inline_input_height(mode) + 1
 }
 
 pub fn clear_inline_viewport<B>(terminal: &mut Terminal<B>) -> Result<(), B::Error>
@@ -203,10 +223,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let palette = palette(options);
     let glyphs = glyphs(options);
 
-    let input_height = match app.input_mode() {
-        InputMode::Normal => 3,
-        _ => INLINE_INPUT_HEIGHT,
-    };
+    let input_height = inline_input_height(app.input_mode());
 
     let top_padding = area.height.saturating_sub(input_height);
     let content_area = Rect {

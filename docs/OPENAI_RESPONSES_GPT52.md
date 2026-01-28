@@ -32,7 +32,7 @@ sampling/logprob controls (per product decision).
 ## Reasoning controls (GPT-5.2)
 
 - reasoning.effort: none | low | medium | high | xhigh.
-- reasoning.summary: configure summaries of reasoning where supported.
+- reasoning.summary: configure summaries of reasoning where supported (none | auto | concise | detailed).
 - include: reasoning.encrypted_content when running stateless (store=false
   or ZDR), so reasoning items can be reused across turns.
 

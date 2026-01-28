@@ -80,9 +80,6 @@ unicode-normalization = "0.1"
 # Markdown parsing
 pulldown-cmark = "0.12"
 
-# Clipboard
-arboard = "3.4"
-
 # Unix libc bindings (for getuid)
 libc = "0.2"
 

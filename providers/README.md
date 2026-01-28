@@ -743,6 +743,7 @@ let model = Provider::OpenAI.parse_model("gpt-5.2")?;
 
 let options = OpenAIRequestOptions::new(
     OpenAIReasoningEffort::High,
+    OpenAIReasoningSummary::Auto,
     OpenAITextVerbosity::Medium,
     OpenAITruncation::Auto,
 );

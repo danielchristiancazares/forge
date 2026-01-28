@@ -295,6 +295,7 @@ pub struct ApiConfig {
     api_key: ApiKey,
     model: ModelName,
     openai_options: OpenAIRequestOptions,
+    gemini_thinking_enabled: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -318,12 +319,19 @@ impl ApiConfig {
             api_key,
             model,
             openai_options: OpenAIRequestOptions::default(),
+            gemini_thinking_enabled: false,
         })
     }
 
     #[must_use]
     pub fn with_openai_options(mut self, options: OpenAIRequestOptions) -> Self {
         self.openai_options = options;
+        self
+    }
+
+    #[must_use]
+    pub fn with_gemini_thinking_enabled(mut self, enabled: bool) -> Self {
+        self.gemini_thinking_enabled = enabled;
         self
     }
 
@@ -350,6 +358,11 @@ impl ApiConfig {
     #[must_use]
     pub fn openai_options(&self) -> OpenAIRequestOptions {
         self.openai_options
+    }
+
+    #[must_use]
+    pub const fn gemini_thinking_enabled(&self) -> bool {
+        self.gemini_thinking_enabled
     }
 }
 
@@ -716,6 +729,7 @@ pub mod openai {
         StreamEvent, ToolDefinition, http_client, mpsc, process_sse_stream, read_capped_error_body,
         send_event,
     };
+    use forge_types::OpenAIReasoningSummary;
     use serde_json::{Value, json};
     use std::collections::{HashMap, HashSet};
 
@@ -769,6 +783,7 @@ pub mod openai {
     #[derive(Default)]
     struct OpenAIParser {
         saw_text_delta: bool,
+        saw_reasoning_summary_delta: bool,
         item_to_call: HashMap<String, String>,
         call_has_delta: HashSet<String>,
     }
@@ -834,6 +849,27 @@ pub mod openai {
                         && let Some(text) = json["text"].as_str()
                     {
                         events.push(StreamEvent::TextDelta(text.to_string()));
+                    }
+                }
+                "response.reasoning_summary_text.delta" => {
+                    if let Some(delta) = json["delta"].as_str() {
+                        self.saw_reasoning_summary_delta = true;
+                        events.push(StreamEvent::ThinkingDelta(delta.to_string()));
+                    }
+                }
+                "response.reasoning_summary_text.done" => {
+                    if !self.saw_reasoning_summary_delta
+                        && let Some(text) = json["text"].as_str()
+                    {
+                        events.push(StreamEvent::ThinkingDelta(text.to_string()));
+                    }
+                }
+                "response.reasoning_summary_part.added" => {
+                    if let Some(part) = json.get("part")
+                        && let Some(text) = part.get("text").and_then(|value| value.as_str())
+                    {
+                        self.saw_reasoning_summary_delta = true;
+                        events.push(StreamEvent::ThinkingDelta(text.to_string()));
                     }
                 }
                 "response.function_call_arguments.delta" => {
@@ -995,10 +1031,18 @@ pub mod openai {
 
         let model = config.model().as_str();
         if model.starts_with("gpt-5") {
-            body.insert(
-                "reasoning".to_string(),
-                json!({ "effort": options.reasoning_effort().as_str() }),
+            let mut reasoning = serde_json::Map::new();
+            reasoning.insert(
+                "effort".to_string(),
+                json!(options.reasoning_effort().as_str()),
             );
+            if options.reasoning_summary() != OpenAIReasoningSummary::None {
+                reasoning.insert(
+                    "summary".to_string(),
+                    json!(options.reasoning_summary().as_str()),
+                );
+            }
+            body.insert("reasoning".to_string(), Value::Object(reasoning));
             body.insert(
                 "text".to_string(),
                 json!({ "verbosity": options.verbosity().as_str() }),
@@ -1048,7 +1092,10 @@ pub mod openai {
         use super::SseParser;
         use super::*;
         use forge_types::NonEmptyString;
-        use forge_types::{ApiKey, Provider};
+        use forge_types::{
+            ApiKey, OpenAIReasoningEffort, OpenAIReasoningSummary, OpenAIRequestOptions,
+            OpenAITextVerbosity, OpenAITruncation, Provider,
+        };
         use serde_json::json;
 
         fn collect_events(json: Value, parser: &mut OpenAIParser) -> Vec<StreamEvent> {
@@ -1098,6 +1145,42 @@ pub mod openai {
             );
 
             assert_eq!(body.get("instructions").unwrap().as_str(), Some("prompt"));
+        }
+
+        #[test]
+        fn includes_reasoning_summary_when_configured() {
+            let key = ApiKey::OpenAI("test".to_string());
+            let model = Provider::OpenAI.default_model();
+            let options = OpenAIRequestOptions::new(
+                OpenAIReasoningEffort::Low,
+                OpenAIReasoningSummary::Auto,
+                OpenAITextVerbosity::High,
+                OpenAITruncation::Auto,
+            );
+            let config = ApiConfig::new(key, model)
+                .unwrap()
+                .with_openai_options(options);
+
+            let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+
+            let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
+
+            let reasoning = body.get("reasoning").unwrap();
+            assert_eq!(reasoning["summary"].as_str(), Some("auto"));
+        }
+
+        #[test]
+        fn omits_reasoning_summary_by_default() {
+            let key = ApiKey::OpenAI("test".to_string());
+            let model = Provider::OpenAI.default_model();
+            let config = ApiConfig::new(key, model).unwrap();
+
+            let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+
+            let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
+
+            let reasoning = body.get("reasoning").unwrap();
+            assert!(reasoning.get("summary").is_none());
         }
 
         #[test]
@@ -1224,6 +1307,40 @@ pub mod openai {
                 &events[0],
                 StreamEvent::ToolCallDelta { id, arguments }
                     if id == "call_2" && arguments == "{\"path\":\"baz\"}"
+            ));
+        }
+
+        #[test]
+        fn emits_reasoning_summary_delta_as_thinking() {
+            let mut state = OpenAIParser::default();
+            let events = collect_events(
+                json!({
+                    "type": "response.reasoning_summary_text.delta",
+                    "delta": "brief summary"
+                }),
+                &mut state,
+            );
+            assert_eq!(events.len(), 1);
+            assert!(matches!(
+                &events[0],
+                StreamEvent::ThinkingDelta(text) if text == "brief summary"
+            ));
+        }
+
+        #[test]
+        fn emits_reasoning_summary_done_when_no_delta() {
+            let mut state = OpenAIParser::default();
+            let events = collect_events(
+                json!({
+                    "type": "response.reasoning_summary_text.done",
+                    "text": "summary text"
+                }),
+                &mut state,
+            );
+            assert_eq!(events.len(), 1);
+            assert!(matches!(
+                &events[0],
+                StreamEvent::ThinkingDelta(text) if text == "summary text"
             ));
         }
     }
@@ -1708,8 +1825,7 @@ pub mod gemini {
         let model = config.model().as_str();
         let url = format!("{API_BASE}/models/{model}:streamGenerateContent?alt=sse");
 
-        // Check if thinking is enabled based on limits (temporary - will use config later)
-        let thinking_enabled = limits.thinking_budget().is_some();
+        let thinking_enabled = config.gemini_thinking_enabled();
 
         let body = build_request_body(
             messages,

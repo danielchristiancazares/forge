@@ -86,11 +86,17 @@ impl ApplyPatchTool {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize)]
 struct ReadFileArgs {
     path: String,
     start_line: Option<u32>,
     end_line: Option<u32>,
+    #[serde(default = "default_true")]
+    line_numbers: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -449,7 +455,8 @@ impl ToolExecutor for ReadFileTool {
             "properties": {
                 "path": { "type": "string" },
                 "start_line": { "type": "integer", "minimum": 1 },
-                "end_line": { "type": "integer", "minimum": 1 }
+                "end_line": { "type": "integer", "minimum": 1 },
+                "line_numbers": { "type": "boolean", "default": true, "description": "Show line numbers (default: true)" }
             },
             "required": ["path"]
         })
@@ -545,6 +552,8 @@ impl ToolExecutor for ReadFileTool {
                 message: e.to_string(),
             })?;
 
+            let show_line_numbers = typed.line_numbers;
+
             let output = if is_binary {
                 if typed.start_line.is_some() || typed.end_line.is_some() {
                     return Err(ToolError::BadArgs {
@@ -560,14 +569,25 @@ impl ToolExecutor for ReadFileTool {
                         message: "File too large; use start_line/end_line".to_string(),
                     });
                 }
-                std::fs::read_to_string(&resolved).map_err(|e| ToolError::ExecutionFailed {
-                    tool: "read_file".to_string(),
-                    message: e.to_string(),
-                })?
+                let content =
+                    std::fs::read_to_string(&resolved).map_err(|e| ToolError::ExecutionFailed {
+                        tool: "read_file".to_string(),
+                        message: e.to_string(),
+                    })?;
+                if show_line_numbers {
+                    format_with_line_numbers(&content, 1)
+                } else {
+                    content
+                }
             } else {
                 let start = typed.start_line.unwrap_or(1) as usize;
                 let end = typed.end_line.unwrap_or(u32::MAX) as usize;
-                read_text_range(&resolved, start, end, self.limits.max_scan_bytes)?
+                let content = read_text_range(&resolved, start, end, self.limits.max_scan_bytes)?;
+                if show_line_numbers {
+                    format_with_line_numbers(&content, start)
+                } else {
+                    content
+                }
             };
 
             // Update file cache with SHA-256 for stale-file protection in apply_patch.
@@ -1190,6 +1210,27 @@ fn read_binary(path: &Path, output_limit: usize) -> Result<String, ToolError> {
     Ok(out)
 }
 
+/// Format text content with line numbers.
+/// Uses right-aligned line numbers with a separator: "  1| content"
+fn format_with_line_numbers(content: &str, start_line: usize) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let max_line_num = start_line + lines.len() - 1;
+    let width = max_line_num.to_string().len();
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        let line_num = start_line + i;
+        out.push_str(&format!("{line_num:>width$}| {line}\n"));
+    }
+    // Remove trailing newline if original didn't have one
+    if !content.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
 fn read_text_range(
     path: &Path,
     start: usize,
@@ -1584,5 +1625,48 @@ mod tests {
     fn glob_tool_risk_level_is_low() {
         let tool = GlobTool;
         assert_eq!(tool.risk_level(), RiskLevel::Low);
+    }
+
+    #[test]
+    fn format_with_line_numbers_basic() {
+        let content = "line one\nline two\nline three";
+        let result = format_with_line_numbers(content, 1);
+        assert_eq!(result, "1| line one\n2| line two\n3| line three");
+    }
+
+    #[test]
+    fn format_with_line_numbers_with_trailing_newline() {
+        let content = "line one\nline two\n";
+        let result = format_with_line_numbers(content, 1);
+        assert_eq!(result, "1| line one\n2| line two\n");
+    }
+
+    #[test]
+    fn format_with_line_numbers_start_offset() {
+        let content = "middle\nend";
+        let result = format_with_line_numbers(content, 50);
+        assert_eq!(result, "50| middle\n51| end");
+    }
+
+    #[test]
+    fn format_with_line_numbers_wide_numbers() {
+        let content = "a\nb";
+        let result = format_with_line_numbers(content, 99);
+        // Both lines should be padded to same width (3 digits for 100)
+        assert_eq!(result, " 99| a\n100| b");
+    }
+
+    #[test]
+    fn format_with_line_numbers_empty() {
+        let content = "";
+        let result = format_with_line_numbers(content, 1);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn format_with_line_numbers_single_line() {
+        let content = "only line";
+        let result = format_with_line_numbers(content, 1);
+        assert_eq!(result, "1| only line");
     }
 }

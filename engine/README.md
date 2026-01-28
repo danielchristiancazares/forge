@@ -832,6 +832,7 @@ thinking_budget_tokens = 10000
 ```toml
 [openai]
 reasoning_effort = "high"  # low | medium | high | xhigh
+reasoning_summary = "auto" # none | auto | concise | detailed (shown when show_thinking=true)
 verbosity = "high"         # low | medium | high
 truncation = "auto"        # auto | none | preserve
 ```

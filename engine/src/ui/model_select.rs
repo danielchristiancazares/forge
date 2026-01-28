@@ -8,6 +8,7 @@ pub enum PredefinedModel {
     ClaudeOpus,
     Gpt52,
     GeminiPro,
+    GeminiFlash,
 }
 
 impl PredefinedModel {
@@ -17,6 +18,7 @@ impl PredefinedModel {
             PredefinedModel::ClaudeOpus,
             PredefinedModel::Gpt52,
             PredefinedModel::GeminiPro,
+            PredefinedModel::GeminiFlash,
         ]
     }
 
@@ -26,6 +28,7 @@ impl PredefinedModel {
             PredefinedModel::ClaudeOpus => "Anthropic Claude Opus 4.5",
             PredefinedModel::Gpt52 => "OpenAI GPT 5.2",
             PredefinedModel::GeminiPro => "Google Gemini 3 Pro",
+            PredefinedModel::GeminiFlash => "Google Gemini 3 Flash",
         }
     }
 
@@ -39,6 +42,9 @@ impl PredefinedModel {
             PredefinedModel::GeminiPro => {
                 ModelName::known(Provider::Gemini, "gemini-3-pro-preview")
             }
+            PredefinedModel::GeminiFlash => {
+                ModelName::known(Provider::Gemini, "gemini-3-flash-preview")
+            }
         }
     }
 
@@ -47,7 +53,7 @@ impl PredefinedModel {
         match self {
             PredefinedModel::ClaudeOpus => Provider::Claude,
             PredefinedModel::Gpt52 => Provider::OpenAI,
-            PredefinedModel::GeminiPro => Provider::Gemini,
+            PredefinedModel::GeminiPro | PredefinedModel::GeminiFlash => Provider::Gemini,
         }
     }
 }

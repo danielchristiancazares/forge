@@ -24,12 +24,11 @@ path = "../tests/ui_snapshots.rs"
 [dependencies]
 forge-engine.workspace = true
 forge-tui.workspace = true
-forge-types.workspace = true
 
 ratatui.workspace = true
 crossterm.workspace = true
 
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 anyhow.workspace = true
 

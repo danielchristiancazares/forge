@@ -26,9 +26,9 @@ pub use forge_context::{
 pub use forge_providers::{self, ApiConfig, gemini::GeminiCache, gemini::GeminiCacheConfig};
 pub use forge_types::{
     ApiKey, CacheHint, CacheableMessage, EmptyStringError, Message, ModelName, ModelNameKind,
-    NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort, OpenAIRequestOptions,
-    OpenAITextVerbosity, OpenAITruncation, OutputLimits, Provider, StreamEvent, StreamFinishReason,
-    ToolCall, ToolDefinition, ToolResult, sanitize_terminal_text,
+    NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort, OpenAIReasoningSummary,
+    OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation, OutputLimits, Provider,
+    StreamEvent, StreamFinishReason, ToolCall, ToolDefinition, ToolResult, sanitize_terminal_text,
 };
 
 mod config;
@@ -362,7 +362,7 @@ pub struct App {
     output_limits: OutputLimits,
     /// Whether prompt caching is enabled (for Claude).
     cache_enabled: bool,
-    /// `OpenAI` request defaults (reasoning/verbosity/truncation).
+    /// `OpenAI` request defaults (reasoning/summary/verbosity/truncation).
     openai_options: OpenAIRequestOptions,
     /// Provider-specific system prompts.
     /// The correct prompt is selected at streaming time based on the active provider.
@@ -396,6 +396,8 @@ pub struct App {
     /// Active Gemini cache (if caching enabled and cache created).
     /// Uses Arc<Mutex> because cache is created/updated inside async streaming tasks.
     gemini_cache: std::sync::Arc<tokio::sync::Mutex<Option<GeminiCache>>>,
+    /// Whether Gemini thinking mode is enabled via config.
+    gemini_thinking_enabled: bool,
     /// Gemini cache configuration.
     gemini_cache_config: GeminiCacheConfig,
     /// The Librarian for fact extraction and retrieval (Context Infinity).

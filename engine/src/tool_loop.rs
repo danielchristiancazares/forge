@@ -726,16 +726,15 @@ impl App {
             }
         }
 
-        for (idx, call) in tool_calls.iter().enumerate() {
+        // Interleave tool calls with their results so each result appears right after
+        // its corresponding call in the display list (for proper tree connector rendering)
+        for (idx, (call, result)) in tool_calls.iter().zip(&ordered_results).enumerate() {
             if !step_id_recorded && idx == 0 {
                 self.push_history_message_with_step_id(Message::tool_use(call.clone()), step_id);
                 step_id_recorded = true;
             } else {
                 self.push_history_message(Message::tool_use(call.clone()));
             }
-        }
-
-        for result in &ordered_results {
             self.push_history_message(Message::tool_result(result.clone()));
         }
 
@@ -776,7 +775,9 @@ impl App {
             let api_key = crate::util::wrap_api_key(model.provider(), api_key);
 
             let config = match ApiConfig::new(api_key, model.clone()) {
-                Ok(config) => config.with_openai_options(self.openai_options),
+                Ok(config) => config
+                    .with_openai_options(self.openai_options)
+                    .with_gemini_thinking_enabled(self.gemini_thinking_enabled),
                 Err(e) => {
                     self.push_notification(format!("Cannot resume after tools: {e}"));
                     self.finish_turn(turn);
