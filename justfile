@@ -39,7 +39,7 @@ cov:
     cargo cov
 
 # Run all checks before committing
-pre-commit: fmt-check lint test
+verify: fmt-check lint test
 
 # Create source zip for bug analysis (excludes build artifacts)
 [windows]

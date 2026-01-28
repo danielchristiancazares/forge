@@ -51,7 +51,9 @@ pub async fn handle_events(app: &mut App) -> Result<bool> {
                     let Some(token) = app.insert_token() else {
                         return Ok(app.should_quit());
                     };
-                    app.insert_mode(token).enter_text(&text);
+                    // Normalize line endings: convert \r\n to \n and remove stray \r
+                    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+                    app.insert_mode(token).enter_text(&normalized);
                 }
             }
             _ => {}
@@ -289,8 +291,8 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     insert.delete_word_backwards();
                 }
-                // Insert character
-                KeyCode::Char(c) => {
+                // Insert character (ignore \r - it's handled via Enter or normalized in paste)
+                KeyCode::Char(c) if c != '\r' => {
                     insert.enter_char(c);
                 }
                 _ => {}
@@ -400,8 +402,8 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
                 KeyCode::Tab => {
                     command_mode.tab_complete();
                 }
-                // Insert character
-                KeyCode::Char(c) => {
+                // Insert character (ignore \r)
+                KeyCode::Char(c) if c != '\r' => {
                     command_mode.push_char(c);
                 }
                 _ => {}

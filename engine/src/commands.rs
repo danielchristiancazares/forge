@@ -718,7 +718,6 @@ impl super::App {
                 }
             }
             Command::Help => {
-                // TODO: Make this a modal
                 self.push_notification(command_help_summary());
             }
             Command::Unknown(cmd) => {

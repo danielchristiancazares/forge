@@ -343,6 +343,26 @@ fn build_message_lines(
     (lines, total_rows)
 }
 
+const TOOL_OUTPUT_WINDOW_LINES: usize = 5;
+
+fn tool_output_window(output_lines: Option<&[String]>, max_lines: usize) -> Vec<String> {
+    let mut lines: Vec<String> = output_lines
+        .unwrap_or(&[])
+        .iter()
+        .filter(|line| !line.starts_with("▶ ") && !line.starts_with("✓ Tool completed"))
+        .cloned()
+        .collect();
+
+    if lines.len() > max_lines {
+        lines = lines.split_off(lines.len() - max_lines);
+    }
+    if lines.len() < max_lines {
+        lines.extend(std::iter::repeat_n(String::new(), max_lines - lines.len()));
+    }
+
+    lines
+}
+
 /// Build message lines for dynamic content (streaming, tool status).
 /// Static history/local content is appended separately from cache.
 fn build_dynamic_message_lines(
@@ -469,96 +489,147 @@ fn build_dynamic_message_lines(
         if has_static || app.streaming().is_some() {
             lines.push(Line::from(""));
         }
-        let spinner = spinner_frame(app.tick_count(), app.ui_options());
-        let approval_pending = app.tool_approval_requests().is_some();
-        let header = if approval_pending {
-            format!("{spinner} Tool approval required")
-        } else {
-            format!("{spinner} Tool execution")
-        };
-        lines.push(Line::from(Span::styled(
-            header,
-            Style::default()
-                .fg(palette.warning)
-                .add_modifier(Modifier::ITALIC),
-        )));
 
-        for status in statuses {
-            let (icon, style, label) = match status.status {
-                ToolCallStatusKind::Denied => (
-                    glyphs.denied,
-                    Style::default()
-                        .fg(palette.warning)
-                        .add_modifier(Modifier::BOLD),
-                    "denied",
-                ),
-                ToolCallStatusKind::Error => (
-                    glyphs.tool_result_err,
-                    Style::default()
-                        .fg(palette.error)
-                        .add_modifier(Modifier::BOLD),
-                    "error",
-                ),
-                ToolCallStatusKind::Ok => (
-                    glyphs.tool_result_ok,
-                    Style::default()
-                        .fg(palette.success)
-                        .add_modifier(Modifier::BOLD),
-                    "ok",
-                ),
-                ToolCallStatusKind::Running => (
-                    spinner,
-                    Style::default()
-                        .fg(palette.primary)
-                        .add_modifier(Modifier::BOLD),
-                    "running",
-                ),
-                ToolCallStatusKind::Approval => (
-                    glyphs.paused,
-                    Style::default()
-                        .fg(palette.warning)
-                        .add_modifier(Modifier::BOLD),
-                    "paused",
-                ),
-                ToolCallStatusKind::Pending => (
-                    glyphs.bullet,
-                    Style::default().fg(palette.text_muted),
-                    "pending",
-                ),
-            };
+        let mut rendered_shell_view = false;
+        if let Some(current_id) = app.tool_loop_current_call_id()
+            && let Some(call) = app
+                .tool_loop_calls()
+                .and_then(|calls| calls.iter().find(|call| call.id == current_id))
+        {
+            let canonical = tool_display::canonical_tool_name(&call.name);
+            if matches!(canonical.as_ref(), "Bash" | "Pwsh") {
+                rendered_shell_view = true;
+                let spinner = spinner_frame(app.tick_count(), app.ui_options());
+                let display = tool_display::format_tool_call_compact(&call.name, &call.arguments);
+                let display = sanitize_terminal_text(&display).into_owned();
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!(" {spinner} "),
+                        Style::default()
+                            .fg(palette.primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        display,
+                        Style::default()
+                            .fg(palette.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
 
-            let name = sanitize_terminal_text(&status.name);
-            let id = sanitize_terminal_text(&status.id);
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {icon} "), style),
-                Span::styled(
-                    format!("{} ({}) [{label}]", name.as_ref(), id.as_ref()),
-                    Style::default().fg(palette.text_muted),
-                ),
-            ]));
-
-            if let Some(reason) = status.reason.as_ref() {
-                lines.push(Line::from(Span::styled(
-                    format!("    ↳ {reason}"),
-                    Style::default().fg(palette.text_muted),
-                )));
+                let output_window =
+                    tool_output_window(app.tool_loop_output_lines(), TOOL_OUTPUT_WINDOW_LINES);
+                let connector_style = Style::default().fg(palette.text_muted);
+                let output_style = Style::default().fg(palette.text_secondary);
+                for (index, line) in output_window.iter().enumerate() {
+                    let safe_line = sanitize_terminal_text(line).into_owned();
+                    if index == 0 {
+                        lines.push(Line::from(vec![
+                            Span::styled(format!(" {} ", glyphs.tree_connector), connector_style),
+                            Span::styled(safe_line, output_style),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::raw("   "),
+                            Span::styled(safe_line, output_style),
+                        ]));
+                    }
+                }
             }
         }
 
-        if let Some(output_lines) = app.tool_loop_output_lines()
-            && !output_lines.is_empty()
-        {
-            lines.push(Line::from(""));
+        if !rendered_shell_view {
+            let spinner = spinner_frame(app.tick_count(), app.ui_options());
+            let approval_pending = app.tool_approval_requests().is_some();
+            let header = if approval_pending {
+                format!("{spinner} Tool approval required")
+            } else {
+                format!("{spinner} Tool execution")
+            };
             lines.push(Line::from(Span::styled(
-                "  Tool output:",
-                Style::default().fg(palette.text_muted),
+                header,
+                Style::default()
+                    .fg(palette.warning)
+                    .add_modifier(Modifier::ITALIC),
             )));
-            for line in output_lines {
-                let safe_line = sanitize_terminal_text(line);
+
+            for status in statuses {
+                let (icon, style, label) = match status.status {
+                    ToolCallStatusKind::Denied => (
+                        glyphs.denied,
+                        Style::default()
+                            .fg(palette.warning)
+                            .add_modifier(Modifier::BOLD),
+                        "denied",
+                    ),
+                    ToolCallStatusKind::Error => (
+                        glyphs.tool_result_err,
+                        Style::default()
+                            .fg(palette.error)
+                            .add_modifier(Modifier::BOLD),
+                        "error",
+                    ),
+                    ToolCallStatusKind::Ok => (
+                        glyphs.tool_result_ok,
+                        Style::default()
+                            .fg(palette.success)
+                            .add_modifier(Modifier::BOLD),
+                        "ok",
+                    ),
+                    ToolCallStatusKind::Running => (
+                        spinner,
+                        Style::default()
+                            .fg(palette.primary)
+                            .add_modifier(Modifier::BOLD),
+                        "running",
+                    ),
+                    ToolCallStatusKind::Approval => (
+                        glyphs.paused,
+                        Style::default()
+                            .fg(palette.warning)
+                            .add_modifier(Modifier::BOLD),
+                        "paused",
+                    ),
+                    ToolCallStatusKind::Pending => (
+                        glyphs.bullet,
+                        Style::default().fg(palette.text_muted),
+                        "pending",
+                    ),
+                };
+
+                let name = sanitize_terminal_text(&status.name);
+                let id = sanitize_terminal_text(&status.id);
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {icon} "), style),
+                    Span::styled(
+                        format!("{} ({}) [{label}]", name.as_ref(), id.as_ref()),
+                        Style::default().fg(palette.text_muted),
+                    ),
+                ]));
+
+                if let Some(reason) = status.reason.as_ref() {
+                    lines.push(Line::from(Span::styled(
+                        format!("    ↳ {reason}"),
+                        Style::default().fg(palette.text_muted),
+                    )));
+                }
+            }
+
+            if let Some(output_lines) = app.tool_loop_output_lines()
+                && !output_lines.is_empty()
+            {
+                lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    format!("    {}", safe_line.as_ref()),
-                    Style::default().fg(palette.text_secondary),
+                    "  Tool output:",
+                    Style::default().fg(palette.text_muted),
                 )));
+                for line in output_lines {
+                    let safe_line = sanitize_terminal_text(line);
+                    lines.push(Line::from(Span::styled(
+                        format!("    {}", safe_line.as_ref()),
+                        Style::default().fg(palette.text_secondary),
+                    )));
+                }
             }
         }
     }

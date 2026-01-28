@@ -1,6 +1,16 @@
 //! Small pure helper functions.
 
-use forge_types::{ModelName, Provider};
+use forge_types::{ApiKey, ModelName, Provider};
+
+/// Wrap a raw API key string in the provider-specific `ApiKey` enum variant.
+#[inline]
+pub fn wrap_api_key(provider: Provider, raw: String) -> ApiKey {
+    match provider {
+        Provider::Claude => ApiKey::Claude(raw),
+        Provider::OpenAI => ApiKey::OpenAI(raw),
+        Provider::Gemini => ApiKey::Gemini(raw),
+    }
+}
 
 /// Truncate a string to a maximum length, adding ellipsis if needed.
 pub fn truncate_with_ellipsis(raw: &str, max: usize) -> String {

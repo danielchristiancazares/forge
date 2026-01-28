@@ -12,7 +12,7 @@ use futures_util::future::Abortable;
 use tokio::sync::mpsc;
 
 use forge_context::{ContextUsageStatus, StepId, ToolBatchId};
-use forge_types::{ApiKey, ModelName, ToolCall, ToolResult, sanitize_terminal_text};
+use forge_types::{ModelName, ToolCall, ToolResult, sanitize_terminal_text};
 
 use crate::input_modes::{ChangeRecorder, TurnChangeReport, TurnContext};
 use crate::state::{
@@ -22,8 +22,8 @@ use crate::state::{
 use crate::tools::{self, ConfirmationRequest};
 use crate::util;
 use crate::{
-    ApiConfig, App, DEFAULT_TOOL_CAPACITY_BYTES, Message, NonEmptyString, Provider,
-    QueuedUserMessage, TOOL_EVENT_CHANNEL_CAPACITY, TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
+    ApiConfig, App, DEFAULT_TOOL_CAPACITY_BYTES, Message, NonEmptyString, QueuedUserMessage,
+    TOOL_EVENT_CHANNEL_CAPACITY, TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
 };
 
 use futures_util::future::AbortHandle;
@@ -773,11 +773,7 @@ impl App {
                 return;
             };
 
-            let api_key = match model.provider() {
-                Provider::Claude => ApiKey::Claude(api_key),
-                Provider::OpenAI => ApiKey::OpenAI(api_key),
-                Provider::Gemini => ApiKey::Gemini(api_key),
-            };
+            let api_key = crate::util::wrap_api_key(model.provider(), api_key);
 
             let config = match ApiConfig::new(api_key, model.clone()) {
                 Ok(config) => config.with_openai_options(self.openai_options),

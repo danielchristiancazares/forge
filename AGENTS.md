@@ -51,8 +51,8 @@ Forge is a Rust Cargo workspace split into focused crates. Key paths:
 ## Commit & Pull Request Guidelines
 - Commit format follows Conventional Commits: `type(scope): summary` (scope optional). Examples: `feat(engine): add rewind`, `fix: resolve clippy lints`.
 - Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
-- Keep commits cohesive; run `just pre-commit` before pushing.
-- After Rust changes, run `just pre-commit` before you stage or commit any files.
+- Keep commits cohesive; run `just verify` before pushing.
+- After Rust changes, run `just verify` before you stage or commit any files.
 - PRs should include a short summary, test results, and screenshots for TUI-visible changes; link related issues when applicable.
 
 ## Configuration & Secrets

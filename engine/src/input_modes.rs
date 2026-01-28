@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use super::ui::{DraftInput, InputState};
-use super::{ApiConfig, ApiKey, App, Message, NonEmptyString, OperationState, Provider};
+use super::{ApiConfig, App, Message, NonEmptyString, OperationState};
 
 // ============================================================================
 // Turn change tracking
@@ -319,11 +319,7 @@ impl InsertMode<'_> {
         self.app.scroll_to_bottom();
         self.app.tool_iterations = 0;
 
-        let api_key = match self.app.model.provider() {
-            Provider::Claude => ApiKey::Claude(api_key),
-            Provider::OpenAI => ApiKey::OpenAI(api_key),
-            Provider::Gemini => ApiKey::Gemini(api_key),
-        };
+        let api_key = crate::util::wrap_api_key(self.app.model.provider(), api_key);
 
         let config = match ApiConfig::new(api_key, self.app.model.clone()) {
             Ok(config) => config.with_openai_options(self.app.openai_options),

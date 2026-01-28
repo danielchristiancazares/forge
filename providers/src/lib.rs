@@ -1657,10 +1657,17 @@ pub mod gemini {
                                 // Generate UUID for tool call ID (Gemini doesn't provide one)
                                 let id = format!("call_{}", Uuid::new_v4());
 
+                                // Extract thought signature from the part (Gemini requires this
+                                // to be echoed back when thinking mode is enabled)
+                                let thought_signature = part
+                                    .get("thoughtSignature")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from);
+
                                 events.push(StreamEvent::ToolCallStart {
                                     id: id.clone(),
                                     name,
-                                    thought_signature: None,
+                                    thought_signature,
                                 });
 
                                 // Send arguments as a single delta
@@ -2032,6 +2039,85 @@ pub mod gemini {
             // Flash models have lower threshold
             let medium_prompt = "A".repeat(5000);
             assert!(should_cache_prompt(&medium_prompt, "gemini-3-flash"));
+        }
+
+        #[test]
+        fn parser_extracts_thought_signature_from_function_call() {
+            let mut parser = GeminiParser;
+
+            // Simulate Gemini response with thinking mode enabled
+            let response = json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "functionCall": {
+                                "name": "read_file",
+                                "args": {"path": "test.rs"}
+                            },
+                            "thoughtSignature": "abc123signature"
+                        }]
+                    }
+                }]
+            });
+
+            let action = parser.parse(&response);
+
+            match action {
+                SseParseAction::Emit(events) => {
+                    assert!(!events.is_empty());
+                    match &events[0] {
+                        StreamEvent::ToolCallStart {
+                            id: _,
+                            name,
+                            thought_signature,
+                        } => {
+                            assert_eq!(name, "read_file");
+                            assert_eq!(thought_signature.as_deref(), Some("abc123signature"));
+                        }
+                        _ => panic!("Expected ToolCallStart event"),
+                    }
+                }
+                _ => panic!("Expected Emit action"),
+            }
+        }
+
+        #[test]
+        fn parser_handles_function_call_without_thought_signature() {
+            let mut parser = GeminiParser;
+
+            // Simulate Gemini response without thinking mode
+            let response = json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "functionCall": {
+                                "name": "list_dir",
+                                "args": {}
+                            }
+                        }]
+                    }
+                }]
+            });
+
+            let action = parser.parse(&response);
+
+            match action {
+                SseParseAction::Emit(events) => {
+                    assert!(!events.is_empty());
+                    match &events[0] {
+                        StreamEvent::ToolCallStart {
+                            id: _,
+                            name,
+                            thought_signature,
+                        } => {
+                            assert_eq!(name, "list_dir");
+                            assert!(thought_signature.is_none());
+                        }
+                        _ => panic!("Expected ToolCallStart event"),
+                    }
+                }
+                _ => panic!("Expected Emit action"),
+            }
         }
     }
 }

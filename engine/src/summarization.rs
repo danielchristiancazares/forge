@@ -8,8 +8,8 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::{
-    ApiConfig, ApiKey, ContextBuildError, MAX_SUMMARIZATION_ATTEMPTS, NonEmptyString,
-    OperationState, PendingSummarization, Provider, QueuedUserMessage, SUMMARIZATION_RETRY_BASE_MS,
+    ApiConfig, ContextBuildError, MAX_SUMMARIZATION_ATTEMPTS, NonEmptyString, OperationState,
+    PendingSummarization, QueuedUserMessage, SUMMARIZATION_RETRY_BASE_MS,
     SUMMARIZATION_RETRY_JITTER_MS, SUMMARIZATION_RETRY_MAX_MS, SummarizationRetry,
     SummarizationRetryState, SummarizationStart, SummarizationState, SummarizationTask,
     TokenCounter, generate_summary, summarization_model,
@@ -99,11 +99,7 @@ impl super::App {
             (queued.config.api_key_owned(), queued.config.model().clone())
         } else {
             let key = if let Some(key) = self.current_api_key().cloned() {
-                match self.model.provider() {
-                    Provider::Claude => ApiKey::Claude(key),
-                    Provider::OpenAI => ApiKey::OpenAI(key),
-                    Provider::Gemini => ApiKey::Gemini(key),
-                }
+                crate::util::wrap_api_key(self.model.provider(), key)
             } else {
                 self.push_notification("Cannot summarize: no API key configured");
                 return SummarizationStart::Failed;

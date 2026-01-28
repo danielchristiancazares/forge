@@ -675,95 +675,96 @@ impl App {
         }
     }
 
-    pub fn tool_loop_calls(&self) -> Option<&[ToolCall]> {
+    // ========================================================================
+    // Tool loop state helpers (private, inline)
+    // ========================================================================
+
+    #[inline]
+    fn tool_loop_state(&self) -> Option<&state::ToolLoopState> {
         match &self.state {
-            OperationState::ToolLoop(state) => Some(&state.batch.calls),
+            OperationState::ToolLoop(state) => Some(state.as_ref()),
             _ => None,
         }
+    }
+
+    #[inline]
+    fn tool_loop_state_mut(&mut self) -> Option<&mut state::ToolLoopState> {
+        match &mut self.state {
+            OperationState::ToolLoop(state) => Some(state.as_mut()),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn tool_approval_ref(&self) -> Option<&state::ApprovalState> {
+        match &self.tool_loop_state()?.phase {
+            ToolLoopPhase::AwaitingApproval(approval) => Some(approval),
+            ToolLoopPhase::Executing(_) => None,
+        }
+    }
+
+    #[inline]
+    fn tool_approval_mut(&mut self) -> Option<&mut state::ApprovalState> {
+        match &mut self.tool_loop_state_mut()?.phase {
+            ToolLoopPhase::AwaitingApproval(approval) => Some(approval),
+            ToolLoopPhase::Executing(_) => None,
+        }
+    }
+
+    #[inline]
+    fn tool_exec_ref(&self) -> Option<&state::ActiveToolExecution> {
+        match &self.tool_loop_state()?.phase {
+            ToolLoopPhase::Executing(exec) => Some(exec),
+            ToolLoopPhase::AwaitingApproval(_) => None,
+        }
+    }
+
+    // ========================================================================
+    // Tool loop public accessors
+    // ========================================================================
+
+    pub fn tool_loop_calls(&self) -> Option<&[ToolCall]> {
+        Some(&self.tool_loop_state()?.batch.calls)
     }
 
     pub fn tool_loop_execute_calls(&self) -> Option<&[ToolCall]> {
-        match &self.state {
-            OperationState::ToolLoop(state) => Some(&state.batch.execute_now),
-            _ => None,
-        }
+        Some(&self.tool_loop_state()?.batch.execute_now)
     }
 
     pub fn tool_loop_results(&self) -> Option<&[ToolResult]> {
-        match &self.state {
-            OperationState::ToolLoop(state) => Some(&state.batch.results),
-            _ => None,
-        }
+        Some(&self.tool_loop_state()?.batch.results)
     }
 
     pub fn tool_loop_current_call_id(&self) -> Option<&str> {
-        match &self.state {
-            OperationState::ToolLoop(state) => match &state.phase {
-                ToolLoopPhase::Executing(exec) => exec.current_call.as_ref().map(|c| c.id.as_str()),
-                ToolLoopPhase::AwaitingApproval(_) => None,
-            },
-            _ => None,
-        }
+        self.tool_exec_ref()?
+            .current_call
+            .as_ref()
+            .map(|c| c.id.as_str())
     }
 
     pub fn tool_loop_output_lines(&self) -> Option<&[String]> {
-        match &self.state {
-            OperationState::ToolLoop(state) => match &state.phase {
-                ToolLoopPhase::Executing(exec) => Some(&exec.output_lines),
-                ToolLoopPhase::AwaitingApproval(_) => None,
-            },
-            _ => None,
-        }
+        Some(&self.tool_exec_ref()?.output_lines)
     }
 
     pub fn tool_approval_requests(&self) -> Option<&[tools::ConfirmationRequest]> {
-        match &self.state {
-            OperationState::ToolLoop(state) => match &state.phase {
-                ToolLoopPhase::AwaitingApproval(approval) => Some(&approval.requests),
-                ToolLoopPhase::Executing(_) => None,
-            },
-            _ => None,
-        }
+        Some(&self.tool_approval_ref()?.requests)
     }
 
     pub fn tool_approval_selected(&self) -> Option<&[bool]> {
-        match &self.state {
-            OperationState::ToolLoop(state) => match &state.phase {
-                ToolLoopPhase::AwaitingApproval(approval) => Some(&approval.selected),
-                ToolLoopPhase::Executing(_) => None,
-            },
-            _ => None,
-        }
+        Some(&self.tool_approval_ref()?.selected)
     }
 
     pub fn tool_approval_cursor(&self) -> Option<usize> {
-        match &self.state {
-            OperationState::ToolLoop(state) => match &state.phase {
-                ToolLoopPhase::AwaitingApproval(approval) => Some(approval.cursor),
-                ToolLoopPhase::Executing(_) => None,
-            },
-            _ => None,
-        }
+        Some(self.tool_approval_ref()?.cursor)
     }
 
     pub fn tool_approval_expanded(&self) -> Option<usize> {
-        match &self.state {
-            OperationState::ToolLoop(state) => match &state.phase {
-                ToolLoopPhase::AwaitingApproval(approval) => approval.expanded,
-                ToolLoopPhase::Executing(_) => None,
-            },
-            _ => None,
-        }
+        self.tool_approval_ref()?.expanded
     }
 
     pub fn tool_approval_deny_confirm(&self) -> bool {
-        match &self.state {
-            OperationState::ToolLoop(state) => match &state.phase {
-                ToolLoopPhase::AwaitingApproval(approval) => approval.deny_confirm,
-                ToolLoopPhase::Executing(_) => false,
-            },
-            _ => false,
-        }
+        self.tool_approval_ref()
+            .is_some_and(|approval| approval.deny_confirm)
     }
 
     pub fn tool_recovery_calls(&self) -> Option<&[ToolCall]> {
@@ -1155,52 +1156,54 @@ impl App {
     }
 
     pub fn tool_approval_move_up(&mut self) {
-        if let OperationState::ToolLoop(state) = &mut self.state
-            && let ToolLoopPhase::AwaitingApproval(approval) = &mut state.phase
-            && approval.cursor > 0
-        {
-            approval.cursor -= 1;
-            approval.deny_confirm = false;
-            approval.expanded = None;
+        let Some(approval) = self.tool_approval_mut() else {
+            return;
+        };
+        if approval.cursor == 0 {
+            return;
         }
+        approval.cursor -= 1;
+        approval.deny_confirm = false;
+        approval.expanded = None;
     }
 
     pub fn tool_approval_move_down(&mut self) {
-        if let OperationState::ToolLoop(state) = &mut self.state
-            && let ToolLoopPhase::AwaitingApproval(approval) = &mut state.phase
-        {
-            // Allow cursor to move to Submit (N) and Deny (N+1) buttons
-            let max_cursor = approval.requests.len() + 1;
-            if approval.cursor < max_cursor {
-                approval.cursor += 1;
-            }
-            approval.deny_confirm = false;
-            approval.expanded = None;
+        let Some(approval) = self.tool_approval_mut() else {
+            return;
+        };
+        // Allow cursor to move to Submit (N) and Deny (N+1) buttons
+        let max_cursor = approval.requests.len() + 1;
+        if approval.cursor < max_cursor {
+            approval.cursor += 1;
         }
+        approval.deny_confirm = false;
+        approval.expanded = None;
     }
 
     pub fn tool_approval_toggle(&mut self) {
-        if let OperationState::ToolLoop(state) = &mut self.state
-            && let ToolLoopPhase::AwaitingApproval(approval) = &mut state.phase
-            && approval.cursor < approval.selected.len()
-        {
-            approval.selected[approval.cursor] = !approval.selected[approval.cursor];
-            approval.deny_confirm = false;
+        let Some(approval) = self.tool_approval_mut() else {
+            return;
+        };
+        if approval.cursor >= approval.selected.len() {
+            return;
         }
+        approval.selected[approval.cursor] = !approval.selected[approval.cursor];
+        approval.deny_confirm = false;
     }
 
     pub fn tool_approval_toggle_details(&mut self) {
-        if let OperationState::ToolLoop(state) = &mut self.state
-            && let ToolLoopPhase::AwaitingApproval(approval) = &mut state.phase
-            && approval.cursor < approval.requests.len()
-        {
-            if approval.expanded == Some(approval.cursor) {
-                approval.expanded = None;
-            } else {
-                approval.expanded = Some(approval.cursor);
-            }
-            approval.deny_confirm = false;
+        let Some(approval) = self.tool_approval_mut() else {
+            return;
+        };
+        if approval.cursor >= approval.requests.len() {
+            return;
         }
+        if approval.expanded == Some(approval.cursor) {
+            approval.expanded = None;
+        } else {
+            approval.expanded = Some(approval.cursor);
+        }
+        approval.deny_confirm = false;
     }
 
     pub fn tool_approval_approve_all(&mut self) {
@@ -1216,14 +1219,11 @@ impl App {
     /// - On Submit button: confirm selected
     /// - On Deny All button: deny all
     pub fn tool_approval_activate(&mut self) {
-        // Determine cursor position relative to tool count
-        let (cursor, num_tools) = if let OperationState::ToolLoop(state) = &self.state
-            && let ToolLoopPhase::AwaitingApproval(approval) = &state.phase
-        {
-            (approval.cursor, approval.requests.len())
-        } else {
+        let Some(approval) = self.tool_approval_ref() else {
             return;
         };
+        let cursor = approval.cursor;
+        let num_tools = approval.requests.len();
 
         match cursor.cmp(&num_tools) {
             std::cmp::Ordering::Less => self.tool_approval_toggle(),
@@ -1233,19 +1233,18 @@ impl App {
     }
 
     pub fn tool_approval_confirm_selected(&mut self) {
-        let ids = if let OperationState::ToolLoop(state) = &self.state
-            && let ToolLoopPhase::AwaitingApproval(approval) = &state.phase
-        {
-            approval
-                .requests
-                .iter()
-                .zip(approval.selected.iter())
-                .filter(|(_, selected)| **selected)
-                .map(|(req, _)| req.tool_call_id.clone())
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
+        let ids = self
+            .tool_approval_ref()
+            .map(|approval| {
+                approval
+                    .requests
+                    .iter()
+                    .zip(approval.selected.iter())
+                    .filter(|(_, selected)| **selected)
+                    .map(|(req, _)| req.tool_call_id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
 
         if ids.is_empty() {
             self.resolve_tool_approval(tools::ApprovalDecision::DenyAll);
@@ -1255,18 +1254,18 @@ impl App {
     }
 
     pub fn tool_approval_request_deny_all(&mut self) {
-        let mut should_deny = false;
-        if let OperationState::ToolLoop(state) = &mut self.state
-            && let ToolLoopPhase::AwaitingApproval(approval) = &mut state.phase
-        {
+        let should_deny = if let Some(approval) = self.tool_approval_mut() {
             let deny_cursor = approval.requests.len() + 1;
             approval.cursor = deny_cursor;
             if approval.deny_confirm {
-                should_deny = true;
+                true
             } else {
                 approval.deny_confirm = true;
+                false
             }
-        }
+        } else {
+            false
+        };
 
         if should_deny {
             self.resolve_tool_approval(tools::ApprovalDecision::DenyAll);

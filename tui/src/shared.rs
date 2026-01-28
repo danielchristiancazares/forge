@@ -77,9 +77,10 @@ pub(crate) fn collect_tool_statuses(
             ToolCallStatusKind::Pending
         };
 
+        let display_name = tool_display::format_tool_call_compact(&call.name, &call.arguments);
         statuses.push(ToolCallStatus {
             id: call.id.clone(),
-            name: call.name.clone(),
+            name: display_name,
             status,
             reason,
         });
