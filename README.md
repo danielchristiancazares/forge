@@ -170,10 +170,11 @@ thinking_enabled = false               # Enable extended thinking
 thinking_budget_tokens = 10000         # Token budget for thinking
 
 [openai]
-reasoning_effort = "high"              # "low", "medium", or "high" (GPT-5+)
+reasoning_effort = "high"              # "low", "medium", "high", or "xhigh" (GPT-5+)
 reasoning_summary = "auto"             # "none", "auto", "concise", "detailed" (GPT-5+, shown when show_thinking=true)
 verbosity = "high"                     # "low", "medium", or "high" (GPT-5+)
 truncation = "auto"                    # "auto", "none" or "preserve"
+# gpt-5.2-pro defaults to xhigh when reasoning_effort is unset.
 
 [google]
 thinking_enabled = true                # Enable thinking (for compatible Gemini models)
@@ -259,8 +260,8 @@ max_patch_bytes = 1048576              # Max patch size in bytes
 | `o` | Enter Insert mode with cleared line |
 | `:` or `/` | Enter Command mode |
 | `s` | Toggle screen mode (fullscreen/inline) |
-| `j` or `Down` | Scroll down |
-| `k` or `Up` | Scroll up |
+| `j`, `Down`, or scroll wheel | Scroll down |
+| `k`, `Up`, or scroll wheel | Scroll up |
 | `PageDown` or `Ctrl+D` | Scroll page down |
 | `PageUp` or `Ctrl+U` | Scroll page up |
 | `g` | Scroll to top |

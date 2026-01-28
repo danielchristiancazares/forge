@@ -20,10 +20,19 @@ pub(crate) struct TurnContext {
     changes: Arc<Mutex<TurnChangeLog>>,
 }
 
+/// Stats for a single file change (lines added/removed).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct DiffStats {
+    pub additions: u32,
+    pub deletions: u32,
+}
+
 #[derive(Debug, Default)]
 struct TurnChangeLog {
     created: BTreeSet<PathBuf>,
     modified: BTreeSet<PathBuf>,
+    /// Per-file diff stats (keyed by path).
+    stats: std::collections::HashMap<PathBuf, DiffStats>,
 }
 
 /// Capability token that allows tool executors to record changes.
@@ -91,6 +100,14 @@ impl ChangeRecorder {
         let mut log = self.changes.lock().expect("mutex poisoned");
         log.record_modified(path);
     }
+
+    /// Record diff stats (additions/deletions) for a file.
+    pub(crate) fn record_stats(&self, path: PathBuf, additions: u32, deletions: u32) {
+        let mut log = self.changes.lock().expect("mutex poisoned");
+        let entry = log.stats.entry(path).or_default();
+        entry.additions = entry.additions.saturating_add(additions);
+        entry.deletions = entry.deletions.saturating_add(deletions);
+    }
 }
 
 impl TurnChangeSummary {
@@ -116,16 +133,24 @@ impl TurnChangeLog {
             return TurnChangeReport::NoChanges;
         }
 
-        let created = format_paths(&self.created, working_dir);
-        let modified = format_paths(&self.modified, working_dir);
+        let created = format_paths_with_stats(&self.created, &self.stats, working_dir);
+        let modified = format_paths_with_stats(&self.modified, &self.stats, working_dir);
         TurnChangeReport::Changes(TurnChangeSummary::new(created, modified))
     }
 }
 
-fn format_paths(paths: &BTreeSet<PathBuf>, working_dir: &Path) -> Vec<String> {
+fn format_paths_with_stats(
+    paths: &BTreeSet<PathBuf>,
+    stats: &std::collections::HashMap<PathBuf, DiffStats>,
+    working_dir: &Path,
+) -> Vec<(String, Option<DiffStats>)> {
     paths
         .iter()
-        .map(|path| format_path(path, working_dir))
+        .map(|path| {
+            let display = format_path(path, working_dir);
+            let file_stats = stats.get(path).copied();
+            (display, file_stats)
+        })
         .collect()
 }
 
@@ -137,12 +162,19 @@ fn format_path(path: &Path, working_dir: &Path) -> String {
 }
 
 impl TurnChangeSummary {
-    fn new(created: Vec<String>, modified: Vec<String>) -> Self {
+    fn new(
+        created: Vec<(String, Option<DiffStats>)>,
+        modified: Vec<(String, Option<DiffStats>)>,
+    ) -> Self {
         let mut lines: Vec<String> = Vec::new();
 
         if !created.is_empty() {
             lines.push(format!("Created files ({}):", created.len()));
-            lines.extend(created.into_iter().map(|path| format!("- {path}")));
+            lines.extend(
+                created
+                    .into_iter()
+                    .map(|(path, stats)| format_file_line(&path, stats)),
+            );
         }
 
         if !modified.is_empty() {
@@ -150,12 +182,27 @@ impl TurnChangeSummary {
                 lines.push(String::new());
             }
             lines.push(format!("Modified files ({}):", modified.len()));
-            lines.extend(modified.into_iter().map(|path| format!("- {path}")));
+            lines.extend(
+                modified
+                    .into_iter()
+                    .map(|(path, stats)| format_file_line(&path, stats)),
+            );
         }
 
         let content = NonEmptyString::new(lines.join("\n"))
             .expect("summary must be non-empty when changes exist");
         Self { content }
+    }
+}
+
+/// Format a file line with optional diff stats.
+/// Output: `- path (+N, -M)` or `- path` if no stats.
+fn format_file_line(path: &str, stats: Option<DiffStats>) -> String {
+    match stats {
+        Some(s) if s.additions > 0 || s.deletions > 0 => {
+            format!("- {path} (+{}, -{})", s.additions, s.deletions)
+        }
+        _ => format!("- {path}"),
     }
 }
 
@@ -323,7 +370,7 @@ impl InsertMode<'_> {
 
         let config = match ApiConfig::new(api_key, self.app.model.clone()) {
             Ok(config) => config
-                .with_openai_options(self.app.openai_options)
+                .with_openai_options(self.app.openai_options_for_model(&self.app.model))
                 .with_gemini_thinking_enabled(self.app.gemini_thinking_enabled),
             Err(e) => {
                 self.app

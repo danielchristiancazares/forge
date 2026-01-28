@@ -161,8 +161,12 @@ impl Provider {
     #[must_use]
     pub fn available_models(&self) -> &'static [&'static str] {
         match self {
-            Provider::Claude => &["claude-opus-4-5-20251101", "claude-haiku-4-5-20251001"],
-            Provider::OpenAI => &["gpt-5.2", "gpt-5.2-2025-12-11"],
+            Provider::Claude => &[
+                "claude-opus-4-5-20251101",
+                "claude-sonnet-4-5-20250514",
+                "claude-haiku-4-5-20251001",
+            ],
+            Provider::OpenAI => &["gpt-5.2", "gpt-5.2-pro", "gpt-5.2-2025-12-11"],
             Provider::Gemini => &["gemini-3-pro-preview", "gemini-3-flash-preview"],
         }
     }

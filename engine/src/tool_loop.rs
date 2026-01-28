@@ -776,7 +776,7 @@ impl App {
 
             let config = match ApiConfig::new(api_key, model.clone()) {
                 Ok(config) => config
-                    .with_openai_options(self.openai_options)
+                    .with_openai_options(self.openai_options_for_model(&model))
                     .with_gemini_thinking_enabled(self.gemini_thinking_enabled),
                 Err(e) => {
                     self.push_notification(format!("Cannot resume after tools: {e}"));

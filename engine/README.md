@@ -1174,7 +1174,10 @@ in the content pane and are not sent to the model.
 ```rust
 pub enum PredefinedModel {
     ClaudeOpus,
+    Gpt52Pro,
     Gpt52,
+    GeminiPro,
+    GeminiFlash,
 }
 ```
 

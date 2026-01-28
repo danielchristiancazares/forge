@@ -301,7 +301,7 @@ let models: &[&str] = Provider::Claude.available_models();
 // ["claude-opus-4-5-20251101", "claude-haiku-4-5-20251001"]
 
 let models: &[&str] = Provider::OpenAI.available_models();
-// ["gpt-5.2", "gpt-5.2-2025-12-11"]
+// ["gpt-5.2", "gpt-5.2-pro", "gpt-5.2-2025-12-11"]
 
 let models: &[&str] = Provider::Gemini.available_models();
 // ["gemini-3-pro-preview", "gemini-3-flash-preview"]

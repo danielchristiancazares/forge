@@ -225,12 +225,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let input_height = inline_input_height(app.input_mode());
 
-    let top_padding = area.height.saturating_sub(input_height);
+    // Anchor input to the bottom: position it so it occupies the last `input_height` rows
     let content_area = Rect {
         x: area.x,
-        y: area.y.saturating_add(top_padding),
+        y: area
+            .y
+            .saturating_add(area.height.saturating_sub(input_height)),
         width: area.width,
-        height: area.height.saturating_sub(top_padding),
+        height: input_height,
     };
 
     draw_input(frame, app, content_area, &palette, &glyphs, true);

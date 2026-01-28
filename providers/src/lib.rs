@@ -1377,6 +1377,8 @@ pub mod gemini {
         pub expire_time: DateTime<Utc>,
         /// Hash of cached system prompt (for detecting changes)
         pub system_prompt_hash: u64,
+        /// Hash of cached tool definitions (for detecting changes)
+        pub tools_hash: u64,
     }
 
     impl GeminiCache {
@@ -1386,10 +1388,10 @@ pub mod gemini {
             Utc::now() >= self.expire_time
         }
 
-        /// Check if this cache matches the given system prompt.
+        /// Check if this cache matches the given system prompt and tools.
         #[must_use]
-        pub fn matches_prompt(&self, prompt: &str) -> bool {
-            hash_prompt(prompt) == self.system_prompt_hash
+        pub fn matches_config(&self, prompt: &str, tools: Option<&[ToolDefinition]>) -> bool {
+            hash_prompt(prompt) == self.system_prompt_hash && hash_tools(tools) == self.tools_hash
         }
     }
 
@@ -1409,6 +1411,20 @@ pub mod gemini {
         hasher.finish()
     }
 
+    /// Hash tool definitions for cache comparison.
+    fn hash_tools(tools: Option<&[ToolDefinition]>) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        if let Some(tools) = tools {
+            for tool in tools {
+                tool.name.hash(&mut hasher);
+                tool.description.hash(&mut hasher);
+                // Hash the JSON representation of parameters for stability
+                tool.parameters.to_string().hash(&mut hasher);
+            }
+        }
+        hasher.finish()
+    }
+
     /// Check if a prompt is large enough to cache.
     ///
     /// Gemini requires minimum token counts:
@@ -1420,7 +1436,7 @@ pub mod gemini {
         prompt.len() / 4 >= min_tokens
     }
 
-    /// Create a cached content object with the system prompt.
+    /// Create a cached content object with the system prompt and tools.
     ///
     /// This calls the Gemini cachedContents API to create a persistent cache
     /// that can be referenced in subsequent requests.
@@ -1428,10 +1444,14 @@ pub mod gemini {
     /// # Note
     /// The cachedContents endpoint uses camelCase (unlike generateContent
     /// which mixes snake_case and camelCase).
+    ///
+    /// When using cached content, `systemInstruction`, `tools`, and `toolConfig`
+    /// must be part of the cache - they cannot be specified in GenerateContent.
     pub async fn create_cache(
         api_key: &str,
         model: &str,
         system_prompt: &str,
+        tools: Option<&[ToolDefinition]>,
         ttl_seconds: u32,
     ) -> Result<GeminiCache> {
         // Check if prompt meets minimum token threshold
@@ -1444,13 +1464,34 @@ pub mod gemini {
         let url = format!("{API_BASE}/cachedContents");
 
         // NOTE: cachedContents endpoint uses camelCase throughout
-        let body = json!({
+        let mut body = json!({
             "model": format!("models/{}", model),
             "systemInstruction": {
                 "parts": [{ "text": system_prompt }]
             },
             "ttl": format!("{}s", ttl_seconds)
         });
+
+        // Include tools in cache if provided (required by Gemini API when using cached content)
+        if let Some(tools) = tools
+            && !tools.is_empty()
+        {
+            let function_declarations: Vec<Value> = tools
+                .iter()
+                .map(|t| {
+                    let mut parameters = t.parameters.clone();
+                    remove_additional_properties(&mut parameters);
+                    json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": parameters
+                    })
+                })
+                .collect();
+            body["tools"] = json!([{
+                "functionDeclarations": function_declarations
+            }]);
+        }
 
         let response = http_client()
             .post(&url)
@@ -1488,6 +1529,7 @@ pub mod gemini {
             name,
             expire_time,
             system_prompt_hash: hash_prompt(system_prompt),
+            tools_hash: hash_tools(tools),
         })
     }
 
@@ -1649,8 +1691,10 @@ pub mod gemini {
 
         body.insert("generationConfig".into(), Value::Object(gen_config));
 
-        // Add tool definitions if provided
-        if let Some(tools) = tools
+        // Add tool definitions if provided, but NOT when using cached content
+        // (tools must be part of the cache per Gemini API requirements)
+        if cache.is_none()
+            && let Some(tools) = tools
             && !tools.is_empty()
         {
             let function_declarations: Vec<Value> = tools
@@ -1862,6 +1906,7 @@ pub mod gemini {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use forge_types::{ApiKey, Provider};
 
         fn contains_additional_properties(value: &Value) -> bool {
             match value {
@@ -1916,6 +1961,42 @@ pub mod gemini {
             let thinking = gen_config.get("thinkingConfig").unwrap();
             assert_eq!(thinking["thinkingLevel"], "high");
             assert_eq!(thinking["includeThoughts"], true);
+        }
+
+        #[test]
+        fn gemini_thinking_flag_controls_request() {
+            let messages = vec![CacheableMessage::plain(Message::try_user("hello").unwrap())];
+            let limits = OutputLimits::with_thinking(8192, 2048).unwrap();
+
+            let config = ApiConfig::new(
+                ApiKey::Gemini("test".to_string()),
+                Provider::Gemini.default_model(),
+            )
+            .unwrap();
+
+            let body = build_request_body(
+                &messages,
+                limits,
+                None,
+                None,
+                config.gemini_thinking_enabled(),
+                None,
+            );
+            let gen_config = body.get("generationConfig").unwrap();
+            assert!(gen_config.get("thinkingConfig").is_none());
+
+            let config = config.with_gemini_thinking_enabled(true);
+            let body = build_request_body(
+                &messages,
+                limits,
+                None,
+                None,
+                config.gemini_thinking_enabled(),
+                None,
+            );
+            let gen_config = body.get("generationConfig").unwrap();
+            let thinking = gen_config.get("thinkingConfig").unwrap();
+            assert_eq!(thinking["thinkingLevel"], "high");
         }
 
         #[test]
@@ -2089,13 +2170,21 @@ pub mod gemini {
                 name: "cachedContents/abc123".to_string(),
                 expire_time: Utc.with_ymd_and_hms(2030, 1, 1, 0, 0, 0).unwrap(),
                 system_prompt_hash: 12345,
+                tools_hash: 0,
             };
+
+            // Create some tools to verify they're NOT included when cache is present
+            let tools = vec![forge_types::ToolDefinition::new(
+                "test_tool".to_string(),
+                "A test tool".to_string(),
+                serde_json::json!({"type": "object"}),
+            )];
 
             let body = build_request_body(
                 &messages,
                 limits,
                 Some("You are helpful"), // Should be ignored when cache present
-                None,
+                Some(&tools),            // Should be ignored when cache present
                 false,
                 Some(&cache),
             );
@@ -2105,6 +2194,9 @@ pub mod gemini {
 
             // Should NOT have system_instruction (it's in the cache)
             assert!(body.get("system_instruction").is_none());
+
+            // Should NOT have tools (they're in the cache)
+            assert!(body.get("tools").is_none());
         }
 
         #[test]
@@ -2116,6 +2208,7 @@ pub mod gemini {
                 name: "test".to_string(),
                 expire_time: Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap(),
                 system_prompt_hash: 0,
+                tools_hash: 0,
             };
             assert!(expired.is_expired());
 
@@ -2124,23 +2217,66 @@ pub mod gemini {
                 name: "test".to_string(),
                 expire_time: Utc.with_ymd_and_hms(2030, 1, 1, 0, 0, 0).unwrap(),
                 system_prompt_hash: 0,
+                tools_hash: 0,
             };
             assert!(!future.is_expired());
         }
 
         #[test]
-        fn cache_prompt_matching() {
+        fn cache_config_matching() {
             let prompt = "You are a helpful assistant.";
-            let hash = hash_prompt(prompt);
+            let tools = vec![forge_types::ToolDefinition::new(
+                "test_tool".to_string(),
+                "A test tool".to_string(),
+                serde_json::json!({"type": "object"}),
+            )];
 
             let cache = GeminiCache {
                 name: "test".to_string(),
                 expire_time: Utc::now(),
-                system_prompt_hash: hash,
+                system_prompt_hash: hash_prompt(prompt),
+                tools_hash: hash_tools(Some(&tools)),
             };
 
-            assert!(cache.matches_prompt(prompt));
-            assert!(!cache.matches_prompt("Different prompt"));
+            // Matches when both prompt and tools match
+            assert!(cache.matches_config(prompt, Some(&tools)));
+
+            // Doesn't match with different prompt
+            assert!(!cache.matches_config("Different prompt", Some(&tools)));
+
+            // Doesn't match with different tools
+            let different_tools = vec![forge_types::ToolDefinition::new(
+                "other_tool".to_string(),
+                "Another tool".to_string(),
+                serde_json::json!({"type": "object"}),
+            )];
+            assert!(!cache.matches_config(prompt, Some(&different_tools)));
+
+            // Doesn't match with no tools when cache has tools
+            assert!(!cache.matches_config(prompt, None));
+        }
+
+        #[test]
+        fn cache_config_matching_no_tools() {
+            let prompt = "You are a helpful assistant.";
+
+            let cache = GeminiCache {
+                name: "test".to_string(),
+                expire_time: Utc::now(),
+                system_prompt_hash: hash_prompt(prompt),
+                tools_hash: hash_tools(None),
+            };
+
+            // Matches when both prompt matches and no tools
+            assert!(cache.matches_config(prompt, None));
+
+            // Doesn't match when tools are provided but cache has none
+            let tools = vec![forge_types::ToolDefinition::new(
+                "test_tool".to_string(),
+                "A test tool".to_string(),
+                serde_json::json!({"type": "object"}),
+            )];
+            assert!(!cache.matches_config(prompt, Some(&tools)));
         }
 
         #[test]

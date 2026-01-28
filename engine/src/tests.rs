@@ -78,7 +78,8 @@ fn test_app() -> App {
         gemini_cache_config: crate::GeminiCacheConfig::default(),
         librarian: None, // No Gemini API key in tests
         input_history: crate::ui::InputHistory::default(),
-        session_save_counter: 0,
+        last_ui_tick: Instant::now(),
+        last_session_autosave: Instant::now(),
         session_changes: crate::session_state::SessionChangeLog::default(),
     }
 }
@@ -93,6 +94,19 @@ fn last_notification(app: &App) -> Option<&str> {
         }
     }
     None
+}
+
+#[test]
+fn openai_options_default_upgrade_for_gpt_52_pro() {
+    let app = test_app();
+    let pro_model = ModelName::known(Provider::OpenAI, "gpt-5.2-pro");
+    let base_model = ModelName::known(Provider::OpenAI, "gpt-5.2");
+
+    let pro_options = app.openai_options_for_model(&pro_model);
+    let base_options = app.openai_options_for_model(&base_model);
+
+    assert_eq!(pro_options.reasoning_effort(), OpenAIReasoningEffort::XHigh);
+    assert_eq!(base_options.reasoning_effort(), OpenAIReasoningEffort::High);
 }
 
 #[derive(Debug)]

@@ -240,7 +240,7 @@ impl ToolExecutor for SearchTool {
     }
 
     fn requires_approval(&self) -> bool {
-        true
+        false
     }
 
     fn risk_level(&self) -> RiskLevel {

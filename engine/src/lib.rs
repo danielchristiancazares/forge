@@ -406,8 +406,10 @@ pub struct App {
     librarian: Option<std::sync::Arc<tokio::sync::Mutex<Librarian>>>,
     /// Input history for prompt and command recall.
     input_history: ui::InputHistory,
-    /// Counter for debouncing session autosave (incremented each tick).
-    session_save_counter: u32,
+    /// Wall-clock timestamp for animation tick cadence (spinner ~10Hz).
+    last_ui_tick: Instant,
+    /// Wall-clock timestamp for session autosave cadence (~3s).
+    last_session_autosave: Instant,
     /// Session-wide log of files created and modified.
     session_changes: SessionChangeLog,
 }
@@ -660,6 +662,30 @@ impl App {
 
     pub fn model(&self) -> &str {
         self.model.as_str()
+    }
+
+    pub(crate) fn openai_options_for_model(&self, model: &ModelName) -> OpenAIRequestOptions {
+        if model.provider() != Provider::OpenAI {
+            return self.openai_options;
+        }
+
+        // gpt-5.2-pro always uses xhigh reasoning - that's the point of the model
+        if model
+            .as_str()
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("gpt-5.2-pro")
+            && self.openai_options.reasoning_effort() != OpenAIReasoningEffort::XHigh
+        {
+            return OpenAIRequestOptions::new(
+                OpenAIReasoningEffort::XHigh,
+                self.openai_options.reasoning_summary(),
+                self.openai_options.verbosity(),
+                self.openai_options.truncation(),
+            );
+        }
+
+        self.openai_options
     }
 
     pub fn tick_count(&self) -> usize {
@@ -1028,17 +1054,23 @@ impl App {
         }
     }
 
-    /// Increment animation tick and poll background tasks.
+    /// Poll background tasks and update wall-clock based timers.
     pub fn tick(&mut self) {
-        self.tick = self.tick.wrapping_add(1);
         self.poll_summarization();
         self.poll_summarization_retry();
         self.poll_tool_loop();
 
-        // Debounced session autosave (~3 seconds at 100ms poll interval)
-        self.session_save_counter += 1;
-        if self.session_save_counter >= 30 {
-            self.session_save_counter = 0;
+        let now = Instant::now();
+
+        // Preserve prior spinner cadence (~10Hz), independent of render FPS.
+        if now.duration_since(self.last_ui_tick) >= Duration::from_millis(100) {
+            self.last_ui_tick = now;
+            self.tick = self.tick.wrapping_add(1);
+        }
+
+        // Preserve prior autosave cadence (~3s), independent of render FPS.
+        if now.duration_since(self.last_session_autosave) >= Duration::from_secs(3) {
+            self.last_session_autosave = now;
             self.autosave_session();
         }
     }

@@ -206,7 +206,7 @@ pub fn glyphs(options: UiOptions) -> Glyphs {
             tool: "⊙",
             tool_result_ok: "✓",
             tool_result_err: "✗",
-            tree_connector: "└",
+            tree_connector: "↪",
             status_ready: "●",
             status_missing: "○",
             pending: "•",

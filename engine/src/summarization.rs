@@ -107,8 +107,8 @@ impl super::App {
             (key, self.model.clone())
         };
 
-        let config = match ApiConfig::new(api_key, model) {
-            Ok(config) => config,
+        let config = match ApiConfig::new(api_key, model.clone()) {
+            Ok(config) => config.with_openai_options(self.openai_options_for_model(&model)),
             Err(e) => {
                 self.push_notification(format!("Cannot summarize: {e}"));
                 // Rollback if we have a queued request (shouldn't happen in practice

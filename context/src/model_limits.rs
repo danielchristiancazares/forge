@@ -133,8 +133,10 @@ const DEFAULT_LIMITS: ModelLimits = ModelLimits::new(8192, 4096);
 const KNOWN_MODELS: &[(&str, ModelLimits)] = &[
     // Claude 4.5 models (most specific first)
     ("claude-opus-4-5", ModelLimits::new(200_000, 64_000)),
+    ("claude-sonnet-4-5", ModelLimits::new(200_000, 64_000)),
     ("claude-haiku-4-5", ModelLimits::new(200_000, 64_000)),
     // GPT 5.2 models
+    ("gpt-5.2-pro", ModelLimits::new(400_000, 128_000)),
     ("gpt-5.2", ModelLimits::new(400_000, 128_000)),
     // Gemini 3 models (1M context, 65K output)
     ("gemini-3-pro", ModelLimits::new(1_048_576, 65_536)),

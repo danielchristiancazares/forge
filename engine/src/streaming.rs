@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 /// 1024 events provides ~10 seconds of buffer at 100 events/sec typical streaming rate.
 const STREAM_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
-use forge_types::{OpenAIReasoningSummary, Provider};
+use forge_types::{OpenAIReasoningSummary, Provider, ToolDefinition};
 
 use super::{
     ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError,
@@ -173,6 +173,7 @@ impl super::App {
                     config.api_key(),
                     config.model().as_str(),
                     prompt,
+                    tools_ref,
                 )
                 .await
             } else {
@@ -595,33 +596,43 @@ impl super::App {
 ///
 /// This function checks if there's a valid (non-expired, matching) cache.
 /// If not, it creates a new cache via the Gemini API and stores it.
+///
+/// Note: Tools must be included in the cache because Gemini's API doesn't allow
+/// specifying `tools` in GenerateContent when using cached content.
 async fn get_or_create_gemini_cache(
     cache_arc: &std::sync::Arc<tokio::sync::Mutex<Option<GeminiCache>>>,
     config: &GeminiCacheConfig,
     api_key: &str,
     model: &str,
     system_prompt: &str,
+    tools: Option<&[ToolDefinition]>,
 ) -> Option<GeminiCache> {
     // First, check if we have a valid cache
     {
         let guard = cache_arc.lock().await;
         if let Some(cache) = guard.as_ref() {
-            if !cache.is_expired() && cache.matches_prompt(system_prompt) {
+            if !cache.is_expired() && cache.matches_config(system_prompt, tools) {
                 tracing::debug!("Using existing Gemini cache: {}", cache.name);
                 return Some(cache.clone());
             }
             tracing::debug!(
-                "Gemini cache invalid (expired: {}, prompt mismatch: {})",
+                "Gemini cache invalid (expired: {}, config mismatch: {})",
                 cache.is_expired(),
-                !cache.matches_prompt(system_prompt)
+                !cache.matches_config(system_prompt, tools)
             );
         }
     }
 
     // Cache is invalid or doesn't exist - create a new one
-    tracing::info!("Creating new Gemini cache for system prompt");
-    match forge_providers::gemini::create_cache(api_key, model, system_prompt, config.ttl_seconds)
-        .await
+    tracing::info!("Creating new Gemini cache for system prompt and tools");
+    match forge_providers::gemini::create_cache(
+        api_key,
+        model,
+        system_prompt,
+        tools,
+        config.ttl_seconds,
+    )
+    .await
     {
         Ok(new_cache) => {
             tracing::info!(

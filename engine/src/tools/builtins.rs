@@ -212,6 +212,29 @@ pub(crate) fn format_unified_diff(
     out
 }
 
+/// Compute diff stats (additions and deletions) between old and new content.
+pub(crate) fn compute_diff_stats(old_bytes: &[u8], new_bytes: &[u8]) -> (u32, u32) {
+    use similar::ChangeTag;
+
+    let old_text = std::str::from_utf8(old_bytes).unwrap_or("");
+    let new_text = std::str::from_utf8(new_bytes).unwrap_or("");
+
+    let diff = TextDiff::from_lines(old_text, new_text);
+
+    let mut additions: u32 = 0;
+    let mut deletions: u32 = 0;
+
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            ChangeTag::Insert => additions += 1,
+            ChangeTag::Delete => deletions += 1,
+            ChangeTag::Equal => {}
+        }
+    }
+
+    (additions, deletions)
+}
+
 impl ToolExecutor for GlobTool {
     fn name(&self) -> &'static str {
         "Glob"
@@ -791,6 +814,7 @@ impl ToolExecutor for ApplyPatchTool {
                     existed,
                     changed,
                     bytes: new_bytes,
+                    original_bytes,
                     permissions,
                 });
             }
@@ -809,6 +833,11 @@ impl ToolExecutor for ApplyPatchTool {
                     } else {
                         ctx.turn_changes.record_created(file.path.clone());
                     }
+                    // Record diff stats for the turn summary
+                    let (additions, deletions) =
+                        compute_diff_stats(&file.original_bytes, &file.bytes);
+                    ctx.turn_changes
+                        .record_stats(file.path.clone(), additions, deletions);
                 }
             }
 
@@ -964,6 +993,14 @@ impl ToolExecutor for WriteFileTool {
 
             ctx.turn_changes.record_created(resolved.clone());
 
+            // Record stats: all lines are additions for a new file
+            // FIXME: use bytecount crate if this becomes a hot path
+            #[allow(clippy::naive_bytecount)]
+            let line_count = bytes.iter().filter(|&&b| b == b'\n').count() as u32
+                + u32::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
+            ctx.turn_changes
+                .record_stats(resolved.clone(), line_count, 0);
+
             let output = format!(
                 "Created {} ({} bytes)",
                 display_path(&resolved),
@@ -1111,17 +1148,28 @@ impl ToolExecutor for RunCommandTool {
             let stdout_content = stdout_task.await.unwrap_or_default();
             let stderr_content = stderr_task.await.unwrap_or_default();
 
-            if !status.success() {
-                return Err(ToolError::ExecutionFailed {
-                    tool: "run_command".to_string(),
-                    message: format!("exit code {}", status.code().unwrap_or(-1)),
-                });
-            }
-
+            // Build combined output (stdout + stderr if present)
             let mut output = stdout_content;
             if !stderr_content.trim().is_empty() {
-                output.push_str("\n\n[stderr]\n");
+                if !output.is_empty() {
+                    output.push_str("\n\n");
+                }
+                output.push_str("[stderr]\n");
                 output.push_str(&stderr_content);
+            }
+
+            if !status.success() {
+                // Include the output in the error so the model can see what went wrong
+                let exit_code = status.code().unwrap_or(-1);
+                let message = if output.trim().is_empty() {
+                    format!("exit code {exit_code}")
+                } else {
+                    format!("exit code {exit_code}\n\n{output}")
+                };
+                return Err(ToolError::ExecutionFailed {
+                    tool: "run_command".to_string(),
+                    message,
+                });
             }
 
             Ok(sanitize_output(&output))
@@ -1296,6 +1344,7 @@ struct StagedFile {
     existed: bool,
     changed: bool,
     bytes: Vec<u8>,
+    original_bytes: Vec<u8>,
     permissions: Option<std::fs::Permissions>,
 }
 

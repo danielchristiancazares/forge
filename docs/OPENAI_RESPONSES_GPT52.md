@@ -22,7 +22,7 @@ sampling/logprob controls (per product decision).
 
 ## Core request fields
 
-- model: GPT-5.2 model or pinned snapshot (e.g., gpt-5.2-YYYY-MM-DD).
+- model: GPT-5.2 or GPT-5.2 Pro model, or pinned snapshot (e.g., gpt-5.2-YYYY-MM-DD, gpt-5.2-pro-YYYY-MM-DD).
 - input: user/system/assistant items, or text input. Supports text, image,
   and file inputs when needed.
 - instructions: system/developer prompt inserted into context. Not carried

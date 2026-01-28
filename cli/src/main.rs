@@ -14,13 +14,14 @@ use ratatui::{TerminalOptions, Viewport, prelude::*};
 use std::{
     env,
     io::{Stdout, Write, stdout},
+    time::Duration,
 };
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use forge_engine::{App, ForgeConfig};
 use forge_tui::{
-    INLINE_VIEWPORT_HEIGHT, InlineOutput, clear_inline_viewport, draw, draw_inline, handle_events,
-    inline_viewport_height,
+    INLINE_VIEWPORT_HEIGHT, InlineOutput, InputPump, clear_inline_viewport, draw, draw_inline,
+    handle_events, inline_viewport_height,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,10 +86,19 @@ impl TerminalSession {
             return Err(err.into());
         }
         let use_alternate_screen = matches!(mode, UiMode::Full);
-        if use_alternate_screen && let Err(err) = execute!(out, EnterAlternateScreen) {
-            let _ = disable_raw_mode();
-            let _ = execute!(out, DisableBracketedPaste);
-            return Err(err.into());
+        if use_alternate_screen {
+            // Enter alternate screen and enable alternate scroll mode (mode 1007).
+            // Mode 1007 converts scroll wheel events to Up/Down arrow keys when in
+            // alternate screen, WITHOUT capturing mouse clicks. This preserves
+            // native text selection while still allowing scroll wheel to work.
+            if let Err(err) = execute!(out, EnterAlternateScreen) {
+                let _ = disable_raw_mode();
+                let _ = execute!(out, LeaveAlternateScreen, DisableBracketedPaste);
+                return Err(err.into());
+            }
+            // Enable alternate scroll mode: CSI ? 1007 h
+            let _ = out.write_all(b"\x1b[?1007h");
+            let _ = out.flush();
         }
 
         let backend = CrosstermBackend::new(out);
@@ -107,6 +117,9 @@ impl TerminalSession {
                 let _ = disable_raw_mode();
                 if use_alternate_screen {
                     let mut out = stdout();
+                    // Disable alternate scroll mode: CSI ? 1007 l
+                    let _ = out.write_all(b"\x1b[?1007l");
+                    let _ = out.flush();
                     let _ = execute!(out, LeaveAlternateScreen, DisableBracketedPaste);
                 } else {
                     let mut out = stdout();
@@ -127,6 +140,9 @@ impl Drop for TerminalSession {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
         if self.use_alternate_screen {
+            // Disable alternate scroll mode: CSI ? 1007 l
+            let _ = self.terminal.backend_mut().write_all(b"\x1b[?1007l");
+            let _ = std::io::Write::flush(&mut *self.terminal.backend_mut());
             let _ = execute!(
                 self.terminal.backend_mut(),
                 LeaveAlternateScreen,
@@ -187,37 +203,54 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Fixed 8ms render cadence (~120 FPS cap).
+const FRAME_DURATION: Duration = Duration::from_millis(8);
+
 async fn run_app_full<B>(terminal: &mut Terminal<B>, app: &mut App) -> Result<RunResult>
 where
     B: Backend + Write,
     B::Error: Send + Sync + 'static,
 {
-    loop {
+    let mut input = InputPump::new();
+    let mut frames = tokio::time::interval(FRAME_DURATION);
+    frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let result: Result<RunResult> = loop {
+        frames.tick().await;
+
+        // Non-blocking input (drain queue only)
+        let quit_now = match handle_events(app, &mut input) {
+            Ok(q) => q,
+            Err(e) => break Err(e),
+        };
+        if quit_now {
+            let _ = clear_inline_viewport(terminal);
+            break Ok(RunResult::Quit);
+        }
+
         app.tick();
-
-        // Yield to allow spawned tasks (streaming, summarization) to make progress.
-        // This is critical because crossterm's event::poll() is blocking and
-        // doesn't yield to the tokio runtime.
-        tokio::task::yield_now().await;
-
         app.process_stream_events();
 
-        if app.take_clear_transcript() {
-            terminal.clear()?;
+        if app.take_clear_transcript()
+            && let Err(e) = terminal.clear()
+        {
+            break Err(e.into());
         }
 
-        terminal.draw(|frame| draw(frame, app))?;
+        if let Err(e) = terminal.draw(|frame| draw(frame, app)) {
+            break Err(e.into());
+        }
 
         if app.take_toggle_screen_mode() {
-            clear_inline_viewport(terminal)?;
-            return Ok(RunResult::SwitchMode);
+            if let Err(e) = clear_inline_viewport(terminal) {
+                break Err(e.into());
+            }
+            break Ok(RunResult::SwitchMode);
         }
+    };
 
-        if handle_events(app).await? {
-            clear_inline_viewport(terminal)?;
-            return Ok(RunResult::Quit);
-        }
-    }
+    input.shutdown().await;
+    result
 }
 
 async fn run_app_inline<B>(terminal: &mut Terminal<B>, app: &mut App) -> Result<RunResult>
@@ -227,45 +260,63 @@ where
 {
     let mut output = InlineOutput::new();
     let mut current_viewport_height = INLINE_VIEWPORT_HEIGHT;
+    let mut input = InputPump::new();
+    let mut frames = tokio::time::interval(FRAME_DURATION);
+    frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    loop {
+    let result: Result<RunResult> = loop {
+        frames.tick().await;
+
+        // Non-blocking input (drain queue only)
+        let quit_now = match handle_events(app, &mut input) {
+            Ok(q) => q,
+            Err(e) => break Err(e),
+        };
+        if quit_now {
+            break Ok(RunResult::Quit);
+        }
+
         app.tick();
-
-        // Yield to allow spawned tasks (streaming, summarization) to make progress.
-        // This is critical because crossterm's event::poll() is blocking and
-        // doesn't yield to the tokio runtime.
-        tokio::task::yield_now().await;
-
         app.process_stream_events();
 
         if app.take_clear_transcript() {
-            clear_inline_transcript(terminal)?;
+            if let Err(e) = clear_inline_transcript(terminal) {
+                break Err(e);
+            }
             output.reset();
         }
 
-        output.flush(terminal, app)?;
+        if let Err(e) = output.flush(terminal, app) {
+            break Err(e.into());
+        }
 
         // Dynamically resize viewport for overlays (e.g., model selector needs more height)
         let needed_height = inline_viewport_height(app.input_mode());
         if needed_height != current_viewport_height {
-            let (term_width, term_height) = terminal_size()?;
+            let (term_width, term_height) = match terminal_size() {
+                Ok(s) => s,
+                Err(e) => break Err(e.into()),
+            };
             // Clamp height to terminal size to avoid rendering outside bounds
             let height = needed_height.min(term_height);
             let y = term_height.saturating_sub(height);
-            terminal.resize(Rect::new(0, y, term_width, height))?;
+            if let Err(e) = terminal.resize(Rect::new(0, y, term_width, height)) {
+                break Err(e.into());
+            }
             current_viewport_height = height;
         }
 
-        terminal.draw(|frame| draw_inline(frame, app))?;
+        if let Err(e) = terminal.draw(|frame| draw_inline(frame, app)) {
+            break Err(e.into());
+        }
 
         if app.take_toggle_screen_mode() {
-            return Ok(RunResult::SwitchMode);
+            break Ok(RunResult::SwitchMode);
         }
+    };
 
-        if handle_events(app).await? {
-            return Ok(RunResult::Quit);
-        }
-    }
+    input.shutdown().await;
+    result
 }
 
 fn clear_inline_transcript<B>(terminal: &mut Terminal<B>) -> Result<()>

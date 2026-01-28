@@ -220,6 +220,7 @@ The reserved output is clamped to the model's `max_output` - requesting more tha
 |--------------|---------------|------------|
 | `claude-opus-4-5` | 200,000 | 64,000 |
 | `claude-haiku-4-5` | 200,000 | 64,000 |
+| `gpt-5.2-pro` | 400,000 | 128,000 |
 | `gpt-5.2` | 400,000 | 128,000 |
 | `gemini-3-pro` | 1,048,576 | 65,536 |
 | Unknown | 8,192 | 4,096 |
@@ -1154,6 +1155,7 @@ println!("Effective input budget: {}", limits.effective_input_budget());
 |--------|---------------|------------|
 | `claude-opus-4-5` | 200,000 | 64,000 |
 | `claude-haiku-4-5` | 200,000 | 64,000 |
+| `gpt-5.2-pro` | 400,000 | 128,000 |
 | `gpt-5.2` | 400,000 | 128,000 |
 
 Unknown models fall back to 8,192 context / 4,096 output.

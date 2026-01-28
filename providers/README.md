@@ -267,7 +267,7 @@ Validation rules by provider:
 | Provider | Prefix Requirement | Example Valid |
 | :--- | :--- | :--- |
 | Claude | Must start with `claude-` | `claude-opus-4-5-20251101` |
-| OpenAI | Must start with `gpt-5` | `gpt-5.2`, `gpt-5.2-2025-12-11` |
+| OpenAI | Must start with `gpt-5` | `gpt-5.2`, `gpt-5.2-pro`, `gpt-5.2-2025-12-11` |
 | Gemini | Must start with `gemini-` | `gemini-3-pro-preview` |
 
 ### OutputLimits - Token Budgets
@@ -584,19 +584,21 @@ The `additionalProperties` field is recursively removed from tool parameter sche
 
 ### Context Caching
 
-Gemini supports explicit context caching for large system prompts:
+Gemini supports explicit context caching for large system prompts and tools:
 
 ```rust
 pub struct GeminiCache {
     pub name: String,                    // "cachedContents/abc123"
     pub expire_time: DateTime<Utc>,
     pub system_prompt_hash: u64,
+    pub tools_hash: u64,
 }
 
 pub async fn create_cache(
     api_key: &str,
     model: &str,
     system_prompt: &str,
+    tools: Option<&[ToolDefinition]>,
     ttl_seconds: u32,
 ) -> Result<GeminiCache>
 ```
@@ -606,7 +608,7 @@ pub async fn create_cache(
 - Gemini 3 Pro: 4,096 tokens (~16,384 characters)
 - Gemini Flash models: 1,024 tokens (~4,096 characters)
 
-When a cache is provided, the request uses `cachedContent` instead of `system_instruction`.
+**Important**: When using cached content, `system_instruction`, `tools`, and `tool_config` must be part of the cache - they cannot be specified in GenerateContent. The cache is invalidated if either the system prompt or tool definitions change.
 
 ### Response Parsing
 
@@ -681,6 +683,7 @@ Token limits are defined in `forge-context/src/model_limits.rs`:
 | :--- | :--- | :--- |
 | `claude-opus-4-5` | 200,000 | 64,000 |
 | `claude-haiku-4-5` | 200,000 | 64,000 |
+| `gpt-5.2-pro` | 400,000 | 128,000 |
 | `gpt-5.2` | 400,000 | 128,000 |
 | `gemini-3-pro` | 1,048,576 | 65,536 |
 | `gemini-3-flash` | 1,048,576 | 65,536 |
@@ -839,26 +842,29 @@ while let Some(event) = rx.recv().await {
 use forge_providers::gemini::{create_cache, GeminiCache};
 
 // Create cache for large system prompt (>16K chars for Pro models)
+// Tools must be included in cache (Gemini API requirement)
 let cache = create_cache(
     &api_key,
     "gemini-3-pro-preview",
     &large_system_prompt,
-    3600, // TTL in seconds
+    Some(&tools),  // Tools are cached with the prompt
+    3600,          // TTL in seconds
 ).await?;
 
 // Use cache in subsequent requests
+// Note: tools are already in the cache, so they're not sent again
 send_message(
     &config,
     &messages,
     limits,
-    None, // System prompt is in cache
-    tools,
+    None,  // System prompt is in cache
+    tools, // Passed for reference but not sent when cache is used
     Some(&cache),
     tx,
 ).await?;
 
-// Check cache validity
-if cache.is_expired() || !cache.matches_prompt(&system_prompt) {
+// Check cache validity (includes both prompt and tools)
+if cache.is_expired() || !cache.matches_config(&system_prompt, Some(&tools)) {
     // Recreate cache
 }
 ```

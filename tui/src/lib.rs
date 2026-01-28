@@ -11,7 +11,7 @@ mod tool_result_summary;
 mod ui_inline;
 
 pub use effects::apply_modal_effect;
-pub use input::handle_events;
+pub use input::{InputPump, handle_events};
 pub use theme::{Glyphs, Palette, glyphs, palette, spinner_frame, styles};
 pub use ui_inline::{
     INLINE_INPUT_HEIGHT, INLINE_VIEWPORT_HEIGHT, InlineOutput, clear_inline_viewport,
@@ -1924,26 +1924,46 @@ fn create_welcome_screen(app: &App, palette: &Palette, glyphs: &Glyphs) -> Parag
     } else {
         "release"
     };
+    // ASCII art logo
+    let logo_style = Style::default()
+        .fg(palette.primary)
+        .add_modifier(Modifier::BOLD);
+
     let logo = vec![
         Line::from(""),
+        Line::from(Span::styled(
+            " ███████╗ ██████╗ ██████╗  ██████╗ ███████╗",
+            logo_style,
+        )),
+        Line::from(Span::styled(
+            " ██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝",
+            logo_style,
+        )),
+        Line::from(Span::styled(
+            " █████╗  ██║   ██║██████╔╝██║  ███╗█████╗  ",
+            logo_style,
+        )),
+        Line::from(Span::styled(
+            " ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  ",
+            logo_style,
+        )),
+        Line::from(Span::styled(
+            " ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗",
+            logo_style,
+        )),
+        Line::from(Span::styled(
+            " ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝",
+            logo_style,
+        )),
+        Line::from(""),
         Line::from(vec![Span::styled(
-            "  Forge",
-            Style::default()
-                .fg(palette.primary)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(vec![Span::styled(
-            format!("  v{version} ({build_profile})"),
-            Style::default().fg(palette.text_secondary),
-        )]),
-        Line::from(vec![Span::styled(
-            "  Your AI Assistant Interface",
+            format!(" v{version} ({build_profile}) - CLI Coding Assistant"),
             Style::default().fg(palette.text_secondary),
         )]),
         Line::from(""),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "  Quick Start:",
+            " Quick Start:",
             Style::default()
                 .fg(palette.text_primary)
                 .add_modifier(Modifier::BOLD),
@@ -1951,7 +1971,7 @@ fn create_welcome_screen(app: &App, palette: &Palette, glyphs: &Glyphs) -> Parag
         Line::from(""),
         Line::from(vec![
             Span::styled(
-                "    i",
+                "   i",
                 Style::default()
                     .fg(palette.green)
                     .add_modifier(Modifier::BOLD),
@@ -1963,7 +1983,7 @@ fn create_welcome_screen(app: &App, palette: &Palette, glyphs: &Glyphs) -> Parag
         ]),
         Line::from(vec![
             Span::styled(
-                "    Enter",
+                "   Enter",
                 Style::default()
                     .fg(palette.green)
                     .add_modifier(Modifier::BOLD),
@@ -1975,7 +1995,7 @@ fn create_welcome_screen(app: &App, palette: &Palette, glyphs: &Glyphs) -> Parag
         ]),
         Line::from(vec![
             Span::styled(
-                "    Esc",
+                "   Esc",
                 Style::default()
                     .fg(palette.yellow)
                     .add_modifier(Modifier::BOLD),
@@ -1987,7 +2007,7 @@ fn create_welcome_screen(app: &App, palette: &Palette, glyphs: &Glyphs) -> Parag
         ]),
         Line::from(vec![
             Span::styled(
-                "    /",
+                "   /",
                 Style::default()
                     .fg(palette.peach)
                     .add_modifier(Modifier::BOLD),
@@ -1999,7 +2019,7 @@ fn create_welcome_screen(app: &App, palette: &Palette, glyphs: &Glyphs) -> Parag
         ]),
         Line::from(vec![
             Span::styled(
-                "    q",
+                "   q",
                 Style::default()
                     .fg(palette.red)
                     .add_modifier(Modifier::BOLD),

@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use forge_types::{OutputLimits, Provider};
 
@@ -337,7 +337,8 @@ impl App {
             gemini_cache_config,
             librarian,
             input_history: crate::ui::InputHistory::default(),
-            session_save_counter: 0,
+            last_ui_tick: Instant::now(),
+            last_session_autosave: Instant::now(),
             session_changes: crate::session_state::SessionChangeLog::default(),
         };
 

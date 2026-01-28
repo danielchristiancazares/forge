@@ -1,66 +1,155 @@
 //! Input handling for Forge TUI.
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+use tokio::sync::mpsc;
 
 use forge_engine::{App, InputMode};
 
-/// Handle terminal events
-/// Returns true if the app should quit
-pub async fn handle_events(app: &mut App) -> Result<bool> {
-    // Poll for events without blocking the async runtime.
-    let event = tokio::task::spawn_blocking(|| -> Result<Option<Event>> {
-        if event::poll(Duration::from_millis(100))? {
-            Ok(Some(event::read()?))
-        } else {
-            Ok(None)
-        }
-    })
-    .await??;
+const INPUT_POLL_TIMEOUT: Duration = Duration::from_millis(25); // shutdown responsiveness
+const INPUT_CHANNEL_CAPACITY: usize = 1024; // bounded: no OOM
+const MAX_EVENTS_PER_FRAME: usize = 64; // never starve rendering
 
-    if let Some(event) = event {
-        match event {
-            Event::Key(key) => {
-                // Handle press + repeat events (ignore releases)
-                if matches!(key.kind, KeyEventKind::Release) {
-                    return Ok(app.should_quit());
-                }
+enum InputMsg {
+    Event(Event),
+    Error(String),
+}
 
-                // Handle Ctrl+C globally
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                    if app.is_loading() {
-                        app.cancel_active_operation();
-                        return Ok(app.should_quit());
-                    }
-                    return Ok(true);
-                }
+/// Dedicated blocking input reader. Rendering consumes events via `try_recv` only.
+pub struct InputPump {
+    rx: mpsc::Receiver<InputMsg>,
+    stop: Arc<AtomicBool>,
+    join: Option<tokio::task::JoinHandle<()>>,
+}
 
-                match app.input_mode() {
-                    InputMode::Normal => handle_normal_mode(app, key),
-                    InputMode::Insert => handle_insert_mode(app, key),
-                    InputMode::Command => handle_command_mode(app, key),
-                    InputMode::ModelSelect => handle_model_select_mode(app, key),
-                }
-            }
-            Event::Paste(text) => {
-                if app.tool_approval_requests().is_some() || app.tool_recovery_calls().is_some() {
-                    return Ok(app.should_quit());
-                }
-                if app.input_mode() == InputMode::Insert {
-                    let Some(token) = app.insert_token() else {
-                        return Ok(app.should_quit());
-                    };
-                    // Normalize line endings: convert \r\n to \n and remove stray \r
-                    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-                    app.insert_mode(token).enter_text(&normalized);
-                }
-            }
-            _ => {}
+impl InputPump {
+    #[must_use]
+    pub fn new() -> Self {
+        let (tx, rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+
+        let join = tokio::task::spawn_blocking(move || input_loop(stop2, tx));
+        Self {
+            rx,
+            stop,
+            join: Some(join),
         }
     }
 
+    /// Deterministic shutdown (use before tearing down terminal session / switching modes).
+    pub async fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(join) = self.join.take() {
+            let _ = join.await;
+        }
+    }
+}
+
+impl Default for InputPump {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for InputPump {
+    fn drop(&mut self) {
+        // Best-effort stop if caller exits early; do not block in Drop.
+        self.stop.store(true, Ordering::Release);
+    }
+}
+
+fn input_loop(stop: Arc<AtomicBool>, tx: mpsc::Sender<InputMsg>) {
+    while !stop.load(Ordering::Acquire) {
+        match event::poll(INPUT_POLL_TIMEOUT) {
+            Ok(true) => match event::read() {
+                Ok(ev) => {
+                    // Bounded queue: if full, drop (prevents unbounded memory growth).
+                    // With no mouse capture, this should be extremely rare in practice.
+                    let _ = tx.try_send(InputMsg::Event(ev));
+                }
+                Err(e) => {
+                    let _ = tx.try_send(InputMsg::Error(e.to_string()));
+                    break;
+                }
+            },
+            Ok(false) => {}
+            Err(e) => {
+                let _ = tx.try_send(InputMsg::Error(e.to_string()));
+                break;
+            }
+        }
+    }
+}
+
+/// Drain queued input events without blocking rendering.
+/// Returns true if the app should quit (same semantics as before).
+pub fn handle_events(app: &mut App, input: &mut InputPump) -> Result<bool> {
+    for _ in 0..MAX_EVENTS_PER_FRAME {
+        match input.rx.try_recv() {
+            Ok(InputMsg::Event(ev)) => {
+                if apply_event(app, ev) {
+                    return Ok(true);
+                }
+            }
+            Ok(InputMsg::Error(msg)) => return Err(anyhow!("input error: {msg}")),
+            Err(mpsc::error::TryRecvError::Empty) => break,
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                return Err(anyhow!("input pump disconnected"));
+            }
+        }
+    }
     Ok(app.should_quit())
+}
+
+fn apply_event(app: &mut App, event: Event) -> bool {
+    match event {
+        Event::Key(key) => {
+            // Handle press + repeat events (ignore releases)
+            if matches!(key.kind, KeyEventKind::Release) {
+                return app.should_quit();
+            }
+
+            // Handle Ctrl+C globally (preserve old semantics: returns true without setting should_quit)
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                if app.is_loading() {
+                    app.cancel_active_operation();
+                    return app.should_quit();
+                }
+                return true;
+            }
+
+            match app.input_mode() {
+                InputMode::Normal => handle_normal_mode(app, key),
+                InputMode::Insert => handle_insert_mode(app, key),
+                InputMode::Command => handle_command_mode(app, key),
+                InputMode::ModelSelect => handle_model_select_mode(app, key),
+            }
+        }
+        Event::Paste(text) => {
+            // Preserve existing paste gating + insert-token flow exactly
+            if app.tool_approval_requests().is_some() || app.tool_recovery_calls().is_some() {
+                return app.should_quit();
+            }
+            if app.input_mode() == InputMode::Insert {
+                let Some(token) = app.insert_token() else {
+                    return app.should_quit();
+                };
+                // Normalize line endings: convert \r\n to \n and remove stray \r
+                let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+                app.insert_mode(token).enter_text(&normalized);
+            }
+        }
+        _ => {}
+    }
+    app.should_quit()
 }
 
 fn handle_normal_mode(app: &mut App, key: KeyEvent) {
