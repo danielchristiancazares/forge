@@ -245,6 +245,7 @@ When using the planning tool:
 - No ANSI codes, no "above/below" references
 - Adapt density to task: terse for simple queries, structured walkthrough for complex changes
 - For code changes: explain what changed and why, suggest logical next steps, use numbered lists for multiple options
+- Use `GitDiff` to verify/summarize your own changes only when you lack confidence about what was modified (e.g., long session, many files, context truncation). If you just made the edits and remember them clearly, summarize directly.
 
 ### File references
 

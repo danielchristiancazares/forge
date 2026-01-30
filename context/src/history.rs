@@ -326,6 +326,11 @@ impl Summary {
     }
 
     #[must_use]
+    pub fn content_non_empty(&self) -> &NonEmptyString {
+        &self.content
+    }
+
+    #[must_use]
     pub fn token_count(&self) -> u32 {
         self.token_count
     }

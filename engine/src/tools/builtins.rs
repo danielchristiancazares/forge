@@ -834,6 +834,17 @@ impl ToolExecutor for ApplyPatchTool {
                         compute_diff_stats(&file.original_bytes, &file.bytes);
                     ctx.turn_changes
                         .record_stats(file.path.clone(), additions, deletions);
+
+                    // Update file cache so subsequent edits don't fail staleness check
+                    let sha = compute_sha256_bytes(&file.bytes);
+                    let mut cache = ctx.file_cache.lock().await;
+                    cache.insert(
+                        file.path.clone(),
+                        FileCacheEntry {
+                            sha256: sha,
+                            read_at: SystemTime::now(),
+                        },
+                    );
                 }
             }
 
@@ -1346,6 +1357,15 @@ fn compute_sha256(path: &Path) -> Result<[u8; 32], std::io::Error> {
     let mut out = [0u8; 32];
     out.copy_from_slice(&digest[..]);
     Ok(out)
+}
+
+fn compute_sha256_bytes(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest[..]);
+    out
 }
 
 struct StagedFile {

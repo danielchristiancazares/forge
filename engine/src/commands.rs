@@ -44,12 +44,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         show_in_help: true,
     },
     CommandSpec {
-        palette_label: "tools",
-        help_label: "tools",
-        description: "Show tool status",
-        show_in_help: true,
-    },
-    CommandSpec {
         palette_label: "model <name>",
         help_label: "model",
         description: "Change the model",
@@ -134,7 +128,6 @@ pub(crate) enum CommandKind {
     Summarize,
     Cancel,
     Screen,
-    Tools,
     Rewind,
     Undo,
     Retry,
@@ -203,10 +196,6 @@ const COMMAND_ALIASES: &[CommandAlias] = &[
         kind: CommandKind::Screen,
     },
     CommandAlias {
-        name: "tools",
-        kind: CommandKind::Tools,
-    },
-    CommandAlias {
         name: "rw",
         kind: CommandKind::Rewind,
     },
@@ -254,7 +243,6 @@ pub(crate) enum Command<'a> {
     Summarize,
     Cancel,
     Screen,
-    Tools,
     Rewind {
         target: Option<&'a str>,
         scope: Option<&'a str>,
@@ -297,7 +285,6 @@ impl<'a> Command<'a> {
             CommandKind::Summarize => Command::Summarize,
             CommandKind::Cancel => Command::Cancel,
             CommandKind::Screen => Command::Screen,
-            CommandKind::Tools => Command::Tools,
             CommandKind::Rewind => Command::Rewind {
                 target: parts.get(1).copied(),
                 scope: parts.get(2).copied(),
@@ -562,22 +549,6 @@ impl super::App {
             Command::Screen => {
                 self.view.toggle_screen_mode = true;
             }
-            Command::Tools => {
-                if self.tool_definitions.is_empty() {
-                    self.push_notification("No tools configured. Add tools to config.toml");
-                } else {
-                    let tools_list: Vec<&str> = self
-                        .tool_definitions
-                        .iter()
-                        .map(|t| t.name.as_str())
-                        .collect();
-                    self.push_notification(format!(
-                        "Tools ({}): {}",
-                        self.tool_definitions.len(),
-                        tools_list.join(", ")
-                    ));
-                }
-            }
             Command::Rewind { target, scope } => {
                 if let Some(reason) = self.busy_reason() {
                     self.push_notification(format!("Cannot rewind while {reason}."));
@@ -731,11 +702,6 @@ mod tests {
     #[test]
     fn parse_screen_command() {
         assert_eq!(Command::parse("screen"), Command::Screen);
-    }
-
-    #[test]
-    fn parse_tools_command() {
-        assert_eq!(Command::parse("tools"), Command::Tools);
     }
 
     #[test]

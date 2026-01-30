@@ -531,10 +531,7 @@ impl ContextManager {
         content: NonEmptyString,
         generated_by: String,
     ) -> Result<SummaryId> {
-        let injected = NonEmptyString::try_from(SUMMARY_PREFIX)
-            .expect("SUMMARY_PREFIX must be non-empty")
-            .append("\n")
-            .append(content.as_str());
+        let injected = NonEmptyString::prefixed(SUMMARY_PREFIX, "\n", &content);
         let token_count = self.counter.count_message(&Message::system(injected));
 
         let SummarizationScope { ids, range } = scope;

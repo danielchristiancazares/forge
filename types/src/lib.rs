@@ -34,6 +34,20 @@ impl NonEmptyString {
         }
     }
 
+    /// Build a non-empty string by prefixing a known non-empty string.
+    ///
+    /// The `content` argument already satisfies the trim invariant, so the
+    /// concatenated result cannot be empty after trimming.
+    #[must_use]
+    pub fn prefixed(prefix: NonEmptyStaticStr, separator: &str, content: &NonEmptyString) -> Self {
+        let mut value =
+            String::with_capacity(prefix.as_str().len() + separator.len() + content.as_str().len());
+        value.push_str(prefix.as_str());
+        value.push_str(separator);
+        value.push_str(content.as_str());
+        Self(value)
+    }
+
     #[must_use]
     pub fn append(mut self, suffix: impl AsRef<str>) -> Self {
         self.0.push_str(suffix.as_ref());
