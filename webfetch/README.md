@@ -14,11 +14,11 @@ HTML-to-Markdown extraction, token-aware chunking, and LRU disk caching.
 | 52-156 | Key Types |
 | 157-177 | Public API |
 | 178-274 | How It Works |
-| 275-323 | Configuration |
-| 324-383 | Usage Examples |
-| 384-387 | Integration with Other Crates |
-| 388-400 | Testing |
-| 401-420 | Design Principles |
+| 275-327 | Configuration |
+| 328-387 | Usage Examples |
+| 388-391 | Integration with Other Crates |
+| 392-404 | Testing |
+| 405-423 | Design Principles |
 
 ## Table of Contents
 
@@ -274,7 +274,10 @@ LRU cache (`cache.rs`) with dual-limit eviction:
 
 ## Configuration
 
-`WebFetchConfig` maps to `[tools.webfetch]` in Forge config:
+`WebFetchConfig` maps to `[tools.webfetch]` in Forge config. When using the
+Forge app, only a subset is currently wired through:
+`user_agent`, `timeout_seconds`, `max_redirects`, `default_max_chunk_tokens`,
+`max_download_bytes`, `cache_dir`, and `cache_ttl_days`.
 
 ```toml
 [tools.webfetch]
@@ -285,9 +288,10 @@ max_redirects = 5                   # Maximum redirect hops
 max_download_bytes = 10485760       # 10 MiB download limit
 default_max_chunk_tokens = 600      # Default token budget per chunk
 max_dns_attempts = 3                # DNS resolution retries
+allow_auto_execution = false        # Allow auto-execution without approval
 
 # Cache settings
-cache_dir = "~/.cache/forge/webfetch"  # Cache directory
+cache_dir = "~/.cache/forge"           # Cache directory (default: OS cache dir + /forge)
 cache_ttl_days = 7                     # Cache entry lifetime
 max_cache_entries = 1000               # Maximum cached URLs
 max_cache_bytes = 1073741824           # 1 GiB total cache size

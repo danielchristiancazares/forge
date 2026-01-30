@@ -10,20 +10,20 @@ This crate provides the foundational type system that enforces correctness at co
 |-------|---------|
 | 1-46 | Header, LLM-TOC, Table of Contents |
 | 47-111 | Design Philosophy |
-| 112-131 | Module Structure |
-| 133-241 | NonEmpty String Types |
-| 243-394 | Provider and Model Types |
-| 396-436 | API Key Types |
-| 438-532 | OpenAI Request Options |
-| 534-619 | Caching and Output Limits |
-| 621-686 | Streaming Events |
-| 688-794 | Tool Calling Types |
-| 796-944 | Message Types |
-| 946-1017 | Terminal Sanitization |
-| 1019-1062 | Type Relationships |
-| 1064-1078 | Error Types Summary |
-| 1080-1097 | Testing |
-| 1099-1131 | Extending the Crate |
+| 112-132 | Module Structure |
+| 133-242 | NonEmpty String Types |
+| 243-396 | Provider and Model Types |
+| 397-438 | API Key Types |
+| 439-563 | OpenAI Request Options |
+| 564-650 | Caching and Output Limits |
+| 651-717 | Streaming Events |
+| 718-825 | Tool Calling Types |
+| 826-975 | Message Types |
+| 976-1048 | Terminal Sanitization |
+| 1049-1093 | Type Relationships |
+| 1094-1109 | Error Types Summary |
+| 1110-1128 | Testing |
+| 1129-1160 | Extending the Crate |
 
 ## Table of Contents
 
@@ -276,6 +276,7 @@ assert_eq!(Provider::parse("claude"), Some(Provider::Claude));
 assert_eq!(Provider::parse("Anthropic"), Some(Provider::Claude));
 assert_eq!(Provider::parse("openai"), Some(Provider::OpenAI));
 assert_eq!(Provider::parse("gpt"), Some(Provider::OpenAI));
+assert_eq!(Provider::parse("chatgpt"), Some(Provider::OpenAI));
 assert_eq!(Provider::parse("gemini"), Some(Provider::Gemini));
 assert_eq!(Provider::parse("google"), Some(Provider::Gemini));
 assert_eq!(Provider::parse("unknown"), None);
@@ -298,7 +299,7 @@ assert_eq!(model.as_str(), "gemini-3-pro-preview");
 
 // List available models
 let models: &[&str] = Provider::Claude.available_models();
-// ["claude-opus-4-5-20251101", "claude-haiku-4-5-20251001"]
+// ["claude-opus-4-5-20251101", "claude-sonnet-4-5-20250514", "claude-haiku-4-5-20251001"]
 
 let models: &[&str] = Provider::OpenAI.available_models();
 // ["gpt-5.2", "gpt-5.2-pro", "gpt-5.2-2025-12-11"]

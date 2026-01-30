@@ -787,14 +787,14 @@ shell_commands_seconds = 120
         let toml_str = r#"
 [tools.approval]
 mode = "default"
-allowlist = ["read_file", "list_files"]
-denylist = ["run_command"]
+allowlist = ["Read", "ListDir"]
+denylist = ["Bash"]
 "#;
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         let approval = config.tools.unwrap().approval.unwrap();
         assert_eq!(approval.mode, Some("default".to_string()));
-        assert_eq!(approval.allowlist, vec!["read_file", "list_files"]);
-        assert_eq!(approval.denylist, vec!["run_command"]);
+        assert_eq!(approval.allowlist, vec!["Read", "ListDir"]);
+        assert_eq!(approval.denylist, vec!["Bash"]);
     }
 
     #[test]

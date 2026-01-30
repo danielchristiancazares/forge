@@ -6,19 +6,19 @@ This document provides comprehensive documentation for the `forge` CLI crate - t
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-37 | Header, Table of Contents |
-| 39-80 | Overview: responsibilities, file structure, dependencies |
-| 82-123 | Architecture Diagram: main() flow, mode switching, terminal session lifecycle |
-| 125-175 | Module Structure: main.rs types and functions, assets.rs constants and statics |
-| 177-270 | Terminal Session Management: TerminalSession, init/cleanup sequences, error handling |
-| 272-363 | UI Mode System: UiMode enum, resolution logic, mode characteristics |
-| 365-547 | Main Event Loops: tick cycle, run_app_full, run_app_inline, transcript clear, yield_now |
-| 549-624 | Asset Management: compile-time embedding, provider-specific prompts, OnceLock initialization |
-| 626-703 | Startup and Shutdown Sequence: initialization order, cleanup guarantees |
-| 705-738 | Configuration Resolution: UI mode config, file location, example |
-| 740-769 | Error Handling: error types, sources, recovery strategy |
-| 771-858 | Extension Guide: adding UI modes, assets, startup flags, modifying event loop |
-| 860-867 | Related Documentation: links to other crate READMEs |
+| 1-39 | Header, Table of Contents |
+| 40-82 | Overview: responsibilities, file structure, dependencies |
+| 83-125 | Architecture Diagram: main() flow, mode switching, terminal session lifecycle |
+| 126-177 | Module Structure: main.rs types and functions, assets.rs constants and statics |
+| 178-274 | Terminal Session Management: TerminalSession, init/cleanup sequences, error handling |
+| 275-367 | UI Mode System: UiMode enum, resolution logic, mode characteristics |
+| 368-561 | Main Event Loops: input pump, frame cadence, run_app_full, run_app_inline, transcript clear |
+| 562-639 | Asset Management: compile-time embedding, provider-specific prompts, OnceLock initialization |
+| 640-722 | Startup and Shutdown Sequence: initialization order, cleanup guarantees |
+| 723-757 | Configuration Resolution: UI mode config, file location, example |
+| 758-788 | Error Handling: error types, sources, recovery strategy |
+| 789-875 | Extension Guide: adding UI modes, assets, startup flags, modifying event loop |
+| 876-882 | Related Documentation: links to other crate READMEs |
 
 ## Table of Contents
 
@@ -195,8 +195,9 @@ When `TerminalSession::new(mode)` is called:
 1. **Enable raw mode**: `enable_raw_mode()` - disables line buffering and echo
 2. **Enable bracketed paste**: `EnableBracketedPaste` - allows detecting pasted text vs typed input
 3. **Enter alternate screen** (full mode only): `EnterAlternateScreen` - switches to alternate buffer
-4. **Create terminal backend**: `CrosstermBackend::new(stdout())`
-5. **Configure viewport**:
+4. **Enable alternate scroll mode** (full mode only): `CSI ? 1007 h` - map scroll wheel to arrow keys without mouse capture
+5. **Create terminal backend**: `CrosstermBackend::new(stdout())`
+6. **Configure viewport**:
    - Full mode: Standard terminal with full screen
    - Inline mode: `Viewport::Inline(INLINE_VIEWPORT_HEIGHT)` - fixed-height viewport at cursor
 
@@ -205,9 +206,10 @@ When `TerminalSession::new(mode)` is called:
 When `TerminalSession` is dropped:
 
 1. **Disable raw mode**: `disable_raw_mode()` - restores normal terminal behavior
-2. **Leave alternate screen** (if applicable): `LeaveAlternateScreen` + `DisableBracketedPaste`
-3. **Clear inline viewport** (inline mode): `clear_inline_viewport()` - erases the inline area
-4. **Disable bracketed paste** (inline mode): `DisableBracketedPaste` - restores normal paste behavior
+2. **Disable alternate scroll mode** (full mode only): `CSI ? 1007 l`
+3. **Leave alternate screen** (if applicable): `LeaveAlternateScreen` + `DisableBracketedPaste`
+4. **Clear inline viewport** (inline mode): `clear_inline_viewport()` - erases the inline area
+5. **Disable bracketed paste** (inline mode): `DisableBracketedPaste` - restores normal paste behavior
 5. **Show cursor**: `terminal.show_cursor()` - ensures cursor visibility
 
 ### Error Handling During Setup
@@ -290,7 +292,7 @@ enum UiMode {
 |--------|-----------|-------------|
 | **Screen** | Alternate screen buffer | Current terminal buffer |
 | **Size** | Full terminal dimensions | Fixed height viewport (`INLINE_VIEWPORT_HEIGHT`) |
-| **Mouse** | Capture enabled | Not captured |
+| **Mouse** | Scroll wheel mapped to arrows (no click capture) | Not captured |
 | **Scrollback** | Preserved (alternate buffer) | Visible above viewport |
 | **Output** | Rendered in viewport | Flushed above viewport via `InlineOutput` |
 
@@ -374,53 +376,52 @@ Both event loops follow the same structure but differ in rendering and output ha
 |                        Event Loop                                  |
 |                                                                    |
 |   +------------------------------------------------------------+  |
-|   |  1. app.tick()                                              |  |
-|   |     - Increment animation counter                           |  |
-|   |     - Poll background tasks (summarization)                 |  |
+|   |  1. frames.tick().await (fixed cadence)                     |  |
 |   +------------------------------------------------------------+  |
 |                              |                                     |
 |                              v                                     |
 |   +------------------------------------------------------------+  |
-|   |  2. tokio::task::yield_now().await                          |  |
-|   |     - Critical: allows async tasks to progress              |  |
-|   |     - crossterm::event::poll() is blocking                  |  |
+|   |  2. handle_events(app, input)                               |  |
+|   |     - Drain InputPump queue (non-blocking)                  |  |
+|   |     - Dispatch to mode-specific handler                     |  |
+|   |     - Returns true if app should quit                       |  |
 |   +------------------------------------------------------------+  |
 |                              |                                     |
 |                              v                                     |
 |   +------------------------------------------------------------+  |
-|   |  3. app.process_stream_events()                             |  |
+|   |  3. app.tick()                                              |  |
+|   |     - Advance animations                                   |  |
+|   |     - Poll background tasks                                |  |
+|   +------------------------------------------------------------+  |
+|                              |                                     |
+|                              v                                     |
+|   +------------------------------------------------------------+  |
+|   |  4. app.process_stream_events()                             |  |
 |   |     - Drain streaming chunks from channel                   |  |
 |   |     - Apply text/tool deltas to UI state                    |  |
 |   +------------------------------------------------------------+  |
 |                              |                                     |
 |                              v                                     |
 |   +------------------------------------------------------------+  |
-|   |  4. Check transcript clear flag                             |  |
-|   |     - app.take_clear_transcript()                           |  |
-|   |     - Full mode: terminal.clear()                           |  |
-|   |     - Inline mode: clear_inline_transcript() + reset        |  |
+|   |  5. Clear transcript if requested                           |  |
+|   |     - Full: terminal.clear()                                |  |
+|   |     - Inline: clear_inline_transcript() + output.reset()    |  |
 |   +------------------------------------------------------------+  |
 |                              |                                     |
 |                              v                                     |
 |   +------------------------------------------------------------+  |
-|   |  5. terminal.draw() / output.flush()                        |  |
-|   |     - Render current state to terminal                      |  |
-|   |     - (Inline mode: flush new output above viewport)        |  |
+|   |  6. Inline: output.flush() + viewport resize (if needed)    |  |
 |   +------------------------------------------------------------+  |
 |                              |                                     |
 |                              v                                     |
 |   +------------------------------------------------------------+  |
-|   |  6. Check mode switch / quit flags                          |  |
+|   |  7. terminal.draw(...)                                      |  |
+|   +------------------------------------------------------------+  |
+|                              |                                     |
+|                              v                                     |
+|   +------------------------------------------------------------+  |
+|   |  8. Check mode switch flags                                 |  |
 |   |     - app.take_toggle_screen_mode()                         |  |
-|   |     - handle_events() returns quit signal                   |  |
-|   +------------------------------------------------------------+  |
-|                              |                                     |
-|                              v                                     |
-|   +------------------------------------------------------------+  |
-|   |  7. handle_events(app).await                                |  |
-|   |     - Poll for keyboard events (100ms timeout)              |  |
-|   |     - Dispatch to mode-specific handler                     |  |
-|   |     - Returns true if app should quit                       |  |
 |   +------------------------------------------------------------+  |
 |                              |                                     |
 |                              v                                     |
@@ -436,12 +437,22 @@ where
     B: Backend + Write,
     B::Error: Send + Sync + 'static,
 {
-    loop {
+    let mut input = InputPump::new();
+    let mut frames = tokio::time::interval(FRAME_DURATION);
+    frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let result: Result<RunResult> = loop {
+        frames.tick().await;
+
+        let quit_now = handle_events(app, &mut input)?;
+        if quit_now {
+            let _ = clear_inline_viewport(terminal);
+            break Ok(RunResult::Quit);
+        }
+
         app.tick();
-        tokio::task::yield_now().await;
         app.process_stream_events();
 
-        // Handle transcript clear request (e.g., from /clear command)
         if app.take_clear_transcript() {
             terminal.clear()?;
         }
@@ -450,14 +461,12 @@ where
 
         if app.take_toggle_screen_mode() {
             clear_inline_viewport(terminal)?;
-            return Ok(RunResult::SwitchMode);
+            break Ok(RunResult::SwitchMode);
         }
+    };
 
-        if handle_events(app).await? {
-            clear_inline_viewport(terminal)?;
-            return Ok(RunResult::Quit);
-        }
-    }
+    input.shutdown().await;
+    result
 }
 ```
 
@@ -477,23 +486,28 @@ where
 {
     let mut output = InlineOutput::new();
     let mut current_viewport_height = INLINE_VIEWPORT_HEIGHT;
+    let mut input = InputPump::new();
+    let mut frames = tokio::time::interval(FRAME_DURATION);
+    frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    loop {
+    let result: Result<RunResult> = loop {
+        frames.tick().await;
+
+        let quit_now = handle_events(app, &mut input)?;
+        if quit_now {
+            break Ok(RunResult::Quit);
+        }
+
         app.tick();
-        tokio::task::yield_now().await;
         app.process_stream_events();
 
-        // Handle transcript clear request (e.g., from /clear command)
-        // In inline mode, this clears the entire terminal and resets output state
         if app.take_clear_transcript() {
             clear_inline_transcript(terminal)?;
             output.reset();
         }
 
-        // Flush completed messages above the viewport
         output.flush(terminal, app)?;
 
-        // Dynamically resize viewport for overlays
         let needed_height = inline_viewport_height(app.input_mode());
         if needed_height != current_viewport_height {
             let (term_width, term_height) = terminal_size()?;
@@ -506,13 +520,12 @@ where
         terminal.draw(|frame| draw_inline(frame, app))?;
 
         if app.take_toggle_screen_mode() {
-            return Ok(RunResult::SwitchMode);
+            break Ok(RunResult::SwitchMode);
         }
+    };
 
-        if handle_events(app).await? {
-            return Ok(RunResult::Quit);
-        }
-    }
+    input.shutdown().await;
+    result
 }
 ```
 
@@ -537,13 +550,12 @@ where
 }
 ```
 
-### Critical: yield_now() Requirement
+### InputPump and Non-Blocking Input
 
-The `tokio::task::yield_now().await` call is essential because:
-
-1. **crossterm's `event::poll()` is blocking** - it does not yield to the tokio runtime
-2. **Spawned tasks need CPU time** - streaming responses and summarization run in background tasks
-3. **Without yielding**, background tasks would starve and the UI would appear frozen
+Input handling is delegated to a dedicated blocking reader (`InputPump`) that pushes
+events into a bounded channel. The render loop only drains the queue (`handle_events`)
+so it never blocks on terminal input. This keeps the UI responsive and avoids the
+need for explicit `yield_now()` calls in the main loop.
 
 ---
 
@@ -669,7 +681,11 @@ pub fn system_prompts() -> SystemPrompts {
    - app.save_history()
    - Errors logged but don't prevent exit
 
-4. Return from main()
+4. Save session state
+   - app.save_session()
+   - Errors logged but don't prevent exit
+
+5. Return from main()
    - Exit code 0 on success
 ```
 
@@ -850,10 +866,10 @@ To add command-line argument parsing:
 
 When modifying the event loop, preserve these invariants:
 
-1. **Always call `yield_now()`** - background tasks depend on it
+1. **Drain input before ticking** - keep input responsive via `InputPump`
 2. **Process stream events before drawing** - ensures UI reflects latest state
 3. **Check flags after drawing** - user sees final state before mode switch
-4. **Handle events last** - clean separation between update and input phases
+4. **Shut down `InputPump` on exit** - clean termination before mode switch
 
 ---
 

@@ -557,7 +557,7 @@ mod tests {
 
         let tool_call = ToolCall {
             id: "call_123".to_string(),
-            name: "read_file".to_string(),
+            name: "Read".to_string(),
             arguments: json!({"path": "/tmp/test.txt"}),
             thought_signature: None,
         };
@@ -565,7 +565,7 @@ mod tests {
         let messages = vec![(MessageId::new_for_test(0), Message::ToolUse(tool_call))];
 
         let (_, conversation) = build_summarization_prompt(&messages, 500);
-        assert!(conversation.contains("Tool Call: read_file"));
+        assert!(conversation.contains("Tool Call: Read"));
         assert!(conversation.contains("/tmp/test.txt"));
         assert!(conversation.contains("[Message 0]"));
     }
@@ -576,7 +576,7 @@ mod tests {
 
         let result = ToolResult {
             tool_call_id: "call_123".to_string(),
-            tool_name: "read_file".to_string(),
+            tool_name: "Read".to_string(),
             content: "File contents here".to_string(),
             is_error: false,
         };
@@ -594,7 +594,7 @@ mod tests {
 
         let result = ToolResult {
             tool_call_id: "call_456".to_string(),
-            tool_name: "read_file".to_string(),
+            tool_name: "Read".to_string(),
             content: "File not found".to_string(),
             is_error: true,
         };

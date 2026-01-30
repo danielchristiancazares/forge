@@ -247,7 +247,7 @@ impl App {
                 continue;
             }
 
-            if call.name == "apply_patch"
+            if call.name == "Edit"
                 && let Some(patch) = call.arguments.get("patch").and_then(|v| v.as_str())
                 && patch.len() > self.tool_settings.patch_limits.max_patch_bytes
             {
@@ -430,8 +430,8 @@ impl App {
             };
 
             let default_timeout = match call.name.as_str() {
-                "read_file" | "apply_patch" => settings.timeouts.file_operations_timeout,
-                "run_command" => settings.timeouts.shell_commands_timeout,
+                "Read" | "Edit" => settings.timeouts.file_operations_timeout,
+                "Bash" => settings.timeouts.shell_commands_timeout,
                 _ => settings.timeouts.default_timeout,
             };
 
@@ -1010,7 +1010,7 @@ fn preflight_sandbox(
 ) -> Result<(), tools::ToolError> {
     let working_dir = sandbox.working_dir();
     match call.name.as_str() {
-        "read_file" => {
+        "Read" => {
             let path = call
                 .arguments
                 .get("path")
@@ -1020,7 +1020,7 @@ fn preflight_sandbox(
                 })?;
             let _ = sandbox.resolve_path(path, &working_dir)?;
         }
-        "apply_patch" => {
+        "Edit" => {
             let patch_str = call
                 .arguments
                 .get("patch")
@@ -1036,7 +1036,7 @@ fn preflight_sandbox(
                 let _ = sandbox.resolve_path(&file.path, &working_dir)?;
             }
         }
-        "write_file" => {
+        "Write" => {
             let path = call
                 .arguments
                 .get("path")

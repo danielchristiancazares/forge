@@ -6,21 +6,21 @@ LLM API client layer for the Forge application. Provides streaming HTTP communic
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-41 | Header, LLM-TOC, Table of Contents |
-| 42-85 | Overview |
-| 88-151 | Architecture |
-| 154-206 | Provider System |
-| 208-301 | Type-Driven Design |
-| 303-382 | SSE Streaming Infrastructure |
-| 384-444 | Claude API Client |
-| 446-522 | OpenAI API Client |
-| 524-623 | Gemini API Client |
-| 625-673 | Public API Reference |
-| 675-688 | Model Limits |
-| 691-865 | Code Examples |
-| 867-902 | Error Handling |
-| 904-978 | Extension Guide |
-| 980-995 | Quick Reference |
+| 1-42 | Header, LLM-TOC, Table of Contents |
+| 43-88 | Overview |
+| 89-154 | Architecture |
+| 155-208 | Provider System |
+| 209-303 | Type-Driven Design |
+| 304-384 | SSE Streaming Infrastructure |
+| 385-446 | Claude API Client |
+| 447-524 | OpenAI API Client |
+| 525-627 | Gemini API Client |
+| 628-677 | Public API Reference |
+| 678-694 | Model Limits |
+| 695-874 | Code Examples |
+| 875-911 | Error Handling |
+| 912-987 | Extension Guide |
+| 988-1002 | Quick Reference |
 
 ## Table of Contents
 
@@ -682,6 +682,7 @@ Token limits are defined in `forge-context/src/model_limits.rs`:
 | Model Prefix | Context Window | Max Output |
 | :--- | :--- | :--- |
 | `claude-opus-4-5` | 200,000 | 64,000 |
+| `claude-sonnet-4-5` | 200,000 | 64,000 |
 | `claude-haiku-4-5` | 200,000 | 64,000 |
 | `gpt-5.2-pro` | 400,000 | 128,000 |
 | `gpt-5.2` | 400,000 | 128,000 |

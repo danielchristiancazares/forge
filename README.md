@@ -8,19 +8,20 @@ Forge brings the efficiency of vim-style modal editing to AI conversation, letti
 <!-- toc:start -->
 | Lines | Section |
 | --- | --- |
-| 7-25 | LLM-TOC |
-| 26-60 | Features: Core Capabilities, Context Infinity, Tool Executor |
-| 61-70 | Requirements |
-| 71-96 | Installation |
-| 97-140 | Quick Start: First Run, Basic Usage |
-| 141-248 | Configuration: Full Reference |
-| 249-326 | Keyboard Shortcuts: All Modes |
-| 327-347 | Commands Reference |
-| 348-376 | Workspace Structure |
-| 377-409 | Development |
-| 410-479 | Troubleshooting |
-| 480-512 | Documentation Index |
-| 513-527 | Contributing and License |
+| 7-26 | LLM-TOC |
+| 27-61 | Features: Core Capabilities, Context Infinity, Tool Executor |
+| 62-71 | Requirements |
+| 72-97 | Installation |
+| 98-141 | Quick Start: First Run, Basic Usage |
+| 142-270 | Configuration: Full Reference |
+| 271-363 | Keyboard Shortcuts: All Modes |
+| 364-383 | Commands Reference |
+| 384-412 | Workspace Structure |
+| 413-447 | Development |
+| 448-517 | Troubleshooting |
+| 518-553 | Documentation Index |
+| 554-564 | Contributing and License |
+| 565-567 | License |
 <!-- toc:end -->
 
 ## Features
@@ -48,9 +49,9 @@ Enable the LLM to interact with your local filesystem and execute tasks:
 
 - **Built-in Tools**:
   - File operations: `read_file`, `write_file`, `apply_patch`, `Glob`
-  - Search: `search` (ugrep/ripgrep backend)
+  - Search: `Search` (aliases: `search`, `rg`, `ripgrep`, `ugrep`, `ug`)
   - Shell: `run_command`
-  - Web: `web_fetch`
+  - Web: `WebFetch`
   - Context: `recall` (retrieve facts from conversation)
   - Git: `git_status`, `git_diff`, `git_add`, `git_commit`, `git_log`, `git_branch`, `git_checkout`, `git_stash`, `git_show`, `git_blame`, `git_restore`
 - **Sandboxed Execution**: Path-based tools are restricted to allowed directories with symlink escape prevention
@@ -164,6 +165,13 @@ google = "${GEMINI_API_KEY}"
 [context]
 infinity = true                        # Enable adaptive context management
 
+[cache]
+enabled = true                         # Legacy prompt caching (Claude only)
+
+[thinking]
+enabled = false                        # Legacy extended thinking toggle
+budget_tokens = 10000                  # Legacy thinking budget (min 1024)
+
 [anthropic]
 cache_enabled = true                   # Enable prompt caching (reduces costs)
 thinking_enabled = false               # Enable extended thinking
@@ -173,7 +181,7 @@ thinking_budget_tokens = 10000         # Token budget for thinking
 reasoning_effort = "high"              # "low", "medium", "high", or "xhigh" (GPT-5+)
 reasoning_summary = "auto"             # "none", "auto", "concise", "detailed" (GPT-5+, shown when show_thinking=true)
 verbosity = "high"                     # "low", "medium", or "high" (GPT-5+)
-truncation = "auto"                    # "auto", "none" or "preserve"
+truncation = "auto"                    # "auto" or "disabled"
 # gpt-5.2-pro defaults to xhigh when reasoning_effort is unset.
 
 [google]
@@ -187,12 +195,15 @@ max_tool_iterations_per_user_turn = 4
 
 [tools.approval]
 mode = "default"                       # "permissive", "default", or "strict"
-allowlist = ["read_file", "Glob"]      # Skip approval for these tools
+allowlist = ["read_file", "git_status", "git_diff", "git_log", "git_show", "git_blame"]  # Skip approval for these tools
 denylist = ["run_command"]             # Always deny these tools
+
+[tools.environment]
+denylist = ["*_KEY", "*_TOKEN", "*_SECRET", "*_PASSWORD", "AWS_*", "ANTHROPIC_*", "OPENAI_*"]  # Case-insensitive patterns
 
 [tools.sandbox]
 allowed_roots = ["."]                  # Allowed base directories
-denied_patterns = ["**/.git/**"]       # Excluded glob patterns
+denied_patterns = ["**/.git/**"]       # Excluded glob patterns (in addition to defaults)
 allow_absolute = false                 # Block absolute paths
 include_default_denies = true          # Include built-in deny patterns
 
@@ -202,36 +213,45 @@ file_operations_seconds = 30
 shell_commands_seconds = 300           # 5 minutes for shell commands
 
 [tools.output]
-max_bytes = 102400                     # 100 KB max output per tool
+max_bytes = 65536                      # 64 KB max output per tool
 
 [tools.webfetch]
-user_agent = "Forge/1.0"               # Custom User-Agent
-timeout_seconds = 30                   # Fetch timeout
+user_agent = "forge-webfetch/1.0"      # Custom User-Agent
+timeout_seconds = 20                   # Fetch timeout
 max_download_bytes = 10485760          # 10MB limit
 max_redirects = 5                      # Max HTTP redirects
-default_max_chunk_tokens = 2000        # Token budget per chunk
+default_max_chunk_tokens = 600         # Token budget per chunk
 cache_dir = "/tmp/webfetch"            # Cache directory
 cache_ttl_days = 7                     # Cache TTL in days
 
 [tools.search]
-binary = "ug"                          # Search binary: "ug" (ugrep) or "rg" (ripgrep)
+binary = "ugrep"                       # Search binary: "ugrep" or "rg" (ripgrep)
 fallback_binary = "rg"                 # Fallback if primary not found
-default_max_results = 100              # Search result limit
-default_timeout_ms = 5000              # Search timeout
+default_max_results = 200              # Search result limit
+default_timeout_ms = 20000             # Search timeout
 max_matches_per_file = 50              # Max matches per file
-max_files = 1000                       # Max files to search
-max_file_size_bytes = 1048576          # Skip files larger than 1MB
+max_files = 10000                      # Max files to search
+max_file_size_bytes = 2000000          # Skip files larger than 2MB
 
 [tools.shell]
 binary = "pwsh"                        # Override shell binary
 args = ["-NoProfile", "-Command"]      # Override shell args
 
 [tools.read_file]
-max_file_read_bytes = 1048576          # Max bytes to read per file
-max_scan_bytes = 10485760              # Max bytes to scan for line counting
+max_file_read_bytes = 204800           # Max bytes to read per file
+max_scan_bytes = 2097152               # Max bytes to scan for line counting
 
 [tools.apply_patch]
-max_patch_bytes = 1048576              # Max patch size in bytes
+max_patch_bytes = 524288               # Max patch size in bytes
+
+[[tools.definitions]]
+name = "get_weather"
+description = "Get current weather for a location"
+[tools.definitions.parameters]
+type = "object"
+[tools.definitions.parameters.properties.location]
+type = "string"
+description = "City name, e.g. 'Seattle, WA'"
 
 ```
 
@@ -259,6 +279,8 @@ max_patch_bytes = 1048576              # Max patch size in bytes
 | `a` | Enter Insert mode at end of line |
 | `o` | Enter Insert mode with cleared line |
 | `:` or `/` | Enter Command mode |
+| `m` | Open model selector |
+| `f` | Toggle files panel |
 | `s` | Toggle screen mode (fullscreen/inline) |
 | `j`, `Down`, or scroll wheel | Scroll down |
 | `k`, `Up`, or scroll wheel | Scroll up |
@@ -267,6 +289,8 @@ max_patch_bytes = 1048576              # Max patch size in bytes
 | `g` | Scroll to top |
 | `G`, `End`, or `Right` | Scroll to bottom |
 | `Left` | Scroll up by chunk (20%) |
+| `Tab` / `Shift+Tab` | Files panel: next/previous file (when visible) |
+| `Enter` / `Esc` | Files panel: collapse expanded diff |
 
 ### Insert Mode (Editing)
 
@@ -282,6 +306,7 @@ max_patch_bytes = 1048576              # Max patch size in bytes
 | `Home` / `End` | Jump to start/end of line |
 | `Ctrl+U` | Clear entire line |
 | `Ctrl+W` | Delete word backwards |
+| `@` | Open file selector |
 
 ### Command Mode
 
@@ -307,6 +332,16 @@ max_patch_bytes = 1048576              # Max patch size in bytes
 | `j` / `Down` | Move selection down |
 | `k` / `Up` | Move selection up |
 | `1`-`9` | Direct selection by index |
+
+### File Select Mode
+
+| Key | Action |
+| --- | --- |
+| `Esc` | Cancel and return to Insert mode |
+| `Enter` | Insert selected file path |
+| `Up` / `Down` | Move selection |
+| `Backspace` | Delete filter character (or cancel if empty) |
+| Typing | Filter file list |
 
 ### Tool Approval Mode
 
@@ -338,9 +373,9 @@ Enter Command mode by pressing `:` or `/` in Normal mode.
 | `/model [name]` | - | Set model or open model selector (no argument) |
 | `/context` | `/ctx` | Show context usage statistics |
 | `/journal` | `/jrnl` | Show stream journal statistics |
-| `/summarize` | `/sum` | Manually trigger summarization |
+| `/summarize` | `/distill` | Manually trigger summarization |
 | `/screen` | - | Toggle between full-screen and inline mode |
-| `/tools` | - | List available tools |
+| `/tools` | - | Show tool status |
 | `/rewind [id\|last] [scope]` | `/rw` | Rewind to an automatic checkpoint (scope: `code`, `conversation`, or `both`) |
 | `/undo` | - | Undo the last user turn (rewind to last turn checkpoint) |
 | `/retry` | - | Undo the last user turn and restore its prompt into the input box |
@@ -405,7 +440,8 @@ cargo cov
 ```bash
 cargo test test_name                    # Single test by name
 cargo test -- --nocapture               # With stdout output
-cargo test --test integration_test      # Integration tests only
+cargo test --test all                   # Integration aggregator
+cargo test --test ui_snapshots          # Snapshot tests
 cargo test -p forge-context             # Tests for specific crate
 ```
 
@@ -508,7 +544,10 @@ Detailed documentation is available in each crate:
 | Document | Description |
 | -------- | ----------- |
 | [`docs/SEARCH_SRS.md`](docs/SEARCH_SRS.md) | Search tool specification |
+| [`docs/SEARCH_INDEXING_SRS.md`](docs/SEARCH_INDEXING_SRS.md) | Search indexing and change tracking |
+| [`docs/CONVERSATION_SEARCH_SRS.md`](docs/CONVERSATION_SEARCH_SRS.md) | Conversation search requirements |
 | [`docs/FILEOPS_SRS.md`](docs/FILEOPS_SRS.md) | File operations specification |
+| [`docs/OUTLINE_TOOL_SRS.md`](docs/OUTLINE_TOOL_SRS.md) | Outline tool specification |
 | [`docs/PWSH_TOOL_SRS.md`](docs/PWSH_TOOL_SRS.md) | PowerShell tool specification |
 | [`docs/COLOR_SCHEME.md`](docs/COLOR_SCHEME.md) | Color scheme documentation |
 

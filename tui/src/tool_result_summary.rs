@@ -100,7 +100,7 @@ pub(crate) fn tool_result_render_decision(
     ToolResultRender::Summary(summary)
 }
 
-/// Check if content looks like a unified diff (apply_patch output, git diff, etc).
+/// Check if content looks like a unified diff (Edit output, git diff, etc).
 fn looks_like_diff(content: &str) -> bool {
     content.lines().take(10).any(|line| {
         line.starts_with("diff --git")
@@ -495,7 +495,7 @@ mod tests {
     fn summary_read_range_prefers_call_args() {
         let call = ToolCall::new(
             "call_1",
-            "read_file",
+            "Read",
             json!({"path": "src/lib.rs", "start_line": 1, "end_line": 50}),
         );
         let meta = ToolCallMeta::from_call(&call);
@@ -505,7 +505,7 @@ mod tests {
 
     #[test]
     fn summary_search_counts_matches_and_files() {
-        let call = ToolCall::new("call_2", "search", json!({"pattern": "foo"}));
+        let call = ToolCall::new("call_2", "Search", json!({"pattern": "foo"}));
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"{"count":3,"matches":[{"type":"match","data":{"path":{"text":"a.rs"}}},{"type":"context","data":{"path":{"text":"b.rs"}}},{"type":"match","data":{"path":{"text":"a.rs"}}}]}"#;
         let summary = format_tool_result_summary(Some(&meta), content, false, 80);
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn summary_glob_counts_files() {
-        let call = ToolCall::new("call_3", "glob", json!({"pattern": "*.rs"}));
+        let call = ToolCall::new("call_3", "Glob", json!({"pattern": "*.rs"}));
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"["a.rs","b.rs"]"#;
         let summary = format_tool_result_summary(Some(&meta), content, false, 80);
@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn summary_bash_reports_exit_and_first_line() {
-        let call = ToolCall::new("call_4", "bash", json!({"command": "echo hi"}));
+        let call = ToolCall::new("call_4", "Bash", json!({"command": "echo hi"}));
         let meta = ToolCallMeta::from_call(&call);
         let summary = format_tool_result_summary(Some(&meta), "hello\nworld", false, 80);
         assert_eq!(summary, "exit 0: hello");
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn summary_git_status_counts_porcelain() {
-        let call = ToolCall::new("call_5", "git_status", json!({"porcelain": true}));
+        let call = ToolCall::new("call_5", "GitStatus", json!({"porcelain": true}));
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"{"stdout":" M file1\nA  file2\n?? file3\n"}"#;
         let summary = format_tool_result_summary(Some(&meta), content, false, 80);
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn edit_is_always_full_even_without_diff_markers() {
-        let call = ToolCall::new("call_1", "apply_patch", json!({}));
+        let call = ToolCall::new("call_1", "Edit", json!({}));
         let meta = ToolCallMeta::from_call(&call);
         // Content has no diff markers (summary lines only)
         let content = "modified: a\nmodified: b\n";
@@ -555,7 +555,7 @@ mod tests {
 
     #[test]
     fn write_is_always_full() {
-        let call = ToolCall::new("call_2", "write_file", json!({}));
+        let call = ToolCall::new("call_2", "Write", json!({}));
         let meta = ToolCallMeta::from_call(&call);
         let content = "Created /path/to/file.rs (1024 bytes)";
         let result = tool_result_render_decision(Some(&meta), content, false, 80);
@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn edit_with_many_files_still_gets_full_output() {
-        let call = ToolCall::new("call_5", "apply_patch", json!({}));
+        let call = ToolCall::new("call_5", "Edit", json!({}));
         let meta = ToolCallMeta::from_call(&call);
         // 15 modified lines before diff markers (exceeds 10-line heuristic window)
         let content = "modified: f1\nmodified: f2\nmodified: f3\nmodified: f4\n\

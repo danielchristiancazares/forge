@@ -6,20 +6,20 @@ This document provides comprehensive documentation for the `forge-engine` crate 
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-39 | Header, Table of Contents |
-| 40-108 | Overview: responsibilities, file structure, dependencies |
-| 109-143 | Architecture Diagram: App structure with InputState, OperationState, components |
-| 145-302 | State Machine Design: OperationState enum, states, transition diagrams |
-| 303-378 | Input Mode System: InputState enum, DraftInput, mode transitions |
-| 379-483 | Type-Driven Design Patterns: proof tokens, InsertToken, CommandToken, mode wrappers |
-| 484-580 | Streaming Orchestration: ActiveStream, StreamingMessage, lifecycle, journal recovery |
-| 582-648 | Command System: built-in commands table, rewind details, Command enum |
-| 650-711 | Context Management Integration: ContextManager, summarization retry, model switch adaptation |
-| 713-891 | Configuration: ForgeConfig structure, loading, env expansion, config sections |
-| 893-1042 | Tool Execution System: ToolRegistry, built-in tools, approval workflow, sandbox |
-| 1044-1269 | Public API Reference: App lifecycle, state queries, mode transitions, streaming ops |
-| 1271-1560 | Extension Guide: adding commands, input modes, providers, async operation states |
-| 1562-1695 | Re-exported Types, Error Handling, Thread Safety, Data Directory |
+| 1-40 | Header, Table of Contents |
+| 41-114 | Overview: responsibilities, file structure, dependencies |
+| 115-149 | Architecture Diagram: App structure with InputState, OperationState, components |
+| 150-305 | State Machine Design: OperationState enum, states, transition diagrams |
+| 306-387 | Input Mode System: InputState enum, DraftInput, mode transitions |
+| 388-492 | Type-Driven Design Patterns: proof tokens, InsertToken, CommandToken, mode wrappers |
+| 493-590 | Streaming Orchestration: ActiveStream, StreamingMessage, lifecycle, journal recovery |
+| 591-672 | Command System: built-in commands table, rewind details, Command enum |
+| 673-735 | Context Management Integration: ContextManager, summarization retry, model switch adaptation |
+| 736-915 | Configuration: ForgeConfig structure, loading, env expansion, config sections |
+| 916-1066 | Tool Execution System: ToolRegistry, built-in tools, approval workflow, sandbox |
+| 1067-1297 | Public API Reference: App lifecycle, state queries, mode transitions, streaming ops |
+| 1298-1591 | Extension Guide: adding commands, input modes, providers, async operation states |
+| 1592-1729 | Re-exported Types, Error Handling, Thread Safety, Data Directory |
 
 ## Table of Contents
 
@@ -46,7 +46,7 @@ The `forge-engine` crate is the heart of the Forge application - a TUI-agnostic 
 
 | Responsibility | Description |
 |----------------|-------------|
-| **Input Mode State Machine** | Vim-style modal editing (Normal, Insert, Command, ModelSelect) |
+| **Input Mode State Machine** | Vim-style modal editing (Normal, Insert, Command, ModelSelect, FileSelect) |
 | **Async Operation State Machine** | Mutually exclusive states for streaming, tool execution, summarizing, idle |
 | **Streaming Management** | Non-blocking LLM response streaming with crash recovery |
 | **Tool Execution** | Built-in tools (ReadFile, WriteFile, ApplyPatch, RunCommand, Glob, Search, WebFetch) |
@@ -90,9 +90,11 @@ engine/
     └── ui/
         ├── mod.rs              # UI types re-exports
         ├── display.rs          # DisplayItem enum
+        ├── file_picker.rs      # File picker state and filtering
         ├── input.rs            # InputState, DraftInput, InputMode
         ├── modal.rs            # ModalEffect animations
         ├── model_select.rs     # PredefinedModel enum
+        ├── panel.rs            # Files panel state and effects
         ├── scroll.rs           # ScrollState tracking
         └── view_state.rs       # ViewState, UiOptions for UI state
 ```
@@ -117,10 +119,10 @@ The engine depends on several workspace crates:
 │                              App                                         │
 │  ┌───────────────────────────────────────────────────────────────────┐  │
 │  │                       InputState                                   │  │
-│  │   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────────────┐     │  │
-│  │   │  Normal  │ │  Insert  │ │ Command  │ │  ModelSelect    │     │  │
-│  │   │ (Draft)  │ │ (Draft)  │ │(Draft,Cmd)│ │(Draft,Selected) │     │  │
-│  │   └──────────┘ └──────────┘ └──────────┘ └─────────────────┘     │  │
+│  │   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────────────┐ ┌───────────┐ │  │
+│  │   │  Normal  │ │  Insert  │ │ Command  │ │  ModelSelect    │ │ FileSelect│ │  │
+│  │   │ (Draft)  │ │ (Draft)  │ │(Draft,Cmd)│ │(Draft,Selected) │ │(Draft,Filter)││  │
+│  │   └──────────┘ └──────────┘ └──────────┘ └─────────────────┘ └───────────┘ │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 │                                                                          │
 │  ┌───────────────────────────────────────────────────────────────────┐  │
@@ -303,7 +305,7 @@ This state machine design provides several guarantees:
 
 ## Input Mode System
 
-The engine implements a vim-style modal editing system with four distinct modes.
+The engine implements a vim-style modal editing system with five distinct modes.
 
 ### InputState Enum
 
@@ -313,6 +315,7 @@ pub(crate) enum InputState {
     Insert(DraftInput),                         // Text editing mode
     Command { draft: DraftInput, command: DraftInput }, // Slash command entry
     ModelSelect { draft: DraftInput, selected: usize }, // Model picker overlay
+    FileSelect { draft: DraftInput, filter: DraftInput }, // File picker overlay
 }
 ```
 
@@ -347,21 +350,25 @@ fn byte_index_at(&self, grapheme_index: usize) -> usize {
         │    Normal     │ <- Default mode, navigation
         └───────┬───────┘
                 │
-    ┌───────────┼───────────┬────────────────┐
-    │ 'i'/'a'/'o'           │ ':'/'/'        │ Tab
-    v                       v                v
-┌───────┐             ┌────────┐       ┌─────────────┐
-│Insert │             │Command │       │ ModelSelect │
-│       │             │        │       │             │
-│Draft+ │             │Draft+  │       │Draft+       │
-│Cursor │             │CmdStr  │       │SelectedIdx  │
-└───┬───┘             └───┬────┘       └──────┬──────┘
-    │                     │                   │
-    │ Esc                 │ Esc/Enter         │ Esc/Enter
-    └─────────────────────┴───────────────────┘
-                          │
-                          v
-                   Back to Normal
+    ┌───────────┼───────────┬──────────────┐
+    │ Insert    │ Command   │ ModelSelect  │
+    │ (i/a/o)   │ (: or /)  │ (m)          │
+    v           v           v
+┌───────┐   ┌────────┐   ┌─────────────┐
+│Insert │   │Command │   │ ModelSelect │
+│       │   │        │   │             │
+│Draft+ │   │Draft+  │   │Draft+       │
+│Cursor │   │CmdStr  │   │SelectedIdx  │
+└───┬───┘   └───┬────┘   └──────┬──────┘
+    │           │               │
+    │ @         │ Esc/Enter     │ Esc/Enter
+    v           │               │
+┌───────────┐   │               │
+│FileSelect │<──┘               │
+│Draft+Filt │                   │
+└─────┬─────┘                   │
+      │ Esc/Enter               │
+      └─────────────────────────┘
 ```
 
 ### Mode Transition Methods
@@ -374,6 +381,7 @@ fn byte_index_at(&self, grapheme_index: usize) -> usize {
 | `enter_insert_mode_with_clear()` | Insert mode with cleared draft |
 | `enter_command_mode()` | Transition to Command, start new command string |
 | `enter_model_select_mode()` | Open model picker with animation |
+| `enter_file_select_mode()` | Open file picker and start filtering |
 
 ---
 
@@ -594,9 +602,9 @@ The engine provides a slash command system for user actions.
 | `/model [name]` | - | Set model or open picker |
 | `/context` | `/ctx` | Show context usage stats |
 | `/journal` | `/jrnl` | Show journal statistics |
-| `/summarize` | `/sum` | Trigger summarization |
+| `/summarize` | `/distill` | Trigger summarization |
 | `/screen` | - | Toggle fullscreen/inline mode |
-| `/tools` | - | Show tool status and list available tools |
+| `/tools` | - | Show tool status |
 | `/rewind [id\|last] [scope]` | `/rw` | Rewind to an automatic checkpoint |
 | `/undo` | - | Rewind to the latest turn checkpoint (conversation only) |
 | `/retry` | - | Rewind to the latest turn checkpoint and restore the prompt into the draft |
@@ -1142,6 +1150,7 @@ pub enum InputMode {
     Insert,      // Text editing mode
     Command,     // Slash command entry (e.g., /quit)
     ModelSelect, // Model picker overlay
+    FileSelect,  // File picker overlay
 }
 ```
 
@@ -1242,6 +1251,7 @@ let kind = effect.kind();
 | `enter_insert_mode_with_clear()` | Insert mode, clear draft |
 | `enter_command_mode()` | Switch to Command mode |
 | `enter_model_select_mode()` | Open model picker |
+| `enter_file_select_mode()` | Open file picker |
 | `insert_token()` | Get proof token for Insert mode |
 | `command_token()` | Get proof token for Command mode |
 | `insert_mode(token)` | Get InsertMode wrapper |
@@ -1350,6 +1360,7 @@ pub(crate) enum InputState {
     Insert(DraftInput),
     Command { draft: DraftInput, command: DraftInput },
     ModelSelect { draft: DraftInput, selected: usize },
+    FileSelect { draft: DraftInput, filter: DraftInput },
     MyMode { draft: DraftInput, custom_state: MyState },  // New mode
 }
 ```
@@ -1362,6 +1373,7 @@ pub enum InputMode {
     Insert,
     Command,
     ModelSelect,
+    FileSelect,
     MyMode,  // New mode
 }
 ```
@@ -1425,6 +1437,7 @@ pub async fn handle_events(app: &mut App) -> Result<bool> {
         InputMode::Insert => handle_insert_mode(app),
         InputMode::Command => handle_command_mode(app),
         InputMode::ModelSelect => handle_model_select_mode(app),
+        InputMode::FileSelect => handle_file_select_mode(app),
         InputMode::MyMode => handle_my_mode(app),  // New handler
     }
 }
@@ -1699,13 +1712,18 @@ The `App` struct is not thread-safe and should be used from a single async task.
 
 ## Data Directory
 
-The engine stores persistent data in `~/.forge/`:
+The engine stores persistent data in the OS local data directory (from
+`dirs::data_local_dir()`), under a `forge/` subfolder. If no system data
+directory is available, it falls back to `./forge/`.
+
+Config remains in the home directory: `~/.forge/config.toml`.
 
 | Path | Purpose |
 |------|---------|
-| `~/.forge/config.toml` | User configuration |
-| `~/.forge/history.db` | SQLite database for conversation history |
-| `~/.forge/stream_journal.db` | WAL for stream crash recovery |
-| `~/.forge/tool_journal.db` | WAL for tool execution recovery |
+| `<data_dir>/history.json` | Conversation history (JSON) |
+| `<data_dir>/session.json` | Draft input and input history |
+| `<data_dir>/stream_journal.db` | WAL for stream crash recovery |
+| `<data_dir>/tool_journal.db` | WAL for tool execution recovery |
+| `<data_dir>/librarian.db` | Librarian fact store (when enabled) |
 
 All database files use SQLite with WAL mode for durability.

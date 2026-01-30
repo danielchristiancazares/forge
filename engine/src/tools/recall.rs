@@ -20,7 +20,7 @@ struct RecallArgs {
 
 impl ToolExecutor for RecallTool {
     fn name(&self) -> &'static str {
-        "recall"
+        "Recall"
     }
 
     fn description(&self) -> &'static str {

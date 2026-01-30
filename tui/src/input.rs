@@ -126,6 +126,22 @@ fn apply_event(app: &mut App, event: Event) -> bool {
                 return true;
             }
 
+            // Handle Esc globally for cancellation during active operations
+            // Only cancel when:
+            // - In Normal mode (Insert/Command mode Esc should exit to Normal first)
+            // - Files panel is not expanded (Esc should collapse it first)
+            // - Not in approval/recovery UI (they have their own Esc handlers)
+            if key.code == KeyCode::Esc
+                && app.is_loading()
+                && app.input_mode() == InputMode::Normal
+                && !app.files_panel_expanded()
+                && app.tool_approval_requests().is_none()
+                && app.tool_recovery_calls().is_none()
+            {
+                app.cancel_active_operation();
+                return app.should_quit();
+            }
+
             match app.input_mode() {
                 InputMode::Normal => handle_normal_mode(app, key),
                 InputMode::Insert => handle_insert_mode(app, key),
@@ -246,8 +262,8 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('f') => {
             app.toggle_files_panel();
         }
-        // Open model picker
-        KeyCode::Char('m') => {
+        // Open model picker (blocked during active operations)
+        KeyCode::Char('m') if !app.is_loading() => {
             app.enter_model_select_mode();
         }
         // Scroll up by 20% chunk

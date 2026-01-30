@@ -465,7 +465,7 @@ fn expand_single_brace(pattern: &str) -> Option<Vec<String>> {
 
 impl ToolExecutor for ReadFileTool {
     fn name(&self) -> &'static str {
-        "read_file"
+        "Read"
     }
 
     fn description(&self) -> &'static str {
@@ -554,12 +554,12 @@ impl ToolExecutor for ReadFileTool {
                 .sandbox
                 .resolve_path_for_create(&typed.path, &ctx.working_dir)?;
             let meta = std::fs::metadata(&resolved).map_err(|e| ToolError::ExecutionFailed {
-                tool: "read_file".to_string(),
+                tool: "Read".to_string(),
                 message: e.to_string(),
             })?;
             if meta.is_dir() {
                 return Err(ToolError::ExecutionFailed {
-                    tool: "read_file".to_string(),
+                    tool: "Read".to_string(),
                     message: "path is a directory".to_string(),
                 });
             }
@@ -571,7 +571,7 @@ impl ToolExecutor for ReadFileTool {
                 .min(ctx.available_capacity_bytes);
 
             let is_binary = sniff_binary(&resolved).map_err(|e| ToolError::ExecutionFailed {
-                tool: "read_file".to_string(),
+                tool: "Read".to_string(),
                 message: e.to_string(),
             })?;
 
@@ -588,15 +588,11 @@ impl ToolExecutor for ReadFileTool {
             } else if typed.start_line.is_none() && typed.end_line.is_none() {
                 if meta.len() as usize > read_limit {
                     return Err(ToolError::ExecutionFailed {
-                        tool: "read_file".to_string(),
+                        tool: "Read".to_string(),
                         message: "File too large; use start_line/end_line".to_string(),
                     });
                 }
-                let content =
-                    std::fs::read_to_string(&resolved).map_err(|e| ToolError::ExecutionFailed {
-                        tool: "read_file".to_string(),
-                        message: e.to_string(),
-                    })?;
+                let content = read_text_lossy(&resolved)?;
                 if show_line_numbers {
                     format_with_line_numbers(&content, 1)
                 } else {
@@ -637,7 +633,7 @@ impl ToolExecutor for ReadFileTool {
 
 impl ToolExecutor for ApplyPatchTool {
     fn name(&self) -> &'static str {
-        "apply_patch"
+        "Edit"
     }
 
     fn description(&self) -> &'static str {
@@ -876,7 +872,7 @@ impl ToolExecutor for ApplyPatchTool {
 
 impl ToolExecutor for WriteFileTool {
     fn name(&self) -> &'static str {
-        "write_file"
+        "Write"
     }
 
     fn description(&self) -> &'static str {
@@ -935,7 +931,7 @@ impl ToolExecutor for WriteFileTool {
             {
                 tokio::fs::create_dir_all(parent).await.map_err(|e| {
                     ToolError::ExecutionFailed {
-                        tool: "write_file".to_string(),
+                        tool: "Write".to_string(),
                         message: format!(
                             "failed to create parent directories for {}: {e}",
                             resolved.display()
@@ -954,7 +950,7 @@ impl ToolExecutor for WriteFileTool {
                 Ok(f) => f,
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                     return Err(ToolError::ExecutionFailed {
-                        tool: "write_file".to_string(),
+                        tool: "Write".to_string(),
                         message: format!(
                             "file already exists: {}. Use apply_patch to modify existing files.",
                             resolved.display()
@@ -963,7 +959,7 @@ impl ToolExecutor for WriteFileTool {
                 }
                 Err(err) => {
                     return Err(ToolError::ExecutionFailed {
-                        tool: "write_file".to_string(),
+                        tool: "Write".to_string(),
                         message: format!("failed to create {}: {err}", resolved.display()),
                     });
                 }
@@ -972,11 +968,11 @@ impl ToolExecutor for WriteFileTool {
             file.write_all(bytes)
                 .await
                 .map_err(|e| ToolError::ExecutionFailed {
-                    tool: "write_file".to_string(),
+                    tool: "Write".to_string(),
                     message: format!("failed to write {}: {e}", resolved.display()),
                 })?;
             file.flush().await.map_err(|e| ToolError::ExecutionFailed {
-                tool: "write_file".to_string(),
+                tool: "Write".to_string(),
                 message: format!("failed to flush {}: {e}", resolved.display()),
             })?;
 
@@ -1013,7 +1009,7 @@ impl ToolExecutor for WriteFileTool {
 
 impl ToolExecutor for RunCommandTool {
     fn name(&self) -> &'static str {
-        "run_command"
+        "Bash"
     }
 
     fn description(&self) -> &'static str {
@@ -1096,7 +1092,7 @@ impl ToolExecutor for RunCommandTool {
             }
 
             let child = command.spawn().map_err(|e| ToolError::ExecutionFailed {
-                tool: "run_command".to_string(),
+                tool: "Bash".to_string(),
                 message: e.to_string(),
             })?;
 
@@ -1108,7 +1104,7 @@ impl ToolExecutor for RunCommandTool {
                     .stdout
                     .take()
                     .ok_or_else(|| ToolError::ExecutionFailed {
-                        tool: "run_command".to_string(),
+                        tool: "Bash".to_string(),
                         message: "Failed to capture stdout".to_string(),
                     })?;
             let stderr =
@@ -1117,7 +1113,7 @@ impl ToolExecutor for RunCommandTool {
                     .stderr
                     .take()
                     .ok_or_else(|| ToolError::ExecutionFailed {
-                        tool: "run_command".to_string(),
+                        tool: "Bash".to_string(),
                         message: "Failed to capture stderr".to_string(),
                     })?;
 
@@ -1143,7 +1139,7 @@ impl ToolExecutor for RunCommandTool {
                     .wait()
                     .await
                     .map_err(|e| ToolError::ExecutionFailed {
-                        tool: "run_command".to_string(),
+                        tool: "Bash".to_string(),
                         message: e.to_string(),
                     })?;
             guard.disarm();
@@ -1170,7 +1166,7 @@ impl ToolExecutor for RunCommandTool {
                     format!("exit code {exit_code}\n\n{output}")
                 };
                 return Err(ToolError::ExecutionFailed {
-                    tool: "run_command".to_string(),
+                    tool: "Bash".to_string(),
                     message,
                 });
             }
@@ -1213,13 +1209,14 @@ fn sniff_binary(path: &Path) -> Result<bool, std::io::Error> {
     if buf[..n].contains(&0) {
         return Ok(true);
     }
-    Ok(std::str::from_utf8(&buf[..n]).is_err())
+    // Treat only NUL-containing files as binary; non-UTF-8 text is decoded lossily.
+    Ok(false)
 }
 
 fn read_binary(path: &Path, output_limit: usize) -> Result<String, ToolError> {
     let mut header = "[binary:base64]".to_string();
     let meta = std::fs::metadata(path).map_err(|e| ToolError::ExecutionFailed {
-        tool: "read_file".to_string(),
+        tool: "Read".to_string(),
         message: e.to_string(),
     })?;
 
@@ -1241,14 +1238,14 @@ fn read_binary(path: &Path, output_limit: usize) -> Result<String, ToolError> {
 
     let max_raw = (available / 4) * 3;
     let mut file = std::fs::File::open(path).map_err(|e| ToolError::ExecutionFailed {
-        tool: "read_file".to_string(),
+        tool: "Read".to_string(),
         message: e.to_string(),
     })?;
     let mut buf = vec![0u8; max_raw];
     let n = file
         .read(&mut buf)
         .map_err(|e| ToolError::ExecutionFailed {
-            tool: "read_file".to_string(),
+            tool: "Read".to_string(),
             message: e.to_string(),
         })?;
     buf.truncate(n);
@@ -1289,40 +1286,49 @@ fn read_text_range(
     max_scan_bytes: usize,
 ) -> Result<String, ToolError> {
     let file = std::fs::File::open(path).map_err(|e| ToolError::ExecutionFailed {
-        tool: "read_file".to_string(),
+        tool: "Read".to_string(),
         message: e.to_string(),
     })?;
     let mut reader = BufReader::new(file);
     let mut output = String::new();
     let mut line_num = 1usize;
     let mut scanned = 0usize;
-    let mut line = String::new();
+    let mut line = Vec::new();
 
     loop {
         line.clear();
-        let bytes = reader
-            .read_line(&mut line)
-            .map_err(|e| ToolError::ExecutionFailed {
-                tool: "read_file".to_string(),
-                message: e.to_string(),
-            })?;
+        let bytes =
+            reader
+                .read_until(b'\n', &mut line)
+                .map_err(|e| ToolError::ExecutionFailed {
+                    tool: "Read".to_string(),
+                    message: e.to_string(),
+                })?;
         if bytes == 0 {
             break;
         }
         scanned += bytes;
         if scanned > max_scan_bytes {
             return Err(ToolError::ExecutionFailed {
-                tool: "read_file".to_string(),
+                tool: "Read".to_string(),
                 message: "Scan limit exceeded; narrow the range".to_string(),
             });
         }
         if line_num >= start && line_num <= end {
-            output.push_str(&line);
+            output.push_str(&String::from_utf8_lossy(&line));
         }
         line_num += 1;
     }
 
     Ok(output)
+}
+
+fn read_text_lossy(path: &Path) -> Result<String, ToolError> {
+    let bytes = std::fs::read(path).map_err(|e| ToolError::ExecutionFailed {
+        tool: "Read".to_string(),
+        message: e.to_string(),
+    })?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn compute_sha256(path: &Path) -> Result<[u8; 32], std::io::Error> {

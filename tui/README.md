@@ -10,9 +10,9 @@ Terminal user interface rendering and input handling for Forge, built on [ratatu
 | 28-39 | Purpose and Responsibility |
 | 40-55 | Module Overview |
 | 56-105 | Full-Screen vs Inline Rendering |
-| 106-476 | Key Modules: lib.rs, ui_inline.rs, input.rs, theme.rs, markdown.rs, effects.rs, shared.rs, tool_display.rs, tool_result_summary.rs, diff_render.rs |
-| 477-509 | Public API |
-| 510-551 | Developer Notes |
+| 106-505 | Key Modules: lib.rs, ui_inline.rs, input.rs, theme.rs, markdown.rs, effects.rs, shared.rs, tool_display.rs, tool_result_summary.rs, diff_render.rs |
+| 506-539 | Public API |
+| 540-580 | Developer Notes |
 
 ## Table of Contents
 
@@ -156,11 +156,11 @@ pub struct InlineOutput {
 
 ### input.rs - Keyboard Input Handling
 
-Entry point: `handle_events(app: &mut App) -> Result<bool>`
+Entry point: `handle_events(app: &mut App, input: &mut InputPump) -> Result<bool>`
 
 **Event Processing:**
-1. Poll with 100ms timeout (non-blocking for async runtime)
-2. Filter to `KeyEventKind::Press` only (important for Windows)
+1. `InputPump` runs a blocking reader loop (25ms poll) and pushes events into a bounded channel
+2. `handle_events` drains the queue (non-blocking) and ignores `KeyEventKind::Release`
 3. Handle global Ctrl+C for cancellation
 4. Dispatch to mode-specific handler
 
@@ -172,6 +172,7 @@ Entry point: `handle_events(app: &mut App) -> Result<bool>`
 | Insert | `handle_insert_mode` | Text editing, message send |
 | Command | `handle_command_mode` | Command input, execution |
 | ModelSelect | `handle_model_select_mode` | Selection, confirmation |
+| FileSelect | `handle_file_select_mode` | File filtering and insertion |
 
 **Modal Priority:**
 Tool approval and recovery modals take priority over mode-specific handling. When active, they intercept key events regardless of input mode.
@@ -185,12 +186,17 @@ Tool approval and recovery modals take priority over mode-specific handling. Whe
 | `a` | Insert at end |
 | `o` | Insert with clear |
 | `:` / `/` | Command mode |
+| `m` | Model selector |
+| `f` | Toggle files panel |
 | `k` / `Up` | Scroll up |
 | `j` / `Down` | Scroll down |
 | `g` | Scroll to top |
-| `G` / `End` | Scroll to bottom |
+| `G` / `End` / `Right` | Scroll to bottom |
 | `Ctrl+U` / `PageUp` | Page up |
 | `Ctrl+D` / `PageDown` | Page down |
+| `Left` | Scroll up by chunk |
+| `Tab` / `Shift+Tab` | Files panel: next/previous file |
+| `Enter` / `Esc` | Files panel: collapse expanded diff |
 | `s` | Toggle screen mode |
 
 **Key Bindings (Insert Mode):**
@@ -199,12 +205,35 @@ Tool approval and recovery modals take priority over mode-specific handling. Whe
 |-----|--------|
 | `Esc` | Normal mode |
 | `Enter` | Send message |
-| `Ctrl+Enter` / `Shift+Enter` | Insert newline |
+| `Ctrl+Enter` / `Shift+Enter` / `Ctrl+J` | Insert newline |
+| `Up` / `Down` | Navigate prompt history |
 | `Backspace` | Delete backward |
 | `Delete` | Delete forward |
+| `Left` / `Right` | Move cursor |
 | `Ctrl+U` | Clear line |
 | `Ctrl+W` | Delete word backward |
 | `Home` / `End` | Jump to start/end |
+| `@` | Open file selector |
+
+**Key Bindings (Model Select Mode):**
+
+| Key | Action |
+|-----|--------|
+| `Esc` | Cancel selection |
+| `Enter` | Confirm selection |
+| `j` / `Down` | Move selection down |
+| `k` / `Up` | Move selection up |
+| `1`-`9` | Direct selection by index |
+
+**Key Bindings (File Select Mode):**
+
+| Key | Action |
+|-----|--------|
+| `Esc` | Cancel and return to Insert |
+| `Enter` | Insert selected file path |
+| `Up` / `Down` | Move selection |
+| `Backspace` | Delete filter character (or cancel if empty) |
+| Typing | Filter file list |
 
 ### theme.rs - Color Palette and Styling
 
@@ -494,7 +523,8 @@ pub mod styles  // Pre-defined style functions
 pub fn apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> Rect
 
 // Input
-pub async fn handle_events(app: &mut App) -> Result<bool>
+pub struct InputPump
+pub fn handle_events(app: &mut App, input: &mut InputPump) -> Result<bool>
 
 // Inline mode
 pub const INLINE_INPUT_HEIGHT: u16

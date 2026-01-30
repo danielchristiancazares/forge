@@ -1318,7 +1318,7 @@ pub mod openai {
                         "type": "function_call",
                         "id": "item_1",
                         "call_id": "call_1",
-                        "name": "read_file",
+                        "name": "Read",
                         "arguments": "{\"path\":\"foo\"}"
                     }
                 }),
@@ -1329,7 +1329,7 @@ pub mod openai {
             assert!(matches!(
                 &events[0],
                 StreamEvent::ToolCallStart { id, name, .. }
-                    if id == "call_1" && name == "read_file"
+                    if id == "call_1" && name == "Read"
             ));
             assert!(matches!(
                 &events[1],
@@ -1348,7 +1348,7 @@ pub mod openai {
                         "type": "function_call",
                         "id": "item_1",
                         "call_id": "call_1",
-                        "name": "read_file"
+                        "name": "Read"
                     }
                 }),
                 &mut state,
@@ -1381,7 +1381,7 @@ pub mod openai {
                         "type": "function_call",
                         "id": "item_1",
                         "call_id": "call_1",
-                        "name": "read_file"
+                        "name": "Read"
                     }
                 }),
                 &mut state,
@@ -1414,7 +1414,7 @@ pub mod openai {
                         "type": "function_call",
                         "id": "item_2",
                         "call_id": "call_2",
-                        "name": "read_file"
+                        "name": "Read"
                     }
                 }),
                 &mut fresh,
@@ -2231,7 +2231,7 @@ pub mod gemini {
 
         #[test]
         fn maps_tool_use_to_function_call() {
-            let call = forge_types::ToolCall::new("call_123", "read_file", json!({"path": "foo"}));
+            let call = forge_types::ToolCall::new("call_123", "Read", json!({"path": "foo"}));
             let messages = vec![CacheableMessage::plain(Message::tool_use(call))];
             let limits = OutputLimits::new(4096);
 
@@ -2240,14 +2240,14 @@ pub mod gemini {
             let contents = body.get("contents").unwrap().as_array().unwrap();
             assert_eq!(contents[0]["role"], "model");
             let func_call = &contents[0]["parts"][0]["functionCall"];
-            assert_eq!(func_call["name"], "read_file");
+            assert_eq!(func_call["name"], "Read");
         }
 
         #[test]
         fn groups_tool_calls_and_preserves_thought_signature() {
             let call = forge_types::ToolCall::new_with_thought_signature(
                 "call_1",
-                "read_file",
+                "Read",
                 json!({"path": "foo"}),
                 Some("sig_1".to_string()),
             );
@@ -2270,8 +2270,7 @@ pub mod gemini {
 
         #[test]
         fn groups_tool_results_into_single_user_message() {
-            let result_a =
-                forge_types::ToolResult::success("call_1", "read_file", "file contents here");
+            let result_a = forge_types::ToolResult::success("call_1", "Read", "file contents here");
             let result_b =
                 forge_types::ToolResult::success("call_2", "list_dir", "dir contents here");
             let messages = vec![
@@ -2288,14 +2287,13 @@ pub mod gemini {
             let parts = contents[0]["parts"].as_array().unwrap();
             assert_eq!(parts.len(), 2);
             // Gemini uses tool_name for functionResponse.name
-            assert_eq!(parts[0]["functionResponse"]["name"], "read_file");
+            assert_eq!(parts[0]["functionResponse"]["name"], "Read");
             assert_eq!(parts[1]["functionResponse"]["name"], "list_dir");
         }
 
         #[test]
         fn maps_tool_result_to_function_response() {
-            let result =
-                forge_types::ToolResult::success("call_1", "read_file", "file contents here");
+            let result = forge_types::ToolResult::success("call_1", "Read", "file contents here");
             let messages = vec![CacheableMessage::plain(Message::tool_result(result))];
             let limits = OutputLimits::new(4096);
 
@@ -2305,7 +2303,7 @@ pub mod gemini {
             assert_eq!(contents[0]["role"], "user");
             let func_resp = &contents[0]["parts"][0]["functionResponse"];
             // Gemini uses tool_name for functionResponse.name
-            assert_eq!(func_resp["name"], "read_file");
+            assert_eq!(func_resp["name"], "Read");
         }
 
         #[test]
@@ -2470,7 +2468,7 @@ pub mod gemini {
                     "content": {
                         "parts": [{
                             "functionCall": {
-                                "name": "read_file",
+                                "name": "Read",
                                 "args": {"path": "test.rs"}
                             },
                             "thoughtSignature": "abc123signature"
@@ -2490,7 +2488,7 @@ pub mod gemini {
                             name,
                             thought_signature,
                         } => {
-                            assert_eq!(name, "read_file");
+                            assert_eq!(name, "Read");
                             assert_eq!(thought_signature.as_deref(), Some("abc123signature"));
                         }
                         _ => panic!("Expected ToolCallStart event"),

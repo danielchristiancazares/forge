@@ -440,7 +440,7 @@ pub(crate) fn collect_edit_targets<'a>(
 
     for call in calls {
         match call.name.as_str() {
-            "apply_patch" => {
+            "Edit" => {
                 let Some(patch) = call.arguments.get("patch").and_then(|v| v.as_str()) else {
                     continue;
                 };
@@ -452,7 +452,7 @@ pub(crate) fn collect_edit_targets<'a>(
                     out.insert(resolved);
                 }
             }
-            "write_file" => {
+            "Write" => {
                 let Some(path) = call.arguments.get("path").and_then(|v| v.as_str()) else {
                     continue;
                 };

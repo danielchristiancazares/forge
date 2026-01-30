@@ -645,7 +645,7 @@ mod tests {
         let mut journal = ToolJournal::open_in_memory().unwrap();
         let calls = vec![ToolCall::new(
             "1",
-            "read_file",
+            "Read",
             serde_json::json!({"path": "foo"}),
         )];
         let batch_id = journal
@@ -655,7 +655,7 @@ mod tests {
         let recovered = journal.recover().unwrap().expect("should recover");
         assert_eq!(recovered.batch_id, batch_id);
         assert_eq!(recovered.calls.len(), 1);
-        assert_eq!(recovered.calls[0].name, "read_file");
+        assert_eq!(recovered.calls[0].name, "Read");
     }
 
     #[test]
@@ -663,19 +663,19 @@ mod tests {
         let mut journal = ToolJournal::open_in_memory().unwrap();
         let calls = vec![ToolCall::new(
             "1",
-            "read_file",
+            "Read",
             serde_json::json!({"path": "foo"}),
         )];
         let batch_id = journal
             .begin_batch("test-model", "assistant", &calls)
             .unwrap();
 
-        let result = ToolResult::success("1", "read_file", "ok");
+        let result = ToolResult::success("1", "Read", "ok");
         journal.record_result(batch_id, &result).unwrap();
 
         let recovered = journal.recover().unwrap().expect("should recover");
         assert_eq!(recovered.results.len(), 1);
-        assert_eq!(recovered.results[0].tool_name, "read_file");
+        assert_eq!(recovered.results[0].tool_name, "Read");
 
         journal.commit_batch(batch_id).unwrap();
         assert!(journal.recover().unwrap().is_none());
@@ -706,7 +706,7 @@ mod tests {
 
         // Record tool call start
         journal
-            .record_call_start(batch_id, 0, "call_1", "read_file", None)
+            .record_call_start(batch_id, 0, "call_1", "Read", None)
             .unwrap();
 
         // Append arguments in chunks
@@ -728,7 +728,7 @@ mod tests {
         assert_eq!(recovered.model_name, "test-model");
         assert_eq!(recovered.assistant_text, "Let me read the file");
         assert_eq!(recovered.calls.len(), 1);
-        assert_eq!(recovered.calls[0].name, "read_file");
+        assert_eq!(recovered.calls[0].name, "Read");
         assert_eq!(recovered.calls[0].arguments["path"], "foo.txt");
     }
 

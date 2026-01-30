@@ -605,12 +605,12 @@ impl App {
                     .map(|cfg| cfg.allowlist.clone())
                     .unwrap_or_else(|| {
                         vec![
-                            "read_file".to_string(),
-                            "git_status".to_string(),
-                            "git_diff".to_string(),
-                            "git_log".to_string(),
-                            "git_show".to_string(),
-                            "git_blame".to_string(),
+                            "Read".to_string(),
+                            "GitStatus".to_string(),
+                            "GitDiff".to_string(),
+                            "GitLog".to_string(),
+                            "GitShow".to_string(),
+                            "GitBlame".to_string(),
                         ]
                     });
                 list.into_iter().collect()
@@ -621,7 +621,7 @@ impl App {
                         .map(|cfg| cfg.denylist.clone())
                         .unwrap_or_default()
                 } else {
-                    vec!["run_command".to_string()]
+                    vec!["Bash".to_string()]
                 };
                 list.into_iter().collect()
             },

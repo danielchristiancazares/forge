@@ -42,17 +42,17 @@ enum GitToolKind {
 impl GitToolKind {
     fn name(self) -> &'static str {
         match self {
-            GitToolKind::Status => "git_status",
-            GitToolKind::Diff => "git_diff",
-            GitToolKind::Restore => "git_restore",
-            GitToolKind::Add => "git_add",
-            GitToolKind::Commit => "git_commit",
-            GitToolKind::Log => "git_log",
-            GitToolKind::Branch => "git_branch",
-            GitToolKind::Checkout => "git_checkout",
-            GitToolKind::Stash => "git_stash",
-            GitToolKind::Show => "git_show",
-            GitToolKind::Blame => "git_blame",
+            GitToolKind::Status => "GitStatus",
+            GitToolKind::Diff => "GitDiff",
+            GitToolKind::Restore => "GitRestore",
+            GitToolKind::Add => "GitAdd",
+            GitToolKind::Commit => "GitCommit",
+            GitToolKind::Log => "GitLog",
+            GitToolKind::Branch => "GitBranch",
+            GitToolKind::Checkout => "GitCheckout",
+            GitToolKind::Stash => "GitStash",
+            GitToolKind::Show => "GitShow",
+            GitToolKind::Blame => "GitBlame",
         }
     }
 
@@ -740,7 +740,7 @@ async fn write_patches_to_dir(
     tokio::fs::create_dir_all(output_dir)
         .await
         .map_err(|e| ToolError::ExecutionFailed {
-            tool: "git_diff".to_string(),
+            tool: "GitDiff".to_string(),
             message: format!("Failed to create output directory: {e}"),
         })?;
 
@@ -762,7 +762,7 @@ async fn write_patches_to_dir(
 
     if !numstat_exec.success {
         return Err(ToolError::ExecutionFailed {
-            tool: "git_diff".to_string(),
+            tool: "GitDiff".to_string(),
             message: format!("git diff --numstat failed: {}", numstat_exec.stderr.trim()),
         });
     }
@@ -812,7 +812,7 @@ async fn write_patches_to_dir(
         tokio::fs::write(&patch_path, &patch_content)
             .await
             .map_err(|e| ToolError::ExecutionFailed {
-                tool: "git_diff".to_string(),
+                tool: "GitDiff".to_string(),
                 message: format!("Failed to write {}: {e}", patch_path.display()),
             })?;
 
@@ -861,14 +861,14 @@ async fn write_patches_to_dir(
 
     let summary_json =
         serde_json::to_string_pretty(&summary).map_err(|e| ToolError::ExecutionFailed {
-            tool: "git_diff".to_string(),
+            tool: "GitDiff".to_string(),
             message: format!("Failed to serialize summary: {e}"),
         })?;
     let summary_path = output_dir.join("_summary.json");
     tokio::fs::write(&summary_path, &summary_json)
         .await
         .map_err(|e| ToolError::ExecutionFailed {
-            tool: "git_diff".to_string(),
+            tool: "GitDiff".to_string(),
             message: format!("Failed to write summary: {e}"),
         })?;
 

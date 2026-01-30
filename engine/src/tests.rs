@@ -615,7 +615,7 @@ fn tool_call_args_overflow_pre_resolved_error() {
 
     stream.apply_event(StreamEvent::ToolCallStart {
         id: "call-1".to_string(),
-        name: "run_command".to_string(),
+        name: "Bash".to_string(),
         thought_signature: None,
     });
     stream.apply_event(StreamEvent::ToolCallDelta {
@@ -640,7 +640,7 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
 
     let call = ToolCall::new(
         "call-1",
-        "apply_patch",
+        "Edit",
         json!({
             "patch": "LP1\nF foo.txt\nT\nhello\n.\nEND\n"
         }),
@@ -733,10 +733,10 @@ async fn tool_loop_write_then_read_same_batch() {
     let calls = vec![
         ToolCall::new(
             "call-write",
-            "write_file",
+            "Write",
             json!({ "path": "test.txt", "content": "hello" }),
         ),
-        ToolCall::new("call-read", "read_file", json!({ "path": "test.txt" })),
+        ToolCall::new("call-read", "Read", json!({ "path": "test.txt" })),
     ];
 
     app.handle_tool_calls(
@@ -831,7 +831,7 @@ fn tool_loop_max_iterations_short_circuits() {
 
     let call = ToolCall::new(
         "call-1",
-        "apply_patch",
+        "Edit",
         json!({ "patch": "LP1\nF foo.txt\nT\nhello\n.\nEND\n" }),
     );
     app.handle_tool_calls(

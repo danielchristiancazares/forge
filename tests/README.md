@@ -7,9 +7,9 @@ This directory contains integration tests that verify the behavior of the Forge 
 | Lines | Section |
 |-------|---------|
 | 1-21 | Header, Intro, LLM-TOC, Table of Contents |
-| 22-26 | Test Structure |
-| 28-40 | Running Tests |
-| 42-49 | Writing Integration Tests |
+| 22-30 | Test Structure |
+| 31-45 | Running Tests |
+| 46-53 | Writing Integration Tests |
 
 ## Table of Contents
 
@@ -23,14 +23,18 @@ This directory contains integration tests that verify the behavior of the Forge 
 
 | File | Description |
 | ---- | ----------- |
-| `integration_test.rs` | General integration tests for engine and TUI workflows |
+| `all.rs` | Integration test aggregator (loads `tests/suite/`) |
+| `ui_snapshots.rs` | TUI snapshot tests (insta) |
+| `vt100_backend.rs` | VT100 backend integration tests |
+| `suite/` | Shared integration test modules |
 
 ## Running Tests
 
 Integration tests can be run using Cargo:
 
 ```bash
-cargo test --test integration_test
+cargo test --test all
+cargo test --test ui_snapshots
 ```
 
 Or run all tests in the workspace:

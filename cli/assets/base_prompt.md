@@ -226,7 +226,7 @@ When using the planning tool:
 - The user cannot see raw command output, file diffs, or file contents. Summarize; avoid long output unless explicitly requested.
 - Lead with outcome or key finding; add context after
 - Bullets: single line when possible, merge related points, order by importance, no nesting
-- Backticks for code/paths/commands; fenced blocks with info string for multi-line
+- Backticks for code/paths/commands; fenced blocks with language identifier for multi-line (e.g. ```rust, ```python, ```json)
 - Headers only when they aid scanning; short Title Case (1-3 words)
 - No ANSI codes, no "above/below" references
 - Adapt density to task: terse for simple queries, structured walkthrough for complex changes

@@ -13,27 +13,27 @@ Context Infinity™ is Forge's system for managing unlimited conversation contex
 | 56-65 | Design Principles |
 | 66-97 | Architecture |
 | 98-166 | Core Concepts |
-| 167-229 | Token Budget Calculation |
-| 230-320 | Context Building Algorithm |
-| 321-351 | When Summarization Triggers |
-| 352-409 | Summarization Process |
-| 410-439 | Model Switching (Context Adaptation) |
-| 440-545 | Stream Journal (Crash Recovery) |
-| 546-590 | Token Counting |
-| 591-618 | Usage Statistics |
-| 619-643 | Persistence |
-| 644-659 | Configuration |
-| 660-682 | Type-Driven Design |
-| 683-710 | Extension Points |
-| 711-728 | Limitations |
-| 729-825 | The Librarian |
-| 826-885 | Fact Store |
-| 886-1605 | Public API |
-| 1606-1702 | Complete Workflow Example |
-| 1703-1720 | Type Relationships |
-| 1721-1727 | Error Handling |
-| 1728-1736 | Dependencies |
-| 1737-1744 | Testing |
+| 167-233 | Token Budget Calculation |
+| 234-324 | Context Building Algorithm |
+| 325-355 | When Summarization Triggers |
+| 356-413 | Summarization Process |
+| 414-443 | Model Switching (Context Adaptation) |
+| 444-549 | Stream Journal (Crash Recovery) |
+| 550-594 | Token Counting |
+| 595-622 | Usage Statistics |
+| 623-650 | Persistence |
+| 651-666 | Configuration |
+| 667-689 | Type-Driven Design |
+| 690-717 | Extension Points |
+| 718-735 | Limitations |
+| 736-832 | The Librarian |
+| 833-892 | Fact Store |
+| 893-1617 | Public API |
+| 1618-1714 | Complete Workflow Example |
+| 1715-1732 | Type Relationships |
+| 1733-1739 | Error Handling |
+| 1740-1748 | Dependencies |
+| 1749-1756 | Testing |
 <!-- toc:end -->
 
 ## Overview
@@ -520,7 +520,7 @@ let text = active.seal(&mut journal)?;
 // 2. Save to history (must succeed before pruning)
 let step_id = active.step_id();
 manager.push_message_with_step_id(Message::assistant(...), step_id);
-manager.save("~/.forge/history.json")?;
+manager.save("<data_dir>/history.json")?;
 
 // 3. ONLY after history is persisted, prune the journal
 journal.commit_and_prune_step(step_id)?;
@@ -622,14 +622,17 @@ pub fn severity(&self) -> u8 {
 
 ## Persistence
 
+In the Forge application, persistent files live under the OS local data directory
+(`dirs::data_local_dir()/forge`). Examples below use `<data_dir>` to denote that base path.
+
 ### History Serialization
 
 ```rust
 // Save
-context_manager.save("~/.forge/history.json")?;
+context_manager.save("<data_dir>/history.json")?;
 
 // Load
-let manager = ContextManager::load("~/.forge/history.json", "claude-opus-4")?;
+let manager = ContextManager::load("<data_dir>/history.json", "claude-opus-4")?;
 ```
 
 The serialization format validates:
@@ -642,7 +645,7 @@ The serialization format validates:
 ### Stream Journal Location
 
 ```
-~/.forge/stream_journal.db
+<data_dir>/stream_journal.db
 ```
 
 ## Configuration
@@ -803,7 +806,7 @@ Make API call
 use forge_context::{Librarian, Fact, FactType, RetrievalResult};
 
 // Initialize with persistent storage
-let mut librarian = Librarian::open("~/.forge/facts.db", gemini_api_key)?;
+let mut librarian = Librarian::open("<data_dir>/librarian.db", gemini_api_key)?;
 
 // Pre-flight: Get relevant context for a query
 let retrieval: RetrievalResult = librarian.retrieve_context("How do I add tests?").await?;
@@ -882,7 +885,7 @@ for result in results {
 ### Storage Location
 
 ```
-~/.forge/facts.db
+<data_dir>/librarian.db
 ```
 
 ---
@@ -1213,7 +1216,7 @@ SQLite-backed write-ahead log for streaming durability:
 use forge_context::{StreamJournal, ActiveJournal, RecoveredStream};
 
 // Open or create journal
-let mut journal = StreamJournal::open("~/.forge/stream.db")?;
+let mut journal = StreamJournal::open("<data_dir>/stream_journal.db")?;
 
 // Check for crash recovery on startup
 if let Some(recovered) = journal.recover()? {
@@ -1313,7 +1316,7 @@ use forge_context::{ToolJournal, RecoveredToolBatch, ToolBatchId};
 use forge_types::{ToolCall, ToolResult};
 
 // Open or create tool journal
-let mut journal = ToolJournal::open("~/.forge/tool_journal.db")?;
+let mut journal = ToolJournal::open("<data_dir>/tool_journal.db")?;
 
 // Check for crash recovery on startup
 if let Some(recovered) = journal.recover()? {
@@ -1416,7 +1419,7 @@ High-level API for intelligent context management:
 use forge_context::{Librarian, Fact, FactType, RetrievalResult, ExtractionResult};
 
 // Create with persistent storage
-let mut librarian = Librarian::open("~/.forge/facts.db", api_key)?;
+let mut librarian = Librarian::open("<data_dir>/librarian.db", api_key)?;
 
 // Or in-memory for testing
 let mut librarian = Librarian::open_in_memory(api_key)?;
@@ -1528,7 +1531,7 @@ Low-level SQLite storage (used internally by Librarian):
 ```rust
 use forge_context::{FactStore, StoredFact, FactId};
 
-let mut store = FactStore::open("~/.forge/facts.db")?;
+let mut store = FactStore::open("<data_dir>/librarian.db")?;
 
 // Store facts
 let ids: Vec<FactId> = store.store_facts(&facts, turn_number)?;
@@ -1623,7 +1626,7 @@ use forge_types::Message;
 
 // Initialize
 let mut manager = ContextManager::new("claude-opus-4-5");
-let mut journal = StreamJournal::open("~/.forge/journal.db")?;
+let mut journal = StreamJournal::open("<data_dir>/stream_journal.db")?;
 let counter = TokenCounter::new();
 
 // Handle crash recovery (idempotent)
@@ -1636,7 +1639,7 @@ if let Some(recovered) = journal.recover()? {
                     Message::assistant(NonEmptyString::new(&partial_text)?),
                     step_id,
                 );
-                manager.save("~/.forge/history.json")?;
+                manager.save("<data_dir>/history.json")?;
             }
             journal.commit_and_prune_step(step_id)?;
         }
@@ -1703,7 +1706,7 @@ manager.push_message_with_step_id(
 );
 
 // Persist conversation BEFORE pruning journal
-manager.save("~/.forge/history.json")?;
+manager.save("<data_dir>/history.json")?;
 
 // Only prune after history is safely persisted
 journal.commit_and_prune_step(step_id)?;
