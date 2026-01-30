@@ -606,12 +606,16 @@ pub mod claude {
                 && let Some(block) = json.get("content_block")
                 && block["type"] == "tool_use"
             {
-                let id = block["id"].as_str().unwrap_or("").to_string();
-                let name = block["name"].as_str().unwrap_or("").to_string();
-                self.current_tool_id = Some(id.clone());
+                let Some(id) = block["id"].as_str().filter(|s| !s.is_empty()) else {
+                    return SseParseAction::Error("Claude tool call missing id".to_string());
+                };
+                let Some(name) = block["name"].as_str().filter(|s| !s.is_empty()) else {
+                    return SseParseAction::Error("Claude tool call missing name".to_string());
+                };
+                self.current_tool_id = Some(id.to_string());
                 events.push(StreamEvent::ToolCallStart {
-                    id,
-                    name,
+                    id: id.to_string(),
+                    name: name.to_string(),
                     thought_signature: None,
                 });
             }
