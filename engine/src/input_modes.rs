@@ -458,7 +458,6 @@ impl CommandMode<'_> {
     ///
     /// Supported completions:
     /// - Command names/aliases (e.g. `cl` -> `clear`)
-    /// - Provider argument for `/provider`
     /// - Model argument for `/model` (current provider)
     /// - Rewind targets/scopes for `/rewind`
     pub fn tab_complete(&mut self) {
@@ -590,15 +589,6 @@ fn complete_command_arg(
     let core_chars = core.chars().count();
 
     let candidates: Vec<String> = match (kind, arg_index) {
-        (CommandKind::Provider, 0) => vec![
-            "claude".to_string(),
-            "anthropic".to_string(),
-            "gpt".to_string(),
-            "openai".to_string(),
-            "chatgpt".to_string(),
-            "gemini".to_string(),
-            "google".to_string(),
-        ],
         (CommandKind::Model, 0) => app
             .provider()
             .available_models()

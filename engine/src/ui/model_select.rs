@@ -41,6 +41,32 @@ impl PredefinedModel {
         }
     }
 
+    /// Short model name without provider prefix (e.g., "Opus 4.5").
+    #[must_use]
+    pub const fn model_name(&self) -> &'static str {
+        match self {
+            PredefinedModel::ClaudeOpus => "Opus 4.5",
+            PredefinedModel::ClaudeSonnet => "Sonnet 4.5",
+            PredefinedModel::ClaudeHaiku => "Haiku 4.5",
+            PredefinedModel::Gpt52Pro => "GPT 5.2 Pro",
+            PredefinedModel::Gpt52 => "GPT 5.2",
+            PredefinedModel::GeminiPro => "Gemini 3 Pro",
+            PredefinedModel::GeminiFlash => "Gemini 3 Flash",
+        }
+    }
+
+    /// Provider company name (e.g., "Anthropic", "OpenAI", "Google").
+    #[must_use]
+    pub const fn firm_name(&self) -> &'static str {
+        match self {
+            PredefinedModel::ClaudeOpus
+            | PredefinedModel::ClaudeSonnet
+            | PredefinedModel::ClaudeHaiku => "Anthropic",
+            PredefinedModel::Gpt52 | PredefinedModel::Gpt52Pro => "OpenAI",
+            PredefinedModel::GeminiPro | PredefinedModel::GeminiFlash => "Google",
+        }
+    }
+
     #[must_use]
     pub fn to_model_name(&self) -> ModelName {
         match self {

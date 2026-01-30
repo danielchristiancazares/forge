@@ -3,7 +3,7 @@
 //! This module handles slash commands like /quit, /clear, /model, etc.
 
 use super::{
-    ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, ModelNameKind, Provider,
+    ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, ModelNameKind,
     SessionChangeLog,
     state::{
         OperationState, SummarizationStart, ToolLoopPhase, ToolLoopState, ToolRecoveryDecision,
@@ -74,8 +74,8 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         show_in_help: true,
     },
     CommandSpec {
-        palette_label: "sum",
-        help_label: "sum",
+        palette_label: "distill",
+        help_label: "distill",
         description: "Summarize older messages",
         show_in_help: true,
     },
@@ -135,7 +135,6 @@ pub(crate) enum CommandKind {
     Quit,
     Clear,
     Model,
-    Provider,
     Context,
     Journal,
     Summarize,
@@ -150,7 +149,7 @@ pub(crate) enum CommandKind {
 
 impl CommandKind {
     pub(crate) fn expects_arg(self) -> bool {
-        matches!(self, Self::Model | Self::Provider | Self::Rewind)
+        matches!(self, Self::Model | Self::Rewind)
     }
 }
 
@@ -178,14 +177,6 @@ const COMMAND_ALIASES: &[CommandAlias] = &[
         kind: CommandKind::Model,
     },
     CommandAlias {
-        name: "p",
-        kind: CommandKind::Provider,
-    },
-    CommandAlias {
-        name: "provider",
-        kind: CommandKind::Provider,
-    },
-    CommandAlias {
         name: "ctx",
         kind: CommandKind::Context,
     },
@@ -202,7 +193,7 @@ const COMMAND_ALIASES: &[CommandAlias] = &[
         kind: CommandKind::Journal,
     },
     CommandAlias {
-        name: "sum",
+        name: "distill",
         kind: CommandKind::Summarize,
     },
     CommandAlias {
@@ -264,7 +255,6 @@ pub(crate) enum Command<'a> {
     Quit,
     Clear,
     Model(Option<&'a str>),
-    Provider(Option<&'a str>),
     Context,
     Journal,
     Summarize,
@@ -308,7 +298,6 @@ impl<'a> Command<'a> {
             CommandKind::Quit => Command::Quit,
             CommandKind::Clear => Command::Clear,
             CommandKind::Model => Command::Model(parts.get(1).copied()),
-            CommandKind::Provider => Command::Provider(parts.get(1).copied()),
             CommandKind::Context => Command::Context,
             CommandKind::Journal => Command::Journal,
             CommandKind::Summarize => Command::Summarize,
@@ -478,45 +467,6 @@ impl super::App {
                 } else {
                     // Enter model selection mode with TUI list
                     self.enter_model_select_mode();
-                }
-            }
-            Command::Provider(provider_arg) => {
-                if let Some(provider_str) = provider_arg {
-                    if let Some(reason) = self.busy_reason() {
-                        self.push_notification(format!(
-                            "Cannot change provider while {reason}. Cancel or wait for it to finish."
-                        ));
-                        return;
-                    }
-                    if let Some(provider) = Provider::parse(provider_str) {
-                        self.set_provider(provider);
-                        let has_key = self.current_api_key().is_some();
-                        let status = if has_key {
-                            format!("Switched to {} ({})", provider.display_name(), self.model)
-                        } else {
-                            format!(
-                                "Switched to {} - No API key! Set {}",
-                                provider.display_name(),
-                                provider.env_var()
-                            )
-                        };
-                        self.push_notification(status);
-                    } else {
-                        self.push_notification(format!("Unknown provider: {provider_str}"));
-                    }
-                } else {
-                    let provider = self.provider();
-                    let providers: Vec<&str> = Provider::all()
-                        .iter()
-                        .map(forge_types::Provider::as_str)
-                        .collect();
-                    self.push_notification(format!(
-                        "Current: {} ({}) │ Providers: {} │ Models: {}",
-                        provider.display_name(),
-                        self.model,
-                        providers.join(", "),
-                        provider.available_models().join(", ")
-                    ));
                 }
             }
             Command::Context => {
@@ -762,17 +712,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_provider_commands() {
-        assert_eq!(Command::parse("provider"), Command::Provider(None));
-        assert_eq!(Command::parse("p"), Command::Provider(None));
-        assert_eq!(
-            Command::parse("provider claude"),
-            Command::Provider(Some("claude"))
-        );
-        assert_eq!(Command::parse("p gpt"), Command::Provider(Some("gpt")));
-    }
-
-    #[test]
     fn parse_context_commands() {
         assert_eq!(Command::parse("context"), Command::Context);
         assert_eq!(Command::parse("ctx"), Command::Context);
@@ -787,7 +726,7 @@ mod tests {
     #[test]
     fn parse_summarize_commands() {
         assert_eq!(Command::parse("summarize"), Command::Summarize);
-        assert_eq!(Command::parse("sum"), Command::Summarize);
+        assert_eq!(Command::parse("distill"), Command::Summarize);
     }
 
     #[test]

@@ -131,6 +131,7 @@ fn apply_event(app: &mut App, event: Event) -> bool {
                 InputMode::Insert => handle_insert_mode(app, key),
                 InputMode::Command => handle_command_mode(app, key),
                 InputMode::ModelSelect => handle_model_select_mode(app, key),
+                InputMode::FileSelect => handle_file_select_mode(app, key),
             }
         }
         Event::Paste(text) => {
@@ -345,6 +346,10 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) {
                 app.insert_mode(token).delete_char();
             }
         }
+        // '@' triggers file select mode (check before acquiring insert token)
+        KeyCode::Char('@') => {
+            app.enter_file_select_mode();
+        }
         _ => {
             let Some(token) = app.insert_token() else {
                 return;
@@ -527,6 +532,41 @@ fn handle_model_select_mode(app: &mut App, key: KeyEvent) {
                 app.model_select_set_index(index);
                 app.model_select_confirm();
             }
+        }
+        _ => {}
+    }
+}
+
+fn handle_file_select_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        // Cancel and return to insert mode
+        KeyCode::Esc => {
+            app.file_select_cancel();
+        }
+        // Confirm selection - insert file path into draft
+        KeyCode::Enter => {
+            app.file_select_confirm();
+        }
+        // Move selection up
+        KeyCode::Up => {
+            app.file_select_move_up();
+        }
+        // Move selection down
+        KeyCode::Down => {
+            app.file_select_move_down();
+        }
+        // Backspace - delete filter character or cancel if empty
+        KeyCode::Backspace => {
+            let filter = app.file_select_filter().unwrap_or("");
+            if filter.is_empty() {
+                app.file_select_cancel();
+            } else {
+                app.file_select_backspace();
+            }
+        }
+        // Type character to filter
+        KeyCode::Char(c) if c != '\r' => {
+            app.file_select_push_char(c);
         }
         _ => {}
     }

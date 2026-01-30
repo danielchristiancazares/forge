@@ -336,7 +336,6 @@ Enter Command mode by pressing `:` or `/` in Normal mode.
 | `/clear` | - | Clear conversation and reset context |
 | `/cancel` | - | Abort active streaming, tool execution, or summarization |
 | `/model [name]` | - | Set model or open model selector (no argument) |
-| `/provider [name]` | `/p` | Switch provider (`claude`, `openai`, `gemini`, `gpt`, `anthropic`, `google`) |
 | `/context` | `/ctx` | Show context usage statistics |
 | `/journal` | `/jrnl` | Show stream journal statistics |
 | `/summarize` | `/sum` | Manually trigger summarization |

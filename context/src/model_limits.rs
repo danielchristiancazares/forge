@@ -68,8 +68,8 @@ impl ModelLimits {
     pub fn effective_input_budget_with_reserved(&self, reserved_output: u32) -> u32 {
         let reserved = reserved_output.min(self.max_output);
         let available = self.context_window.saturating_sub(reserved);
-        // Subtract 5% safety margin
-        let safety_margin = available / 20; // 5% = 1/20
+        // Subtract 5% safety margin, capped at 4096 tokens
+        let safety_margin = (available / 20).min(4096);
         available.saturating_sub(safety_margin)
     }
 
@@ -273,9 +273,9 @@ mod tests {
         fn effective_input_budget_subtracts_output_and_safety_margin() {
             let limits = ModelLimits::new(200_000, 16_000);
             // available = 200_000 - 16_000 = 184_000
-            // safety = 184_000 / 20 = 9_200
-            // effective = 184_000 - 9_200 = 174_800
-            assert_eq!(limits.effective_input_budget(), 174_800);
+            // safety = 184_000 / 20 = 9_200 -> capped at 4096
+            // effective = 184_000 - 4096 = 179,904
+            assert_eq!(limits.effective_input_budget(), 179_904);
         }
 
         #[test]
@@ -299,10 +299,15 @@ mod tests {
         fn effective_input_budget_with_reserved_uses_configured_limit() {
             // Model has 64k max output, but user configured 16k
             let limits = ModelLimits::new(200_000, 64_000);
-            // Using model max: 200k - 64k = 136k, - 5% = 129,200
-            assert_eq!(limits.effective_input_budget(), 129_200);
-            // Using configured 16k: 200k - 16k = 184k, - 5% = 174,800
-            assert_eq!(limits.effective_input_budget_with_reserved(16_000), 174_800);
+            // Using model max: 200k - 64k = 136k
+            // Safety = 136k / 20 = 6800 -> capped at 4096
+            // Effective = 136k - 4096 = 131,904
+            assert_eq!(limits.effective_input_budget(), 131_904);
+
+            // Using configured 16k: 200k - 16k = 184k
+            // Safety = 184k / 20 = 9200 -> capped at 4096
+            // Effective = 184k - 4096 = 179,904
+            assert_eq!(limits.effective_input_budget_with_reserved(16_000), 179_904);
         }
 
         #[test]

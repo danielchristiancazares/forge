@@ -592,7 +592,6 @@ The engine provides a slash command system for user actions.
 | `/clear` | - | Clear conversation and history |
 | `/cancel` | - | Cancel streaming, tool execution, or summarization |
 | `/model [name]` | - | Set model or open picker |
-| `/provider [n]` | `/p` | Switch provider |
 | `/context` | `/ctx` | Show context usage stats |
 | `/journal` | `/jrnl` | Show journal statistics |
 | `/summarize` | `/sum` | Trigger summarization |
@@ -1263,11 +1262,10 @@ let kind = effect.kind();
 | `deny_all_tools()` | Deny all pending tool calls |
 | `approve_selected_tools(indices)` | Approve specific tool calls |
 
-### Model/Provider Management
+### Model Management
 
 | Method | Description |
 |--------|-------------|
-| `set_provider(provider)` | Switch provider |
 | `set_model(model)` | Set specific model |
 | `model_select_index()` | Currently selected index |
 | `model_select_move_up()` | Move selection up |

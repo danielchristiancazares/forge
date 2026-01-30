@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 /// 1024 events provides ~10 seconds of buffer at 100 events/sec typical streaming rate.
 const STREAM_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
+use forge_context::TokenCounter;
 use forge_types::{OpenAIReasoningSummary, Provider, ToolDefinition};
 
 use super::{
@@ -32,6 +33,23 @@ impl super::App {
 
         let QueuedUserMessage { config, turn } = queued;
         let context_infinity_enabled = self.context_infinity_enabled();
+
+        // Calculate overhead from system prompt and tools to avoid context overflow
+        let system_prompt = self.system_prompts.get(config.provider());
+        let tools = self.tool_definitions.clone();
+
+        let counter = TokenCounter::new();
+        let sys_tokens = counter.count_str(system_prompt);
+        let tool_tokens = if tools.is_empty() {
+            0
+        } else {
+            // Estimate tool definition size
+            match serde_json::to_string(&tools) {
+                Ok(s) => counter.count_str(&s),
+                Err(_) => 0,
+            }
+        };
+        let overhead = sys_tokens + tool_tokens;
 
         // When context infinity enabled, use summarization-based context management.
         // Otherwise, use basic mode.
@@ -67,7 +85,7 @@ impl super::App {
                 }
             }
         } else {
-            self.build_basic_api_messages()
+            self.build_basic_api_messages(overhead)
         };
 
         let journal = match self.stream_journal.begin_session(config.model().as_str()) {
@@ -115,15 +133,12 @@ impl super::App {
 
         // Convert messages to cacheable format based on cache_enabled setting
         let cache_enabled = self.cache_enabled;
-        // Select the correct system prompt for the active provider
-        let system_prompt = self
-            .system_prompts
-            .map(|prompts| prompts.get(config.provider()));
+        // system_prompt already retrieved above
         let cacheable_messages: Vec<CacheableMessage> = if cache_enabled {
             // Cache older messages, keep recent ones fresh
             // Claude allows max 4 cache_control blocks total
-            // System prompt uses 1 slot if present, leaving 3 for messages
-            let max_cached = if system_prompt.is_some() { 3 } else { 4 };
+            // System prompt uses 1 slot, leaving 3 for messages
+            let max_cached = 3;
             let len = api_messages.len();
             let recent_threshold = len.saturating_sub(4); // Don't cache last 4 messages
             let mut cached_count = 0;
@@ -146,8 +161,7 @@ impl super::App {
                 .collect()
         };
 
-        // Clone tool definitions for async task
-        let tools = self.tool_definitions.clone();
+        // tools already retrieved above (cloned)
 
         // Clone Gemini cache state for async task (only relevant for Gemini provider)
         let gemini_cache_arc = self.gemini_cache.clone();
@@ -163,16 +177,13 @@ impl super::App {
             };
 
             // Handle Gemini cache lifecycle
-            let gemini_cache = if is_gemini
-                && gemini_cache_config.enabled
-                && let Some(prompt) = system_prompt
-            {
+            let gemini_cache = if is_gemini && gemini_cache_config.enabled {
                 get_or_create_gemini_cache(
                     &gemini_cache_arc,
                     &gemini_cache_config,
                     config.api_key(),
                     config.model().as_str(),
-                    prompt,
+                    system_prompt,
                     tools_ref,
                 )
                 .await
@@ -184,7 +195,7 @@ impl super::App {
                 &config,
                 &cacheable_messages,
                 limits,
-                system_prompt,
+                Some(system_prompt),
                 tools_ref,
                 gemini_cache.as_ref(),
                 tx.clone(),
@@ -325,8 +336,8 @@ impl super::App {
                 StreamEvent::TextDelta(text) => active
                     .journal
                     .append_text(&mut self.stream_journal, text.clone()),
-                StreamEvent::ThinkingDelta(_) => {
-                    // Don't persist thinking content to journal - silently consume
+                StreamEvent::ThinkingDelta(_) | StreamEvent::Usage(_) => {
+                    // Don't persist thinking or usage to journal - silently consume
                     Ok(())
                 }
                 StreamEvent::ToolCallStart { .. } | StreamEvent::ToolCallDelta { .. } => Ok(()),
@@ -519,6 +530,13 @@ impl super::App {
 
         // Capture metadata before consuming the streaming message.
         let model = message.model_name().clone();
+        let stream_usage = message.usage();
+
+        // Aggregate API usage for this turn
+        if stream_usage.has_data() {
+            let turn_usage = self.turn_usage.get_or_insert_with(Default::default);
+            turn_usage.record_call(stream_usage);
+        }
 
         // SECURITY: Check finish_reason FIRST before processing tool calls.
         // This prevents tools from executing when the stream ended with an error,

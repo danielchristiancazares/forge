@@ -11,6 +11,7 @@ pub enum InputMode {
     Insert,
     Command,
     ModelSelect,
+    FileSelect,
 }
 
 /// Draft input buffer with cursor tracking.
@@ -172,6 +173,11 @@ pub enum InputState {
         draft: DraftInput,
         selected: usize,
     },
+    FileSelect {
+        draft: DraftInput,
+        filter: DraftInput,
+        selected: usize,
+    },
 }
 
 impl Default for InputState {
@@ -187,6 +193,7 @@ impl InputState {
             InputState::Insert(_) => InputMode::Insert,
             InputState::Command { .. } => InputMode::Command,
             InputState::ModelSelect { .. } => InputMode::ModelSelect,
+            InputState::FileSelect { .. } => InputMode::FileSelect,
         }
     }
 
@@ -195,7 +202,8 @@ impl InputState {
             InputState::Normal(draft)
             | InputState::Insert(draft)
             | InputState::Command { draft, .. }
-            | InputState::ModelSelect { draft, .. } => draft,
+            | InputState::ModelSelect { draft, .. }
+            | InputState::FileSelect { draft, .. } => draft,
         }
     }
 
@@ -204,7 +212,8 @@ impl InputState {
             InputState::Normal(draft)
             | InputState::Insert(draft)
             | InputState::Command { draft, .. }
-            | InputState::ModelSelect { draft, .. } => draft,
+            | InputState::ModelSelect { draft, .. }
+            | InputState::FileSelect { draft, .. } => draft,
         }
     }
 
@@ -248,7 +257,8 @@ impl InputState {
             InputState::Normal(draft)
             | InputState::Insert(draft)
             | InputState::Command { draft, .. }
-            | InputState::ModelSelect { draft, .. } => InputState::Normal(draft),
+            | InputState::ModelSelect { draft, .. }
+            | InputState::FileSelect { draft, .. } => InputState::Normal(draft),
         }
     }
 
@@ -257,7 +267,8 @@ impl InputState {
             InputState::Normal(draft)
             | InputState::Insert(draft)
             | InputState::Command { draft, .. }
-            | InputState::ModelSelect { draft, .. } => InputState::Insert(draft),
+            | InputState::ModelSelect { draft, .. }
+            | InputState::FileSelect { draft, .. } => InputState::Insert(draft),
         }
     }
 
@@ -266,7 +277,8 @@ impl InputState {
             InputState::Normal(draft)
             | InputState::Insert(draft)
             | InputState::Command { draft, .. }
-            | InputState::ModelSelect { draft, .. } => InputState::Command {
+            | InputState::ModelSelect { draft, .. }
+            | InputState::FileSelect { draft, .. } => InputState::Command {
                 draft,
                 command: DraftInput::default(),
             },
@@ -278,7 +290,43 @@ impl InputState {
             InputState::Normal(draft)
             | InputState::Insert(draft)
             | InputState::Command { draft, .. }
-            | InputState::ModelSelect { draft, .. } => InputState::ModelSelect { draft, selected },
+            | InputState::ModelSelect { draft, .. }
+            | InputState::FileSelect { draft, .. } => InputState::ModelSelect { draft, selected },
+        }
+    }
+
+    pub fn into_file_select(self) -> InputState {
+        match self {
+            InputState::Normal(draft)
+            | InputState::Insert(draft)
+            | InputState::Command { draft, .. }
+            | InputState::ModelSelect { draft, .. }
+            | InputState::FileSelect { draft, .. } => InputState::FileSelect {
+                draft,
+                filter: DraftInput::default(),
+                selected: 0,
+            },
+        }
+    }
+
+    pub fn file_select_filter(&self) -> Option<&str> {
+        match self {
+            InputState::FileSelect { filter, .. } => Some(filter.text()),
+            _ => None,
+        }
+    }
+
+    pub fn file_select_filter_mut(&mut self) -> Option<&mut DraftInput> {
+        match self {
+            InputState::FileSelect { filter, .. } => Some(filter),
+            _ => None,
+        }
+    }
+
+    pub fn file_select_index(&self) -> Option<usize> {
+        match self {
+            InputState::FileSelect { selected, .. } => Some(*selected),
+            _ => None,
         }
     }
 }

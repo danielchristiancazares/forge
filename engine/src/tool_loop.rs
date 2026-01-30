@@ -726,16 +726,21 @@ impl App {
             }
         }
 
-        // Interleave tool calls with their results so each result appears right after
-        // its corresponding call in the display list (for proper tree connector rendering)
-        for (idx, (call, result)) in tool_calls.iter().zip(&ordered_results).enumerate() {
+        // Group all tool calls first (so they appear as a single block in history/API).
+        // This is critical for providers like Gemini that require thoughtSignature round-tripping
+        // within the same turn structure, and for parallel tool call correctness.
+        for (idx, call) in tool_calls.iter().enumerate() {
             if !step_id_recorded && idx == 0 {
                 self.push_history_message_with_step_id(Message::tool_use(call.clone()), step_id);
                 step_id_recorded = true;
             } else {
                 self.push_history_message(Message::tool_use(call.clone()));
             }
-            self.push_history_message(Message::tool_result(result.clone()));
+        }
+
+        // Then push all tool results (matching the call order)
+        for result in ordered_results {
+            self.push_history_message(Message::tool_result(result));
         }
 
         let autosave_succeeded = self.autosave_history();
@@ -988,6 +993,12 @@ impl App {
             self.push_local_message(Message::system(msg));
         }
         self.pending_user_message = None;
+
+        // Transfer turn usage to last_turn_usage for display, reset for next turn
+        if self.turn_usage.is_some() {
+            self.last_turn_usage = self.turn_usage.take();
+        }
+        self.tool_iterations = 0;
     }
 }
 

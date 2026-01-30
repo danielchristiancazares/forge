@@ -37,7 +37,7 @@ use unicode_width::UnicodeWidthStr;
 
 use forge_engine::{
     App, ChangeKind, ContextUsageStatus, DisplayItem, FileDiff, InputMode, Message,
-    PredefinedModel, Provider, UiOptions, command_specs,
+    PredefinedModel, Provider, TurnUsage, UiOptions, command_specs, find_match_positions,
 };
 use forge_types::{ToolResult, sanitize_terminal_text};
 
@@ -114,7 +114,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(bg_block, frame.area());
 
     let input_height = match app.input_mode() {
-        InputMode::Normal => 3,
+        InputMode::Normal | InputMode::ModelSelect => 3,
         _ => 5,
     };
 
@@ -179,6 +179,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if app.input_mode() == InputMode::ModelSelect {
         draw_model_selector(frame, app, &palette, &glyphs, elapsed);
+    }
+
+    if app.input_mode() == InputMode::FileSelect {
+        draw_file_selector(frame, app, &palette, &glyphs, elapsed);
     }
 
     if app.tool_approval_requests().is_some() {
@@ -791,7 +795,7 @@ pub(crate) fn draw_input(
     };
 
     let (mode_label, mode_style, border_style) = match mode {
-        InputMode::Normal | InputMode::ModelSelect => (
+        InputMode::Normal | InputMode::ModelSelect | InputMode::FileSelect => (
             "NORMAL",
             styles::mode_normal(palette),
             Style::default().fg(palette.text_muted),
@@ -843,7 +847,7 @@ pub(crate) fn draw_input(
             Span::styled("Esc", styles::key_highlight(palette)),
             Span::styled(" cancel ", styles::key_hint(palette)),
         ],
-        InputMode::ModelSelect => vec![
+        InputMode::ModelSelect | InputMode::FileSelect => vec![
             Span::styled("↑↓", styles::key_highlight(palette)),
             Span::styled(" select  ", styles::key_hint(palette)),
             Span::styled("1-9", styles::key_highlight(palette)),
@@ -865,7 +869,7 @@ pub(crate) fn draw_input(
     let pct = usage.percentage();
     let remaining = (100.0 - pct).clamp(0.0, 100.0);
     let base_usage = format!("Context {remaining:.0}% left");
-    let usage_str = match severity_override {
+    let context_str = match severity_override {
         2 => format!("{base_usage} !!"), // Double bang for unrecoverable
         1 => format!("{base_usage} !"),
         _ => base_usage,
@@ -877,6 +881,13 @@ pub(crate) fn draw_input(
             1 => palette.yellow, // 70-90%
             _ => palette.red,    // > 90%
         },
+    };
+    // Format API usage if available
+    let api_usage_str = format_api_usage(app.last_turn_usage());
+    let usage_str = if api_usage_str.is_empty() {
+        context_str
+    } else {
+        format!("{context_str}  {api_usage_str}")
     };
 
     let padding_v: u16 = match mode {
@@ -1013,9 +1024,10 @@ pub(crate) fn draw_input(
         } else {
             (
                 match mode {
-                    InputMode::Insert | InputMode::Normal | InputMode::ModelSelect => {
-                        app.draft_text().to_string()
-                    }
+                    InputMode::Insert
+                    | InputMode::Normal
+                    | InputMode::ModelSelect
+                    | InputMode::FileSelect => app.draft_text().to_string(),
                     InputMode::Command => command_line.clone().unwrap_or_default(),
                 },
                 0u16,
@@ -1195,25 +1207,56 @@ fn draw_inline_model_selector(
     let selected_index = app.model_select_index().unwrap_or(0);
     let models = PredefinedModel::all();
 
+    let content_width = area.width.saturating_sub(2) as usize; // borders
+
     let mut lines: Vec<Line> = Vec::new();
     for (i, model) in models.iter().enumerate() {
         let is_selected = i == selected_index;
         let marker = if is_selected { glyphs.selected } else { " " };
         let num = i + 1;
 
-        let style = if is_selected {
+        let left = format!(" {marker} {num}  {}", model.model_name());
+        let right = model.firm_name();
+        let left_width = left.chars().count();
+        let right_width = right.chars().count();
+        let gap = 2usize;
+        let filler = content_width.saturating_sub(left_width + right_width + gap);
+
+        let bg = if is_selected {
+            Some(palette.bg_highlight)
+        } else {
+            None
+        };
+
+        let mut left_style = if is_selected {
             Style::default()
                 .fg(palette.text_primary)
-                .bg(palette.bg_highlight)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(palette.text_secondary)
         };
+        if let Some(bg) = bg {
+            left_style = left_style.bg(bg);
+        }
 
-        lines.push(Line::from(vec![Span::styled(
-            format!(" {marker} {num}  {}", model.display_name()),
-            style,
-        )]));
+        let mut filler_style = Style::default();
+        if let Some(bg) = bg {
+            filler_style = filler_style.bg(bg);
+        }
+
+        let mut right_style = Style::default()
+            .fg(palette.text_disabled)
+            .add_modifier(Modifier::DIM);
+        if let Some(bg) = bg {
+            right_style = right_style.bg(bg);
+        }
+
+        lines.push(Line::from(vec![
+            Span::styled(left, left_style),
+            Span::styled(" ".repeat(filler), filler_style),
+            Span::styled(" ".repeat(gap), filler_style),
+            Span::styled(right.to_string(), right_style),
+        ]));
     }
 
     let keybindings = Line::from(vec![
@@ -1254,7 +1297,7 @@ fn draw_inline_model_selector(
     let pct = usage.percentage();
     let remaining = (100.0 - pct).clamp(0.0, 100.0);
     let base_usage = format!("Context {remaining:.0}% left");
-    let usage_str = match severity_override {
+    let context_str = match severity_override {
         2 => format!("{base_usage} !!"),
         1 => format!("{base_usage} !"),
         _ => base_usage,
@@ -1266,6 +1309,12 @@ fn draw_inline_model_selector(
             1 => palette.yellow,
             _ => palette.red,
         },
+    };
+    let api_usage_str = format_api_usage(app.last_turn_usage());
+    let usage_str = if api_usage_str.is_empty() {
+        context_str
+    } else {
+        format!("{context_str}  {api_usage_str}")
     };
 
     let block = Block::default()
@@ -1524,6 +1573,7 @@ pub fn draw_model_selector(
     let mut row_index = 0usize;
     let mut push_row = |label: &str, selected: bool, muted: bool, tag: Option<(&str, Style)>| {
         row_index += 1;
+
         let prefix = if selected { glyphs.selected } else { " " };
         let left = format!(" {prefix} {row_index:>2}  {label}");
         let left_width = left.width();
@@ -1537,6 +1587,7 @@ pub fn draw_model_selector(
         } else {
             None
         };
+
         let mut left_style = if selected {
             Style::default()
                 .fg(palette.text_primary)
@@ -1560,22 +1611,26 @@ pub fn draw_model_selector(
             right_style = right_style.bg(bg);
         }
 
-        let mut spans = Vec::new();
-        spans.push(Span::styled(left, left_style));
-        if filler > 0 {
-            spans.push(Span::styled(" ".repeat(filler), filler_style));
-        }
-        if !right_text.is_empty() {
-            spans.push(Span::styled(" ".repeat(gap), filler_style));
-            spans.push(Span::styled(right_text.to_string(), right_style));
-        }
-        lines.push(Line::from(spans));
+        lines.push(Line::from(vec![
+            Span::styled(left, left_style),
+            Span::styled(" ".repeat(filler), filler_style),
+            Span::styled(" ".repeat(gap), filler_style),
+            Span::styled(right_text.to_string(), right_style),
+        ]));
         lines.push(Line::from(""));
     };
 
     for (i, model) in models.iter().enumerate() {
         let is_selected = i == selected_index;
-        push_row(model.display_name(), is_selected, false, None);
+        let firm_style = Style::default()
+            .fg(palette.text_disabled)
+            .add_modifier(Modifier::DIM);
+        push_row(
+            model.model_name(),
+            is_selected,
+            false,
+            Some((model.firm_name(), firm_style)),
+        );
     }
 
     if matches!(lines.last(), Some(line) if line.width() == 0) {
@@ -1587,10 +1642,6 @@ pub fn draw_model_selector(
         Style::default().fg(palette.primary_dim),
     )));
     lines.push(Line::from(vec![
-        Span::styled("  ↑↓", styles::key_highlight(palette)),
-        Span::styled(" select  ", styles::key_hint(palette)),
-        Span::styled("1-9", styles::key_highlight(palette)),
-        Span::styled(" quick pick  ", styles::key_hint(palette)),
         Span::styled("Enter", styles::key_highlight(palette)),
         Span::styled(" confirm  ", styles::key_hint(palette)),
         Span::styled("Esc", styles::key_highlight(palette)),
@@ -1637,7 +1688,8 @@ pub fn draw_model_selector(
             Style::default()
                 .fg(palette.text_primary)
                 .add_modifier(Modifier::BOLD),
-        )]));
+        )]))
+        .title_alignment(Alignment::Center);
 
     let selector = Paragraph::new(lines).block(block);
 
@@ -1917,6 +1969,236 @@ fn draw_tool_recovery_prompt(frame: &mut Frame, app: &App, palette: &Palette, gl
     frame.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
+fn draw_file_selector(
+    frame: &mut Frame,
+    app: &mut App,
+    palette: &Palette,
+    glyphs: &Glyphs,
+    elapsed: Duration,
+) {
+    let area = frame.area();
+    let selected_index = app.file_select_index().unwrap_or(0);
+    let filter = app.file_select_filter().unwrap_or("").to_string();
+    let files = app.file_select_files();
+
+    let selector_width = 70.min(area.width.saturating_sub(4)).max(40);
+    let content_width = selector_width.saturating_sub(4).max(1) as usize;
+
+    let divider = Line::from(Span::styled(
+        "─".repeat(content_width),
+        Style::default().fg(palette.primary_dim),
+    ));
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Filter input line
+    let filter_display = if filter.is_empty() {
+        "Type to filter files...".to_string()
+    } else {
+        filter.clone()
+    };
+    let filter_style = if filter.is_empty() {
+        Style::default().fg(palette.text_muted)
+    } else {
+        Style::default().fg(palette.text_primary)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(" @ ", Style::default().fg(palette.primary)),
+        Span::styled(filter_display, filter_style),
+    ]));
+
+    lines.push(divider.clone());
+    lines.push(Line::from(""));
+
+    // File count info
+    let file_picker = app.file_picker();
+    let total = file_picker.total_count();
+    let showing = files.len();
+    let count_text = if filter.is_empty() {
+        format!(" {showing} of {total} files")
+    } else {
+        format!(" {showing} matches")
+    };
+    lines.push(Line::from(Span::styled(
+        count_text,
+        Style::default().fg(palette.text_muted),
+    )));
+    lines.push(Line::from(""));
+
+    // File list
+    let max_visible = 12;
+    let start_idx = if selected_index >= max_visible {
+        selected_index - max_visible + 1
+    } else {
+        0
+    };
+
+    for (i, entry) in files.iter().enumerate().skip(start_idx).take(max_visible) {
+        let is_selected = i == selected_index;
+        let prefix = if is_selected { glyphs.selected } else { " " };
+
+        // Build the file path with fuzzy match highlighting
+        let match_positions = find_match_positions(&entry.display, &filter);
+        let mut spans: Vec<Span> = Vec::new();
+
+        let bg = if is_selected {
+            Some(palette.bg_highlight)
+        } else {
+            None
+        };
+
+        let prefix_style = if let Some(bg) = bg {
+            Style::default().fg(palette.primary).bg(bg)
+        } else {
+            Style::default().fg(palette.primary)
+        };
+        spans.push(Span::styled(format!(" {prefix} "), prefix_style));
+
+        // Render path with highlighted matches
+        let path_chars: Vec<char> = entry.display.chars().collect();
+        let mut in_match = false;
+        let mut segment = String::new();
+
+        for (char_idx, &c) in path_chars.iter().enumerate() {
+            let is_match = match_positions.contains(&char_idx);
+
+            if is_match != in_match {
+                // Flush current segment
+                if !segment.is_empty() {
+                    let style = if in_match {
+                        let mut s = Style::default()
+                            .fg(palette.accent)
+                            .add_modifier(Modifier::BOLD);
+                        if let Some(bg) = bg {
+                            s = s.bg(bg);
+                        }
+                        s
+                    } else {
+                        let mut s = if is_selected {
+                            Style::default().fg(palette.text_primary)
+                        } else {
+                            Style::default().fg(palette.text_secondary)
+                        };
+                        if let Some(bg) = bg {
+                            s = s.bg(bg);
+                        }
+                        s
+                    };
+                    spans.push(Span::styled(segment.clone(), style));
+                    segment.clear();
+                }
+                in_match = is_match;
+            }
+            segment.push(c);
+        }
+
+        // Flush final segment
+        if !segment.is_empty() {
+            let style = if in_match {
+                let mut s = Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD);
+                if let Some(bg) = bg {
+                    s = s.bg(bg);
+                }
+                s
+            } else {
+                let mut s = if is_selected {
+                    Style::default().fg(palette.text_primary)
+                } else {
+                    Style::default().fg(palette.text_secondary)
+                };
+                if let Some(bg) = bg {
+                    s = s.bg(bg);
+                }
+                s
+            };
+            spans.push(Span::styled(segment, style));
+        }
+
+        // Pad to full width for consistent highlight
+        let line_width: usize = spans.iter().map(|s| s.content.width()).sum();
+        if line_width < content_width {
+            let padding = content_width - line_width;
+            let pad_style = if let Some(bg) = bg {
+                Style::default().bg(bg)
+            } else {
+                Style::default()
+            };
+            spans.push(Span::styled(" ".repeat(padding), pad_style));
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    // Show scroll indicator if there are more files
+    if files.len() > max_visible {
+        lines.push(Line::from(Span::styled(
+            format!(" ... and {} more", files.len() - max_visible),
+            Style::default().fg(palette.text_muted),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "─".repeat(content_width),
+        Style::default().fg(palette.primary_dim),
+    )));
+    lines.push(Line::from(vec![
+        Span::styled("Enter", styles::key_highlight(palette)),
+        Span::styled(" select  ", styles::key_hint(palette)),
+        Span::styled("Esc", styles::key_highlight(palette)),
+        Span::styled(" cancel", styles::key_hint(palette)),
+    ]));
+
+    let inner_height = lines.len() as u16;
+    let selector_height = inner_height.saturating_add(4);
+    let desired_y = area.y + area.height.saturating_sub(12);
+    let max_y = area.y + area.height.saturating_sub(selector_height);
+    let y = desired_y.min(max_y);
+
+    let base_area = Rect {
+        x: area.x + (area.width.saturating_sub(selector_width) / 2),
+        y,
+        width: selector_width,
+        height: selector_height,
+    };
+
+    let (selector_area, effect_done) = if let Some(effect) = app.modal_effect_mut() {
+        effect.advance(elapsed);
+        (
+            apply_modal_effect(effect, base_area, area),
+            effect.is_finished(),
+        )
+    } else {
+        (base_area, false)
+    };
+
+    if effect_done {
+        app.clear_modal_effect();
+    }
+
+    frame.render_widget(Clear, selector_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette.primary))
+        .style(Style::default().bg(palette.bg_panel))
+        .padding(Padding::uniform(1))
+        .title(Line::from(vec![Span::styled(
+            " Select File ",
+            Style::default()
+                .fg(palette.text_primary)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .title_alignment(Alignment::Center);
+
+    let selector = Paragraph::new(lines).block(block);
+
+    frame.render_widget(selector, selector_area);
+}
+
 fn create_welcome_screen(app: &App, palette: &Palette, glyphs: &Glyphs) -> Paragraph<'static> {
     let version = env!("CARGO_PKG_VERSION");
     let build_profile = if cfg!(debug_assertions) {
@@ -2110,4 +2392,40 @@ fn create_welcome_screen(app: &App, palette: &Palette, glyphs: &Glyphs) -> Parag
     ]));
 
     Paragraph::new(lines).alignment(Alignment::Left)
+}
+
+/// Format API usage for status bar display.
+///
+/// Returns a compact string like "API: 12.3k/1.2k (85% hit)" or empty if no data.
+fn format_api_usage(usage: Option<&TurnUsage>) -> String {
+    let Some(usage) = usage else {
+        return String::new();
+    };
+    if !usage.total.has_data() {
+        return String::new();
+    }
+
+    let input = usage.total.input_tokens;
+    let output = usage.total.output_tokens;
+    let cache_pct = usage.total.cache_hit_percentage();
+
+    // Format token counts compactly: 1234 -> "1.2k", 12345 -> "12k"
+    let fmt_tokens = |n: u32| -> String {
+        if n >= 10_000 {
+            format!("{}k", n / 1000)
+        } else if n >= 1_000 {
+            format!("{:.1}k", n as f64 / 1000.0)
+        } else {
+            n.to_string()
+        }
+    };
+
+    let input_str = fmt_tokens(input);
+    let output_str = fmt_tokens(output);
+
+    if cache_pct > 0.5 {
+        format!("API: {input_str}/{output_str} ({cache_pct:.0}% hit)")
+    } else {
+        format!("API: {input_str}/{output_str}")
+    }
 }

@@ -17,6 +17,13 @@ use crate::ui::DraftInput;
 
 // StreamEvent is already in scope from the use statement above
 
+/// Test system prompts for unit tests.
+const TEST_SYSTEM_PROMPTS: SystemPrompts = SystemPrompts {
+    claude: "You are a helpful assistant.",
+    openai: "You are a helpful assistant.",
+    gemini: "You are a helpful assistant.",
+};
+
 fn test_app() -> App {
     let mut api_keys = HashMap::new();
     api_keys.insert(Provider::Claude, "test".to_string());
@@ -61,7 +68,7 @@ fn test_app() -> App {
         output_limits,
         cache_enabled: false,
         openai_options: OpenAIRequestOptions::default(),
-        system_prompts: None,
+        system_prompts: TEST_SYSTEM_PROMPTS,
         cached_usage_status: None,
         pending_user_message: None,
         tool_definitions,
@@ -81,6 +88,9 @@ fn test_app() -> App {
         last_ui_tick: Instant::now(),
         last_session_autosave: Instant::now(),
         session_changes: crate::session_state::SessionChangeLog::default(),
+        file_picker: crate::ui::FilePickerState::new(),
+        turn_usage: None,
+        last_turn_usage: None,
     }
 }
 
@@ -310,31 +320,6 @@ fn process_command_clear_requests_transcript_clear() {
 
     assert!(app.take_clear_transcript());
     assert!(!app.take_clear_transcript());
-}
-
-#[test]
-fn process_command_provider_switch_sets_status_when_no_key() {
-    let mut app = test_app();
-    app.enter_command_mode();
-
-    let command = {
-        let token = app.command_token().expect("command mode");
-        let mut command_mode = app.command_mode(token);
-        for c in "p gpt".chars() {
-            command_mode.push_char(c);
-        }
-        command_mode.take_command().expect("take command")
-    };
-
-    app.process_command(command);
-
-    assert_eq!(app.provider(), Provider::OpenAI);
-    assert_eq!(app.model(), Provider::OpenAI.default_model().as_str());
-    assert_eq!(
-        last_notification(&app),
-        Some("Switched to GPT - No API key! Set OPENAI_API_KEY")
-    );
-    assert_eq!(app.input_mode(), InputMode::Normal);
 }
 
 #[test]

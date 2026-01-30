@@ -74,7 +74,7 @@ const DEFAULT_SANDBOX_DENIES: [&str; 21] = [
 ];
 
 impl App {
-    pub fn new(system_prompts: Option<SystemPrompts>) -> anyhow::Result<Self> {
+    pub fn new(system_prompts: SystemPrompts) -> anyhow::Result<Self> {
         let (config, config_error) = match ForgeConfig::load() {
             Ok(config) => (config, None),
             Err(err) => (None, Some(err)),
@@ -340,6 +340,9 @@ impl App {
             last_ui_tick: Instant::now(),
             last_session_autosave: Instant::now(),
             session_changes: crate::session_state::SessionChangeLog::default(),
+            file_picker: crate::ui::FilePickerState::new(),
+            turn_usage: None,
+            last_turn_usage: None,
         };
 
         app.clamp_output_limits_to_model();

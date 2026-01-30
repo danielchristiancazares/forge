@@ -9,8 +9,8 @@
 
 use anyhow::Result;
 use forge_types::{
-    ApiKey, CacheHint, CacheableMessage, Message, ModelName, OpenAIRequestOptions, OutputLimits,
-    Provider, StreamEvent, ToolDefinition,
+    ApiKey, ApiUsage, CacheHint, CacheableMessage, Message, ModelName, OpenAIRequestOptions,
+    OutputLimits, Provider, StreamEvent, ToolDefinition,
 };
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -410,9 +410,9 @@ pub async fn send_message(
 /// Claude/Anthropic API implementation.
 pub mod claude {
     use super::{
-        ApiConfig, CacheHint, CacheableMessage, Message, OutputLimits, Result, SseParseAction,
-        SseParser, StreamEvent, ToolDefinition, http_client, mpsc, process_sse_stream,
-        read_capped_error_body, send_event,
+        ApiConfig, ApiUsage, CacheHint, CacheableMessage, Message, OutputLimits, Result,
+        SseParseAction, SseParser, StreamEvent, ToolDefinition, http_client, mpsc,
+        process_sse_stream, read_capped_error_body, send_event,
     };
     use serde_json::json;
 
@@ -563,6 +563,43 @@ pub mod claude {
     impl SseParser for ClaudeParser {
         fn parse(&mut self, json: &serde_json::Value) -> SseParseAction {
             let mut events = Vec::new();
+
+            // Handle message_start - contains input token usage
+            if json["type"] == "message_start"
+                && let Some(message) = json.get("message")
+                && let Some(usage) = message.get("usage")
+            {
+                // Anthropic's input_tokens is non-cached tokens only.
+                // Total input = input_tokens + cache_read + cache_creation
+                let non_cached = usage["input_tokens"].as_u64().unwrap_or(0) as u32;
+                let cache_read = usage["cache_read_input_tokens"].as_u64().unwrap_or(0) as u32;
+                let cache_creation =
+                    usage["cache_creation_input_tokens"].as_u64().unwrap_or(0) as u32;
+                let total_input = non_cached
+                    .saturating_add(cache_read)
+                    .saturating_add(cache_creation);
+                events.push(StreamEvent::Usage(ApiUsage {
+                    input_tokens: total_input,
+                    cache_read_tokens: cache_read,
+                    cache_creation_tokens: cache_creation,
+                    output_tokens: 0,
+                }));
+            }
+
+            // Handle message_delta - contains output token usage
+            if json["type"] == "message_delta"
+                && let Some(usage) = json.get("usage")
+            {
+                let output_tokens = usage["output_tokens"].as_u64().unwrap_or(0) as u32;
+                if output_tokens > 0 {
+                    events.push(StreamEvent::Usage(ApiUsage {
+                        input_tokens: 0,
+                        cache_read_tokens: 0,
+                        cache_creation_tokens: 0,
+                        output_tokens,
+                    }));
+                }
+            }
 
             // Handle content_block_start for tool_use
             if json["type"] == "content_block_start"
@@ -719,15 +756,81 @@ pub mod claude {
             );
             assert_eq!(system[1]["text"].as_str(), Some("summary"));
         }
+
+        #[test]
+        fn claude_parser_emits_usage_on_message_start() {
+            let mut parser = ClaudeParser::default();
+            // Anthropic reports: input_tokens (non-cached) + cache_read + cache_creation
+            // Total input should be the sum: 1234 + 1000 + 50 = 2284
+            let json: serde_json::Value = serde_json::json!({
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": 1234,
+                        "cache_read_input_tokens": 1000,
+                        "cache_creation_input_tokens": 50
+                    }
+                }
+            });
+
+            let action = parser.parse(&json);
+            match action {
+                SseParseAction::Emit(events) => {
+                    assert_eq!(events.len(), 1);
+                    match &events[0] {
+                        StreamEvent::Usage(usage) => {
+                            // Total = non_cached + cache_read + cache_creation
+                            assert_eq!(usage.input_tokens, 2284);
+                            assert_eq!(usage.cache_read_tokens, 1000);
+                            assert_eq!(usage.cache_creation_tokens, 50);
+                            assert_eq!(usage.output_tokens, 0);
+                        }
+                        _ => panic!("Expected Usage event"),
+                    }
+                }
+                _ => panic!("Expected Emit action"),
+            }
+        }
+
+        #[test]
+        fn claude_parser_emits_usage_on_message_delta() {
+            let mut parser = ClaudeParser::default();
+            let json: serde_json::Value = serde_json::json!({
+                "type": "message_delta",
+                "delta": {
+                    "stop_reason": "end_turn"
+                },
+                "usage": {
+                    "output_tokens": 567
+                }
+            });
+
+            let action = parser.parse(&json);
+            match action {
+                SseParseAction::Emit(events) => {
+                    assert_eq!(events.len(), 1);
+                    match &events[0] {
+                        StreamEvent::Usage(usage) => {
+                            assert_eq!(usage.input_tokens, 0);
+                            assert_eq!(usage.cache_read_tokens, 0);
+                            assert_eq!(usage.cache_creation_tokens, 0);
+                            assert_eq!(usage.output_tokens, 567);
+                        }
+                        _ => panic!("Expected Usage event"),
+                    }
+                }
+                _ => panic!("Expected Emit action"),
+            }
+        }
     }
 }
 
 /// `OpenAI` API implementation.
 pub mod openai {
     use super::{
-        ApiConfig, CacheableMessage, Message, OutputLimits, Result, SseParseAction, SseParser,
-        StreamEvent, ToolDefinition, http_client, mpsc, process_sse_stream, read_capped_error_body,
-        send_event,
+        ApiConfig, ApiUsage, CacheableMessage, Message, OutputLimits, Result, SseParseAction,
+        SseParser, StreamEvent, ToolDefinition, http_client, mpsc, process_sse_stream,
+        read_capped_error_body, send_event,
     };
     use forge_types::OpenAIReasoningSummary;
     use serde_json::{Value, json};
@@ -911,6 +1014,24 @@ pub mod openai {
                     }
                 }
                 "response.completed" => {
+                    // Extract usage from response.usage if present
+                    if let Some(usage) = json.get("response").and_then(|r| r.get("usage")) {
+                        let input_tokens = usage["input_tokens"].as_u64().unwrap_or(0) as u32;
+                        let output_tokens = usage["output_tokens"].as_u64().unwrap_or(0) as u32;
+                        let cached_tokens = usage
+                            .get("input_tokens_details")
+                            .and_then(|d| d.get("cached_tokens"))
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0) as u32;
+
+                        events.push(StreamEvent::Usage(ApiUsage {
+                            input_tokens,
+                            cache_read_tokens: cached_tokens,
+                            cache_creation_tokens: 0, // OpenAI doesn't report this
+                            output_tokens,
+                        }));
+                        return SseParseAction::Emit(events);
+                    }
                     return SseParseAction::Done;
                 }
                 "response.incomplete" => {
@@ -1342,6 +1463,48 @@ pub mod openai {
                 &events[0],
                 StreamEvent::ThinkingDelta(text) if text == "summary text"
             ));
+        }
+
+        #[test]
+        fn response_completed_emits_usage() {
+            let mut state = OpenAIParser::default();
+            let action = state.parse(&json!({
+                "type": "response.completed",
+                "response": {
+                    "usage": {
+                        "input_tokens": 1234,
+                        "output_tokens": 567,
+                        "total_tokens": 1801,
+                        "input_tokens_details": { "cached_tokens": 100 },
+                        "output_tokens_details": { "reasoning_tokens": 50 }
+                    }
+                }
+            }));
+            match action {
+                super::SseParseAction::Emit(events) => {
+                    assert_eq!(events.len(), 1);
+                    match &events[0] {
+                        StreamEvent::Usage(usage) => {
+                            assert_eq!(usage.input_tokens, 1234);
+                            assert_eq!(usage.output_tokens, 567);
+                            assert_eq!(usage.cache_read_tokens, 100);
+                            assert_eq!(usage.cache_creation_tokens, 0);
+                        }
+                        _ => panic!("Expected Usage event"),
+                    }
+                }
+                _ => panic!("Expected Emit action"),
+            }
+        }
+
+        #[test]
+        fn response_completed_without_usage_returns_done() {
+            let mut state = OpenAIParser::default();
+            let action = state.parse(&json!({
+                "type": "response.completed",
+                "response": {}
+            }));
+            assert!(matches!(action, super::SseParseAction::Done));
         }
     }
 }

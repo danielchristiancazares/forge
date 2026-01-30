@@ -10,9 +10,9 @@ use tokio::sync::mpsc;
 mod ui;
 use ui::InputState;
 pub use ui::{
-    ChangeKind, DisplayItem, DraftInput, FilesPanelState, InputHistory, InputMode, ModalEffect,
-    ModalEffectKind, PanelEffect, PanelEffectKind, PredefinedModel, ScrollState, UiOptions,
-    ViewState,
+    ChangeKind, DisplayItem, DraftInput, FileEntry, FilePickerState, FilesPanelState, InputHistory,
+    InputMode, ModalEffect, ModalEffectKind, PanelEffect, PanelEffectKind, PredefinedModel,
+    ScrollState, UiOptions, ViewState, find_match_positions,
 };
 
 pub use forge_context::{
@@ -25,10 +25,11 @@ pub use forge_context::{
 };
 pub use forge_providers::{self, ApiConfig, gemini::GeminiCache, gemini::GeminiCacheConfig};
 pub use forge_types::{
-    ApiKey, CacheHint, CacheableMessage, EmptyStringError, Message, ModelName, ModelNameKind,
-    NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort, OpenAIReasoningSummary,
-    OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation, OutputLimits, Provider,
-    StreamEvent, StreamFinishReason, ToolCall, ToolDefinition, ToolResult, sanitize_terminal_text,
+    ApiKey, ApiUsage, CacheHint, CacheableMessage, EmptyStringError, Message, ModelName,
+    ModelNameKind, NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort,
+    OpenAIReasoningSummary, OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation,
+    OutputLimits, Provider, StreamEvent, StreamFinishReason, ToolCall, ToolDefinition, ToolResult,
+    sanitize_terminal_text,
 };
 
 mod config;
@@ -81,6 +82,26 @@ pub enum FileDiff {
     Error(String),
 }
 
+/// Aggregated API usage for a user turn (may include multiple API calls).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TurnUsage {
+    /// Number of API calls made during this turn.
+    pub api_calls: u32,
+    /// Total usage aggregated across all API calls.
+    pub total: ApiUsage,
+    /// Usage from the most recent API call (for display).
+    pub last_call: ApiUsage,
+}
+
+impl TurnUsage {
+    /// Record usage from an API call.
+    pub fn record_call(&mut self, usage: ApiUsage) {
+        self.api_calls = self.api_calls.saturating_add(1);
+        self.total.merge(&usage);
+        self.last_call = usage;
+    }
+}
+
 pub use state::SummarizationTask;
 
 use state::{
@@ -124,6 +145,8 @@ pub struct StreamingMessage {
     receiver: mpsc::Receiver<StreamEvent>,
     tool_calls: Vec<ToolCallAccumulator>,
     max_tool_args_bytes: usize,
+    /// API-reported token usage accumulated during streaming.
+    usage: ApiUsage,
 }
 
 impl StreamingMessage {
@@ -154,6 +177,7 @@ impl StreamingMessage {
             receiver,
             tool_calls: Vec::new(),
             max_tool_args_bytes,
+            usage: ApiUsage::default(),
         }
     }
 
@@ -176,6 +200,12 @@ impl StreamingMessage {
     #[must_use]
     pub fn thinking(&self) -> &str {
         &self.thinking
+    }
+
+    /// API-reported token usage accumulated during streaming.
+    #[must_use]
+    pub fn usage(&self) -> ApiUsage {
+        self.usage
     }
 
     pub fn try_recv_event(&mut self) -> Result<StreamEvent, mpsc::error::TryRecvError> {
@@ -220,6 +250,10 @@ impl StreamingMessage {
                     }
                     acc.arguments_json.push_str(&arguments);
                 }
+                None
+            }
+            StreamEvent::Usage(usage) => {
+                self.usage.merge(&usage);
                 None
             }
             StreamEvent::Done => Some(StreamFinishReason::Done),
@@ -313,8 +347,10 @@ impl StreamingMessage {
 /// The prompt is selected at streaming time based on the active provider.
 #[derive(Debug, Clone, Copy)]
 pub struct SystemPrompts {
-    /// Default prompt for Claude and OpenAI.
-    pub default: &'static str,
+    /// Claude-specific prompt.
+    pub claude: &'static str,
+    /// OpenAI-specific prompt.
+    pub openai: &'static str,
     /// Gemini-specific prompt.
     pub gemini: &'static str,
 }
@@ -324,8 +360,9 @@ impl SystemPrompts {
     #[must_use]
     pub fn get(&self, provider: Provider) -> &'static str {
         match provider {
+            Provider::Claude => self.claude,
+            Provider::OpenAI => self.openai,
             Provider::Gemini => self.gemini,
-            Provider::Claude | Provider::OpenAI => self.default,
         }
     }
 }
@@ -366,7 +403,7 @@ pub struct App {
     openai_options: OpenAIRequestOptions,
     /// Provider-specific system prompts.
     /// The correct prompt is selected at streaming time based on the active provider.
-    system_prompts: Option<SystemPrompts>,
+    system_prompts: SystemPrompts,
     /// Cached context usage status (invalidated when history/model changes).
     cached_usage_status: Option<ContextUsageStatus>,
     /// Pending user message awaiting stream completion.
@@ -412,6 +449,12 @@ pub struct App {
     last_session_autosave: Instant,
     /// Session-wide log of files created and modified.
     session_changes: SessionChangeLog,
+    /// File picker state for "@" reference feature.
+    file_picker: ui::FilePickerState,
+    /// API usage for the current user turn (reset when turn completes).
+    turn_usage: Option<TurnUsage>,
+    /// API usage from the last completed turn (for status bar display).
+    last_turn_usage: Option<TurnUsage>,
 }
 
 impl App {
@@ -884,6 +927,11 @@ impl App {
         self.context_infinity
     }
 
+    /// API usage from the last completed turn (for status bar display).
+    pub fn last_turn_usage(&self) -> Option<&TurnUsage> {
+        self.last_turn_usage.as_ref()
+    }
+
     #[allow(clippy::unused_self)] // Kept as method for API consistency
     fn idle_state(&self) -> OperationState {
         OperationState::Idle
@@ -893,11 +941,12 @@ impl App {
         std::mem::replace(&mut self.state, OperationState::Idle)
     }
 
-    fn build_basic_api_messages(&mut self) -> Vec<Message> {
+    fn build_basic_api_messages(&mut self, reserved_overhead: u32) -> Vec<Message> {
         let budget = self
             .context_manager
             .current_limits()
-            .effective_input_budget();
+            .effective_input_budget()
+            .saturating_sub(reserved_overhead);
         let entries = self.context_manager.history().entries();
         if entries.is_empty() {
             return Vec::new();
@@ -977,20 +1026,6 @@ impl App {
             .set_output_limit(clamped.max_output_tokens());
     }
 
-    /// Switch to a different provider
-    pub fn set_provider(&mut self, provider: Provider) {
-        self.model = provider.default_model();
-        if self.context_infinity_enabled() {
-            // Notify context manager of model change for adaptive context
-            self.handle_context_adaptation();
-        } else {
-            self.context_manager
-                .set_model_without_adaptation(self.model.as_str());
-        }
-
-        self.clamp_output_limits_to_model();
-    }
-
     /// Set a specific model (called from :model command).
     pub fn set_model(&mut self, model: ModelName) {
         self.model = model;
@@ -1006,8 +1041,7 @@ impl App {
 
     /// Handle context adaptation after a model switch.
     ///
-    /// This method is called after `set_model()` or `set_provider()` to handle
-    /// the context adaptation result:
+    /// This method is called after `set_model()` to handle the context adaptation result:
     /// - If shrinking with `needs_summarization`, starts background summarization
     /// - If expanding, attempts to restore previously summarized messages
     fn handle_context_adaptation(&mut self) {
@@ -1187,6 +1221,112 @@ impl App {
         self.set_model(model);
         self.push_notification(format!("Model set to: {}", predefined.display_name()));
         self.enter_normal_mode();
+    }
+
+    // ========================================================================
+    // File select mode (@ reference feature)
+    // ========================================================================
+
+    /// Enter file select mode, scanning files from the current directory.
+    pub fn enter_file_select_mode(&mut self) {
+        // Scan files if not already scanned
+        if !self.file_picker.is_scanned() {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            self.file_picker.scan_files(&cwd);
+        }
+        self.input = std::mem::take(&mut self.input).into_file_select();
+        if self.view.ui_options.reduced_motion {
+            self.view.modal_effect = None;
+        } else {
+            self.view.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
+            self.view.last_frame = Instant::now();
+        }
+    }
+
+    /// Get the current file select filter text.
+    pub fn file_select_filter(&self) -> Option<&str> {
+        self.input.file_select_filter()
+    }
+
+    /// Get the current file select index.
+    pub fn file_select_index(&self) -> Option<usize> {
+        self.input.file_select_index()
+    }
+
+    /// Get filtered files for display.
+    pub fn file_select_files(&self) -> Vec<&ui::FileEntry> {
+        self.file_picker.filtered_files()
+    }
+
+    /// Get the file picker state for rendering.
+    pub fn file_picker(&self) -> &ui::FilePickerState {
+        &self.file_picker
+    }
+
+    /// Move file selection up.
+    pub fn file_select_move_up(&mut self) {
+        if let InputState::FileSelect { selected, .. } = &mut self.input
+            && *selected > 0
+        {
+            *selected -= 1;
+        }
+    }
+
+    /// Move file selection down.
+    pub fn file_select_move_down(&mut self) {
+        if let InputState::FileSelect { selected, .. } = &mut self.input {
+            let max_index = self.file_picker.filtered_count().saturating_sub(1);
+            if *selected < max_index {
+                *selected += 1;
+            }
+        }
+    }
+
+    /// Update the file select filter and refresh filtered results.
+    pub fn file_select_update_filter(&mut self) {
+        let filter = self.input.file_select_filter().unwrap_or("").to_string();
+        self.file_picker.update_filter(&filter);
+        // Reset selection to 0 when filter changes
+        if let InputState::FileSelect { selected, .. } = &mut self.input {
+            *selected = 0;
+        }
+    }
+
+    /// Push a character to the file select filter.
+    pub fn file_select_push_char(&mut self, c: char) {
+        if let Some(filter) = self.input.file_select_filter_mut() {
+            filter.enter_char(c);
+        }
+        self.file_select_update_filter();
+    }
+
+    /// Delete a character from the file select filter (backspace).
+    pub fn file_select_backspace(&mut self) {
+        if let Some(filter) = self.input.file_select_filter_mut() {
+            filter.delete_char();
+        }
+        self.file_select_update_filter();
+    }
+
+    /// Confirm file selection - insert the selected file path into the draft.
+    pub fn file_select_confirm(&mut self) {
+        let Some(index) = self.file_select_index() else {
+            self.enter_insert_mode();
+            return;
+        };
+
+        if let Some(entry) = self.file_picker.get_selected(index) {
+            let path = entry.display.clone();
+            // Insert the file path at cursor position in the draft
+            self.input.draft_mut().enter_text(&path);
+        }
+
+        self.enter_insert_mode();
+    }
+
+    /// Cancel file selection and return to insert mode.
+    pub fn file_select_cancel(&mut self) {
+        self.enter_insert_mode();
     }
 
     pub fn tool_approval_move_up(&mut self) {
