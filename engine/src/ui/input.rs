@@ -388,10 +388,6 @@ mod tests {
         }
     }
 
-    // ========================================================================
-    // DraftInput cursor movement tests
-    // ========================================================================
-
     #[test]
     fn draft_move_cursor_left_from_start() {
         let mut draft = DraftInput {
@@ -451,10 +447,6 @@ mod tests {
         draft.move_cursor_end();
         assert_eq!(draft.cursor(), 5);
     }
-
-    // ========================================================================
-    // DraftInput character insertion tests
-    // ========================================================================
 
     #[test]
     fn draft_enter_char_at_start() {
@@ -521,10 +513,6 @@ mod tests {
         assert_eq!(draft.text(), "hello world");
         assert_eq!(draft.cursor(), 10);
     }
-
-    // ========================================================================
-    // DraftInput deletion tests
-    // ========================================================================
 
     #[test]
     fn draft_delete_char_at_start() {
@@ -615,10 +603,6 @@ mod tests {
         assert_eq!(draft.cursor(), 0);
     }
 
-    // ========================================================================
-    // DraftInput word deletion tests
-    // ========================================================================
-
     #[test]
     fn draft_delete_word_backwards_single_word() {
         let mut draft = DraftInput {
@@ -662,10 +646,6 @@ mod tests {
         assert_eq!(draft.text(), "hello");
         assert_eq!(draft.cursor(), 0);
     }
-
-    // ========================================================================
-    // DraftInput Unicode tests
-    // ========================================================================
 
     #[test]
     fn draft_unicode_grapheme_count() {
@@ -719,10 +699,6 @@ mod tests {
         // 'a' is 1 byte, '🦀' is 4 bytes
         assert_eq!(draft.byte_index(), 5); // 1 + 4 = 5
     }
-
-    // ========================================================================
-    // InputState tests
-    // ========================================================================
 
     #[test]
     fn input_state_draft_accessor() {
@@ -831,10 +807,6 @@ mod tests {
         let mut state = InputState::Normal(DraftInput::default());
         assert!(state.command_mut().is_none());
     }
-
-    // ========================================================================
-    // InputMode tests
-    // ========================================================================
 
     #[test]
     fn input_mode_default() {

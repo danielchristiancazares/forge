@@ -52,6 +52,10 @@ zip:
     zip -r forge-source.zip . -x 'target/*' -x 'docs/*' -x 'scripts/*' -x '.*' -x '.*/*' -x '*.zip' -x 'lcov.info' -x 'coverage/*' -x 'sha256.txt'
     sha256sum forge-source.zip > sha256.txt || shasum -a 256 forge-source.zip > sha256.txt
 
+# Install forge binary to ~/.cargo/bin
+install:
+    cargo install --path cli
+
 # Clean build artifacts
 clean:
     cargo clean

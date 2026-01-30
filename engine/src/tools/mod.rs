@@ -1,6 +1,7 @@
 //! Tool Executor Framework - core types and helpers.
 
 pub mod builtins;
+pub mod command_blacklist;
 pub mod git;
 pub mod lp1;
 pub mod recall;
@@ -8,6 +9,8 @@ pub mod sandbox;
 pub mod search;
 pub mod shell;
 pub mod webfetch;
+
+pub use command_blacklist::CommandBlacklist;
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -157,6 +160,10 @@ pub enum DenialReason {
     LimitsExceeded {
         message: String,
     },
+    CommandBlacklisted {
+        command: String,
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for DenialReason {
@@ -179,6 +186,9 @@ impl std::fmt::Display for DenialReason {
                 pattern
             ),
             DenialReason::LimitsExceeded { message } => write!(f, "{message}"),
+            DenialReason::CommandBlacklisted { command, reason } => {
+                write!(f, "Command blocked: {reason} (command: {command})")
+            }
         }
     }
 }
@@ -275,6 +285,8 @@ pub struct ToolCtx {
     pub turn_changes: ChangeRecorder,
     /// The Librarian for fact recall (Context Infinity).
     pub librarian: Option<Arc<Mutex<Librarian>>>,
+    /// Command blacklist for blocking catastrophic commands.
+    pub command_blacklist: CommandBlacklist,
 }
 
 /// Shared batch-level tool context.
@@ -333,6 +345,7 @@ pub struct ToolSettings {
     pub policy: Policy,
     pub sandbox: Sandbox,
     pub env_sanitizer: EnvSanitizer,
+    pub command_blacklist: CommandBlacklist,
 }
 
 /// Sanitizes environment variables before executing commands.

@@ -694,6 +694,12 @@ impl App {
             .expect("default sandbox")
         });
 
+        // Command blacklist initialization (patterns defined in command_blacklist module)
+        let command_blacklist = tools::CommandBlacklist::with_defaults().unwrap_or_else(|e| {
+            tracing::error!("Failed to compile command blacklist: {e}. Using empty blacklist.");
+            tools::CommandBlacklist::new(&[]).expect("empty blacklist")
+        });
+
         tools::ToolSettings {
             limits,
             read_limits,
@@ -706,6 +712,7 @@ impl App {
             policy,
             sandbox,
             env_sanitizer,
+            command_blacklist,
         }
     }
 }

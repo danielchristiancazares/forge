@@ -449,6 +449,7 @@ impl App {
                 file_cache,
                 turn_changes: turn_recorder,
                 librarian,
+                command_blacklist: settings.command_blacklist.clone(),
             };
 
             let timeout = exec_ref.timeout().unwrap_or(ctx.default_timeout);
@@ -619,14 +620,15 @@ impl App {
                     if let Some(id) = state.batch.batch_id {
                         let _ = self.tool_journal.record_result(id, &result);
                     }
-                    exec.remaining_capacity_bytes = exec
-                        .remaining_capacity_bytes
-                        .saturating_sub(result.content.len());
                     state.batch.results.push(result);
 
                     if exec.queue.is_empty() {
                         should_commit = true;
                     } else {
+                        // Recompute capacity fresh from current context state.
+                        // This ensures each tool gets accurate capacity even if context
+                        // changed during previous tool execution (e.g., user message added).
+                        exec.remaining_capacity_bytes = self.remaining_tool_capacity(&state.batch);
                         self.start_next_tool_call(exec);
                     }
                 }
@@ -1002,10 +1004,6 @@ impl App {
     }
 }
 
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
 fn preflight_sandbox(
     sandbox: &tools::sandbox::Sandbox,
     call: &ToolCall,
@@ -1053,6 +1051,12 @@ fn preflight_sandbox(
     Ok(())
 }
 
+/// Strip Windows extended path prefix (`\\?\`) for cleaner display.
+fn strip_windows_prefix(path: &std::path::Path) -> String {
+    let s = path.display().to_string();
+    s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+}
+
 pub(crate) fn tool_error_result(call: &ToolCall, err: tools::ToolError) -> ToolResult {
     let message = match err {
         tools::ToolError::BadArgs { message } => format!("Bad args: {message}"),
@@ -1070,10 +1074,13 @@ pub(crate) fn tool_error_result(call: &ToolCall, err: tools::ToolError) -> ToolR
             format!("Duplicate tool call id: {id}")
         }
         tools::ToolError::PatchFailed { file, message } => {
-            format!("Patch failed for {}: {message}", file.display())
+            format!(
+                "Patch failed for {}: {message}",
+                strip_windows_prefix(&file)
+            )
         }
         tools::ToolError::StaleFile { file, reason } => {
-            format!("Stale file {}: {reason}", file.display())
+            format!("{}: {reason}", strip_windows_prefix(&file))
         }
     };
 

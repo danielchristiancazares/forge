@@ -65,7 +65,6 @@ impl FilePickerState {
                 break;
             }
 
-            // Only include files, not directories
             if !entry.file_type().is_some_and(|ft| ft.is_file()) {
                 continue;
             }
@@ -77,7 +76,6 @@ impl FilePickerState {
                 .to_string_lossy()
                 .replace('\\', "/");
 
-            // Skip the root itself
             if display.is_empty() || display == root_str {
                 continue;
             }
@@ -85,10 +83,8 @@ impl FilePickerState {
             self.all_files.push(FileEntry { display, path });
         }
 
-        // Sort by display path for consistent ordering
         self.all_files.sort_by(|a, b| a.display.cmp(&b.display));
 
-        // Initially show all files (up to limit)
         self.filtered = (0..self.all_files.len().min(MAX_DISPLAY_RESULTS)).collect();
     }
 
@@ -97,7 +93,6 @@ impl FilePickerState {
         self.filtered.clear();
 
         if filter.is_empty() {
-            // Show first N files when no filter
             self.filtered = (0..self.all_files.len().min(MAX_DISPLAY_RESULTS)).collect();
             return;
         }
@@ -105,7 +100,6 @@ impl FilePickerState {
         let filter_lower = filter.to_lowercase();
         let filter_chars: Vec<char> = filter_lower.chars().collect();
 
-        // Score and collect matching files
         let mut scored: Vec<(usize, i32)> = self
             .all_files
             .iter()
@@ -116,7 +110,6 @@ impl FilePickerState {
             })
             .collect();
 
-        // Sort by score (descending), then by path length (prefer shorter paths)
         scored.sort_by(|a, b| {
             b.1.cmp(&a.1).then_with(|| {
                 self.all_files[a.0]
@@ -179,7 +172,6 @@ fn fuzzy_match_score(path: &str, filter_chars: &[char]) -> i32 {
     let path_lower = path.to_lowercase();
     let path_chars: Vec<char> = path_lower.chars().collect();
 
-    // Check if all filter chars exist in order (subsequence match)
     let mut filter_idx = 0;
     let mut match_positions: Vec<usize> = Vec::new();
 
@@ -190,22 +182,18 @@ fn fuzzy_match_score(path: &str, filter_chars: &[char]) -> i32 {
         }
     }
 
-    // All filter chars must be found
     if filter_idx != filter_chars.len() {
         return 0;
     }
 
-    // Base score
     let mut score = 100;
 
-    // Bonus for consecutive matches
     for window in match_positions.windows(2) {
         if window[1] == window[0] + 1 {
             score += 10;
         }
     }
 
-    // Bonus for matches at word boundaries (after / or .)
     for &pos in &match_positions {
         if pos == 0 {
             score += 15;
@@ -217,7 +205,6 @@ fn fuzzy_match_score(path: &str, filter_chars: &[char]) -> i32 {
         }
     }
 
-    // Bonus for matching filename (last path component)
     if let Some(last_slash) = path.rfind('/') {
         let filename_start = last_slash + 1;
         if match_positions
@@ -228,7 +215,6 @@ fn fuzzy_match_score(path: &str, filter_chars: &[char]) -> i32 {
         }
     }
 
-    // Penalty for path length (prefer shorter paths)
     score -= (path.len() / 10) as i32;
 
     score.max(1)

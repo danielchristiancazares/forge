@@ -56,12 +56,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         show_in_help: true,
     },
     CommandSpec {
-        palette_label: "p, provider <name>",
-        help_label: "p(rovider)",
-        description: "Switch provider (claude/gpt)",
-        show_in_help: true,
-    },
-    CommandSpec {
         palette_label: "ctx",
         help_label: "ctx",
         description: "Show context usage",

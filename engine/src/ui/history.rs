@@ -59,7 +59,6 @@ impl InputHistory {
         if text.is_empty() {
             return;
         }
-        // Don't add duplicates of the most recent entry
         if self.prompts.last().is_some_and(|last| last == &text) {
             return;
         }
@@ -77,7 +76,6 @@ impl InputHistory {
         if text.is_empty() {
             return;
         }
-        // Don't add duplicates of the most recent entry
         if self.commands.last().is_some_and(|last| last == &text) {
             return;
         }
@@ -99,17 +97,12 @@ impl InputHistory {
 
         match self.prompt_index {
             None => {
-                // Start navigation: stash current and show most recent
                 self.prompt_stash = Some(current.to_owned());
                 self.prompt_index = Some(self.prompts.len() - 1);
                 self.prompts.last().map(String::as_str)
             }
-            Some(0) => {
-                // Already at oldest entry
-                None
-            }
+            Some(0) => None,
             Some(idx) => {
-                // Move to older entry
                 let new_idx = idx - 1;
                 self.prompt_index = Some(new_idx);
                 self.prompts.get(new_idx).map(String::as_str)
@@ -125,12 +118,10 @@ impl InputHistory {
         match self.prompt_index {
             None => None,
             Some(idx) if idx + 1 >= self.prompts.len() => {
-                // At newest entry: restore stash
                 self.prompt_index = None;
                 self.prompt_stash.as_deref()
             }
             Some(idx) => {
-                // Move to newer entry
                 let new_idx = idx + 1;
                 self.prompt_index = Some(new_idx);
                 self.prompts.get(new_idx).map(String::as_str)
@@ -150,17 +141,12 @@ impl InputHistory {
 
         match self.command_index {
             None => {
-                // Start navigation: stash current and show most recent
                 self.command_stash = Some(current.to_owned());
                 self.command_index = Some(self.commands.len() - 1);
                 self.commands.last().map(String::as_str)
             }
-            Some(0) => {
-                // Already at oldest entry
-                None
-            }
+            Some(0) => None,
             Some(idx) => {
-                // Move to older entry
                 let new_idx = idx - 1;
                 self.command_index = Some(new_idx);
                 self.commands.get(new_idx).map(String::as_str)
@@ -176,12 +162,10 @@ impl InputHistory {
         match self.command_index {
             None => None,
             Some(idx) if idx + 1 >= self.commands.len() => {
-                // At newest entry: restore stash
                 self.command_index = None;
                 self.command_stash.as_deref()
             }
             Some(idx) => {
-                // Move to newer entry
                 let new_idx = idx + 1;
                 self.command_index = Some(new_idx);
                 self.commands.get(new_idx).map(String::as_str)
@@ -216,10 +200,6 @@ impl InputHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ========================================================================
-    // Push tests
-    // ========================================================================
 
     #[test]
     fn push_prompt_adds_to_history() {
@@ -276,10 +256,6 @@ mod tests {
         }
         assert_eq!(history.command_count(), MAX_COMMAND_HISTORY);
     }
-
-    // ========================================================================
-    // Prompt navigation tests
-    // ========================================================================
 
     #[test]
     fn navigate_prompt_up_empty_history() {
@@ -346,10 +322,6 @@ mod tests {
         assert_eq!(history.navigate_prompt_down(), Some("draft"));
     }
 
-    // ========================================================================
-    // Command navigation tests
-    // ========================================================================
-
     #[test]
     fn navigate_command_up_empty_history() {
         let mut history = InputHistory::default();
@@ -377,10 +349,6 @@ mod tests {
         assert_eq!(result, Some("my command"));
     }
 
-    // ========================================================================
-    // Reset tests
-    // ========================================================================
-
     #[test]
     fn reset_navigation_clears_state() {
         let mut history = InputHistory::default();
@@ -397,10 +365,6 @@ mod tests {
         assert!(history.prompt_stash.is_none());
         assert!(history.command_stash.is_none());
     }
-
-    // ========================================================================
-    // Serialization tests
-    // ========================================================================
 
     #[test]
     fn serialization_preserves_history() {

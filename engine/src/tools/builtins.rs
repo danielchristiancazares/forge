@@ -735,7 +735,7 @@ impl ToolExecutor for ApplyPatchTool {
                     let Some(entry) = entry else {
                         return Err(ToolError::StaleFile {
                             file: resolved.clone(),
-                            reason: "File was not read before patching".to_string(),
+                            reason: "File was not read before editing, or has been modified since last read".to_string(),
                         });
                     };
 
@@ -1062,6 +1062,9 @@ impl ToolExecutor for RunCommandTool {
                     message: "command must not be empty".to_string(),
                 });
             }
+
+            // Validate against command blacklist BEFORE any execution
+            ctx.command_blacklist.validate(&typed.command)?;
 
             let mut command = Command::new(&self.shell.binary);
             for arg in &self.shell.args {

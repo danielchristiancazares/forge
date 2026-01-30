@@ -1027,8 +1027,10 @@ impl App {
     }
 
     /// Set a specific model (called from :model command).
+    ///
+    /// Persists the model to `~/.forge/config.toml` for future sessions.
     pub fn set_model(&mut self, model: ModelName) {
-        self.model = model;
+        self.model = model.clone();
         if self.context_infinity_enabled() {
             self.handle_context_adaptation();
         } else {
@@ -1037,6 +1039,11 @@ impl App {
         }
 
         self.clamp_output_limits_to_model();
+
+        // Persist the model selection to config
+        if let Err(e) = config::ForgeConfig::persist_model(model.as_str()) {
+            tracing::warn!("Failed to persist model to config: {e}");
+        }
     }
 
     /// Handle context adaptation after a model switch.

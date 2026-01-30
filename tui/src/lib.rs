@@ -2379,18 +2379,6 @@ fn create_welcome_screen(app: &App, palette: &Palette, glyphs: &Glyphs) -> Parag
         ]));
     }
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("  Tip: ", Style::default().fg(palette.text_muted)),
-        Span::styled("/p claude", Style::default().fg(palette.peach)),
-        Span::styled(" or ", Style::default().fg(palette.text_muted)),
-        Span::styled("/p gpt", Style::default().fg(palette.peach)),
-        Span::styled(
-            " to switch providers",
-            Style::default().fg(palette.text_muted),
-        ),
-    ]));
-
     Paragraph::new(lines).alignment(Alignment::Left)
 }
 

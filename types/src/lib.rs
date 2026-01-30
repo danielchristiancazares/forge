@@ -986,10 +986,6 @@ impl CacheableMessage {
     }
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1041,10 +1037,6 @@ mod tests {
         assert!(OutputLimits::with_thinking(8192, 4096).is_ok());
     }
 
-    // ========================================================================
-    // ApiKey Tests
-    // ========================================================================
-
     #[test]
     fn api_key_provider_claude() {
         let key = ApiKey::Claude("sk-ant-test".to_string());
@@ -1065,10 +1057,6 @@ mod tests {
         assert_eq!(key.provider(), Provider::Gemini);
         assert_eq!(key.as_str(), "AIza-test-key");
     }
-
-    // ========================================================================
-    // OutputLimits Tests
-    // ========================================================================
 
     #[test]
     fn output_limits_new_no_thinking() {
@@ -1119,10 +1107,6 @@ mod tests {
         ));
     }
 
-    // ========================================================================
-    // CacheHint Tests
-    // ========================================================================
-
     #[test]
     fn cache_hint_default_is_none() {
         let hint = CacheHint::default();
@@ -1142,10 +1126,6 @@ mod tests {
         let cacheable = CacheableMessage::cached(msg);
         assert_eq!(cacheable.cache_hint, CacheHint::Ephemeral);
     }
-
-    // ========================================================================
-    // OpenAI Request Options Tests
-    // ========================================================================
 
     #[test]
     fn openai_reasoning_effort_parse() {
@@ -1267,10 +1247,6 @@ mod tests {
         assert_eq!(options.truncation(), OpenAITruncation::Disabled);
     }
 
-    // ========================================================================
-    // StreamEvent Tests
-    // ========================================================================
-
     #[test]
     fn stream_finish_reason_equality() {
         assert_eq!(StreamFinishReason::Done, StreamFinishReason::Done);
@@ -1298,10 +1274,6 @@ mod tests {
             "NonEmptyStaticStr conversion must preserve NonEmptyString's trim invariant"
         );
     }
-
-    // ========================================================================
-    // ApiUsage Tests
-    // ========================================================================
 
     #[test]
     fn api_usage_default_is_zero() {

@@ -156,8 +156,8 @@ The codebase enforces correctness through types (see `DESIGN.md`):
 
 | Provider | Default Model | Context | Output |
 |----------|---------------|---------|--------|
-| Claude | `claude-opus-4-5-20251101` | 200K | 128K |
-| OpenAI | `gpt-5.2` | 1M | 100K |
+| Claude | `claude-opus-4-5-20251101` | 200K | 64K |
+| OpenAI | `gpt-5.2` | 400K | 128K |
 | Gemini | `gemini-3-pro-preview` | 1M | 65K |
 
 Adding a provider: extend `Provider` enum, implement all match arms, add module in `providers/src/`.

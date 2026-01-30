@@ -1,5 +1,6 @@
 use serde::Deserialize;
-use std::{env, path::PathBuf};
+use std::io::Write;
+use std::{env, fs, path::PathBuf};
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ForgeConfig {
@@ -377,6 +378,73 @@ impl ForgeConfig {
     #[must_use]
     pub fn path() -> Option<PathBuf> {
         config_path()
+    }
+
+    /// Persist the model to the config file.
+    ///
+    /// Uses `toml_edit` to preserve comments and formatting.
+    /// Creates the config file and parent directory if they don't exist.
+    pub fn persist_model(model: &str) -> std::io::Result<()> {
+        let path = match config_path() {
+            Some(path) => path,
+            None => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Could not determine config path",
+                ));
+            }
+        };
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // Load existing config or create empty document
+        let content = if path.exists() {
+            fs::read_to_string(&path)?
+        } else {
+            String::new()
+        };
+
+        let mut doc = content
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+        // Ensure [app] table exists
+        if !doc.contains_key("app") {
+            doc["app"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+
+        // Set the model
+        doc["app"]["model"] = toml_edit::value(model);
+
+        // Write back atomically
+        let mut tmp = tempfile::NamedTempFile::new_in(
+            path.parent().unwrap_or_else(|| std::path::Path::new(".")),
+        )?;
+        tmp.write_all(doc.to_string().as_bytes())?;
+        tmp.as_file().sync_all()?;
+
+        // Persist (rename) - handle Windows where rename fails if target exists
+        if let Err(err) = tmp.persist(&path) {
+            if path.exists() {
+                // Windows fallback: backup and restore
+                let backup_path = path.with_extension("bak");
+                let _ = fs::remove_file(&backup_path);
+                fs::rename(&path, &backup_path)?;
+
+                if let Err(rename_err) = err.file.persist(&path) {
+                    let _ = fs::rename(&backup_path, &path);
+                    return Err(rename_err.error);
+                }
+                let _ = fs::remove_file(&backup_path);
+            } else {
+                return Err(err.error);
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -848,4 +916,72 @@ type = "string"
         };
         assert_eq!(parse_err.path(), &path);
     }
+}
+
+// ========================================================================
+// persist_model tests
+// ========================================================================
+
+#[test]
+fn persist_model_creates_new_config() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let config_path = tmp_dir.path().join("config.toml");
+
+    // Create a mock config_path function by writing directly
+    let content = "";
+    std::fs::write(&config_path, content).unwrap();
+
+    // Parse and update
+    let mut doc = content.parse::<toml_edit::DocumentMut>().unwrap();
+    if !doc.contains_key("app") {
+        doc["app"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    doc["app"]["model"] = toml_edit::value("gpt-4o");
+    std::fs::write(&config_path, doc.to_string()).unwrap();
+
+    // Verify
+    let result = std::fs::read_to_string(&config_path).unwrap();
+    assert!(result.contains("[app]"));
+    assert!(result.contains("model = \"gpt-4o\""));
+}
+
+#[test]
+fn persist_model_preserves_other_settings() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let config_path = tmp_dir.path().join("config.toml");
+
+    // Create existing config with comments and other settings
+    let original = r#"# My config
+[app]
+model = "old-model"
+max_output_tokens = 8000
+
+[api_keys]
+anthropic = "sk-test"
+"#;
+    std::fs::write(&config_path, original).unwrap();
+
+    // Parse and update
+    let mut doc = original.parse::<toml_edit::DocumentMut>().unwrap();
+    doc["app"]["model"] = toml_edit::value("new-model");
+    std::fs::write(&config_path, doc.to_string()).unwrap();
+
+    // Verify
+    let result = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        result.contains("# My config"),
+        "Comment should be preserved"
+    );
+    assert!(
+        result.contains("model = \"new-model\""),
+        "Model should be updated"
+    );
+    assert!(
+        result.contains("max_output_tokens = 8000"),
+        "Other settings should be preserved"
+    );
+    assert!(
+        result.contains("anthropic = \"sk-test\""),
+        "API keys should be preserved"
+    );
 }

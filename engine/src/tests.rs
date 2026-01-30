@@ -500,10 +500,6 @@ fn rollback_pending_user_message_no_op_when_empty() {
     assert!(app.pending_user_message.is_none());
 }
 
-// ========================================================================
-// StreamingMessage Tests
-// ========================================================================
-
 #[test]
 fn streaming_message_apply_text_delta() {
     let (tx, rx) = mpsc::channel(1024);

@@ -180,18 +180,19 @@ pub struct ModelLimits {
 The **effective input budget** is calculated as:
 
 ```
-effective_budget = context_window - max_output - (5% safety margin)
+effective_budget = context_window - max_output - safety_margin
+safety_margin = min(available / 20, 4096)  // 5% capped at 4096 tokens
 ```
 
 Example for Claude Opus 4.5 (200k context, 64k output):
 
 ```
 available = 200,000 - 64,000 = 136,000
-safety_margin = 136,000 / 20 = 6,800
-effective_budget = 136,000 - 6,800 = 129,200 tokens
+safety_margin = min(136,000 / 20, 4096) = min(6,800, 4096) = 4,096
+effective_budget = 136,000 - 4,096 = 131,904 tokens
 ```
 
-The 5% safety margin accounts for:
+The safety margin (5% capped at 4096) accounts for:
 
 - Token counting inaccuracies (see [Token Counting Accuracy](#token-counting-accuracy))
 - System prompt overhead
@@ -209,7 +210,8 @@ manager.set_output_limit(16_000);
 
 // Now effective budget is:
 // 200,000 - 16,000 = 184,000 available
-// 184,000 * 0.95 = 174,800 effective budget (vs 129,200 without config)
+// safety_margin = min(184,000 / 20, 4096) = 4,096
+// effective_budget = 184,000 - 4,096 = 179,904 (vs 131,904 without config)
 ```
 
 The reserved output is clamped to the model's `max_output` - requesting more than the model supports has no effect.
@@ -219,10 +221,12 @@ The reserved output is clamped to the model's `max_output` - requesting more tha
 | Model Prefix | Context Window | Max Output |
 |--------------|---------------|------------|
 | `claude-opus-4-5` | 200,000 | 64,000 |
+| `claude-sonnet-4-5` | 200,000 | 64,000 |
 | `claude-haiku-4-5` | 200,000 | 64,000 |
 | `gpt-5.2-pro` | 400,000 | 128,000 |
 | `gpt-5.2` | 400,000 | 128,000 |
 | `gemini-3-pro` | 1,048,576 | 65,536 |
+| `gemini-3-flash` | 1,048,576 | 65,536 |
 | Unknown | 8,192 | 4,096 |
 
 Model lookup uses **prefix matching** - `claude-opus-4-5-20251101` matches `claude-opus-4-5`.
@@ -1154,9 +1158,12 @@ println!("Effective input budget: {}", limits.effective_input_budget());
 | Prefix | Context Window | Max Output |
 |--------|---------------|------------|
 | `claude-opus-4-5` | 200,000 | 64,000 |
+| `claude-sonnet-4-5` | 200,000 | 64,000 |
 | `claude-haiku-4-5` | 200,000 | 64,000 |
 | `gpt-5.2-pro` | 400,000 | 128,000 |
 | `gpt-5.2` | 400,000 | 128,000 |
+| `gemini-3-pro` | 1,048,576 | 65,536 |
+| `gemini-3-flash` | 1,048,576 | 65,536 |
 
 Unknown models fall back to 8,192 context / 4,096 output.
 
@@ -1167,13 +1174,15 @@ Token constraints for a model:
 ```rust
 let limits = ModelLimits::new(200_000, 16_000);
 
-// Effective budget = context_window - max_output - 5% safety margin
+// Effective budget = context_window - max_output - safety_margin
+// safety_margin = min(available / 20, 4096)
 let budget = limits.effective_input_budget();
-// 200,000 - 16,000 = 184,000
-// 184,000 * 0.95 = 174,800
+// 200,000 - 16,000 = 184,000 available
+// safety_margin = min(184,000 / 20, 4096) = 4,096
+// effective_budget = 184,000 - 4,096 = 179,904
 ```
 
-The 5% safety margin accounts for token counting inaccuracies and overhead from system prompts, formatting, and tool definitions.
+The safety margin (5% capped at 4096) accounts for token counting inaccuracies and overhead from system prompts, formatting, and tool definitions.
 
 ### Token Counting
 
