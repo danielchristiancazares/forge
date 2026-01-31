@@ -20,7 +20,7 @@ use super::{
     ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError,
     DEFAULT_STREAM_EVENT_BUDGET, EMPTY_RESPONSE_BADGE, GeminiCache, GeminiCacheConfig, Message,
     NonEmptyString, OperationState, QueuedUserMessage, StreamEvent, StreamFinishReason,
-    StreamingMessage, SummarizationStart, sanitize_terminal_text, security,
+    StreamingMessage, SummarizationStart, notifications, sanitize_terminal_text, security,
 };
 use crate::errors::format_stream_error;
 
@@ -160,6 +160,9 @@ impl super::App {
                 .map(CacheableMessage::plain)
                 .collect()
         };
+
+        // Inject any pending system notifications as an assistant message
+        let cacheable_messages = self.inject_pending_notifications(cacheable_messages);
 
         // tools already retrieved above (cloned)
 
@@ -438,6 +441,7 @@ impl super::App {
                     journal,
                     abort_handle,
                     tool_batch_id,
+                    turn,
                     ..
                 } = active;
 
@@ -466,6 +470,8 @@ impl super::App {
                 };
                 self.push_local_message(Message::assistant(model, aborted));
                 self.push_notification(format!("Journal append failed: {err}"));
+                // Clean up turn state (pending_user_message, tool_iterations, etc.)
+                self.finish_turn(turn);
                 return;
             }
 
@@ -607,6 +613,38 @@ impl super::App {
         self.pending_user_message = None;
         self.commit_history_message(message, step_id);
         self.finish_turn(turn);
+    }
+
+    /// Inject pending system notifications as an assistant message.
+    ///
+    /// This takes all queued notifications, formats them, and appends them
+    /// as an assistant message at the tail of the message list. Because
+    /// assistant messages can only come from API responses or Forge's injection
+    /// layer, this creates a trusted channel for system-level communication
+    /// that cannot be forged by user input.
+    ///
+    /// Cache impact: None - injection at tail preserves cache prefix.
+    fn inject_pending_notifications(
+        &mut self,
+        mut messages: Vec<CacheableMessage>,
+    ) -> Vec<CacheableMessage> {
+        let notifications = self.notification_queue.take();
+        if notifications.is_empty() {
+            return messages;
+        }
+
+        let combined = notifications
+            .iter()
+            .map(notifications::SystemNotification::format)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if let Ok(content) = NonEmptyString::new(combined) {
+            let msg = Message::assistant(self.model.clone(), content);
+            messages.push(CacheableMessage::plain(msg)); // tail = cache-safe
+        }
+
+        messages
     }
 }
 

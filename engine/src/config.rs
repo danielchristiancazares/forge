@@ -395,9 +395,22 @@ impl ForgeConfig {
             }
         };
 
-        // Ensure parent directory exists
+        // Ensure parent directory exists with secure permissions
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                let metadata = fs::metadata(parent)?;
+                // Only modify permissions if we own the directory
+                let our_uid = unsafe { libc::getuid() };
+                if metadata.uid() == our_uid {
+                    let mode = metadata.permissions().mode() & 0o777;
+                    if mode & 0o077 != 0 {
+                        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+                    }
+                }
+            }
         }
 
         // Load existing config or create empty document
@@ -441,6 +454,20 @@ impl ForgeConfig {
                 let _ = fs::remove_file(&backup_path);
             } else {
                 return Err(err.error);
+            }
+        }
+
+        // Ensure config file has secure permissions (user-only read/write)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let metadata = fs::metadata(&path)?;
+            let our_uid = unsafe { libc::getuid() };
+            if metadata.uid() == our_uid {
+                let mode = metadata.permissions().mode() & 0o777;
+                if mode & 0o077 != 0 {
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+                }
             }
         }
 

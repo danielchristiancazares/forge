@@ -225,7 +225,14 @@ async fn process_sse_stream<P: SseParser>(
                         SseParseAction::Continue => {}
                         SseParseAction::Emit(events) => {
                             for event in events {
+                                // Check if this is a terminal event before sending
+                                let is_terminal =
+                                    matches!(&event, StreamEvent::Done | StreamEvent::Error(_));
                                 if !send_event(tx, event).await {
+                                    return Ok(());
+                                }
+                                // Return immediately after sending terminal events
+                                if is_terminal {
                                     return Ok(());
                                 }
                             }
@@ -889,8 +896,10 @@ pub mod openai {
 
     #[derive(Default)]
     struct OpenAIParser {
-        saw_text_delta: bool,
-        saw_reasoning_summary_delta: bool,
+        /// Track which item_ids have received text deltas (for fallback on .done)
+        text_delta_seen: HashSet<String>,
+        /// Track which item_ids have received reasoning summary deltas
+        reasoning_delta_seen: HashSet<String>,
         item_to_call: HashMap<String, String>,
         call_has_delta: HashSet<String>,
     }
@@ -947,27 +956,39 @@ pub mod openai {
                 }
                 "response.output_text.delta" | "response.refusal.delta" => {
                     if let Some(delta) = json["delta"].as_str() {
-                        self.saw_text_delta = true;
+                        // Track per item_id to handle multi-item responses correctly
+                        if let Some(item_id) = json.get("item_id").and_then(|v| v.as_str()) {
+                            self.text_delta_seen.insert(item_id.to_string());
+                        }
                         events.push(StreamEvent::TextDelta(delta.to_string()));
                     }
                 }
                 "response.output_text.done" => {
-                    if !self.saw_text_delta
-                        && let Some(text) = json["text"].as_str()
-                    {
+                    // Only emit fallback text if this specific item never received deltas
+                    let item_id = json.get("item_id").and_then(|v| v.as_str());
+                    let saw_delta = item_id
+                        .map(|id| self.text_delta_seen.contains(id))
+                        .unwrap_or(false);
+                    if !saw_delta && let Some(text) = json["text"].as_str() {
                         events.push(StreamEvent::TextDelta(text.to_string()));
                     }
                 }
                 "response.reasoning_summary_text.delta" => {
                     if let Some(delta) = json["delta"].as_str() {
-                        self.saw_reasoning_summary_delta = true;
+                        // Track per item_id
+                        if let Some(item_id) = json.get("item_id").and_then(|v| v.as_str()) {
+                            self.reasoning_delta_seen.insert(item_id.to_string());
+                        }
                         events.push(StreamEvent::ThinkingDelta(delta.to_string()));
                     }
                 }
                 "response.reasoning_summary_text.done" => {
-                    if !self.saw_reasoning_summary_delta
-                        && let Some(text) = json["text"].as_str()
-                    {
+                    // Only emit fallback if this specific item never received deltas
+                    let item_id = json.get("item_id").and_then(|v| v.as_str());
+                    let saw_delta = item_id
+                        .map(|id| self.reasoning_delta_seen.contains(id))
+                        .unwrap_or(false);
+                    if !saw_delta && let Some(text) = json["text"].as_str() {
                         events.push(StreamEvent::ThinkingDelta(text.to_string()));
                     }
                 }
@@ -975,7 +996,10 @@ pub mod openai {
                     if let Some(part) = json.get("part")
                         && let Some(text) = part.get("text").and_then(|value| value.as_str())
                     {
-                        self.saw_reasoning_summary_delta = true;
+                        // Track per item_id
+                        if let Some(item_id) = json.get("item_id").and_then(|v| v.as_str()) {
+                            self.reasoning_delta_seen.insert(item_id.to_string());
+                        }
                         events.push(StreamEvent::ThinkingDelta(text.to_string()));
                     }
                 }
@@ -1034,9 +1058,10 @@ pub mod openai {
                             cache_creation_tokens: 0, // OpenAI doesn't report this
                             output_tokens,
                         }));
-                        return SseParseAction::Emit(events);
                     }
-                    return SseParseAction::Done;
+                    // Always emit Done after response.completed to properly terminate stream
+                    events.push(StreamEvent::Done);
+                    return SseParseAction::Emit(events);
                 }
                 "response.incomplete" => {
                     let reason = extract_incomplete_reason(json)
@@ -1946,16 +1971,13 @@ pub mod gemini {
             let mut events = Vec::new();
 
             // Process candidates
+            // Track if we should terminate after emitting events
+            let mut finish_action = None;
+
             if let Some(candidates) = json.get("candidates").and_then(|v| v.as_array()) {
                 for candidate in candidates {
-                    // Check finish reason
-                    if let Some(reason) = candidate.get("finishReason").and_then(|v| v.as_str())
-                        && let Some(action) = handle_finish_reason(reason)
-                    {
-                        return action;
-                    }
-
-                    // Process content parts
+                    // Process content parts FIRST (before checking finish reason)
+                    // This ensures we don't drop final content when finishReason is present
                     if let Some(content) = candidate.get("content")
                         && let Some(parts) = content.get("parts").and_then(|v| v.as_array())
                     {
@@ -2008,7 +2030,28 @@ pub mod gemini {
                             }
                         }
                     }
+
+                    // Check finish reason AFTER processing content
+                    if let Some(reason) = candidate.get("finishReason").and_then(|v| v.as_str())
+                        && let Some(action) = handle_finish_reason(reason)
+                    {
+                        finish_action = Some(action);
+                    }
                 }
+            }
+
+            // If we have a finish action, emit any accumulated events first, then signal completion
+            if let Some(action) = finish_action {
+                if events.is_empty() {
+                    return action;
+                }
+                // Emit events and signal done/error based on finish reason
+                match action {
+                    SseParseAction::Done => events.push(StreamEvent::Done),
+                    SseParseAction::Error(msg) => events.push(StreamEvent::Error(msg)),
+                    _ => {}
+                }
+                return SseParseAction::Emit(events);
             }
 
             if events.is_empty() {
