@@ -42,6 +42,7 @@ mod commands;
 mod errors;
 mod init;
 mod input_modes;
+mod notifications;
 mod persistence;
 mod security;
 mod session_state;
@@ -57,6 +58,8 @@ pub use input_modes::{
 };
 
 pub use commands::{CommandSpec, command_help_summary, command_specs};
+
+pub use notifications::SystemNotification;
 
 pub(crate) use persistence::{ABORTED_JOURNAL_BADGE, EMPTY_RESPONSE_BADGE};
 
@@ -455,6 +458,8 @@ pub struct App {
     turn_usage: Option<TurnUsage>,
     /// API usage from the last completed turn (for status bar display).
     last_turn_usage: Option<TurnUsage>,
+    /// Queue of pending system notifications to inject into next API request.
+    notification_queue: notifications::NotificationQueue,
 }
 
 impl App {
@@ -925,6 +930,14 @@ impl App {
 
     pub fn context_infinity_enabled(&self) -> bool {
         self.context_infinity
+    }
+
+    /// Queue a system notification to be injected into the next API request.
+    ///
+    /// Notifications are injected as assistant messages, which cannot be forged
+    /// by user input, providing a secure channel for system-level communication.
+    pub fn queue_notification(&mut self, notification: notifications::SystemNotification) {
+        self.notification_queue.push(notification);
     }
 
     /// API usage from the last completed turn (for status bar display).

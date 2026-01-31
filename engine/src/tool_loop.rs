@@ -23,7 +23,7 @@ use crate::tools::{self, ConfirmationRequest};
 use crate::util;
 use crate::{
     ApiConfig, App, DEFAULT_TOOL_CAPACITY_BYTES, Message, NonEmptyString, QueuedUserMessage,
-    TOOL_EVENT_CHANNEL_CAPACITY, TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
+    SystemNotification, TOOL_EVENT_CHANNEL_CAPACITY, TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
 };
 
 use futures_util::future::AbortHandle;
@@ -409,22 +409,18 @@ impl App {
 
         let handle = tokio::spawn(async move {
             use futures_util::FutureExt;
-            let _ = event_tx
-                .send(tools::ToolEvent::Started {
-                    tool_call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                })
-                .await;
+            let _ = event_tx.try_send(tools::ToolEvent::Started {
+                tool_call_id: call.id.clone(),
+                tool_name: call.name.clone(),
+            });
 
             let exec_ref = match registry.lookup(&call.name) {
                 Ok(exec) => exec,
                 Err(err) => {
                     let result = tool_error_result(&call, err);
-                    let _ = event_tx
-                        .send(tools::ToolEvent::Completed {
-                            tool_call_id: call.id.clone(),
-                        })
-                        .await;
+                    let _ = event_tx.try_send(tools::ToolEvent::Completed {
+                        tool_call_id: call.id.clone(),
+                    });
                     return result;
                 }
             };
@@ -490,11 +486,9 @@ impl App {
                 },
             };
 
-            let _ = event_tx
-                .send(tools::ToolEvent::Completed {
-                    tool_call_id: call.id.clone(),
-                })
-                .await;
+            let _ = event_tx.try_send(tools::ToolEvent::Completed {
+                tool_call_id: call.id.clone(),
+            });
 
             result
         });
@@ -852,6 +846,22 @@ impl App {
                     "Tool call denied by user",
                 ));
             }
+        }
+
+        // Queue system notifications for tool approval/denial
+        let approved_count = approved_calls.len();
+        let denied_count = denied_results.len();
+        if approved_count > 0 {
+            #[allow(clippy::cast_possible_truncation)]
+            self.queue_notification(SystemNotification::ToolsApproved {
+                count: approved_count.min(u8::MAX as usize) as u8,
+            });
+        }
+        if denied_count > 0 {
+            #[allow(clippy::cast_possible_truncation)]
+            self.queue_notification(SystemNotification::ToolsDenied {
+                count: denied_count.min(u8::MAX as usize) as u8,
+            });
         }
 
         if let Some(id) = batch.batch_id {

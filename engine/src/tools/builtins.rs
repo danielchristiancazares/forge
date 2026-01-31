@@ -1541,7 +1541,7 @@ async fn read_stream<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                 chunk: super::sanitize_output(&chunk),
             }
         };
-        let _ = tx.send(event).await;
+        let _ = tx.try_send(event);
     }
     collected
 }

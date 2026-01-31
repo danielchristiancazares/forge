@@ -44,5 +44,5 @@ pub use model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry, ResolvedMo
 pub use stream_journal::{ActiveJournal, JournalStats, RecoveredStream, StepId, StreamJournal};
 pub use summarization::{generate_summary, summarization_model};
 pub use token_counter::TokenCounter;
-pub use tool_journal::{RecoveredToolBatch, ToolBatchId, ToolJournal};
+pub use tool_journal::{CorruptedToolArgs, RecoveredToolBatch, ToolBatchId, ToolJournal};
 pub use working_context::{ContextSegment, ContextUsage, WorkingContext};

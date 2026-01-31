@@ -308,6 +308,12 @@ impl App {
                     return stream_recovered;
                 }
 
+                if !recovered_batch.corrupted_args.is_empty() {
+                    self.push_notification(format!(
+                        "Warning: {} tool call(s) had corrupted arguments",
+                        recovered_batch.corrupted_args.len()
+                    ));
+                }
                 self.state = OperationState::ToolRecovery(ToolRecoveryState {
                     batch: recovered_batch,
                     step_id,

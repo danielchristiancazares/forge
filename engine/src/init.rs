@@ -343,6 +343,7 @@ impl App {
             file_picker: crate::ui::FilePickerState::new(),
             turn_usage: None,
             last_turn_usage: None,
+            notification_queue: crate::notifications::NotificationQueue::new(),
         };
 
         app.clamp_output_limits_to_model();

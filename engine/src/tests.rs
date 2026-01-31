@@ -91,6 +91,7 @@ fn test_app() -> App {
         file_picker: crate::ui::FilePickerState::new(),
         turn_usage: None,
         last_turn_usage: None,
+        notification_queue: crate::notifications::NotificationQueue::new(),
     }
 }
 

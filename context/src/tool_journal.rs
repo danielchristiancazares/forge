@@ -14,6 +14,14 @@ use forge_types::{ToolCall, ToolResult};
 /// Unique identifier for a tool batch.
 pub type ToolBatchId = i64;
 
+/// Information about corrupted tool call arguments during recovery.
+#[derive(Debug, Clone)]
+pub struct CorruptedToolArgs {
+    pub tool_call_id: String,
+    pub raw_json: String,
+    pub parse_error: String,
+}
+
 /// Recovered tool batch data after a crash.
 #[derive(Debug, Clone)]
 pub struct RecoveredToolBatch {
@@ -22,6 +30,8 @@ pub struct RecoveredToolBatch {
     pub assistant_text: String,
     pub calls: Vec<ToolCall>,
     pub results: Vec<ToolResult>,
+    /// Tool calls whose arguments failed to parse (substituted with {})
+    pub corrupted_args: Vec<CorruptedToolArgs>,
 }
 
 /// Tool journal for durable tool batch tracking.
@@ -382,6 +392,7 @@ impl ToolJournal {
             .context("Failed to load tool batch metadata")?;
 
         let mut calls: Vec<ToolCall> = Vec::new();
+        let mut corrupted_args: Vec<CorruptedToolArgs> = Vec::new();
         let mut stmt = self
             .db
             .prepare(
@@ -404,17 +415,33 @@ impl ToolJournal {
             let args = if args_json.trim().is_empty() {
                 serde_json::Value::Object(serde_json::Map::new())
             } else if args_json.len() > RECOVERY_MAX_ARGS_BYTES {
-                // Skip parsing excessively large arguments
                 tracing::warn!(
                     "Tool call {} has oversized arguments ({} bytes), using empty object",
                     id,
                     args_json.len()
                 );
+                corrupted_args.push(CorruptedToolArgs {
+                    tool_call_id: id.clone(),
+                    raw_json: format!("[{} bytes, truncated]", args_json.len()),
+                    parse_error: "oversized".to_string(),
+                });
                 serde_json::Value::Object(serde_json::Map::new())
             } else {
                 match serde_json::from_str(&args_json) {
                     Ok(value) => value,
-                    Err(_) => serde_json::Value::Object(serde_json::Map::new()),
+                    Err(err) => {
+                        tracing::warn!(
+                            "Tool call {} has invalid JSON arguments: {}, using empty object",
+                            id,
+                            err
+                        );
+                        corrupted_args.push(CorruptedToolArgs {
+                            tool_call_id: id.clone(),
+                            raw_json: args_json.clone(),
+                            parse_error: err.to_string(),
+                        });
+                        serde_json::Value::Object(serde_json::Map::new())
+                    }
                 }
             };
             calls.push(ToolCall::new_with_thought_signature(
@@ -459,6 +486,7 @@ impl ToolJournal {
             assistant_text,
             calls,
             results,
+            corrupted_args,
         }))
     }
 
