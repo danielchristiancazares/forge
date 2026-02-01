@@ -15,7 +15,6 @@ pub struct CommandSpec {
     pub palette_label: &'static str,
     pub help_label: &'static str,
     pub description: &'static str,
-    pub show_in_help: bool,
 }
 
 const COMMAND_SPECS: &[CommandSpec] = &[
@@ -23,95 +22,67 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         palette_label: "q, quit",
         help_label: "q(uit)",
         description: "Exit the application",
-        show_in_help: true,
     },
     CommandSpec {
         palette_label: "clear",
         help_label: "clear",
         description: "Clear conversation history",
-        show_in_help: true,
     },
     CommandSpec {
         palette_label: "cancel",
         help_label: "cancel",
         description: "Cancel streaming, tool execution, or summarization",
-        show_in_help: true,
     },
     CommandSpec {
         palette_label: "tool <id> <result>",
         help_label: "tool",
         description: "Submit a tool result",
-        show_in_help: true,
     },
     CommandSpec {
         palette_label: "model <name>",
         help_label: "model",
         description: "Change the model",
-        show_in_help: true,
     },
     CommandSpec {
         palette_label: "ctx",
         help_label: "ctx",
         description: "Show context usage",
-        show_in_help: true,
     },
     CommandSpec {
         palette_label: "jrnl",
         help_label: "jrnl",
         description: "Show stream journal stats",
-        show_in_help: true,
     },
     CommandSpec {
         palette_label: "distill",
         help_label: "distill",
         description: "Summarize older messages",
-        show_in_help: true,
     },
     CommandSpec {
         palette_label: "screen",
         help_label: "screen",
         description: "Toggle fullscreen/inline mode",
-        show_in_help: true,
     },
     CommandSpec {
         palette_label: "rewind <id|last> [code|conversation|both]",
         help_label: "rewind",
         description: "Rewind to an automatic checkpoint",
-        show_in_help: true,
     },
     CommandSpec {
         palette_label: "undo",
         help_label: "undo",
         description: "Undo the last user turn (rewind to the last turn checkpoint)",
-        show_in_help: true,
     },
     CommandSpec {
         palette_label: "retry",
         help_label: "retry",
         description: "Undo the last user turn and restore its prompt into the input box",
-        show_in_help: true,
-    },
-    CommandSpec {
-        palette_label: "help",
-        help_label: "help",
-        description: "Show available commands",
-        show_in_help: false,
     },
 ];
 
 #[must_use]
 pub fn command_specs() -> &'static [CommandSpec] {
     COMMAND_SPECS
-}
-
-#[must_use]
-pub fn command_help_summary() -> String {
-    let labels: Vec<&str> = COMMAND_SPECS
-        .iter()
-        .filter(|spec| spec.show_in_help)
-        .map(|spec| spec.help_label)
-        .collect();
-    format!("Commands: /{}", labels.join(", /"))
 }
 
 // ============================================================================
@@ -131,7 +102,6 @@ pub(crate) enum CommandKind {
     Rewind,
     Undo,
     Retry,
-    Help,
 }
 
 impl CommandKind {
@@ -211,10 +181,6 @@ const COMMAND_ALIASES: &[CommandAlias] = &[
         name: "retry",
         kind: CommandKind::Retry,
     },
-    CommandAlias {
-        name: "help",
-        kind: CommandKind::Help,
-    },
 ];
 
 pub(crate) fn command_aliases() -> &'static [CommandAlias] {
@@ -249,7 +215,6 @@ pub(crate) enum Command<'a> {
     },
     Undo,
     Retry,
-    Help,
     Unknown(&'a str),
     Empty,
 }
@@ -291,7 +256,6 @@ impl<'a> Command<'a> {
             },
             CommandKind::Undo => Command::Undo,
             CommandKind::Retry => Command::Retry,
-            CommandKind::Help => Command::Help,
         }
     }
 }
@@ -632,9 +596,6 @@ impl super::App {
                     self.input = std::mem::take(&mut self.input).into_insert();
                 }
             }
-            Command::Help => {
-                self.push_notification(command_help_summary());
-            }
             Command::Unknown(cmd) => {
                 self.push_notification(format!("Unknown command: {cmd}"));
             }
@@ -702,11 +663,6 @@ mod tests {
     #[test]
     fn parse_screen_command() {
         assert_eq!(Command::parse("screen"), Command::Screen);
-    }
-
-    #[test]
-    fn parse_help_command() {
-        assert_eq!(Command::parse("help"), Command::Help);
     }
 
     #[test]

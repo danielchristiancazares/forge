@@ -83,7 +83,7 @@ pub use input_modes::{
     CommandMode, CommandToken, EnteredCommand, InsertMode, InsertToken, QueuedUserMessage,
 };
 
-pub use commands::{CommandSpec, command_help_summary, command_specs};
+pub use commands::{CommandSpec, command_specs};
 
 pub use notifications::SystemNotification;
 
