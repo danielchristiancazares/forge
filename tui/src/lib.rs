@@ -465,17 +465,17 @@ fn build_dynamic_message_lines(
                 " Thinking"
             };
 
-            let mut header_spans = vec![Span::styled(format!(" {icon} "), name_style)];
-            if is_empty {
-                let spinner = spinner_frame(app.tick_count(), app.ui_options());
-                header_spans.push(Span::styled(spinner, Style::default().fg(palette.primary)));
-            }
-            header_spans.push(Span::styled(
-                header_tail,
-                Style::default()
-                    .fg(palette.text_muted)
-                    .add_modifier(Modifier::ITALIC),
-            ));
+            // Use spinner as the icon while actively reasoning, with provider color
+            let spinner = spinner_frame(app.tick_count(), app.ui_options());
+            let header_spans = vec![
+                Span::styled(format!(" {spinner} "), Style::default().fg(color)),
+                Span::styled(
+                    header_tail,
+                    Style::default()
+                        .fg(palette.text_muted)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            ];
             lines.push(Line::from(header_spans));
 
             let thinking_style = Style::default()
@@ -502,10 +502,10 @@ fn build_dynamic_message_lines(
 
         if is_empty {
             if !has_thinking {
+                // Show spinner with provider color while waiting for response
                 let spinner = spinner_frame(app.tick_count(), app.ui_options());
                 lines.push(Line::from(vec![
-                    Span::styled(format!(" {icon} "), name_style),
-                    Span::styled(spinner, Style::default().fg(palette.primary)),
+                    Span::styled(format!(" {spinner} "), Style::default().fg(color)),
                     Span::styled(" Thinking...", Style::default().fg(palette.text_muted)),
                 ]));
             }
