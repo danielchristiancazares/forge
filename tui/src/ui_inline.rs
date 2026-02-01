@@ -6,7 +6,7 @@ use ratatui::prelude::{Backend, Terminal};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Clear, Paragraph, Widget, Wrap},
 };
@@ -410,6 +410,31 @@ fn append_message_lines(
                     format!(" {icon} "),
                     name_style,
                 )]));
+            }
+        }
+        Message::Thinking(_) => {
+            // Provider thinking/reasoning - styled italic and muted
+            let content_style = Style::default()
+                .fg(palette.text_muted)
+                .add_modifier(Modifier::ITALIC);
+            let content = sanitize_terminal_text(msg.content());
+
+            // Header line with icon and "Thinking" label
+            lines.push(Line::from(vec![Span::styled(
+                format!(" {icon} {name}"),
+                name_style,
+            )]));
+
+            // Content lines indented
+            for content_line in content.lines() {
+                if content_line.is_empty() {
+                    lines.push(Line::from(""));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::raw("   "),
+                        Span::styled(content_line.to_string(), content_style),
+                    ]));
+                }
             }
         }
     }

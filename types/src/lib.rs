@@ -979,6 +979,45 @@ impl AssistantMessage {
     }
 }
 
+/// Provider reasoning/thinking content (Claude extended thinking, Gemini thinking, etc.).
+///
+/// This is separate from `AssistantMessage` because thinking is metadata about the
+/// reasoning process, not part of the actual response. It can be shown/hidden
+/// independently in the UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThinkingMessage {
+    content: NonEmptyString,
+    timestamp: SystemTime,
+    #[serde(flatten)]
+    model: ModelName,
+}
+
+impl ThinkingMessage {
+    #[must_use]
+    pub fn new(model: ModelName, content: NonEmptyString) -> Self {
+        Self {
+            content,
+            timestamp: SystemTime::now(),
+            model,
+        }
+    }
+
+    #[must_use]
+    pub fn content(&self) -> &str {
+        self.content.as_str()
+    }
+
+    #[must_use]
+    pub fn provider(&self) -> Provider {
+        self.model.provider()
+    }
+
+    #[must_use]
+    pub fn model(&self) -> &ModelName {
+        &self.model
+    }
+}
+
 /// A complete message.
 ///
 /// This is a real sum type (not a `Role` tag + "sometimes-meaningful" fields).
@@ -987,6 +1026,8 @@ pub enum Message {
     System(SystemMessage),
     User(UserMessage),
     Assistant(AssistantMessage),
+    /// Provider reasoning/thinking content.
+    Thinking(ThinkingMessage),
     /// A tool call requested by the assistant.
     ToolUse(ToolCall),
     /// The result of a tool call execution.
@@ -1013,6 +1054,12 @@ impl Message {
         Self::Assistant(AssistantMessage::new(model, content))
     }
 
+    /// Create a thinking message (provider reasoning content).
+    #[must_use]
+    pub fn thinking(model: ModelName, content: NonEmptyString) -> Self {
+        Self::Thinking(ThinkingMessage::new(model, content))
+    }
+
     /// Create a tool use message (assistant requesting a tool call).
     #[must_use]
     pub fn tool_use(call: ToolCall) -> Self {
@@ -1030,7 +1077,8 @@ impl Message {
         match self {
             Message::System(_) => "system",
             Message::User(_) | Message::ToolResult(_) => "user",
-            Message::Assistant(_) | Message::ToolUse(_) => "assistant",
+            // Thinking is assistant-role content (internal reasoning)
+            Message::Assistant(_) | Message::Thinking(_) | Message::ToolUse(_) => "assistant",
         }
     }
 
@@ -1040,6 +1088,7 @@ impl Message {
             Message::System(m) => m.content(),
             Message::User(m) => m.content(),
             Message::Assistant(m) => m.content(),
+            Message::Thinking(m) => m.content(),
             Message::ToolUse(call) => &call.name,
             Message::ToolResult(result) => &result.content,
         }

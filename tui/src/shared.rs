@@ -211,6 +211,14 @@ pub(crate) fn message_header_parts(
             };
             (icon.to_string(), label.to_string(), style)
         }
+        Message::Thinking(m) => {
+            let color = provider_color(m.provider(), palette);
+            (
+                glyphs.thinking.to_string(),
+                "Thinking".to_string(),
+                Style::default().fg(color).add_modifier(Modifier::ITALIC),
+            )
+        }
     }
 }
 

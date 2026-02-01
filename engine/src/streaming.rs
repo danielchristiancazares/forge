@@ -595,13 +595,21 @@ impl super::App {
             return;
         }
 
+        // Capture thinking content before consuming the streaming message.
+        // Thinking is persisted as a separate message for UI toggle support.
+        let thinking_content = message.thinking().to_owned();
+
         // Convert streaming message to completed message (empty content is invalid).
-        let Some(message) = message.into_message().ok() else {
+        let Some(assistant_message) = message.into_message().ok() else {
             // Stream completed successfully but with empty content - unusual but not an error
             self.pending_user_message = None;
             let empty_badge = NonEmptyString::try_from(EMPTY_RESPONSE_BADGE)
                 .expect("EMPTY_RESPONSE_BADGE must be non-empty");
-            let empty_msg = Message::assistant(model, empty_badge);
+            let empty_msg = Message::assistant(model.clone(), empty_badge);
+            // Still push thinking if we captured any before the empty response
+            if let Ok(thinking) = NonEmptyString::new(thinking_content) {
+                self.push_local_message(Message::thinking(model, thinking));
+            }
             self.push_local_message(empty_msg);
             // Empty response - discard the step (nothing to recover)
             self.discard_journal_step(step_id);
@@ -611,7 +619,12 @@ impl super::App {
 
         // Stream completed successfully with content
         self.pending_user_message = None;
-        self.commit_history_message(message, step_id);
+
+        // Push thinking message first (if any), then assistant message
+        if let Ok(thinking) = NonEmptyString::new(thinking_content) {
+            self.push_local_message(Message::thinking(model, thinking));
+        }
+        self.commit_history_message(assistant_message, step_id);
         self.finish_turn(turn);
     }
 

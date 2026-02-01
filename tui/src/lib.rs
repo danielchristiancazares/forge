@@ -842,6 +842,32 @@ fn render_message_static(
                 lines.extend(rendered);
             }
         }
+        Message::Thinking(_) => {
+            // Provider thinking/reasoning - styled italic and muted
+            let content_style = Style::default()
+                .fg(palette.text_muted)
+                .add_modifier(Modifier::ITALIC);
+            let content = sanitize_terminal_text(msg.content());
+            let mut rendered = render_markdown(content.as_ref(), content_style, palette);
+
+            if rendered.is_empty() {
+                lines.push(Line::from(vec![Span::styled(
+                    format!(" {icon} {name}"),
+                    name_style,
+                )]));
+            } else {
+                // Add header line for thinking
+                lines.push(Line::from(vec![Span::styled(
+                    format!(" {icon} {name}"),
+                    name_style,
+                )]));
+                // Indent thinking content
+                for line in &mut rendered {
+                    line.spans.insert(0, Span::raw("   "));
+                }
+                lines.extend(rendered);
+            }
+        }
     }
 }
 

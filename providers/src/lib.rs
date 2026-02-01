@@ -574,6 +574,10 @@ pub mod claude {
                         }]
                     }));
                 }
+                Message::Thinking(_) => {
+                    // Thinking is not sent back to the API - it's provider-generated
+                    // reasoning that we store for UI display only.
+                }
             }
         }
 
@@ -581,9 +585,12 @@ pub mod claude {
         // When thinking is enabled, the API requires assistant messages to start with
         // thinking/redacted_thinking blocks. Since we don't store thinking content,
         // we must disable thinking when replaying conversations with assistant messages.
-        let has_assistant_history = messages
-            .iter()
-            .any(|m| matches!(m.message, Message::Assistant(_) | Message::ToolUse(_)));
+        let has_assistant_history = messages.iter().any(|m| {
+            matches!(
+                m.message,
+                Message::Assistant(_) | Message::Thinking(_) | Message::ToolUse(_)
+            )
+        });
 
         let mut body = serde_json::Map::new();
         body.insert("model".into(), json!(model));
@@ -1188,7 +1195,7 @@ pub mod openai {
         match msg {
             Message::System(_) => "developer",
             Message::User(_) | Message::ToolResult(_) => "user",
-            Message::Assistant(_) | Message::ToolUse(_) => "assistant",
+            Message::Assistant(_) | Message::Thinking(_) | Message::ToolUse(_) => "assistant",
         }
     }
 
@@ -1219,6 +1226,9 @@ pub mod openai {
                         "call_id": result.tool_call_id,
                         "output": result.content,
                     }));
+                }
+                Message::Thinking(_) => {
+                    // Thinking is not sent back to the API - stored for UI only.
                 }
                 _ => {
                     input_items.push(json!({
@@ -1958,6 +1968,10 @@ pub mod gemini {
                         "role": "user",
                         "parts": parts
                     }));
+                }
+                Message::Thinking(_) => {
+                    // Thinking is not sent back to the API - stored for UI only.
+                    index += 1;
                 }
             }
         }

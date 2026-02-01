@@ -80,6 +80,10 @@ Write the summary as a continuous narrative that captures the essence of the con
             Message::System(_) => "System",
             Message::User(_) => "User",
             Message::Assistant(_) => "Assistant",
+            Message::Thinking(_) => {
+                // Skip thinking content in summaries - it's internal reasoning
+                continue;
+            }
             Message::ToolUse(call) => {
                 // Format tool calls with their name for context
                 let _ = write!(
