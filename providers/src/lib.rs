@@ -1,7 +1,46 @@
-//! LLM provider clients with streaming support.
+//! LLM provider clients with unified streaming support.
 //!
-//! This crate handles HTTP communication with Claude and `OpenAI` APIs,
-//! including SSE streaming and error handling.
+//! This crate handles HTTP communication with Claude, OpenAI, and Gemini APIs,
+//! providing a unified streaming interface that abstracts provider differences
+//! while preserving provider-specific features.
+//!
+//! # Architecture
+//!
+//! The crate is organized around a provider dispatch pattern:
+//!
+//! - [`send_message`] - Unified entry point that dispatches to provider-specific implementations
+//! - [`claude`] - Anthropic Claude API client (Messages API)
+//! - [`openai`] - OpenAI API client (Responses API for GPT-5.x)
+//! - [`gemini`] - Google Gemini API client (GenerateContent API)
+//!
+//! All providers emit events through a [`tokio::sync::mpsc::Sender<StreamEvent>`]
+//! channel, allowing the caller to process streaming content as it arrives.
+//!
+//! # Configuration
+//!
+//! Use [`ApiConfig`] to bundle API credentials and model selection. The constructor
+//! validates that the API key and model belong to the same provider, making
+//! provider mismatch errors impossible at runtime.
+//!
+//! # Streaming Events
+//!
+//! All providers normalize their responses to [`StreamEvent`][forge_types::StreamEvent]:
+//!
+//! | Event | Description |
+//! |-------|-------------|
+//! | `TextDelta` | Incremental text content from the model |
+//! | `ThinkingDelta` | Extended thinking/reasoning content |
+//! | `ToolCallStart` | Beginning of a tool/function call |
+//! | `ToolCallDelta` | Incremental tool call arguments (JSON) |
+//! | `Usage` | Token consumption metrics |
+//! | `Done` | Stream completed successfully |
+//! | `Error` | Stream terminated with an error |
+//!
+//! # Error Handling
+//!
+//! Errors during streaming are delivered as `StreamEvent::Error` events rather than
+//! `Result::Err` returns. This allows partial responses to be captured before an error
+//! occurs. Only unrecoverable failures like network errors return `Err`.
 
 // Pedantic lint configuration - these are intentional design choices
 #![allow(clippy::missing_errors_doc)] // Result-returning functions are self-explanatory
@@ -131,6 +170,12 @@ enum SseParseAction {
     Error(String),
 }
 
+/// Provider-specific SSE event parser.
+///
+/// Each provider implements this trait to parse their JSON event payloads
+/// into unified [`StreamEvent`]s. The shared [`process_sse_stream`] function
+/// handles common SSE logic (buffering, timeouts, error tracking) while
+/// delegating JSON interpretation to the provider-specific parser.
 trait SseParser {
     /// Parse a JSON payload and return the action to take.
     fn parse(&mut self, json: &serde_json::Value) -> SseParseAction;
@@ -225,13 +270,11 @@ async fn process_sse_stream<P: SseParser>(
                         SseParseAction::Continue => {}
                         SseParseAction::Emit(events) => {
                             for event in events {
-                                // Check if this is a terminal event before sending
                                 let is_terminal =
                                     matches!(&event, StreamEvent::Done | StreamEvent::Error(_));
                                 if !send_event(tx, event).await {
                                     return Ok(());
                                 }
-                                // Return immediately after sending terminal events
                                 if is_terminal {
                                     return Ok(());
                                 }
@@ -296,7 +339,21 @@ pub async fn read_capped_error_body(response: reqwest::Response) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
-/// Configuration for API requests.
+/// Configuration for API requests, bundling credentials and model selection.
+///
+/// This type enforces provider consistency at construction time: you cannot
+/// create an `ApiConfig` with a Claude API key and an OpenAI model. This makes
+/// provider mismatch errors impossible at runtime.
+///
+/// # Builder Pattern
+///
+/// Use the `with_*` methods to configure provider-specific options:
+///
+/// ```ignore
+/// let config = ApiConfig::new(api_key, model)?
+///     .with_openai_options(OpenAIRequestOptions::default())
+///     .with_gemini_thinking_enabled(true);
+/// ```
 #[derive(Debug, Clone)]
 pub struct ApiConfig {
     api_key: ApiKey,
@@ -414,7 +471,22 @@ pub async fn send_message(
     }
 }
 
-/// Claude/Anthropic API implementation.
+/// Anthropic Claude API implementation.
+///
+/// Communicates with `https://api.anthropic.com/v1/messages` using SSE streaming.
+///
+/// # Features
+///
+/// - Extended thinking mode via `OutputLimits::with_thinking()`
+/// - Ephemeral caching via `CacheHint::Ephemeral` on message content
+/// - Tool calling with `tool_use` content blocks
+///
+/// # Thinking Mode Constraints
+///
+/// Thinking is automatically disabled when the conversation history contains
+/// `Message::Assistant` or `Message::ToolUse` messages. This is because Claude's
+/// API requires assistant messages to start with thinking/redacted_thinking blocks
+/// when thinking is enabled, but Forge doesn't store thinking content in history.
 pub mod claude {
     use super::{
         ApiConfig, ApiUsage, CacheHint, CacheableMessage, Message, OutputLimits, Result,
@@ -836,7 +908,23 @@ pub mod claude {
     }
 }
 
-/// `OpenAI` API implementation.
+/// OpenAI API implementation using the Responses API.
+///
+/// Communicates with `https://api.openai.com/v1/responses` for GPT-5.x models.
+/// This uses the newer Responses API (not Chat Completions) which supports
+/// advanced reasoning features.
+///
+/// # Features
+///
+/// - Reasoning effort control (`none`, `low`, `medium`, `high`, `xhigh`)
+/// - Reasoning summaries (emitted as `ThinkingDelta` events)
+/// - Text verbosity control
+/// - Automatic server-side prefix caching
+///
+/// # Role Mapping
+///
+/// Per the OpenAI Model Spec authority hierarchy, `Message::System` maps to
+/// the `"developer"` role (not `"system"`, which is reserved for OpenAI runtime).
 pub mod openai {
     use super::{
         ApiConfig, ApiUsage, CacheableMessage, Message, OutputLimits, Result, SseParseAction,
@@ -1511,7 +1599,8 @@ pub mod openai {
             }));
             match action {
                 super::SseParseAction::Emit(events) => {
-                    assert_eq!(events.len(), 1);
+                    // Should emit Usage followed by Done
+                    assert_eq!(events.len(), 2);
                     match &events[0] {
                         StreamEvent::Usage(usage) => {
                             assert_eq!(usage.input_tokens, 1234);
@@ -1519,8 +1608,9 @@ pub mod openai {
                             assert_eq!(usage.cache_read_tokens, 100);
                             assert_eq!(usage.cache_creation_tokens, 0);
                         }
-                        _ => panic!("Expected Usage event"),
+                        _ => panic!("Expected Usage event first"),
                     }
+                    assert!(matches!(&events[1], StreamEvent::Done));
                 }
                 _ => panic!("Expected Emit action"),
             }
@@ -1533,12 +1623,38 @@ pub mod openai {
                 "type": "response.completed",
                 "response": {}
             }));
-            assert!(matches!(action, super::SseParseAction::Done));
+            // Now emits Done as an event (not SseParseAction::Done) for consistency
+            match action {
+                super::SseParseAction::Emit(events) => {
+                    assert_eq!(events.len(), 1);
+                    assert!(matches!(&events[0], StreamEvent::Done));
+                }
+                _ => panic!("Expected Emit action with Done event"),
+            }
         }
     }
 }
 
 /// Google Gemini API implementation.
+///
+/// Communicates with `https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent`.
+///
+/// # Features
+///
+/// - Thinking mode via `thinkingConfig` with `thinkingLevel: "high"`
+/// - Explicit context caching via the `cachedContents` API
+/// - Thought signatures for tool calls when thinking mode is enabled
+///
+/// # Message Grouping
+///
+/// Gemini requires consecutive tool calls and tool results to be grouped:
+/// - Multiple consecutive `Message::ToolUse` become a single `model` content entry
+/// - Multiple consecutive `Message::ToolResult` become a single `user` content entry
+///
+/// # Schema Sanitization
+///
+/// The `additionalProperties` field is recursively removed from tool parameter
+/// schemas, as Gemini doesn't support it.
 pub mod gemini {
     use super::{
         ApiConfig, CacheableMessage, Message, OutputLimits, Result, SseParseAction, SseParser,

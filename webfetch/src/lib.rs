@@ -1,30 +1,56 @@
-//! `WebFetch`: URL fetching with browser fallback for Forge.
+//! Safe URL fetching with browser fallback for LLM consumption.
 //!
-//! This crate implements the `WebFetch` tool specification (`WEBFETCH_SRD.md` v2.4).
-//! It provides safe URL fetching with SSRF protection, robots.txt compliance,
-//! HTML-to-Markdown extraction, and token-aware chunking.
+//! This crate provides a complete pipeline for fetching web content and converting
+//! it into LLM-friendly Markdown chunks. It implements comprehensive security
+//! measures (SSRF protection, robots.txt compliance) and intelligent content
+//! extraction with boilerplate removal.
 //!
-//! # Architecture
+//! # Pipeline
 //!
-//! The crate is organized into these modules:
+//! The fetch pipeline processes URLs through these stages:
 //!
-//! - [`types`]: Domain types (input, output, config, errors)
-//! - [`http`]: HTTP client with SSRF validation
-//! - [`browser`]: CDP-based browser automation (optional)
-//! - [`robots`]: RFC 9309 robots.txt parser
-//! - [`extract`]: HTML → Markdown extraction pipeline
-//! - [`chunk`]: Token-aware content chunking
-//! - [`cache`]: LRU disk cache with TTL
+//! 1. **Cache check** - Returns cached content if valid (respects TTL, re-chunks on hit)
+//! 2. **SSRF validation** - Validates scheme, host, port; resolves DNS with rebinding protection
+//! 3. **robots.txt** - RFC 9309 compliant checking with origin-scoped caching
+//! 4. **Content fetch** - HTTP request with optional headless browser fallback for SPAs
+//! 5. **Extraction** - Boilerplate removal, HTML-to-Markdown conversion
+//! 6. **Chunking** - Token-aware splitting with heading context tracking
+//! 7. **Cache write** - Stores extracted markdown for future requests
+//!
+//! # Modules
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`types`] | Input/output types, configuration, structured errors |
+//! | [`http`] | HTTP client with SSRF protection and DNS pinning |
+//! | [`browser`] | CDP-based Chromium rendering with request interception |
+//! | [`robots`] | RFC 9309 parser with wildcard/anchor pattern support |
+//! | [`extract`] | HTML-to-Markdown with intelligent boilerplate detection |
+//! | [`chunk`] | Token-bounded chunking with code/list block handling |
+//! | [`cache`] | LRU disk cache with dual-limit eviction |
+//! | [`resolved`] | Internal: config resolution eliminating Option handling |
 //!
 //! # Usage
 //!
 //! ```ignore
 //! use forge_webfetch::{fetch, WebFetchInput, WebFetchConfig};
 //!
-//! let input = WebFetchInput::new("https://example.com")?;
+//! let input = WebFetchInput::new("https://example.com")?
+//!     .with_max_chunk_tokens(800)?
+//!     .with_no_cache(false);
 //! let config = WebFetchConfig::default();
 //! let output = fetch(input, &config).await?;
+//!
+//! for chunk in &output.chunks {
+//!     println!("[{}] {} tokens", chunk.heading, chunk.token_count);
+//! }
 //! ```
+//!
+//! # Error Handling
+//!
+//! All errors are [`WebFetchError`] with stable [`ErrorCode`] variants, human-readable
+//! messages, and `retryable` hints. Non-fatal conditions (cache write failures,
+//! charset fallbacks) are reported via [`Note`] tokens in the output.
 
 // Allow dead code during scaffold phase for user's modules (http, browser)
 #![allow(dead_code)]

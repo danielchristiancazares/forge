@@ -1,7 +1,34 @@
 //! Core domain types for Forge.
 //!
-//! This crate contains pure domain types with no IO, no async, and minimal dependencies.
-//! Everything here can be used from any layer of the application.
+//! This crate provides foundational types with **no IO, no async, and minimal dependencies**.
+//! All types can be safely used from any layer of the application without pulling in runtime
+//! complexity.
+//!
+//! # Design Philosophy
+//!
+//! This crate follows **type-driven design** principles where invalid states are unrepresentable:
+//!
+//! - **Invariants at construction**: Types validate constraints when created, not when used.
+//!   Once you have a value, you know it satisfies all required invariants.
+//!
+//! - **Provider scoping**: Types like [`ModelName`] and [`ApiKey`] carry their provider
+//!   association, preventing cross-provider mixing at compile time.
+//!
+//! - **True sum types**: [`Message`] is a proper enum where each variant contains role-specific
+//!   data, rather than a role tag with optional fields.
+//!
+//! # Module Overview
+//!
+//! | Category | Types |
+//! |----------|-------|
+//! | String validation | [`NonEmptyString`], [`NonEmptyStaticStr`], [`EmptyStringError`] |
+//! | Provider/model | [`Provider`], [`ModelName`], [`ModelNameKind`], [`ModelParseError`], [`ApiKey`] |
+//! | OpenAI options | [`OpenAIReasoningEffort`], [`OpenAIReasoningSummary`], [`OpenAITextVerbosity`], [`OpenAITruncation`], [`OpenAIRequestOptions`] |
+//! | Output config | [`OutputLimits`], [`OutputLimitsError`], [`CacheHint`] |
+//! | Streaming | [`StreamEvent`], [`StreamFinishReason`], [`ApiUsage`] |
+//! | Tool calling | [`ToolDefinition`], [`ToolCall`], [`ToolResult`] |
+//! | Messages | [`SystemMessage`], [`UserMessage`], [`AssistantMessage`], [`Message`], [`CacheableMessage`] |
+//! | Security | [`sanitize_terminal_text`] |
 
 // Pedantic lint configuration - these are intentional design choices
 #![allow(clippy::missing_errors_doc)] // Result-returning functions are self-explanatory
@@ -15,7 +42,21 @@ use std::borrow::Cow;
 use std::time::SystemTime;
 use thiserror::Error;
 
-/// A string guaranteed to be non-empty (after trimming).
+/// A string guaranteed to be non-empty after trimming whitespace.
+///
+/// This type enforces the invariant that the contained string is never empty
+/// (or whitespace-only) after trimming. Validation occurs at construction time,
+/// so all operations on an existing `NonEmptyString` can assume the content is valid.
+///
+/// # Invariants
+///
+/// - Content is never empty after `trim()`
+/// - Whitespace-only strings are rejected
+///
+/// # Serde
+///
+/// Serializes as a plain JSON string. Deserialization validates non-emptiness
+/// and fails with an error if the string is empty or whitespace-only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct NonEmptyString(String);
@@ -102,6 +143,13 @@ impl AsRef<str> for NonEmptyString {
 }
 
 /// A compile-time checked non-empty static string.
+///
+/// Unlike [`NonEmptyString`], this type can be constructed in `const` contexts
+/// for static strings. The assertion happens at compile time via `const fn`.
+///
+/// **Note**: This only validates non-emptiness, not whitespace. A whitespace-only
+/// `NonEmptyStaticStr` will fail when converted to `NonEmptyString` (which enforces
+/// the trim invariant).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NonEmptyStaticStr(&'static str);
 
@@ -126,6 +174,20 @@ impl TryFrom<NonEmptyStaticStr> for NonEmptyString {
     }
 }
 
+/// LLM provider identifier.
+///
+/// | Variant | API | Default Model |
+/// |---------|-----|---------------|
+/// | `Claude` | Anthropic Messages API | `claude-opus-4-5-20251101` |
+/// | `OpenAI` | OpenAI Responses API | `gpt-5.2` |
+/// | `Gemini` | Google GenerateContent API | `gemini-3-pro-preview` |
+///
+/// # Parsing
+///
+/// The [`Provider::parse`] method accepts various aliases:
+/// - Claude: `"claude"`, `"anthropic"`
+/// - OpenAI: `"openai"`, `"gpt"`, `"chatgpt"`
+/// - Gemini: `"gemini"`, `"google"`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum Provider {
     #[default]
@@ -243,9 +305,22 @@ pub enum ModelParseError {
     GeminiPrefix(String),
 }
 
-/// Provider-scoped model name.
+/// Provider-scoped model name with validation status.
 ///
-/// This prevents mixing model names across providers and makes unknown names explicit.
+/// This type prevents mixing model names across providers and makes unknown names explicit.
+/// The [`ModelNameKind`] distinguishes verified models from user-supplied ones.
+///
+/// # Memory Optimization
+///
+/// Known models use `Cow::Borrowed` with static strings, avoiding allocation.
+/// User-supplied models use `Cow::Owned` to store the string.
+///
+/// # Validation
+///
+/// Each provider enforces prefix rules:
+/// - Claude: must start with `claude-`
+/// - OpenAI: must start with `gpt-5` (GPT-5.x series minimum)
+/// - Gemini: must start with `gemini-`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelName {
     provider: Provider,
@@ -965,7 +1040,7 @@ impl Message {
             Message::System(m) => m.content(),
             Message::User(m) => m.content(),
             Message::Assistant(m) => m.content(),
-            Message::ToolUse(call) => &call.name, // Return tool name as content summary
+            Message::ToolUse(call) => &call.name,
             Message::ToolResult(result) => &result.content,
         }
     }

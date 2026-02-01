@@ -1,3 +1,35 @@
+//! Forge CLI - Binary entry point and terminal session management.
+//!
+//! This crate is the application entry point that orchestrates:
+//! - Terminal session lifecycle (raw mode, alternate screen, bracketed paste)
+//! - UI mode selection (full-screen vs inline) from config and environment
+//! - Tick-based event loops coordinating async tasks, streaming, and rendering
+//! - Runtime mode switching between display modes
+//!
+//! # Architecture
+//!
+//! The CLI bridges [`forge_engine`] (application state) and [`forge_tui`] (rendering),
+//! providing RAII-based terminal management with guaranteed cleanup.
+//!
+//! ```text
+//! main() -> TerminalSession::new(mode) -> run_app_{full,inline}() -> App + TUI
+//!                                              |
+//!                                              v
+//!                               RunResult::Quit | SwitchMode
+//! ```
+//!
+//! # Event Loop
+//!
+//! Both full-screen and inline modes use a fixed 8ms (~120 FPS) render cadence:
+//!
+//! 1. Wait for frame tick
+//! 2. Drain input queue (non-blocking via [`forge_tui::InputPump`])
+//! 3. Advance application state (`app.tick()`)
+//! 4. Process streaming events from LLM
+//! 5. Handle transcript clear requests
+//! 6. Render frame
+//! 7. Check for mode switch or quit
+
 mod assets;
 
 use anyhow::Result;
@@ -24,9 +56,19 @@ use forge_tui::{
     handle_events, inline_viewport_height,
 };
 
+/// Display mode for the terminal UI.
+///
+/// Forge supports two rendering modes that can be toggled at runtime:
+/// - `Full`: Takes over the entire terminal using an alternate screen buffer
+/// - `Inline`: Renders in a fixed-height viewport at the current cursor position
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UiMode {
+    /// Full-screen mode using the alternate screen buffer.
+    /// Preserves the user's scrollback history and provides the full terminal area.
     Full,
+    /// Inline mode using a fixed-height viewport.
+    /// Renders at the current cursor position, allowing previous terminal content
+    /// to remain visible above.
     Inline,
 }
 
@@ -39,8 +81,11 @@ impl UiMode {
     }
 }
 
+/// Result of an event loop iteration indicating whether to quit or switch modes.
 enum RunResult {
+    /// User requested application exit.
     Quit,
+    /// User requested switching between full-screen and inline modes.
     SwitchMode,
 }
 
@@ -71,6 +116,16 @@ impl UiMode {
     }
 }
 
+/// RAII wrapper for terminal state with guaranteed cleanup on drop.
+///
+/// Manages the terminal lifecycle including:
+/// - Raw mode (disables line buffering and echo)
+/// - Bracketed paste (detects pasted text vs typed input)
+/// - Alternate screen (full mode only)
+/// - Alternate scroll mode (maps scroll wheel to arrows without mouse capture)
+///
+/// On drop, all terminal state is restored to its original configuration,
+/// ensuring the terminal remains usable even after panics or early returns.
 struct TerminalSession {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     use_alternate_screen: bool,
@@ -203,9 +258,27 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Fixed 8ms render cadence (~120 FPS cap).
+/// Target frame duration for the render loop (~120 FPS cap).
+///
+/// This cadence balances UI responsiveness with CPU usage. The interval uses
+/// `MissedTickBehavior::Skip` to avoid frame buildup during slow renders.
 const FRAME_DURATION: Duration = Duration::from_millis(8);
 
+/// Runs the full-screen event loop with alternate screen rendering.
+///
+/// # Event loop steps
+///
+/// 1. Wait for frame tick (8ms cadence)
+/// 2. Drain input queue via [`InputPump`] (non-blocking)
+/// 3. Advance app state and process streaming events
+/// 4. Clear terminal if transcript reset requested
+/// 5. Draw frame using [`draw`]
+/// 6. Check for mode switch flag
+///
+/// # Returns
+///
+/// - `Ok(RunResult::Quit)` when user requests exit
+/// - `Ok(RunResult::SwitchMode)` when user toggles display mode
 async fn run_app_full<B>(terminal: &mut Terminal<B>, app: &mut App) -> Result<RunResult>
 where
     B: Backend + Write,
@@ -253,6 +326,23 @@ where
     result
 }
 
+/// Runs the inline event loop with a fixed-height viewport.
+///
+/// Unlike full-screen mode, inline mode:
+/// - Flushes LLM output above the viewport via [`InlineOutput`]
+/// - Dynamically resizes the viewport for overlays (e.g., model selector)
+/// - Uses `clear_inline_transcript` for transcript resets
+///
+/// # Event loop steps
+///
+/// 1. Wait for frame tick (8ms cadence)
+/// 2. Drain input queue via [`InputPump`] (non-blocking)
+/// 3. Advance app state and process streaming events
+/// 4. Clear transcript if requested (full terminal clear + output reset)
+/// 5. Flush pending output above viewport
+/// 6. Resize viewport if input mode changed (overlays need more height)
+/// 7. Draw frame using [`draw_inline`]
+/// 8. Check for mode switch flag
 async fn run_app_inline<B>(terminal: &mut Terminal<B>, app: &mut App) -> Result<RunResult>
 where
     B: Backend + Write,
@@ -319,6 +409,13 @@ where
     result
 }
 
+/// Clears the entire terminal for inline mode transcript resets.
+///
+/// Performs a complete terminal reset:
+/// 1. `ClearType::Purge` - clears scrollback buffer
+/// 2. `ClearType::All` - clears visible screen
+/// 3. `MoveTo(0, 0)` - resets cursor to top-left
+/// 4. `terminal.clear()` - clears ratatui's internal buffer
 fn clear_inline_transcript<B>(terminal: &mut Terminal<B>) -> Result<()>
 where
     B: Backend + Write,

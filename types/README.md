@@ -4,27 +4,6 @@ Core domain types for Forge with **no IO, no async, and minimal dependencies**.
 
 This crate provides the foundational type system that enforces correctness at compile time. Every type can be safely used from any layer of the application without pulling in runtime complexity.
 
-## LLM-TOC
-<!-- Auto-generated section map for LLM context -->
-| Lines | Section |
-|-------|---------|
-| 1-46 | Header, LLM-TOC, Table of Contents |
-| 47-111 | Design Philosophy |
-| 112-132 | Module Structure |
-| 133-242 | NonEmpty String Types |
-| 243-396 | Provider and Model Types |
-| 397-438 | API Key Types |
-| 439-563 | OpenAI Request Options |
-| 564-650 | Caching and Output Limits |
-| 651-717 | Streaming Events |
-| 718-825 | Tool Calling Types |
-| 826-975 | Message Types |
-| 976-1048 | Terminal Sanitization |
-| 1049-1093 | Type Relationships |
-| 1094-1109 | Error Types Summary |
-| 1110-1128 | Testing |
-| 1129-1160 | Extending the Crate |
-
 ## Table of Contents
 
 - [Design Philosophy](#design-philosophy)
@@ -35,12 +14,14 @@ This crate provides the foundational type system that enforces correctness at co
 - [OpenAI Request Options](#openai-request-options)
 - [Caching and Output Limits](#caching-and-output-limits)
 - [Streaming Events](#streaming-events)
+- [API Usage Tracking](#api-usage-tracking)
 - [Tool Calling Types](#tool-calling-types)
 - [Message Types](#message-types)
 - [Terminal Sanitization](#terminal-sanitization)
 - [Type Relationships](#type-relationships)
 - [Error Types Summary](#error-types-summary)
 - [Testing](#testing)
+- [Extending the Crate](#extending-the-crate)
 
 ---
 
@@ -61,7 +42,7 @@ let limits = OutputLimits::with_thinking(4096, 5000)?;  // Err: budget >= max
 
 // ModelName: Provider prefix validated during parsing
 let model = Provider::OpenAI.parse_model("gpt-5.2")?;  // Ok
-let model = Provider::Gemini.parse_model("gemini-1.5-pro")?;  // Ok
+let model = Provider::Gemini.parse_model("gemini-3-pro-preview")?;  // Ok
 ```
 
 ### 2. Provider Scoping
@@ -85,7 +66,7 @@ assert_eq!(key.provider(), Provider::Claude);
 ```rust
 pub enum Message {
     System(SystemMessage),      // content, timestamp
-    User(UserMessage),          // content, timestamp  
+    User(UserMessage),          // content, timestamp
     Assistant(AssistantMessage), // content, timestamp, model
     ToolUse(ToolCall),          // id, name, arguments, optional thought_signature
     ToolResult(ToolResult),     // tool_call_id, content, is_error
@@ -179,6 +160,18 @@ accepts_str(&s);
 let s = NonEmptyString::new("hello")?;
 let s = s.append(" world");
 assert_eq!(s.as_str(), "hello world");
+```
+
+**Prefixed Construction:**
+
+```rust
+use forge_types::{NonEmptyString, NonEmptyStaticStr};
+
+// Build a non-empty string by prefixing with a known non-empty static string
+const PREFIX: NonEmptyStaticStr = NonEmptyStaticStr::new("Error");
+let content = NonEmptyString::new("something went wrong")?;
+let message = NonEmptyString::prefixed(PREFIX, ": ", &content);
+assert_eq!(message.as_str(), "Error: something went wrong");
 ```
 
 **Conversion:**
@@ -280,6 +273,12 @@ assert_eq!(Provider::parse("chatgpt"), Some(Provider::OpenAI));
 assert_eq!(Provider::parse("gemini"), Some(Provider::Gemini));
 assert_eq!(Provider::parse("google"), Some(Provider::Gemini));
 assert_eq!(Provider::parse("unknown"), None);
+
+// Infer provider from model name prefix
+assert_eq!(Provider::from_model_name("claude-opus-4-5-20251101"), Some(Provider::Claude));
+assert_eq!(Provider::from_model_name("gpt-5.2"), Some(Provider::OpenAI));
+assert_eq!(Provider::from_model_name("gemini-3-pro-preview"), Some(Provider::Gemini));
+assert_eq!(Provider::from_model_name("unknown-model"), None);
 
 // Enumerate all providers
 for provider in Provider::all() {
@@ -412,6 +411,13 @@ pub enum ApiKey {
 
 **Invariant:** The key string is always associated with its correct provider.
 
+**Security:** The `Debug` implementation redacts the key value to prevent accidental credential disclosure in logs or error messages:
+
+```rust
+let key = ApiKey::Claude("sk-ant-api03-secret".into());
+// Debug output: ApiKey::Claude(<redacted>)
+```
+
 **Usage:**
 
 ```rust
@@ -420,6 +426,7 @@ use forge_types::{ApiKey, Provider};
 // Create provider-specific keys
 let claude_key = ApiKey::Claude("sk-ant-api03-...".into());
 let openai_key = ApiKey::OpenAI("sk-proj-...".into());
+let gemini_key = ApiKey::Gemini("AIza...".into());
 
 // Access provider
 assert_eq!(claude_key.provider(), Provider::Claude);
@@ -660,11 +667,12 @@ Events emitted during streaming API responses.
 | `ThinkingDelta(String)` | Provider reasoning content (Claude extended thinking or OpenAI summaries) |
 | `ToolCallStart { id, name, thought_signature }` | Tool use content block began |
 | `ToolCallDelta { id, arguments }` | Tool call JSON arguments chunk |
+| `Usage(ApiUsage)` | API-reported token usage from provider |
 | `Done` | Stream completed successfully |
 | `Error(String)` | Error occurred during streaming |
 
 ```rust
-use forge_types::StreamEvent;
+use forge_types::{StreamEvent, ApiUsage};
 
 fn handle_event(event: StreamEvent, response: &mut String, thinking: &mut String) {
     match event {
@@ -683,6 +691,9 @@ fn handle_event(event: StreamEvent, response: &mut String, thinking: &mut String
         }
         StreamEvent::ToolCallDelta { id, arguments } => {
             println!("Tool {} args: {}", id, arguments);
+        }
+        StreamEvent::Usage(usage) => {
+            println!("Tokens: {} in, {} out", usage.input_tokens, usage.output_tokens);
         }
         StreamEvent::Done => {
             println!("Stream completed");
@@ -711,6 +722,94 @@ assert_eq!(reason, StreamFinishReason::Done);
 
 let reason = StreamFinishReason::Error("timeout".to_string());
 assert_ne!(reason, StreamFinishReason::Done);
+```
+
+---
+
+## API Usage Tracking
+
+### ApiUsage
+
+Captures actual token counts from provider API responses for accurate cost tracking and cache hit analysis.
+
+**Fields:**
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `input_tokens` | `u32` | Total input tokens (includes cached tokens) |
+| `cache_read_tokens` | `u32` | Input tokens read from cache (cache hits) |
+| `cache_creation_tokens` | `u32` | Input tokens written to cache (cache misses that were cached) |
+| `output_tokens` | `u32` | Output tokens generated by the model |
+
+**Construction:**
+
+```rust
+use forge_types::ApiUsage;
+
+// Default is all zeros
+let usage = ApiUsage::default();
+assert_eq!(usage.input_tokens, 0);
+assert!(!usage.has_data());
+
+// Direct field access (public fields)
+let usage = ApiUsage {
+    input_tokens: 1000,
+    cache_read_tokens: 800,
+    cache_creation_tokens: 50,
+    output_tokens: 500,
+};
+```
+
+**Computed Properties:**
+
+```rust
+use forge_types::ApiUsage;
+
+let usage = ApiUsage {
+    input_tokens: 1000,
+    cache_read_tokens: 800,
+    cache_creation_tokens: 0,
+    output_tokens: 500,
+};
+
+// Non-cached input tokens (for cost calculation)
+// cost = (non_cached * input_price) + (cache_read * cached_price) + (output * output_price)
+assert_eq!(usage.non_cached_input_tokens(), 200);
+
+// Check if usage has any data
+assert!(usage.has_data());
+
+// Cache hit percentage (0-100)
+let hit_rate = usage.cache_hit_percentage();
+assert!((hit_rate - 80.0).abs() < 0.01);  // 80% cache hit rate
+```
+
+**Aggregation:**
+
+```rust
+use forge_types::ApiUsage;
+
+let mut total = ApiUsage {
+    input_tokens: 1000,
+    cache_read_tokens: 800,
+    cache_creation_tokens: 100,
+    output_tokens: 500,
+};
+
+let call2 = ApiUsage {
+    input_tokens: 2000,
+    cache_read_tokens: 1500,
+    cache_creation_tokens: 200,
+    output_tokens: 1000,
+};
+
+// Merge another usage into this one (saturating arithmetic)
+total.merge(&call2);
+
+assert_eq!(total.input_tokens, 3000);
+assert_eq!(total.cache_read_tokens, 2300);
+assert_eq!(total.cache_creation_tokens, 300);
+assert_eq!(total.output_tokens, 1500);
 ```
 
 ---
@@ -775,6 +874,7 @@ A tool call requested by the LLM during a response.
 use forge_types::ToolCall;
 use serde_json::json;
 
+// Basic construction
 let call = ToolCall::new(
     "call_abc123",
     "get_weather",
@@ -786,6 +886,17 @@ let call = ToolCall::new(
 
 assert_eq!(call.id, "call_abc123");
 assert_eq!(call.name, "get_weather");
+assert!(call.thought_signature.is_none());
+
+// With thought signature (for Gemini)
+let call = ToolCall::new_with_thought_signature(
+    "call_xyz789",
+    "search",
+    json!({"query": "rust programming"}),
+    Some("sig_abc".to_string()),
+);
+
+assert_eq!(call.thought_signature, Some("sig_abc".to_string()));
 ```
 
 ### ToolResult
@@ -1079,12 +1190,15 @@ Provider -----> ModelName (scoped)
     +-----> OpenAIRequestOptions
                 |
                 +---> OpenAIReasoningEffort
+                +---> OpenAIReasoningSummary
                 +---> OpenAITextVerbosity
                 +---> OpenAITruncation
 
 ToolDefinition (standalone - tool schemas)
 
 StreamEvent -----> StreamFinishReason
+    |
+    +-----> ApiUsage (token tracking)
 
 OutputLimits (validated invariants)
 ```
@@ -1118,9 +1232,10 @@ cargo test -p forge-types
 The test suite verifies:
 
 - `NonEmptyString` rejects empty and whitespace-only strings
-- `Provider::parse()` handles all aliases correctly  
+- `Provider::parse()` handles all aliases correctly
 - `ModelName::parse()` validates provider prefix requirements
 - `OutputLimits::with_thinking()` enforces budget constraints
+- `ApiUsage` arithmetic and aggregation functions
 - `sanitize_terminal_text()` strips all dangerous escape sequences
 - `sanitize_terminal_text()` preserves safe content without allocation
 
@@ -1138,6 +1253,7 @@ The test suite verifies:
    - `default_model()` - create default `ModelName`
    - `available_models()` - list of known model names
    - `parse()` - add parsing aliases
+   - `from_model_name()` - add prefix detection
    - `all()` - add to static slice
 3. Add variant to `ApiKey` enum
 4. Update `ModelName::parse()` if provider has prefix requirements

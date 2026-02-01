@@ -8,17 +8,17 @@ sampling/logprob controls (per product decision).
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-16 | Header & TOC |
-| 17-25 | Core Request Fields |
-| 26-32 | Reasoning Controls |
-| 33-37 | Output Formatting |
-| 38-44 | Tools and Tool Selection |
-| 45-50 | Streaming / Background |
-| 51-57 | Conversation State |
-| 58-64 | Caching / Safety / Tiering |
-| 65-69 | Metadata and Templates |
-| 70-73 | Out of Scope |
-| 74-81 | References |
+| 1-22 | Header & TOC |
+| 23-30 | Core Request Fields |
+| 32-41 | Reasoning Controls |
+| 43-46 | Output Formatting |
+| 48-53 | Tools and Tool Selection |
+| 55-71 | Streaming / Background |
+| 73-78 | Conversation State |
+| 80-85 | Caching / Safety / Tiering |
+| 87-90 | Metadata and Templates |
+| 92-94 | Out of Scope |
+| 96-105 | References |
 
 ## Core request fields
 
@@ -31,10 +31,14 @@ sampling/logprob controls (per product decision).
 
 ## Reasoning controls (GPT-5.2)
 
-- reasoning.effort: none | low | medium | high | xhigh.
+- reasoning.effort:
+  - **GPT-5.2**: none (default) | low | medium | high | xhigh
+  - **GPT-5.2 Pro**: medium | high | xhigh only (no none/low)
 - reasoning.summary: configure summaries of reasoning where supported (none | auto | concise | detailed).
 - include: reasoning.encrypted_content when running stateless (store=false
   or ZDR), so reasoning items can be reused across turns.
+
+**Forge policy**: Default to xhigh for GPT-5.2 Pro (that's what Pro is for).
 
 ## Output formatting
 
@@ -53,6 +57,18 @@ sampling/logprob controls (per product decision).
 - stream: enable SSE streaming.
 - stream_options: only when stream=true.
 - background: run response asynchronously (useful for long tasks).
+
+**GPT-5.2 Pro requirements**: Per OpenAI docs, Pro requests "may take several
+minutes to finish" and they recommend "using background mode" to avoid timeouts.
+
+**Forge policy**: Auto-enable background mode for GPT-5.2 Pro. This is required,
+not optional - SSE idle timeouts are fundamentally incompatible with deep
+reasoning that takes minutes to hours.
+
+**Constraints**:
+- background=true requires store=true
+- background=true is not ZDR compatible ("breaks ZDR guarantees")
+- background=true is not available in EU region
 
 ## Conversation state
 
@@ -84,3 +100,6 @@ sampling/logprob controls (per product decision).
 - <https://platform.openai.com/docs/guides/reasoning/use-case-examples>
 - <https://platform.openai.com/docs/guides/structured-outputs/introduction%3F.doc>
 - <https://platform.openai.com/docs/models/gpt-5.2/>
+- <https://platform.openai.com/docs/models/gpt-5.2-pro>
+- <https://platform.openai.com/docs/guides/background>
+- <https://platform.openai.com/docs/guides/your-data>

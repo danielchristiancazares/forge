@@ -1,7 +1,31 @@
-// Tool Journal - tool batch durability for crash recovery
-//
-// Records tool calls/results so pending tool batches can be recovered.
-// This is intentionally minimal: one active uncommitted batch at a time.
+//! Tool Journal - Durable tool batch tracking for crash recovery.
+//!
+//! This module provides SQLite-backed persistence for tool execution batches,
+//! enabling recovery of interrupted tool operations after crashes.
+//!
+//! # Design Constraints
+//!
+//! - **Single pending batch**: Only one uncommitted batch can exist at a time
+//! - **Journal-before-execute**: Tool calls are persisted before execution begins
+//! - **Atomic commit**: Batch commit and cleanup occur in a single transaction
+//!
+//! # Streaming Support
+//!
+//! For tool calls created during streaming responses (before arguments are complete),
+//! use the streaming batch workflow:
+//!
+//! 1. [`ToolJournal::begin_streaming_batch`] - Create batch before tool calls arrive
+//! 2. [`ToolJournal::record_call_start`] - Record each tool call as it begins
+//! 3. [`ToolJournal::append_call_args`] - Append argument chunks as they stream
+//! 4. [`ToolJournal::append_assistant_delta`] - Append assistant text deltas
+//! 5. [`ToolJournal::record_result`] - Record results as tools complete
+//! 6. [`ToolJournal::commit_batch`] - Commit when all tools finish
+//!
+//! # Recovery
+//!
+//! On startup, call [`ToolJournal::recover`] to check for incomplete batches.
+//! The [`RecoveredToolBatch`] contains all persisted state, allowing the user
+//! to resume execution or discard the batch.
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};

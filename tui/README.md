@@ -10,9 +10,9 @@ Terminal user interface rendering and input handling for Forge, built on [ratatu
 | 28-39 | Purpose and Responsibility |
 | 40-55 | Module Overview |
 | 56-105 | Full-Screen vs Inline Rendering |
-| 106-505 | Key Modules: lib.rs, ui_inline.rs, input.rs, theme.rs, markdown.rs, effects.rs, shared.rs, tool_display.rs, tool_result_summary.rs, diff_render.rs |
-| 506-539 | Public API |
-| 540-580 | Developer Notes |
+| 106-616 | Key Modules: lib.rs, ui_inline.rs, input.rs, theme.rs, markdown.rs, effects.rs, shared.rs, tool_display.rs, tool_result_summary.rs, diff_render.rs |
+| 617-650 | Public API |
+| 651-692 | Developer Notes |
 
 ## Table of Contents
 
@@ -192,8 +192,10 @@ Tool approval and recovery modals take priority over mode-specific handling. Whe
 | `j` / `Down` | Scroll down |
 | `g` | Scroll to top |
 | `G` / `End` / `Right` | Scroll to bottom |
-| `Ctrl+U` / `PageUp` | Page up |
-| `Ctrl+D` / `PageDown` | Page down |
+| `PageUp` | Page up |
+| `PageDown` | Page down |
+| `Ctrl+U` | Page up (or scroll diff up when files panel expanded) |
+| `Ctrl+D` | Page down (or scroll diff down when files panel expanded) |
 | `Left` | Scroll up by chunk |
 | `Tab` / `Shift+Tab` | Files panel: next/previous file |
 | `Enter` / `Esc` | Files panel: collapse expanded diff |
@@ -242,22 +244,39 @@ Kanagawa Wave-inspired colors with high-contrast fallback:
 
 ```rust
 pub struct Palette {
+    // Backgrounds (Sumi Ink shades)
     pub bg_dark: Color,         // sumiInk0 - main background
     pub bg_panel: Color,        // sumiInk3 - overlay panels
     pub bg_highlight: Color,    // sumiInk4 - selection highlight
+    pub bg_popup: Color,        // sumiInk5 - popup backgrounds
+    pub bg_border: Color,       // sumiInk6 - subtle borders
+
+    // Foregrounds (Fuji tones)
     pub text_primary: Color,    // fujiWhite - main text
     pub text_secondary: Color,  // oldWhite - assistant text
     pub text_muted: Color,      // fujiGray - hints, borders
+    pub text_disabled: Color,   // katanaGray - disabled elements
+
+    // Brand/Primary
     pub primary: Color,         // oniViolet - brand color
+    pub primary_dim: Color,     // springViolet1 - dimmed primary
+
+    // Semantic colors
     pub accent: Color,          // springBlue - tool calls
     pub success: Color,         // springGreen - ok status
     pub warning: Color,         // carpYellow - warnings
     pub error: Color,           // peachRed - errors
     pub peach: Color,           // surimiOrange - inline code
-    // Provider colors
-    pub provider_claude: Color,
-    pub provider_openai: Color,
-    pub provider_gemini: Color,
+
+    // Convenience aliases
+    pub green: Color,           // = success
+    pub yellow: Color,          // = warning
+    pub red: Color,             // = error
+
+    // Provider branding
+    pub provider_claude: Color, // burnt orange
+    pub provider_openai: Color, // white
+    pub provider_gemini: Color, // Google blue
 }
 ```
 
@@ -266,14 +285,39 @@ Unicode and ASCII-fallback symbols:
 
 ```rust
 pub struct Glyphs {
-    pub system: &'static str,       // "●" or "S"
-    pub user: &'static str,         // "○" or "U"
-    pub assistant: &'static str,    // "◇" or "A"
-    pub tool: &'static str,         // "⊙" or "T"
+    // Message icons
+    pub system: &'static str,           // "●" or "S"
+    pub user: &'static str,             // "○" or "U"
+    pub assistant: &'static str,        // "◇" or "A"
+    pub tool: &'static str,             // "⊙" or "T"
     pub tool_result_ok: &'static str,   // "✓" or "OK"
     pub tool_result_err: &'static str,  // "✗" or "ERR"
-    pub spinner_frames: &'static [&'static str],
-    // ... more glyphs
+    pub tree_connector: &'static str,   // "↪" or "L"
+
+    // Status indicators
+    pub status_ready: &'static str,     // "●" or "*"
+    pub status_missing: &'static str,   // "○" or "o"
+    pub pending: &'static str,          // "•" or "*"
+    pub denied: &'static str,           // "⊘" or "X"
+    pub paused: &'static str,           // "⏸" or "||"
+    pub running: &'static str,          // "▶" or ">"
+    pub bullet: &'static str,           // "•" or "*"
+
+    // Navigation
+    pub arrow_up: &'static str,         // "↑" or "^"
+    pub arrow_down: &'static str,       // "↓" or "v"
+    pub selected: &'static str,         // "▸" or ">"
+
+    // Scrollbar
+    pub track: &'static str,            // "│" or "|"
+    pub thumb: &'static str,            // "█" or "#"
+
+    // File changes
+    pub add: &'static str,              // "+"
+    pub modified: &'static str,         // "~"
+
+    // Animation
+    pub spinner_frames: &'static [&'static str],  // Braille or ASCII
 }
 ```
 
@@ -311,12 +355,13 @@ pub mod styles {
 Entry point: `render_markdown(content: &str, base_style: Style, palette: &Palette) -> Vec<Line<'static>>`
 
 **Features:**
-- Headings (bold)
-- Bold / italic / strikethrough
-- Code blocks with fence markers
-- Inline code (peach colored)
-- Ordered and unordered lists with nesting
-- Tables with box-drawing borders
+- Headings (bold, with spacing)
+- Bold / italic with proper nesting (counters, not booleans)
+- Code blocks with fence markers (```language)
+- Inline code (peach colored, bold)
+- Ordered and unordered lists with nesting (4-space indent per level)
+- Tables with box-drawing borders (unicode width aware)
+- Paragraphs with automatic spacing
 
 **Caching:**
 Thread-local cache with automatic eviction:
@@ -349,11 +394,15 @@ Renders HTML and XML-like content as plain text rather than silently dropping it
 
 Uses `unicode-width` for proper handling of CJK characters and emoji.
 
-### effects.rs - Modal Animations
+### effects.rs - Modal and Panel Animations
 
-Entry point: `apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> Rect`
+**Public Entry Point:**
+- `apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> Rect`
 
-**Effect Types:**
+**Internal Entry Point (used by lib.rs):**
+- `apply_files_panel_effect(effect: &PanelEffect, base: Rect) -> Rect`
+
+**Modal Effect Types (`ModalEffectKind`):**
 
 | Effect | Description |
 |--------|-------------|
@@ -361,7 +410,14 @@ Entry point: `apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rec
 | `SlideUp` | Slides up from below viewport |
 | `Shake` | Horizontal oscillation with decay (for errors) |
 
-**Usage Pattern:**
+**Panel Effect Types (`PanelEffectKind`):**
+
+| Effect | Description |
+|--------|-------------|
+| `SlideOutRight` | Panel slides out to the right (hide) |
+| `SlideInRight` | Panel slides in from the right (show) |
+
+**Modal Usage Pattern:**
 
 ```rust
 // In draw function
@@ -381,6 +437,9 @@ if effect_done {
 frame.render_widget(content, modal_area);
 ```
 
+**Panel Animation (internal):**
+The files panel uses slide animations when toggling visibility. This is handled internally by `lib.rs` using `apply_files_panel_effect`.
+
 **Easing:**
 Uses cubic ease-out for smooth deceleration:
 
@@ -393,40 +452,68 @@ fn ease_out_cubic(t: f32) -> f32 {
 
 ### shared.rs - Shared Rendering Helpers
 
-Common utilities used by both full-screen and inline rendering:
+Common utilities used by both full-screen and inline rendering. All functions are `pub(crate)`.
 
 **Provider Colors:**
 ```rust
-pub fn provider_color(provider: Provider, palette: &Palette) -> Color
+pub(crate) fn provider_color(provider: Provider, palette: &Palette) -> Color
 ```
 
 **Tool Call Status:**
 ```rust
-pub struct ToolCallStatus {
-    pub id: String,
-    pub name: String,
-    pub status: ToolCallStatusKind,  // Denied, Error, Ok, Running, Approval, Pending
-    pub reason: Option<String>,
+pub(crate) enum ToolCallStatusKind {
+    Denied,    // User denied the tool
+    Error,     // Tool execution failed
+    Ok,        // Completed successfully
+    Running,   // Currently executing
+    Approval,  // Awaiting user approval
+    Pending,   // Queued for execution
 }
+
+pub(crate) struct ToolCallStatus {
+    pub id: String,
+    pub name: String,           // Compact display name from tool_display
+    pub status: ToolCallStatusKind,
+    pub reason: Option<String>, // First line of result/error
+}
+
+pub(crate) fn collect_tool_statuses(app: &App, reason_max_len: usize) -> Option<Vec<ToolCallStatus>>
+pub(crate) fn tool_status_signature(statuses: Option<&[ToolCallStatus]>) -> Option<String>
 ```
 
 **Message Headers:**
 ```rust
-pub fn message_header_parts(msg: &Message, palette: &Palette, glyphs: &Glyphs)
+pub(crate) fn message_header_parts(msg: &Message, palette: &Palette, glyphs: &Glyphs)
     -> (String, String, Style)  // (icon, name, style)
 ```
 
+Returns the appropriate icon, display name, and style for each message type:
+- System: muted bold
+- User: green bold
+- Assistant: provider-colored
+- ToolUse: accent bold with compact tool name
+- ToolResult: success/error with ok/error icon
+
 **Wrapped Line Counting:**
 ```rust
-pub fn wrapped_line_count_exact(lines: &[Line], width: u16) -> usize
-pub fn wrapped_line_rows(lines: &[Line], width: u16) -> Vec<usize>
+pub(crate) fn wrapped_line_count_exact(lines: &[Line], width: u16) -> usize
+pub(crate) fn wrapped_line_count(lines: &[Line], width: u16) -> u16  // Capped to u16
+pub(crate) fn wrapped_line_rows(lines: &[Line], width: u16) -> Vec<usize>
+pub(crate) fn truncate_with_ellipsis(raw: &str, max: usize) -> String
 ```
 
 **Approval View:**
 Collects and formats tool approval requests for display:
 
 ```rust
-pub struct ApprovalView {
+pub(crate) struct ApprovalItem {
+    pub tool_name: String,
+    pub risk_label: String,     // "HIGH", "MEDIUM", "LOW"
+    pub summary: Option<String>,
+    pub details: Vec<String>,   // Expanded JSON args
+}
+
+pub(crate) struct ApprovalView {
     pub items: Vec<ApprovalItem>,
     pub selected: Vec<bool>,
     pub cursor: usize,
@@ -434,6 +521,8 @@ pub struct ApprovalView {
     pub any_selected: bool,
     pub deny_confirm: bool,
 }
+
+pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<ApprovalView>
 ```
 
 ### tool_display.rs - Compact Tool Call Display
@@ -451,13 +540,19 @@ Examples:
 - `GitAdd(-A)` or `GitAdd(3 file(s))`
 
 **Canonical Names:**
-Maps tool name variants to canonical display names:
+Tool names are expected in PascalCase from the tool registry. The function maps them to display names:
 
-```rust
-"read" | "read_file" | "readfile" => "Read"
-"search" | "rg" | "ripgrep" => "Search"
-"bash" | "run_command" => "Bash"
-```
+| Tool Name | Display |
+|-----------|---------|
+| `Read`, `Write`, `Edit`, `Delete`, `Move`, `Copy` | File operations |
+| `ListDir`, `Outline` | Directory/code inspection |
+| `Glob`, `Search` | Search operations |
+| `GitStatus`, `GitDiff`, `GitAdd`, `GitCommit`, etc. | Git operations |
+| `Pwsh`, `Bash` | Shell commands |
+| `WebFetch` | URL fetching |
+| `Build`, `Test` | Build system operations |
+
+Unknown tools pass through as-is.
 
 ### tool_result_summary.rs - Tool Result Summarization
 
@@ -470,20 +565,36 @@ pub enum ToolResultRender {
 }
 ```
 
+**Tool Kinds:**
+```rust
+pub(crate) enum ToolKind {
+    Read,     // File reading
+    Search,   // Content search (ripgrep)
+    Glob,     // File pattern matching
+    Bash,     // Shell commands (Bash/Pwsh)
+    Edit,     // File editing
+    Write,    // File creation
+    GitStatus,// Git status
+    Other,    // Everything else
+}
+```
+
 **Render Decision:**
-- `Edit` and `Write` always render full (never summarized)
-- Diff-like content gets `Full { diff_aware: true }`
+- `Edit` always renders full with `diff_aware: true` (never summarized)
+- `Write` always renders full with `diff_aware: false` (never summarized)
+- Content with diff markers (`---`, `+++`, `@@`) gets `Full { diff_aware: true }`
 - Other tools get tool-specific summaries
 
 **Tool-Specific Summaries:**
 
 | Tool | Summary Format |
 |------|----------------|
-| Read | "42 lines" or "lines 1-50" (if range specified) |
-| Search | "3 matches in 2 files" |
-| Glob | "5 files" |
-| Bash | "exit 0: first output line" |
-| GitStatus | "1 staged, 2 modified, 3 untracked" |
+| Read | "42 lines" or "lines 1-50" (if range specified in args) |
+| Search | "3 matches in 2 files" (parsed from JSON output) |
+| Glob | "5 files" (from JSON array or line count) |
+| Bash/Pwsh | "exit 0: first output line" (parsed from JSON or text) |
+| GitStatus | "1 staged, 2 modified, 3 untracked" (git porcelain format) |
+| Other | Line count or truncated first line |
 
 ### diff_render.rs - Diff-Aware Coloring
 
@@ -519,7 +630,7 @@ pub fn glyphs(options: UiOptions) -> Glyphs
 pub fn spinner_frame(tick: usize, options: UiOptions) -> &'static str
 pub mod styles  // Pre-defined style functions
 
-// Effects
+// Effects (modal overlay animations)
 pub fn apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> Rect
 
 // Input

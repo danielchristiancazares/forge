@@ -443,13 +443,28 @@ This is **automatic** - no re-summarization needed. The working context builder 
 
 ## Stream Journal (Crash Recovery)
 
-The `StreamJournal` ensures streaming responses survive crashes using SQLite WAL mode.
+The `StreamJournal` ensures streaming responses survive crashes using SQLite WAL mode with intelligent buffering.
 
 ### Key Invariant
 
-**Deltas MUST be persisted BEFORE being displayed to the user.**
+**Deltas are buffered and flushed to SQLite under controlled conditions.**
 
-This write-ahead logging approach guarantees that after a crash, partial responses can be recovered.
+To balance crash recovery with UI responsiveness, deltas are buffered in memory and flushed when:
+
+1. **First content arrives** - Ensures crash recovery has content immediately
+2. **Buffer reaches threshold** - Prevents unbounded memory growth (default: 25 deltas)
+3. **Time since last flush exceeds interval** - Bounds the data loss window (default: 200ms)
+
+This means a crash can lose up to the flush threshold deltas if they arrived within the flush interval. The time-based flush bounds this window.
+
+### Configuration
+
+The flush behavior can be tuned via environment variables:
+
+```bash
+FORGE_STREAM_JOURNAL_FLUSH_THRESHOLD=25   # Deltas before auto-flush (default: 25)
+FORGE_STREAM_JOURNAL_FLUSH_INTERVAL_MS=200  # Max ms between flushes (default: 200)
+```
 
 ### Schema
 
@@ -729,7 +744,7 @@ fn count_message(&self, msg: &Message) -> u32;
 
 6. **Recent messages cannot be summarized**: The N most recent messages (default: 4) are always preserved verbatim. If these alone exceed the budget, the error is unrecoverable.
 
-7. **SQLite journal latency**: Stream deltas are written synchronously to SQLite before display. On slow disks, this may cause UI stutter for high-frequency deltas.
+7. **Stream journal crash window**: Stream deltas are buffered before SQLite persistence. A crash can lose up to 25 deltas (or 200ms of content, whichever comes first). The flush threshold and interval are configurable via environment variables.
 
 ---
 
@@ -752,7 +767,7 @@ The API call then includes:
 
 ### Model Choice
 
-The Librarian uses **Gemini Flash** (`gemini-3-flash-preview`) for cheap, fast operations. It runs invisibly in the background - users never see it directly.
+The Librarian uses **Gemini 3 Flash** (`gemini-3-flash-preview`) for cheap, fast operations. It runs invisibly in the background - users never see it directly. The model is called with low temperature (0.1) and low thinking level for consistent extraction.
 
 ### Fact Types
 
@@ -1261,17 +1276,18 @@ journal.commit_and_prune_step(step_id)?;
 
 #### `ActiveJournal`
 
-RAII handle proving a stream is in-flight:
+RAII handle proving a stream is in-flight. Text deltas are buffered in memory and flushed periodically to reduce SQLite write frequency and improve UI responsiveness.
 
 ```rust
 impl ActiveJournal {
     fn step_id(&self) -> StepId;
     fn model_name(&self) -> &str;  // Model name for attribution
     fn append_text(&mut self, journal: &mut StreamJournal, content: impl Into<String>) -> Result<()>;
-    fn append_done(&mut self, journal: &mut StreamJournal) -> Result<()>;
-    fn append_error(&mut self, journal: &mut StreamJournal, message: impl Into<String>) -> Result<()>;
-    fn seal(self, journal: &mut StreamJournal) -> Result<String>;
-    fn discard(self, journal: &mut StreamJournal) -> Result<u64>;
+    fn append_done(&mut self, journal: &mut StreamJournal) -> Result<()>;  // Flushes buffer first
+    fn append_error(&mut self, journal: &mut StreamJournal, message: impl Into<String>) -> Result<()>;  // Flushes buffer first
+    fn flush(&mut self, journal: &mut StreamJournal) -> Result<()>;  // Explicit flush
+    fn seal(self, journal: &mut StreamJournal) -> Result<String>;  // Flushes and seals
+    fn discard(self, journal: &mut StreamJournal) -> Result<u64>;  // Discards without flush
 }
 ```
 
@@ -1300,6 +1316,19 @@ pub enum RecoveredStream {
         last_seq: u64,
         model_name: Option<String>,
     },
+}
+```
+
+#### `JournalStats`
+
+Statistics about the stream journal:
+
+```rust
+pub struct JournalStats {
+    pub total_entries: u64,
+    pub sealed_entries: u64,
+    pub unsealed_entries: u64,
+    pub current_step_id: StepId,
 }
 ```
 
@@ -1343,6 +1372,14 @@ journal.commit_batch(batch_id)?;
 
 **Key invariant:** Only one uncommitted batch can exist at a time. Tool calls and results are persisted immediately, enabling recovery of partial batches after crashes.
 
+#### `ToolBatchId`
+
+Type alias for tool batch identifiers:
+
+```rust
+pub type ToolBatchId = i64;
+```
+
 #### `RecoveredToolBatch`
 
 Data recovered from an incomplete tool batch:
@@ -1372,8 +1409,12 @@ journal.record_call_start(batch_id, 0, "call_1", "read_file", None)?;
 journal.append_call_args(batch_id, "call_1", r#"{"path":"#)?;
 journal.append_call_args(batch_id, "call_1", r#""foo.rs"}"#)?;
 
-// Update assistant text
+// Update assistant text (full replacement)
 journal.update_assistant_text(batch_id, "I'll read that file...")?;
+
+// Or append deltas efficiently (O(n) instead of O(n^2))
+journal.append_assistant_delta(batch_id, "Hello")?;
+journal.append_assistant_delta(batch_id, " world")?;
 ```
 
 ### Summarization

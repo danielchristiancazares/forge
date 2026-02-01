@@ -1,3 +1,22 @@
+//! Tool result summarization and render decision logic.
+//!
+//! Determines whether tool results should be rendered in full or as compact summaries.
+//! The decision depends on:
+//!
+//! - **Tool type**: `Edit` and `Write` always render full (never summarized)
+//! - **Content analysis**: Diff-like content (with `@@`, `---`, `+++`) renders full
+//! - **Tool-specific parsing**: Each tool type has custom summary logic
+//!
+//! # Summary Formats
+//!
+//! | Tool | Format |
+//! |------|--------|
+//! | Read | "42 lines" or "lines 1-50" |
+//! | Search | "3 matches in 2 files" |
+//! | Glob | "5 files" |
+//! | Bash/Pwsh | "exit 0: first line" |
+//! | GitStatus | "1 staged, 2 modified" |
+
 use std::collections::HashSet;
 
 use forge_types::ToolCall;

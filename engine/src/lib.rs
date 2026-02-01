@@ -1,6 +1,32 @@
 //! Core engine for Forge - state machine and orchestration.
 //!
-//! This crate contains the App state machine without TUI dependencies.
+//! This crate contains the `App` state machine without TUI dependencies, providing:
+//!
+//! - **Application state**: The [`App`] struct manages all runtime state
+//! - **Input modes**: Vim-style modal editing (Normal, Insert, Command, Model)
+//! - **Streaming**: LLM response streaming with tool call handling
+//! - **Tool execution**: Approval flow, crash recovery, and result journaling
+//! - **Context management**: Token budgeting, summarization triggers
+//! - **Persistence**: Session state, history, and checkpoint recovery
+//!
+//! # Architecture
+//!
+//! The engine uses dual state machines:
+//!
+//! 1. **Input state** ([`InputState`]): Controls which input mode is active
+//! 2. **Operation state** ([`OperationState`]): Tracks async operations (streaming, summarization)
+//!
+//! The TUI layer (`forge_tui`) reads state from `App` and forwards input back to it.
+//! No rendering logic lives in this crate.
+//!
+//! # Type-Driven Design
+//!
+//! Operations requiring proof of state use token types:
+//!
+//! - [`InsertToken`]: Proof that we're in Insert mode
+//! - [`CommandToken`]: Proof that we're in Command mode
+//! - [`QueuedUserMessage`]: Proof that a message is validated and ready to send
+//! - [`PreparedContext`]: Proof that context was built within token budget
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -131,8 +157,22 @@ struct ParsedToolCalls {
     pre_resolved: Vec<ToolResult>,
 }
 
-/// A message being streamed - existence proves streaming is active.
-/// Typestate: consuming this produces a complete assistant `Message`.
+/// An in-flight streaming response from an LLM.
+///
+/// This type uses the typestate pattern: its existence proves streaming is active.
+/// When the stream completes, the `StreamingMessage` is consumed to produce a
+/// complete assistant [`Message`].
+///
+/// # Tool Call Accumulation
+///
+/// As `ToolCallStart` and `ToolCallDelta` events arrive, tool calls are accumulated
+/// in [`ToolCallAccumulator`] structs. Arguments are streamed as JSON strings and
+/// parsed only when the stream completes.
+///
+/// # Thinking Capture
+///
+/// By default, thinking/reasoning deltas are discarded. Set `capture_thinking: true`
+/// in the constructor to accumulate them for UI rendering.
 #[derive(Debug)]
 pub struct StreamingMessage {
     model: ModelName,

@@ -6,19 +6,19 @@ compliance (RFC 9309), HTTP fetching with optional headless browser rendering,
 HTML-to-Markdown extraction, token-aware chunking, and LRU disk caching.
 
 ## LLM-TOC
-<!-- Auto-generated section map for LLM context -->
+<!-- Section map for LLM context (approximate line ranges) -->
 | Lines | Section |
 |-------|---------|
-| 1-36 | Header, Intro, LLM-TOC, Table of Contents |
-| 37-51 | Architecture |
-| 52-156 | Key Types |
-| 157-177 | Public API |
-| 178-274 | How It Works |
-| 275-327 | Configuration |
-| 328-387 | Usage Examples |
-| 388-391 | Integration with Other Crates |
-| 392-404 | Testing |
-| 405-423 | Design Principles |
+| 1-35 | Header, Intro, LLM-TOC, Table of Contents |
+| 36-50 | Architecture |
+| 51-155 | Key Types |
+| 156-176 | Public API |
+| 177-275 | How It Works |
+| 276-330 | Configuration |
+| 331-390 | Usage Examples |
+| 391-396 | Integration with Other Crates |
+| 397-410 | Testing |
+| 411-430 | Design Principles |
 
 ## Table of Contents
 
@@ -387,7 +387,8 @@ match fetch(input, &config).await {
 
 ## Integration with Other Crates
 
-- **`forge-context`**: Uses `TokenCounter` for accurate token counting
+- **`forge-context`**: Uses `TokenCounter` for accurate token counting in chunking
+- **`forge-types`**: Shares core domain types across the workspace
 
 ## Testing
 

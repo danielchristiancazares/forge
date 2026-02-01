@@ -1,4 +1,26 @@
-//! TUI rendering for Forge using ratatui.
+//! Terminal user interface rendering for Forge.
+//!
+//! This crate provides the visual layer for Forge, handling:
+//!
+//! - **Full-screen rendering** via ratatui's alternate screen with scrollable
+//!   message history, overlays (command palette, model selector), and modal animations
+//! - **Inline rendering** that preserves terminal scrollback with a fixed-height viewport
+//! - **Input handling** with vim-style modal editing (Normal, Insert, Command modes)
+//! - **Theming** with Kanagawa Wave palette and accessibility options
+//! - **Markdown rendering** with caching for efficient re-renders
+//!
+//! # Architecture
+//!
+//! The crate is purely presentational: it renders state from `forge_engine` and
+//! forwards user input back to it. No business logic, API calls, or persistence.
+//!
+//! # Message Caching
+//!
+//! Static message content is cached in a thread-local `MessageLinesCache` to avoid
+//! rebuilding every frame. Cache invalidation occurs when:
+//! - Display version changes (new messages)
+//! - Terminal width changes
+//! - UI options change (ascii_only, high_contrast, reduced_motion)
 
 mod diff_render;
 mod effects;

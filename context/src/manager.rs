@@ -25,6 +25,10 @@ const MAX_SUMMARY_RATIO: f32 = 0.95;
 const MIN_SUMMARY_TOKENS: u32 = 64;
 const MAX_SUMMARY_TOKENS: u32 = 2048;
 
+/// Configuration for the summarization process.
+///
+/// Controls how aggressively older messages are compressed and how many
+/// recent messages are preserved from summarization.
 #[derive(Debug, Clone)]
 pub struct SummarizationConfig {
     /// Target compression ratio (e.g., 0.15 = 15% of original size).
@@ -55,13 +59,25 @@ pub enum ContextBuildError {
     },
 }
 
+/// Details about what needs to be summarized to fit within the token budget.
+///
+/// Returned as part of [`ContextBuildError::SummarizationNeeded`] when
+/// the context exceeds the model's budget but can be resolved by
+/// summarizing older messages.
 #[derive(Debug, Clone)]
 pub struct SummarizationNeeded {
+    /// How many tokens over budget the unsummarized content is.
     pub excess_tokens: u32,
+    /// Message IDs that should be summarized.
     pub messages_to_summarize: Vec<MessageId>,
+    /// Human-readable suggestion for the caller.
     pub suggestion: String,
 }
 
+/// Contiguous range of message IDs selected for summarization.
+///
+/// Summaries must cover contiguous message ranges to maintain
+/// chronological coherence. This type ensures that constraint.
 #[derive(Debug, Clone)]
 pub struct SummarizationScope {
     ids: Vec<MessageId>,
@@ -87,14 +103,27 @@ pub enum ContextAdaptation {
     },
 }
 
+/// Request for async summarization, created by [`ContextManager::prepare_summarization`].
+///
+/// Contains everything needed to generate a summary via an LLM call.
+/// After generation, pass the result to [`ContextManager::complete_summarization`].
 #[derive(Debug)]
 pub struct PendingSummarization {
+    /// The scope defining which messages to summarize.
     pub scope: SummarizationScope,
+    /// The actual messages to summarize, in order.
     pub messages: Vec<(MessageId, Message)>,
+    /// Total tokens in the original messages.
     pub original_tokens: u32,
+    /// Target token count for the generated summary.
     pub target_tokens: u32,
 }
 
+/// Proof that working context was successfully built within the token budget.
+///
+/// This type serves as a proof token that the context preparation succeeded.
+/// It borrows the `ContextManager` to ensure the context remains valid until
+/// the API call completes.
 #[derive(Debug)]
 pub struct PreparedContext<'a> {
     manager: &'a ContextManager,
@@ -115,16 +144,28 @@ impl PreparedContext<'_> {
     }
 }
 
+/// Current context usage state with explicit summarization status.
+///
+/// Returned by [`ContextManager::usage_status`] to provide UI-friendly
+/// information about the current context state.
 #[derive(Debug, Clone)]
 pub enum ContextUsageStatus {
+    /// Context fits within budget and is ready for use.
     Ready(ContextUsage),
+    /// Context exceeds budget; summarization is needed before API call.
     NeedsSummarization {
+        /// Current usage statistics.
         usage: ContextUsage,
+        /// Details about what needs summarization.
         needed: SummarizationNeeded,
     },
+    /// Recent messages alone exceed budget; unrecoverable without user action.
     RecentMessagesTooLarge {
+        /// Current usage statistics.
         usage: ContextUsage,
+        /// Tokens required by recent messages.
         required_tokens: u32,
+        /// Available budget tokens.
         budget_tokens: u32,
     },
 }

@@ -196,19 +196,16 @@ impl ModelRegistry {
     /// * `model` - The model name/identifier to look up
     #[must_use]
     pub fn get(&self, model: &str) -> ResolvedModelLimits {
-        // Check overrides first (exact match)
         if let Some(limits) = self.overrides.get(model) {
             return ResolvedModelLimits::new(*limits, ModelLimitsSource::Override);
         }
 
-        // Try prefix matching against known models
         for (prefix, limits) in KNOWN_MODELS {
             if model.starts_with(prefix) {
                 return ResolvedModelLimits::new(*limits, ModelLimitsSource::Prefix(prefix));
             }
         }
 
-        // Return default fallback
         ResolvedModelLimits::new(DEFAULT_LIMITS, ModelLimitsSource::DefaultFallback)
     }
 

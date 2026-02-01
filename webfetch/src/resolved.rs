@@ -1,7 +1,26 @@
-//! Resolved, invariant-safe configuration and request types.
+//! Invariant-safe configuration resolution.
 //!
-//! This module converts optional, boundary-level configuration into concrete
-//! representations suitable for core logic (Invariant-First Architecture).
+//! This module transforms optional boundary-level configuration ([`WebFetchConfig`])
+//! into concrete internal types ([`ResolvedConfig`], [`ResolvedRequest`]) that have no
+//! `Option` fields. This follows the "Parse, don't validate" principle - optional
+//! configuration is resolved once at the boundary, and core logic operates on
+//! types where all invariants are enforced.
+//!
+//! # Types
+//!
+//! - [`ResolvedConfig`]: Fully resolved configuration with concrete values
+//! - [`ResolvedRequest`]: Request parameters with resolved defaults
+//! - [`CachePolicy`]: Enabled with settings or Disabled
+//! - [`BrowserPolicy`]: Enabled with settings or Disabled
+//!
+//! # Usage
+//!
+//! ```ignore
+//! let resolved = ResolvedConfig::from_config(&config)?;
+//! let request = ResolvedRequest::from_input(input, &resolved);
+//! // Now use resolved.timeout, request.max_chunk_tokens, etc.
+//! // No Option unwrapping needed in downstream code.
+//! ```
 use std::path::PathBuf;
 use std::time::Duration;
 

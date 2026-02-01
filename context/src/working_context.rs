@@ -305,7 +305,6 @@ mod tests {
 
     #[test]
     fn test_severity_levels() {
-        // Low usage
         let low = ContextUsage {
             used_tokens: 10_000,
             budget_tokens: 200_000,
@@ -313,7 +312,6 @@ mod tests {
         };
         assert_eq!(low.severity(), 0);
 
-        // Medium usage
         let medium = ContextUsage {
             used_tokens: 160_000,
             budget_tokens: 200_000,
@@ -321,7 +319,6 @@ mod tests {
         };
         assert_eq!(medium.severity(), 1);
 
-        // High usage
         let high = ContextUsage {
             used_tokens: 190_000,
             budget_tokens: 200_000,
@@ -409,7 +406,6 @@ mod tests {
             budget_tokens: 100_000,
             summarized_segments: 0,
         };
-        // Exactly 70% should be green (severity 0)
         assert_eq!(usage.severity(), 0);
     }
 
@@ -420,7 +416,6 @@ mod tests {
             budget_tokens: 100_000,
             summarized_segments: 0,
         };
-        // Just over 70% should be yellow (severity 1)
         assert_eq!(usage.severity(), 1);
     }
 
@@ -431,7 +426,6 @@ mod tests {
             budget_tokens: 100_000,
             summarized_segments: 0,
         };
-        // Exactly 90% should be yellow (severity 1)
         assert_eq!(usage.severity(), 1);
     }
 
@@ -442,7 +436,6 @@ mod tests {
             budget_tokens: 100_000,
             summarized_segments: 0,
         };
-        // Just over 90% should be red (severity 2)
         assert_eq!(usage.severity(), 2);
     }
 }

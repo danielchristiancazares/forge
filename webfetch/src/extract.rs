@@ -93,7 +93,6 @@ impl ConversionContext {
             return resolved.to_string();
         }
 
-        // Return as-is if resolution fails
         href.to_string()
     }
 
