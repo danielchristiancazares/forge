@@ -377,7 +377,7 @@ impl App {
             join_handle: None,
             event_rx: None,
             abort_handle: None,
-            output_lines: Vec::new(),
+            output_lines: std::collections::HashMap::new(),
             remaining_capacity_bytes: initial_capacity_bytes,
             turn_recorder,
         };
@@ -390,7 +390,6 @@ impl App {
             return false;
         };
 
-        exec.output_lines.clear();
         exec.current_call = Some(call.clone());
 
         let (event_tx, event_rx) = mpsc::channel(TOOL_EVENT_CHANNEL_CAPACITY);
@@ -522,29 +521,21 @@ impl App {
                                     tool_call_id,
                                     tool_name,
                                 } => {
-                                    let is_current =
-                                        exec.current_call.as_ref().map(|call| call.id.as_str())
-                                            == Some(tool_call_id.as_str());
-                                    if is_current {
-                                        exec.output_lines.push(format!(
-                                            "▶ {} ({})",
-                                            tools::sanitize_output(&tool_name),
-                                            tool_call_id
-                                        ));
-                                    }
+                                    let lines =
+                                        exec.output_lines.entry(tool_call_id.clone()).or_default();
+                                    lines.push(format!(
+                                        "▶ {} ({})",
+                                        tools::sanitize_output(&tool_name),
+                                        tool_call_id
+                                    ));
                                 }
                                 tools::ToolEvent::StdoutChunk {
                                     tool_call_id,
                                     chunk,
                                 } => {
-                                    let is_current =
-                                        exec.current_call.as_ref().map(|call| call.id.as_str())
-                                            == Some(tool_call_id.as_str());
-                                    if !is_current {
-                                        continue;
-                                    }
+                                    let lines = exec.output_lines.entry(tool_call_id).or_default();
                                     append_tool_output_lines(
-                                        &mut exec.output_lines,
+                                        lines,
                                         &tools::sanitize_output(&chunk),
                                         None,
                                     );
@@ -553,26 +544,17 @@ impl App {
                                     tool_call_id,
                                     chunk,
                                 } => {
-                                    let is_current =
-                                        exec.current_call.as_ref().map(|call| call.id.as_str())
-                                            == Some(tool_call_id.as_str());
-                                    if !is_current {
-                                        continue;
-                                    }
+                                    let lines = exec.output_lines.entry(tool_call_id).or_default();
                                     append_tool_output_lines(
-                                        &mut exec.output_lines,
+                                        lines,
                                         &tools::sanitize_output(&chunk),
                                         Some("[stderr] "),
                                     );
                                 }
                                 tools::ToolEvent::Completed { tool_call_id } => {
-                                    let is_current =
-                                        exec.current_call.as_ref().map(|call| call.id.as_str())
-                                            == Some(tool_call_id.as_str());
-                                    if is_current {
-                                        exec.output_lines
-                                            .push(format!("✓ Tool completed ({tool_call_id})"));
-                                    }
+                                    let lines =
+                                        exec.output_lines.entry(tool_call_id.clone()).or_default();
+                                    lines.push(format!("✓ Tool completed ({tool_call_id})"));
                                 }
                             },
                             Err(mpsc::error::TryRecvError::Empty) => break,

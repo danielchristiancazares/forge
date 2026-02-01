@@ -3,7 +3,7 @@
 //! This module contains the core state machine for tracking what the App is currently doing.
 //! These types are internal to the engine crate.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -36,8 +36,6 @@ impl DataDir {
 }
 
 use crate::ActiveJournal;
-
-use std::collections::HashMap;
 
 #[derive(Debug)]
 pub(crate) struct ActiveStream {
@@ -125,7 +123,7 @@ pub(crate) struct ActiveToolExecution {
     pub(crate) join_handle: Option<tokio::task::JoinHandle<ToolResult>>,
     pub(crate) event_rx: Option<mpsc::Receiver<tools::ToolEvent>>,
     pub(crate) abort_handle: Option<AbortHandle>,
-    pub(crate) output_lines: Vec<String>,
+    pub(crate) output_lines: HashMap<String, Vec<String>>,
     pub(crate) remaining_capacity_bytes: usize,
     pub(crate) turn_recorder: ChangeRecorder,
 }

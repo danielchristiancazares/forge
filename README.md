@@ -19,9 +19,9 @@ Forge brings the efficiency of vim-style modal editing to AI conversation, letti
 | 384-412 | Workspace Structure |
 | 413-447 | Development |
 | 448-517 | Troubleshooting |
-| 518-553 | Documentation Index |
-| 554-564 | Contributing and License |
-| 565-567 | License |
+| 518-557 | Documentation Index |
+| 558-568 | Contributing |
+| 569-571 | License |
 <!-- toc:end -->
 
 ## Features
@@ -48,12 +48,12 @@ Forge's adaptive context management system keeps conversations flowing without h
 Enable the LLM to interact with your local filesystem and execute tasks:
 
 - **Built-in Tools**:
-  - File operations: `read_file`, `write_file`, `apply_patch`, `Glob`
+  - File operations: `Read`, `Write`, `Edit` (LP1 patches), `Glob`
   - Search: `Search` (aliases: `search`, `rg`, `ripgrep`, `ugrep`, `ug`)
-  - Shell: `run_command`
+  - Shell: `Bash`
   - Web: `WebFetch`
-  - Context: `recall` (retrieve facts from conversation)
-  - Git: `git_status`, `git_diff`, `git_add`, `git_commit`, `git_log`, `git_branch`, `git_checkout`, `git_stash`, `git_show`, `git_blame`, `git_restore`
+  - Context: `Recall` (retrieve facts from conversation)
+  - Git: `GitStatus`, `GitDiff`, `GitAdd`, `GitCommit`, `GitLog`, `GitBranch`, `GitCheckout`, `GitStash`, `GitShow`, `GitBlame`, `GitRestore`
 - **Sandboxed Execution**: Path-based tools are restricted to allowed directories with symlink escape prevention
 - **Interactive Approval**: Review and approve or deny tool calls before execution
 - **Stale File Protection**: Files must be read before patching, with SHA validation to catch external changes
@@ -195,8 +195,8 @@ max_tool_iterations_per_user_turn = 4
 
 [tools.approval]
 mode = "default"                       # "permissive", "default", or "strict"
-allowlist = ["read_file", "git_status", "git_diff", "git_log", "git_show", "git_blame"]  # Skip approval for these tools
-denylist = ["run_command"]             # Always deny these tools
+allowlist = ["Read", "GitStatus", "GitDiff", "GitLog", "GitShow", "GitBlame"]  # Skip approval for these tools
+denylist = ["Bash"]                    # Always deny these tools
 
 [tools.environment]
 denylist = ["*_KEY", "*_TOKEN", "*_SECRET", "*_PASSWORD", "AWS_*", "ANTHROPIC_*", "OPENAI_*"]  # Case-insensitive patterns
@@ -528,12 +528,15 @@ Detailed documentation is available in each crate:
 | [`providers/README.md`](providers/README.md) | LLM API clients (Claude, OpenAI, Gemini) |
 | [`types/README.md`](types/README.md) | Core domain types |
 | [`webfetch/README.md`](webfetch/README.md) | Web page fetching and HTML-to-markdown |
+| [`scripts/README.md`](scripts/README.md) | Development and maintenance scripts |
+| [`tests/README.md`](tests/README.md) | Integration test structure and guidelines |
 
 ### Design Documents
 
 | Document | Description |
 | -------- | ----------- |
 | [`DESIGN.md`](DESIGN.md) | Type-driven design philosophy |
+| [`INVARIANT_FIRST_ARCHITECTURE.md`](INVARIANT_FIRST_ARCHITECTURE.md) | Making invalid states unrepresentable |
 | [`docs/LP1.md`](docs/LP1.md) | Line Patch v1 format specification |
 | [`docs/ANTHROPIC_MESSAGES_API.md`](docs/ANTHROPIC_MESSAGES_API.md) | Claude API reference |
 | [`docs/OPENAI_RESPONSES_GPT52.md`](docs/OPENAI_RESPONSES_GPT52.md) | OpenAI Responses API integration |
@@ -549,6 +552,7 @@ Detailed documentation is available in each crate:
 | [`docs/FILEOPS_SRS.md`](docs/FILEOPS_SRS.md) | File operations specification |
 | [`docs/OUTLINE_TOOL_SRS.md`](docs/OUTLINE_TOOL_SRS.md) | Outline tool specification |
 | [`docs/PWSH_TOOL_SRS.md`](docs/PWSH_TOOL_SRS.md) | PowerShell tool specification |
+| [`docs/SUBAGENT_SRS.md`](docs/SUBAGENT_SRS.md) | Subagent delegation specification |
 | [`docs/COLOR_SCHEME.md`](docs/COLOR_SCHEME.md) | Color scheme documentation |
 
 ## Contributing

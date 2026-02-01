@@ -642,22 +642,55 @@ fn build_dynamic_message_lines(
                         Style::default().fg(palette.text_muted),
                     )));
                 }
-            }
 
-            if let Some(output_lines) = app.tool_loop_output_lines()
-                && !output_lines.is_empty()
-            {
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "  Tool output:",
-                    Style::default().fg(palette.text_muted),
-                )));
-                for line in output_lines {
-                    let safe_line = sanitize_terminal_text(line);
-                    lines.push(Line::from(Span::styled(
-                        format!("    {}", safe_line.as_ref()),
-                        Style::default().fg(palette.text_secondary),
-                    )));
+                // Show output lines for this specific tool
+                if let Some(output_lines) = app.tool_loop_output_lines_for(&status.id)
+                    && !output_lines.is_empty()
+                {
+                    let is_running = matches!(status.status, ToolCallStatusKind::Running);
+                    let output_style = Style::default().fg(palette.text_secondary);
+                    let connector = glyphs.tree_connector;
+
+                    if is_running {
+                        // For running tool, show windowed output
+                        let window =
+                            tool_output_window(Some(output_lines), TOOL_OUTPUT_WINDOW_LINES);
+                        for (i, line) in window.iter().enumerate() {
+                            if line.is_empty() {
+                                continue;
+                            }
+                            let safe_line = sanitize_terminal_text(line);
+                            if i == 0 {
+                                lines.push(Line::from(vec![
+                                    Span::styled(
+                                        format!("    {connector} "),
+                                        Style::default().fg(palette.text_muted),
+                                    ),
+                                    Span::styled(safe_line.into_owned(), output_style),
+                                ]));
+                            } else {
+                                lines.push(Line::from(vec![
+                                    Span::raw("      "),
+                                    Span::styled(safe_line.into_owned(), output_style),
+                                ]));
+                            }
+                        }
+                    } else {
+                        // For completed tools, show last meaningful line as summary
+                        let last_line = output_lines.iter().rev().find(|l| {
+                            !l.starts_with("▶ ") && !l.starts_with("✓ ") && !l.trim().is_empty()
+                        });
+                        if let Some(line) = last_line {
+                            let safe_line = sanitize_terminal_text(line);
+                            lines.push(Line::from(vec![
+                                Span::styled(
+                                    format!("    {connector} "),
+                                    Style::default().fg(palette.text_muted),
+                                ),
+                                Span::styled(safe_line.into_owned(), output_style),
+                            ]));
+                        }
+                    }
                 }
             }
         }

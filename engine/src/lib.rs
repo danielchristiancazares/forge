@@ -859,7 +859,16 @@ impl App {
     }
 
     pub fn tool_loop_output_lines(&self) -> Option<&[String]> {
-        Some(&self.tool_exec_ref()?.output_lines)
+        let exec = self.tool_exec_ref()?;
+        let current_id = exec.current_call.as_ref()?.id.as_str();
+        exec.output_lines.get(current_id).map(Vec::as_slice)
+    }
+
+    pub fn tool_loop_output_lines_for(&self, tool_call_id: &str) -> Option<&[String]> {
+        self.tool_exec_ref()?
+            .output_lines
+            .get(tool_call_id)
+            .map(Vec::as_slice)
     }
 
     pub fn tool_approval_requests(&self) -> Option<&[tools::ConfirmationRequest]> {
