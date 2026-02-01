@@ -1,6 +1,7 @@
 # CLAUDE.md
 
 This file provides guidance for Claude Code (claude.ai/code) when working with code in this repository.
+Adapt your Bash commands to use pwsh.exe as you are running in a powershell 7 environment.
 
 ## Build Commands to run after making changes
 
