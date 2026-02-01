@@ -63,7 +63,7 @@ pub(crate) fn canonical_tool_name(name: &str) -> std::borrow::Cow<'static, str> 
 
         // Shell/command tools
         "Pwsh" => Cow::Borrowed("Pwsh"),
-        "Bash" => Cow::Borrowed("Bash"),
+        "Run" => Cow::Borrowed("Run"),
 
         // Web tools
         "WebFetch" => Cow::Borrowed("WebFetch"),
@@ -108,7 +108,7 @@ fn extract_primary_arg(name: &str, args: &Value) -> Option<String> {
         "GitStatus" => return None,
 
         // Shell/command tools
-        "Pwsh" | "Bash" => "command",
+        "Pwsh" | "Run" => "command",
 
         // Web tools
         "WebFetch" => "url",

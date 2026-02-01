@@ -426,7 +426,7 @@ impl App {
 
             let default_timeout = match call.name.as_str() {
                 "Read" | "Edit" => settings.timeouts.file_operations_timeout,
-                "Bash" => settings.timeouts.shell_commands_timeout,
+                "Run" => settings.timeouts.shell_commands_timeout,
                 _ => settings.timeouts.default_timeout,
             };
 

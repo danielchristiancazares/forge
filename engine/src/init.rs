@@ -622,7 +622,7 @@ impl App {
                         .map(|cfg| cfg.denylist.clone())
                         .unwrap_or_default()
                 } else {
-                    vec!["Bash".to_string()]
+                    vec!["Run".to_string()]
                 };
                 list.into_iter().collect()
             },

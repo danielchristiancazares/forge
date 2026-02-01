@@ -1020,7 +1020,7 @@ impl ToolExecutor for WriteFileTool {
 
 impl ToolExecutor for RunCommandTool {
     fn name(&self) -> &'static str {
-        "Bash"
+        "Run"
     }
 
     fn description(&self) -> &'static str {
@@ -1103,7 +1103,7 @@ impl ToolExecutor for RunCommandTool {
             }
 
             let child = command.spawn().map_err(|e| ToolError::ExecutionFailed {
-                tool: "Bash".to_string(),
+                tool: "Run".to_string(),
                 message: e.to_string(),
             })?;
 
@@ -1115,7 +1115,7 @@ impl ToolExecutor for RunCommandTool {
                     .stdout
                     .take()
                     .ok_or_else(|| ToolError::ExecutionFailed {
-                        tool: "Bash".to_string(),
+                        tool: "Run".to_string(),
                         message: "Failed to capture stdout".to_string(),
                     })?;
             let stderr =
@@ -1124,7 +1124,7 @@ impl ToolExecutor for RunCommandTool {
                     .stderr
                     .take()
                     .ok_or_else(|| ToolError::ExecutionFailed {
-                        tool: "Bash".to_string(),
+                        tool: "Run".to_string(),
                         message: "Failed to capture stderr".to_string(),
                     })?;
 
@@ -1150,7 +1150,7 @@ impl ToolExecutor for RunCommandTool {
                     .wait()
                     .await
                     .map_err(|e| ToolError::ExecutionFailed {
-                        tool: "Bash".to_string(),
+                        tool: "Run".to_string(),
                         message: e.to_string(),
                     })?;
             guard.disarm();
@@ -1177,7 +1177,7 @@ impl ToolExecutor for RunCommandTool {
                     format!("exit code {exit_code}\n\n{output}")
                 };
                 return Err(ToolError::ExecutionFailed {
-                    tool: "Bash".to_string(),
+                    tool: "Run".to_string(),
                     message,
                 });
             }

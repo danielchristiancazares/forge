@@ -50,7 +50,7 @@ Enable the LLM to interact with your local filesystem and execute tasks:
 - **Built-in Tools**:
   - File operations: `Read`, `Write`, `Edit` (LP1 patches), `Glob`
   - Search: `Search` (aliases: `search`, `rg`, `ripgrep`, `ugrep`, `ug`)
-  - Shell: `Bash`
+  - Shell: `Run`
   - Web: `WebFetch`
   - Context: `Recall` (retrieve facts from conversation)
   - Git: `GitStatus`, `GitDiff`, `GitAdd`, `GitCommit`, `GitLog`, `GitBranch`, `GitCheckout`, `GitStash`, `GitShow`, `GitBlame`, `GitRestore`
@@ -196,7 +196,7 @@ max_tool_iterations_per_user_turn = 4
 [tools.approval]
 mode = "default"                       # "permissive", "default", or "strict"
 allowlist = ["Read", "GitStatus", "GitDiff", "GitLog", "GitShow", "GitBlame"]  # Skip approval for these tools
-denylist = ["Bash"]                    # Always deny these tools
+denylist = ["Run"]                     # Always deny these tools
 
 [tools.environment]
 denylist = ["*_KEY", "*_TOKEN", "*_SECRET", "*_PASSWORD", "AWS_*", "ANTHROPIC_*", "OPENAI_*"]  # Case-insensitive patterns

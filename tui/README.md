@@ -548,7 +548,7 @@ Tool names are expected in PascalCase from the tool registry. The function maps 
 | `ListDir`, `Outline` | Directory/code inspection |
 | `Glob`, `Search` | Search operations |
 | `GitStatus`, `GitDiff`, `GitAdd`, `GitCommit`, etc. | Git operations |
-| `Pwsh`, `Bash` | Shell commands |
+| `Pwsh`, `Run` | Shell commands |
 | `WebFetch` | URL fetching |
 | `Build`, `Test` | Build system operations |
 
@@ -571,7 +571,7 @@ pub(crate) enum ToolKind {
     Read,     // File reading
     Search,   // Content search (ripgrep)
     Glob,     // File pattern matching
-    Bash,     // Shell commands (Bash/Pwsh)
+    Shell,    // Shell commands (Run/Pwsh)
     Edit,     // File editing
     Write,    // File creation
     GitStatus,// Git status
@@ -592,7 +592,7 @@ pub(crate) enum ToolKind {
 | Read | "42 lines" or "lines 1-50" (if range specified in args) |
 | Search | "3 matches in 2 files" (parsed from JSON output) |
 | Glob | "5 files" (from JSON array or line count) |
-| Bash/Pwsh | "exit 0: first output line" (parsed from JSON or text) |
+| Run/Pwsh | "exit 0: first output line" (parsed from JSON or text) |
 | GitStatus | "1 staged, 2 modified, 3 untracked" (git porcelain format) |
 | Other | Line count or truncated first line |
 

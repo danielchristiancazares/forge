@@ -14,7 +14,7 @@
 //! | Read | "42 lines" or "lines 1-50" |
 //! | Search | "3 matches in 2 files" |
 //! | Glob | "5 files" |
-//! | Bash/Pwsh | "exit 0: first line" |
+//! | Run/Pwsh | "exit 0: first line" |
 //! | GitStatus | "1 staged, 2 modified" |
 
 use std::collections::HashSet;
@@ -30,7 +30,7 @@ pub(crate) enum ToolKind {
     Read,
     Search,
     Glob,
-    Bash,
+    Shell,
     Edit,
     Write,
     GitStatus,
@@ -69,7 +69,7 @@ impl ToolKind {
             "Read" => ToolKind::Read,
             "Search" => ToolKind::Search,
             "Glob" => ToolKind::Glob,
-            "Bash" | "Pwsh" => ToolKind::Bash,
+            "Run" | "Pwsh" => ToolKind::Shell,
             "Edit" => ToolKind::Edit,
             "Write" => ToolKind::Write,
             "GitStatus" => ToolKind::GitStatus,
@@ -147,7 +147,7 @@ pub(crate) fn format_tool_result_summary(
             summarize_search(content).unwrap_or_else(|| summarize_generic(content, max_width))
         }
         Some(ToolKind::Glob) => summarize_glob(content),
-        Some(ToolKind::Bash) => summarize_bash(content, is_error, max_width),
+        Some(ToolKind::Shell) => summarize_shell(content, is_error, max_width),
         Some(ToolKind::GitStatus) => {
             summarize_git_status(content).unwrap_or_else(|| summarize_generic(content, max_width))
         }
@@ -187,7 +187,7 @@ fn summarize_glob(content: &str) -> String {
     format!("{count} {label}")
 }
 
-fn summarize_bash(content: &str, is_error: bool, max_width: usize) -> String {
+fn summarize_shell(content: &str, is_error: bool, max_width: usize) -> String {
     let (stdout, exit_code) = parse_command_output(content);
     let first = first_non_empty_line(stdout.as_deref().unwrap_or(content));
     let fallback_line = first_line(content);
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn summary_bash_reports_exit_and_first_line() {
-        let call = ToolCall::new("call_4", "Bash", json!({"command": "echo hi"}));
+        let call = ToolCall::new("call_4", "Run", json!({"command": "echo hi"}));
         let meta = ToolCallMeta::from_call(&call);
         let summary = format_tool_result_summary(Some(&meta), "hello\nworld", false, 80);
         assert_eq!(summary, "exit 0: hello");
@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn other_tools_with_diff_content_get_full_diff_aware() {
-        let call = ToolCall::new("call_3", "bash", json!({}));
+        let call = ToolCall::new("call_3", "Run", json!({}));
         let meta = ToolCallMeta::from_call(&call);
         let content = "--- old\n+++ new\n@@ -1 +1 @@\n-foo\n+bar";
         let result = tool_result_render_decision(Some(&meta), content, false, 80);
@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn other_tools_without_diff_get_summary() {
-        let call = ToolCall::new("call_4", "bash", json!({}));
+        let call = ToolCall::new("call_4", "Run", json!({}));
         let meta = ToolCallMeta::from_call(&call);
         let content = "hello\nworld";
         let result = tool_result_render_decision(Some(&meta), content, false, 80);

@@ -277,7 +277,7 @@ pub struct WebFetchConfig {
 /// ```
 #[derive(Debug, Default, Deserialize)]
 pub struct ShellConfig {
-    /// Override shell binary (e.g., "pwsh", "bash", "/usr/local/bin/fish").
+    /// Override shell binary (e.g., "pwsh", "Run", "/usr/local/bin/fish").
     pub binary: Option<String>,
     /// Override shell args (e.g., `["-c"]` or `["/C"]`).
     pub args: Option<Vec<String>>,
@@ -815,13 +815,13 @@ shell_commands_seconds = 120
 [tools.approval]
 mode = "default"
 allowlist = ["Read", "ListDir"]
-denylist = ["Bash"]
+denylist = ["Run"]
 "#;
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         let approval = config.tools.unwrap().approval.unwrap();
         assert_eq!(approval.mode, Some("default".to_string()));
         assert_eq!(approval.allowlist, vec!["Read", "ListDir"]);
-        assert_eq!(approval.denylist, vec!["Bash"]);
+        assert_eq!(approval.denylist, vec!["Run"]);
     }
 
     #[test]

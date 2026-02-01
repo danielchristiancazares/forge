@@ -616,7 +616,7 @@ fn tool_call_args_overflow_pre_resolved_error() {
 
     stream.apply_event(StreamEvent::ToolCallStart {
         id: "call-1".to_string(),
-        name: "Bash".to_string(),
+        name: "Run".to_string(),
         thought_signature: None,
     });
     stream.apply_event(StreamEvent::ToolCallDelta {
