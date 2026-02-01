@@ -223,7 +223,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
         .border_style(Style::default().fg(palette.text_muted))
         .padding(Padding::horizontal(1));
 
-    if app.is_empty() {
+    if app.is_empty() && app.display_items().is_empty() {
         app.update_scroll_max(0);
         MESSAGE_CACHE.with(|cache| cache.borrow_mut().invalidate());
         let welcome = create_welcome_screen(app, palette, glyphs);
@@ -344,7 +344,10 @@ fn build_message_lines(
 ) -> (Vec<Line<'static>>, usize) {
     let mut lines: Vec<Line> = Vec::new();
     let mut msg_count = 0;
-    let mut tool_calls: HashMap<&str, ToolCallMeta> = HashMap::new();
+    // Buffer ToolUse messages until we see their paired ToolResult.
+    // History stores all ToolUses before ToolResults for API correctness,
+    // but we want to render each ToolUse immediately before its result.
+    let mut buffered_tool_uses: HashMap<&str, (&Message, ToolCallMeta)> = HashMap::new();
 
     for item in app.display_items() {
         let msg = match item {
@@ -353,15 +356,42 @@ fn build_message_lines(
         };
         match msg {
             Message::ToolUse(call) => {
-                tool_calls.insert(call.id.as_str(), ToolCallMeta::from_call(call));
-                render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs, None);
+                // Buffer instead of rendering immediately
+                buffered_tool_uses.insert(call.id.as_str(), (msg, ToolCallMeta::from_call(call)));
             }
             Message::ToolResult(result) => {
-                let meta = tool_calls.get(result.tool_call_id.as_str());
-                render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs, meta);
+                // Render paired ToolUse first (if buffered), then the result
+                if let Some((tool_use_msg, meta)) =
+                    buffered_tool_uses.remove(result.tool_call_id.as_str())
+                {
+                    render_message_static(
+                        tool_use_msg,
+                        &mut lines,
+                        &mut msg_count,
+                        palette,
+                        glyphs,
+                        None,
+                    );
+                    render_message_static(
+                        msg,
+                        &mut lines,
+                        &mut msg_count,
+                        palette,
+                        glyphs,
+                        Some(&meta),
+                    );
+                } else {
+                    // Orphan result (ToolUse rendered in previous pass or missing)
+                    render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs, None);
+                }
             }
             _ => render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs, None),
         }
+    }
+
+    // Render any orphaned ToolUse messages (in-flight, no result yet)
+    for (_, (msg, _)) in buffered_tool_uses {
+        render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs, None);
     }
 
     let total_rows = wrapped_line_count_exact(&lines, width);
@@ -526,7 +556,7 @@ fn build_dynamic_message_lines(
                 .and_then(|calls| calls.iter().find(|call| call.id == current_id))
         {
             let canonical = tool_display::canonical_tool_name(&call.name);
-            if matches!(canonical.as_ref(), "Bash" | "Pwsh") {
+            if matches!(canonical.as_ref(), "Run" | "Pwsh") {
                 rendered_shell_view = true;
                 let spinner = spinner_frame(app.tick_count(), app.ui_options());
                 let display = tool_display::format_tool_call_compact(&call.name, &call.arguments);

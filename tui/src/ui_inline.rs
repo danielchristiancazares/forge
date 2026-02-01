@@ -110,6 +110,12 @@ impl InlineOutput {
         let mut msg_count = usize::from(self.has_output);
 
         if self.next_display_index < items.len() {
+            // Buffer ToolUse messages until we see their paired ToolResult.
+            // History stores all ToolUses before ToolResults for API correctness,
+            // but we want to render each ToolUse immediately before its result.
+            let mut buffered_tool_uses: HashMap<String, (DisplayItem, ToolCallMeta)> =
+                HashMap::new();
+
             for item in &items[self.next_display_index..] {
                 let msg = match item {
                     DisplayItem::History(id) => app.history().get_entry(*id).message(),
@@ -118,18 +124,31 @@ impl InlineOutput {
 
                 match msg {
                     Message::ToolUse(call) => {
-                        self.tool_calls
-                            .insert(call.id.clone(), ToolCallMeta::from_call(call));
-                        append_message_lines(
-                            &mut lines,
-                            msg,
-                            &mut msg_count,
-                            &palette,
-                            &glyphs,
-                            None,
-                        );
+                        let meta = ToolCallMeta::from_call(call);
+                        // Store metadata for result lookup (persists across render passes)
+                        self.tool_calls.insert(call.id.clone(), meta.clone());
+                        // Buffer for rendering when we see the result
+                        buffered_tool_uses.insert(call.id.clone(), (item.clone(), meta));
                     }
                     Message::ToolResult(result) => {
+                        // Render paired ToolUse first (if buffered in this pass)
+                        if let Some((tool_item, _)) =
+                            buffered_tool_uses.remove(&result.tool_call_id)
+                        {
+                            let tool_msg = match &tool_item {
+                                DisplayItem::History(id) => app.history().get_entry(*id).message(),
+                                DisplayItem::Local(m) => m,
+                            };
+                            append_message_lines(
+                                &mut lines,
+                                tool_msg,
+                                &mut msg_count,
+                                &palette,
+                                &glyphs,
+                                None,
+                            );
+                        }
+                        // Render the result with metadata lookup
                         let meta = self.tool_calls.get(&result.tool_call_id);
                         append_message_lines(
                             &mut lines,
@@ -150,6 +169,15 @@ impl InlineOutput {
                         None,
                     ),
                 }
+            }
+
+            // Render any orphaned ToolUse messages (in-flight, no result yet)
+            for (_, (item, _)) in buffered_tool_uses {
+                let msg = match &item {
+                    DisplayItem::History(id) => app.history().get_entry(*id).message(),
+                    DisplayItem::Local(m) => m,
+                };
+                append_message_lines(&mut lines, msg, &mut msg_count, &palette, &glyphs, None);
             }
 
             self.next_display_index = items.len();
