@@ -7,7 +7,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
 
@@ -16,6 +16,10 @@ use forge_engine::{App, InputMode};
 const INPUT_POLL_TIMEOUT: Duration = Duration::from_millis(25); // shutdown responsiveness
 const INPUT_CHANNEL_CAPACITY: usize = 1024; // bounded: no OOM
 const MAX_EVENTS_PER_FRAME: usize = 64; // never starve rendering
+
+/// Threshold for detecting rapid keypresses that indicate paste without bracketed paste support.
+/// If keys arrive faster than this, treat Enter as newline instead of submit.
+const PASTE_DETECTION_THRESHOLD: Duration = Duration::from_millis(5);
 
 enum InputMsg {
     Event(Event),
@@ -27,6 +31,10 @@ pub struct InputPump {
     rx: mpsc::Receiver<InputMsg>,
     stop: Arc<AtomicBool>,
     join: Option<tokio::task::JoinHandle<()>>,
+    /// Tracks last key event time for paste detection fallback.
+    /// When bracketed paste isn't supported, rapid keystrokes indicate paste.
+    /// Initialized to creation time - first keystroke is never "rapid".
+    last_key_time: Instant,
 }
 
 impl InputPump {
@@ -41,6 +49,7 @@ impl InputPump {
             rx,
             stop,
             join: Some(join),
+            last_key_time: Instant::now(),
         }
     }
 
@@ -92,10 +101,16 @@ fn input_loop(stop: Arc<AtomicBool>, tx: mpsc::Sender<InputMsg>) {
 /// Drain queued input events without blocking rendering.
 /// Returns true if the app should quit (same semantics as before).
 pub fn handle_events(app: &mut App, input: &mut InputPump) -> Result<bool> {
+    let now = Instant::now();
     for _ in 0..MAX_EVENTS_PER_FRAME {
         match input.rx.try_recv() {
             Ok(InputMsg::Event(ev)) => {
-                if apply_event(app, ev) {
+                // Detect rapid keypresses that indicate paste without bracketed paste support
+                let rapid_input =
+                    now.duration_since(input.last_key_time) < PASTE_DETECTION_THRESHOLD;
+                input.last_key_time = now;
+
+                if apply_event(app, ev, rapid_input) {
                     return Ok(true);
                 }
             }
@@ -109,7 +124,10 @@ pub fn handle_events(app: &mut App, input: &mut InputPump) -> Result<bool> {
     Ok(app.should_quit())
 }
 
-fn apply_event(app: &mut App, event: Event) -> bool {
+/// Apply a single input event to the app.
+/// `rapid_input` indicates keystroke arrived very quickly after the previous one,
+/// suggesting paste without bracketed paste support.
+fn apply_event(app: &mut App, event: Event, rapid_input: bool) -> bool {
     match event {
         Event::Key(key) => {
             // Handle press + repeat events (ignore releases)
@@ -144,7 +162,7 @@ fn apply_event(app: &mut App, event: Event) -> bool {
 
             match app.input_mode() {
                 InputMode::Normal => handle_normal_mode(app, key),
-                InputMode::Insert => handle_insert_mode(app, key),
+                InputMode::Insert => handle_insert_mode(app, key, rapid_input),
                 InputMode::Command => handle_command_mode(app, key),
                 InputMode::ModelSelect => handle_model_select_mode(app, key),
                 InputMode::FileSelect => handle_file_select_mode(app, key),
@@ -206,9 +224,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('a') => {
             app.enter_insert_mode_at_end();
         }
-        // Enter insert mode with new line
+        // Toggle thinking visibility
         KeyCode::Char('o') => {
-            app.enter_insert_mode_with_clear();
+            app.toggle_thinking();
         }
         // Enter command mode
         KeyCode::Char(':' | '/') => {
@@ -292,7 +310,11 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
     }
 }
 
-fn handle_insert_mode(app: &mut App, key: KeyEvent) {
+/// Handle insert mode input.
+/// `rapid_input` indicates this keystroke arrived very quickly after the previous one,
+/// which suggests paste without bracketed paste support - in this case, Enter inserts
+/// a newline instead of submitting.
+fn handle_insert_mode(app: &mut App, key: KeyEvent, rapid_input: bool) {
     // Tool approval modal takes priority over insert mode
     if app.tool_approval_requests().is_some() {
         match key.code {
@@ -318,13 +340,17 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    // Handle newline insertion (Ctrl+Enter, Shift+Enter, Ctrl+J)
-    let is_newline = matches!(
+    // Handle newline insertion:
+    // - Explicit: Ctrl+Enter, Shift+Enter, Ctrl+J
+    // - Implicit: bare Enter during rapid input (paste without bracketed paste support)
+    let is_explicit_newline = matches!(
         (key.code, key.modifiers),
         (KeyCode::Enter, m) if m.contains(KeyModifiers::CONTROL) || m.contains(KeyModifiers::SHIFT)
     ) || matches!(key, KeyEvent { code: KeyCode::Char('j'), modifiers: m, .. } if m.contains(KeyModifiers::CONTROL));
 
-    if is_newline {
+    let is_paste_newline = rapid_input && key.code == KeyCode::Enter && key.modifiers.is_empty();
+
+    if is_explicit_newline || is_paste_newline {
         let Some(token) = app.insert_token() else {
             return;
         };
@@ -337,7 +363,7 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.enter_normal_mode();
         }
-        // Submit message
+        // Submit message (only when not detected as paste)
         KeyCode::Enter => {
             let Some(token) = app.insert_token() else {
                 return;

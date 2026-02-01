@@ -160,6 +160,19 @@ impl InlineOutput {
                         );
                         self.tool_calls.remove(&result.tool_call_id);
                     }
+                    Message::Thinking(_) => {
+                        // Only render thinking if show_thinking is enabled
+                        if app.ui_options().show_thinking {
+                            append_message_lines(
+                                &mut lines,
+                                msg,
+                                &mut msg_count,
+                                &palette,
+                                &glyphs,
+                                None,
+                            );
+                        }
+                    }
                     _ => append_message_lines(
                         &mut lines,
                         msg,

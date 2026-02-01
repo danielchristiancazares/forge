@@ -385,6 +385,12 @@ fn build_message_lines(
                     render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs, None);
                 }
             }
+            Message::Thinking(_) => {
+                // Only render thinking if show_thinking is enabled
+                if app.ui_options().show_thinking {
+                    render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs, None);
+                }
+            }
             _ => render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs, None),
         }
     }

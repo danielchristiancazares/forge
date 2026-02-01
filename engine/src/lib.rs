@@ -530,6 +530,11 @@ impl App {
         self.view.ui_options
     }
 
+    /// Toggle visibility of thinking/reasoning content in the UI.
+    pub fn toggle_thinking(&mut self) {
+        self.view.ui_options.show_thinking = !self.view.ui_options.show_thinking;
+    }
+
     /// Toggle visibility of the files panel.
     pub fn toggle_files_panel(&mut self) {
         let panel = &mut self.view.files_panel;
