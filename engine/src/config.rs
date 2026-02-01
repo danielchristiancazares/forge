@@ -3,6 +3,7 @@ use std::io::Write;
 use std::{env, fs, path::PathBuf};
 
 #[derive(Debug, Default, Deserialize)]
+#[allow(clippy::unsafe_derive_deserialize)] // unsafe is for Unix permission checks, unrelated to serde
 pub struct ForgeConfig {
     pub app: Option<AppConfig>,
     pub api_keys: Option<ApiKeys>,
