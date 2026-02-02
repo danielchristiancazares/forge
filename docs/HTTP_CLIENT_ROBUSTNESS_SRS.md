@@ -1,10 +1,14 @@
 # HTTP Client Robustness SRS
 
-Production-grade HTTP client requirements synthesized from official Anthropic SDKs (Python, Java, Go, TypeScript).
+Production-grade HTTP client requirements synthesized from official Anthropic and OpenAI SDKs.
+
+Both providers use [Stainless](https://www.stainlessapi.com/) for SDK generation, resulting in nearly identical HTTP client patterns across all official SDKs.
 
 ## SDK Analysis
 
 ### Source Code Reviewed
+
+#### Anthropic SDKs
 
 | SDK | Key Files |
 |-----|-----------|
@@ -13,22 +17,40 @@ Production-grade HTTP client requirements synthesized from official Anthropic SD
 | Go | `requestconfig.go`, `ssestream.go`, `constants.go` |
 | TypeScript | `client.ts`, `streaming.ts`, `constants.ts` |
 
-### Feature Matrix
+#### OpenAI SDKs
 
-| Feature | Python | Java | Go | TS | Forge |
-|---------|--------|------|-----|-----|-------|
-| TCP Keepalive | ✅ 60s/5 probes | ❌ | ❌ | ❌ | ❌ |
-| HTTP/2 Ping | ❌ | ✅ 1 min | ❌ | ❌ | ❌ |
-| Pool Config | ✅ 1000/100 | ✅ per-host=max | ❌ | ❌ | ❌ |
-| Default Timeout | 10min (5s connect) | 10min (1min connect) | None | 10min | 30s connect |
-| Max Retries | 2 | 2 | 2 | 2 | 0 (API), 3 (summarize) |
-| Backoff | 0.5×2^n, max 8s | Same | Same | Same | Only summarization |
-| Jitter | ±25% | Same | Same | Same | 0-200ms |
-| Retry-After Header | ✅ | ✅ | ✅ | ✅ | ❌ |
-| x-should-retry Header | ✅ | ✅ | ✅ | ✅ | ❌ |
-| SSE ping handling | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Idle stream detection | ❌ | ❌ | ❌ | ❌ | ✅ 60s |
-| Model token limits | ✅ Opus:8192 | ? | ✅ | ✅ | ❌ |
+| SDK | Key Files |
+|-----|-----------|
+| Python | `_base_client.py`, `_constants.py`, `_streaming.py` |
+| Node/TS | `src/client.ts`, `src/core/streaming.ts` |
+| Go | `internal/requestconfig/requestconfig.go`, `packages/ssestream/ssestream.go` |
+| Java | `RetryingHttpClient.kt`, `SseHandler.kt`, `Timeout.kt` |
+| .NET | Delegates to `System.ClientModel` (Azure SDK patterns) |
+
+#### Community SDKs
+
+| SDK | Key Files |
+|-----|-----------|
+| async-openai (Rust) | `client.rs`, `config.rs` - uses `backoff` crate |
+
+### Cross-Provider Feature Matrix
+
+| Feature | Anthropic | OpenAI | async-openai | Forge |
+|---------|-----------|--------|--------------|-------|
+| Max Retries | 2 | 2 (.NET: 3) | unlimited | 0 (API), 3 (summarize) |
+| Initial Delay | 0.5s | 0.5s | 1ms | N/A |
+| Max Delay | 8s | 8s | 32s | N/A |
+| Jitter | ±25% | ±25% | ±10% | 0-200ms |
+| Retry-After | ✅ 3-tier | ✅ 3-tier | ❌ | ❌ |
+| x-should-retry | ✅ | ✅ | ❌ | ❌ |
+| Retry Count Header | ✅ | ✅ | ❌ | ❌ |
+| Idempotency-Key | ✅ | ✅ (not Go) | ❌ | ❌ |
+| Connection Pool | 1000/100 (Python) | 1000/100 (Python) | delegated | default |
+| Connect Timeout | 5s (Python) | 5s (Python) | none | 30s |
+| Request Timeout | 10min | 10min | none | none |
+| TCP Keepalive | Python only | ❌ | ❌ | ❌ |
+| HTTP/2 Ping | Java only | ❌ | ❌ | ❌ |
+| Idle Detection | ❌ | ❌ | ❌ | ✅ 60s |
 
 ---
 
@@ -36,7 +58,9 @@ Production-grade HTTP client requirements synthesized from official Anthropic SD
 
 ### 1. TCP Keepalive
 
-**Source**: Python SDK (`_base_client.py:845-869`)
+**Source**: Anthropic Python SDK (`_base_client.py:845-869`)
+
+**Note**: Only the Anthropic Python SDK configures TCP keepalive. OpenAI SDKs and other Anthropic SDKs delegate to HTTP library defaults.
 
 **Specification**:
 ```
@@ -58,7 +82,9 @@ reqwest::Client::builder()
 
 ### 2. Connection Pool Configuration
 
-**Source**: Python SDK (`_constants.py:11`)
+**Source**: Anthropic/OpenAI Python SDKs (`_constants.py`)
+
+**Note**: Both providers use identical httpx connection limits. Other language SDKs delegate to their HTTP library defaults.
 
 **Specification**:
 ```
@@ -80,7 +106,9 @@ reqwest::Client::builder()
 
 ### 3. HTTP/2 Ping Interval
 
-**Source**: Java SDK (`OkHttpClient.kt:262`)
+**Source**: Anthropic Java SDK (`OkHttpClient.kt:262`)
+
+**Note**: Only the Anthropic Java SDK configures HTTP/2 pings. OpenAI SDKs do not configure this.
 
 **Specification**:
 ```
@@ -103,7 +131,7 @@ reqwest::Client::builder()
 
 ### 4. Retry with Exponential Backoff
 
-**Source**: All SDKs (identical implementation)
+**Source**: All Anthropic and OpenAI SDKs (identical Stainless-generated implementation)
 
 **Specification**:
 ```
@@ -235,15 +263,36 @@ impl Timeout {
 
 ### 6. Request Headers
 
-**Source**: All SDKs
+**Source**: All Anthropic and OpenAI SDKs
 
-**Specification**:
+#### Retry Headers
 
 | Header | Value | Purpose |
 |--------|-------|---------|
 | `X-Stainless-Retry-Count` | `0`, `1`, `2`, ... | Current retry attempt |
 | `X-Stainless-Timeout` | Seconds (integer) | Client timeout for server optimization |
-| `Idempotency-Key` | `stainless-rust-retry-{uuid}` | Safe retry deduplication |
+| `Idempotency-Key` | `stainless-{lang}-retry-{uuid}` | Safe retry deduplication |
+
+#### Idempotency Key Formats by Language
+
+| Language | Format |
+|----------|--------|
+| Python | `stainless-python-retry-{uuid}` |
+| Node/TS | `stainless-node-retry-{uuid}` |
+| Java | `stainless-java-retry-{uuid}` |
+| Go | Not implemented |
+| Rust (proposed) | `stainless-rust-retry-{uuid}` |
+
+#### Platform Headers (sent on all requests)
+
+| Header | Example Value |
+|--------|---------------|
+| `X-Stainless-Lang` | `python`, `js`, `go`, `java` |
+| `X-Stainless-Package-Version` | `1.0.0` |
+| `X-Stainless-OS` | `Linux`, `Darwin`, `Windows` |
+| `X-Stainless-Arch` | `x64`, `arm64` |
+| `X-Stainless-Runtime` | `CPython`, `node`, `go` |
+| `X-Stainless-Runtime-Version` | `3.11.0`, `20.0.0` |
 
 **Rust Implementation**:
 ```rust
@@ -270,9 +319,11 @@ fn add_retry_headers(
 
 ---
 
-### 7. Non-Streaming Token Limits
+### 7. Non-Streaming Token Limits (Anthropic Only)
 
-**Source**: All SDKs (`constants.go`, `_constants.py`, `constants.ts`)
+**Source**: Anthropic SDKs (`constants.go`, `_constants.py`, `constants.ts`)
+
+**Note**: OpenAI SDKs do not enforce non-streaming token limits.
 
 **Specification**:
 
@@ -309,22 +360,41 @@ fn calculate_nonstreaming_timeout(max_tokens: u32, model: &str) -> Result<Durati
 
 ### 8. SSE Event Handling
 
-**Source**: All SDKs
+Both providers use Server-Sent Events for streaming, with provider-specific event types.
 
-**Event Types**:
+#### Common Patterns
 
-| Event | Handling |
-|-------|----------|
-| `message_start` | Yield to consumer |
-| `message_delta` | Yield to consumer |
-| `message_stop` | Yield to consumer |
-| `content_block_start` | Yield to consumer |
-| `content_block_delta` | Yield to consumer |
-| `content_block_stop` | Yield to consumer |
-| `ping` | Ignore (keepalive, resets idle timer) |
-| `error` | Parse JSON body, throw as API error |
+| Pattern | Both Providers |
+|---------|----------------|
+| Termination signal | `[DONE]` marker in data field |
+| Error detection | `error` field in JSON payload |
+| Event boundaries | Double newline (`\n\n`) |
+| Comment lines | Lines starting with `:` ignored |
 
-**Current Status**: Forge already implements this correctly in `process_sse_stream()`.
+#### Anthropic SSE Events
+
+| Event Type | Description |
+|------------|-------------|
+| `message_start` | Message metadata, usage info |
+| `message_delta` | Stop reason, final usage |
+| `message_stop` | Stream complete |
+| `content_block_start` | New content block with type |
+| `content_block_delta` | Text or tool use delta |
+| `content_block_stop` | Content block complete |
+| `ping` | Keepalive (ignore, resets idle timer) |
+| `error` | API error with type/message |
+
+#### OpenAI SSE Events
+
+| Event Type | Description |
+|------------|-------------|
+| (no event field) | Chat completion chunk |
+| `thread.run.created` | Assistants API: run started |
+| `thread.run.completed` | Assistants API: run finished |
+| `thread.message.delta` | Assistants API: message chunk |
+| `error` | API error |
+
+**Current Status**: Forge implements Anthropic SSE correctly in `process_sse_stream()`. OpenAI streaming uses simpler event structure (no event type field for chat completions).
 
 ---
 
@@ -371,14 +441,33 @@ fn calculate_nonstreaming_timeout(max_tokens: u32, model: &str) -> Result<Durati
 
 ## What Forge Already Does Better
 
-| Feature | Forge | SDKs |
-|---------|-------|------|
-| Idle stream detection | ✅ 60s timeout | ❌ None |
-| Error body size cap | ✅ 32 KiB | ❌ Unbounded |
-| SSE buffer limit | ✅ 4 MiB | ❌ Varies |
-| Parse error threshold | ✅ 3 failures abort | ❌ Varies |
+| Feature | Forge | Anthropic SDKs | OpenAI SDKs |
+|---------|-------|----------------|-------------|
+| Idle stream detection | ✅ 60s timeout | ❌ None | ❌ None |
+| Error body size cap | ✅ 32 KiB | ❌ Unbounded | ❌ Unbounded |
+| SSE buffer limit | ✅ 4 MiB | ❌ Varies | ❌ Varies |
+| Parse error threshold | ✅ 3 failures abort | ❌ Varies | ❌ Varies |
 
-Forge's idle stream detection is ahead of all official SDKs.
+Forge's idle stream detection is ahead of all official SDKs from both providers.
+
+---
+
+## Community SDK Comparison
+
+The **async-openai** Rust crate takes a different approach:
+
+| Feature | async-openai | Official SDKs |
+|---------|--------------|---------------|
+| Retry library | `backoff` crate | Custom implementation |
+| Initial delay | 1ms | 500ms |
+| Max delay | 32s | 8s |
+| Jitter | ±10% | ±25% |
+| Retry-After parsing | ❌ | ✅ |
+| x-should-retry | ❌ | ✅ |
+| Idempotency keys | ❌ | ✅ |
+| 429 handling | ✅ (except insufficient_quota) | ✅ |
+
+**Recommendation**: Forge should follow the official SDK patterns rather than async-openai's approach for consistency with provider expectations.
 
 ---
 
