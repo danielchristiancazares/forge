@@ -41,11 +41,6 @@ impl super::App {
             DistillationStart::Failed
         };
 
-        if !self.memory_enabled() {
-            self.push_notification("Memory disabled: distillation unavailable");
-            return fail_with_rollback(self, queued_request);
-        }
-
         if self.busy_reason().is_some() {
             return fail_with_rollback(self, queued_request);
         }
@@ -144,10 +139,6 @@ impl super::App {
     /// `context_manager.complete_distillation()`.
     pub fn poll_distillation(&mut self) {
         use futures_util::future::FutureExt;
-
-        if !self.memory_enabled() {
-            return;
-        }
 
         let finished = match &self.state {
             OperationState::Distilling(state) => state.task.handle.is_finished(),

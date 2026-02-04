@@ -609,32 +609,27 @@ impl FullHistory {
         Ok(expected_id)
     }
 
-    /// Get all history entries.
     #[must_use]
     pub fn entries(&self) -> &[HistoryEntry] {
         &self.entries
     }
 
-    /// Number of distillates in history.
     #[must_use]
     pub fn distillates_len(&self) -> usize {
         self.distillates.len()
     }
 
-    /// Next Distillate ID to assign.
     #[must_use]
     pub fn next_distillate_id(&self) -> DistillateId {
         DistillateId::new(self.distillates.len() as u64)
     }
 
-    /// Get a specific entry by ID.
     #[must_use]
     pub fn get_entry(&self, id: MessageId) -> &HistoryEntry {
         let index = id.as_u64() as usize;
         &self.entries[index]
     }
 
-    /// Get a specific distillate by ID.
     #[must_use]
     pub fn distillate(&self, id: DistillateId) -> &Distillate {
         &self.distillates[id.0 as usize]
@@ -645,7 +640,6 @@ impl FullHistory {
         self.entries.iter().map(HistoryEntry::token_count).sum()
     }
 
-    /// Number of messages in history.
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -680,7 +674,6 @@ impl FullHistory {
         Some(entry.message().clone())
     }
 
-    /// Count of Distilled messages.
     #[must_use]
     pub fn distilled_count(&self) -> usize {
         self.entries.iter().filter(|e| e.is_distilled()).count()

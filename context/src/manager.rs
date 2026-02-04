@@ -27,10 +27,6 @@ const MAX_DISTILLATION_RATIO: f32 = 0.95;
 const MIN_DISTILLATION_TOKENS: u32 = 64;
 const MAX_DISTILLATION_TOKENS: u32 = 2048;
 
-/// Configuration for the distillation process.
-///
-/// Controls how aggressively older messages are compressed and how many
-/// recent messages are preserved from distillation.
 #[derive(Debug, Clone)]
 pub struct DistillationConfig {
     /// Target compression ratio (e.g., 0.15 = 15% of original size).
@@ -186,7 +182,6 @@ pub struct ContextManager {
 }
 
 impl ContextManager {
-    /// Create a new context manager for the given model.
     #[must_use]
     pub fn new(initial_model: ModelName) -> Self {
         let registry = ModelRegistry::new();
@@ -680,25 +675,21 @@ impl ContextManager {
         }
     }
 
-    /// Access to full history.
     #[must_use]
     pub fn history(&self) -> &FullHistory {
         &self.history
     }
 
-    /// Current model name.
     #[must_use]
     pub fn current_model(&self) -> &ModelName {
         &self.current_model
     }
 
-    /// Current model limits.
     #[must_use]
     pub fn current_limits(&self) -> ModelLimits {
         self.current_limits
     }
 
-    /// Where the current model limits came from.
     #[must_use]
     pub fn current_limits_source(&self) -> ModelLimitsSource {
         self.current_limits_source

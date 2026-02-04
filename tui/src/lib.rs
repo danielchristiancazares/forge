@@ -76,7 +76,6 @@ use self::tool_result_summary::{ToolCallMeta, ToolResultRender, tool_result_rend
 /// Stores static (history/local) content keyed by display + UI options.
 #[derive(Default)]
 struct MessageLinesCache {
-    /// Cache is valid only when key matches.
     key: MessageCacheKey,
     lines: Vec<Line<'static>>,
     total_rows: usize,
@@ -182,7 +181,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         full_main_area
     };
 
-    // Vertical split within main area for messages + input
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(input_height)])
@@ -753,9 +751,7 @@ fn render_message_static(
     }
     *msg_count += 1;
 
-    // Message header with role icon and name
     let (icon, name, name_style) = message_header_parts(msg, palette, glyphs);
-
     match msg {
         Message::User(_) => {
             let content_style = Style::default().fg(palette.text_primary);

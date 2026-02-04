@@ -573,7 +573,6 @@ impl App {
         }
     }
 
-    /// Check if the files panel is visible.
     pub fn files_panel_visible(&self) -> bool {
         self.view.files_panel.visible
     }
@@ -600,7 +599,6 @@ impl App {
         self.view.files_panel_effect = None;
     }
 
-    /// Get the session-wide file change log.
     pub fn session_changes(&self) -> &SessionChangeLog {
         &self.session_changes
     }
@@ -667,12 +665,10 @@ impl App {
         panel.expanded = expanded_path;
     }
 
-    /// Check if a diff is currently expanded.
     pub fn files_panel_expanded(&self) -> bool {
         self.view.files_panel.expanded.is_some()
     }
 
-    /// Get the current files panel state.
     pub fn files_panel_state(&self) -> &FilesPanelState {
         &self.view.files_panel
     }
@@ -683,10 +679,6 @@ impl App {
         self.view.files_panel.diff_scroll = 0;
     }
 
-    /// Sync the files panel selection index with the expanded path.
-    ///
-    /// Called after files are added/removed to ensure the selected index
-    /// correctly corresponds to the expanded file path.
     pub fn files_panel_sync_selection(&mut self) {
         let panel = &mut self.view.files_panel;
         let files = self
@@ -719,12 +711,10 @@ impl App {
         self.view.files_panel.diff_scroll += 10;
     }
 
-    /// Scroll the diff view up.
     pub fn files_panel_scroll_diff_up(&mut self) {
         self.view.files_panel.diff_scroll = self.view.files_panel.diff_scroll.saturating_sub(10);
     }
 
-    /// Generate diff for the currently expanded file in the panel.
     pub fn files_panel_diff(&self) -> Option<FileDiff> {
         let path = self.view.files_panel.expanded.as_ref()?;
 

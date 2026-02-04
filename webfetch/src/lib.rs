@@ -101,10 +101,8 @@ pub async fn fetch(
     let resolved = ResolvedConfig::from_config(config)?;
     let request = ResolvedRequest::from_input(input, &resolved);
 
-    // Determine effective max_chunk_tokens
     let max_chunk_tokens = request.max_chunk_tokens;
 
-    // Determine rendering method for cache key
     let cache_lookup_method = if request.force_browser {
         cache::RenderingMethod::Browser
     } else {
@@ -128,7 +126,6 @@ pub async fn fetch(
 
     let chunks = chunk::chunk(&extracted.markdown, max_chunk_tokens);
 
-    // Determine final rendering method
     let final_rendering_method = if used_browser {
         RenderingMethod::Browser
     } else {
@@ -155,7 +152,6 @@ pub async fn fetch(
         }
     }
 
-    // Add condition notes in canonical order
     if dom_truncated {
         notes.push(Note::BrowserDomTruncated);
     }
@@ -259,7 +255,6 @@ async fn fetch_content(
     resolved_ips: &[std::net::IpAddr],
     notes: &mut Vec<Note>,
 ) -> Result<(String, url::Url, bool, bool, bool, bool), WebFetchError> {
-    // Check if browser is requested or needed
     if input.force_browser {
         if browser::is_available(config) {
             let response = browser::render(&input.url, config).await?;
@@ -276,14 +271,11 @@ async fn fetch_content(
         notes.push(Note::BrowserUnavailableUsedHttp);
     }
 
-    // Try HTTP fetch
     let response = http::fetch(&input.url, resolved_ips, config).await?;
     let charset_fallback = response.charset_fallback;
 
-    // Decode body to string
     let html = decode_body(&response.body, response.charset.as_deref())?;
 
-    // Check for SPA heuristics (minimal HTML that likely needs JS)
     if !input.force_browser && is_spa_heuristic(&html) && browser::is_available(config) {
         // Try browser fallback for SPA
         if let Ok(browser_response) = browser::render(&input.url, config).await {

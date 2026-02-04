@@ -28,8 +28,6 @@ pub fn format_tool_call_compact(name: &str, args: &Value) -> String {
     }
 }
 
-/// Map tool names to canonical display names.
-/// Tool names are already canonical PascalCase from the tool registry.
 pub(crate) fn canonical_tool_name(name: &str) -> std::borrow::Cow<'static, str> {
     use std::borrow::Cow;
 
@@ -84,16 +82,10 @@ pub(crate) fn canonical_tool_name(name: &str) -> std::borrow::Cow<'static, str> 
 fn extract_primary_arg(name: &str, args: &Value) -> Option<String> {
     let obj = args.as_object()?;
 
-    // Tool-specific primary argument mapping
     let key = match name {
-        // Search tools
         "Glob" | "Search" => "pattern",
-
-        // File tools
         "Read" | "Write" | "Edit" | "Delete" | "ListDir" | "Outline" | "GitBlame" => "path",
         "Move" | "Copy" => "source",
-
-        // Git tools with primary args
         "GitCommit" => return format_git_commit(obj),
         "GitDiff" => return format_git_diff(obj),
         "GitAdd" => return format_git_add(obj),
@@ -103,20 +95,10 @@ fn extract_primary_arg(name: &str, args: &Value) -> Option<String> {
         "GitCheckout" => return format_git_checkout(obj),
         "GitShow" => return format_git_show(obj),
         "GitLog" => return format_git_log(obj),
-
-        // Git tools with no required args - show tool name only
         "GitStatus" => return None,
-
-        // Shell/command tools
         "Pwsh" | "Run" => "command",
-
-        // Web tools
         "WebFetch" => "url",
-
-        // Build/test tools
         "Build" | "Test" => return format_build_test(obj),
-
-        // Unknown tool - try common keys
         _ => return try_common_keys(obj),
     };
 

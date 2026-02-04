@@ -83,9 +83,10 @@ impl std::fmt::Debug for ApiKeys {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ContextConfig {
-    /// Enable Context Infinity (distillation-based context management).
-    /// Default is determined by environment variable FORGE_CONTEXT_INFINITY.
-    pub infinity: Option<bool>,
+    /// Enable memory (librarian fact extraction and retrieval).
+    /// Defaults to false. Can also be controlled via FORGE_CONTEXT_INFINITY env var when [context] section is absent.
+    #[serde(default)]
+    pub memory: bool,
 }
 
 /// Legacy configuration for prompt caching.
@@ -726,10 +727,10 @@ google = "AIza-test"
     fn parse_context_config() {
         let toml_str = r"
 [context]
-infinity = true
+memory = true
 ";
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.context.unwrap().infinity, Some(true));
+        assert!(config.context.unwrap().memory);
     }
 
     #[test]

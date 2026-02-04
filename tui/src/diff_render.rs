@@ -60,7 +60,6 @@ fn diff_style_for_line(line: &str, base_style: Style, palette: &Palette) -> Styl
             .add_modifier(Modifier::BOLD);
     }
 
-    // Hunk headers.
     if line.starts_with("@@") {
         return Style::default()
             .fg(palette.accent)
@@ -74,12 +73,11 @@ fn diff_style_for_line(line: &str, base_style: Style, palette: &Palette) -> Styl
             .add_modifier(Modifier::ITALIC);
     }
 
-    // Deletions / additions.
     if line.starts_with('-') {
-        return Style::default().fg(palette.error); // red
+        return Style::default().fg(palette.error);
     }
     if line.starts_with('+') {
-        return Style::default().fg(palette.success); // green
+        return Style::default().fg(palette.success);
     }
 
     base_style

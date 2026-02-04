@@ -25,19 +25,11 @@ use forge_types::{ModelName, PredefinedModel};
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelLimits {
-    /// Maximum input context window in tokens.
     context_window: u32,
-    /// Maximum output tokens the model can generate.
     max_output: u32,
 }
 
 impl ModelLimits {
-    /// Creates new model limits with the given context window and max output.
-    ///
-    /// # Arguments
-    ///
-    /// * `context_window` - Maximum input context in tokens
-    /// * `max_output` - Maximum output tokens
     #[must_use]
     pub const fn new(context_window: u32, max_output: u32) -> Self {
         Self {
@@ -160,7 +152,6 @@ pub struct ModelRegistry {
 }
 
 impl ModelRegistry {
-    /// Creates a new model registry with no custom overrides.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -174,9 +165,6 @@ impl ModelRegistry {
     /// 1. Exact match in overrides
     /// 2. Exact match in the model catalog
     ///
-    /// # Arguments
-    ///
-    /// * `model` - The validated model to look up
     #[must_use]
     pub fn get(&self, model: &ModelName) -> ResolvedModelLimits {
         let predefined = model.predefined();
@@ -192,10 +180,6 @@ impl ModelRegistry {
     ///
     /// Overrides take precedence over catalog defaults for exact matches.
     ///
-    /// # Arguments
-    ///
-    /// * `model` - The exact model to override
-    /// * `limits` - The custom limits to use for this model
     #[cfg(test)]
     pub fn set_override(&mut self, model: PredefinedModel, limits: ModelLimits) {
         self.overrides.insert(model, limits);
@@ -204,10 +188,6 @@ impl ModelRegistry {
     /// Removes a custom override for a model.
     ///
     /// After removal, the model will use catalog defaults.
-    ///
-    /// # Arguments
-    ///
-    /// * `model` - The model whose override should be removed
     ///
     /// # Returns
     ///

@@ -469,16 +469,12 @@ impl super::App {
                 }
             },
             Command::Distill => {
-                if self.memory_enabled() {
-                    self.push_notification("Distilling older messages...");
-                    let result = self.try_start_distillation(None);
-                    if matches!(result, DistillationStart::NotNeeded) {
-                        self.push_notification("No messages need distillation");
-                    }
-                    // If Failed, try_start_distillation already set status
-                } else {
-                    self.push_notification("Memory disabled: distillation unavailable");
+                self.push_notification("Distilling older messages...");
+                let result = self.try_start_distillation(None);
+                if matches!(result, DistillationStart::NotNeeded) {
+                    self.push_notification("No messages need distillation");
                 }
+                // If Failed, try_start_distillation already set status
             }
             Command::Cancel => {
                 self.cancel_active_operation();

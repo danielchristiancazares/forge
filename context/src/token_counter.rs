@@ -17,15 +17,12 @@ use tiktoken_rs::{CoreBPE, o200k_base};
 
 use forge_types::Message;
 
-/// Singleton encoder instance.
 ///
 /// The tiktoken encoder is expensive to initialize (loads vocabulary data),
 /// so we create it once and reuse it across all `TokenCounter` instances.
 static ENCODER: OnceLock<Option<CoreBPE>> = OnceLock::new();
 
-/// Returns a reference to the shared encoder instance.
-///
-/// Initializes the encoder on first call using `o200k_base` encoding.
+/// Returns the shared encoder, initializing on first call.
 fn get_encoder() -> Option<&'static CoreBPE> {
     ENCODER.get_or_init(|| o200k_base().ok()).as_ref()
 }
@@ -62,7 +59,6 @@ fn get_encoder() -> Option<&'static CoreBPE> {
 /// ```
 #[derive(Clone, Copy)]
 pub struct TokenCounter {
-    /// Reference to the shared encoder.
     encoder: Option<&'static CoreBPE>,
 }
 
@@ -75,10 +71,7 @@ impl std::fmt::Debug for TokenCounter {
 }
 
 impl TokenCounter {
-    /// Creates a new token counter.
-    ///
-    /// This is cheap to call - the underlying encoder is a singleton
-    /// that is initialized only once across all `TokenCounter` instances.
+    /// Initializes a counter using the shared singleton encoder.
     #[must_use]
     pub fn new() -> Self {
         let encoder = get_encoder();
@@ -140,7 +133,6 @@ impl TokenCounter {
         content_tokens + role_tokens + MESSAGE_OVERHEAD
     }
 
-    /// Counts total tokens for a slice of messages.
     ///
     /// This sums the token count of each message including their overhead.
     ///

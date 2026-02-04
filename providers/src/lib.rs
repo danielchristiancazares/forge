@@ -58,11 +58,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-// Re-export types that callers need
 pub use forge_types;
 
 const CONNECT_TIMEOUT_SECS: u64 = 30;
-/// Max idle time between SSE chunks before aborting.
 const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 60;
 
 // REQ-1: TCP Keepalive (from Anthropic Python SDK)
@@ -73,18 +71,12 @@ const TCP_KEEPALIVE_SECS: u64 = 60;
 const POOL_MAX_IDLE_PER_HOST: usize = 100;
 const POOL_IDLE_TIMEOUT_SECS: u64 = 90;
 
-/// Maximum bytes for SSE buffer before aborting (4 MiB).
-/// Prevents memory exhaustion from malicious/misbehaving servers.
 const MAX_SSE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
-/// Maximum consecutive SSE parse failures before aborting.
 const MAX_SSE_PARSE_ERRORS: usize = 3;
 
-/// Maximum characters of bad SSE payload to include in logs.
 const MAX_SSE_PARSE_ERROR_PREVIEW: usize = 160;
 
-/// Maximum bytes for error body reads (32 KiB).
-/// Prevents memory spikes from large error responses.
 const MAX_ERROR_BODY_BYTES: usize = 32 * 1024;
 
 /// Shared HTTP client for all provider requests.

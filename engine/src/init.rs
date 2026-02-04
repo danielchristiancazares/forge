@@ -163,10 +163,10 @@ impl App {
             .unwrap_or_else(|| provider.default_model());
 
         let context_manager = ContextManager::new(model.clone());
-        let context_infinity_enabled = config
+        let memory_enabled = config
             .as_ref()
             .and_then(|cfg| cfg.context.as_ref())
-            .and_then(|ctx| ctx.infinity)
+            .map(|ctx| ctx.memory)
             .unwrap_or_else(Self::context_infinity_enabled_from_env);
 
         let anthropic_config = config.as_ref().and_then(|cfg| cfg.anthropic.as_ref());
@@ -241,8 +241,8 @@ impl App {
 
         let data_dir = Self::data_dir();
 
-        // Initialize Librarian for Context Infinity (if enabled and Gemini API key available)
-        let librarian = if context_infinity_enabled {
+        // Initialize Librarian for memory (if enabled and Gemini API key available)
+        let librarian = if memory_enabled {
             if let Some(gemini_key) = api_keys.get(&Provider::Gemini).cloned() {
                 let librarian_path = data_dir.join("librarian.db");
                 match Librarian::open(&librarian_path, gemini_key) {
@@ -256,9 +256,7 @@ impl App {
                     }
                 }
             } else {
-                tracing::info!(
-                    "Context Infinity enabled but no Gemini API key - Librarian disabled"
-                );
+                tracing::info!("Memory enabled but no Gemini API key - Librarian disabled");
                 None
             }
         } else {
@@ -311,7 +309,7 @@ impl App {
             context_manager,
             stream_journal,
             state: OperationState::Idle,
-            memory_enabled: context_infinity_enabled,
+            memory_enabled,
             output_limits,
             cache_enabled,
             openai_options,

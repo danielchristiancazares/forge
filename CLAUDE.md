@@ -3,13 +3,24 @@
 This file provides guidance for Claude Code (claude.ai/code) when working with code in this repository.
 Adapt your Bash commands to use pwsh.exe as you are running in a powershell 7 environment.
 
-## Build Commands to run after making changes
+## Validation Workflow
 
+After making changes, always run:
+
+```bash
+just verify              # Runs fmt, clippy, and all tests
+```
+
+This ensures code quality before committing. The `just verify` command runs:
+- `cargo fmt` - Format code
+- `cargo clippy --workspace --all-targets -- -D warnings` - Lint with zero warnings
+- `cargo test` - Run all tests
+
+Individual commands (for debugging):
 ```bash
 cargo check              # Fast type-check
 cargo build              # Debug build
-cargo test               # Run tests
-cargo clippy --workspace --all-targets -- -D warnings  # Lint
+cargo test               # Run specific tests
 cargo cov                # Coverage report (requires cargo-llvm-cov, coverage should never go down)
 ```
 
@@ -32,7 +43,7 @@ openai = "${OPENAI_API_KEY}"
 google = "${GEMINI_API_KEY}"
 
 [context]
-infinity = true            # Enable distillation-based context management
+memory = true              # Enable memory (librarian fact extraction/retrieval)
 
 [anthropic]
 cache_enabled = true
@@ -309,6 +320,23 @@ cargo clippy --workspace --all-targets -- -D warnings
 Conventional commits: `type(scope): description`
 
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
+
+## Commit Workflow
+
+After completing changes and ensuring they work:
+
+1. **Verify**: `just verify` - Ensure all tests pass and code is formatted
+2. **Stage**: `git add -A` - Stage all changes
+3. **Commit**: `git commit -m "type(scope): description"` - Write a conventional commit message
+4. **Push**: `git push` - Push to remote
+
+Example:
+```bash
+just verify
+git add -A
+git commit -m "refactor(config): replace Option<bool> tristate with bool + serde default"
+git push
+```
 
 ## Additional Coding Guidelines
 
