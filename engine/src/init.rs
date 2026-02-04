@@ -138,7 +138,7 @@ impl App {
             .and_then(|app| app.model.as_ref());
 
         let provider = model_raw
-            .and_then(|m| Provider::from_model_name(m))
+            .and_then(|m| Provider::from_model_name(m).ok())
             .or_else(|| {
                 if api_keys.contains_key(&Provider::Claude) {
                     Some(Provider::Claude)
@@ -448,7 +448,7 @@ impl App {
         let reasoning_effort = config
             .and_then(|cfg| cfg.reasoning_effort.as_deref())
             .map(|raw| {
-                OpenAIReasoningEffort::parse(raw).unwrap_or_else(|| {
+                OpenAIReasoningEffort::parse(raw).unwrap_or_else(|_| {
                     tracing::warn!("Unknown OpenAI reasoning_effort in config: {raw}");
                     OpenAIReasoningEffort::default()
                 })
@@ -458,7 +458,7 @@ impl App {
         let reasoning_summary = config
             .and_then(|cfg| cfg.reasoning_summary.as_deref())
             .map(|raw| {
-                OpenAIReasoningSummary::parse(raw).unwrap_or_else(|| {
+                OpenAIReasoningSummary::parse(raw).unwrap_or_else(|_| {
                     tracing::warn!("Unknown OpenAI reasoning_summary in config: {raw}");
                     OpenAIReasoningSummary::default()
                 })
@@ -468,7 +468,7 @@ impl App {
         let verbosity = config
             .and_then(|cfg| cfg.verbosity.as_deref())
             .map(|raw| {
-                OpenAITextVerbosity::parse(raw).unwrap_or_else(|| {
+                OpenAITextVerbosity::parse(raw).unwrap_or_else(|_| {
                     tracing::warn!("Unknown OpenAI verbosity in config: {raw}");
                     OpenAITextVerbosity::default()
                 })
@@ -478,7 +478,7 @@ impl App {
         let truncation = config
             .and_then(|cfg| cfg.truncation.as_deref())
             .map(|raw| {
-                OpenAITruncation::parse(raw).unwrap_or_else(|| {
+                OpenAITruncation::parse(raw).unwrap_or_else(|_| {
                     tracing::warn!("Unknown OpenAI truncation in config: {raw}");
                     OpenAITruncation::default()
                 })

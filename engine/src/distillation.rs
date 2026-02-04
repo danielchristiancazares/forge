@@ -125,9 +125,9 @@ impl super::App {
             handle,
         };
 
-        self.state = OperationState::Distilling(DistillationState {
-            task,
-            queued: queued_request,
+        self.state = OperationState::Distilling(match queued_request {
+            Some(message) => DistillationState::CompletedWithQueued { task, message },
+            None => DistillationState::Running(task),
         });
         DistillationStart::Started
     }
@@ -141,7 +141,7 @@ impl super::App {
         use futures_util::future::FutureExt;
 
         let finished = match &self.state {
-            OperationState::Distilling(state) => state.task.handle.is_finished(),
+            OperationState::Distilling(state) => state.task().handle.is_finished(),
             _ => return,
         };
 
@@ -153,7 +153,10 @@ impl super::App {
         // Take ownership of the task
         let (task, queued_request) = match std::mem::replace(&mut self.state, OperationState::Idle)
         {
-            OperationState::Distilling(state) => (state.task, state.queued),
+            OperationState::Distilling(state) => match state {
+                DistillationState::Running(task) => (task, None),
+                DistillationState::CompletedWithQueued { task, message } => (task, Some(message)),
+            },
             other => {
                 self.state = other;
                 return;

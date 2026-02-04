@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use forge_context::Librarian;
-use forge_types::{ToolDefinition, ToolResult, sanitize_terminal_text};
+use forge_types::{ToolDefinition, ToolResult, sanitize_terminal_text, strip_steganographic_chars};
 use jsonschema::JSONSchema;
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
@@ -415,9 +415,14 @@ pub fn truncate_output(output: String, effective_max: usize) -> String {
     truncated
 }
 
-/// Sanitize tool output for terminal display.
+/// Sanitize tool output for terminal display and steganographic injection.
+///
+/// Applies both terminal escape stripping and steganographic character
+/// removal. Tool output is untrusted content that enters the LLM context
+/// window, so both sanitization passes are required.
 pub fn sanitize_output(output: &str) -> String {
-    sanitize_terminal_text(output).into_owned()
+    let terminal_safe = sanitize_terminal_text(output);
+    strip_steganographic_chars(&terminal_safe).into_owned()
 }
 
 /// Redact obvious secrets in output distillates (best-effort).

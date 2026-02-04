@@ -11,6 +11,7 @@ use scraper::{ElementRef, Html, Node, Selector};
 use url::Url;
 
 use crate::types::{ErrorCode, WebFetchError};
+use forge_types::strip_steganographic_chars;
 
 /// Minimum extracted content length (Unicode scalar values).
 ///
@@ -136,7 +137,9 @@ pub fn extract(html: &str, final_url: &Url) -> Result<ExtractedContent, WebFetch
         Some(element) => {
             let ctx = ConversionContext::new(base_url);
             let raw = convert_element_to_markdown(element, ctx);
-            normalize_whitespace_final(&raw)
+            let normalized = normalize_whitespace_final(&raw);
+            // Strip steganographic characters from web content before LLM ingestion
+            strip_steganographic_chars(&normalized).into_owned()
         }
         None => {
             // FR-WF-EXT-EMPTY-02: All root candidates empty

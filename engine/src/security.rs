@@ -3,13 +3,18 @@
 //! These functions prevent sensitive data (like API keys) from leaking
 //! into logs, error messages, or terminal output.
 
-use forge_types::sanitize_terminal_text;
+use forge_types::{sanitize_terminal_text, strip_steganographic_chars};
 
-/// Sanitize a stream error message by redacting API keys and stripping terminal controls.
+/// Sanitize a stream error message by redacting API keys and stripping controls.
+///
+/// Applies three sanitization passes:
+/// 1. Redact API keys (OpenAI, Anthropic, Gemini)
+/// 2. Strip terminal escape sequences
+/// 3. Strip steganographic characters
 pub fn sanitize_stream_error(raw: &str) -> String {
-    // First redact API keys, then strip terminal controls
     let redacted = redact_api_keys(raw.trim());
-    sanitize_terminal_text(&redacted).into_owned()
+    let terminal_safe = sanitize_terminal_text(&redacted);
+    strip_steganographic_chars(&terminal_safe).into_owned()
 }
 
 /// Redact API keys from a string.

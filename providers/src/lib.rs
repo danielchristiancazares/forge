@@ -52,7 +52,7 @@ pub mod sse_types;
 use anyhow::Result;
 use forge_types::{
     ApiKey, ApiUsage, CacheHint, CacheableMessage, Message, ModelName, OpenAIRequestOptions,
-    OutputLimits, Provider, StreamEvent, ToolDefinition,
+    OutputLimits, Provider, StreamEvent, ThoughtSignature, ThoughtSignatureState, ToolDefinition,
 };
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -525,11 +525,12 @@ pub async fn send_message(
 pub mod claude {
     use super::{
         ApiConfig, ApiUsage, CacheHint, CacheableMessage, Message, OutputLimits, Result,
-        SseParseAction, SseParser, StreamEvent, ToolDefinition, http_client, mpsc,
-        process_sse_stream, read_capped_error_body,
+        SseParseAction, SseParser, StreamEvent, ThoughtSignatureState, ToolDefinition, http_client,
+        mpsc, process_sse_stream, read_capped_error_body,
         retry::{RetryConfig, RetryOutcome, send_with_retry},
         send_event,
     };
+    use forge_types::ThinkingState;
     use serde_json::json;
 
     const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -537,7 +538,7 @@ pub mod claude {
     /// Build a content block with optional `cache_control`.
     fn content_block(text: &str, cache_hint: CacheHint) -> serde_json::Value {
         match cache_hint {
-            CacheHint::None => json!({
+            CacheHint::Default => json!({
                 "type": "text",
                 "text": text
             }),
@@ -626,10 +627,10 @@ pub mod claude {
                 }
                 Message::Thinking(thinking) => {
                     // Send thinking as redacted_thinking if we have the signature
-                    if let Some(signature) = thinking.signature() {
+                    if let ThoughtSignatureState::Signed(signature) = thinking.signature_state() {
                         pending_assistant_content.push(json!({
                             "type": "redacted_thinking",
-                            "data": signature
+                            "data": signature.as_str()
                         }));
                     }
                     // If no signature, skip (legacy thinking without signature)
@@ -669,12 +670,12 @@ pub mod claude {
 
         // Enable thinking if configured. We now properly replay thinking with signatures
         // via redacted_thinking blocks, so this works across multi-turn conversations.
-        if let Some(budget) = limits.thinking_budget() {
+        if let ThinkingState::Enabled(budget) = limits.thinking() {
             body.insert(
                 "thinking".into(),
                 json!({
                     "type": "enabled",
-                    "budget_tokens": budget
+                    "budget_tokens": budget.as_u32()
                 }),
             );
 
@@ -761,7 +762,7 @@ pub mod claude {
                         events.push(StreamEvent::ToolCallStart {
                             id,
                             name,
-                            thought_signature: None,
+                            thought_signature: ThoughtSignatureState::Unsigned,
                         });
                     }
                 }
@@ -1023,8 +1024,8 @@ pub mod claude {
 pub mod openai {
     use super::{
         ApiConfig, ApiUsage, CacheableMessage, Message, OutputLimits, Result, SseParseAction,
-        SseParser, StreamEvent, ToolDefinition, http_client, mpsc, process_sse_stream,
-        read_capped_error_body,
+        SseParser, StreamEvent, ThoughtSignatureState, ToolDefinition, http_client, mpsc,
+        process_sse_stream, read_capped_error_body,
         retry::{RetryConfig, RetryOutcome, send_with_retry},
         send_event,
     };
@@ -1117,7 +1118,7 @@ pub mod openai {
                         events.push(StreamEvent::ToolCallStart {
                             id: call_id.clone(),
                             name,
-                            thought_signature: None,
+                            thought_signature: ThoughtSignatureState::Unsigned,
                         });
 
                         // Emit initial arguments if present
@@ -1396,7 +1397,7 @@ pub mod openai {
                 "effort".to_string(),
                 json!(options.reasoning_effort().as_str()),
             );
-            if options.reasoning_summary() != OpenAIReasoningSummary::None {
+            if options.reasoning_summary() != OpenAIReasoningSummary::Disabled {
                 reasoning.insert(
                     "summary".to_string(),
                     json!(options.reasoning_summary().as_str()),
@@ -1837,7 +1838,8 @@ pub mod openai {
 pub mod gemini {
     use super::{
         ApiConfig, CacheableMessage, Message, OutputLimits, Result, SseParseAction, SseParser,
-        StreamEvent, ToolDefinition, http_client, mpsc, process_sse_stream, read_capped_error_body,
+        StreamEvent, ThoughtSignature, ThoughtSignatureState, ToolDefinition, http_client, mpsc,
+        process_sse_stream, read_capped_error_body,
         retry::{RetryConfig, RetryOutcome, send_with_retry},
         send_event,
     };
@@ -2101,8 +2103,13 @@ pub mod gemini {
                                         "args": call.arguments
                                     }),
                                 );
-                                if let Some(signature) = call.thought_signature.as_ref() {
-                                    part.insert("thoughtSignature".into(), json!(signature));
+                                if let ThoughtSignatureState::Signed(signature) =
+                                    &call.thought_signature
+                                {
+                                    part.insert(
+                                        "thoughtSignature".into(),
+                                        json!(signature.as_str()),
+                                    );
                                 }
                                 parts.push(Value::Object(part));
                                 index += 1;
@@ -2266,10 +2273,18 @@ pub mod gemini {
                                 // Generate UUID for tool call ID (Gemini doesn't provide one)
                                 let id = format!("call_{}", Uuid::new_v4());
 
+                                let thought_signature = match part.thought_signature {
+                                    Some(signature) if !signature.is_empty() => {
+                                        ThoughtSignatureState::Signed(ThoughtSignature::new(
+                                            signature,
+                                        ))
+                                    }
+                                    _ => ThoughtSignatureState::Unsigned,
+                                };
                                 events.push(StreamEvent::ToolCallStart {
                                     id: id.clone(),
                                     name,
-                                    thought_signature: part.thought_signature,
+                                    thought_signature,
                                 });
 
                                 // Send arguments as a single delta
@@ -2573,11 +2588,11 @@ pub mod gemini {
 
         #[test]
         fn groups_tool_calls_and_preserves_thought_signature() {
-            let call = forge_types::ToolCall::new_with_thought_signature(
+            let call = forge_types::ToolCall::new_signed(
                 "call_1",
                 "Read",
                 json!({"path": "foo"}),
-                Some("sig_1".to_string()),
+                forge_types::ThoughtSignature::new("sig_1"),
             );
             let second = forge_types::ToolCall::new("call_2", "list_dir", json!({}));
             let messages = vec![
@@ -2820,7 +2835,11 @@ pub mod gemini {
                             thought_signature,
                         } => {
                             assert_eq!(name, "Read");
-                            assert_eq!(thought_signature.as_deref(), Some("abc123signature"));
+                            assert!(matches!(
+                                thought_signature,
+                                ThoughtSignatureState::Signed(signature)
+                                    if signature.as_str() == "abc123signature"
+                            ));
                         }
                         _ => panic!("Expected ToolCallStart event"),
                     }
@@ -2859,7 +2878,7 @@ pub mod gemini {
                             thought_signature,
                         } => {
                             assert_eq!(name, "list_dir");
-                            assert!(thought_signature.is_none());
+                            assert!(matches!(thought_signature, ThoughtSignatureState::Unsigned));
                         }
                         _ => panic!("Expected ToolCallStart event"),
                     }

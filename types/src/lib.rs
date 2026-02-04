@@ -22,20 +22,20 @@
 //! | Category | Types |
 //! |----------|-------|
 //! | String validation | [`NonEmptyString`], [`NonEmptyStaticStr`], [`EmptyStringError`] |
-//! | Provider/model | [`Provider`], [`PredefinedModel`], [`ModelName`], [`ModelParseError`], [`ApiKey`] |
+//! | Provider/model | [`Provider`], [`PredefinedModel`], [`ModelName`], [`ModelParseError`], [`EnumParseError`], [`ApiKey`] |
 //! | OpenAI options | [`OpenAIReasoningEffort`], [`OpenAIReasoningSummary`], [`OpenAITextVerbosity`], [`OpenAITruncation`], [`OpenAIRequestOptions`] |
-//! | Output config | [`OutputLimits`], [`OutputLimitsError`], [`CacheHint`] |
+//! | Output config | [`OutputLimits`], [`OutputLimitsError`], [`ThinkingBudget`], [`ThinkingState`], [`CacheHint`] |
 //! | Streaming | [`StreamEvent`], [`StreamFinishReason`], [`ApiUsage`] |
 //! | Tool calling | [`ToolDefinition`], [`ToolCall`], [`ToolResult`] |
 //! | Messages | [`SystemMessage`], [`UserMessage`], [`AssistantMessage`], [`Message`], [`CacheableMessage`] |
-//! | Security | [`sanitize_terminal_text`] |
+//! | Security | [`sanitize_terminal_text`], [`strip_steganographic_chars`] |
 
 // Pedantic lint configuration - these are intentional design choices
 #![allow(clippy::missing_errors_doc)] // Result-returning functions are self-explanatory
 #![allow(clippy::missing_panics_doc)] // Panics are documented in assertions
 
 mod sanitize;
-pub use sanitize::sanitize_terminal_text;
+pub use sanitize::{sanitize_terminal_text, strip_steganographic_chars};
 
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -196,6 +196,80 @@ pub enum Provider {
     Gemini,
 }
 
+const PROVIDER_PARSE_VALUES: &[&str] = &[
+    "claude",
+    "anthropic",
+    "openai",
+    "gpt",
+    "chatgpt",
+    "gemini",
+    "google",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnumKind {
+    Provider,
+    PredefinedModel,
+    OpenAIReasoningEffort,
+    OpenAIReasoningSummary,
+    OpenAITextVerbosity,
+    OpenAITruncation,
+}
+
+impl EnumKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            EnumKind::Provider => "provider",
+            EnumKind::PredefinedModel => "predefined model",
+            EnumKind::OpenAIReasoningEffort => "OpenAI reasoning effort",
+            EnumKind::OpenAIReasoningSummary => "OpenAI reasoning summary",
+            EnumKind::OpenAITextVerbosity => "OpenAI text verbosity",
+            EnumKind::OpenAITruncation => "OpenAI truncation",
+        }
+    }
+}
+
+impl std::fmt::Display for EnumKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("invalid {kind} value '{raw}'; expected one of: {expected:?}")]
+pub struct EnumParseError {
+    kind: EnumKind,
+    raw: String,
+    expected: &'static [&'static str],
+}
+
+impl EnumParseError {
+    #[must_use]
+    pub fn new(kind: EnumKind, raw: impl Into<String>, expected: &'static [&'static str]) -> Self {
+        Self {
+            kind,
+            raw: raw.into(),
+            expected,
+        }
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> EnumKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub fn raw(&self) -> &str {
+        &self.raw
+    }
+
+    #[must_use]
+    pub const fn expected(&self) -> &'static [&'static str] {
+        self.expected
+    }
+}
+
 impl Provider {
     #[must_use]
     pub fn as_str(&self) -> &'static str {
@@ -249,20 +323,30 @@ impl Provider {
     }
 
     /// Parse provider from string.
-    #[must_use]
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "claude" | "anthropic" => Some(Provider::Claude),
-            "openai" | "gpt" | "chatgpt" => Some(Provider::OpenAI),
-            "gemini" | "google" => Some(Provider::Gemini),
-            _ => None,
+    pub fn parse(s: &str) -> Result<Self, EnumParseError> {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Err(EnumParseError::new(
+                EnumKind::Provider,
+                trimmed,
+                PROVIDER_PARSE_VALUES,
+            ));
+        }
+        match trimmed.to_ascii_lowercase().as_str() {
+            "claude" | "anthropic" => Ok(Provider::Claude),
+            "openai" | "gpt" | "chatgpt" => Ok(Provider::OpenAI),
+            "gemini" | "google" => Ok(Provider::Gemini),
+            _ => Err(EnumParseError::new(
+                EnumKind::Provider,
+                trimmed,
+                PROVIDER_PARSE_VALUES,
+            )),
         }
     }
 
     /// Infer provider from model name prefix.
-    #[must_use]
-    pub fn from_model_name(model: &str) -> Option<Self> {
-        PredefinedModel::from_model_id(model).map(PredefinedModel::provider)
+    pub fn from_model_name(model: &str) -> Result<Self, EnumParseError> {
+        Ok(PredefinedModel::from_model_id(model)?.provider())
     }
 
     /// Get all available providers.
@@ -282,6 +366,34 @@ pub enum PredefinedModel {
     Gpt52,
     GeminiPro,
     GeminiFlash,
+}
+
+const CLAUDE_MODEL_IDS: &[&str] = &[
+    "claude-opus-4-5-20251101",
+    "claude-sonnet-4-5-20250514",
+    "claude-haiku-4-5-20251001",
+];
+
+const OPENAI_MODEL_IDS: &[&str] = &["gpt-5.2-pro", "gpt-5.2"];
+
+const GEMINI_MODEL_IDS: &[&str] = &["gemini-3-pro-preview", "gemini-3-flash-preview"];
+
+const ALL_MODEL_IDS: &[&str] = &[
+    "claude-opus-4-5-20251101",
+    "claude-sonnet-4-5-20250514",
+    "claude-haiku-4-5-20251001",
+    "gpt-5.2-pro",
+    "gpt-5.2",
+    "gemini-3-pro-preview",
+    "gemini-3-flash-preview",
+];
+
+fn expected_model_ids(provider: Provider) -> &'static [&'static str] {
+    match provider {
+        Provider::Claude => CLAUDE_MODEL_IDS,
+        Provider::OpenAI => OPENAI_MODEL_IDS,
+        Provider::Gemini => GEMINI_MODEL_IDS,
+    }
 }
 
 impl PredefinedModel {
@@ -367,27 +479,44 @@ impl PredefinedModel {
         ModelName::from_predefined(self)
     }
 
-    #[must_use]
-    pub fn from_model_id(raw: &str) -> Option<Self> {
+    pub fn from_model_id(raw: &str) -> Result<Self, EnumParseError> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
-            return None;
+            return Err(EnumParseError::new(
+                EnumKind::PredefinedModel,
+                trimmed,
+                ALL_MODEL_IDS,
+            ));
         }
         Self::all()
             .iter()
             .copied()
             .find(|model| model.model_id().eq_ignore_ascii_case(trimmed))
+            .ok_or_else(|| EnumParseError::new(EnumKind::PredefinedModel, trimmed, ALL_MODEL_IDS))
     }
 
-    #[must_use]
-    pub fn from_provider_and_id(provider: Provider, raw: &str) -> Option<Self> {
+    pub fn from_provider_and_id(provider: Provider, raw: &str) -> Result<Self, EnumParseError> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
-            return None;
+            return Err(EnumParseError::new(
+                EnumKind::PredefinedModel,
+                trimmed,
+                expected_model_ids(provider),
+            ));
         }
-        Self::all().iter().copied().find(|model| {
-            model.provider() == provider && model.model_id().eq_ignore_ascii_case(trimmed)
-        })
+        Self::all()
+            .iter()
+            .copied()
+            .find(|model| {
+                model.provider() == provider && model.model_id().eq_ignore_ascii_case(trimmed)
+            })
+            .ok_or_else(|| {
+                EnumParseError::new(
+                    EnumKind::PredefinedModel,
+                    trimmed,
+                    expected_model_ids(provider),
+                )
+            })
     }
 }
 
@@ -449,9 +578,8 @@ impl ModelName {
             return Err(ModelParseError::GeminiPrefix(trimmed.to_string()));
         }
 
-        let Some(model) = PredefinedModel::from_provider_and_id(provider, trimmed) else {
-            return Err(ModelParseError::UnknownModel(trimmed.to_string()));
-        };
+        let model = PredefinedModel::from_provider_and_id(provider, trimmed)
+            .map_err(|_| ModelParseError::UnknownModel(trimmed.to_string()))?;
 
         Ok(Self::from_predefined(model))
     }
@@ -545,9 +673,18 @@ impl ApiKey {
     }
 }
 
+const OPENAI_REASONING_EFFORT_VALUES: &[&str] =
+    &["none", "low", "medium", "high", "xhigh", "x-high"];
+
+const OPENAI_REASONING_SUMMARY_VALUES: &[&str] = &["none", "auto", "concise", "detailed"];
+
+const OPENAI_TEXT_VERBOSITY_VALUES: &[&str] = &["low", "medium", "high"];
+
+const OPENAI_TRUNCATION_VALUES: &[&str] = &["auto", "disabled"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OpenAIReasoningEffort {
-    None,
+    Disabled,
     Low,
     Medium,
     #[default]
@@ -556,22 +693,33 @@ pub enum OpenAIReasoningEffort {
 }
 
 impl OpenAIReasoningEffort {
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "none" => Some(Self::None),
-            "low" => Some(Self::Low),
-            "medium" => Some(Self::Medium),
-            "high" => Some(Self::High),
-            "xhigh" | "x-high" => Some(Self::XHigh),
-            _ => None,
+    pub fn parse(value: &str) -> Result<Self, EnumParseError> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(EnumParseError::new(
+                EnumKind::OpenAIReasoningEffort,
+                trimmed,
+                OPENAI_REASONING_EFFORT_VALUES,
+            ));
+        }
+        match trimmed.to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::Disabled),
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" | "x-high" => Ok(Self::XHigh),
+            _ => Err(EnumParseError::new(
+                EnumKind::OpenAIReasoningEffort,
+                trimmed,
+                OPENAI_REASONING_EFFORT_VALUES,
+            )),
         }
     }
 
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::None => "none",
+            Self::Disabled => "none",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
@@ -583,28 +731,39 @@ impl OpenAIReasoningEffort {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OpenAIReasoningSummary {
     #[default]
-    None,
+    Disabled,
     Auto,
     Concise,
     Detailed,
 }
 
 impl OpenAIReasoningSummary {
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "none" => Some(Self::None),
-            "auto" => Some(Self::Auto),
-            "concise" => Some(Self::Concise),
-            "detailed" => Some(Self::Detailed),
-            _ => None,
+    pub fn parse(value: &str) -> Result<Self, EnumParseError> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(EnumParseError::new(
+                EnumKind::OpenAIReasoningSummary,
+                trimmed,
+                OPENAI_REASONING_SUMMARY_VALUES,
+            ));
+        }
+        match trimmed.to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::Disabled),
+            "auto" => Ok(Self::Auto),
+            "concise" => Ok(Self::Concise),
+            "detailed" => Ok(Self::Detailed),
+            _ => Err(EnumParseError::new(
+                EnumKind::OpenAIReasoningSummary,
+                trimmed,
+                OPENAI_REASONING_SUMMARY_VALUES,
+            )),
         }
     }
 
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::None => "none",
+            Self::Disabled => "none",
             Self::Auto => "auto",
             Self::Concise => "concise",
             Self::Detailed => "detailed",
@@ -621,13 +780,24 @@ pub enum OpenAITextVerbosity {
 }
 
 impl OpenAITextVerbosity {
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "low" => Some(Self::Low),
-            "medium" => Some(Self::Medium),
-            "high" => Some(Self::High),
-            _ => None,
+    pub fn parse(value: &str) -> Result<Self, EnumParseError> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(EnumParseError::new(
+                EnumKind::OpenAITextVerbosity,
+                trimmed,
+                OPENAI_TEXT_VERBOSITY_VALUES,
+            ));
+        }
+        match trimmed.to_ascii_lowercase().as_str() {
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            _ => Err(EnumParseError::new(
+                EnumKind::OpenAITextVerbosity,
+                trimmed,
+                OPENAI_TEXT_VERBOSITY_VALUES,
+            )),
         }
     }
 
@@ -649,12 +819,23 @@ pub enum OpenAITruncation {
 }
 
 impl OpenAITruncation {
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "auto" => Some(Self::Auto),
-            "disabled" => Some(Self::Disabled),
-            _ => None,
+    pub fn parse(value: &str) -> Result<Self, EnumParseError> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(EnumParseError::new(
+                EnumKind::OpenAITruncation,
+                trimmed,
+                OPENAI_TRUNCATION_VALUES,
+            ));
+        }
+        match trimmed.to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "disabled" => Ok(Self::Disabled),
+            _ => Err(EnumParseError::new(
+                EnumKind::OpenAITruncation,
+                trimmed,
+                OPENAI_TRUNCATION_VALUES,
+            )),
         }
     }
 
@@ -732,7 +913,7 @@ impl Default for OpenAIRequestOptions {
 pub enum CacheHint {
     /// No caching preference - provider uses default behavior.
     #[default]
-    None,
+    Default,
     /// Content is stable and should be cached if supported.
     ///
     /// Named "Ephemeral" to match Anthropic's API terminology. Despite the name,
@@ -740,16 +921,6 @@ pub enum CacheHint {
     /// indicate the cache entry has a limited TTL (~5 min) rather than permanent
     /// storage. The content itself should be stable/unchanging for caching to help.
     Ephemeral,
-}
-
-/// Validated output configuration that guarantees invariants.
-///
-/// If thinking is enabled, `thinking_budget < max_output_tokens` is guaranteed
-/// by construction. You cannot create an invalid `OutputLimits`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OutputLimits {
-    max_output_tokens: u32,
-    thinking_budget: Option<u32>,
 }
 
 /// Error when trying to construct invalid output limits.
@@ -761,14 +932,59 @@ pub enum OutputLimitsError {
     ThinkingBudgetTooSmall,
 }
 
+/// Validated thinking budget for extended reasoning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThinkingBudget(u32);
+
+impl ThinkingBudget {
+    pub const MIN_TOKENS: u32 = 1024;
+
+    pub fn new(value: u32) -> Result<Self, OutputLimitsError> {
+        if value < Self::MIN_TOKENS {
+            return Err(OutputLimitsError::ThinkingBudgetTooSmall);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThinkingState {
+    Disabled,
+    Enabled(ThinkingBudget),
+}
+
+impl ThinkingState {
+    #[must_use]
+    pub const fn is_enabled(self) -> bool {
+        matches!(self, ThinkingState::Enabled(_))
+    }
+}
+
+/// Validated output configuration that guarantees invariants.
+///
+/// If thinking is enabled, `thinking_budget < max_output_tokens` is guaranteed
+/// by construction. You cannot create an invalid `OutputLimits`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputLimits {
+    Standard {
+        max_output_tokens: u32,
+    },
+    WithThinking {
+        max_output_tokens: u32,
+        thinking_budget: ThinkingBudget,
+    },
+}
+
 impl OutputLimits {
     /// Create output limits without thinking.
     #[must_use]
     pub const fn new(max_output_tokens: u32) -> Self {
-        Self {
-            max_output_tokens,
-            thinking_budget: None,
-        }
+        Self::Standard { max_output_tokens }
     }
 
     /// Create output limits with thinking enabled.
@@ -778,34 +994,88 @@ impl OutputLimits {
         max_output_tokens: u32,
         thinking_budget: u32,
     ) -> Result<Self, OutputLimitsError> {
-        if thinking_budget < 1024 {
-            return Err(OutputLimitsError::ThinkingBudgetTooSmall);
-        }
-        if thinking_budget >= max_output_tokens {
+        let budget = ThinkingBudget::new(thinking_budget)?;
+        if budget.as_u32() >= max_output_tokens {
             return Err(OutputLimitsError::ThinkingBudgetTooLarge {
-                budget: thinking_budget,
+                budget: budget.as_u32(),
                 max_output: max_output_tokens,
             });
         }
-        Ok(Self {
+        Ok(Self::WithThinking {
             max_output_tokens,
-            thinking_budget: Some(thinking_budget),
+            thinking_budget: budget,
         })
     }
 
     #[must_use]
     pub const fn max_output_tokens(&self) -> u32 {
-        self.max_output_tokens
+        match self {
+            OutputLimits::Standard { max_output_tokens }
+            | OutputLimits::WithThinking {
+                max_output_tokens, ..
+            } => *max_output_tokens,
+        }
     }
 
     #[must_use]
-    pub const fn thinking_budget(&self) -> Option<u32> {
-        self.thinking_budget
+    pub const fn thinking(&self) -> ThinkingState {
+        match self {
+            OutputLimits::Standard { .. } => ThinkingState::Disabled,
+            OutputLimits::WithThinking {
+                thinking_budget, ..
+            } => ThinkingState::Enabled(*thinking_budget),
+        }
     }
 
     #[must_use]
     pub const fn has_thinking(&self) -> bool {
-        self.thinking_budget.is_some()
+        matches!(self, OutputLimits::WithThinking { .. })
+    }
+}
+
+/// Opaque provider signature for thinking/tool-call replay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThoughtSignature(String);
+
+impl ThoughtSignature {
+    #[must_use]
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn push_str(&mut self, delta: &str) {
+        self.0.push_str(delta);
+    }
+}
+
+impl From<String> for ThoughtSignature {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for ThoughtSignature {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "signature", rename_all = "snake_case")]
+pub enum ThoughtSignatureState {
+    Unsigned,
+    Signed(ThoughtSignature),
+}
+
+impl ThoughtSignatureState {
+    #[must_use]
+    pub const fn is_signed(&self) -> bool {
+        matches!(self, ThoughtSignatureState::Signed(_))
     }
 }
 
@@ -821,7 +1091,7 @@ pub enum StreamEvent {
     ToolCallStart {
         id: String,
         name: String,
-        thought_signature: Option<String>,
+        thought_signature: ThoughtSignatureState,
     },
     /// Tool call arguments delta - emitted as JSON arguments stream in.
     ToolCallDelta { id: String, arguments: String },
@@ -925,9 +1195,8 @@ pub struct ToolCall {
     pub name: String,
     /// The arguments to pass to the tool, as parsed JSON.
     pub arguments: serde_json::Value,
-    /// Optional thought signature for providers that require it (Gemini).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thought_signature: Option<String>,
+    /// Thought signature state for providers that require it (Gemini).
+    pub thought_signature: ThoughtSignatureState,
 }
 
 impl ToolCall {
@@ -940,22 +1209,27 @@ impl ToolCall {
             id: id.into(),
             name: name.into(),
             arguments,
-            thought_signature: None,
+            thought_signature: ThoughtSignatureState::Unsigned,
         }
     }
 
-    pub fn new_with_thought_signature(
+    pub fn new_signed(
         id: impl Into<String>,
         name: impl Into<String>,
         arguments: serde_json::Value,
-        thought_signature: Option<String>,
+        thought_signature: ThoughtSignature,
     ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
             arguments,
-            thought_signature,
+            thought_signature: ThoughtSignatureState::Signed(thought_signature),
         }
+    }
+
+    #[must_use]
+    pub const fn signature_state(&self) -> &ThoughtSignatureState {
+        &self.thought_signature
     }
 }
 
@@ -1085,8 +1359,7 @@ pub struct ThinkingMessage {
     content: NonEmptyString,
     /// Encrypted signature for replaying thinking blocks to the API.
     /// Required by Claude API when continuing conversations with thinking enabled.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    signature: Option<String>,
+    signature: ThoughtSignatureState,
     timestamp: SystemTime,
     #[serde(flatten)]
     model: ModelName,
@@ -1097,7 +1370,7 @@ impl ThinkingMessage {
     pub fn new(model: ModelName, content: NonEmptyString) -> Self {
         Self {
             content,
-            signature: None,
+            signature: ThoughtSignatureState::Unsigned,
             timestamp: SystemTime::now(),
             model,
         }
@@ -1107,7 +1380,7 @@ impl ThinkingMessage {
     pub fn with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self {
         Self {
             content,
-            signature: Some(signature),
+            signature: ThoughtSignatureState::Signed(ThoughtSignature::new(signature)),
             timestamp: SystemTime::now(),
             model,
         }
@@ -1119,8 +1392,13 @@ impl ThinkingMessage {
     }
 
     #[must_use]
-    pub fn signature(&self) -> Option<&str> {
-        self.signature.as_deref()
+    pub const fn signature_state(&self) -> &ThoughtSignatureState {
+        &self.signature
+    }
+
+    #[must_use]
+    pub const fn has_signature(&self) -> bool {
+        self.signature.is_signed()
     }
 
     #[must_use]
@@ -1235,7 +1513,7 @@ impl CacheableMessage {
 
     #[must_use]
     pub fn plain(message: Message) -> Self {
-        Self::new(message, CacheHint::None)
+        Self::new(message, CacheHint::Default)
     }
 
     #[must_use]
@@ -1257,13 +1535,13 @@ mod tests {
 
     #[test]
     fn provider_from_str_parses_aliases() {
-        assert_eq!(Provider::parse("claude"), Some(Provider::Claude));
-        assert_eq!(Provider::parse("Anthropic"), Some(Provider::Claude));
-        assert_eq!(Provider::parse("openai"), Some(Provider::OpenAI));
-        assert_eq!(Provider::parse("gpt"), Some(Provider::OpenAI));
-        assert_eq!(Provider::parse("gemini"), Some(Provider::Gemini));
-        assert_eq!(Provider::parse("google"), Some(Provider::Gemini));
-        assert_eq!(Provider::parse("unknown"), None);
+        assert_eq!(Provider::parse("claude").unwrap(), Provider::Claude);
+        assert_eq!(Provider::parse("Anthropic").unwrap(), Provider::Claude);
+        assert_eq!(Provider::parse("openai").unwrap(), Provider::OpenAI);
+        assert_eq!(Provider::parse("gpt").unwrap(), Provider::OpenAI);
+        assert_eq!(Provider::parse("gemini").unwrap(), Provider::Gemini);
+        assert_eq!(Provider::parse("google").unwrap(), Provider::Gemini);
+        assert!(Provider::parse("unknown").is_err());
     }
 
     #[test]
@@ -1320,7 +1598,7 @@ mod tests {
     fn output_limits_new_no_thinking() {
         let limits = OutputLimits::new(4096);
         assert_eq!(limits.max_output_tokens(), 4096);
-        assert_eq!(limits.thinking_budget(), None);
+        assert_eq!(limits.thinking(), ThinkingState::Disabled);
         assert!(!limits.has_thinking());
     }
 
@@ -1328,7 +1606,10 @@ mod tests {
     fn output_limits_with_valid_thinking() {
         let limits = OutputLimits::with_thinking(16384, 8192).unwrap();
         assert_eq!(limits.max_output_tokens(), 16384);
-        assert_eq!(limits.thinking_budget(), Some(8192));
+        assert_eq!(
+            limits.thinking(),
+            ThinkingState::Enabled(ThinkingBudget::new(8192).unwrap())
+        );
         assert!(limits.has_thinking());
     }
 
@@ -1344,7 +1625,10 @@ mod tests {
     #[test]
     fn output_limits_accepts_minimum_budget() {
         let limits = OutputLimits::with_thinking(4096, 1024).unwrap();
-        assert_eq!(limits.thinking_budget(), Some(1024));
+        assert_eq!(
+            limits.thinking(),
+            ThinkingState::Enabled(ThinkingBudget::new(1024).unwrap())
+        );
     }
 
     #[test]
@@ -1366,16 +1650,16 @@ mod tests {
     }
 
     #[test]
-    fn cache_hint_default_is_none() {
+    fn cache_hint_default_is_default() {
         let hint = CacheHint::default();
-        assert_eq!(hint, CacheHint::None);
+        assert_eq!(hint, CacheHint::Default);
     }
 
     #[test]
     fn cacheable_message_plain_has_no_hint() {
         let msg = Message::try_user("test").unwrap();
         let cacheable = CacheableMessage::plain(msg);
-        assert_eq!(cacheable.cache_hint, CacheHint::None);
+        assert_eq!(cacheable.cache_hint, CacheHint::Default);
     }
 
     #[test]
@@ -1388,35 +1672,35 @@ mod tests {
     #[test]
     fn openai_reasoning_effort_parse() {
         assert_eq!(
-            OpenAIReasoningEffort::parse("none"),
-            Some(OpenAIReasoningEffort::None)
+            OpenAIReasoningEffort::parse("none").unwrap(),
+            OpenAIReasoningEffort::Disabled
         );
         assert_eq!(
-            OpenAIReasoningEffort::parse("low"),
-            Some(OpenAIReasoningEffort::Low)
+            OpenAIReasoningEffort::parse("low").unwrap(),
+            OpenAIReasoningEffort::Low
         );
         assert_eq!(
-            OpenAIReasoningEffort::parse("MEDIUM"),
-            Some(OpenAIReasoningEffort::Medium)
+            OpenAIReasoningEffort::parse("MEDIUM").unwrap(),
+            OpenAIReasoningEffort::Medium
         );
         assert_eq!(
-            OpenAIReasoningEffort::parse("High"),
-            Some(OpenAIReasoningEffort::High)
+            OpenAIReasoningEffort::parse("High").unwrap(),
+            OpenAIReasoningEffort::High
         );
         assert_eq!(
-            OpenAIReasoningEffort::parse("xhigh"),
-            Some(OpenAIReasoningEffort::XHigh)
+            OpenAIReasoningEffort::parse("xhigh").unwrap(),
+            OpenAIReasoningEffort::XHigh
         );
         assert_eq!(
-            OpenAIReasoningEffort::parse("x-high"),
-            Some(OpenAIReasoningEffort::XHigh)
+            OpenAIReasoningEffort::parse("x-high").unwrap(),
+            OpenAIReasoningEffort::XHigh
         );
-        assert_eq!(OpenAIReasoningEffort::parse("invalid"), None);
+        assert!(OpenAIReasoningEffort::parse("invalid").is_err());
     }
 
     #[test]
     fn openai_reasoning_effort_as_str() {
-        assert_eq!(OpenAIReasoningEffort::None.as_str(), "none");
+        assert_eq!(OpenAIReasoningEffort::Disabled.as_str(), "none");
         assert_eq!(OpenAIReasoningEffort::Low.as_str(), "low");
         assert_eq!(OpenAIReasoningEffort::Medium.as_str(), "medium");
         assert_eq!(OpenAIReasoningEffort::High.as_str(), "high");
@@ -1426,27 +1710,27 @@ mod tests {
     #[test]
     fn openai_reasoning_summary_parse() {
         assert_eq!(
-            OpenAIReasoningSummary::parse("auto"),
-            Some(OpenAIReasoningSummary::Auto)
+            OpenAIReasoningSummary::parse("auto").unwrap(),
+            OpenAIReasoningSummary::Auto
         );
         assert_eq!(
-            OpenAIReasoningSummary::parse("CONCISE"),
-            Some(OpenAIReasoningSummary::Concise)
+            OpenAIReasoningSummary::parse("CONCISE").unwrap(),
+            OpenAIReasoningSummary::Concise
         );
         assert_eq!(
-            OpenAIReasoningSummary::parse("Detailed"),
-            Some(OpenAIReasoningSummary::Detailed)
+            OpenAIReasoningSummary::parse("Detailed").unwrap(),
+            OpenAIReasoningSummary::Detailed
         );
         assert_eq!(
-            OpenAIReasoningSummary::parse("none"),
-            Some(OpenAIReasoningSummary::None)
+            OpenAIReasoningSummary::parse("none").unwrap(),
+            OpenAIReasoningSummary::Disabled
         );
-        assert_eq!(OpenAIReasoningSummary::parse("invalid"), None);
+        assert!(OpenAIReasoningSummary::parse("invalid").is_err());
     }
 
     #[test]
     fn openai_reasoning_summary_as_str() {
-        assert_eq!(OpenAIReasoningSummary::None.as_str(), "none");
+        assert_eq!(OpenAIReasoningSummary::Disabled.as_str(), "none");
         assert_eq!(OpenAIReasoningSummary::Auto.as_str(), "auto");
         assert_eq!(OpenAIReasoningSummary::Concise.as_str(), "concise");
         assert_eq!(OpenAIReasoningSummary::Detailed.as_str(), "detailed");
@@ -1455,38 +1739,41 @@ mod tests {
     #[test]
     fn openai_text_verbosity_parse() {
         assert_eq!(
-            OpenAITextVerbosity::parse("low"),
-            Some(OpenAITextVerbosity::Low)
+            OpenAITextVerbosity::parse("low").unwrap(),
+            OpenAITextVerbosity::Low
         );
         assert_eq!(
-            OpenAITextVerbosity::parse("MEDIUM"),
-            Some(OpenAITextVerbosity::Medium)
+            OpenAITextVerbosity::parse("MEDIUM").unwrap(),
+            OpenAITextVerbosity::Medium
         );
         assert_eq!(
-            OpenAITextVerbosity::parse("High"),
-            Some(OpenAITextVerbosity::High)
+            OpenAITextVerbosity::parse("High").unwrap(),
+            OpenAITextVerbosity::High
         );
-        assert_eq!(OpenAITextVerbosity::parse("invalid"), None);
+        assert!(OpenAITextVerbosity::parse("invalid").is_err());
     }
 
     #[test]
     fn openai_truncation_parse() {
         assert_eq!(
-            OpenAITruncation::parse("auto"),
-            Some(OpenAITruncation::Auto)
+            OpenAITruncation::parse("auto").unwrap(),
+            OpenAITruncation::Auto
         );
         assert_eq!(
-            OpenAITruncation::parse("DISABLED"),
-            Some(OpenAITruncation::Disabled)
+            OpenAITruncation::parse("DISABLED").unwrap(),
+            OpenAITruncation::Disabled
         );
-        assert_eq!(OpenAITruncation::parse("invalid"), None);
+        assert!(OpenAITruncation::parse("invalid").is_err());
     }
 
     #[test]
     fn openai_request_options_default() {
         let options = OpenAIRequestOptions::default();
         assert_eq!(options.reasoning_effort(), OpenAIReasoningEffort::High);
-        assert_eq!(options.reasoning_summary(), OpenAIReasoningSummary::None);
+        assert_eq!(
+            options.reasoning_summary(),
+            OpenAIReasoningSummary::Disabled
+        );
         assert_eq!(options.verbosity(), OpenAITextVerbosity::High);
         assert_eq!(options.truncation(), OpenAITruncation::Auto);
     }

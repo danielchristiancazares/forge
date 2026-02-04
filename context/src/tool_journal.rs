@@ -33,7 +33,7 @@ use std::fs::OpenOptions;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use forge_types::{ToolCall, ToolResult};
+use forge_types::{ThoughtSignature, ThoughtSignatureState, ToolCall, ToolResult};
 
 /// Unique identifier for a tool batch.
 pub type ToolBatchId = i64;
@@ -172,6 +172,10 @@ impl ToolJournal {
         for (seq, call) in calls.iter().enumerate() {
             let args_json = serde_json::to_string(&call.arguments)
                 .context("Failed to serialize tool call arguments")?;
+            let thought_signature = match call.signature_state() {
+                ThoughtSignatureState::Signed(signature) => Some(signature.as_str()),
+                ThoughtSignatureState::Unsigned => None,
+            };
             tx.execute(
                 "INSERT INTO tool_calls (batch_id, seq, tool_call_id, tool_name, arguments_json, thought_signature)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -181,7 +185,7 @@ impl ToolJournal {
                     &call.id,
                     &call.name,
                     args_json,
-                    call.thought_signature.as_deref()
+                    thought_signature
                 ],
             )
             .with_context(|| format!("Failed to insert tool call {}", call.id))?;
@@ -230,8 +234,12 @@ impl ToolJournal {
         seq: usize,
         tool_call_id: &str,
         tool_name: &str,
-        thought_signature: Option<&str>,
+        thought_signature: &ThoughtSignatureState,
     ) -> Result<()> {
+        let thought_signature = match thought_signature {
+            ThoughtSignatureState::Signed(signature) => Some(signature.as_str()),
+            ThoughtSignatureState::Unsigned => None,
+        };
         self.db
             .execute(
                 "INSERT INTO tool_calls (batch_id, seq, tool_call_id, tool_name, arguments_json, thought_signature)
@@ -468,12 +476,18 @@ impl ToolJournal {
                     }
                 }
             };
-            calls.push(ToolCall::new_with_thought_signature(
-                id,
-                name,
-                args,
-                thought_signature,
-            ));
+            let signature_state = match thought_signature {
+                Some(signature) if !signature.is_empty() => {
+                    ThoughtSignatureState::Signed(ThoughtSignature::new(signature))
+                }
+                _ => ThoughtSignatureState::Unsigned,
+            };
+            calls.push(match signature_state {
+                ThoughtSignatureState::Signed(signature) => {
+                    ToolCall::new_signed(id, name, args, signature)
+                }
+                ThoughtSignatureState::Unsigned => ToolCall::new(id, name, args),
+            });
         }
 
         let mut results: Vec<ToolResult> = Vec::new();
@@ -758,7 +772,13 @@ mod tests {
 
         // Record tool call start
         journal
-            .record_call_start(batch_id, 0, "call_1", "Read", None)
+            .record_call_start(
+                batch_id,
+                0,
+                "call_1",
+                "Read",
+                &ThoughtSignatureState::Unsigned,
+            )
             .unwrap();
 
         // Append arguments in chunks
@@ -850,7 +870,13 @@ mod tests {
 
         let batch_id = journal.begin_streaming_batch("test-model").unwrap();
         journal
-            .record_call_start(batch_id, 0, "call_1", "test_tool", None)
+            .record_call_start(
+                batch_id,
+                0,
+                "call_1",
+                "test_tool",
+                &ThoughtSignatureState::Unsigned,
+            )
             .unwrap();
         // Don't append any arguments - leave it empty
 
@@ -866,7 +892,13 @@ mod tests {
 
         let batch_id = journal.begin_streaming_batch("test-model").unwrap();
         journal
-            .record_call_start(batch_id, 0, "call_1", "test_tool", None)
+            .record_call_start(
+                batch_id,
+                0,
+                "call_1",
+                "test_tool",
+                &ThoughtSignatureState::Unsigned,
+            )
             .unwrap();
         // Append invalid JSON
         journal

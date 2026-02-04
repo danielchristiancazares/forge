@@ -958,7 +958,7 @@ impl App {
         if let Some(thinking_message) = thinking_message {
             let has_signature = matches!(
                 &thinking_message,
-                Message::Thinking(thinking) if thinking.signature().is_some()
+                Message::Thinking(thinking) if thinking.has_signature()
             );
             if has_signature {
                 self.push_history_message(thinking_message);

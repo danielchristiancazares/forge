@@ -447,7 +447,7 @@ In `providers/src/lib.rs`, cache hints are applied via `CacheHint`:
 ```rust
 fn content_block(text: &str, cache_hint: CacheHint) -> serde_json::Value {
     match cache_hint {
-        CacheHint::None => json!({"type": "text", "text": text}),
+        CacheHint::Default => json!({"type": "text", "text": text}),
         CacheHint::Ephemeral => json!({
             "type": "text",
             "text": text,
@@ -527,10 +527,12 @@ data: {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_d
 In `providers/src/lib.rs`:
 
 ```rust
-if let Some(budget) = limits.thinking_budget() {
+use forge_types::ThinkingState;
+
+if let ThinkingState::Enabled(budget) = limits.thinking() {
     body.insert("thinking".into(), json!({
         "type": "enabled",
-        "budget_tokens": budget
+        "budget_tokens": budget.as_u32()
     }));
 }
 ```

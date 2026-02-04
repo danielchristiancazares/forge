@@ -265,20 +265,26 @@ assert_eq!(Provider::Claude.env_var(), "ANTHROPIC_API_KEY");
 assert_eq!(Provider::OpenAI.env_var(), "OPENAI_API_KEY");
 
 // Parse from user input (case-insensitive, multiple aliases)
-assert_eq!(Provider::parse("claude"), Some(Provider::Claude));
-assert_eq!(Provider::parse("Anthropic"), Some(Provider::Claude));
-assert_eq!(Provider::parse("openai"), Some(Provider::OpenAI));
-assert_eq!(Provider::parse("gpt"), Some(Provider::OpenAI));
-assert_eq!(Provider::parse("chatgpt"), Some(Provider::OpenAI));
-assert_eq!(Provider::parse("gemini"), Some(Provider::Gemini));
-assert_eq!(Provider::parse("google"), Some(Provider::Gemini));
-assert_eq!(Provider::parse("unknown"), None);
+assert_eq!(Provider::parse("claude").unwrap(), Provider::Claude);
+assert_eq!(Provider::parse("Anthropic").unwrap(), Provider::Claude);
+assert_eq!(Provider::parse("openai").unwrap(), Provider::OpenAI);
+assert_eq!(Provider::parse("gpt").unwrap(), Provider::OpenAI);
+assert_eq!(Provider::parse("chatgpt").unwrap(), Provider::OpenAI);
+assert_eq!(Provider::parse("gemini").unwrap(), Provider::Gemini);
+assert_eq!(Provider::parse("google").unwrap(), Provider::Gemini);
+assert!(Provider::parse("unknown").is_err());
 
 // Infer provider from model name prefix
-assert_eq!(Provider::from_model_name("claude-opus-4-5-20251101"), Some(Provider::Claude));
-assert_eq!(Provider::from_model_name("gpt-5.2"), Some(Provider::OpenAI));
-assert_eq!(Provider::from_model_name("gemini-3-pro-preview"), Some(Provider::Gemini));
-assert_eq!(Provider::from_model_name("unknown-model"), None);
+assert_eq!(
+    Provider::from_model_name("claude-opus-4-5-20251101").unwrap(),
+    Provider::Claude
+);
+assert_eq!(Provider::from_model_name("gpt-5.2").unwrap(), Provider::OpenAI);
+assert_eq!(
+    Provider::from_model_name("gemini-3-pro-preview").unwrap(),
+    Provider::Gemini
+);
+assert!(Provider::from_model_name("unknown-model").is_err());
 
 // Enumerate all providers
 for provider in Provider::all() {
@@ -445,7 +451,7 @@ Controls how much reasoning the model should perform before responding.
 
 | Variant | API Value | Description |
 | ------- | --------- | ----------- |
-| `None` | "none" | No reasoning |
+| `Disabled` | "none" | No reasoning |
 | `Low` | "low" | Minimal reasoning |
 | `Medium` | "medium" | Moderate reasoning |
 | `High` (default) | "high" | Full reasoning |
@@ -455,10 +461,10 @@ Controls how much reasoning the model should perform before responding.
 use forge_types::OpenAIReasoningEffort;
 
 // Parse from string (case-insensitive)
-assert_eq!(OpenAIReasoningEffort::parse("high"), Some(OpenAIReasoningEffort::High));
-assert_eq!(OpenAIReasoningEffort::parse("xhigh"), Some(OpenAIReasoningEffort::XHigh));
-assert_eq!(OpenAIReasoningEffort::parse("x-high"), Some(OpenAIReasoningEffort::XHigh));
-assert_eq!(OpenAIReasoningEffort::parse("invalid"), None);
+assert_eq!(OpenAIReasoningEffort::parse("high").unwrap(), OpenAIReasoningEffort::High);
+assert_eq!(OpenAIReasoningEffort::parse("xhigh").unwrap(), OpenAIReasoningEffort::XHigh);
+assert_eq!(OpenAIReasoningEffort::parse("x-high").unwrap(), OpenAIReasoningEffort::XHigh);
+assert!(OpenAIReasoningEffort::parse("invalid").is_err());
 
 // Convert to API string
 assert_eq!(OpenAIReasoningEffort::High.as_str(), "high");
@@ -474,7 +480,7 @@ Controls whether OpenAI returns a reasoning summary (for supported models).
 
 | Variant | API Value | Description |
 | ------- | --------- | ----------- |
-| `None` (default) | "none" | Do not request a reasoning summary |
+| `Disabled` (default) | "none" | Do not request a reasoning summary |
 | `Auto` | "auto" | Request the most detailed summary available |
 | `Concise` | "concise" | Request a concise summary |
 | `Detailed` | "detailed" | Request a detailed summary |
@@ -482,13 +488,13 @@ Controls whether OpenAI returns a reasoning summary (for supported models).
 ```rust
 use forge_types::OpenAIReasoningSummary;
 
-assert_eq!(OpenAIReasoningSummary::parse("auto"), Some(OpenAIReasoningSummary::Auto));
-assert_eq!(OpenAIReasoningSummary::parse("CONCISE"), Some(OpenAIReasoningSummary::Concise));
-assert_eq!(OpenAIReasoningSummary::parse("detailed"), Some(OpenAIReasoningSummary::Detailed));
-assert_eq!(OpenAIReasoningSummary::parse("invalid"), None);
+assert_eq!(OpenAIReasoningSummary::parse("auto").unwrap(), OpenAIReasoningSummary::Auto);
+assert_eq!(OpenAIReasoningSummary::parse("CONCISE").unwrap(), OpenAIReasoningSummary::Concise);
+assert_eq!(OpenAIReasoningSummary::parse("detailed").unwrap(), OpenAIReasoningSummary::Detailed);
+assert!(OpenAIReasoningSummary::parse("invalid").is_err());
 
 assert_eq!(OpenAIReasoningSummary::Auto.as_str(), "auto");
-assert_eq!(OpenAIReasoningSummary::default(), OpenAIReasoningSummary::None);
+assert_eq!(OpenAIReasoningSummary::default(), OpenAIReasoningSummary::Disabled);
 ```
 
 ### OpenAITextVerbosity
@@ -553,7 +559,7 @@ assert_eq!(opts.truncation(), OpenAITruncation::Auto);
 // Default configuration
 let default_opts = OpenAIRequestOptions::default();
 assert_eq!(default_opts.reasoning_effort(), OpenAIReasoningEffort::High);
-assert_eq!(default_opts.reasoning_summary(), OpenAIReasoningSummary::None);
+assert_eq!(default_opts.reasoning_summary(), OpenAIReasoningSummary::Disabled);
 assert_eq!(default_opts.verbosity(), OpenAITextVerbosity::High);
 assert_eq!(default_opts.truncation(), OpenAITruncation::Auto);
 ```
@@ -568,7 +574,7 @@ A hint for whether content should be cached by the provider.
 
 | Variant | Description |
 | ------- | ----------- |
-| `None` (default) | No caching preference |
+| `Default` (default) | No caching preference |
 | `Ephemeral` | Content should be cached if supported |
 
 **Provider Behavior:**
@@ -584,7 +590,7 @@ A hint for whether content should be cached by the provider.
 use forge_types::CacheHint;
 
 let default = CacheHint::default();
-assert_eq!(default, CacheHint::None);
+assert_eq!(default, CacheHint::Default);
 
 let cached = CacheHint::Ephemeral;
 ```
@@ -598,31 +604,33 @@ Validated output configuration that guarantees invariants by construction.
 - If thinking is enabled: `thinking_budget >= 1024`
 - If thinking is enabled: `thinking_budget < max_output_tokens`
 
+Use `ThinkingState` to inspect whether thinking is enabled, and `ThinkingBudget::as_u32()` to read the validated token budget.
+
 **Without Thinking:**
 
 ```rust
-use forge_types::OutputLimits;
+use forge_types::{OutputLimits, ThinkingState};
 
 // Always succeeds (no validation needed)
 let limits = OutputLimits::new(4096);
 assert_eq!(limits.max_output_tokens(), 4096);
-assert_eq!(limits.thinking_budget(), None);
+assert_eq!(limits.thinking(), ThinkingState::Disabled);
 assert!(!limits.has_thinking());
 ```
 
 **With Thinking:**
 
 ```rust
-use forge_types::{OutputLimits, OutputLimitsError};
+use forge_types::{OutputLimits, OutputLimitsError, ThinkingState};
 
 // Valid configuration
 let limits = OutputLimits::with_thinking(16384, 8192)?;
 assert_eq!(limits.max_output_tokens(), 16384);
-assert_eq!(limits.thinking_budget(), Some(8192));
+assert!(matches!(limits.thinking(), ThinkingState::Enabled(_)));
 assert!(limits.has_thinking());
 
 // Minimum budget (1024)
-let limits = OutputLimits::with_thinking(4096, 1024)?;
+let _limits = OutputLimits::with_thinking(4096, 1024)?;
 
 // Budget too small
 let result = OutputLimits::with_thinking(4096, 512);
@@ -1064,7 +1072,7 @@ let msg = Message::system(NonEmptyString::new("You are helpful.")?);
 
 // No caching
 let plain = CacheableMessage::plain(msg.clone());
-assert_eq!(plain.cache_hint, CacheHint::None);
+assert_eq!(plain.cache_hint, CacheHint::Default);
 
 // With caching hint
 let cached = CacheableMessage::cached(msg.clone());

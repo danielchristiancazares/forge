@@ -623,12 +623,7 @@ mod tests {
         use forge_types::ToolCall;
         use serde_json::json;
 
-        let tool_call = ToolCall {
-            id: "call_123".to_string(),
-            name: "Read".to_string(),
-            arguments: json!({"path": "/tmp/test.txt"}),
-            thought_signature: None,
-        };
+        let tool_call = ToolCall::new("call_123", "Read", json!({"path": "/tmp/test.txt"}));
 
         let messages = vec![(MessageId::new_for_test(0), Message::ToolUse(tool_call))];
 

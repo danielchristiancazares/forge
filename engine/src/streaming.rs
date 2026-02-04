@@ -22,27 +22,37 @@ use super::{
     ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError,
     DEFAULT_STREAM_EVENT_BUDGET, DistillationStart, EMPTY_RESPONSE_BADGE, GeminiCache,
     GeminiCacheConfig, Message, NonEmptyString, OperationState, QueuedUserMessage, StreamEvent,
-    StreamFinishReason, StreamingMessage, notifications, sanitize_terminal_text, security,
+    StreamFinishReason, StreamingMessage, ThoughtSignatureState, notifications,
+    sanitize_terminal_text, security,
 };
 use crate::errors::format_stream_error;
 
 fn build_thinking_message(
     model: ModelName,
     content: String,
-    signature: Option<String>,
+    signature: ThoughtSignatureState,
 ) -> Option<Message> {
     if let Ok(thinking) = NonEmptyString::new(content) {
         return Some(match signature {
-            Some(sig) => Message::thinking_with_signature(model, thinking, sig),
-            None => Message::thinking(model, thinking),
+            ThoughtSignatureState::Signed(sig) => {
+                Message::thinking_with_signature(model, thinking, sig.as_str().to_string())
+            }
+            ThoughtSignatureState::Unsigned => Message::thinking(model, thinking),
         });
     }
 
-    signature.map(|sig| {
-        let placeholder = NonEmptyString::try_from(REDACTED_THINKING_PLACEHOLDER)
-            .expect("REDACTED_THINKING_PLACEHOLDER must be non-empty");
-        Message::thinking_with_signature(model, placeholder, sig)
-    })
+    match signature {
+        ThoughtSignatureState::Signed(sig) => {
+            let placeholder = NonEmptyString::try_from(REDACTED_THINKING_PLACEHOLDER)
+                .expect("REDACTED_THINKING_PLACEHOLDER must be non-empty");
+            Some(Message::thinking_with_signature(
+                model,
+                placeholder,
+                sig.as_str().to_string(),
+            ))
+        }
+        ThoughtSignatureState::Unsigned => None,
+    }
 }
 
 impl super::App {
@@ -127,11 +137,11 @@ impl super::App {
             && match config.model().provider() {
                 Provider::Claude | Provider::Gemini => true,
                 Provider::OpenAI => {
-                    self.openai_options.reasoning_summary() != OpenAIReasoningSummary::None
+                    self.openai_options.reasoning_summary() != OpenAIReasoningSummary::Disabled
                 }
             };
 
-        let active = ActiveStream {
+        let active = ActiveStream::Transient {
             message: StreamingMessage::new_with_thinking_capture(
                 config.model().clone(),
                 rx,
@@ -140,7 +150,6 @@ impl super::App {
             ),
             journal,
             abort_handle,
-            tool_batch_id: None,
             tool_call_seq: 0,
             tool_args_journal_bytes: std::collections::HashMap::new(),
             turn,
@@ -263,7 +272,7 @@ impl super::App {
                     _ => return,
                 };
 
-                match active.message.try_recv_event() {
+                match active.message_mut().try_recv_event() {
                     Ok(event) => event,
                     Err(mpsc::error::TryRecvError::Empty) => break,
                     Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -286,7 +295,7 @@ impl super::App {
                             OperationState::Streaming(active) => active,
                             _ => break,
                         };
-                        match active.message.try_recv_event() {
+                        match active.message_mut().try_recv_event() {
                             Ok(StreamEvent::TextDelta(more_text)) => {
                                 text.push_str(&more_text);
                                 processed = processed.saturating_add(1);
@@ -312,7 +321,7 @@ impl super::App {
                             OperationState::Streaming(active) => active,
                             _ => break,
                         };
-                        match active.message.try_recv_event() {
+                        match active.message_mut().try_recv_event() {
                             Ok(StreamEvent::ThinkingDelta(more_thinking)) => {
                                 thinking.push_str(&more_thinking);
                                 processed = processed.saturating_add(1);
@@ -358,7 +367,7 @@ impl super::App {
 
             let persist_result = match &event {
                 StreamEvent::TextDelta(text) => active
-                    .journal
+                    .journal_mut()
                     .append_text(&mut self.stream_journal, text.clone()),
                 StreamEvent::ThinkingDelta(_)
                 | StreamEvent::ThinkingSignature(_)
@@ -367,9 +376,9 @@ impl super::App {
                     Ok(())
                 }
                 StreamEvent::ToolCallStart { .. } | StreamEvent::ToolCallDelta { .. } => Ok(()),
-                StreamEvent::Done => active.journal.append_done(&mut self.stream_journal),
+                StreamEvent::Done => active.journal_mut().append_done(&mut self.stream_journal),
                 StreamEvent::Error(msg) => active
-                    .journal
+                    .journal_mut()
                     .append_error(&mut self.stream_journal, msg.clone()),
             };
 
@@ -385,37 +394,44 @@ impl super::App {
                         name,
                         thought_signature,
                     } => {
-                        if active.tool_batch_id.is_none() {
+                        // Ensure we're in Journaled state (transition if Transient)
+                        if matches!(&active, ActiveStream::Transient { .. }) {
                             match self
                                 .tool_journal
-                                .begin_streaming_batch(active.journal.model_name())
+                                .begin_streaming_batch(active.journal().model_name())
                             {
                                 Ok(batch_id) => {
-                                    active.tool_batch_id = Some(batch_id);
+                                    active = active.transition_to_journaled(batch_id);
                                 }
                                 Err(e) => journal_error = Some(e.to_string()),
                             }
                         }
-                        if let Some(batch_id) = active.tool_batch_id {
-                            let seq = active.tool_call_seq;
-                            active.tool_call_seq = active.tool_call_seq.saturating_add(1);
+                        // Record tool call if journaled
+                        if let ActiveStream::Journaled { tool_batch_id, .. } = &active {
+                            let batch_id = *tool_batch_id;
+                            let seq = active.tool_call_seq();
+                            active.increment_tool_call_seq();
                             if let Err(e) = self.tool_journal.record_call_start(
                                 batch_id,
                                 seq,
                                 id,
                                 name,
-                                thought_signature.as_deref(),
+                                thought_signature,
                             ) {
                                 journal_error = Some(e.to_string());
                             }
                         }
                     }
                     StreamEvent::ToolCallDelta { id, arguments } => {
-                        if let Some(batch_id) = active.tool_batch_id {
+                        if let ActiveStream::Journaled { tool_batch_id, .. } = &active {
+                            let batch_id = *tool_batch_id;
                             // Check size cap before appending to journal
                             let max_bytes = self.tool_settings.limits.max_tool_args_bytes;
-                            let current_bytes =
-                                active.tool_args_journal_bytes.get(id).copied().unwrap_or(0);
+                            let current_bytes = active
+                                .tool_args_journal_bytes_mut()
+                                .get(id)
+                                .copied()
+                                .unwrap_or(0);
                             let new_total = current_bytes.saturating_add(arguments.len());
 
                             if new_total <= max_bytes {
@@ -425,7 +441,9 @@ impl super::App {
                                 {
                                     journal_error = Some(e.to_string());
                                 } else {
-                                    active.tool_args_journal_bytes.insert(id.clone(), new_total);
+                                    active
+                                        .tool_args_journal_bytes_mut()
+                                        .insert(id.clone(), new_total);
                                 }
                             }
                             // Over limit: silently skip appending to journal
@@ -437,11 +455,13 @@ impl super::App {
             }
 
             if journal_error.is_none() {
-                finish_reason = active.message.apply_event(event);
-                // Append text delta to tool journal (if tool batch active and we have a delta)
+                finish_reason = active.message_mut().apply_event(event);
+                // Append text delta to tool journal (if journaled and we have a delta)
                 if let Some(ref delta) = text_delta_for_tool_journal
-                    && let Some(batch_id) = active.tool_batch_id
-                    && let Err(e) = self.tool_journal.append_assistant_delta(batch_id, delta)
+                    && let ActiveStream::Journaled { tool_batch_id, .. } = &active
+                    && let Err(e) = self
+                        .tool_journal
+                        .append_assistant_delta(*tool_batch_id, delta)
                 {
                     journal_error = Some(e.to_string());
                 }
@@ -459,14 +479,7 @@ impl super::App {
                     }
                 };
 
-                let ActiveStream {
-                    message,
-                    journal,
-                    abort_handle,
-                    tool_batch_id,
-                    turn,
-                    ..
-                } = active;
+                let (message, journal, abort_handle, tool_batch_id, turn) = active.into_parts();
 
                 abort_handle.abort();
 
@@ -537,14 +550,7 @@ impl super::App {
             }
         };
 
-        let ActiveStream {
-            mut message,
-            journal,
-            abort_handle,
-            tool_batch_id,
-            turn,
-            ..
-        } = active;
+        let (mut message, journal, abort_handle, tool_batch_id, turn) = active.into_parts();
 
         abort_handle.abort();
 
@@ -602,7 +608,7 @@ impl super::App {
         if message.has_tool_calls() {
             // Capture thinking before returning so signatures survive tool-call turns.
             let thinking_content = message.thinking().to_owned();
-            let thinking_signature = message.thinking_signature().map(ToOwned::to_owned);
+            let thinking_signature = message.thinking_signature_state().clone();
             let thinking_message =
                 build_thinking_message(model.clone(), thinking_content, thinking_signature);
             let parsed = message.take_tool_calls();
@@ -627,7 +633,7 @@ impl super::App {
         // Capture thinking content and signature before consuming the streaming message.
         // Thinking is stored separately for UI toggles and signature replay.
         let thinking_content = message.thinking().to_owned();
-        let thinking_signature = message.thinking_signature().map(ToOwned::to_owned);
+        let thinking_signature = message.thinking_signature_state().clone();
 
         // Convert streaming message to completed message (empty content is invalid).
         let Some(assistant_message) = message.into_message().ok() else {
@@ -638,10 +644,11 @@ impl super::App {
             let empty_msg = Message::assistant(model.clone(), empty_badge);
             // Still push thinking if we captured any before the empty response
             if let Ok(thinking) = NonEmptyString::new(thinking_content) {
-                let thinking_msg = if let Some(sig) = thinking_signature {
-                    Message::thinking_with_signature(model, thinking, sig)
-                } else {
-                    Message::thinking(model, thinking)
+                let thinking_msg = match &thinking_signature {
+                    ThoughtSignatureState::Signed(sig) => {
+                        Message::thinking_with_signature(model, thinking, sig.as_str().to_string())
+                    }
+                    ThoughtSignatureState::Unsigned => Message::thinking(model, thinking),
                 };
                 self.push_local_message(thinking_msg);
             }
@@ -656,7 +663,7 @@ impl super::App {
         self.pending_user_message = None;
 
         // Push thinking message first (if any), then assistant message
-        let has_thinking_signature = thinking_signature.is_some();
+        let has_thinking_signature = thinking_signature.is_signed();
         if let Some(thinking_msg) =
             build_thinking_message(model, thinking_content, thinking_signature)
         {

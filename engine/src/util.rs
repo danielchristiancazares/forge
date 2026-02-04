@@ -29,7 +29,9 @@ pub fn truncate_with_ellipsis(raw: &str, max: usize) -> String {
 /// Used for crash recovery when we need to reconstruct the model from stored metadata.
 /// Falls back to None if the model name cannot be parsed.
 pub fn parse_model_name_from_string(name: &str) -> Option<ModelName> {
-    PredefinedModel::from_model_id(name).map(ModelName::from_predefined)
+    PredefinedModel::from_model_id(name)
+        .map(ModelName::from_predefined)
+        .ok()
 }
 
 #[cfg(test)]

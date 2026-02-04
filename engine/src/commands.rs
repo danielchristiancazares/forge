@@ -5,8 +5,8 @@
 use super::{
     ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, SessionChangeLog,
     state::{
-        DistillationStart, JournalStatus, OperationState, ToolLoopPhase, ToolLoopState,
-        ToolRecoveryDecision,
+        ActiveStream, DistillationStart, JournalStatus, OperationState, ToolLoopPhase,
+        ToolLoopState, ToolRecoveryDecision,
     },
 };
 
@@ -262,15 +262,15 @@ impl super::App {
     pub fn cancel_active_operation(&mut self) -> bool {
         match self.replace_with_idle() {
             OperationState::Streaming(active) => {
-                active.abort_handle.abort();
+                active.abort_handle().abort();
 
-                // Clean up tool batch if streaming had started tool calls
-                if let Some(batch_id) = active.tool_batch_id {
-                    let _ = self.tool_journal.discard_batch(batch_id);
+                // Clean up tool batch if journaled
+                if let ActiveStream::Journaled { tool_batch_id, .. } = &active {
+                    let _ = self.tool_journal.discard_batch(*tool_batch_id);
                 }
 
                 // Clean up journal state
-                let _ = active.journal.discard(&mut self.stream_journal);
+                let _ = active.into_journal().discard(&mut self.stream_journal);
 
                 // Rollback the user message since no response was generated
                 self.rollback_pending_user_message();
@@ -301,8 +301,8 @@ impl super::App {
                 true
             }
             OperationState::Distilling(state) => {
-                state.task.handle.abort();
-                if state.queued.is_some() {
+                state.task().handle.abort();
+                if state.has_queued_message() {
                     self.rollback_pending_user_message();
                 }
                 self.push_notification("Distillation cancelled");
@@ -329,12 +329,12 @@ impl super::App {
                 let state = self.replace_with_idle();
                 match state {
                     OperationState::Streaming(active) => {
-                        active.abort_handle.abort();
-                        // Clean up tool batch if streaming had started tool calls
-                        if let Some(batch_id) = active.tool_batch_id {
-                            let _ = self.tool_journal.discard_batch(batch_id);
+                        active.abort_handle().abort();
+                        // Clean up tool batch if journaled
+                        if let ActiveStream::Journaled { tool_batch_id, .. } = &active {
+                            let _ = self.tool_journal.discard_batch(*tool_batch_id);
                         }
-                        let _ = active.journal.discard(&mut self.stream_journal);
+                        let _ = active.into_journal().discard(&mut self.stream_journal);
                     }
                     OperationState::ToolLoop(state) => {
                         let ToolLoopState { batch, phase } = *state;
@@ -352,7 +352,7 @@ impl super::App {
                         self.discard_journal_step(state.step_id);
                     }
                     OperationState::Distilling(state) => {
-                        state.task.handle.abort();
+                        state.task().handle.abort();
                     }
                     OperationState::Idle => {}
                 }

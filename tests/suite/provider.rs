@@ -6,24 +6,24 @@ use forge_types::{ModelName, ModelParseError, PredefinedModel, Provider};
 #[test]
 fn provider_parse_aliases() {
     // Claude aliases
-    assert_eq!(Provider::parse("claude"), Some(Provider::Claude));
-    assert_eq!(Provider::parse("Claude"), Some(Provider::Claude));
-    assert_eq!(Provider::parse("CLAUDE"), Some(Provider::Claude));
-    assert_eq!(Provider::parse("anthropic"), Some(Provider::Claude));
+    assert_eq!(Provider::parse("claude").unwrap(), Provider::Claude);
+    assert_eq!(Provider::parse("Claude").unwrap(), Provider::Claude);
+    assert_eq!(Provider::parse("CLAUDE").unwrap(), Provider::Claude);
+    assert_eq!(Provider::parse("anthropic").unwrap(), Provider::Claude);
 
     // OpenAI aliases
-    assert_eq!(Provider::parse("openai"), Some(Provider::OpenAI));
-    assert_eq!(Provider::parse("gpt"), Some(Provider::OpenAI));
-    assert_eq!(Provider::parse("chatgpt"), Some(Provider::OpenAI));
+    assert_eq!(Provider::parse("openai").unwrap(), Provider::OpenAI);
+    assert_eq!(Provider::parse("gpt").unwrap(), Provider::OpenAI);
+    assert_eq!(Provider::parse("chatgpt").unwrap(), Provider::OpenAI);
 
     // Gemini aliases
-    assert_eq!(Provider::parse("gemini"), Some(Provider::Gemini));
-    assert_eq!(Provider::parse("google"), Some(Provider::Gemini));
-    assert_eq!(Provider::parse("Gemini"), Some(Provider::Gemini));
+    assert_eq!(Provider::parse("gemini").unwrap(), Provider::Gemini);
+    assert_eq!(Provider::parse("google").unwrap(), Provider::Gemini);
+    assert_eq!(Provider::parse("Gemini").unwrap(), Provider::Gemini);
 
     // Unknown
-    assert_eq!(Provider::parse("unknown_provider"), None);
-    assert_eq!(Provider::parse(""), None);
+    assert!(Provider::parse("unknown_provider").is_err());
+    assert!(Provider::parse("").is_err());
 }
 
 #[test]

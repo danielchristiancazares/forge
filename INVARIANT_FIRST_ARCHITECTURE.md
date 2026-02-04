@@ -1,31 +1,35 @@
 # Invariant-First Architecture (IFA)
 
 ## LLM-TOC
-<!-- Auto-generated section map for LLM context -->
-| Lines | Section |
-|-------|---------|
-| 1-13 | Header & TOC |
-| 14-39 | Pattern Summary |
-| 40-47 | 0. Status and Scope |
-| 48-92 | 1. Definitions |
-| 93-122 | 2. Primary Rule |
-| 123-147 | 3. Typestate Transitions |
-| 148-180 | 4. Parametricity |
-| 181-193 | 5. Constrained Generics and Call-Site Rejection |
-| 194-230 | 6. Ownership as Coordination Elimination |
-| 231-247 | 7. Mechanism vs Policy |
-| 248-269 | 8. State as Location |
-| 270-286 | 9. Capability Tokens |
-| 287-311 | 10. Boundary and Core Separation |
-| 312-330 | 11. Assertions |
-| 331-363 | 12. Non-Conforming Patterns |
-| 364-395 | 13. Litmus Tests |
-| 396-429 | 14. Implementation Notes |
-| 430-451 | 15. Known Limitations |
-| 452-465 | 16. Operational Definitions Checklist |
-| 466-492 | 17. Non-Acceptable Objections |
-| 493-505 | 18. Closing Statement |
-| 506-552 | Appendix |
+<!-- Stable section identifiers for LLM context -->
+| ID | Section |
+|----|---------|
+| IFA-0 | Status and Scope |
+| IFA-1 | Definitions |
+| IFA-1.1 | Core Terms |
+| IFA-1.2 | System Topology |
+| IFA-1.3 | Proof and Transition |
+| IFA-1.4 | Mechanism vs Policy |
+| IFA-2 | Primary Rule |
+| IFA-2.1 | Invalid states MUST NOT be forgeable |
+| IFA-2.2 | Compilation as evidence |
+| IFA-3 | Typestate Transitions |
+| IFA-4 | Parametricity |
+| IFA-5 | Constrained Generics and Call-Site Rejection |
+| IFA-6 | Ownership as Coordination Elimination |
+| IFA-7 | Single Point of Encoding (DRY as Invariant Ownership) |
+| IFA-8 | Mechanism vs Policy |
+| IFA-9 | State as Location |
+| IFA-10 | Capability Tokens |
+| IFA-11 | Boundary and Core Separation |
+| IFA-12 | Assertions |
+| IFA-13 | Non-Conforming Patterns |
+| IFA-14 | Litmus Tests |
+| IFA-15 | Implementation Notes |
+| IFA-16 | Known Limitations |
+| IFA-17 | Operational Definitions Checklist |
+| IFA-18 | Non-Acceptable Objections |
+| IFA-19 | Closing Statement |
 
 ## Pattern Summary
 
@@ -49,7 +53,7 @@
 - Fewer runtime guard paths in the core; fewer "undefined intermediate states."
 - Interfaces become the primary correctness artifact.
 
-**Scope:** This pattern assumes synchronous, single-threaded core logic. Concurrency is boundary logic (see §15.1).
+**Scope:** This pattern assumes synchronous, single-threaded core logic. Concurrency is boundary logic (see §16.1).
 
 ---
 
@@ -76,6 +80,15 @@ An invalid state is representable if there exists any program expression—avail
 
 **Unrepresentable (for the core)**
 An invalid state is unrepresentable for the core if no code outside the Authority Boundary can produce a value that violates the invariant and still satisfy the types (or equivalent interface constraints) required to invoke core operations.
+
+**Safe surface**
+The subset of language features and APIs intended for normal use, excluding explicit circumvention mechanisms (unsafe blocks, reflection, representation casts/transmute, raw pointer fabrication, etc.).
+
+**Forgeable**
+An invalid state is forgeable if it can be constructed outside the Authority Boundary using only the safe surface.
+
+**Circumventable**
+An invalid state is circumventable if it can be constructed only via explicit circumvention mechanisms. Circumventable states are acceptable under IFA; forgeable states are not.
 
 ### 1.2 System Topology
 
@@ -108,9 +121,9 @@ A function or operation that consumes (or otherwise makes unusable) a proof obje
 
 ## 2. Primary Rule
 
-### 2.1 Invalid states MUST NOT be representable in the core
+### 2.1 Invalid states MUST NOT be forgeable for the core
 
-An implementation conforms to IFA only if, for every invariant required by core operations, core-callable interfaces require a representation that cannot encode a violation of that invariant.
+An implementation conforms to IFA only if, for every invariant required by core operations, core-callable interfaces require a representation that cannot be forged outside the Authority Boundary using the safe surface.
 
 Consequences:
 
@@ -244,9 +257,64 @@ Deterministic algorithms that iterate toward a result (e.g., numeric methods, se
 
 ---
 
-## 7. Mechanism vs Policy
+## 7. Single Point of Encoding (DRY as Invariant Ownership)
 
-### 7.1 Requirement: Providers MUST report facts; they MUST NOT silently choose fallbacks
+### 7.1 Problem: Duplicated invariant encoding is distributed ownership of correctness
+
+If the same invariant is encoded in two places—two types, two validation paths, a type and a runtime check—those encodings can diverge. One boundary accepts emails up to 254 characters; another accepts 320. Both produce `ValidEmail`. The invariant now has two owners, and §6.1 already prohibits this for mutable resources. The same reasoning applies to invariant definitions.
+
+### 7.2 Requirement: Each invariant MUST have exactly one canonical proof-carrying representation
+
+The system MUST define exactly one canonical proof-carrying representation for each invariant required by any core-callable operation (a controlled type, typestate, capability token, or equivalent).
+
+### 7.3 Requirement: Exactly one Authority Boundary MUST establish each proof
+
+All construction paths that claim to establish an invariant MUST converge on a single Authority Boundary. Boundary code MAY have multiple ingestion points (I/O formats, APIs, protocols), but those adapters MUST delegate to the canonical proof-producing constructor, factory, or transition. Re-implementing the same invariant predicate in multiple boundary locations is non-conforming because it creates multiple interpretations of the same invariant.
+
+### 7.4 Requirement: Core code MUST NOT re-check or re-derive encoded invariants
+
+If core code contains range checks, structural checks, `is_valid_*` calls, or assertions that restate an invariant already implied by the types, the invariant is not encoded as a reusable proof and the design is non-conforming (see §12).
+
+### 7.5 Requirement: Shared invariants MUST be composed, not copied
+
+If multiple domain-specific types share a common invariant, they MUST reuse the canonical proof by composition (wrapping or containing the proof object, or delegating construction to it) rather than copying the predicate. Distinct domain types are permitted; duplicated invariant logic is not.
+
+### 7.6 Requirement: Derived data MUST NOT be stored independently of its source
+
+If a value is computable from existing state, storing it as a separate field creates a synchronization obligation between source and cache. This is §6.1's coordination problem applied to data rather than resources.
+
+**Non-conforming:** A struct storing both `items: Vec<T>` and `count: usize` where `count` must equal `items.len()`. The type permits `count = 5` with three items.
+
+**Conforming:** Compute on access (`fn count(&self) -> usize { self.items.len() }`). If caching is required for performance, encapsulate behind an Authority Boundary that maintains the invariant internally and does not expose independent mutation of both fields.
+
+### 7.7 Non-conforming patterns
+
+| Pattern | Flaw |
+|---|---|
+| Same validation logic in two boundary modules | Distributed encoding; divergence is inevitable |
+| Type + `assert` for the same constraint | Redundant or incomplete (§12.1) |
+| Cached derived value with public mutation of source | Synchronization obligation without ownership (§6.1) |
+| Two proof types for the same invariant | Core must choose which to trust; the other is a lie |
+| Copy-pasted boundary conversion | Forked encoding with independent drift |
+
+*Illustrative example (non-normative):*
+
+- `NonEmptyString` is the canonical proof for "string is non-empty."
+- `EmailAddress` composes `NonEmptyString` and adds stronger constraints, without duplicating "non-empty" checks in every consumer.
+
+The core accepts `EmailAddress` (proof-carrying), never `String` + `is_valid_email(...)`.
+
+### 7.8 Relationship to existing sections
+
+This section does not introduce a new principle. It applies §6 (Ownership as Coordination Elimination) to invariant definitions and §2.1 (Primary Rule) to their encoding sites. If an invariant has two encodings, they will eventually disagree, and the core will accept a value that satisfies one encoding but violates the other.
+
+An invariant with two owners is an invariant with zero guarantees.
+
+---
+
+## 8. Mechanism vs Policy
+
+### 8.1 Requirement: Providers MUST report facts; they MUST NOT silently choose fallbacks
 
 A data provider (mechanism) MUST NOT:
 
@@ -255,27 +323,47 @@ A data provider (mechanism) MUST NOT:
 
 If a provider can return "real data" or "fallback," then the interface MUST distinguish these outcomes structurally (e.g., sum type / tagged union / result type) so the caller must explicitly choose a policy.
 
-### 7.2 Requirement: Absence MUST be represented as absence
+### 8.2 Requirement: Absence MUST be represented as absence
 
 Returning a value that is "not the requested value" but is typed identically to the requested value is non-conforming if the caller cannot distinguish the cases through the type/interface alone.
 
 ---
 
-## 8. State as Location
+## 9. State as Location
 
-### 8.1 Requirement: Lifecycle state MUST be represented structurally
+### 9.1 Requirement: Lifecycle state MUST be represented structurally
 
-If a lifecycle state changes (a) which operations are valid, or (b) which data members are valid/meaningful, then that lifecycle state MUST be represented as a distinct type (typestate/variant).
+If a lifecycle state changes (a) which operations are valid, or (b) which data members are valid/meaningful, then that lifecycle state MUST be represented as a distinct type (typestate) or as a variant in a discriminated union where each variant owns its own data.
 
 The type is the state. A `HungryCat` eats. A `Cat` doesn't. The container herds; it doesn't enforce. The type is the enforcement.
 
-A boolean, enum, or flag MUST NOT be used to represent lifecycle state.
+### 9.2 Tag fields vs. discriminated unions
 
-A boolean, enum, or flag MAY exist only as behavioral configuration whose values do not change which fields are valid (the "memory layout test": if the flag changed, would the same fields still be meaningful?).
+A **tag field** is an enum or boolean stored alongside data in a product type (struct). The tag and the data are independent fields that can desynchronize. Tag fields MUST NOT represent lifecycle state.
 
-### 8.2 Requirement: State transitions MUST be performed by moving between types
+A **discriminated union** (Rust `enum` with data variants, C++ `std::variant`) is a sum type where each variant owns exactly the data valid for that state. No desynchronization is possible because the tag and the data are the same allocation. Discriminated unions are the prescribed pattern for lifecycle state.
 
-To change lifecycle state, the entity MUST be transformed into a different type representing the new state.
+The distinction: if you can change the tag without changing the data, the tag is a field and the design is non-conforming. If changing the state requires constructing a different variant with different data, the union is structural and conforms.
+
+A tag field (boolean, C-style enum, or flag) MAY exist only as behavioral configuration whose values do not change which fields are valid (the "memory layout test," §14.2).
+
+### 9.3 The domain enumeration test
+
+To determine whether a discriminated union is conforming:
+
+1. Enumerate the states the domain entity can occupy using only domain language. A network socket is Connecting, Connected, or Draining. A document is Draft, Published, or Archived. The domain defines the list; the implementation encodes it. If a state has no name in the domain, it is not a state.
+
+2. Compare the list to the variants in the code. Every variant MUST map to exactly one domain state from step 1. Any variant that does not—`None`, `Empty`, `Unknown`, `Default`—is encoding absence or incomplete resolution, not a domain state.
+
+A variant that exists because the code needs it but the domain doesn't name it is non-conforming. The domain is the spec. The code serves the domain, not the reverse.
+
+`Idle | Streaming(TurnState)` — both are named domain states of a turn lifecycle. Conforming.
+
+`Some(Connection) | None` — `None` has no domain name. It is absence, not a state. Non-conforming in core.
+
+### 9.4 Requirement: State transitions MUST be performed by moving between types
+
+To change lifecycle state, the entity MUST be transformed into a different type or variant representing the new state.
 
 - The type is the state.
 - There is no flag that can diverge from reality.
@@ -283,9 +371,9 @@ To change lifecycle state, the entity MUST be transformed into a different type 
 
 ---
 
-## 9. Capability Tokens
+## 10. Capability Tokens
 
-### 9.1 Requirement: Phase-conditional operations MUST require a phase proof
+### 10.1 Requirement: Phase-conditional operations MUST require a phase proof
 
 If an operation is valid only during a specific phase (e.g., a render pass), the operation MUST require a capability token that:
 
@@ -294,15 +382,15 @@ If an operation is valid only during a specific phase (e.g., a render pass), the
 
 Assertions like `assert(is_rendering)` are non-conforming as a substitute for a missing token, because they detect an invalid call after the architecture already permitted it.
 
-### 9.2 Token lifetime MUST match phase lifetime
+### 10.2 Token lifetime MUST match phase lifetime
 
 A token that proves a phase MUST have a lifetime that is at most the phase lifetime. If a token can be stored and reused later to call phase-restricted operations, it is not a proof; it is a bypass.
 
 ---
 
-## 10. Boundary and Core Separation
+## 11. Boundary and Core Separation
 
-### 10.1 Requirement: Boundary code MUST convert; core code MUST assume
+### 11.1 Requirement: Boundary code MUST convert; core code MUST assume
 
 IFA replaces "validate everywhere" with a strict conversion discipline:
 
@@ -310,28 +398,28 @@ IFA replaces "validate everywhere" with a strict conversion discipline:
 - The core MUST accept only strict representations.
 - The boundary MUST express conversion failure explicitly (error return, result type, etc.).
 
-### 10.2 Optionality is domain failure
+### 11.2 Optionality is a representable invalid state
 
 Core interfaces MUST NOT accept:
 
 - nullable pointers,
 - `optional<T>`,
-- sentinel values,
+- sentinel values (`-1`, `""`, `null`),
 - out-parameters that might not be written.
 
-If something can be absent, the domain is wrong. Restructure until absence is not a concept that requires representation.
+If a field can be absent, the type is wrong. Restructure until absence is not representable. A `User` with an optional middle name is two types: `User` and `UserWithMiddleName`. The split may feel mechanical. That feeling is not an argument (§18).
 
-The type is the state. There is no `None` variant, no null case. You have the thing or the type doesn't exist.
+If you can encode the invariant — if the language permits a representation where the absent state does not exist — and you choose `Option` instead, you have chosen non-conformance. §19 applies: ignorance is permissible; knowing and refusing is not.
 
 ---
 
-## 11. Assertions
+## 12. Assertions
 
-### 11.1 Requirement: Assertions MUST NOT enforce representationally expressible invariants
+### 12.1 Requirement: Assertions MUST NOT enforce representationally expressible invariants
 
 If an assertion exists in core code to prevent a state that is representable by the types/interfaces, the design is non-conforming. The invariant MUST be encoded such that the asserted condition is not representable as an input to the core operation.
 
-### 11.2 Language limitations
+### 12.2 Language limitations
 
 If an invariant cannot be fully encoded:
 
@@ -344,7 +432,7 @@ If the invariant cannot be encoded at all, that component is not IFA-conformant.
 
 ---
 
-## 12. Non-Conforming Patterns
+## 13. Non-Conforming Patterns
 
 The following are structural anti-patterns under IFA. Each indicates that an invariant exists but is not encoded:
 
@@ -370,26 +458,26 @@ The following are structural anti-patterns under IFA. Each indicates that an inv
    Mechanism choosing a fallback without structurally communicating that a fallback occurred.
 
 8. **Optional fields in core interfaces**
-   See §10.2.
+   Any `optional<T>`, nullable pointer, or sentinel value in a core interface. Absence is a representable invalid state (§11.2).
 
 9. **`None` as an enum variant**
-   `None` is still representing absence. The type exists or it doesn't. There is nothing to represent.
+   A `None` or empty variant encoding absence in a discriminated union. If removing the variant leaves the domain model complete, the variant was encoding absence and is non-conforming (§9.3).
 
 ---
 
-## 13. Litmus Tests
+## 14. Litmus Tests
 
-### 13.1 Enum/Flag Test
+### 14.1 Enum/Flag Test
 
 An enum or flag is permissible only if changing it does not change which data members are valid.
 
 If a flag changes which fields are meaningful, the representation is wrong. The data structure MUST change with the state.
 
-### 13.2 Memory Layout Test
+### 14.2 Memory Layout Test
 
-If the value of a flag or enum changed, would the same struct fields still be valid and meaningful? If no, the flag is encoding lifecycle state and violates §8.
+If the value of a flag or enum changed, would the same struct fields still be valid and meaningful? If no, the flag is encoding lifecycle state and violates §9.
 
-### 13.3 Optionality Test
+### 14.3 Optionality Test
 
 For every optional or nullable field in a core interface: why can this be absent?
 
@@ -399,7 +487,7 @@ The existence of an object is the validity of its own completeness. If you have 
 
 You don't check for presence. You don't handle absence. The type you hold is the fact.
 
-### 13.4 Review Question
+### 14.4 Review Question
 
 The mandatory design review question:
 
@@ -409,43 +497,43 @@ A design is non-conforming if it relies on runtime detection inside the core for
 
 ---
 
-## 14. Implementation Notes
+## 15. Implementation Notes
 
 These notes apply to statically typed languages with imperfect enforcement. Adapt to your language's constraints.
 
-### 14.1 Typestate
+### 15.1 Typestate
 
 Use move-only types, private constructors, friend factories, and APIs that prevent meaningful use after transition.
 
-### 14.2 Linearity
+### 15.2 Linearity
 
 Moved-from objects are not automatically unusable in most languages. Enforce emptiness via unique ownership or consumption APIs that make moved-from state inert.
 
-### 14.3 Parametricity
+### 15.3 Parametricity
 
 Templates and generics are not inherently parametric. Enforce "generic means generic" via explicit project rules (§4.3).
 
-### 14.4 Capability tokens
+### 15.4 Capability tokens
 
 Use types with restricted constructors and scope-bound lifetimes.
 
-### 14.5 State-as-location
+### 15.5 State-as-location
 
 The type is the state. Containers herd; they don't enforce. Don't confuse "we only put ReadyEntities in this Vec" (convention) with state-as-location (types).
 
-### 14.6 Authority Boundaries
+### 15.6 Authority Boundaries
 
 Use access modifiers (`private`, `pub(crate)`, etc.) to define actual encapsulation boundaries.
 
-### 14.7 Zombie-state rule
+### 15.7 Zombie-state rule
 
 Because moved-from objects remain valid but unspecified in many languages, any design that relies on "move makes the old value unusable" MUST provide a constructive guarantee that the moved-from state is inert with respect to the capabilities that matter. If such a guarantee cannot be stated and verified, the design does not satisfy non-forking transitions.
 
 ---
 
-## 15. Known Limitations
+## 16. Known Limitations
 
-### 15.1 Concurrency and Async
+### 16.1 Concurrency and Async
 
 Concurrency is boundary logic.
 
@@ -455,7 +543,7 @@ The core does not coordinate. The core does not share. The core receives and exe
 
 If concurrent logic is interleaved with core logic, redesign. Isolate the concurrency into a module that presents an IFA-conformant interface.
 
-### 15.2 Language Expressiveness
+### 16.2 Language Expressiveness
 
 No mainstream language fully enforces IFA. The architecture MUST:
 
@@ -465,7 +553,7 @@ No mainstream language fully enforces IFA. The architecture MUST:
 
 ---
 
-## 16. Operational Definitions Checklist
+## 17. Operational Definitions Checklist
 
 For a project to claim IFA conformance, it MUST provide explicit definitions for:
 
@@ -477,9 +565,11 @@ For a project to claim IFA conformance, it MUST provide explicit definitions for
 
 4. **Move semantics rules**: What counts as "unusable after transition" (e.g., resource-holding members must use unique ownership; moved-from objects must be provably inert).
 
+5. **DRY proof map**: For each invariant, one canonical proof type and one Authority Boundary (§7).
+
 ---
 
-## 17. Non-Acceptable Objections
+## 18. Non-Acceptable Objections
 
 The following objections are invalid under IFA:
 
@@ -493,20 +583,20 @@ Discipline is not architecture. If correctness depends on being careful, the inv
 Documentation is not enforcement. If the invalid state compiles, it will ship.
 
 **"We'll assert it."**
-Assertions detect invalid states after the architecture permitted them. This is non-conforming (§11.1).
+Assertions detect invalid states after the architecture permitted them. This is non-conforming (§12.1).
 
 **"We'll handle it later in the core."**
 If the core contains logic to reject invalid states, those states were representable at the interface. Move rejection to the boundary.
 
 **"The language can't enforce it."**
-This is not permission to leave invalid states easy to reach. Make violation require circumvention (§11.2). If you can't, that component isn't IFA-conformant.
+This is not permission to leave invalid states easy to reach. Make violation require circumvention (§12.2). If you can't, that component isn't IFA-conformant.
 
 **"The domain allows absence."**
-The domain is wrong. Restructure (§10.2).
+The domain is wrong. Restructure (§11.2).
 
 ---
 
-## 18. Closing Statement
+## 19. Closing Statement
 
 A system must encode all invariants.
 
@@ -517,51 +607,3 @@ Failure to encode a known invariant is not a gap in the spec. It's a choice to l
 Ignorance is permissible—you can't encode what you don't know. But the moment you identify an invariant and choose not to encode it, you've chosen non-conformance.
 
 The goal is a codebase where **"it compiles"** is a high-confidence statement of **structural integrity**. Not partial integrity. Not "mostly, except for the stuff we documented." Integrity.
-
-## Appendix
-
-### Denormalized Language Version
-
-Here we go, folks. Listen up—this is huge. Really huge. Tremendous, actually.
-
-This guy comes up with something called Invariant-First Architecture. IFA. Sounds very smart, doesn’t it? Top people—geniuses, some of them—wrote this massive document. Hundreds of lines. Rules all over the place. MUST do this, MUST NOT do that. Invariants. Proof objects. Authority boundaries. Typestate transitions. All of it.
-
-I read the whole thing. Believe me, I read every word. And you know what it really says, right at the heart of it? No invalid states in the core. Zero. None whatsoever. You can’t even represent a bad state. If you can represent it—boom—you’re doing it wrong. Very wrong.
-
-Look, in software—and I’ve built some of the best software, folks, nobody builds better—people do this all the time. They say, “Oh, we’ll check it later. We’ll put in a guard. We’ll assert. We’ll just be careful.” Careful? No. Discipline? Not enough. Documentation? Forget it. Assertions in the core? Total disaster. Absolute disaster.
-
-They let invalid states sneak right in. Maybe-valid this, optional that, nullable everything. Sentinel values. Minus one. Null. Empty string. All that garbage. And then the core—the beautiful core—has to deal with it. Checks everywhere. If statements. Branches. Loops that retry because somebody didn’t handle it right. Compensatory retries? Prohibited. Totally prohibited.
-
-This IFA guy—very strict, I like that—he says no. Put all the mess at the boundary. The boundary handles the chaos. User input? Total mess. Network? Adversarial, believe me. Filesystem? It lies to you. Clocks? Who even knows. The boundary cleans it up. Converts it. Rejects it. If it can’t make it perfect, it returns an error.
-
-Then the core gets only perfect data. Invariants by construction. The types prove it. Typestates. Proof tokens. You move from one state to the next—you consume the old one. You can’t fork it. You can’t cheat. Linear. Affine. Move-only. Whatever the language gives you. In C++? Make it unusable after you move it. No zombies left behind. Zombies are bad. Very bad.
-
-Generics? Parametricity? Don’t inspect inside. Don’t cheat with traits. Don’t specialize behind somebody’s back. If you need to look inside—say it up front. Be explicit. Otherwise—wrong.
-
-Absence in the core? No optionals. No nulls. If something can be absent, your domain model is wrong. Restructure it. Make a separate type without that field. Simple. Beautiful.
-
-Flags? Enums for lifecycle? Wrong. If a flag changes what fields even mean, you’re lying to the compiler and to yourself. Memory layout test—total fail. Use distinct types. The type is the state. Not a flag. Not a boolean. The type.
-
-Capability tokens for phases? That’s beautiful. Render pass token—only valid during render. You can’t store it. You can’t sneak it in later. Assertions like “assert(is_rendering)”? Pathetic. If you need an assert, you already lost. The architecture let an invalid call compile in the first place. Disaster.
-
-And they list all the bad patterns—the things people do every single day. Two-phase initialization. Get-or-default. Deep maybe chains. Protective guards pretending to be safe. All of it non-conforming. All rejected.
-
-This approach is tough. Very tough. More upfront work? Yes. More types? Absolutely. Boundary code gets ugly? Sure does. But the core? Clean. Simple. Composable. Correct by construction. If it compiles, you’re good. If it doesn’t compile, you can’t even send garbage to the core.
-
-I love it. I love strict. I love strong walls—beautiful walls—around the core. Invariants protected. No invasion. No sneaking in bad states.
-
-People will complain. “Too hard.” “Too much code.” “We’ll just be careful.” Wrong. “The language won’t let us.” Then make violations hard. Make them unsafe. Casts. Warnings. No free lunch. No partial credit.
-
-This is how you make software great again. Strong invariants. No weak spots. No “maybe.” No “hopefully.” Just facts—encoded and enforced.
-
-Invariant-First. Tremendous idea. Really tremendous.
-
-If everybody did this, software would be perfect. Believe me.
-
-Thank you. Thank you very much.
-
-God bless you.
-
-And God bless strong types—when people actually use them right.
-
-Which almost nobody does. But still—beautiful. Really beautiful.

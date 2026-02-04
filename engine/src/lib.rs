@@ -54,7 +54,8 @@ pub use forge_types::{
     ApiKey, ApiUsage, CacheHint, CacheableMessage, EmptyStringError, Message, ModelName,
     NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort, OpenAIReasoningSummary,
     OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation, OutputLimits, Provider,
-    StreamEvent, StreamFinishReason, ToolCall, ToolDefinition, ToolResult, sanitize_terminal_text,
+    StreamEvent, StreamFinishReason, ThinkingState, ThoughtSignature, ThoughtSignatureState,
+    ToolCall, ToolDefinition, ToolResult, sanitize_terminal_text,
 };
 
 mod config;
@@ -146,7 +147,7 @@ struct ToolCallAccumulator {
     id: String,
     name: String,
     arguments_json: String,
-    thought_signature: Option<String>,
+    thought_signature: ThoughtSignatureState,
     args_exceeded: bool,
 }
 
@@ -179,7 +180,7 @@ pub struct StreamingMessage {
     /// Provider thinking/reasoning deltas (if captured).
     thinking: String,
     /// Encrypted signature for replaying thinking blocks (Claude extended thinking).
-    thinking_signature: Option<String>,
+    thinking_signature: ThoughtSignatureState,
     /// Whether we should capture thinking deltas at all (default: false).
     ///
     /// This keeps the default behavior (discard thinking) while allowing
@@ -217,7 +218,7 @@ impl StreamingMessage {
             model,
             content: String::new(),
             thinking: String::new(),
-            thinking_signature: None,
+            thinking_signature: ThoughtSignatureState::Unsigned,
             capture_thinking,
             receiver,
             tool_calls: Vec::new(),
@@ -249,8 +250,8 @@ impl StreamingMessage {
 
     /// Returns the thinking signature for API replay, if captured.
     #[must_use]
-    pub fn thinking_signature(&self) -> Option<&str> {
-        self.thinking_signature.as_deref()
+    pub const fn thinking_signature_state(&self) -> &ThoughtSignatureState {
+        &self.thinking_signature
     }
 
     /// API-reported token usage accumulated during streaming.
@@ -279,8 +280,11 @@ impl StreamingMessage {
                 // Always capture signature for API replay, regardless of thinking display preference.
                 // Signatures arrive as deltas that must be concatenated.
                 match &mut self.thinking_signature {
-                    Some(existing) => existing.push_str(&signature_delta),
-                    None => self.thinking_signature = Some(signature_delta),
+                    ThoughtSignatureState::Unsigned => {
+                        self.thinking_signature =
+                            ThoughtSignatureState::Signed(ThoughtSignature::new(signature_delta));
+                    }
+                    ThoughtSignatureState::Signed(existing) => existing.push_str(&signature_delta),
                 }
                 None
             }
@@ -335,13 +339,25 @@ impl StreamingMessage {
         let mut pre_resolved = Vec::new();
 
         for acc in self.tool_calls.drain(..) {
+            let build_call =
+                |id: String,
+                 name: String,
+                 arguments: serde_json::Value,
+                 thought_signature: ThoughtSignatureState| {
+                    match thought_signature {
+                        ThoughtSignatureState::Signed(signature) => {
+                            ToolCall::new_signed(id, name, arguments, signature)
+                        }
+                        ThoughtSignatureState::Unsigned => ToolCall::new(id, name, arguments),
+                    }
+                };
             if acc.args_exceeded {
                 pre_resolved.push(ToolResult::error(
                     acc.id.clone(),
                     acc.name.clone(),
                     "Tool arguments exceeded maximum size",
                 ));
-                calls.push(ToolCall::new_with_thought_signature(
+                calls.push(build_call(
                     acc.id,
                     acc.name,
                     serde_json::Value::Object(serde_json::Map::new()),
@@ -351,7 +367,7 @@ impl StreamingMessage {
             }
 
             if acc.arguments_json.trim().is_empty() {
-                calls.push(ToolCall::new_with_thought_signature(
+                calls.push(build_call(
                     acc.id,
                     acc.name,
                     serde_json::Value::Object(serde_json::Map::new()),
@@ -361,7 +377,7 @@ impl StreamingMessage {
             }
 
             match serde_json::from_str(&acc.arguments_json) {
-                Ok(arguments) => calls.push(ToolCall::new_with_thought_signature(
+                Ok(arguments) => calls.push(build_call(
                     acc.id,
                     acc.name,
                     arguments,
@@ -378,7 +394,7 @@ impl StreamingMessage {
                         acc.name.clone(),
                         "Invalid tool arguments JSON",
                     ));
-                    calls.push(ToolCall::new_with_thought_signature(
+                    calls.push(build_call(
                         acc.id,
                         acc.name,
                         serde_json::Value::Object(serde_json::Map::new()),
@@ -449,7 +465,7 @@ pub struct App {
     /// Whether memory (automatic distillation) is enabled.
     /// This is determined at init from config/env and does not change during runtime.
     memory_enabled: bool,
-    /// Validated output limits (max tokens + optional thinking budget).
+    /// Validated output limits (max tokens + explicit thinking state).
     /// Invariant: if thinking is enabled, budget < `max_tokens`.
     output_limits: OutputLimits,
     /// Whether prompt caching is enabled (for Claude).
@@ -793,7 +809,7 @@ impl App {
 
     pub fn streaming(&self) -> Option<&StreamingMessage> {
         match &self.state {
-            OperationState::Streaming(active) => Some(&active.message),
+            OperationState::Streaming(active) => Some(active.message()),
             _ => None,
         }
     }
@@ -1056,15 +1072,17 @@ impl App {
             return;
         }
 
-        let clamped = if let Some(budget) = current.thinking_budget() {
-            if budget < model_max_output {
-                OutputLimits::with_thinking(model_max_output, budget)
-                    .unwrap_or(OutputLimits::new(model_max_output))
-            } else {
-                OutputLimits::new(model_max_output)
+        let clamped = match current.thinking() {
+            ThinkingState::Enabled(budget) => {
+                let budget_tokens = budget.as_u32();
+                if budget_tokens < model_max_output {
+                    OutputLimits::with_thinking(model_max_output, budget_tokens)
+                        .unwrap_or(OutputLimits::new(model_max_output))
+                } else {
+                    OutputLimits::new(model_max_output)
+                }
             }
-        } else {
-            OutputLimits::new(model_max_output)
+            ThinkingState::Disabled => OutputLimits::new(model_max_output),
         };
 
         let warning = if current.has_thinking() && !clamped.has_thinking() {

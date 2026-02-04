@@ -339,11 +339,10 @@ fn process_stream_events_applies_deltas_and_done() {
         .stream_journal
         .begin_session(app.model.as_str())
         .expect("journal session");
-    app.state = OperationState::Streaming(ActiveStream {
+    app.state = OperationState::Streaming(ActiveStream::Transient {
         message: streaming,
         journal,
         abort_handle,
-        tool_batch_id: None,
         tool_call_seq: 0,
         tool_args_journal_bytes: std::collections::HashMap::new(),
         turn: crate::input_modes::TurnContext::new_for_tests(),
@@ -378,11 +377,10 @@ fn process_stream_events_persists_thinking_signature_when_hidden() {
         .stream_journal
         .begin_session(app.model.as_str())
         .expect("journal session");
-    app.state = OperationState::Streaming(ActiveStream {
+    app.state = OperationState::Streaming(ActiveStream::Transient {
         message: streaming,
         journal,
         abort_handle,
-        tool_batch_id: None,
         tool_call_seq: 0,
         tool_args_journal_bytes: std::collections::HashMap::new(),
         turn: crate::input_modes::TurnContext::new_for_tests(),
@@ -405,7 +403,10 @@ fn process_stream_events_persists_thinking_signature_when_hidden() {
         panic!("expected thinking message first");
     };
     assert_eq!(thinking.content(), "[Thinking hidden]");
-    assert_eq!(thinking.signature(), Some("sig"));
+    assert!(matches!(
+        thinking.signature_state(),
+        ThoughtSignatureState::Signed(signature) if signature.as_str() == "sig"
+    ));
 
     assert!(matches!(assistant_entry.message(), Message::Assistant(_)));
     assert_eq!(assistant_entry.message().content(), "hello");
@@ -426,11 +427,10 @@ fn process_stream_events_respects_budget() {
         .stream_journal
         .begin_session(app.model.as_str())
         .expect("journal session");
-    app.state = OperationState::Streaming(ActiveStream {
+    app.state = OperationState::Streaming(ActiveStream::Transient {
         message: streaming,
         journal,
         abort_handle,
-        tool_batch_id: None,
         tool_call_seq: 0,
         tool_args_journal_bytes: std::collections::HashMap::new(),
         turn: crate::input_modes::TurnContext::new_for_tests(),
@@ -445,6 +445,64 @@ fn process_stream_events_respects_budget() {
     let content_len = app.streaming().expect("still streaming").content().len();
     assert_eq!(content_len, DEFAULT_STREAM_EVENT_BUDGET);
     assert!(content_len < 10_000);
+}
+
+#[test]
+fn process_stream_events_starts_tool_journal_on_first_tool_call() {
+    let mut app = test_app();
+
+    let (tx, rx) = mpsc::channel(1024);
+    let streaming = StreamingMessage::new(
+        app.model.clone(),
+        rx,
+        app.tool_settings.limits.max_tool_args_bytes,
+    );
+    let (abort_handle, _abort_registration) = AbortHandle::new_pair();
+    let journal = app
+        .stream_journal
+        .begin_session(app.model.as_str())
+        .expect("journal session");
+    app.state = OperationState::Streaming(ActiveStream::Transient {
+        message: streaming,
+        journal,
+        abort_handle,
+        tool_call_seq: 0,
+        tool_args_journal_bytes: std::collections::HashMap::new(),
+        turn: crate::input_modes::TurnContext::new_for_tests(),
+    });
+
+    tx.try_send(StreamEvent::ToolCallStart {
+        id: "call-1".to_string(),
+        name: "Read".to_string(),
+        thought_signature: ThoughtSignatureState::Unsigned,
+    })
+    .expect("send tool start");
+    tx.try_send(StreamEvent::ToolCallDelta {
+        id: "call-1".to_string(),
+        arguments: r#"{"path":"foo.txt"}"#.to_string(),
+    })
+    .expect("send tool args");
+
+    app.process_stream_events();
+
+    let tool_batch_id = match &app.state {
+        OperationState::Streaming(ActiveStream::Journaled { tool_batch_id, .. }) => *tool_batch_id,
+        _ => panic!("expected journaled stream"),
+    };
+
+    let recovered = app
+        .tool_journal
+        .recover()
+        .expect("recover tool batch")
+        .expect("pending tool batch");
+    assert_eq!(recovered.batch_id, tool_batch_id);
+    assert_eq!(recovered.model_name, app.model.as_str());
+    assert_eq!(recovered.calls.len(), 1);
+    let call = &recovered.calls[0];
+    assert_eq!(call.id, "call-1");
+    assert_eq!(call.name, "Read");
+    assert_eq!(call.arguments["path"], "foo.txt");
+    assert!(recovered.results.is_empty());
 }
 
 #[test]
@@ -665,7 +723,7 @@ fn tool_call_args_overflow_pre_resolved_error() {
     stream.apply_event(StreamEvent::ToolCallStart {
         id: "call-1".to_string(),
         name: "Run".to_string(),
-        thought_signature: None,
+        thought_signature: ThoughtSignatureState::Unsigned,
     });
     stream.apply_event(StreamEvent::ToolCallDelta {
         id: "call-1".to_string(),
@@ -730,7 +788,10 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
     let Message::Thinking(thinking) = thinking_entry.message() else {
         panic!("expected thinking message first");
     };
-    assert_eq!(thinking.signature(), Some("sig"));
+    assert!(matches!(
+        thinking.signature_state(),
+        ThoughtSignatureState::Signed(signature) if signature.as_str() == "sig"
+    ));
     let last = app.history().entries().last().expect("tool result");
     assert!(matches!(last.message(), Message::ToolResult(_)));
     assert_eq!(last.message().content(), "Tool call denied by user");
@@ -866,12 +927,12 @@ async fn distillation_failure_goes_to_idle_no_retry() {
         generated_by: "test".to_string(),
         handle,
     };
-    app.state = OperationState::Distilling(DistillationState {
+    app.state = OperationState::Distilling(DistillationState::CompletedWithQueued {
         task,
-        queued: Some(QueuedUserMessage {
+        message: QueuedUserMessage {
             config: config.clone(),
             turn: crate::input_modes::TurnContext::new_for_tests(),
-        }),
+        },
     });
 
     tokio::task::yield_now().await;

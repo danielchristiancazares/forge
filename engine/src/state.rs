@@ -50,17 +50,163 @@ pub(crate) enum JournalStatus {
     Failed,
 }
 
+/// Active streaming state with typestate encoding for journal status.
+///
+/// Transitions: Transient -> Journaled (when first tool call detected)
 #[derive(Debug)]
-pub(crate) struct ActiveStream {
-    pub(crate) message: StreamingMessage,
-    pub(crate) journal: ActiveJournal,
-    pub(crate) abort_handle: AbortHandle,
-    pub(crate) tool_batch_id: Option<ToolBatchId>,
-    pub(crate) tool_call_seq: usize,
-    /// Tracks bytes of tool arguments written to journal per call ID.
-    /// When a call exceeds the limit, we stop appending to the journal.
-    pub(crate) tool_args_journal_bytes: HashMap<String, usize>,
-    pub(crate) turn: TurnContext,
+pub(crate) enum ActiveStream {
+    /// Stream without tool call journaling (no tool calls yet, or journaling failed).
+    Transient {
+        message: StreamingMessage,
+        journal: ActiveJournal,
+        abort_handle: AbortHandle,
+        tool_call_seq: usize,
+        tool_args_journal_bytes: HashMap<String, usize>,
+        turn: TurnContext,
+    },
+    /// Stream with tool call journaling active (crash-recoverable).
+    Journaled {
+        tool_batch_id: ToolBatchId,
+        message: StreamingMessage,
+        journal: ActiveJournal,
+        abort_handle: AbortHandle,
+        tool_call_seq: usize,
+        tool_args_journal_bytes: HashMap<String, usize>,
+        turn: TurnContext,
+    },
+}
+
+impl ActiveStream {
+    /// Transition from Transient to Journaled state (non-reversible).
+    pub(crate) fn transition_to_journaled(self, batch_id: ToolBatchId) -> Self {
+        match self {
+            ActiveStream::Transient {
+                message,
+                journal,
+                abort_handle,
+                tool_call_seq,
+                tool_args_journal_bytes,
+                turn,
+            } => ActiveStream::Journaled {
+                tool_batch_id: batch_id,
+                message,
+                journal,
+                abort_handle,
+                tool_call_seq,
+                tool_args_journal_bytes,
+                turn,
+            },
+            // Already journaled - this shouldn't happen, but return unchanged
+            ActiveStream::Journaled { .. } => self,
+        }
+    }
+
+    /// Access common fields (available in both states).
+    pub(crate) fn message(&self) -> &StreamingMessage {
+        match self {
+            ActiveStream::Transient { message, .. } | ActiveStream::Journaled { message, .. } => {
+                message
+            }
+        }
+    }
+
+    pub(crate) fn message_mut(&mut self) -> &mut StreamingMessage {
+        match self {
+            ActiveStream::Transient { message, .. } | ActiveStream::Journaled { message, .. } => {
+                message
+            }
+        }
+    }
+
+    pub(crate) fn journal(&self) -> &ActiveJournal {
+        match self {
+            ActiveStream::Transient { journal, .. } | ActiveStream::Journaled { journal, .. } => {
+                journal
+            }
+        }
+    }
+
+    pub(crate) fn journal_mut(&mut self) -> &mut ActiveJournal {
+        match self {
+            ActiveStream::Transient { journal, .. } | ActiveStream::Journaled { journal, .. } => {
+                journal
+            }
+        }
+    }
+
+    pub(crate) fn into_journal(self) -> ActiveJournal {
+        match self {
+            ActiveStream::Transient { journal, .. } | ActiveStream::Journaled { journal, .. } => {
+                journal
+            }
+        }
+    }
+
+    pub(crate) fn abort_handle(&self) -> &AbortHandle {
+        match self {
+            ActiveStream::Transient { abort_handle, .. }
+            | ActiveStream::Journaled { abort_handle, .. } => abort_handle,
+        }
+    }
+
+    pub(crate) fn tool_call_seq(&self) -> usize {
+        match self {
+            ActiveStream::Transient { tool_call_seq, .. }
+            | ActiveStream::Journaled { tool_call_seq, .. } => *tool_call_seq,
+        }
+    }
+
+    pub(crate) fn increment_tool_call_seq(&mut self) {
+        match self {
+            ActiveStream::Transient { tool_call_seq, .. }
+            | ActiveStream::Journaled { tool_call_seq, .. } => {
+                *tool_call_seq = tool_call_seq.saturating_add(1);
+            }
+        }
+    }
+
+    pub(crate) fn tool_args_journal_bytes_mut(&mut self) -> &mut HashMap<String, usize> {
+        match self {
+            ActiveStream::Transient {
+                tool_args_journal_bytes,
+                ..
+            }
+            | ActiveStream::Journaled {
+                tool_args_journal_bytes,
+                ..
+            } => tool_args_journal_bytes,
+        }
+    }
+
+    /// Consume self and return parts for cleanup.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        StreamingMessage,
+        ActiveJournal,
+        AbortHandle,
+        Option<ToolBatchId>,
+        TurnContext,
+    ) {
+        match self {
+            ActiveStream::Transient {
+                message,
+                journal,
+                abort_handle,
+                turn,
+                ..
+            } => (message, journal, abort_handle, None, turn),
+            ActiveStream::Journaled {
+                message,
+                journal,
+                abort_handle,
+                tool_batch_id,
+                turn,
+                ..
+            } => (message, journal, abort_handle, Some(tool_batch_id), turn),
+        }
+    }
 }
 
 /// A background distillation task.
@@ -82,12 +228,33 @@ pub(crate) enum DistillationStart {
     Failed,
 }
 
+/// Distillation state with typestate encoding for message queueing.
+///
+/// Transitions: Running -> CompletedWithQueued (when user message arrives during distillation)
 #[derive(Debug)]
-pub(crate) struct DistillationState {
-    pub(crate) task: DistillationTask,
-    /// When present, a validated user request is waiting to be streamed once
-    /// distillation completes.
-    pub(crate) queued: Option<crate::QueuedUserMessage>,
+pub(crate) enum DistillationState {
+    /// Distillation in progress, no queued message.
+    Running(DistillationTask),
+    /// Distillation in progress, with a user message queued to stream after completion.
+    CompletedWithQueued {
+        task: DistillationTask,
+        message: crate::QueuedUserMessage,
+    },
+}
+
+impl DistillationState {
+    /// Get the task reference (available in both states).
+    pub(crate) fn task(&self) -> &DistillationTask {
+        match self {
+            DistillationState::Running(task)
+            | DistillationState::CompletedWithQueued { task, .. } => task,
+        }
+    }
+
+    /// Check if there's a queued user message.
+    pub(crate) fn has_queued_message(&self) -> bool {
+        matches!(self, DistillationState::CompletedWithQueued { .. })
+    }
 }
 
 #[derive(Debug)]

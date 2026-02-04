@@ -275,9 +275,16 @@ Models must also exist in the predefined catalog (`PredefinedModel`).
 ### OutputLimits - Token Budgets
 
 ```rust
-pub struct OutputLimits {
-    max_output_tokens: u32,
-    thinking_budget: Option<u32>,
+pub enum OutputLimits {
+    Standard { max_output_tokens: u32 },
+    WithThinking { max_output_tokens: u32, thinking_budget: ThinkingBudget },
+}
+
+pub struct ThinkingBudget(u32);
+
+pub enum ThinkingState {
+    Disabled,
+    Enabled(ThinkingBudget),
 }
 ```
 
@@ -290,7 +297,7 @@ Construction enforces invariants:
 
 ```rust
 pub enum CacheHint {
-    None,      // No caching preference
+    Default,   // No caching preference
     Ephemeral, // Request caching (Claude-specific)
 }
 ```
