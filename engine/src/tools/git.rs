@@ -24,6 +24,8 @@ const DEFAULT_GIT_STDOUT_BYTES: usize = 200_000;
 const DEFAULT_GIT_STDERR_BYTES: usize = 100_000;
 const MAX_OUTPUT_BYTES: usize = 5_000_000;
 
+use crate::config::default_true;
+
 #[derive(Debug, Clone, Copy)]
 enum GitToolKind {
     Status,
@@ -298,9 +300,9 @@ impl ToolExecutor for GitTool {
             }
             GitToolKind::Add => {
                 let typed: GitAddArgs = parse_args(args)?;
-                if typed.all.unwrap_or(false) {
+                if typed.all {
                     "Git add -A".to_string()
-                } else if typed.update.unwrap_or(false) {
+                } else if typed.update {
                     "Git add -u".to_string()
                 } else {
                     format!("Git add {} file(s)", typed.paths.unwrap_or_default().len())
@@ -854,12 +856,12 @@ async fn write_patches_to_dir(
 struct GitStatusArgs {
     #[serde(default)]
     timeout_ms: Option<u64>,
-    #[serde(default)]
-    porcelain: Option<bool>,
-    #[serde(default)]
-    branch: Option<bool>,
-    #[serde(default)]
-    untracked: Option<bool>,
+    #[serde(default = "default_true")]
+    porcelain: bool,
+    #[serde(default = "default_true")]
+    branch: bool,
+    #[serde(default = "default_true")]
+    untracked: bool,
 }
 
 #[derive(Deserialize)]
@@ -867,11 +869,11 @@ struct GitDiffArgs {
     #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
-    cached: Option<bool>,
+    cached: bool,
     #[serde(default)]
-    stat: Option<bool>,
+    stat: bool,
     #[serde(default)]
-    name_only: Option<bool>,
+    name_only: bool,
     #[serde(default)]
     unified: Option<i64>,
     #[serde(default)]
@@ -892,9 +894,9 @@ struct GitRestoreArgs {
     #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
-    staged: Option<bool>,
-    #[serde(default)]
-    worktree: Option<bool>,
+    staged: bool,
+    #[serde(default = "default_true")]
+    worktree: bool,
 }
 
 #[derive(Deserialize)]
@@ -904,9 +906,9 @@ struct GitAddArgs {
     #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
-    all: Option<bool>,
+    all: bool,
     #[serde(default)]
-    update: Option<bool>,
+    update: bool,
 }
 
 #[derive(Deserialize)]
@@ -927,7 +929,7 @@ struct GitLogArgs {
     #[serde(default)]
     max_count: Option<u32>,
     #[serde(default)]
-    oneline: Option<bool>,
+    oneline: bool,
     #[serde(default)]
     format: Option<String>,
     #[serde(default)]
@@ -949,9 +951,9 @@ struct GitBranchArgs {
     #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
-    list_all: Option<bool>,
+    list_all: bool,
     #[serde(default)]
-    list_remote: Option<bool>,
+    list_remote: bool,
     #[serde(default)]
     create: Option<String>,
     #[serde(default)]
@@ -989,7 +991,7 @@ struct GitStashArgs {
     #[serde(default)]
     index: Option<u32>,
     #[serde(default)]
-    include_untracked: Option<bool>,
+    include_untracked: bool,
 }
 
 #[derive(Deserialize)]
@@ -999,9 +1001,9 @@ struct GitShowArgs {
     #[serde(default)]
     commit: Option<String>,
     #[serde(default)]
-    stat: Option<bool>,
+    stat: bool,
     #[serde(default)]
-    name_only: Option<bool>,
+    name_only: bool,
     #[serde(default)]
     format: Option<String>,
     #[serde(default)]
@@ -1029,9 +1031,9 @@ async fn handle_git_status(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErro
     let req: GitStatusArgs = parse_args(&args)?;
 
     let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
-    let porcelain = req.porcelain.unwrap_or(true);
-    let branch = req.branch.unwrap_or(true);
-    let untracked = req.untracked.unwrap_or(true);
+    let porcelain = req.porcelain;
+    let branch = req.branch;
+    let untracked = req.untracked;
 
     let working_dir = ctx.working_dir.clone();
 
@@ -1139,13 +1141,13 @@ async fn handle_git_diff(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
 
     let mut cmd_args: Vec<String> = vec!["diff".into()];
 
-    if req.cached.unwrap_or(false) {
+    if req.cached {
         cmd_args.push("--cached".into());
     }
-    if req.stat.unwrap_or(false) {
+    if req.stat {
         cmd_args.push("--stat".into());
     }
-    if req.name_only.unwrap_or(false) {
+    if req.name_only {
         cmd_args.push("--name-only".into());
     }
     if let Some(u) = req.unified
@@ -1202,8 +1204,8 @@ async fn handle_git_restore(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErr
         });
     }
 
-    let staged = req.staged.unwrap_or(false);
-    let worktree = req.worktree.unwrap_or(true);
+    let staged = req.staged;
+    let worktree = req.worktree;
 
     if !staged && !worktree {
         return Err(ToolError::BadArgs {
@@ -1260,8 +1262,8 @@ async fn handle_git_restore(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErr
 async fn handle_git_add(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError> {
     let req: GitAddArgs = parse_args(&args)?;
 
-    let use_all = req.all.unwrap_or(false);
-    let use_update = req.update.unwrap_or(false);
+    let use_all = req.all;
+    let use_update = req.update;
     let paths = req.paths.unwrap_or_default();
 
     if !use_all && !use_update && paths.is_empty() {
@@ -1389,7 +1391,7 @@ async fn handle_git_log(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError> 
     if let Some(n) = req.max_count {
         cmd_args.push(format!("-{n}"));
     }
-    if req.oneline.unwrap_or(false) {
+    if req.oneline {
         cmd_args.push("--oneline".into());
     }
     if let Some(fmt) = &req.format {
@@ -1468,9 +1470,9 @@ async fn handle_git_branch(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErro
             });
         }
     } else {
-        if req.list_all.unwrap_or(false) {
+        if req.list_all {
             cmd_args.push("-a".into());
-        } else if req.list_remote.unwrap_or(false) {
+        } else if req.list_remote {
             cmd_args.push("-r".into());
         }
         cmd_args.push("-v".into());
@@ -1578,7 +1580,7 @@ async fn handle_git_stash(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError
     match action {
         "push" | "save" => {
             cmd_args.push("push".into());
-            if req.include_untracked.unwrap_or(false) {
+            if req.include_untracked {
                 cmd_args.push("-u".into());
             }
             if let Some(msg) = &req.message {
@@ -1671,10 +1673,10 @@ async fn handle_git_show(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
     if let Some(commit) = &req.commit {
         cmd_args.push(commit.clone());
     }
-    if req.stat.unwrap_or(false) {
+    if req.stat {
         cmd_args.push("--stat".into());
     }
-    if req.name_only.unwrap_or(false) {
+    if req.name_only {
         cmd_args.push("--name-only".into());
     }
     if let Some(fmt) = &req.format {

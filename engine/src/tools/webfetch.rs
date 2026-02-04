@@ -66,8 +66,10 @@ impl WebFetchTool {
 struct WebFetchArgs {
     url: String,
     max_chunk_tokens: Option<u32>,
-    no_cache: Option<bool>,
-    force_browser: Option<bool>,
+    #[serde(default)]
+    no_cache: bool,
+    #[serde(default)]
+    force_browser: bool,
 }
 
 impl ToolExecutor for WebFetchTool {
@@ -158,8 +160,8 @@ impl ToolExecutor for WebFetchTool {
                     })?;
             }
 
-            input = input.with_no_cache(typed.no_cache.unwrap_or(false));
-            input = input.with_force_browser(typed.force_browser.unwrap_or(false));
+            input = input.with_no_cache(typed.no_cache);
+            input = input.with_force_browser(typed.force_browser);
 
             // Build config
             let config = self.build_config();

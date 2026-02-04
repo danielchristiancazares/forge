@@ -5,7 +5,8 @@
 use super::{
     ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, SessionChangeLog,
     state::{
-        DistillationStart, OperationState, ToolLoopPhase, ToolLoopState, ToolRecoveryDecision,
+        DistillationStart, JournalStatus, OperationState, ToolLoopPhase, ToolLoopState,
+        ToolRecoveryDecision,
     },
 };
 
@@ -288,7 +289,7 @@ impl super::App {
                     batch.results,
                     batch.model,
                     batch.step_id,
-                    batch.batch_id,
+                    batch.journal_status,
                     batch.turn,
                     batch.thinking_message,
                 );
@@ -340,7 +341,7 @@ impl super::App {
                         if let ToolLoopPhase::Executing(exec) = &phase {
                             exec.spawned.abort();
                         }
-                        if let Some(id) = batch.batch_id {
+                        if let JournalStatus::Persisted(id) = batch.journal_status {
                             let _ = self.tool_journal.discard_batch(id);
                         }
                         self.discard_journal_step(batch.step_id);

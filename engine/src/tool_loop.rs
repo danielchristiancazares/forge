@@ -18,8 +18,8 @@ use forge_types::{ModelName, ToolCall, ToolResult, sanitize_terminal_text};
 
 use crate::input_modes::{ChangeRecorder, TurnChangeReport, TurnContext};
 use crate::state::{
-    ApprovalState, OperationState, ToolBatch, ToolLoopPhase, ToolLoopState, ToolPlan,
-    ToolRecoveryDecision, ToolRecoveryState,
+    ApprovalState, JournalStatus, OperationState, ToolBatch, ToolLoopPhase, ToolLoopState,
+    ToolPlan, ToolRecoveryDecision, ToolRecoveryState,
 };
 use crate::tools::{self, ConfirmationRequest};
 use crate::util;
@@ -230,29 +230,43 @@ impl App {
             return;
         }
 
-        // Try to update existing batch or create new one
-        let mut batch_id = tool_batch_id;
-        if let Some(id) = batch_id
-            && let Err(e) = self.tool_journal.update_assistant_text(id, &assistant_text)
-        {
-            tracing::warn!("Tool journal update failed: {e}");
-            self.push_notification(format!("Tool journal error: {e}"));
-            batch_id = None;
-        }
-        if batch_id.is_none() {
-            batch_id =
-                match self
-                    .tool_journal
-                    .begin_batch(model.as_str(), &assistant_text, &tool_calls)
-                {
-                    Ok(id) => Some(id),
-                    Err(e) => {
-                        tracing::warn!("Tool journal begin failed: {e}");
-                        self.push_notification(format!("Tool journal error: {e}"));
-                        None
+        // Determine journal status BEFORE constructing ToolBatch (IFA §12.3)
+        let journal_status = if let Some(id) = tool_batch_id {
+            // Try to update existing batch
+            match self.tool_journal.update_assistant_text(id, &assistant_text) {
+                Ok(()) => JournalStatus::Persisted(id),
+                Err(e) => {
+                    tracing::warn!("Tool journal update failed: {e}");
+                    self.push_notification(format!("Tool journal error: {e}"));
+                    // Try to create a new batch instead
+                    match self.tool_journal.begin_batch(
+                        model.as_str(),
+                        &assistant_text,
+                        &tool_calls,
+                    ) {
+                        Ok(new_id) => JournalStatus::Persisted(new_id),
+                        Err(e2) => {
+                            tracing::warn!("Tool journal begin failed: {e2}");
+                            self.push_notification(format!("Tool journal error: {e2}"));
+                            JournalStatus::Failed
+                        }
                     }
-                };
-        }
+                }
+            }
+        } else {
+            // No existing batch, create new one
+            match self
+                .tool_journal
+                .begin_batch(model.as_str(), &assistant_text, &tool_calls)
+            {
+                Ok(id) => JournalStatus::Persisted(id),
+                Err(e) => {
+                    tracing::warn!("Tool journal begin failed: {e}");
+                    self.push_notification(format!("Tool journal error: {e}"));
+                    JournalStatus::Failed
+                }
+            }
+        };
 
         self.start_tool_loop(
             assistant_text,
@@ -260,7 +274,7 @@ impl App {
             pre_resolved,
             model,
             step_id,
-            batch_id,
+            journal_status,
             turn,
             thinking_message,
         );
@@ -274,7 +288,7 @@ impl App {
         pre_resolved: Vec<ToolResult>,
         model: ModelName,
         step_id: StepId,
-        batch_id: Option<ToolBatchId>,
+        journal_status: JournalStatus,
         turn: TurnContext,
         thinking_message: Option<Message>,
     ) {
@@ -288,7 +302,7 @@ impl App {
                     "Max tool iterations reached",
                 )
             }));
-            if let Some(id) = batch_id {
+            if let JournalStatus::Persisted(id) = journal_status {
                 for result in &results {
                     let _ = self.tool_journal.record_result(id, result);
                 }
@@ -299,7 +313,7 @@ impl App {
                 results,
                 model,
                 step_id,
-                batch_id,
+                journal_status,
                 true,
                 turn,
                 thinking_message,
@@ -309,7 +323,7 @@ impl App {
         self.tool_iterations = next_iteration;
 
         let plan = self.plan_tool_calls(&tool_calls, pre_resolved);
-        if let Some(id) = batch_id {
+        if let JournalStatus::Persisted(id) = journal_status {
             for result in &plan.pre_resolved {
                 let _ = self.tool_journal.record_result(id, result);
             }
@@ -328,22 +342,15 @@ impl App {
             results: plan.pre_resolved,
             model,
             step_id,
-            batch_id,
+            journal_status,
             execute_now: plan.execute_now,
             approval_calls: plan.approval_calls,
-            approval_requests: plan.approval_requests.clone(),
             turn,
         };
         let remaining_capacity_bytes = self.remaining_tool_capacity(&batch);
 
         if !plan.approval_requests.is_empty() {
-            let approval = ApprovalState {
-                requests: plan.approval_requests,
-                selected: vec![true; batch.approval_requests.len()],
-                cursor: 0,
-                deny_confirm: false,
-                expanded: None,
-            };
+            let approval = ApprovalState::new(plan.approval_requests);
             self.state = OperationState::ToolLoop(Box::new(ToolLoopState {
                 batch,
                 phase: ToolLoopPhase::AwaitingApproval(approval),
@@ -359,7 +366,7 @@ impl App {
                 batch.results,
                 batch.model,
                 batch.step_id,
-                batch.batch_id,
+                batch.journal_status,
                 true,
                 batch.turn,
                 batch.thinking_message,
@@ -715,7 +722,7 @@ impl App {
                         batch.results,
                         batch.model,
                         batch.step_id,
-                        batch.batch_id,
+                        batch.journal_status,
                         true,
                         batch.turn,
                         batch.thinking_message,
@@ -849,8 +856,8 @@ impl App {
 
                     // Record result to journal
                     let mut batch = batch;
-                    if let Some(id) = batch.batch_id {
-                        let _ = self.tool_journal.record_result(id, &result);
+                    if let JournalStatus::Persisted(id) = &batch.journal_status {
+                        let _ = self.tool_journal.record_result(*id, &result);
                     }
                     batch.results.push(result);
 
@@ -873,7 +880,7 @@ impl App {
                             batch.results,
                             batch.model,
                             batch.step_id,
-                            batch.batch_id,
+                            batch.journal_status,
                             true,
                             batch.turn,
                             batch.thinking_message,
@@ -903,7 +910,7 @@ impl App {
         mut results: Vec<ToolResult>,
         model: ModelName,
         step_id: StepId,
-        batch_id: Option<ToolBatchId>,
+        journal_status: JournalStatus,
         turn: TurnContext,
         thinking_message: Option<Message>,
     ) {
@@ -913,8 +920,8 @@ impl App {
                 continue;
             }
             let result = ToolResult::error(call.id.clone(), call.name.clone(), "Cancelled by user");
-            if let Some(id) = batch_id {
-                let _ = self.tool_journal.record_result(id, &result);
+            if let JournalStatus::Persisted(id) = &journal_status {
+                let _ = self.tool_journal.record_result(*id, &result);
             }
             results.push(result);
         }
@@ -925,7 +932,7 @@ impl App {
             results,
             model,
             step_id,
-            batch_id,
+            journal_status,
             false,
             turn,
             thinking_message,
@@ -940,7 +947,7 @@ impl App {
         results: Vec<ToolResult>,
         model: ModelName,
         step_id: StepId,
-        batch_id: Option<ToolBatchId>,
+        journal_status: JournalStatus,
         auto_resume: bool,
         turn: TurnContext,
         thinking_message: Option<Message>,
@@ -1006,7 +1013,7 @@ impl App {
         let autosave_succeeded = self.autosave_history();
         if autosave_succeeded {
             self.finalize_journal_commit(step_id);
-            if let Some(id) = batch_id
+            if let JournalStatus::Persisted(id) = journal_status
                 && let Err(e) = self.tool_journal.commit_batch(id)
             {
                 tracing::warn!("Failed to commit tool batch {id}: {e}");
@@ -1128,9 +1135,9 @@ impl App {
             });
         }
 
-        if let Some(id) = batch.batch_id {
+        if let JournalStatus::Persisted(id) = &batch.journal_status {
             for result in &denied_results {
-                let _ = self.tool_journal.record_result(id, result);
+                let _ = self.tool_journal.record_result(*id, result);
             }
         }
         batch.results.extend(denied_results);
@@ -1158,7 +1165,7 @@ impl App {
                 batch.results,
                 batch.model,
                 batch.step_id,
-                batch.batch_id,
+                batch.journal_status,
                 true,
                 batch.turn,
                 batch.thinking_message,
@@ -1236,7 +1243,7 @@ impl App {
             results,
             model,
             step_id,
-            Some(batch.batch_id),
+            JournalStatus::Persisted(batch.batch_id),
             auto_resume,
             TurnContext::new_for_recovery(),
             None,

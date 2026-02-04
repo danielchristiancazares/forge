@@ -232,25 +232,26 @@ where
     F: Fn() -> RequestBuilder,
 {
     let idempotency_key = generate_idempotency_key();
-    let mut last_error: Option<reqwest::Error> = None;
 
-    for retry_count in 0..=config.max_retries {
-        // Build request with retry headers
+    // Handle max_retries == 0 case: single attempt only
+    if config.max_retries == 0 {
+        return execute_single_attempt(&build_request, &idempotency_key, timeout, 0).await;
+    }
+
+    // Attempts 0 through max_retries-1: can retry on failure
+    for retry_count in 0..config.max_retries {
         let request = add_retry_headers(build_request(), retry_count, &idempotency_key, timeout);
 
-        // Send request
         match request.send().await {
             Ok(response) => {
                 let status = response.status();
                 let headers = response.headers().clone();
 
-                // Success - return Success variant
                 if status.is_success() {
                     return RetryOutcome::Success(response);
                 }
 
-                // Check if retryable
-                if retry_count < config.max_retries && should_retry(status, &headers) {
+                if should_retry(status, &headers) {
                     let delay = calculate_retry_delay(retry_count, config, Some(&headers));
                     tracing::debug!(
                         status = %status,
@@ -262,12 +263,11 @@ where
                     continue;
                 }
 
-                // Non-retryable status or exhausted retries - return HttpError variant
+                // Non-retryable HTTP status
                 return RetryOutcome::HttpError(response);
             }
             Err(e) => {
-                // Connection/IO error
-                if retry_count < config.max_retries && is_retryable_error(&e) {
+                if is_retryable_error(&e) {
                     let delay = calculate_retry_delay(retry_count, config, None);
                     tracing::debug!(
                         error = %e,
@@ -275,27 +275,66 @@ where
                         delay_ms = delay.as_millis(),
                         "Retrying request after connection error"
                     );
-                    last_error = Some(e);
                     tokio::time::sleep(delay).await;
                     continue;
                 }
 
-                // Non-retryable error or exhausted retries
-                if retry_count > 0 {
-                    return RetryOutcome::ConnectionError {
-                        attempts: retry_count + 1,
-                        source: e,
-                    };
+                // Non-retryable error
+                if retry_count == 0 {
+                    return RetryOutcome::NonRetryable(e);
                 }
-                return RetryOutcome::NonRetryable(e);
+                return RetryOutcome::ConnectionError {
+                    attempts: retry_count + 1,
+                    source: e,
+                };
             }
         }
     }
 
-    // Should only reach here if all retries exhausted on connection errors
-    RetryOutcome::ConnectionError {
-        attempts: config.max_retries + 1,
-        source: last_error.expect("should have error after exhausting retries"),
+    // Final attempt (retry_count == max_retries): no more retries possible
+    let request = add_retry_headers(
+        build_request(),
+        config.max_retries,
+        &idempotency_key,
+        timeout,
+    );
+
+    match request.send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                RetryOutcome::Success(response)
+            } else {
+                RetryOutcome::HttpError(response)
+            }
+        }
+        Err(e) => RetryOutcome::ConnectionError {
+            attempts: config.max_retries + 1,
+            source: e, // Error returned directly - no stashing
+        },
+    }
+}
+
+/// Helper for single-attempt case (max_retries == 0).
+async fn execute_single_attempt<F>(
+    build_request: &F,
+    idempotency_key: &str,
+    timeout: Option<Duration>,
+    retry_count: u32,
+) -> RetryOutcome
+where
+    F: Fn() -> RequestBuilder,
+{
+    let request = add_retry_headers(build_request(), retry_count, idempotency_key, timeout);
+
+    match request.send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                RetryOutcome::Success(response)
+            } else {
+                RetryOutcome::HttpError(response)
+            }
+        }
+        Err(e) => RetryOutcome::NonRetryable(e),
     }
 }
 

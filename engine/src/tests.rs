@@ -713,7 +713,7 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
     match &app.state {
         OperationState::ToolLoop(state) => match state.phase {
             ToolLoopPhase::AwaitingApproval(ref approval) => {
-                assert_eq!(approval.requests.len(), 1);
+                assert_eq!(approval.data().requests.len(), 1);
             }
             ToolLoopPhase::Processing(_) | ToolLoopPhase::Executing(_) => {
                 panic!("expected awaiting approval")

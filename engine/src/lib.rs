@@ -886,24 +886,24 @@ impl App {
     }
 
     pub fn tool_approval_requests(&self) -> Option<&[tools::ConfirmationRequest]> {
-        Some(&self.tool_approval_ref()?.requests)
+        Some(&self.tool_approval_ref()?.data().requests)
     }
 
     pub fn tool_approval_selected(&self) -> Option<&[bool]> {
-        Some(&self.tool_approval_ref()?.selected)
+        Some(&self.tool_approval_ref()?.data().selected)
     }
 
     pub fn tool_approval_cursor(&self) -> Option<usize> {
-        Some(self.tool_approval_ref()?.cursor)
+        Some(self.tool_approval_ref()?.data().cursor)
     }
 
     pub fn tool_approval_expanded(&self) -> Option<usize> {
-        self.tool_approval_ref()?.expanded
+        self.tool_approval_ref()?.data().expanded
     }
 
     pub fn tool_approval_deny_confirm(&self) -> bool {
         self.tool_approval_ref()
-            .is_some_and(|approval| approval.deny_confirm)
+            .is_some_and(state::ApprovalState::is_confirming_deny)
     }
 
     pub fn tool_recovery_calls(&self) -> Option<&[ToolCall]> {
@@ -1413,51 +1413,55 @@ impl App {
         let Some(approval) = self.tool_approval_mut() else {
             return;
         };
-        if approval.cursor == 0 {
+        // data_mut() auto-cancels deny confirmation
+        let data = approval.data_mut();
+        if data.cursor == 0 {
             return;
         }
-        approval.cursor -= 1;
-        approval.deny_confirm = false;
-        approval.expanded = None;
+        data.cursor -= 1;
+        data.expanded = None;
     }
 
     pub fn tool_approval_move_down(&mut self) {
         let Some(approval) = self.tool_approval_mut() else {
             return;
         };
+        // data_mut() auto-cancels deny confirmation
+        let data = approval.data_mut();
         // Allow cursor to move to Submit (N) and Deny (N+1) buttons
-        let max_cursor = approval.requests.len() + 1;
-        if approval.cursor < max_cursor {
-            approval.cursor += 1;
+        let max_cursor = data.requests.len() + 1;
+        if data.cursor < max_cursor {
+            data.cursor += 1;
         }
-        approval.deny_confirm = false;
-        approval.expanded = None;
+        data.expanded = None;
     }
 
     pub fn tool_approval_toggle(&mut self) {
         let Some(approval) = self.tool_approval_mut() else {
             return;
         };
-        if approval.cursor >= approval.selected.len() {
+        // data_mut() auto-cancels deny confirmation
+        let data = approval.data_mut();
+        if data.cursor >= data.selected.len() {
             return;
         }
-        approval.selected[approval.cursor] = !approval.selected[approval.cursor];
-        approval.deny_confirm = false;
+        data.selected[data.cursor] = !data.selected[data.cursor];
     }
 
     pub fn tool_approval_toggle_details(&mut self) {
         let Some(approval) = self.tool_approval_mut() else {
             return;
         };
-        if approval.cursor >= approval.requests.len() {
+        // data_mut() auto-cancels deny confirmation
+        let data = approval.data_mut();
+        if data.cursor >= data.requests.len() {
             return;
         }
-        if approval.expanded == Some(approval.cursor) {
-            approval.expanded = None;
+        if data.expanded == Some(data.cursor) {
+            data.expanded = None;
         } else {
-            approval.expanded = Some(approval.cursor);
+            data.expanded = Some(data.cursor);
         }
-        approval.deny_confirm = false;
     }
 
     pub fn tool_approval_approve_all(&mut self) {
@@ -1476,8 +1480,9 @@ impl App {
         let Some(approval) = self.tool_approval_ref() else {
             return;
         };
-        let cursor = approval.cursor;
-        let num_tools = approval.requests.len();
+        let data = approval.data();
+        let cursor = data.cursor;
+        let num_tools = data.requests.len();
 
         match cursor.cmp(&num_tools) {
             std::cmp::Ordering::Less => self.tool_approval_toggle(),
@@ -1490,10 +1495,10 @@ impl App {
         let ids = self
             .tool_approval_ref()
             .map(|approval| {
-                approval
-                    .requests
+                let data = approval.data();
+                data.requests
                     .iter()
-                    .zip(approval.selected.iter())
+                    .zip(data.selected.iter())
                     .filter(|(_, selected)| **selected)
                     .map(|(req, _)| req.tool_call_id.clone())
                     .collect::<Vec<_>>()
@@ -1509,12 +1514,15 @@ impl App {
 
     pub fn tool_approval_request_deny_all(&mut self) {
         let should_deny = if let Some(approval) = self.tool_approval_mut() {
-            let deny_cursor = approval.requests.len() + 1;
-            approval.cursor = deny_cursor;
-            if approval.deny_confirm {
+            // Check if already confirming BEFORE any mutations
+            if approval.is_confirming_deny() {
+                // Second 'd' press - execute denial
                 true
             } else {
-                approval.deny_confirm = true;
+                // First 'd' press - move cursor and enter confirmation
+                let deny_cursor = approval.data().requests.len() + 1;
+                approval.data_mut().cursor = deny_cursor;
+                approval.enter_deny_confirmation();
                 false
             }
         } else {

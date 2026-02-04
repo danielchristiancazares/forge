@@ -173,12 +173,12 @@ impl App {
 
         // Load cache config (default: enabled)
         let cache_enabled = anthropic_config
-            .and_then(|cfg| cfg.cache_enabled)
+            .map(|cfg| cfg.cache_enabled)
             .or_else(|| {
                 config
                     .as_ref()
                     .and_then(|cfg| cfg.cache.as_ref())
-                    .and_then(|cache| cache.enabled)
+                    .map(|cache| cache.enabled)
             })
             .unwrap_or(true);
 
@@ -188,12 +188,12 @@ impl App {
             let max_output = context_manager.current_limits().max_output();
 
             let thinking_enabled = anthropic_config
-                .and_then(|cfg| cfg.thinking_enabled)
+                .map(|cfg| cfg.thinking_enabled)
                 .or_else(|| {
                     config
                         .as_ref()
                         .and_then(|cfg| cfg.thinking.as_ref())
-                        .and_then(|t| t.enabled)
+                        .map(|t| t.enabled)
                 })
                 .unwrap_or(false);
 
@@ -230,15 +230,13 @@ impl App {
         // Load Gemini cache config
         let gemini_config = config.as_ref().and_then(|cfg| cfg.google.as_ref());
         let gemini_cache_config = crate::GeminiCacheConfig {
-            enabled: gemini_config
-                .and_then(|cfg| cfg.cache_enabled)
-                .unwrap_or(false), // Default disabled - requires explicit opt-in
+            enabled: gemini_config.map(|cfg| cfg.cache_enabled).unwrap_or(false), // Default disabled - requires explicit opt-in
             ttl_seconds: gemini_config
                 .and_then(|cfg| cfg.cache_ttl_seconds)
                 .unwrap_or(3600), // Default 1 hour
         };
         let gemini_thinking_enabled = gemini_config
-            .and_then(|cfg| cfg.thinking_enabled)
+            .map(|cfg| cfg.thinking_enabled)
             .unwrap_or(false);
 
         let data_dir = Self::data_dir();
@@ -379,10 +377,10 @@ impl App {
     fn ui_options_from_config(config: Option<&ForgeConfig>) -> UiOptions {
         let app = config.and_then(|cfg| cfg.app.as_ref());
         UiOptions {
-            ascii_only: app.and_then(|cfg| cfg.ascii_only).unwrap_or(false),
-            high_contrast: app.and_then(|cfg| cfg.high_contrast).unwrap_or(false),
-            reduced_motion: app.and_then(|cfg| cfg.reduced_motion).unwrap_or(false),
-            show_thinking: app.and_then(|cfg| cfg.show_thinking).unwrap_or(false),
+            ascii_only: app.map(|cfg| cfg.ascii_only).unwrap_or(false),
+            high_contrast: app.map(|cfg| cfg.high_contrast).unwrap_or(false),
+            reduced_motion: app.map(|cfg| cfg.reduced_motion).unwrap_or(false),
+            show_thinking: app.map(|cfg| cfg.show_thinking).unwrap_or(false),
         }
     }
 
@@ -648,7 +646,7 @@ impl App {
 
         let sandbox_cfg = tools_cfg.and_then(|cfg| cfg.sandbox.as_ref());
         let include_default_denies = sandbox_cfg
-            .and_then(|cfg| cfg.include_default_denies)
+            .map(|cfg| cfg.include_default_denies)
             .unwrap_or(true);
         let mut denied_patterns = sandbox_cfg
             .map(|cfg| cfg.denied_patterns.clone())
@@ -670,9 +668,7 @@ impl App {
         if allowed_roots.is_empty() {
             allowed_roots.push(PathBuf::from("."));
         }
-        let allow_absolute = sandbox_cfg
-            .and_then(|cfg| cfg.allow_absolute)
-            .unwrap_or(false);
+        let allow_absolute = sandbox_cfg.map(|cfg| cfg.allow_absolute).unwrap_or(false);
 
         let sandbox = tools::sandbox::Sandbox::new(
             allowed_roots.clone(),

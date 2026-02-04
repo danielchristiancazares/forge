@@ -2,6 +2,11 @@ use serde::Deserialize;
 use std::io::Write;
 use std::{env, fs, path::PathBuf};
 
+// Default value function for serde (bool::default() is false, so only true needs a fn)
+pub(crate) const fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[allow(clippy::unsafe_derive_deserialize)] // unsafe is for Unix permission checks, unrelated to serde
 pub struct ForgeConfig {
@@ -42,15 +47,17 @@ pub struct AppConfig {
     pub model: Option<String>,
     pub tui: Option<String>,
     /// Use ASCII-only glyphs for icons and spinners.
-    pub ascii_only: Option<bool>,
+    #[serde(default)]
+    pub ascii_only: bool,
     /// Enable a high-contrast color palette.
-    pub high_contrast: Option<bool>,
+    #[serde(default)]
+    pub high_contrast: bool,
     /// Disable modal animations and motion effects.
-    pub reduced_motion: Option<bool>,
+    #[serde(default)]
+    pub reduced_motion: bool,
     /// Render provider thinking/reasoning deltas in the UI (if available).
-    ///
-    /// Default: false.
-    pub show_thinking: Option<bool>,
+    #[serde(default)]
+    pub show_thinking: bool,
 }
 
 #[derive(Default, Deserialize)]
@@ -76,6 +83,8 @@ impl std::fmt::Debug for ApiKeys {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ContextConfig {
+    /// Enable Context Infinity (distillation-based context management).
+    /// Default is determined by environment variable FORGE_CONTEXT_INFINITY.
     pub infinity: Option<bool>,
 }
 
@@ -84,7 +93,8 @@ pub struct ContextConfig {
 #[derive(Debug, Default, Deserialize)]
 pub struct CacheConfig {
     /// Enable prompt caching. Default: true for Claude, ignored for `OpenAI`.
-    pub enabled: Option<bool>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 /// Legacy configuration for extended thinking/reasoning.
@@ -92,7 +102,8 @@ pub struct CacheConfig {
 #[derive(Debug, Default, Deserialize)]
 pub struct ThinkingConfig {
     /// Enable extended thinking. Default: false.
-    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub enabled: bool,
     /// Token budget for thinking. Default: 10000. Minimum: 1024.
     pub budget_tokens: Option<u32>,
 }
@@ -107,8 +118,10 @@ pub struct ThinkingConfig {
 /// ```
 #[derive(Debug, Default, Deserialize)]
 pub struct AnthropicConfig {
-    pub cache_enabled: Option<bool>,
-    pub thinking_enabled: Option<bool>,
+    #[serde(default = "default_true")]
+    pub cache_enabled: bool,
+    #[serde(default)]
+    pub thinking_enabled: bool,
     pub thinking_budget_tokens: Option<u32>,
 }
 
@@ -140,9 +153,11 @@ pub struct OpenAIConfig {
 #[derive(Debug, Default, Deserialize)]
 pub struct GeminiConfig {
     /// Enable thinking mode with `thinkingLevel: "high"`. Default: false.
-    pub thinking_enabled: Option<bool>,
+    #[serde(default)]
+    pub thinking_enabled: bool,
     /// Enable explicit context caching. Default: false.
-    pub cache_enabled: Option<bool>,
+    #[serde(default)]
+    pub cache_enabled: bool,
     /// TTL for cached content in seconds. Default: 3600.
     pub cache_ttl_seconds: Option<u32>,
 }
@@ -195,8 +210,10 @@ pub struct ToolSandboxConfig {
     pub allowed_roots: Vec<String>,
     #[serde(default)]
     pub denied_patterns: Vec<String>,
-    pub allow_absolute: Option<bool>,
-    pub include_default_denies: Option<bool>,
+    #[serde(default)]
+    pub allow_absolute: bool,
+    #[serde(default = "default_true")]
+    pub include_default_denies: bool,
 }
 
 /// Timeout configuration for tools.
@@ -662,9 +679,9 @@ reduced_motion = true
         let app = config.app.unwrap();
         assert_eq!(app.model, Some("claude-opus-4-5-20251101".to_string()));
         assert_eq!(app.tui, Some("full".to_string()));
-        assert_eq!(app.ascii_only, Some(true));
-        assert_eq!(app.high_contrast, Some(false));
-        assert_eq!(app.reduced_motion, Some(true));
+        assert!(app.ascii_only);
+        assert!(!app.high_contrast);
+        assert!(app.reduced_motion);
     }
 
     #[test]
@@ -725,8 +742,8 @@ thinking_budget_tokens = 10000
 ";
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         let anthropic = config.anthropic.unwrap();
-        assert_eq!(anthropic.cache_enabled, Some(true));
-        assert_eq!(anthropic.thinking_enabled, Some(false));
+        assert!(anthropic.cache_enabled);
+        assert!(!anthropic.thinking_enabled);
         assert_eq!(anthropic.thinking_budget_tokens, Some(10000));
     }
 
@@ -755,8 +772,8 @@ cache_ttl_seconds = 7200
 ";
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         let google = config.google.unwrap();
-        assert_eq!(google.thinking_enabled, Some(true));
-        assert_eq!(google.cache_enabled, Some(true));
+        assert!(google.thinking_enabled);
+        assert!(google.cache_enabled);
         assert_eq!(google.cache_ttl_seconds, Some(7200));
     }
 
@@ -786,8 +803,8 @@ include_default_denies = true
         let sandbox = config.tools.unwrap().sandbox.unwrap();
         assert_eq!(sandbox.allowed_roots, vec!["/home/user/project", "/tmp"]);
         assert_eq!(sandbox.denied_patterns, vec!["*.secret", "**/.env"]);
-        assert_eq!(sandbox.allow_absolute, Some(false));
-        assert_eq!(sandbox.include_default_denies, Some(true));
+        assert!(!sandbox.allow_absolute);
+        assert!(sandbox.include_default_denies);
     }
 
     #[test]

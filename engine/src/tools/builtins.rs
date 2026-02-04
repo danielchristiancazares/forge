@@ -119,7 +119,8 @@ struct RunCommandArgs {
 struct GlobArgs {
     pattern: String,
     path: Option<String>,
-    hidden: Option<bool>,
+    #[serde(default)]
+    hidden: bool,
     limit: Option<usize>,
 }
 
@@ -306,7 +307,7 @@ impl ToolExecutor for GlobTool {
             }
 
             let base_path = typed.path.as_deref().unwrap_or(".");
-            let include_hidden = typed.hidden.unwrap_or(false);
+            let include_hidden = typed.hidden;
             let limit = typed
                 .limit
                 .unwrap_or(DEFAULT_GLOB_LIMIT)
@@ -1665,7 +1666,7 @@ mod tests {
         let args: GlobArgs = serde_json::from_value(json).unwrap();
         assert_eq!(args.pattern, "**/*.rs");
         assert_eq!(args.path, Some("src".to_string()));
-        assert_eq!(args.hidden, Some(true));
+        assert!(args.hidden);
         assert_eq!(args.limit, Some(500));
     }
 
@@ -1675,7 +1676,7 @@ mod tests {
         let args: GlobArgs = serde_json::from_value(json).unwrap();
         assert_eq!(args.pattern, "*.txt");
         assert_eq!(args.path, None);
-        assert_eq!(args.hidden, None);
+        assert!(!args.hidden);
         assert_eq!(args.limit, None);
     }
 

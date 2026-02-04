@@ -4,6 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::config::default_true;
+
 use globset::{GlobBuilder, GlobSet};
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
@@ -287,12 +289,12 @@ impl ToolExecutor for SearchTool {
             }
 
             let case_mode = parse_case(typed.case.as_deref());
-            let fixed_strings = typed.fixed_strings.unwrap_or(false);
-            let word_regexp = typed.word_regexp.unwrap_or(false);
-            let recursive = typed.recursive.unwrap_or(true);
-            let hidden = typed.hidden.unwrap_or(false);
-            let follow = typed.follow.unwrap_or(false);
-            let no_ignore = typed.no_ignore.unwrap_or(false);
+            let fixed_strings = typed.fixed_strings;
+            let word_regexp = typed.word_regexp;
+            let recursive = typed.recursive;
+            let hidden = typed.hidden;
+            let follow = typed.follow;
+            let no_ignore = typed.no_ignore;
             let context = typed.context.unwrap_or(0) as usize;
             let max_results = typed.max_results.unwrap_or(self.config.default_max_results);
             let timeout_ms = typed.timeout_ms.unwrap_or(self.config.default_timeout_ms);
@@ -625,15 +627,21 @@ struct SearchArgs {
     pattern: String,
     path: Option<String>,
     case: Option<String>,
-    fixed_strings: Option<bool>,
-    word_regexp: Option<bool>,
+    #[serde(default)]
+    fixed_strings: bool,
+    #[serde(default)]
+    word_regexp: bool,
     include_glob: Option<Vec<String>>,
     exclude_glob: Option<Vec<String>>,
     glob: Option<Vec<String>>,
-    recursive: Option<bool>,
-    hidden: Option<bool>,
-    follow: Option<bool>,
-    no_ignore: Option<bool>,
+    #[serde(default = "default_true")]
+    recursive: bool,
+    #[serde(default)]
+    hidden: bool,
+    #[serde(default)]
+    follow: bool,
+    #[serde(default)]
+    no_ignore: bool,
     context: Option<u32>,
     max_results: Option<usize>,
     max_matches_per_file: Option<usize>,

@@ -36,6 +36,20 @@ impl DataDir {
 
 use crate::ActiveJournal;
 
+/// Journal persistence status - determined BEFORE ToolBatch construction.
+///
+/// # IFA Conformance
+/// - Each distinct state has its own variant
+/// - No "pending" state - journaling is resolved before ToolBatch exists
+/// - Explicit matching required - no convenience Option accessor
+#[derive(Debug, Clone)]
+pub(crate) enum JournalStatus {
+    /// Successfully persisted with this batch ID.
+    Persisted(ToolBatchId),
+    /// Journaling failed (error already logged at construction time).
+    Failed,
+}
+
 #[derive(Debug)]
 pub(crate) struct ActiveStream {
     pub(crate) message: StreamingMessage,
@@ -84,21 +98,91 @@ pub(crate) struct ToolBatch {
     pub(crate) results: Vec<ToolResult>,
     pub(crate) model: ModelName,
     pub(crate) step_id: StepId,
-    /// Journal batch ID. None if journaling failed or was disabled.
-    pub(crate) batch_id: Option<ToolBatchId>,
+    /// Journal persistence status - determined at construction.
+    pub(crate) journal_status: JournalStatus,
     pub(crate) execute_now: Vec<ToolCall>,
     pub(crate) approval_calls: Vec<ToolCall>,
-    pub(crate) approval_requests: Vec<ConfirmationRequest>,
     pub(crate) turn: TurnContext,
 }
 
+/// Shared data for all approval phases.
 #[derive(Debug)]
-pub(crate) struct ApprovalState {
+pub(crate) struct ApprovalData {
     pub(crate) requests: Vec<ConfirmationRequest>,
     pub(crate) selected: Vec<bool>,
     pub(crate) cursor: usize,
-    pub(crate) deny_confirm: bool,
     pub(crate) expanded: Option<usize>,
+}
+
+impl ApprovalData {
+    pub(crate) fn new(requests: Vec<ConfirmationRequest>) -> Self {
+        let len = requests.len();
+        Self {
+            requests,
+            selected: vec![true; len],
+            cursor: 0,
+            expanded: None,
+        }
+    }
+}
+
+/// Approval workflow state machine (IFA §8.2: State transitions move between types).
+///
+/// # State Machine
+/// ```text
+/// ┌────────────────────┐  'd' pressed   ┌─────────────────────────┐
+/// │ Selecting(data)    │ ─────────────> │ ConfirmingDeny(data)    │
+/// └────────────────────┘                └─────────────────────────┘
+///       ^                                      │
+///       │  any key except 'd'/Enter            │ 'd' or Enter
+///       └──────────────────────────────────────┘
+///                                              v
+///                                    [Execute denial - consume state]
+/// ```
+#[derive(Debug)]
+pub(crate) enum ApprovalState {
+    /// User is selecting which tools to approve/deny.
+    Selecting(ApprovalData),
+    /// User pressed 'd'; awaiting confirmation.
+    ConfirmingDeny(ApprovalData),
+}
+
+impl ApprovalState {
+    pub(crate) fn new(requests: Vec<ConfirmationRequest>) -> Self {
+        Self::Selecting(ApprovalData::new(requests))
+    }
+
+    /// Read-only access to data (allowed in any phase).
+    pub(crate) fn data(&self) -> &ApprovalData {
+        match self {
+            Self::Selecting(d) | Self::ConfirmingDeny(d) => d,
+        }
+    }
+
+    /// Mutable access to data with automatic cancel of deny confirmation.
+    /// Any mutation cancels the ConfirmingDeny state.
+    pub(crate) fn data_mut(&mut self) -> &mut ApprovalData {
+        // If we're in ConfirmingDeny, transition back to Selecting
+        *self = match std::mem::replace(self, Self::Selecting(ApprovalData::new(vec![]))) {
+            Self::Selecting(d) | Self::ConfirmingDeny(d) => Self::Selecting(d),
+        };
+        match self {
+            Self::Selecting(d) => d,
+            Self::ConfirmingDeny(_) => unreachable!(),
+        }
+    }
+
+    /// Check if in deny confirmation phase.
+    pub(crate) fn is_confirming_deny(&self) -> bool {
+        matches!(self, Self::ConfirmingDeny(_))
+    }
+
+    /// Transition: enter deny confirmation (Selecting -> ConfirmingDeny).
+    pub(crate) fn enter_deny_confirmation(&mut self) {
+        *self = match std::mem::replace(self, Self::Selecting(ApprovalData::new(vec![]))) {
+            Self::Selecting(d) | Self::ConfirmingDeny(d) => Self::ConfirmingDeny(d),
+        };
+    }
 }
 
 /// Tool loop phase state machine (IFA §8.1: State as Location).
