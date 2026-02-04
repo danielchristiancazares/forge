@@ -162,7 +162,7 @@ impl App {
             })
             .unwrap_or_else(|| provider.default_model());
 
-        let context_manager = ContextManager::new(model.as_str());
+        let context_manager = ContextManager::new(model.clone());
         let context_infinity_enabled = config
             .as_ref()
             .and_then(|cfg| cfg.context.as_ref())
@@ -183,12 +183,9 @@ impl App {
             .unwrap_or(true);
 
         // Build OutputLimits at the boundary - validates invariants here, not at runtime
+        // Use the model's max_output from the registry (provider-specific limits)
         let output_limits = {
-            let max_output = config
-                .as_ref()
-                .and_then(|cfg| cfg.app.as_ref())
-                .and_then(|app| app.max_output_tokens)
-                .unwrap_or(16_000); // Default max output
+            let max_output = context_manager.current_limits().max_output();
 
             let thinking_enabled = anthropic_config
                 .and_then(|cfg| cfg.thinking_enabled)
@@ -316,7 +313,7 @@ impl App {
             context_manager,
             stream_journal,
             state: OperationState::Idle,
-            context_infinity: context_infinity_enabled,
+            memory_enabled: context_infinity_enabled,
             output_limits,
             cache_enabled,
             openai_options,

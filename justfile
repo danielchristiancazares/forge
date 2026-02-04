@@ -28,7 +28,7 @@ lint:
 
 # Format code
 fmt:
-    cargo fmt
+    cargo fmt --all
 
 # Check formatting without modifying
 fmt-check:
@@ -39,7 +39,7 @@ cov:
     cargo cov
 
 # Run all checks before committing
-verify: fmt-check lint test
+verify: fmt fmt-check lint test
 
 # Create source zip for bug analysis (excludes build artifacts)
 [windows]

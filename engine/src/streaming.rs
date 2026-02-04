@@ -12,17 +12,38 @@ use tokio::sync::mpsc;
 /// This prevents OOM if the provider sends events faster than we can process them.
 /// 1024 events provides ~10 seconds of buffer at 100 events/sec typical streaming rate.
 const STREAM_EVENT_CHANNEL_CAPACITY: usize = 1024;
+/// Placeholder content when we need to persist a thinking signature without UI capture.
+const REDACTED_THINKING_PLACEHOLDER: &str = "[Thinking hidden]";
 
 use forge_context::TokenCounter;
-use forge_types::{OpenAIReasoningSummary, Provider, ToolDefinition};
+use forge_types::{ModelName, OpenAIReasoningSummary, Provider, ToolDefinition};
 
 use super::{
     ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError,
-    DEFAULT_STREAM_EVENT_BUDGET, EMPTY_RESPONSE_BADGE, GeminiCache, GeminiCacheConfig, Message,
-    NonEmptyString, OperationState, QueuedUserMessage, StreamEvent, StreamFinishReason,
-    StreamingMessage, SummarizationStart, notifications, sanitize_terminal_text, security,
+    DEFAULT_STREAM_EVENT_BUDGET, DistillationStart, EMPTY_RESPONSE_BADGE, GeminiCache,
+    GeminiCacheConfig, Message, NonEmptyString, OperationState, QueuedUserMessage, StreamEvent,
+    StreamFinishReason, StreamingMessage, notifications, sanitize_terminal_text, security,
 };
 use crate::errors::format_stream_error;
+
+fn build_thinking_message(
+    model: ModelName,
+    content: String,
+    signature: Option<String>,
+) -> Option<Message> {
+    if let Ok(thinking) = NonEmptyString::new(content) {
+        return Some(match signature {
+            Some(sig) => Message::thinking_with_signature(model, thinking, sig),
+            None => Message::thinking(model, thinking),
+        });
+    }
+
+    signature.map(|sig| {
+        let placeholder = NonEmptyString::try_from(REDACTED_THINKING_PLACEHOLDER)
+            .expect("REDACTED_THINKING_PLACEHOLDER must be non-empty");
+        Message::thinking_with_signature(model, placeholder, sig)
+    })
+}
 
 impl super::App {
     /// Start streaming response from the API.
@@ -32,7 +53,7 @@ impl super::App {
         }
 
         let QueuedUserMessage { config, turn } = queued;
-        let context_infinity_enabled = self.context_infinity_enabled();
+        let memory_enabled = self.memory_enabled();
 
         // Calculate overhead from system prompt and tools to avoid context overflow
         let system_prompt = self.system_prompts.get(config.provider());
@@ -51,21 +72,21 @@ impl super::App {
         };
         let overhead = sys_tokens + tool_tokens;
 
-        // When context infinity enabled, use summarization-based context management.
+        // When memory enabled, use distillation-based context management.
         // Otherwise, use basic mode.
-        let api_messages = if context_infinity_enabled {
+        let api_messages = if memory_enabled {
             match self.context_manager.prepare() {
                 Ok(prepared) => prepared.api_messages(),
-                Err(ContextBuildError::SummarizationNeeded(needed)) => {
+                Err(ContextBuildError::DistillationNeeded(needed)) => {
                     self.push_notification(format!(
                         "{} (excess ~{} tokens)",
                         needed.suggestion, needed.excess_tokens
                     ));
                     let queued = QueuedUserMessage { config, turn };
-                    let start_result = self.start_summarization_with_attempt(Some(queued), 1);
-                    if !matches!(start_result, SummarizationStart::Started) {
-                        self.push_notification("Cannot start: summarization did not start");
-                        // Note: rollback is handled inside start_summarization_with_attempt
+                    let start_result = self.try_start_distillation(Some(queued));
+                    if !matches!(start_result, DistillationStart::Started) {
+                        self.push_notification("Cannot start: distillation did not start");
+                        // Note: rollback is handled inside try_start_distillation
                         // when it fails with a queued request
                     }
                     return;
@@ -339,7 +360,9 @@ impl super::App {
                 StreamEvent::TextDelta(text) => active
                     .journal
                     .append_text(&mut self.stream_journal, text.clone()),
-                StreamEvent::ThinkingDelta(_) | StreamEvent::Usage(_) => {
+                StreamEvent::ThinkingDelta(_)
+                | StreamEvent::ThinkingSignature(_)
+                | StreamEvent::Usage(_) => {
                     // Don't persist thinking or usage to journal - silently consume
                     Ok(())
                 }
@@ -577,6 +600,11 @@ impl super::App {
 
         // Only process tool calls when stream completed successfully (Done)
         if message.has_tool_calls() {
+            // Capture thinking before returning so signatures survive tool-call turns.
+            let thinking_content = message.thinking().to_owned();
+            let thinking_signature = message.thinking_signature().map(ToOwned::to_owned);
+            let thinking_message =
+                build_thinking_message(model.clone(), thinking_content, thinking_signature);
             let parsed = message.take_tool_calls();
             let assistant_text = message.content().to_string();
             // NOTE: We do NOT clear pending_user_message here because:
@@ -591,13 +619,15 @@ impl super::App {
                 step_id,
                 tool_batch_id,
                 turn,
+                thinking_message,
             );
             return;
         }
 
-        // Capture thinking content before consuming the streaming message.
-        // Thinking is persisted as a separate message for UI toggle support.
+        // Capture thinking content and signature before consuming the streaming message.
+        // Thinking is stored separately for UI toggles and signature replay.
         let thinking_content = message.thinking().to_owned();
+        let thinking_signature = message.thinking_signature().map(ToOwned::to_owned);
 
         // Convert streaming message to completed message (empty content is invalid).
         let Some(assistant_message) = message.into_message().ok() else {
@@ -608,7 +638,12 @@ impl super::App {
             let empty_msg = Message::assistant(model.clone(), empty_badge);
             // Still push thinking if we captured any before the empty response
             if let Ok(thinking) = NonEmptyString::new(thinking_content) {
-                self.push_local_message(Message::thinking(model, thinking));
+                let thinking_msg = if let Some(sig) = thinking_signature {
+                    Message::thinking_with_signature(model, thinking, sig)
+                } else {
+                    Message::thinking(model, thinking)
+                };
+                self.push_local_message(thinking_msg);
             }
             self.push_local_message(empty_msg);
             // Empty response - discard the step (nothing to recover)
@@ -621,8 +656,15 @@ impl super::App {
         self.pending_user_message = None;
 
         // Push thinking message first (if any), then assistant message
-        if let Ok(thinking) = NonEmptyString::new(thinking_content) {
-            self.push_local_message(Message::thinking(model, thinking));
+        let has_thinking_signature = thinking_signature.is_some();
+        if let Some(thinking_msg) =
+            build_thinking_message(model, thinking_content, thinking_signature)
+        {
+            if has_thinking_signature {
+                self.push_history_message(thinking_msg);
+            } else {
+                self.push_local_message(thinking_msg);
+            }
         }
         self.commit_history_message(assistant_message, step_id);
         self.finish_turn(turn);

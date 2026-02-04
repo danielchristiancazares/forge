@@ -10,7 +10,7 @@ Terminal user interface rendering and input handling for Forge, built on [ratatu
 | 28-39 | Purpose and Responsibility |
 | 40-55 | Module Overview |
 | 56-105 | Full-Screen vs Inline Rendering |
-| 106-616 | Key Modules: lib.rs, ui_inline.rs, input.rs, theme.rs, markdown.rs, effects.rs, shared.rs, tool_display.rs, tool_result_summary.rs, diff_render.rs |
+| 106-616 | Key Modules: lib.rs, ui_inline.rs, input.rs, theme.rs, markdown.rs, effects.rs, shared.rs, tool_display.rs, tool_result_Distillate.rs, diff_render.rs |
 | 617-650 | Public API |
 | 651-692 | Developer Notes |
 
@@ -49,7 +49,7 @@ tui/src/
 ├── effects.rs          # Modal animation transforms
 ├── shared.rs           # Rendering helpers shared between modes
 ├── tool_display.rs     # Compact tool call formatting
-├── tool_result_summary.rs  # Tool result summarization logic
+├── tool_result_Distillate.rs  # Tool result summarization logic
 └── diff_render.rs      # Diff-aware coloring for tool output
 ```
 
@@ -509,7 +509,7 @@ Collects and formats tool approval requests for display:
 pub(crate) struct ApprovalItem {
     pub tool_name: String,
     pub risk_label: String,     // "HIGH", "MEDIUM", "LOW"
-    pub summary: Option<String>,
+    pub Distillate: Option<String>,
     pub details: Vec<String>,   // Expanded JSON args
 }
 
@@ -554,14 +554,14 @@ Tool names are expected in PascalCase from the tool registry. The function maps 
 
 Unknown tools pass through as-is.
 
-### tool_result_summary.rs - Tool Result Summarization
+### tool_result_Distillate.rs - Tool Result Summarization
 
 Determines how to render tool results:
 
 ```rust
 pub enum ToolResultRender {
     Full { diff_aware: bool },  // Show complete output
-    Summary(String),            // Show compact summary
+    Distillate(String),            // Show compact Distillate
 }
 ```
 
@@ -580,14 +580,14 @@ pub(crate) enum ToolKind {
 ```
 
 **Render Decision:**
-- `Edit` always renders full with `diff_aware: true` (never summarized)
-- `Write` always renders full with `diff_aware: false` (never summarized)
+- `Edit` always renders full with `diff_aware: true` (never Distilled)
+- `Write` always renders full with `diff_aware: false` (never Distilled)
 - Content with diff markers (`---`, `+++`, `@@`) gets `Full { diff_aware: true }`
-- Other tools get tool-specific summaries
+- Other tools get tool-specific Distillates
 
-**Tool-Specific Summaries:**
+**Tool-Specific Distillates:**
 
-| Tool | Summary Format |
+| Tool | Distillate Format |
 |------|----------------|
 | Read | "42 lines" or "lines 1-50" (if range specified in args) |
 | Search | "3 matches in 2 files" (parsed from JSON output) |
@@ -689,3 +689,4 @@ pub fn clear_render_cache()
 2. Add style function to `styles` module
 3. Update `high_contrast()` fallback
 4. Consider `ascii_only` glyph fallbacks
+

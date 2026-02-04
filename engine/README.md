@@ -96,7 +96,6 @@ engine/
         ├── file_picker.rs      # File picker state and filtering
         ├── input.rs            # InputState, DraftInput, InputMode
         ├── modal.rs            # ModalEffect animations
-        ├── model_select.rs     # PredefinedModel enum
         ├── panel.rs            # Files panel state and effects
         ├── scroll.rs           # ScrollState tracking
         └── view_state.rs       # ViewState, UiOptions for UI state
@@ -202,7 +201,7 @@ struct ToolRecoveryState {
 // Summarization task
 struct SummarizationTask {
     scope: SummarizationScope,                          // Which messages to summarize
-    generated_by: String,                               // Model that generated the summary
+    generated_by: String,                               // Model that generated the Distillate
     handle: JoinHandle<anyhow::Result<String>>,         // Async task handle
     attempt: u8,                                        // Retry attempt number
 }
@@ -715,13 +714,13 @@ fn summarization_retry_delay(attempt: u8) -> Duration {
 
 ```rust
 fn handle_context_adaptation(&mut self) {
-    let adaptation = self.context_manager.switch_model(self.model.as_str());
+    let adaptation = self.context_manager.switch_model(self.model.clone());
 
     match adaptation {
         ContextAdaptation::NoChange => {}
-        ContextAdaptation::Shrinking { needs_summarization: true, .. } => {
-            self.push_notification("Context budget shrank; summarizing...");
-            self.start_summarization();
+        ContextAdaptation::Shrinking { needs_distillation: true, .. } => {
+            self.push_notification("Context budget shrank; distilling...");
+            self.start_distillation();
         }
         ContextAdaptation::Expanding { can_restore, .. } => {
             if can_restore > 0 {
@@ -842,7 +841,7 @@ thinking_budget_tokens = 10000
 ```toml
 [openai]
 reasoning_effort = "high"  # low | medium | high | xhigh
-reasoning_summary = "auto" # none | auto | concise | detailed (shown when show_thinking=true)
+reasoning_Distillate = "auto" # none | auto | concise | detailed (shown when show_thinking=true)
 verbosity = "high"         # low | medium | high
 truncation = "auto"        # auto | none | preserve
 ```
@@ -956,7 +955,7 @@ pub trait ToolExecutor: Send + Sync + std::panic::UnwindSafe {
             RiskLevel::Low
         }
     }
-    fn approval_summary(&self, args: &Value) -> Result<String, ToolError>;
+    fn approval_Distillate(&self, args: &Value) -> Result<String, ToolError>;
     fn timeout(&self) -> Option<Duration> { None }
     fn execute<'a>(&'a self, args: Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
 }
@@ -1088,8 +1087,8 @@ This creates a clean trust boundary: the small, finite set of notification varia
 /// This is a closed enum - only Forge code can construct these variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemNotification {
-    /// Context was summarized to fit within token budget.
-    ContextSummarized,
+    /// Context was Distilled to fit within token budget.
+    ContextDistilled,
     /// Session was recovered after a crash.
     SessionRecovered,
     /// User approved tool calls.
@@ -1139,7 +1138,7 @@ All notifications are prefixed with `[System: ...]` to clearly mark them as syst
 
 | Notification | Formatted Output |
 |--------------|------------------|
-| `ContextSummarized` | `[System: Earlier messages were summarized to fit context budget]` |
+| `ContextDistilled` | `[System: Earlier messages were Distilled to fit context budget]` |
 | `SessionRecovered` | `[System: Session recovered after unexpected termination]` |
 | `ToolsApproved { count: 3 }` | `[System: User approved 3 tool call(s)]` |
 | `ToolsDenied { count: 1 }` | `[System: User denied 1 tool call(s)]` |
@@ -1189,7 +1188,7 @@ self.queue_notification(SystemNotification::ToolsApproved { count: 3 });
 self.queue_notification(SystemNotification::SessionRecovered);
 
 // Summarization complete
-self.queue_notification(SystemNotification::ContextSummarized);
+self.queue_notification(SystemNotification::ContextDistilled);
 ```
 
 The notifications are automatically drained and injected on the next API request.
@@ -1610,10 +1609,10 @@ impl Provider {
 
     pub fn default_model(&self) -> ModelName {
         match self {
-            Self::Claude => ModelName::known(Self::Claude, "claude-opus-4-5-20251101"),
-            Self::OpenAI => ModelName::known(Self::OpenAI, "gpt-5.2"),
-            Self::Gemini => ModelName::known(Self::Gemini, "gemini-3-pro-preview"),
-            Self::MyProvider => ModelName::known(Self::MyProvider, "my-model-v1"),
+            Self::Claude => ModelName::from_predefined(PredefinedModel::ClaudeOpus),
+            Self::OpenAI => ModelName::from_predefined(PredefinedModel::Gpt52),
+            Self::Gemini => ModelName::from_predefined(PredefinedModel::GeminiPro),
+            Self::MyProvider => ModelName::from_predefined(PredefinedModel::MyProviderModel),
         }
     }
 }
@@ -1659,7 +1658,7 @@ impl ToolExecutor for MyTool {
 
     fn is_side_effecting(&self) -> bool { false }
 
-    fn approval_summary(&self, args: &Value) -> Result<String, ToolError> {
+    fn approval_Distillate(&self, args: &Value) -> Result<String, ToolError> {
         let arg1 = args["arg1"].as_str().unwrap_or("?");
         Ok(format!("Run my_tool with arg: {arg1}"))
     }
@@ -1883,3 +1882,4 @@ Config remains in the home directory: `~/.forge/config.toml`.
 | `<data_dir>/librarian.db` | Librarian fact store (when enabled) |
 
 All database files use SQLite with WAL mode for durability.
+

@@ -3,10 +3,9 @@
 //! This module handles slash commands like /quit, /clear, /model, etc.
 
 use super::{
-    ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, ModelNameKind,
-    SessionChangeLog,
+    ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, SessionChangeLog,
     state::{
-        OperationState, SummarizationStart, ToolLoopPhase, ToolLoopState, ToolRecoveryDecision,
+        DistillationStart, OperationState, ToolLoopPhase, ToolLoopState, ToolRecoveryDecision,
     },
 };
 
@@ -31,7 +30,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec {
         palette_label: "cancel",
         help_label: "cancel",
-        description: "Cancel streaming, tool execution, or summarization",
+        description: "Cancel streaming, tool execution, or distillation",
     },
     CommandSpec {
         palette_label: "tool <id> <result>",
@@ -56,7 +55,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec {
         palette_label: "distill",
         help_label: "distill",
-        description: "Summarize older messages",
+        description: "Distill older messages",
     },
     CommandSpec {
         palette_label: "screen",
@@ -96,7 +95,7 @@ pub(crate) enum CommandKind {
     Model,
     Context,
     Journal,
-    Summarize,
+    Distill,
     Cancel,
     Screen,
     Rewind,
@@ -151,11 +150,7 @@ const COMMAND_ALIASES: &[CommandAlias] = &[
     },
     CommandAlias {
         name: "distill",
-        kind: CommandKind::Summarize,
-    },
-    CommandAlias {
-        name: "summarize",
-        kind: CommandKind::Summarize,
+        kind: CommandKind::Distill,
     },
     CommandAlias {
         name: "cancel",
@@ -206,7 +201,7 @@ pub(crate) enum Command<'a> {
     Model(Option<&'a str>),
     Context,
     Journal,
-    Summarize,
+    Distill,
     Cancel,
     Screen,
     Rewind {
@@ -247,7 +242,7 @@ impl<'a> Command<'a> {
             CommandKind::Model => Command::Model(parts.get(1).copied()),
             CommandKind::Context => Command::Context,
             CommandKind::Journal => Command::Journal,
-            CommandKind::Summarize => Command::Summarize,
+            CommandKind::Distill => Command::Distill,
             CommandKind::Cancel => Command::Cancel,
             CommandKind::Screen => Command::Screen,
             CommandKind::Rewind => Command::Rewind {
@@ -284,10 +279,8 @@ impl super::App {
             }
             OperationState::ToolLoop(state) => {
                 let ToolLoopState { batch, phase } = *state;
-                if let ToolLoopPhase::Executing(exec) = &phase
-                    && let Some(handle) = &exec.abort_handle
-                {
-                    handle.abort();
+                if let ToolLoopPhase::Executing(exec) = &phase {
+                    exec.spawned.abort();
                 }
                 self.cancel_tool_batch(
                     batch.assistant_text,
@@ -297,6 +290,7 @@ impl super::App {
                     batch.step_id,
                     batch.batch_id,
                     batch.turn,
+                    batch.thinking_message,
                 );
                 self.push_notification("Tool execution cancelled");
                 true
@@ -305,19 +299,12 @@ impl super::App {
                 self.commit_recovered_tool_batch(state, ToolRecoveryDecision::Discard);
                 true
             }
-            OperationState::Summarizing(state) => {
+            OperationState::Distilling(state) => {
                 state.task.handle.abort();
                 if state.queued.is_some() {
                     self.rollback_pending_user_message();
                 }
-                self.push_notification("Summarization cancelled");
-                true
-            }
-            OperationState::SummarizationRetry(state) => {
-                if state.queued.is_some() {
-                    self.rollback_pending_user_message();
-                }
-                self.push_notification("Summarization retry cancelled");
+                self.push_notification("Distillation cancelled");
                 true
             }
             OperationState::Idle => false,
@@ -350,10 +337,8 @@ impl super::App {
                     }
                     OperationState::ToolLoop(state) => {
                         let ToolLoopState { batch, phase } = *state;
-                        if let ToolLoopPhase::Executing(exec) = &phase
-                            && let Some(handle) = &exec.abort_handle
-                        {
-                            handle.abort();
+                        if let ToolLoopPhase::Executing(exec) = &phase {
+                            exec.spawned.abort();
                         }
                         if let Some(id) = batch.batch_id {
                             let _ = self.tool_journal.discard_batch(id);
@@ -365,17 +350,17 @@ impl super::App {
                         let _ = self.tool_journal.discard_batch(state.batch.batch_id);
                         self.discard_journal_step(state.step_id);
                     }
-                    OperationState::Summarizing(state) => {
+                    OperationState::Distilling(state) => {
                         state.task.handle.abort();
                     }
-                    OperationState::SummarizationRetry(_) | OperationState::Idle => {}
+                    OperationState::Idle => {}
                 }
 
                 self.display.clear();
                 self.display_version = self.display_version.wrapping_add(1);
                 self.pending_user_message = None; // Clear pending message tracking
                 self.session_changes = SessionChangeLog::default();
-                self.context_manager = ContextManager::new(self.model.as_str());
+                self.context_manager = ContextManager::new(self.model.clone());
                 self.context_manager
                     .set_output_limit(self.output_limits.max_output_tokens());
                 self.invalidate_usage_cache();
@@ -394,16 +379,8 @@ impl super::App {
                     let provider = self.provider();
                     match provider.parse_model(model_name) {
                         Ok(model) => {
-                            let kind = model.kind();
                             self.set_model(model);
-                            let suffix = match kind {
-                                ModelNameKind::Known => "",
-                                ModelNameKind::Unverified => " (unverified; limits may fallback)",
-                            };
-                            self.push_notification(format!(
-                                "Model set to: {}{}",
-                                self.model, suffix
-                            ));
+                            self.push_notification(format!("Model set to: {}", self.model));
                         }
                         Err(e) => {
                             self.push_notification(format!("Invalid model: {e}"));
@@ -416,9 +393,9 @@ impl super::App {
             }
             Command::Context => {
                 let usage_status = self.context_usage_status();
-                let (usage, needs_summary, recent_too_large) = match &usage_status {
+                let (usage, needs_distillation, recent_too_large) = match &usage_status {
                     ContextUsageStatus::Ready(usage) => (usage, None, None),
-                    ContextUsageStatus::NeedsSummarization { usage, needed } => {
+                    ContextUsageStatus::NeedsDistillation { usage, needed } => {
                         (usage, Some(needed), None)
                     }
                     ContextUsageStatus::RecentMessagesTooLarge {
@@ -439,34 +416,29 @@ impl super::App {
                 let limits = self.context_manager.current_limits();
                 let limits_source = match self.context_manager.current_limits_source() {
                     ModelLimitsSource::Override => "override".to_string(),
-                    ModelLimitsSource::Prefix(prefix) => prefix.to_string(),
-                    ModelLimitsSource::DefaultFallback => "fallback(default)".to_string(),
+                    ModelLimitsSource::Catalog(model) => model.model_id().to_string(),
                 };
-                let context_flag = if self.context_infinity_enabled() {
-                    "on"
-                } else {
-                    "off"
-                };
+                let memory_flag = if self.memory_enabled() { "on" } else { "off" };
                 let pct = usage.percentage();
-                let remaining = (100.0 - pct).clamp(0.0, 100.0);
+                let remaining = (100.0_f32 - pct).clamp(0.0, 100.0);
                 let status_suffix = if let Some((required, budget)) = recent_too_large {
                     format!(" │ ERROR: recent msgs ({required} tokens) > budget ({budget} tokens)")
                 } else {
-                    needs_summary.map_or(String::new(), |needed| {
+                    needs_distillation.map_or(String::new(), |needed| {
                         format!(
-                            " │ Summarize: {} msgs (~{} tokens)",
-                            needed.messages_to_summarize.len(),
+                            " │ Distill: {} msgs (~{} tokens)",
+                            needed.messages_to_distill.len(),
                             needed.excess_tokens
                         )
                     })
                 };
                 self.push_notification(format!(
-                    "ContextInfinity: {} │ Context: {remaining:.0}% left │ Used: {} │ Budget(effective): {} │ Window(raw): {} │ Max output: {} │ Model: {} │ Limits: {}{}",
-                    context_flag,
+                    "Memory: {} │ Context: {remaining:.0}% left │ Used: {} │ Budget(effective): {} │ Window(raw): {} │ Output(reserved): {} │ Model: {} │ Limits: {}{}",
+                    memory_flag,
                     format_k(usage.used_tokens),
                     format_k(usage.budget_tokens),
                     format_k(limits.context_window()),
-                    format_k(limits.max_output()),
+                    format_k(self.output_limits.max_output_tokens()),
                     self.context_manager.current_model(),
                     limits_source,
                     status_suffix,
@@ -495,16 +467,16 @@ impl super::App {
                     self.push_notification(format!("Journal error: {e}"));
                 }
             },
-            Command::Summarize => {
-                if self.context_infinity_enabled() {
-                    self.push_notification("Summarizing older messages...");
-                    let result = self.start_summarization_with_attempt(None, 1);
-                    if matches!(result, SummarizationStart::NotNeeded) {
-                        self.push_notification("No messages need summarization");
+            Command::Distill => {
+                if self.memory_enabled() {
+                    self.push_notification("Distilling older messages...");
+                    let result = self.try_start_distillation(None);
+                    if matches!(result, DistillationStart::NotNeeded) {
+                        self.push_notification("No messages need distillation");
                     }
-                    // If Failed, start_summarization_with_attempt already set status
+                    // If Failed, try_start_distillation already set status
                 } else {
-                    self.push_notification("ContextInfinity disabled: summarization unavailable");
+                    self.push_notification("Memory disabled: distillation unavailable");
                 }
             }
             Command::Cancel => {
@@ -650,9 +622,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_summarize_commands() {
-        assert_eq!(Command::parse("summarize"), Command::Summarize);
-        assert_eq!(Command::parse("distill"), Command::Summarize);
+    fn parse_distill_commands() {
+        assert_eq!(Command::parse("distill"), Command::Distill);
     }
 
     #[test]

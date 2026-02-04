@@ -4,40 +4,42 @@
 //! - Adding messages to history
 //! - Switching models (triggers adaptation)
 //! - Building working context for API calls
-//! - Managing summarization
+//! - Managing distillation (compacting older messages)
 //! - Persistence
 
 use anyhow::Result;
 use std::io::Write;
 use std::path::Path;
 
-use forge_types::{Message, NonEmptyString};
+#[cfg(test)]
+use forge_types::PredefinedModel;
+use forge_types::{Message, ModelName, NonEmptyString};
 use tempfile::NamedTempFile;
 
 use super::StepId;
-use super::history::{FullHistory, MessageId, Summary, SummaryId};
+use super::history::{Distillate, DistillateId, FullHistory, MessageId};
 use super::model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry};
 use super::token_counter::TokenCounter;
-use super::working_context::{ContextSegment, ContextUsage, SUMMARY_PREFIX, WorkingContext};
+use super::working_context::{ContextSegment, ContextUsage, DISTILLATE_PREFIX, WorkingContext};
 
-const MIN_SUMMARY_RATIO: f32 = 0.01;
-const MAX_SUMMARY_RATIO: f32 = 0.95;
-const MIN_SUMMARY_TOKENS: u32 = 64;
-const MAX_SUMMARY_TOKENS: u32 = 2048;
+const MIN_DISTILLATION_RATIO: f32 = 0.01;
+const MAX_DISTILLATION_RATIO: f32 = 0.95;
+const MIN_DISTILLATION_TOKENS: u32 = 64;
+const MAX_DISTILLATION_TOKENS: u32 = 2048;
 
-/// Configuration for the summarization process.
+/// Configuration for the distillation process.
 ///
 /// Controls how aggressively older messages are compressed and how many
-/// recent messages are preserved from summarization.
+/// recent messages are preserved from distillation.
 #[derive(Debug, Clone)]
-pub struct SummarizationConfig {
+pub struct DistillationConfig {
     /// Target compression ratio (e.g., 0.15 = 15% of original size).
     pub target_ratio: f32,
-    /// Don't summarize the N most recent messages.
+    /// Don't distill the N most recent messages.
     pub preserve_recent: usize,
 }
 
-impl Default for SummarizationConfig {
+impl Default for DistillationConfig {
     fn default() -> Self {
         Self {
             target_ratio: 0.15,
@@ -48,8 +50,8 @@ impl Default for SummarizationConfig {
 
 #[derive(Debug)]
 pub enum ContextBuildError {
-    /// Older messages need summarization to fit within budget.
-    SummarizationNeeded(SummarizationNeeded),
+    /// Older messages need distillation to fit within budget.
+    DistillationNeeded(DistillationNeeded),
     /// The most recent N messages alone exceed the budget.
     /// This is unrecoverable - user must reduce input or switch to larger model.
     RecentMessagesTooLarge {
@@ -59,27 +61,27 @@ pub enum ContextBuildError {
     },
 }
 
-/// Details about what needs to be summarized to fit within the token budget.
+/// Details about what needs to be distilled to fit within the token budget.
 ///
-/// Returned as part of [`ContextBuildError::SummarizationNeeded`] when
+/// Returned as part of [`ContextBuildError::DistillationNeeded`] when
 /// the context exceeds the model's budget but can be resolved by
-/// summarizing older messages.
+/// distilling older messages.
 #[derive(Debug, Clone)]
-pub struct SummarizationNeeded {
-    /// How many tokens over budget the unsummarized content is.
+pub struct DistillationNeeded {
+    /// How many tokens over budget the undistilled content is.
     pub excess_tokens: u32,
-    /// Message IDs that should be summarized.
-    pub messages_to_summarize: Vec<MessageId>,
+    /// Message IDs that should be distilled.
+    pub messages_to_distill: Vec<MessageId>,
     /// Human-readable suggestion for the caller.
     pub suggestion: String,
 }
 
-/// Contiguous range of message IDs selected for summarization.
+/// Contiguous range of message IDs selected for distillation.
 ///
-/// Summaries must cover contiguous message ranges to maintain
+/// Distillations must cover contiguous message ranges to maintain
 /// chronological coherence. This type ensures that constraint.
 #[derive(Debug, Clone)]
-pub struct SummarizationScope {
+pub struct DistillationScope {
     ids: Vec<MessageId>,
     range: std::ops::Range<MessageId>,
 }
@@ -92,7 +94,7 @@ pub enum ContextAdaptation {
     Shrinking {
         old_budget: u32,
         new_budget: u32,
-        needs_summarization: bool,
+        needs_distillation: bool,
     },
     /// Switched to a model with larger context.
     Expanding {
@@ -103,19 +105,19 @@ pub enum ContextAdaptation {
     },
 }
 
-/// Request for async summarization, created by [`ContextManager::prepare_summarization`].
+/// Request for async distillation, created by [`ContextManager::prepare_distillation`].
 ///
-/// Contains everything needed to generate a summary via an LLM call.
-/// After generation, pass the result to [`ContextManager::complete_summarization`].
+/// Contains everything needed to generate a distillation via an LLM call.
+/// After generation, pass the result to [`ContextManager::complete_distillation`].
 #[derive(Debug)]
-pub struct PendingSummarization {
-    /// The scope defining which messages to summarize.
-    pub scope: SummarizationScope,
-    /// The actual messages to summarize, in order.
+pub struct PendingDistillation {
+    /// The scope defining which messages to distill.
+    pub scope: DistillationScope,
+    /// The actual messages to distill, in order.
     pub messages: Vec<(MessageId, Message)>,
     /// Total tokens in the original messages.
     pub original_tokens: u32,
-    /// Target token count for the generated summary.
+    /// Target token count for the generated distillation.
     pub target_tokens: u32,
 }
 
@@ -144,7 +146,7 @@ impl PreparedContext<'_> {
     }
 }
 
-/// Current context usage state with explicit summarization status.
+/// Current context usage state with explicit distillation status.
 ///
 /// Returned by [`ContextManager::usage_status`] to provide UI-friendly
 /// information about the current context state.
@@ -152,12 +154,12 @@ impl PreparedContext<'_> {
 pub enum ContextUsageStatus {
     /// Context fits within budget and is ready for use.
     Ready(ContextUsage),
-    /// Context exceeds budget; summarization is needed before API call.
-    NeedsSummarization {
+    /// Context exceeds budget; distillation is needed before API call.
+    NeedsDistillation {
         /// Current usage statistics.
         usage: ContextUsage,
-        /// Details about what needs summarization.
-        needed: SummarizationNeeded,
+        /// Details about what needs distillation.
+        needed: DistillationNeeded,
     },
     /// Recent messages alone exceed budget; unrecoverable without user action.
     RecentMessagesTooLarge {
@@ -175,10 +177,10 @@ pub struct ContextManager {
     history: FullHistory,
     counter: TokenCounter,
     registry: ModelRegistry,
-    current_model: String,
+    current_model: ModelName,
     current_limits: ModelLimits,
     current_limits_source: ModelLimitsSource,
-    summarization_config: SummarizationConfig,
+    distillation_config: DistillationConfig,
     /// Configured output limit (if set, allows more input context).
     configured_output_limit: Option<u32>,
 }
@@ -186,9 +188,9 @@ pub struct ContextManager {
 impl ContextManager {
     /// Create a new context manager for the given model.
     #[must_use]
-    pub fn new(initial_model: &str) -> Self {
+    pub fn new(initial_model: ModelName) -> Self {
         let registry = ModelRegistry::new();
-        let resolved = registry.get(initial_model);
+        let resolved = registry.get(&initial_model);
         let limits = resolved.limits();
         let limits_source = resolved.source();
 
@@ -196,10 +198,10 @@ impl ContextManager {
             history: FullHistory::new(),
             counter: TokenCounter::new(),
             registry,
-            current_model: initial_model.to_string(),
+            current_model: initial_model,
             current_limits: limits,
             current_limits_source: limits_source,
-            summarization_config: SummarizationConfig::default(),
+            distillation_config: DistillationConfig::default(),
             configured_output_limit: None,
         }
     }
@@ -261,13 +263,13 @@ impl ContextManager {
     }
 
     /// Switch to a different model - triggers context adaptation.
-    pub fn switch_model(&mut self, new_model: &str) -> ContextAdaptation {
+    pub fn switch_model(&mut self, new_model: ModelName) -> ContextAdaptation {
         let old_budget = self.effective_budget();
-        let resolved = self.registry.get(new_model);
+        let resolved = self.registry.get(&new_model);
         let new_limits = resolved.limits();
         let new_source = resolved.source();
 
-        self.current_model = new_model.to_string();
+        self.current_model = new_model;
         self.current_limits = new_limits;
         self.current_limits_source = new_source;
 
@@ -277,37 +279,37 @@ impl ContextManager {
             std::cmp::Ordering::Less => ContextAdaptation::Shrinking {
                 old_budget,
                 new_budget,
-                needs_summarization: self.build_working_context().is_err(),
+                needs_distillation: self.build_working_context().is_err(),
             },
             std::cmp::Ordering::Greater => ContextAdaptation::Expanding {
                 old_budget,
                 new_budget,
-                can_restore: self.history.summarized_count(),
+                can_restore: self.history.distilled_count(),
             },
             std::cmp::Ordering::Equal => ContextAdaptation::NoChange,
         }
     }
 
-    /// Update model limits without triggering summarization behavior.
-    pub fn set_model_without_adaptation(&mut self, new_model: &str) {
-        let resolved = self.registry.get(new_model);
-        self.current_model = new_model.to_string();
+    /// Update model limits without triggering distillation behavior.
+    pub fn set_model_without_adaptation(&mut self, new_model: ModelName) {
+        let resolved = self.registry.get(&new_model);
+        self.current_model = new_model;
         self.current_limits = resolved.limits();
         self.current_limits_source = resolved.source();
     }
 
     /// Build the working context for current model.
     ///
-    /// Returns an error if summarization is needed to fit within budget, or if
+    /// Returns an error if distillation is needed to fit within budget, or if
     /// the most recent messages alone exceed the budget (unrecoverable).
     fn build_working_context(&self) -> Result<WorkingContext, ContextBuildError> {
         #[derive(Debug)]
         enum Block {
-            Unsummarized(Vec<(MessageId, u32)>),
-            Summarized {
-                summary_id: SummaryId,
+            Undistilled(Vec<(MessageId, u32)>),
+            Distilled {
+                distillate_id: DistillateId,
                 messages: Vec<(MessageId, u32)>,
-                summary_tokens: u32,
+                distillate_tokens: u32,
             },
         }
 
@@ -315,11 +317,11 @@ impl ContextManager {
         let mut ctx = WorkingContext::new(budget);
 
         let entries = self.history.entries();
-        let max_preserve = self.summarization_config.preserve_recent.min(entries.len());
+        let max_preserve = self.distillation_config.preserve_recent.min(entries.len());
         let mut preserve_count = 0usize;
         let mut tokens_for_recent = 0u32;
 
-        // Phase 1: The N most recent messages are always preserved and never summarized.
+        // Phase 1: The N most recent messages are always preserved and never distilled.
         // Count them unconditionally - if they exceed budget, that's an unrecoverable error.
         for entry in entries.iter().rev().take(max_preserve) {
             tokens_for_recent = tokens_for_recent.saturating_add(entry.token_count());
@@ -340,72 +342,72 @@ impl ContextManager {
         // Phase 2: Partition older messages into contiguous blocks.
         let older_entries = &entries[..recent_start];
         let mut blocks: Vec<Block> = Vec::new();
-        let mut unsummarized: Vec<(MessageId, u32)> = Vec::new();
-        let mut summary_block: Option<(SummaryId, u32)> = None;
-        let mut summarized: Vec<(MessageId, u32)> = Vec::new();
+        let mut undistilled: Vec<(MessageId, u32)> = Vec::new();
+        let mut distillate_block: Option<(DistillateId, u32)> = None;
+        let mut distilled_messages: Vec<(MessageId, u32)> = Vec::new();
 
         for entry in older_entries {
-            let summarized_here = entry
-                .summary_id()
-                .map(|sid| (sid, self.history.summary(sid).token_count()));
+            let distilled_here = entry
+                .distillate_id()
+                .map(|sid| (sid, self.history.distillate(sid).token_count()));
 
-            if let Some((summary_id, summary_tokens)) = summarized_here {
-                if !unsummarized.is_empty() {
-                    blocks.push(Block::Unsummarized(std::mem::take(&mut unsummarized)));
+            if let Some((distillate_id, distillate_tokens)) = distilled_here {
+                if !undistilled.is_empty() {
+                    blocks.push(Block::Undistilled(std::mem::take(&mut undistilled)));
                 }
 
-                match summary_block {
-                    Some((current_id, _)) if current_id == summary_id => {}
+                match distillate_block {
+                    Some((current_id, _)) if current_id == distillate_id => {}
                     Some((current_id, current_tokens)) => {
-                        blocks.push(Block::Summarized {
-                            summary_id: current_id,
-                            messages: std::mem::take(&mut summarized),
-                            summary_tokens: current_tokens,
+                        blocks.push(Block::Distilled {
+                            distillate_id: current_id,
+                            messages: std::mem::take(&mut distilled_messages),
+                            distillate_tokens: current_tokens,
                         });
-                        summary_block = Some((summary_id, summary_tokens));
+                        distillate_block = Some((distillate_id, distillate_tokens));
                     }
                     None => {
-                        summary_block = Some((summary_id, summary_tokens));
+                        distillate_block = Some((distillate_id, distillate_tokens));
                     }
                 }
 
-                summarized.push((entry.id(), entry.token_count()));
+                distilled_messages.push((entry.id(), entry.token_count()));
             } else {
-                if let Some((summary_id, summary_tokens)) = summary_block.take() {
-                    blocks.push(Block::Summarized {
-                        summary_id,
-                        messages: std::mem::take(&mut summarized),
-                        summary_tokens,
+                if let Some((distillate_id, distillate_tokens)) = distillate_block.take() {
+                    blocks.push(Block::Distilled {
+                        distillate_id,
+                        messages: std::mem::take(&mut distilled_messages),
+                        distillate_tokens,
                     });
                 }
 
-                unsummarized.push((entry.id(), entry.token_count()));
+                undistilled.push((entry.id(), entry.token_count()));
             }
         }
 
-        if let Some((summary_id, summary_tokens)) = summary_block.take() {
-            blocks.push(Block::Summarized {
-                summary_id,
-                messages: summarized,
-                summary_tokens,
+        if let Some((distillate_id, distillate_tokens)) = distillate_block.take() {
+            blocks.push(Block::Distilled {
+                distillate_id,
+                messages: distilled_messages,
+                distillate_tokens,
             });
-        } else if !unsummarized.is_empty() {
-            blocks.push(Block::Unsummarized(unsummarized));
+        } else if !undistilled.is_empty() {
+            blocks.push(Block::Undistilled(undistilled));
         }
 
         // Phase 3: Select older content from newest to oldest within remaining budget.
         let mut selected_rev: Vec<ContextSegment> = Vec::new();
-        let mut need_summary_rev: Vec<MessageId> = Vec::new();
+        let mut need_distillation_rev: Vec<MessageId> = Vec::new();
         let mut tokens_used: u32 = 0;
         let mut exhausted = false;
 
         for block in blocks.iter().rev() {
             if exhausted {
-                // Collect all older content (summarized or not) for re-summarization.
+                // Collect all older content (Distilled or not) for re-distillation.
                 match block {
-                    Block::Unsummarized(messages) | Block::Summarized { messages, .. } => {
+                    Block::Undistilled(messages) | Block::Distilled { messages, .. } => {
                         for (id, _) in messages.iter().rev() {
-                            need_summary_rev.push(*id);
+                            need_distillation_rev.push(*id);
                         }
                     }
                 }
@@ -413,39 +415,39 @@ impl ContextManager {
             }
 
             match block {
-                Block::Summarized {
-                    summary_id,
+                Block::Distilled {
+                    distillate_id,
                     messages,
-                    summary_tokens,
+                    distillate_tokens,
                 } => {
                     let original_tokens: u32 = messages.iter().map(|(_, t)| *t).sum();
 
-                    // Prefer full originals when budget allows; otherwise fall back to the summary.
+                    // Prefer full originals when budget allows; otherwise fall back to the distillate.
                     if tokens_used + original_tokens <= remaining_budget {
                         for (id, tokens) in messages.iter().rev() {
                             selected_rev.push(ContextSegment::original(*id, *tokens));
                         }
                         tokens_used += original_tokens;
-                    } else if tokens_used + *summary_tokens <= remaining_budget {
+                    } else if tokens_used + *distillate_tokens <= remaining_budget {
                         let replaces: Vec<MessageId> = messages.iter().map(|(id, _)| *id).collect();
-                        selected_rev.push(ContextSegment::summarized(
-                            *summary_id,
+                        selected_rev.push(ContextSegment::distilled(
+                            *distillate_id,
                             replaces,
-                            *summary_tokens,
+                            *distillate_tokens,
                         ));
-                        tokens_used += *summary_tokens;
+                        tokens_used += *distillate_tokens;
                     } else {
-                        // Even the summary doesn't fit. Mark underlying messages for
-                        // hierarchical re-summarization (combined with other old content
-                        // into a more compact summary). The old summary becomes orphaned.
+                        // Even the distillate doesn't fit. Mark underlying messages for
+                        // hierarchical re-distillation (combined with other old content
+                        // into a more compact distillation). The old distillate becomes orphaned.
                         exhausted = true;
                         for (id, _) in messages.iter().rev() {
-                            need_summary_rev.push(*id);
+                            need_distillation_rev.push(*id);
                         }
-                        // Don't break - continue to collect more content for summarization.
+                        // Don't break - continue to collect more content for distillation.
                     }
                 }
-                Block::Unsummarized(messages) => {
+                Block::Undistilled(messages) => {
                     // Include as many of the most recent messages as we can.
                     for i in (0..messages.len()).rev() {
                         let (id, tokens) = messages[i];
@@ -453,10 +455,10 @@ impl ContextManager {
                             selected_rev.push(ContextSegment::original(id, tokens));
                             tokens_used += tokens;
                         } else {
-                            // Everything older than this point should be summarized.
+                            // Everything older than this point should be distilled.
                             exhausted = true;
                             for (id, _) in messages[..=i].iter().rev() {
-                                need_summary_rev.push(*id);
+                                need_distillation_rev.push(*id);
                             }
                             break;
                         }
@@ -465,38 +467,37 @@ impl ContextManager {
             }
         }
 
-        let mut need_summary: Vec<MessageId> = need_summary_rev.into_iter().rev().collect();
+        let mut need_distillation: Vec<MessageId> =
+            need_distillation_rev.into_iter().rev().collect();
 
-        if !need_summary.is_empty() {
-            need_summary.sort_by_key(super::history::MessageId::as_u64);
-            need_summary.dedup();
+        if !need_distillation.is_empty() {
+            need_distillation.sort_by_key(super::history::MessageId::as_u64);
+            need_distillation.dedup();
 
-            let tokens_to_summarize: u32 = need_summary
+            let tokens_to_distill: u32 = need_distillation
                 .iter()
                 .map(|id| self.history.get_entry(*id).token_count())
                 .sum();
             let available_left = remaining_budget.saturating_sub(tokens_used);
-            let excess_tokens = tokens_to_summarize.saturating_sub(available_left);
+            let excess_tokens = tokens_to_distill.saturating_sub(available_left);
 
-            let msg_count = need_summary.len();
-            return Err(ContextBuildError::SummarizationNeeded(
-                SummarizationNeeded {
-                    excess_tokens,
-                    messages_to_summarize: need_summary,
-                    suggestion: format!("{msg_count} older messages need summarization"),
-                },
-            ));
+            let msg_count = need_distillation.len();
+            return Err(ContextBuildError::DistillationNeeded(DistillationNeeded {
+                excess_tokens,
+                messages_to_distill: need_distillation,
+                suggestion: format!("{msg_count} older messages need distillation"),
+            }));
         }
 
         // Phase 4: Materialize selected older segments in chronological order.
         for segment in selected_rev.into_iter().rev() {
             match segment {
                 ContextSegment::Original { id, tokens } => ctx.push_original(id, tokens),
-                ContextSegment::Summarized {
-                    summary_id,
+                ContextSegment::Distilled {
+                    distillate_id,
                     replaces,
                     tokens,
-                } => ctx.push_summary(summary_id, replaces, tokens),
+                } => ctx.push_distillate(distillate_id, replaces, tokens),
             }
         }
 
@@ -508,11 +509,11 @@ impl ContextManager {
         Ok(ctx)
     }
 
-    /// Prepare a summarization request for the given messages.
-    pub fn prepare_summarization(
+    /// Prepare a distillation request for the given messages.
+    pub fn prepare_distillation(
         &mut self,
         message_ids: &[MessageId],
-    ) -> Option<PendingSummarization> {
+    ) -> Option<PendingDistillation> {
         let mut ids: Vec<MessageId> = message_ids.to_vec();
         ids.sort_by_key(super::history::MessageId::as_u64);
         ids.dedup();
@@ -521,7 +522,7 @@ impl ContextManager {
             return None;
         }
 
-        // Keep only the first contiguous run - summaries must represent a contiguous slice of history.
+        // Keep only the first contiguous run - distillations must represent a contiguous slice of history.
         let mut end = 1usize;
         while end < ids.len() {
             if ids[end].as_u64() == ids[end - 1].as_u64() + 1 {
@@ -543,21 +544,21 @@ impl ContextManager {
             .sum();
 
         let ratio = self
-            .summarization_config
+            .distillation_config
             .target_ratio
-            .clamp(MIN_SUMMARY_RATIO, MAX_SUMMARY_RATIO);
+            .clamp(MIN_DISTILLATION_RATIO, MAX_DISTILLATION_RATIO);
         let target_tokens = (f64::from(original_tokens) * f64::from(ratio)).round() as u32;
-        let target_tokens = target_tokens.clamp(MIN_SUMMARY_TOKENS, MAX_SUMMARY_TOKENS);
+        let target_tokens = target_tokens.clamp(MIN_DISTILLATION_TOKENS, MAX_DISTILLATION_TOKENS);
 
         let first = ids.first().copied()?;
         let last = ids.last().copied()?;
         let end_exclusive = last.next();
-        let scope = SummarizationScope {
+        let scope = DistillationScope {
             ids,
             range: first..end_exclusive,
         };
 
-        Some(PendingSummarization {
+        Some(PendingDistillation {
             scope,
             messages,
             original_tokens,
@@ -565,26 +566,26 @@ impl ContextManager {
         })
     }
 
-    /// Complete a summarization by adding the generated summary.
-    pub fn complete_summarization(
+    /// Complete a distillation by adding the generated distillate.
+    pub fn complete_distillation(
         &mut self,
-        scope: SummarizationScope,
+        scope: DistillationScope,
         content: NonEmptyString,
         generated_by: String,
-    ) -> Result<SummaryId> {
-        let injected = NonEmptyString::prefixed(SUMMARY_PREFIX, "\n", &content);
+    ) -> Result<DistillateId> {
+        let injected = NonEmptyString::prefixed(DISTILLATE_PREFIX, "\n", &content);
         let token_count = self.counter.count_message(&Message::system(injected));
 
-        let SummarizationScope { ids, range } = scope;
+        let DistillationScope { ids, range } = scope;
 
         let original_tokens: u32 = ids
             .iter()
             .map(|id| self.history.get_entry(*id).token_count())
             .sum();
 
-        let summary_id = self.history.next_summary_id();
-        let summary = Summary::new(
-            summary_id,
+        let distillate_id = self.history.next_distillate_id();
+        let distillate = Distillate::new(
+            distillate_id,
             range,
             content,
             token_count,
@@ -592,14 +593,14 @@ impl ContextManager {
             generated_by,
         );
 
-        self.history.add_summary(summary)?;
-        Ok(summary_id)
+        self.history.add_distillate(distillate)?;
+        Ok(distillate_id)
     }
 
-    /// Try to restore summarized messages when budget allows.
+    /// Try to restore Distilled messages when budget allows.
     ///
     /// This does not mutate history. If the current model's budget can fit original messages for
-    /// previously-summarized segments, `build_working_context()` will choose originals.
+    /// previously-Distilled segments, `build_working_context()` will choose originals.
     #[must_use]
     pub fn try_restore_messages(&self) -> usize {
         let Ok(ctx) = self.build_working_context() else {
@@ -612,7 +613,7 @@ impl ContextManager {
                 matches!(
                     segment,
                     ContextSegment::Original { id, .. }
-                        if self.history.get_entry(*id).summary_id().is_some()
+                        if self.history.get_entry(*id).distillate_id().is_some()
                 )
             })
             .count()
@@ -627,9 +628,9 @@ impl ContextManager {
         })
     }
 
-    /// Get only the N most recent messages, bypassing summarization.
+    /// Get only the N most recent messages, bypassing distillation.
     ///
-    /// This is used when the Librarian is active - instead of summarizing
+    /// This is used when the Librarian is active - instead of distilling
     /// old messages, we rely on the Librarian's distilled facts for context.
     /// This mode sends: system prompt + Librarian facts + recent N messages.
     ///
@@ -647,22 +648,22 @@ impl ContextManager {
     /// Get the configured preserve_recent count.
     #[must_use]
     pub fn preserve_recent_count(&self) -> usize {
-        self.summarization_config.preserve_recent
+        self.distillation_config.preserve_recent
     }
 
-    /// Get current usage statistics with explicit summarization status.
+    /// Get current usage statistics with explicit distillation status.
     #[must_use]
     pub fn usage_status(&self) -> ContextUsageStatus {
         let fallback_usage = || ContextUsage {
             used_tokens: self.history.total_tokens(),
             budget_tokens: self.effective_budget(),
-            summarized_segments: 0,
+            distilled_segments: 0,
         };
 
         match self.prepare() {
             Ok(prepared) => ContextUsageStatus::Ready(prepared.usage()),
-            Err(ContextBuildError::SummarizationNeeded(needed)) => {
-                ContextUsageStatus::NeedsSummarization {
+            Err(ContextBuildError::DistillationNeeded(needed)) => {
+                ContextUsageStatus::NeedsDistillation {
                     usage: fallback_usage(),
                     needed,
                 }
@@ -687,7 +688,7 @@ impl ContextManager {
 
     /// Current model name.
     #[must_use]
-    pub fn current_model(&self) -> &str {
+    pub fn current_model(&self) -> &ModelName {
         &self.current_model
     }
 
@@ -756,12 +757,12 @@ impl ContextManager {
     }
 
     /// Load history from a JSON file.
-    pub fn load(path: impl AsRef<Path>, model: &str) -> Result<Self> {
+    pub fn load(path: impl AsRef<Path>, model: ModelName) -> Result<Self> {
         let json = std::fs::read_to_string(path)?;
         let history: FullHistory = serde_json::from_str(&json)?;
 
         let registry = ModelRegistry::new();
-        let resolved = registry.get(model);
+        let resolved = registry.get(&model);
         let limits = resolved.limits();
         let limits_source = resolved.source();
 
@@ -769,29 +770,47 @@ impl ContextManager {
             history,
             counter: TokenCounter::new(),
             registry,
-            current_model: model.to_string(),
+            current_model: model,
             current_limits: limits,
             current_limits_source: limits_source,
-            summarization_config: SummarizationConfig::default(),
+            distillation_config: DistillationConfig::default(),
             configured_output_limit: None, // Will be set by engine after load
         })
     }
 }
 
 #[cfg(test)]
+impl ContextManager {
+    /// Set a registry override for testing purposes.
+    ///
+    /// This allows tests to simulate models with custom context limits.
+    pub fn set_registry_override(&mut self, model: PredefinedModel, limits: ModelLimits) {
+        self.registry.set_override(model, limits);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use forge_types::PredefinedModel;
+
+    fn model(predefined: PredefinedModel) -> ModelName {
+        predefined.to_model_name()
+    }
 
     #[test]
     fn test_new_manager() {
-        let manager = ContextManager::new("claude-opus-4-5-20251101");
-        assert_eq!(manager.current_model(), "claude-opus-4-5-20251101");
+        let manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
+        assert_eq!(
+            manager.current_model().as_str(),
+            PredefinedModel::ClaudeOpus.model_id()
+        );
         assert_eq!(manager.history().len(), 0);
     }
 
     #[test]
     fn test_push_message() {
-        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
+        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
         let id1 = manager.push_message(Message::try_user("Hello").expect("non-empty test message"));
         let id2 = manager.push_message(Message::try_user("World").expect("non-empty test message"));
@@ -803,10 +822,10 @@ mod tests {
 
     #[test]
     fn test_switch_model_shrinking() {
-        let mut manager = ContextManager::new("claude-opus-4-5-20251101"); // 200k context
+        // gemini-3-pro has 1M context, claude-opus has 200k
+        let mut manager = ContextManager::new(model(PredefinedModel::GeminiPro));
 
-        // Unknown model falls back to 8k context (default limits)
-        let result = manager.switch_model("unknown-small-model");
+        let result = manager.switch_model(model(PredefinedModel::ClaudeOpus));
 
         match result {
             ContextAdaptation::Shrinking { .. } => (),
@@ -816,10 +835,10 @@ mod tests {
 
     #[test]
     fn test_switch_model_expanding() {
-        // Unknown model falls back to 8k context (default limits)
-        let mut manager = ContextManager::new("unknown-small-model");
+        // claude-opus has 200k context, gemini-3-pro has 1M
+        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
-        let result = manager.switch_model("claude-opus-4-5-20251101"); // 200k context
+        let result = manager.switch_model(model(PredefinedModel::GeminiPro));
 
         match result {
             ContextAdaptation::Expanding { .. } => (),
@@ -829,7 +848,7 @@ mod tests {
 
     #[test]
     fn test_build_context_simple() {
-        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
+        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
         manager.push_message(Message::try_user("Hello").expect("non-empty test message"));
         manager.push_message(Message::try_user("World").expect("non-empty test message"));
@@ -842,13 +861,19 @@ mod tests {
     }
 
     #[test]
-    fn test_hierarchical_summarization_collects_summarized_messages() {
-        use crate::history::{MessageId, Summary};
+    fn test_hierarchical_distillation_collects_distilled_messages() {
+        use crate::history::{Distillate, MessageId};
+        use crate::model_limits::ModelLimits;
         use forge_types::NonEmptyString;
 
-        // Create manager with a very small model to force tight budget
-        // Unknown model falls back to 8k context (default limits)
-        let mut manager = ContextManager::new("unknown-small-model");
+        // Create manager with a real model, then override to simulate small context
+        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
+
+        // Override to a very small context (2k) to force tight budget
+        let small_limits = ModelLimits::new(2_000, 500);
+        manager.set_registry_override(PredefinedModel::ClaudeOpus, small_limits);
+        // Re-apply the limits after override
+        manager.set_model_without_adaptation(model(PredefinedModel::ClaudeOpus));
 
         // Add many messages to exceed budget
         for i in 0..20 {
@@ -858,46 +883,42 @@ mod tests {
             );
         }
 
-        // Create a summary covering messages 0-10
-        let summary_id = manager.history.next_summary_id();
-        let summary = Summary::new(
-            summary_id,
+        // Create a Distillate covering messages 0-10
+        let distillate_id = manager.history.next_distillate_id();
+        let distillate = Distillate::new(
+            distillate_id,
             MessageId::new_for_test(0)..MessageId::new_for_test(10),
-            NonEmptyString::new("Summary of first 10 messages").expect("non-empty"),
-            100, // 100 tokens for the summary
+            NonEmptyString::new("Distillate of first 10 messages").expect("non-empty"),
+            100, // 100 tokens for the Distillate
             500, // Original was 500 tokens
-            "test-model".to_string(),
+            PredefinedModel::ClaudeOpus.model_id().to_string(),
         );
-        manager.history.add_summary(summary).expect("add summary");
+        manager
+            .history
+            .add_distillate(distillate)
+            .expect("add Distillate");
 
-        // Switch to a different unknown model to trigger adaptation
-        // (Both fall back to 8k default, but we're testing the hierarchical logic)
-        manager.set_model_without_adaptation("even-smaller-model-fallback");
-
-        // Now try to build context - should need hierarchical summarization
+        // Now try to build context - should need hierarchical distillation
         let result = manager.build_working_context();
 
-        // If summarization is needed, verify summarized messages are included
-        if let Err(ContextBuildError::SummarizationNeeded(needed)) = result {
-            // The messages_to_summarize should include the already-summarized messages 0-9
-            // if they were collected for hierarchical re-summarization
-            let has_summarized = needed
-                .messages_to_summarize
-                .iter()
-                .any(|id| id.as_u64() < 10);
+        // If distillation is needed, verify Distilled messages are included
+        if let Err(ContextBuildError::DistillationNeeded(needed)) = result {
+            // The messages_to_distill should include the already-Distilled messages 0-9
+            // if they were collected for hierarchical re-distillation
+            let has_distilled = needed.messages_to_distill.iter().any(|id| id.as_u64() < 10);
 
             // This test verifies the mechanism exists - the exact behavior depends on
             // budget calculations. The key assertion is that we don't panic or break.
             assert!(
-                !needed.messages_to_summarize.is_empty(),
-                "Should have messages to summarize"
+                !needed.messages_to_distill.is_empty(),
+                "Should have messages to distill"
             );
 
-            // If summarized messages are included, verify they form a contiguous range
-            // from the start (hierarchical summarization collects from oldest)
-            if has_summarized {
+            // If Distilled messages are included, verify they form a contiguous range
+            // from the start (hierarchical distillation collects from oldest)
+            if has_distilled {
                 let min_id = needed
-                    .messages_to_summarize
+                    .messages_to_distill
                     .iter()
                     .map(MessageId::as_u64)
                     .min()
@@ -910,7 +931,7 @@ mod tests {
 
     #[test]
     fn test_rollback_last_message_success() {
-        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
+        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
         let id1 = manager.push_message(Message::try_user("Hello").expect("non-empty"));
         let id2 = manager.push_message(Message::try_user("World").expect("non-empty"));
@@ -932,7 +953,7 @@ mod tests {
 
     #[test]
     fn test_rollback_last_message_wrong_id() {
-        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
+        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
         let id1 = manager.push_message(Message::try_user("Hello").expect("non-empty"));
         let _id2 = manager.push_message(Message::try_user("World").expect("non-empty"));
@@ -949,7 +970,7 @@ mod tests {
 
     #[test]
     fn test_set_output_limit() {
-        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
+        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
         // Get initial budget (without configured output limit)
         let _initial_budget = manager.effective_budget();
@@ -971,20 +992,11 @@ mod tests {
 
     #[test]
     fn test_current_limits_source() {
-        let manager = ContextManager::new("claude-opus-4-5-20251101");
+        let manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
         // Known model should come from prefix match
         let source = manager.current_limits_source();
-        assert!(matches!(source, ModelLimitsSource::Prefix(_)));
-    }
-
-    #[test]
-    fn test_current_limits_source_unknown_model() {
-        let manager = ContextManager::new("unknown-model-xyz");
-
-        // Unknown model should use default fallback
-        let source = manager.current_limits_source();
-        assert!(matches!(source, ModelLimitsSource::DefaultFallback));
+        assert!(matches!(source, ModelLimitsSource::Catalog(_)));
     }
 
     // ========================================================================
@@ -993,7 +1005,7 @@ mod tests {
 
     #[test]
     fn test_save_load_roundtrip() {
-        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
+        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
         // Add some messages
         manager.push_message(Message::try_user("Hello").expect("non-empty"));
@@ -1012,12 +1024,15 @@ mod tests {
         assert!(tmp_path.exists());
 
         // Load into new manager
-        let loaded = ContextManager::load(&tmp_path, "claude-opus-4-5-20251101")
+        let loaded = ContextManager::load(&tmp_path, model(PredefinedModel::ClaudeOpus))
             .expect("load should succeed");
 
         // Verify content preserved
         assert_eq!(loaded.history().len(), 2);
-        assert_eq!(loaded.current_model(), "claude-opus-4-5-20251101");
+        assert_eq!(
+            loaded.current_model().as_str(),
+            PredefinedModel::ClaudeOpus.model_id()
+        );
 
         // Verify message content
         let entries: Vec<_> = loaded.history().entries().iter().collect();
@@ -1030,7 +1045,7 @@ mod tests {
 
     #[test]
     fn test_load_with_different_model() {
-        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
+        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
         manager.push_message(Message::try_user("Test").expect("non-empty"));
 
         let tmp_dir = std::env::temp_dir();
@@ -1039,20 +1054,26 @@ mod tests {
         manager.save(&tmp_path).expect("save");
 
         // Load with a different model
-        let loaded = ContextManager::load(&tmp_path, "gpt-5.2").expect("load should succeed");
+        let loaded = ContextManager::load(&tmp_path, model(PredefinedModel::Gpt52))
+            .expect("load should succeed");
 
         // History preserved
         assert_eq!(loaded.history().len(), 1);
         // But model is the new one
-        assert_eq!(loaded.current_model(), "gpt-5.2");
+        assert_eq!(
+            loaded.current_model().as_str(),
+            PredefinedModel::Gpt52.model_id()
+        );
 
         let _ = std::fs::remove_file(&tmp_path);
     }
 
     #[test]
     fn test_load_nonexistent_file() {
-        let result =
-            ContextManager::load("/nonexistent/path/file.json", "claude-opus-4-5-20251101");
+        let result = ContextManager::load(
+            "/nonexistent/path/file.json",
+            model(PredefinedModel::ClaudeOpus),
+        );
         assert!(result.is_err());
     }
 
@@ -1062,7 +1083,7 @@ mod tests {
 
     #[test]
     fn test_usage_status_ready_when_empty() {
-        let manager = ContextManager::new("claude-opus-4-5-20251101");
+        let manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
         let status = manager.usage_status();
 
         // Empty history should always be ready
@@ -1071,7 +1092,7 @@ mod tests {
 
     #[test]
     fn test_push_message_with_step_id_and_has_step_id() {
-        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
+        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
         // Push with step ID
         let _id = manager.push_message_with_step_id(
@@ -1088,7 +1109,7 @@ mod tests {
     fn test_tool_messages_in_history() {
         use forge_types::{ToolCall, ToolResult};
 
-        let mut manager = ContextManager::new("claude-opus-4-5-20251101");
+        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
         // Add a tool use message
         let tool_call = ToolCall::new(

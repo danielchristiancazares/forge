@@ -16,7 +16,7 @@ use tokio::process::Command;
 
 use super::{
     FileCacheEntry, PatchLimits, ReadFileLimits, RiskLevel, SearchToolConfig, ToolCtx, ToolError,
-    ToolExecutor, ToolFut, ToolRegistry, WebFetchToolConfig, redact_summary, sanitize_output,
+    ToolExecutor, ToolFut, ToolRegistry, WebFetchToolConfig, redact_distillate, sanitize_output,
 };
 use crate::tools::git;
 
@@ -287,7 +287,7 @@ impl ToolExecutor for GlobTool {
                 message: e.to_string(),
             })?;
         let base = typed.path.as_deref().unwrap_or(".");
-        Ok(redact_summary(&format!(
+        Ok(redact_distillate(&format!(
             "Glob {} in {}",
             typed.pattern, base
         )))
@@ -502,15 +502,15 @@ impl ToolExecutor for ReadFileTool {
             serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
                 message: e.to_string(),
             })?;
-        let mut summary = format!("Read {}", typed.path);
+        let mut distillate = format!("Read {}", typed.path);
         if let Some(start) = typed.start_line {
             if let Some(end) = typed.end_line {
-                summary.push_str(&format!(" lines {start}-{end}"));
+                distillate.push_str(&format!(" lines {start}-{end}"));
             } else {
-                summary.push_str(&format!(" lines {start}-"));
+                distillate.push_str(&format!(" lines {start}-"));
             }
         }
-        Ok(redact_summary(&summary))
+        Ok(redact_distillate(&distillate))
     }
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
@@ -663,7 +663,7 @@ impl ToolExecutor for ApplyPatchTool {
             message: e.to_string(),
         })?;
         let files: Vec<String> = patch.files.iter().map(|f| f.path.clone()).collect();
-        let summary = if files.is_empty() {
+        let distillate = if files.is_empty() {
             "Apply patch (no files)".to_string()
         } else {
             format!(
@@ -672,7 +672,7 @@ impl ToolExecutor for ApplyPatchTool {
                 files.join(", ")
             )
         };
-        Ok(redact_summary(&summary))
+        Ok(redact_distillate(&distillate))
     }
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
@@ -829,7 +829,7 @@ impl ToolExecutor for ApplyPatchTool {
                     } else {
                         ctx.turn_changes.record_created(file.path.clone());
                     }
-                    // Record diff stats for the turn summary
+                    // Record diff stats for the turn Distillate
                     let (additions, deletions) =
                         compute_diff_stats(&file.original_bytes, &file.bytes);
                     ctx.turn_changes
@@ -848,27 +848,27 @@ impl ToolExecutor for ApplyPatchTool {
                 }
             }
 
-            // Build output: skip summary for single-file edits (redundant with tool header)
+            // Build output: skip Distillate for single-file edits (redundant with tool header)
             let output = if !any_changed {
                 "No changes applied.".to_string()
             } else if changed_count == 1 && !diff_sections.is_empty() {
                 // Single file: just show the diff
                 diff_sections.join("\n\n")
             } else {
-                // Multiple files: show summary then diffs
-                let mut summary_lines: Vec<String> = Vec::new();
+                // Multiple files: show Distillate then diffs
+                let mut distillate_lines: Vec<String> = Vec::new();
                 for file in &staged {
                     if !file.changed {
                         continue;
                     }
                     let rel_path = display_path_relative(&file.path, &ctx.working_dir);
                     if file.existed {
-                        summary_lines.push(format!("modified: {rel_path}"));
+                        distillate_lines.push(format!("modified: {rel_path}"));
                     } else {
-                        summary_lines.push(format!("created: {rel_path}"));
+                        distillate_lines.push(format!("created: {rel_path}"));
                     }
                 }
-                let mut out = summary_lines.join("\n");
+                let mut out = distillate_lines.join("\n");
                 if !diff_sections.is_empty() {
                     out.push_str("\n\n");
                     out.push_str(&diff_sections.join("\n\n"));
@@ -911,12 +911,12 @@ impl ToolExecutor for WriteFileTool {
             serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
                 message: e.to_string(),
             })?;
-        let summary = format!(
+        let distillate = format!(
             "Write new file: {} ({} bytes)",
             typed.path,
             typed.content.len()
         );
-        Ok(redact_summary(&summary))
+        Ok(redact_distillate(&distillate))
     }
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
@@ -1054,8 +1054,8 @@ impl ToolExecutor for RunCommandTool {
             serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
                 message: e.to_string(),
             })?;
-        let summary = format!("Run command: {}", typed.command);
-        Ok(redact_summary(&summary))
+        let distillate = format!("Run command: {}", typed.command);
+        Ok(redact_distillate(&distillate))
     }
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {

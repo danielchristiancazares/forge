@@ -607,8 +607,8 @@ The `assets/` directory contains additional prompts used by Context Infinity:
 
 | File | Purpose |
 |------|---------|
-| `contextinfinity_extraction.md` | Prompt for extracting key information during summarization |
-| `contextinfinity_retrieval.md` | Prompt for retrieving relevant context from summaries |
+| `contextinfinity_extraction.md` | Prompt for extracting key information during distillation |
+| `contextinfinity_retrieval.md` | Prompt for retrieving relevant context from Distillates |
 
 These are loaded by the `context` crate, not directly by `assets.rs`.
 
@@ -880,3 +880,4 @@ When modifying the event loop, preserve these invariants:
 | `tui/README.md` | Comprehensive TUI rendering documentation |
 | `engine/README.md` | Engine state machine and App API |
 | `context/README.md` | Context management system |
+

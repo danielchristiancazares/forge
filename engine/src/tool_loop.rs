@@ -6,18 +6,20 @@
 //! - Approval workflow handling
 //! - Tool batch commit and recovery
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
 
-use futures_util::future::Abortable;
+use futures_util::future::{AbortHandle, Abortable, FutureExt};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use forge_context::{ContextUsageStatus, StepId, ToolBatchId};
 use forge_types::{ModelName, ToolCall, ToolResult, sanitize_terminal_text};
 
 use crate::input_modes::{ChangeRecorder, TurnChangeReport, TurnContext};
 use crate::state::{
-    ActiveToolExecution, ApprovalState, OperationState, ToolBatch, ToolLoopPhase, ToolLoopState,
-    ToolPlan, ToolRecoveryDecision, ToolRecoveryState,
+    ApprovalState, OperationState, ToolBatch, ToolLoopPhase, ToolLoopState, ToolPlan,
+    ToolRecoveryDecision, ToolRecoveryState,
 };
 use crate::tools::{self, ConfirmationRequest};
 use crate::util;
@@ -26,7 +28,189 @@ use crate::{
     SystemNotification, TOOL_EVENT_CHANNEL_CAPACITY, TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
 };
 
-use futures_util::future::AbortHandle;
+// ============================================================================
+// SpawnedTool: Proof object for spawned tool execution (IFA §8.1)
+// ============================================================================
+
+/// Proof object representing a spawned tool execution.
+///
+/// # Invariant
+/// Existence proves: execution has been spawned and result not yet collected.
+/// This does NOT mean the task is still running - it may have finished.
+///
+/// # Authority Boundary
+/// The crate is the enforcement boundary. Construction is through `spawn()`
+/// which creates channel/abort internally, ensuring all handles correspond
+/// to the same spawned task.
+#[derive(Debug)]
+pub(crate) struct SpawnedTool {
+    call: ToolCall,
+    join_handle: JoinHandle<ToolResult>,
+    event_rx: mpsc::Receiver<tools::ToolEvent>,
+    abort_handle: AbortHandle,
+}
+
+/// Result of completing a spawned tool execution.
+/// Contains all data from the execution, ensuring nothing is lost.
+#[derive(Debug)]
+pub(crate) struct CompletedTool {
+    pub(crate) call: ToolCall,
+    pub(crate) result: Result<ToolResult, tokio::task::JoinError>,
+    /// Events that arrived (drained after task completion).
+    pub(crate) final_events: Vec<tools::ToolEvent>,
+}
+
+impl SpawnedTool {
+    /// Spawn a tool execution, returning the proof object.
+    ///
+    /// # Atomic Construction
+    /// Creates channel and abort registration internally, guaranteeing
+    /// all handles correspond to the spawned task.
+    ///
+    /// # Arguments
+    /// - `call`: The tool call being executed (moved into struct)
+    /// - `task_fn`: Closure that receives (event sender, abort handle) and returns the task future.
+    ///   The abort handle is provided so tools can check cancellation via `abort_handle.is_aborted()`.
+    pub(crate) fn spawn<F, Fut>(call: ToolCall, task_fn: F) -> Self
+    where
+        F: FnOnce(mpsc::Sender<tools::ToolEvent>, AbortHandle) -> Fut,
+        Fut: Future<Output = ToolResult> + Send + 'static,
+    {
+        let (tx, rx) = mpsc::channel(TOOL_EVENT_CHANNEL_CAPACITY);
+        let (abort_handle, abort_registration) = AbortHandle::new_pair();
+
+        // Capture only what we need for the abort error path
+        let call_id_for_abort = call.id.clone();
+        let call_name_for_abort = call.name.clone();
+
+        // Clone abort_handle for use inside the task (for ToolCtx.abort checking)
+        let abort_handle_for_task = abort_handle.clone();
+        let future = task_fn(tx, abort_handle_for_task);
+        let abortable = Abortable::new(future, abort_registration);
+
+        let join_handle = tokio::spawn(async move {
+            match abortable.await {
+                Ok(result) => result,
+                Err(_aborted) => {
+                    ToolResult::error(call_id_for_abort, call_name_for_abort, "Cancelled by user")
+                }
+            }
+        });
+
+        Self {
+            call,
+            join_handle,
+            event_rx: rx,
+            abort_handle,
+        }
+    }
+
+    /// Access the tool call being executed.
+    pub(crate) fn call(&self) -> &ToolCall {
+        &self.call
+    }
+
+    /// Poll for progress events (non-blocking).
+    pub(crate) fn try_recv_event(&mut self) -> Option<tools::ToolEvent> {
+        self.event_rx.try_recv().ok()
+    }
+
+    /// Check if the spawned task has completed (result ready to collect).
+    pub(crate) fn is_finished(&self) -> bool {
+        self.join_handle.is_finished()
+    }
+
+    /// Request abort of the running task.
+    pub(crate) fn abort(&self) {
+        self.abort_handle.abort();
+    }
+
+    /// Consume the SpawnedTool, collecting all results.
+    ///
+    /// # Non-Forking Transition
+    /// Consumes `self`, preventing any further use of handles.
+    /// Returns ALL data: call, result, and final events.
+    ///
+    /// # Event Draining
+    /// Events are drained AFTER join completes to capture any events
+    /// produced while awaiting.
+    ///
+    /// # No expect()/panic
+    /// Join errors are returned in the result, not panicked.
+    pub(crate) async fn complete(self) -> CompletedTool {
+        // Destructure self to take ownership of all fields
+        let Self {
+            call,
+            join_handle,
+            mut event_rx,
+            abort_handle: _, // No longer needed
+        } = self;
+
+        // Await task completion
+        let result = join_handle.await;
+
+        // Drain events AFTER await - events may have been produced while waiting
+        let mut final_events = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            final_events.push(event);
+        }
+
+        CompletedTool {
+            call,
+            result,
+            final_events,
+        }
+    }
+}
+
+// ============================================================================
+// ToolQueue: Queue state without active execution
+// ============================================================================
+
+/// Tool execution queue without an active execution.
+/// Used after approvals but before first tool starts, or between tools.
+#[derive(Debug)]
+pub(crate) struct ToolQueue {
+    pub(crate) queue: VecDeque<ToolCall>,
+    pub(crate) output_lines: HashMap<String, Vec<String>>,
+    pub(crate) remaining_capacity_bytes: usize,
+    pub(crate) turn_recorder: ChangeRecorder,
+}
+
+impl ToolQueue {
+    /// Create a new tool queue from a list of calls to execute.
+    pub(crate) fn new(
+        calls: Vec<ToolCall>,
+        remaining_capacity_bytes: usize,
+        turn_recorder: ChangeRecorder,
+    ) -> Self {
+        Self {
+            queue: VecDeque::from(calls),
+            output_lines: HashMap::new(),
+            remaining_capacity_bytes,
+            turn_recorder,
+        }
+    }
+
+    /// Check if the queue is empty.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+}
+
+// ============================================================================
+// ActiveExecution: State with a spawned tool (requires SpawnedTool)
+// ============================================================================
+
+/// Active tool execution state - a tool IS spawned.
+/// Existence of this type proves a task has been spawned and not yet collected.
+#[derive(Debug)]
+pub(crate) struct ActiveExecution {
+    pub(crate) spawned: SpawnedTool, // NOT Optional - existence proves execution
+    pub(crate) queue: VecDeque<ToolCall>,
+    pub(crate) output_lines: HashMap<String, Vec<String>>,
+    pub(crate) turn_recorder: ChangeRecorder,
+}
 
 impl App {
     #[allow(clippy::too_many_arguments)]
@@ -39,6 +223,7 @@ impl App {
         step_id: StepId,
         tool_batch_id: Option<ToolBatchId>,
         turn: TurnContext,
+        thinking_message: Option<Message>,
     ) {
         if tool_calls.is_empty() {
             self.finish_turn(turn);
@@ -77,6 +262,7 @@ impl App {
             step_id,
             batch_id,
             turn,
+            thinking_message,
         );
     }
 
@@ -90,6 +276,7 @@ impl App {
         step_id: StepId,
         batch_id: Option<ToolBatchId>,
         turn: TurnContext,
+        thinking_message: Option<Message>,
     ) {
         let next_iteration = self.tool_iterations.saturating_add(1);
         if next_iteration > self.tool_settings.limits.max_tool_iterations_per_user_turn {
@@ -115,6 +302,7 @@ impl App {
                 batch_id,
                 true,
                 turn,
+                thinking_message,
             );
             return;
         }
@@ -135,6 +323,7 @@ impl App {
 
         let batch = ToolBatch {
             assistant_text,
+            thinking_message,
             calls: tool_calls,
             results: plan.pre_resolved,
             model,
@@ -162,8 +351,8 @@ impl App {
             return;
         }
 
-        let queue = batch.execute_now.clone();
-        if queue.is_empty() {
+        let calls_to_execute = batch.execute_now.clone();
+        if calls_to_execute.is_empty() {
             self.commit_tool_batch(
                 batch.assistant_text,
                 batch.calls,
@@ -173,16 +362,17 @@ impl App {
                 batch.batch_id,
                 true,
                 batch.turn,
+                batch.thinking_message,
             );
             return;
         }
 
-        let exec =
-            self.spawn_tool_execution(queue, remaining_capacity_bytes, batch.turn.recorder());
-        self.state = OperationState::ToolLoop(Box::new(ToolLoopState {
-            batch,
-            phase: ToolLoopPhase::Executing(exec),
-        }));
+        let phase = self.start_tool_execution(
+            calls_to_execute,
+            remaining_capacity_bytes,
+            batch.turn.recorder(),
+        );
+        self.state = OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
     }
 
     fn plan_tool_calls(&self, calls: &[ToolCall], mut pre_resolved: Vec<ToolResult>) -> ToolPlan {
@@ -338,7 +528,7 @@ impl App {
     fn tool_capacity_bytes(&mut self) -> usize {
         let usage = match self.context_usage_status() {
             ContextUsageStatus::Ready(usage)
-            | ContextUsageStatus::NeedsSummarization { usage, .. }
+            | ContextUsageStatus::NeedsDistillation { usage, .. }
             | ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => usage,
         };
 
@@ -365,135 +555,133 @@ impl App {
         remaining
     }
 
-    fn spawn_tool_execution(
+    /// Create a tool queue and immediately try to spawn the first tool.
+    /// Returns the appropriate phase (Processing if queue empty, Executing otherwise).
+    fn start_tool_execution(
         &self,
-        queue: Vec<ToolCall>,
+        calls: Vec<ToolCall>,
         initial_capacity_bytes: usize,
         turn_recorder: ChangeRecorder,
-    ) -> ActiveToolExecution {
-        let mut exec = ActiveToolExecution {
-            queue: VecDeque::from(queue),
-            current_call: None,
-            join_handle: None,
-            event_rx: None,
-            abort_handle: None,
-            output_lines: std::collections::HashMap::new(),
-            remaining_capacity_bytes: initial_capacity_bytes,
-            turn_recorder,
-        };
-        self.start_next_tool_call(&mut exec);
-        exec
+    ) -> ToolLoopPhase {
+        let queue = ToolQueue::new(calls, initial_capacity_bytes, turn_recorder);
+        self.spawn_next_from_queue(queue)
     }
 
-    fn start_next_tool_call(&self, exec: &mut ActiveToolExecution) -> bool {
-        let Some(call) = exec.queue.pop_front() else {
-            return false;
+    /// Spawn the next tool from the queue, transitioning to Executing if possible.
+    ///
+    /// # IFA Conformance
+    /// - Call comes FROM the queue, preventing mismatch
+    /// - Consumes queue, returns new phase
+    /// - Returns Processing if queue empty
+    fn spawn_next_from_queue(&self, mut queue: ToolQueue) -> ToolLoopPhase {
+        let Some(call) = queue.queue.pop_front() else {
+            return ToolLoopPhase::Processing(queue);
         };
 
-        exec.current_call = Some(call.clone());
+        let remaining_capacity = queue.remaining_capacity_bytes;
+        let turn_recorder = queue.turn_recorder.clone();
 
-        let (event_tx, event_rx) = mpsc::channel(TOOL_EVENT_CHANNEL_CAPACITY);
-        exec.event_rx = Some(event_rx);
-
-        let (abort_handle, abort_registration) = AbortHandle::new_pair();
-        exec.abort_handle = Some(abort_handle.clone());
-
+        // Capture app state needed for tool execution
         let registry = self.tool_registry.clone();
         let settings = self.tool_settings.clone();
         let file_cache = self.tool_file_cache.clone();
         let librarian = self.librarian.clone();
         let working_dir = settings.sandbox.working_dir();
-        let remaining_capacity = exec.remaining_capacity_bytes;
-        let turn_recorder = exec.turn_recorder.clone();
 
-        let handle = tokio::spawn(async move {
-            use futures_util::FutureExt;
-            let _ = event_tx.try_send(tools::ToolEvent::Started {
-                tool_call_id: call.id.clone(),
-                tool_name: call.name.clone(),
-            });
+        let spawned = SpawnedTool::spawn(call.clone(), |event_tx, abort_handle| {
+            let call = call.clone();
 
-            let exec_ref = match registry.lookup(&call.name) {
-                Ok(exec) => exec,
-                Err(err) => {
-                    let result = tool_error_result(&call, err);
-                    let _ = event_tx.try_send(tools::ToolEvent::Completed {
-                        tool_call_id: call.id.clone(),
-                    });
-                    return result;
-                }
-            };
+            async move {
+                let _ = event_tx.try_send(tools::ToolEvent::Started {
+                    tool_call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                });
 
-            let default_timeout = match call.name.as_str() {
-                "Read" | "Edit" => settings.timeouts.file_operations_timeout,
-                "Run" => settings.timeouts.shell_commands_timeout,
-                _ => settings.timeouts.default_timeout,
-            };
-
-            let mut ctx = tools::ToolCtx {
-                sandbox: settings.sandbox.clone(),
-                abort: abort_handle,
-                output_tx: event_tx.clone(),
-                default_timeout,
-                max_output_bytes: settings.max_output_bytes,
-                available_capacity_bytes: remaining_capacity,
-                tool_call_id: call.id.clone(),
-                allow_truncation: true,
-                working_dir,
-                env_sanitizer: settings.env_sanitizer.clone(),
-                file_cache,
-                turn_changes: turn_recorder,
-                librarian,
-                command_blacklist: settings.command_blacklist.clone(),
-            };
-
-            let timeout = exec_ref.timeout().unwrap_or(ctx.default_timeout);
-            let exec_future = exec_ref.execute(call.arguments.clone(), &mut ctx);
-            let exec_future = std::panic::AssertUnwindSafe(exec_future).catch_unwind();
-            let exec_future = Abortable::new(exec_future, abort_registration);
-
-            let result = match tokio::time::timeout(timeout, exec_future).await {
-                Err(_) => tool_error_result(
-                    &call,
-                    tools::ToolError::Timeout {
-                        tool: call.name.clone(),
-                        elapsed: timeout,
-                    },
-                ),
-                Ok(Err(_)) => tool_error_result(&call, tools::ToolError::Cancelled),
-                Ok(Ok(Err(panic_payload))) => {
-                    let panic_msg = panic_payload_to_string(&panic_payload);
-                    let message = format!("Tool panicked: {panic_msg}");
-                    ToolResult::error(
-                        call.id.clone(),
-                        call.name.clone(),
-                        tools::sanitize_output(&message),
-                    )
-                }
-                Ok(Ok(Ok(inner))) => match inner {
-                    Ok(output) => {
-                        let sanitized = tools::sanitize_output(&output);
-                        let effective_max = ctx.max_output_bytes.min(ctx.available_capacity_bytes);
-                        let final_output = if ctx.allow_truncation {
-                            tools::truncate_output(sanitized, effective_max)
-                        } else {
-                            sanitized
-                        };
-                        ToolResult::success(call.id.clone(), call.name.clone(), final_output)
+                let exec_ref = match registry.lookup(&call.name) {
+                    Ok(exec) => exec,
+                    Err(err) => {
+                        let result = tool_error_result(&call, err);
+                        let _ = event_tx.try_send(tools::ToolEvent::Completed {
+                            tool_call_id: call.id.clone(),
+                        });
+                        return result;
                     }
-                    Err(err) => tool_error_result(&call, err),
-                },
-            };
+                };
 
-            let _ = event_tx.try_send(tools::ToolEvent::Completed {
-                tool_call_id: call.id.clone(),
-            });
+                let default_timeout = match call.name.as_str() {
+                    "Read" | "Edit" => settings.timeouts.file_operations_timeout,
+                    "Run" => settings.timeouts.shell_commands_timeout,
+                    _ => settings.timeouts.default_timeout,
+                };
 
-            result
+                let mut ctx = tools::ToolCtx {
+                    sandbox: settings.sandbox.clone(),
+                    abort: abort_handle,
+                    output_tx: event_tx.clone(),
+                    default_timeout,
+                    max_output_bytes: settings.max_output_bytes,
+                    available_capacity_bytes: remaining_capacity,
+                    tool_call_id: call.id.clone(),
+                    allow_truncation: true,
+                    working_dir,
+                    env_sanitizer: settings.env_sanitizer.clone(),
+                    file_cache,
+                    turn_changes: turn_recorder,
+                    librarian,
+                    command_blacklist: settings.command_blacklist.clone(),
+                };
+
+                let timeout = exec_ref.timeout().unwrap_or(ctx.default_timeout);
+                let exec_future = exec_ref.execute(call.arguments.clone(), &mut ctx);
+                let exec_future = std::panic::AssertUnwindSafe(exec_future).catch_unwind();
+
+                let result = match tokio::time::timeout(timeout, exec_future).await {
+                    Err(_) => tool_error_result(
+                        &call,
+                        tools::ToolError::Timeout {
+                            tool: call.name.clone(),
+                            elapsed: timeout,
+                        },
+                    ),
+                    Ok(Err(panic_payload)) => {
+                        let panic_msg = panic_payload_to_string(&panic_payload);
+                        let message = format!("Tool panicked: {panic_msg}");
+                        ToolResult::error(
+                            call.id.clone(),
+                            call.name.clone(),
+                            tools::sanitize_output(&message),
+                        )
+                    }
+                    Ok(Ok(inner)) => match inner {
+                        Ok(output) => {
+                            let sanitized = tools::sanitize_output(&output);
+                            let effective_max =
+                                ctx.max_output_bytes.min(ctx.available_capacity_bytes);
+                            let final_output = if ctx.allow_truncation {
+                                tools::truncate_output(sanitized, effective_max)
+                            } else {
+                                sanitized
+                            };
+                            ToolResult::success(call.id.clone(), call.name.clone(), final_output)
+                        }
+                        Err(err) => tool_error_result(&call, err),
+                    },
+                };
+
+                let _ = event_tx.try_send(tools::ToolEvent::Completed {
+                    tool_call_id: call.id.clone(),
+                });
+
+                result
+            }
         });
 
-        exec.join_handle = Some(handle);
-        true
+        ToolLoopPhase::Executing(ActiveExecution {
+            spawned,
+            queue: queue.queue,
+            output_lines: queue.output_lines,
+            turn_recorder: queue.turn_recorder,
+        })
     }
 
     pub(crate) fn poll_tool_loop(&mut self) {
@@ -506,124 +694,204 @@ impl App {
                 return;
             }
         };
-        let mut state = state;
-        let mut completed: Option<ToolResult> = None;
-        let mut should_commit = false;
+        let ToolLoopState { batch, phase } = state;
 
-        match &mut state.phase {
-            ToolLoopPhase::AwaitingApproval(_) => {}
-            ToolLoopPhase::Executing(exec) => {
-                if let Some(rx) = exec.event_rx.as_mut() {
-                    loop {
-                        match rx.try_recv() {
-                            Ok(event) => match event {
-                                tools::ToolEvent::Started {
-                                    tool_call_id,
-                                    tool_name,
-                                } => {
-                                    let lines =
-                                        exec.output_lines.entry(tool_call_id.clone()).or_default();
-                                    lines.push(format!(
-                                        "▶ {} ({})",
-                                        tools::sanitize_output(&tool_name),
-                                        tool_call_id
-                                    ));
-                                }
-                                tools::ToolEvent::StdoutChunk {
-                                    tool_call_id,
-                                    chunk,
-                                } => {
-                                    let lines = exec.output_lines.entry(tool_call_id).or_default();
-                                    append_tool_output_lines(
-                                        lines,
-                                        &tools::sanitize_output(&chunk),
-                                        None,
-                                    );
-                                }
-                                tools::ToolEvent::StderrChunk {
-                                    tool_call_id,
-                                    chunk,
-                                } => {
-                                    let lines = exec.output_lines.entry(tool_call_id).or_default();
-                                    append_tool_output_lines(
-                                        lines,
-                                        &tools::sanitize_output(&chunk),
-                                        Some("[stderr] "),
-                                    );
-                                }
-                                tools::ToolEvent::Completed { tool_call_id } => {
-                                    let lines =
-                                        exec.output_lines.entry(tool_call_id.clone()).or_default();
-                                    lines.push(format!("✓ Tool completed ({tool_call_id})"));
-                                }
-                            },
-                            Err(mpsc::error::TryRecvError::Empty) => break,
-                            Err(mpsc::error::TryRecvError::Disconnected) => {
-                                exec.event_rx = None;
-                                break;
-                            }
+        match phase {
+            ToolLoopPhase::AwaitingApproval(approval) => {
+                // No polling needed - wait for user input
+                self.state = OperationState::ToolLoop(Box::new(ToolLoopState {
+                    batch,
+                    phase: ToolLoopPhase::AwaitingApproval(approval),
+                }));
+            }
+
+            ToolLoopPhase::Processing(queue) => {
+                // Try to spawn the next tool from queue
+                if queue.is_empty() {
+                    // Queue empty - commit batch
+                    self.commit_tool_batch(
+                        batch.assistant_text,
+                        batch.calls,
+                        batch.results,
+                        batch.model,
+                        batch.step_id,
+                        batch.batch_id,
+                        true,
+                        batch.turn,
+                        batch.thinking_message,
+                    );
+                } else {
+                    // Spawn next tool
+                    let phase = self.spawn_next_from_queue(queue);
+                    self.state = OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
+                }
+            }
+
+            ToolLoopPhase::Executing(mut exec) => {
+                // Poll for events from the spawned tool
+                while let Some(event) = exec.spawned.try_recv_event() {
+                    match event {
+                        tools::ToolEvent::Started {
+                            tool_call_id,
+                            tool_name,
+                        } => {
+                            let lines = exec.output_lines.entry(tool_call_id.clone()).or_default();
+                            lines.push(format!(
+                                "▶ {} ({})",
+                                tools::sanitize_output(&tool_name),
+                                tool_call_id
+                            ));
+                        }
+                        tools::ToolEvent::StdoutChunk {
+                            tool_call_id,
+                            chunk,
+                        } => {
+                            let lines = exec.output_lines.entry(tool_call_id).or_default();
+                            append_tool_output_lines(lines, &tools::sanitize_output(&chunk), None);
+                        }
+                        tools::ToolEvent::StderrChunk {
+                            tool_call_id,
+                            chunk,
+                        } => {
+                            let lines = exec.output_lines.entry(tool_call_id).or_default();
+                            append_tool_output_lines(
+                                lines,
+                                &tools::sanitize_output(&chunk),
+                                Some("[stderr] "),
+                            );
+                        }
+                        tools::ToolEvent::Completed { tool_call_id } => {
+                            let lines = exec.output_lines.entry(tool_call_id.clone()).or_default();
+                            lines.push(format!("✓ Tool completed ({tool_call_id})"));
                         }
                     }
                 }
 
-                if let Some(handle) = exec.join_handle.as_mut()
-                    && let Some(joined) = handle.now_or_never()
-                {
-                    exec.join_handle = None;
-                    exec.event_rx = None;
-                    exec.abort_handle = None;
+                // Check if the spawned tool has completed
+                if exec.spawned.is_finished() {
+                    // Tool finished - collect result using consuming transition
+                    // We need to use now_or_never to poll synchronously since we can't
+                    // await here. The JoinHandle is finished so this will return immediately.
+                    let ActiveExecution {
+                        spawned,
+                        queue,
+                        mut output_lines,
+                        turn_recorder,
+                    } = exec;
 
-                    let result = match joined {
+                    // Use now_or_never since we know it's finished
+                    let Some(completed) = Box::pin(spawned.complete()).now_or_never() else {
+                        // Shouldn't happen since is_finished() was true
+                        tracing::error!("Tool was finished but complete() didn't return");
+                        self.state = OperationState::Idle;
+                        return;
+                    };
+
+                    // Process final events from the completed tool
+                    for event in completed.final_events {
+                        match event {
+                            tools::ToolEvent::Started {
+                                tool_call_id,
+                                tool_name,
+                            } => {
+                                let lines = output_lines.entry(tool_call_id.clone()).or_default();
+                                lines.push(format!(
+                                    "▶ {} ({})",
+                                    tools::sanitize_output(&tool_name),
+                                    tool_call_id
+                                ));
+                            }
+                            tools::ToolEvent::StdoutChunk {
+                                tool_call_id,
+                                chunk,
+                            } => {
+                                let lines = output_lines.entry(tool_call_id).or_default();
+                                append_tool_output_lines(
+                                    lines,
+                                    &tools::sanitize_output(&chunk),
+                                    None,
+                                );
+                            }
+                            tools::ToolEvent::StderrChunk {
+                                tool_call_id,
+                                chunk,
+                            } => {
+                                let lines = output_lines.entry(tool_call_id).or_default();
+                                append_tool_output_lines(
+                                    lines,
+                                    &tools::sanitize_output(&chunk),
+                                    Some("[stderr] "),
+                                );
+                            }
+                            tools::ToolEvent::Completed { tool_call_id } => {
+                                let lines = output_lines.entry(tool_call_id.clone()).or_default();
+                                lines.push(format!("✓ Tool completed ({tool_call_id})"));
+                            }
+                        }
+                    }
+
+                    // Convert completed result to ToolResult
+                    let result = match completed.result {
                         Ok(result) => result,
                         Err(err) => {
-                            let (call_id, tool_name) = exec.current_call.as_ref().map_or_else(
-                                || ("<unknown>".to_string(), "<unknown>".to_string()),
-                                |c| (c.id.clone(), c.name.clone()),
-                            );
                             let message = if err.is_cancelled() {
                                 "Tool execution cancelled"
                             } else {
                                 "Tool execution failed"
                             };
-                            ToolResult::error(call_id, tool_name, message)
+                            ToolResult::error(
+                                completed.call.id.clone(),
+                                completed.call.name.clone(),
+                                message,
+                            )
                         }
                     };
-                    exec.current_call = None;
-                    completed = Some(result);
-                }
 
-                if let Some(result) = completed.take() {
-                    if let Some(id) = state.batch.batch_id {
+                    // Record result to journal
+                    let mut batch = batch;
+                    if let Some(id) = batch.batch_id {
                         let _ = self.tool_journal.record_result(id, &result);
                     }
-                    state.batch.results.push(result);
+                    batch.results.push(result);
 
-                    if exec.queue.is_empty() {
-                        should_commit = true;
+                    // Recompute capacity fresh from current context state
+                    let new_capacity = self.remaining_tool_capacity(&batch);
+
+                    // Create new queue with updated state
+                    let new_queue = ToolQueue {
+                        queue,
+                        output_lines,
+                        remaining_capacity_bytes: new_capacity,
+                        turn_recorder,
+                    };
+
+                    if new_queue.is_empty() {
+                        // All tools done - commit batch
+                        self.commit_tool_batch(
+                            batch.assistant_text,
+                            batch.calls,
+                            batch.results,
+                            batch.model,
+                            batch.step_id,
+                            batch.batch_id,
+                            true,
+                            batch.turn,
+                            batch.thinking_message,
+                        );
                     } else {
-                        // Recompute capacity fresh from current context state.
-                        // This ensures each tool gets accurate capacity even if context
-                        // changed during previous tool execution (e.g., user message added).
-                        exec.remaining_capacity_bytes = self.remaining_tool_capacity(&state.batch);
-                        self.start_next_tool_call(exec);
+                        // Spawn next tool
+                        let phase = self.spawn_next_from_queue(new_queue);
+                        self.state =
+                            OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
                     }
+                } else {
+                    // Still running - keep state
+                    self.state = OperationState::ToolLoop(Box::new(ToolLoopState {
+                        batch,
+                        phase: ToolLoopPhase::Executing(exec),
+                    }));
                 }
             }
-        }
-
-        if should_commit {
-            self.commit_tool_batch(
-                state.batch.assistant_text,
-                state.batch.calls,
-                state.batch.results,
-                state.batch.model,
-                state.batch.step_id,
-                state.batch.batch_id,
-                true,
-                state.batch.turn,
-            );
-        } else {
-            self.state = OperationState::ToolLoop(Box::new(state));
         }
     }
 
@@ -637,6 +905,7 @@ impl App {
         step_id: StepId,
         batch_id: Option<ToolBatchId>,
         turn: TurnContext,
+        thinking_message: Option<Message>,
     ) {
         let existing: HashSet<String> = results.iter().map(|r| r.tool_call_id.clone()).collect();
         for call in &calls {
@@ -659,6 +928,7 @@ impl App {
             batch_id,
             false,
             turn,
+            thinking_message,
         );
     }
 
@@ -673,10 +943,22 @@ impl App {
         batch_id: Option<ToolBatchId>,
         auto_resume: bool,
         turn: TurnContext,
+        thinking_message: Option<Message>,
     ) {
         self.state = self.idle_state();
 
         let mut step_id_recorded = false;
+        if let Some(thinking_message) = thinking_message {
+            let has_signature = matches!(
+                &thinking_message,
+                Message::Thinking(thinking) if thinking.signature().is_some()
+            );
+            if has_signature {
+                self.push_history_message(thinking_message);
+            } else {
+                self.push_local_message(thinking_message);
+            }
+        }
         if let Ok(content) = NonEmptyString::new(assistant_text.clone()) {
             let message = Message::assistant(model.clone(), content);
             self.push_history_message_with_step_id(message, step_id);
@@ -879,16 +1161,14 @@ impl App {
                 batch.batch_id,
                 true,
                 batch.turn,
+                batch.thinking_message,
             );
             return;
         }
 
         let remaining_capacity = self.remaining_tool_capacity(&batch);
-        let exec = self.spawn_tool_execution(queue, remaining_capacity, batch.turn.recorder());
-        self.state = OperationState::ToolLoop(Box::new(ToolLoopState {
-            batch,
-            phase: ToolLoopPhase::Executing(exec),
-        }));
+        let phase = self.start_tool_execution(queue, remaining_capacity, batch.turn.recorder());
+        self.state = OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
     }
 
     pub(crate) fn resolve_tool_recovery(&mut self, decision: ToolRecoveryDecision) {
@@ -959,6 +1239,7 @@ impl App {
             Some(batch.batch_id),
             auto_resume,
             TurnContext::new_for_recovery(),
+            None,
         );
 
         match decision {
@@ -982,8 +1263,8 @@ impl App {
         // Sync files panel selection after file list changes
         self.files_panel_sync_selection();
 
-        if let TurnChangeReport::Changes(summary) = report {
-            let msg = summary.into_message();
+        if let TurnChangeReport::Changes(distillate) = report {
+            let msg = distillate.into_message();
             self.push_local_message(Message::system(msg));
         }
         self.pending_user_message = None;
@@ -1059,7 +1340,6 @@ pub(crate) fn tool_error_result(call: &ToolCall, err: tools::ToolError) -> ToolR
         tools::ToolError::ExecutionFailed { tool, message } => {
             format!("{tool} failed: {message}")
         }
-        tools::ToolError::Cancelled => "Cancelled by user".to_string(),
         tools::ToolError::UnknownTool { name } => format!("Unknown tool: {name}"),
         tools::ToolError::DuplicateTool { name } => format!("Duplicate tool: {name}"),
         tools::ToolError::DuplicateToolCallId { id } => {

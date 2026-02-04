@@ -565,7 +565,6 @@ fn append_recovery_prompt(lines: &mut Vec<Line>, app: &App, palette: &Palette) {
     lines.push(Line::from("Press r to resume or d to discard."));
 }
 
-/// Get the style for a diff line.
 fn diff_style_for_line(line: &str, base_style: Style, palette: &Palette) -> Style {
     use ratatui::style::Modifier;
 

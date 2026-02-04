@@ -1,9 +1,11 @@
 //! Model token limits and registry.
 //!
 //! This module provides [`ModelLimits`] for storing token constraints per model,
-//! and [`ModelRegistry`] for looking up limits by model name with prefix matching.
+//! and [`ModelRegistry`] for looking up limits by validated model name.
 
 use std::collections::HashMap;
+
+use forge_types::{ModelName, PredefinedModel};
 
 /// Each model has a maximum context window (input tokens) and maximum output tokens.
 /// The effective input budget accounts for output reservation and a safety margin.
@@ -44,7 +46,6 @@ impl ModelLimits {
         }
     }
 
-    /// Returns the effective input budget.
     ///
     /// This is the maximum number of tokens available for input messages,
     /// calculated as: `context_window - max_output - 5% safety margin`.
@@ -73,13 +74,11 @@ impl ModelLimits {
         available.saturating_sub(safety_margin)
     }
 
-    /// Returns the maximum context window size in tokens.
     #[must_use]
     pub const fn context_window(&self) -> u32 {
         self.context_window
     }
 
-    /// Returns the maximum output tokens.
     #[must_use]
     pub const fn max_output(&self) -> u32 {
         self.max_output
@@ -91,15 +90,13 @@ impl ModelLimits {
 pub enum ModelLimitsSource {
     /// Exact match from an override.
     Override,
-    /// Matched a known prefix (the matched prefix).
-    Prefix(&'static str),
-    /// Fell back to `DEFAULT_LIMITS` because no match was found.
-    DefaultFallback,
+    /// Matched a known model from the catalog.
+    Catalog(PredefinedModel),
 }
 
 /// Result of looking up model limits.
 ///
-/// This makes the "fallback OR real data" decision explicit at the call site.
+/// Contains both the limits and the source (override vs prefix match).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedModelLimits {
     limits: ModelLimits,
@@ -123,56 +120,43 @@ impl ResolvedModelLimits {
     }
 }
 
-/// Default fallback limits for unknown models.
-const DEFAULT_LIMITS: ModelLimits = ModelLimits::new(8192, 4096);
-
-/// Known model prefixes and their limits.
-///
-/// Ordered by specificity (more specific prefixes first) to ensure
-/// correct matching when multiple prefixes could match.
-const KNOWN_MODELS: &[(&str, ModelLimits)] = &[
-    // Claude 4.5 models (most specific first)
-    ("claude-opus-4-5", ModelLimits::new(200_000, 64_000)),
-    ("claude-sonnet-4-5", ModelLimits::new(200_000, 64_000)),
-    ("claude-haiku-4-5", ModelLimits::new(200_000, 64_000)),
-    // GPT 5.2 models
-    ("gpt-5.2-pro", ModelLimits::new(400_000, 128_000)),
-    ("gpt-5.2", ModelLimits::new(400_000, 128_000)),
-    // Gemini 3 models (1M context, 65K output)
-    ("gemini-3-pro", ModelLimits::new(1_048_576, 65_536)),
-    ("gemini-3-flash", ModelLimits::new(1_048_576, 65_536)),
-];
+fn default_limits_for(model: PredefinedModel) -> ModelLimits {
+    match model {
+        PredefinedModel::ClaudeOpus
+        | PredefinedModel::ClaudeSonnet
+        | PredefinedModel::ClaudeHaiku => ModelLimits::new(200_000, 64_000),
+        PredefinedModel::Gpt52Pro | PredefinedModel::Gpt52 => ModelLimits::new(400_000, 128_000),
+        PredefinedModel::GeminiPro | PredefinedModel::GeminiFlash => {
+            ModelLimits::new(1_048_576, 65_536)
+        }
+    }
+}
 
 /// Registry of known model limits with support for custom overrides.
 ///
 /// The registry provides model limits through a two-tier lookup:
 /// 1. First, check custom overrides set via [`ModelRegistry::set_override`]
-/// 2. If no override exists, use prefix matching against known model limits
-/// 3. If no prefix matches, return `DEFAULT_LIMITS` with an explicit `DefaultFallback` source.
+/// 2. If no override exists, use the canonical model catalog
 ///
-/// # Prefix Matching
-///
-/// Model names are matched using prefix comparison. For example:
-/// - `"claude-opus-4-5-20251101"` matches prefix `"claude-opus-4-5"`
-/// - `"gpt-5.2-2025-12-11"` matches prefix `"gpt-5"`
+/// Unknown models must be rejected at the boundary; the core only operates on
+/// validated [`ModelName`] values.
 ///
 /// # Example
 ///
 /// ```ignore
 /// use forge_context::{ModelRegistry, ModelLimits};
 ///
-/// let mut registry = ModelRegistry::new();
+/// let registry = ModelRegistry::new();
 ///
 /// // Get limits for a known model
-/// let claude_limits = registry.get("claude-opus-4-5-20251101").limits();
-/// assert_eq!(claude_limits.context_window(), 200_000);
-///
-/// // Custom overrides can be added via ModelRegistry when enabled in tests.
+/// let model = forge_types::PredefinedModel::ClaudeOpus.to_model_name();
+/// let resolved = registry.get(&model);
+/// assert_eq!(resolved.limits().context_window(), 200_000);
 /// ```
 #[derive(Debug, Clone)]
 pub struct ModelRegistry {
-    /// Custom overrides that take precedence over default prefix matching.
-    overrides: HashMap<String, ModelLimits>,
+    /// Custom overrides that take precedence over catalog defaults.
+    overrides: HashMap<PredefinedModel, ModelLimits>,
 }
 
 impl ModelRegistry {
@@ -184,65 +168,59 @@ impl ModelRegistry {
         }
     }
 
-    /// Returns the limits for the given model.
+    /// Look up model limits for a validated model.
     ///
     /// Lookup order:
     /// 1. Exact match in overrides
-    /// 2. Prefix match against known models
-    /// 3. Default fallback limits
+    /// 2. Exact match in the model catalog
     ///
     /// # Arguments
     ///
-    /// * `model` - The model name/identifier to look up
+    /// * `model` - The validated model to look up
     #[must_use]
-    pub fn get(&self, model: &str) -> ResolvedModelLimits {
-        if let Some(limits) = self.overrides.get(model) {
+    pub fn get(&self, model: &ModelName) -> ResolvedModelLimits {
+        let predefined = model.predefined();
+        if let Some(limits) = self.overrides.get(&predefined) {
             return ResolvedModelLimits::new(*limits, ModelLimitsSource::Override);
         }
 
-        for (prefix, limits) in KNOWN_MODELS {
-            if model.starts_with(prefix) {
-                return ResolvedModelLimits::new(*limits, ModelLimitsSource::Prefix(prefix));
-            }
-        }
-
-        ResolvedModelLimits::new(DEFAULT_LIMITS, ModelLimitsSource::DefaultFallback)
+        let limits = default_limits_for(predefined);
+        ResolvedModelLimits::new(limits, ModelLimitsSource::Catalog(predefined))
     }
 
     /// Sets a custom override for a specific model.
     ///
-    /// Overrides take precedence over prefix matching for exact matches.
+    /// Overrides take precedence over catalog defaults for exact matches.
     ///
     /// # Arguments
     ///
-    /// * `model` - The exact model name to override
+    /// * `model` - The exact model to override
     /// * `limits` - The custom limits to use for this model
     #[cfg(test)]
-    pub fn set_override(&mut self, model: String, limits: ModelLimits) {
+    pub fn set_override(&mut self, model: PredefinedModel, limits: ModelLimits) {
         self.overrides.insert(model, limits);
     }
 
     /// Removes a custom override for a model.
     ///
-    /// After removal, the model will use prefix matching or default limits.
+    /// After removal, the model will use catalog defaults.
     ///
     /// # Arguments
     ///
-    /// * `model` - The model name whose override should be removed
+    /// * `model` - The model whose override should be removed
     ///
     /// # Returns
     ///
     /// The removed limits if an override existed, or `None` otherwise.
     #[cfg(test)]
-    pub fn remove_override(&mut self, model: &str) -> Option<ModelLimits> {
-        self.overrides.remove(model)
+    pub fn remove_override(&mut self, model: PredefinedModel) -> Option<ModelLimits> {
+        self.overrides.remove(&model)
     }
 
-    /// Returns `true` if the model has a custom override set.
     #[must_use]
     #[cfg(test)]
-    pub fn has_override(&self, model: &str) -> bool {
-        self.overrides.contains_key(model)
+    pub fn has_override(&self, model: PredefinedModel) -> bool {
+        self.overrides.contains_key(&model)
     }
 }
 
@@ -339,22 +317,28 @@ mod tests {
 
     mod model_registry {
         use super::*;
+        use forge_types::{ModelName, PredefinedModel};
+
+        fn model(predefined: PredefinedModel) -> ModelName {
+            predefined.to_model_name()
+        }
 
         #[test]
         fn new_creates_empty_registry() {
             let registry = ModelRegistry::new();
-            assert!(!registry.has_override("any-model"));
+            assert!(!registry.has_override(PredefinedModel::ClaudeOpus));
         }
 
         #[test]
         fn get_claude_opus_4_5_models() {
             let registry = ModelRegistry::new();
 
-            let limits = registry.get("claude-opus-4-5").limits();
-            assert_eq!(limits.context_window(), 200_000);
-            assert_eq!(limits.max_output(), 64_000);
-
-            let limits = registry.get("claude-opus-4-5-20251101").limits();
+            let resolved = registry.get(&model(PredefinedModel::ClaudeOpus));
+            assert_eq!(
+                resolved.source(),
+                ModelLimitsSource::Catalog(PredefinedModel::ClaudeOpus)
+            );
+            let limits = resolved.limits();
             assert_eq!(limits.context_window(), 200_000);
             assert_eq!(limits.max_output(), 64_000);
         }
@@ -363,10 +347,10 @@ mod tests {
         fn get_claude_haiku_4_5_models() {
             let registry = ModelRegistry::new();
 
-            let resolved = registry.get("claude-haiku-4-5-20251001");
+            let resolved = registry.get(&model(PredefinedModel::ClaudeHaiku));
             assert_eq!(
                 resolved.source(),
-                ModelLimitsSource::Prefix("claude-haiku-4-5")
+                ModelLimitsSource::Catalog(PredefinedModel::ClaudeHaiku)
             );
             let limits = resolved.limits();
             assert_eq!(limits.context_window(), 200_000);
@@ -374,25 +358,24 @@ mod tests {
         }
 
         #[test]
-        fn unknown_claude_models_use_default_fallback() {
-            let registry = ModelRegistry::new();
-
-            // Unknown claude variant uses default fallback (no generic claude prefix)
-            let resolved = registry.get("claude-experimental-x");
-            assert_eq!(resolved.source(), ModelLimitsSource::DefaultFallback);
-        }
-
-        #[test]
         fn get_gpt_5_2_models() {
             let registry = ModelRegistry::new();
 
-            let resolved = registry.get("gpt-5.2");
-            assert_eq!(resolved.source(), ModelLimitsSource::Prefix("gpt-5.2"));
+            let resolved = registry.get(&model(PredefinedModel::Gpt52));
+            assert_eq!(
+                resolved.source(),
+                ModelLimitsSource::Catalog(PredefinedModel::Gpt52)
+            );
             let limits = resolved.limits();
             assert_eq!(limits.context_window(), 400_000);
             assert_eq!(limits.max_output(), 128_000);
 
-            let limits = registry.get("gpt-5.2-2025-12-11").limits();
+            let resolved = registry.get(&model(PredefinedModel::Gpt52Pro));
+            assert_eq!(
+                resolved.source(),
+                ModelLimitsSource::Catalog(PredefinedModel::Gpt52Pro)
+            );
+            let limits = resolved.limits();
             assert_eq!(limits.context_window(), 400_000);
             assert_eq!(limits.max_output(), 128_000);
         }
@@ -401,8 +384,11 @@ mod tests {
         fn get_gemini_3_pro_models() {
             let registry = ModelRegistry::new();
 
-            let resolved = registry.get("gemini-3-pro-preview");
-            assert_eq!(resolved.source(), ModelLimitsSource::Prefix("gemini-3-pro"));
+            let resolved = registry.get(&model(PredefinedModel::GeminiPro));
+            assert_eq!(
+                resolved.source(),
+                ModelLimitsSource::Catalog(PredefinedModel::GeminiPro)
+            );
             let limits = resolved.limits();
             assert_eq!(limits.context_window(), 1_048_576);
             assert_eq!(limits.max_output(), 65_536);
@@ -412,10 +398,10 @@ mod tests {
         fn get_gemini_3_flash_models() {
             let registry = ModelRegistry::new();
 
-            let resolved = registry.get("gemini-3-flash-preview");
+            let resolved = registry.get(&model(PredefinedModel::GeminiFlash));
             assert_eq!(
                 resolved.source(),
-                ModelLimitsSource::Prefix("gemini-3-flash")
+                ModelLimitsSource::Catalog(PredefinedModel::GeminiFlash)
             );
             let limits = resolved.limits();
             assert_eq!(limits.context_window(), 1_048_576);
@@ -423,63 +409,25 @@ mod tests {
         }
 
         #[test]
-        fn legacy_gpt_models_use_default_fallback() {
-            let registry = ModelRegistry::new();
-
-            // Legacy GPT models are not supported, fall back to default
-            let resolved = registry.get("gpt-5");
-            assert_eq!(resolved.source(), ModelLimitsSource::DefaultFallback);
-
-            let resolved = registry.get("gpt-4o");
-            assert_eq!(resolved.source(), ModelLimitsSource::DefaultFallback);
-
-            let resolved = registry.get("gpt-4");
-            assert_eq!(resolved.source(), ModelLimitsSource::DefaultFallback);
-
-            let resolved = registry.get("gpt-3.5-turbo");
-            assert_eq!(resolved.source(), ModelLimitsSource::DefaultFallback);
-        }
-
-        #[test]
-        fn get_unknown_model_returns_default() {
-            let registry = ModelRegistry::new();
-
-            let resolved = registry.get("unknown-model-xyz");
-            assert_eq!(resolved.source(), ModelLimitsSource::DefaultFallback);
-            let limits = resolved.limits();
-            assert_eq!(limits.context_window(), 8192);
-            assert_eq!(limits.max_output(), 4096);
-
-            let resolved = registry.get("llama-3-70b");
-            assert_eq!(resolved.source(), ModelLimitsSource::DefaultFallback);
-            let limits = resolved.limits();
-            assert_eq!(limits.context_window(), 8192);
-            assert_eq!(limits.max_output(), 4096);
-        }
-
-        #[test]
         fn set_override_takes_precedence() {
             let mut registry = ModelRegistry::new();
 
-            // Before override, uses prefix matching
-            let limits = registry.get("claude-opus-4-5-custom").limits();
+            // Before override, uses catalog defaults
+            let limits = registry.get(&model(PredefinedModel::ClaudeOpus)).limits();
             assert_eq!(limits.context_window(), 200_000);
 
             // Set override
-            registry.set_override(
-                "claude-opus-4-5-custom".to_string(),
-                ModelLimits::new(50_000, 8000),
-            );
+            registry.set_override(PredefinedModel::ClaudeOpus, ModelLimits::new(50_000, 8000));
 
             // After override, uses custom limits
-            let resolved = registry.get("claude-opus-4-5-custom");
+            let resolved = registry.get(&model(PredefinedModel::ClaudeOpus));
             assert_eq!(resolved.source(), ModelLimitsSource::Override);
             let limits = resolved.limits();
             assert_eq!(limits.context_window(), 50_000);
             assert_eq!(limits.max_output(), 8000);
 
-            // Other claude-opus-4-5 models still use defaults
-            let limits = registry.get("claude-opus-4-5-20251101").limits();
+            // Other Claude models still use defaults
+            let limits = registry.get(&model(PredefinedModel::ClaudeSonnet)).limits();
             assert_eq!(limits.context_window(), 200_000);
         }
 
@@ -487,16 +435,19 @@ mod tests {
         fn remove_override_restores_default_behavior() {
             let mut registry = ModelRegistry::new();
 
-            registry.set_override("gpt-5.2".to_string(), ModelLimits::new(50_000, 5000));
-            assert!(registry.has_override("gpt-5.2"));
+            registry.set_override(PredefinedModel::Gpt52, ModelLimits::new(50_000, 5000));
+            assert!(registry.has_override(PredefinedModel::Gpt52));
 
-            let removed = registry.remove_override("gpt-5.2");
+            let removed = registry.remove_override(PredefinedModel::Gpt52);
             assert!(removed.is_some());
-            assert!(!registry.has_override("gpt-5.2"));
+            assert!(!registry.has_override(PredefinedModel::Gpt52));
 
-            // Should now use prefix matching
-            let resolved = registry.get("gpt-5.2");
-            assert_eq!(resolved.source(), ModelLimitsSource::Prefix("gpt-5.2"));
+            // Should now use catalog defaults
+            let resolved = registry.get(&model(PredefinedModel::Gpt52));
+            assert_eq!(
+                resolved.source(),
+                ModelLimitsSource::Catalog(PredefinedModel::Gpt52)
+            );
             let limits = resolved.limits();
             assert_eq!(limits.context_window(), 400_000);
         }
@@ -504,7 +455,7 @@ mod tests {
         #[test]
         fn remove_nonexistent_override_returns_none() {
             let mut registry = ModelRegistry::new();
-            let removed = registry.remove_override("nonexistent");
+            let removed = registry.remove_override(PredefinedModel::GeminiPro);
             assert!(removed.is_none());
         }
 
@@ -512,9 +463,9 @@ mod tests {
         fn has_override_returns_correct_state() {
             let mut registry = ModelRegistry::new();
 
-            assert!(!registry.has_override("test-model"));
-            registry.set_override("test-model".to_string(), ModelLimits::new(1000, 100));
-            assert!(registry.has_override("test-model"));
+            assert!(!registry.has_override(PredefinedModel::GeminiFlash));
+            registry.set_override(PredefinedModel::GeminiFlash, ModelLimits::new(1000, 100));
+            assert!(registry.has_override(PredefinedModel::GeminiFlash));
         }
 
         #[test]
@@ -522,21 +473,21 @@ mod tests {
             let new_registry = ModelRegistry::new();
             let default_registry = ModelRegistry::default();
 
-            // Both should return same limits for any model
+            // Both should return same limits for known models
             assert_eq!(
-                new_registry.get("claude-opus-4-5"),
-                default_registry.get("claude-opus-4-5")
+                new_registry.get(&model(PredefinedModel::ClaudeOpus)),
+                default_registry.get(&model(PredefinedModel::ClaudeOpus))
             );
-            assert_eq!(new_registry.get("unknown"), default_registry.get("unknown"));
         }
 
         #[test]
         fn registry_is_clone() {
             let mut registry = ModelRegistry::new();
-            registry.set_override("test".to_string(), ModelLimits::new(1000, 100));
+            registry.set_override(PredefinedModel::Gpt52Pro, ModelLimits::new(1000, 100));
 
             let cloned = registry.clone();
-            assert_eq!(cloned.get("test"), registry.get("test"));
+            let model = model(PredefinedModel::Gpt52Pro);
+            assert_eq!(cloned.get(&model), registry.get(&model));
         }
     }
 }

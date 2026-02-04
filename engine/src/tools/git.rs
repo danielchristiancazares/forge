@@ -15,7 +15,7 @@ use tokio::process::Command;
 use tokio::time;
 
 use super::{
-    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, redact_summary, sanitize_output,
+    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, redact_distillate, sanitize_output,
 };
 
 const DEFAULT_GIT_TIMEOUT_MS: u64 = 30_000;
@@ -85,7 +85,6 @@ impl GitToolKind {
             GitToolKind::Status => json!({
                 "type": "object",
                 "properties": {
-                    "working_dir": {"type": "string", "description": "Optional working directory for the git command"},
                     "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds before the command is aborted"},
                     "porcelain": {"type": "boolean", "default": true, "description": "Use porcelain output (`--porcelain=1`) when true"},
                     "branch": {"type": "boolean", "default": true, "description": "Include branch info (`-b`) in porcelain mode"},
@@ -96,7 +95,6 @@ impl GitToolKind {
             GitToolKind::Diff => json!({
                 "type": "object",
                 "properties": {
-                    "working_dir": {"type": "string", "description": "Optional working directory for the git command"},
                     "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds before the command is aborted"},
                     "cached": {"type": "boolean", "default": false, "description": "Diff staged changes (`--cached`)"},
                     "stat": {"type": "boolean", "default": false, "description": "Show diffstat only (`--stat`)"},
@@ -114,7 +112,6 @@ impl GitToolKind {
                 "type": "object",
                 "properties": {
                     "paths": {"type": "array", "items": {"type": "string"}, "description": "Paths to restore (passed after `--`)"},
-                    "working_dir": {"type": "string", "description": "Optional working directory for the git command"},
                     "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds before the command is aborted"},
                     "staged": {"type": "boolean", "default": false, "description": "Restore the index/staging area (`--staged`)"},
                     "worktree": {"type": "boolean", "default": true, "description": "Restore the working tree (`--worktree`) (default true)"}
@@ -127,7 +124,6 @@ impl GitToolKind {
                     "paths": {"type": "array", "items": {"type": "string"}, "description": "Files to stage"},
                     "all": {"type": "boolean", "default": false, "description": "Stage all changes (`-A`)"},
                     "update": {"type": "boolean", "default": false, "description": "Stage modified/deleted only (`-u`)"},
-                    "working_dir": {"type": "string", "description": "Optional working directory"},
                     "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"}
                 },
                 "required": []
@@ -138,7 +134,6 @@ impl GitToolKind {
                     "type": {"type": "string", "description": "Commit type: feat, fix, docs, style, refactor, test, chore, etc."},
                     "scope": {"type": "string", "description": "Optional scope/area of change"},
                     "message": {"type": "string", "description": "Commit description"},
-                    "working_dir": {"type": "string", "description": "Optional working directory"},
                     "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"}
                 },
                 "required": ["type", "message"]
@@ -146,7 +141,6 @@ impl GitToolKind {
             GitToolKind::Log => json!({
                 "type": "object",
                 "properties": {
-                    "working_dir": {"type": "string", "description": "Optional working directory"},
                     "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"},
                     "max_count": {"type": "integer", "minimum": 1, "description": "Limit number of commits to show"},
                     "oneline": {"type": "boolean", "default": false, "description": "Show each commit on a single line"},
@@ -163,7 +157,6 @@ impl GitToolKind {
             GitToolKind::Branch => json!({
                 "type": "object",
                 "properties": {
-                    "working_dir": {"type": "string", "description": "Optional working directory"},
                     "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"},
                     "list_all": {"type": "boolean", "default": false, "description": "List both local and remote branches (`-a`)"},
                     "list_remote": {"type": "boolean", "default": false, "description": "List only remote branches (`-r`)"},
@@ -178,7 +171,6 @@ impl GitToolKind {
             GitToolKind::Checkout => json!({
                 "type": "object",
                 "properties": {
-                    "working_dir": {"type": "string", "description": "Optional working directory"},
                     "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"},
                     "branch": {"type": "string", "description": "Branch to switch to"},
                     "create_branch": {"type": "string", "description": "Create and switch to a new branch (`-b`)"},
@@ -190,7 +182,6 @@ impl GitToolKind {
             GitToolKind::Stash => json!({
                 "type": "object",
                 "properties": {
-                    "working_dir": {"type": "string", "description": "Optional working directory"},
                     "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"},
                     "action": {"type": "string", "enum": ["push", "pop", "apply", "drop", "list", "show", "clear"], "default": "push", "description": "Stash action to perform"},
                     "message": {"type": "string", "description": "Message for the stash (with push)"},
@@ -202,7 +193,6 @@ impl GitToolKind {
             GitToolKind::Show => json!({
                 "type": "object",
                 "properties": {
-                    "working_dir": {"type": "string", "description": "Optional working directory"},
                     "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"},
                     "commit": {"type": "string", "description": "Commit to show (default: HEAD)"},
                     "stat": {"type": "boolean", "default": false, "description": "Show diffstat only"},
@@ -216,7 +206,6 @@ impl GitToolKind {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path to blame"},
-                    "working_dir": {"type": "string", "description": "Optional working directory"},
                     "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"},
                     "start_line": {"type": "integer", "minimum": 1, "description": "Start line number for range"},
                     "end_line": {"type": "integer", "minimum": 1, "description": "End line number for range"},
@@ -293,14 +282,8 @@ impl ToolExecutor for GitTool {
     }
 
     fn approval_summary(&self, args: &Value) -> Result<String, ToolError> {
-        let summary = match self.kind {
-            GitToolKind::Status => {
-                let typed: GitStatusArgs = parse_args(args)?;
-                format!(
-                    "Git status in {}",
-                    typed.working_dir.unwrap_or_else(|| ".".to_string())
-                )
-            }
+        let distillate = match self.kind {
+            GitToolKind::Status => "Git status".to_string(),
             GitToolKind::Diff => {
                 let typed: GitDiffArgs = parse_args(args)?;
                 if let (Some(from_ref), Some(to_ref)) = (typed.from_ref, typed.to_ref) {
@@ -344,7 +327,7 @@ impl ToolExecutor for GitTool {
             }
         };
 
-        Ok(redact_summary(&summary))
+        Ok(redact_distillate(&distillate))
     }
 
     fn timeout(&self) -> Option<Duration> {
@@ -536,16 +519,6 @@ fn effective_max_bytes(ctx: &ToolCtx) -> usize {
         .max(1)
 }
 
-fn resolve_working_dir(ctx: &ToolCtx, working_dir: Option<String>) -> Result<PathBuf, ToolError> {
-    let base = ctx.working_dir.clone();
-    let dir = if let Some(raw) = working_dir {
-        ctx.sandbox.resolve_path(&raw, &base)?
-    } else {
-        base
-    };
-    Ok(dir)
-}
-
 async fn run_git(
     ctx: &ToolCtx,
     working_dir: &Path,
@@ -679,7 +652,7 @@ fn trim_output(output: &str) -> String {
     output.trim_end_matches(&['\r', '\n'][..]).to_string()
 }
 
-// ===== Git diff patch summary helpers =====
+// ===== Git diff patch Distillate helpers =====
 
 fn sanitize_path_for_filename(path: &str) -> String {
     path.replace(['/', '\\'], "__")
@@ -699,12 +672,12 @@ struct FileDiffEntry {
 }
 
 #[derive(Serialize)]
-struct DiffSummary {
+struct DiffDistillate {
     from_ref: String,
     to_ref: String,
     generated_at: String,
     files: Vec<FileDiffEntry>,
-    summary: DiffStats,
+    stats: DiffStats,
 }
 
 #[derive(Serialize)]
@@ -847,11 +820,11 @@ async fn write_patches_to_dir(
         });
     }
 
-    let summary = DiffSummary {
+    let distillate = DiffDistillate {
         from_ref: from_ref.to_string(),
         to_ref: to_ref.to_string(),
         generated_at: chrono::Utc::now().to_rfc3339(),
-        summary: DiffStats {
+        stats: DiffStats {
             files_changed: files.len(),
             insertions: total_insertions,
             deletions: total_deletions,
@@ -859,28 +832,26 @@ async fn write_patches_to_dir(
         files,
     };
 
-    let summary_json =
-        serde_json::to_string_pretty(&summary).map_err(|e| ToolError::ExecutionFailed {
+    let distillate_json =
+        serde_json::to_string_pretty(&distillate).map_err(|e| ToolError::ExecutionFailed {
             tool: "GitDiff".to_string(),
-            message: format!("Failed to serialize summary: {e}"),
+            message: format!("Failed to serialize distillate: {e}"),
         })?;
-    let summary_path = output_dir.join("_summary.json");
-    tokio::fs::write(&summary_path, &summary_json)
+    let distillate_path = output_dir.join("_distillate.json");
+    tokio::fs::write(&distillate_path, &distillate_json)
         .await
         .map_err(|e| ToolError::ExecutionFailed {
             tool: "GitDiff".to_string(),
-            message: format!("Failed to write summary: {e}"),
+            message: format!("Failed to write distillate: {e}"),
         })?;
 
-    Ok(json!(summary))
+    Ok(json!(distillate))
 }
 
 // ===== Argument types =====
 
 #[derive(Deserialize)]
 struct GitStatusArgs {
-    #[serde(default)]
-    working_dir: Option<String>,
     #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
@@ -893,8 +864,6 @@ struct GitStatusArgs {
 
 #[derive(Deserialize)]
 struct GitDiffArgs {
-    #[serde(default)]
-    working_dir: Option<String>,
     #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
@@ -921,8 +890,6 @@ struct GitDiffArgs {
 struct GitRestoreArgs {
     paths: Vec<String>,
     #[serde(default)]
-    working_dir: Option<String>,
-    #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
     staged: Option<bool>,
@@ -934,8 +901,6 @@ struct GitRestoreArgs {
 struct GitAddArgs {
     #[serde(default)]
     paths: Option<Vec<String>>,
-    #[serde(default)]
-    working_dir: Option<String>,
     #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
@@ -952,15 +917,11 @@ struct GitCommitArgs {
     scope: Option<String>,
     message: String,
     #[serde(default)]
-    working_dir: Option<String>,
-    #[serde(default)]
     timeout_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
 struct GitLogArgs {
-    #[serde(default)]
-    working_dir: Option<String>,
     #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
@@ -986,8 +947,6 @@ struct GitLogArgs {
 #[derive(Deserialize)]
 struct GitBranchArgs {
     #[serde(default)]
-    working_dir: Option<String>,
-    #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
     list_all: Option<bool>,
@@ -1008,8 +967,6 @@ struct GitBranchArgs {
 #[derive(Deserialize)]
 struct GitCheckoutArgs {
     #[serde(default)]
-    working_dir: Option<String>,
-    #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
     branch: Option<String>,
@@ -1024,8 +981,6 @@ struct GitCheckoutArgs {
 #[derive(Deserialize)]
 struct GitStashArgs {
     #[serde(default)]
-    working_dir: Option<String>,
-    #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
     action: Option<String>,
@@ -1039,8 +994,6 @@ struct GitStashArgs {
 
 #[derive(Deserialize)]
 struct GitShowArgs {
-    #[serde(default)]
-    working_dir: Option<String>,
     #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
@@ -1058,8 +1011,6 @@ struct GitShowArgs {
 #[derive(Deserialize)]
 struct GitBlameArgs {
     path: String,
-    #[serde(default)]
-    working_dir: Option<String>,
     #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
@@ -1082,7 +1033,7 @@ async fn handle_git_status(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErro
     let branch = req.branch.unwrap_or(true);
     let untracked = req.untracked.unwrap_or(true);
 
-    let working_dir = resolve_working_dir(ctx, req.working_dir)?;
+    let working_dir = ctx.working_dir.clone();
 
     let mut cmd_args: Vec<String> = vec!["status".into()];
     if porcelain {
@@ -1129,7 +1080,7 @@ async fn handle_git_diff(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
     let req: GitDiffArgs = parse_args(&args)?;
 
     let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
-    let working_dir = resolve_working_dir(ctx, req.working_dir)?;
+    let working_dir = ctx.working_dir.clone();
 
     if let (Some(from_ref), Some(to_ref), Some(output_dir)) = (
         req.from_ref.as_ref(),
@@ -1139,11 +1090,11 @@ async fn handle_git_diff(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
         let output_dir = ctx
             .sandbox
             .resolve_path_for_create(output_dir, &working_dir)?;
-        let summary =
+        let distillate =
             write_patches_to_dir(ctx, &working_dir, from_ref, to_ref, &output_dir, timeout_ms)
                 .await?;
 
-        let files_changed = summary["summary"]["files_changed"].as_u64().unwrap_or(0);
+        let files_changed = distillate["stats"]["files_changed"].as_u64().unwrap_or(0);
         let text = format!(
             "Diff between {} and {}: {} files changed. Patches written to {}",
             from_ref,
@@ -1164,8 +1115,8 @@ async fn handle_git_diff(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
             "output_dir".to_string(),
             json!(output_dir.display().to_string()),
         );
-        response.insert("summary".to_string(), summary["summary"].clone());
-        response.insert("files".to_string(), summary["files"].clone());
+        response.insert("stats".to_string(), distillate["stats"].clone());
+        response.insert("files".to_string(), distillate["files"].clone());
 
         return Ok(Value::Object(response));
     }
@@ -1261,7 +1212,7 @@ async fn handle_git_restore(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErr
     }
 
     let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
-    let working_dir = resolve_working_dir(ctx, req.working_dir)?;
+    let working_dir = ctx.working_dir.clone();
     let max_cap = effective_max_bytes(ctx);
 
     let mut cmd_args: Vec<String> = vec!["restore".into()];
@@ -1320,7 +1271,7 @@ async fn handle_git_add(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError> 
     }
 
     let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
-    let working_dir = resolve_working_dir(ctx, req.working_dir)?;
+    let working_dir = ctx.working_dir.clone();
     let max_cap = effective_max_bytes(ctx);
 
     let mut cmd_args: Vec<String> = vec!["add".into()];
@@ -1388,7 +1339,7 @@ async fn handle_git_commit(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErro
     };
 
     let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
-    let working_dir = resolve_working_dir(ctx, req.working_dir)?;
+    let working_dir = ctx.working_dir.clone();
     let max_cap = effective_max_bytes(ctx);
 
     let cmd_args: Vec<String> = vec!["commit".into(), "-m".into(), commit_msg.clone()];
@@ -1428,7 +1379,7 @@ async fn handle_git_log(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError> 
     let req: GitLogArgs = parse_args(&args)?;
 
     let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
-    let working_dir = resolve_working_dir(ctx, req.working_dir)?;
+    let working_dir = ctx.working_dir.clone();
 
     let max_cap = effective_max_bytes(ctx).min(MAX_OUTPUT_BYTES);
     let max_bytes = clamp_bytes(req.max_bytes, DEFAULT_GIT_STDOUT_BYTES, max_cap);
@@ -1493,7 +1444,7 @@ async fn handle_git_branch(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErro
     let req: GitBranchArgs = parse_args(&args)?;
 
     let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
-    let working_dir = resolve_working_dir(ctx, req.working_dir)?;
+    let working_dir = ctx.working_dir.clone();
     let max_cap = effective_max_bytes(ctx);
 
     let mut cmd_args: Vec<String> = vec!["branch".into()];
@@ -1554,7 +1505,7 @@ async fn handle_git_checkout(ctx: &ToolCtx, args: Value) -> Result<Value, ToolEr
     let req: GitCheckoutArgs = parse_args(&args)?;
 
     let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
-    let working_dir = resolve_working_dir(ctx, req.working_dir)?;
+    let working_dir = ctx.working_dir.clone();
     let max_cap = effective_max_bytes(ctx);
 
     let mut cmd_args: Vec<String> = vec!["checkout".into()];
@@ -1617,7 +1568,7 @@ async fn handle_git_stash(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError
     let req: GitStashArgs = parse_args(&args)?;
 
     let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
-    let working_dir = resolve_working_dir(ctx, req.working_dir)?;
+    let working_dir = ctx.working_dir.clone();
     let max_cap = effective_max_bytes(ctx);
 
     let action = req.action.as_deref().unwrap_or("push");
@@ -1710,7 +1661,7 @@ async fn handle_git_show(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
     let req: GitShowArgs = parse_args(&args)?;
 
     let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
-    let working_dir = resolve_working_dir(ctx, req.working_dir)?;
+    let working_dir = ctx.working_dir.clone();
 
     let max_cap = effective_max_bytes(ctx).min(MAX_OUTPUT_BYTES);
     let max_bytes = clamp_bytes(req.max_bytes, DEFAULT_GIT_STDOUT_BYTES, max_cap);
@@ -1764,7 +1715,7 @@ async fn handle_git_blame(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError
     }
 
     let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
-    let working_dir = resolve_working_dir(ctx, req.working_dir)?;
+    let working_dir = ctx.working_dir.clone();
 
     let max_cap = effective_max_bytes(ctx).min(MAX_OUTPUT_BYTES);
     let max_bytes = clamp_bytes(req.max_bytes, DEFAULT_GIT_STDOUT_BYTES, max_cap);

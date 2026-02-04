@@ -19,7 +19,6 @@ pub struct ModalEffect {
 }
 
 impl ModalEffect {
-    /// Create a pop-scale effect (used when entering model select).
     #[must_use]
     pub fn pop_scale(duration: Duration) -> Self {
         Self {
@@ -29,7 +28,6 @@ impl ModalEffect {
         }
     }
 
-    /// Create a slide-up effect.
     #[must_use]
     pub fn slide_up(duration: Duration) -> Self {
         Self {
@@ -39,7 +37,6 @@ impl ModalEffect {
         }
     }
 
-    /// Create a shake effect.
     #[must_use]
     pub fn shake(duration: Duration) -> Self {
         Self {
@@ -71,7 +68,6 @@ impl ModalEffect {
         self.elapsed >= self.duration
     }
 
-    /// Get the effect kind.
     #[must_use]
     pub fn kind(&self) -> ModalEffectKind {
         self.kind

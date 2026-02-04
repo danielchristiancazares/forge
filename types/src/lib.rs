@@ -22,7 +22,7 @@
 //! | Category | Types |
 //! |----------|-------|
 //! | String validation | [`NonEmptyString`], [`NonEmptyStaticStr`], [`EmptyStringError`] |
-//! | Provider/model | [`Provider`], [`ModelName`], [`ModelNameKind`], [`ModelParseError`], [`ApiKey`] |
+//! | Provider/model | [`Provider`], [`PredefinedModel`], [`ModelName`], [`ModelParseError`], [`ApiKey`] |
 //! | OpenAI options | [`OpenAIReasoningEffort`], [`OpenAIReasoningSummary`], [`OpenAITextVerbosity`], [`OpenAITruncation`], [`OpenAIRequestOptions`] |
 //! | Output config | [`OutputLimits`], [`OutputLimitsError`], [`CacheHint`] |
 //! | Streaming | [`StreamEvent`], [`StreamFinishReason`], [`ApiUsage`] |
@@ -227,24 +227,20 @@ impl Provider {
     #[must_use]
     pub fn default_model(&self) -> ModelName {
         match self {
-            Provider::Claude => ModelName::known(*self, "claude-opus-4-5-20251101"),
-            Provider::OpenAI => ModelName::known(*self, "gpt-5.2"),
-            Provider::Gemini => ModelName::known(*self, "gemini-3-pro-preview"),
+            Provider::Claude => ModelName::from_predefined(PredefinedModel::ClaudeOpus),
+            Provider::OpenAI => ModelName::from_predefined(PredefinedModel::Gpt52),
+            Provider::Gemini => ModelName::from_predefined(PredefinedModel::GeminiPro),
         }
     }
 
     /// All available models for this provider.
     #[must_use]
-    pub fn available_models(&self) -> &'static [&'static str] {
-        match self {
-            Provider::Claude => &[
-                "claude-opus-4-5-20251101",
-                "claude-sonnet-4-5-20250514",
-                "claude-haiku-4-5-20251001",
-            ],
-            Provider::OpenAI => &["gpt-5.2", "gpt-5.2-pro", "gpt-5.2-2025-12-11"],
-            Provider::Gemini => &["gemini-3-pro-preview", "gemini-3-flash-preview"],
-        }
+    pub fn available_models(&self) -> Vec<PredefinedModel> {
+        PredefinedModel::all()
+            .iter()
+            .copied()
+            .filter(|model| model.provider() == *self)
+            .collect()
     }
 
     /// Parse a model name for this provider.
@@ -266,16 +262,7 @@ impl Provider {
     /// Infer provider from model name prefix.
     #[must_use]
     pub fn from_model_name(model: &str) -> Option<Self> {
-        let lower = model.trim().to_ascii_lowercase();
-        if lower.starts_with("claude-") {
-            Some(Provider::Claude)
-        } else if lower.starts_with("gpt-") {
-            Some(Provider::OpenAI)
-        } else if lower.starts_with("gemini-") {
-            Some(Provider::Gemini)
-        } else {
-            None
-        }
+        PredefinedModel::from_model_id(model).map(PredefinedModel::provider)
     }
 
     /// Get all available providers.
@@ -285,12 +272,123 @@ impl Provider {
     }
 }
 
-/// Whether a model name is verified/known or user-supplied.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum ModelNameKind {
-    Known,
-    #[default]
-    Unverified,
+/// Predefined model options for the model selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PredefinedModel {
+    ClaudeOpus,
+    ClaudeSonnet,
+    ClaudeHaiku,
+    Gpt52Pro,
+    Gpt52,
+    GeminiPro,
+    GeminiFlash,
+}
+
+impl PredefinedModel {
+    #[must_use]
+    pub const fn all() -> &'static [PredefinedModel] {
+        &[
+            PredefinedModel::ClaudeOpus,
+            PredefinedModel::ClaudeSonnet,
+            PredefinedModel::ClaudeHaiku,
+            PredefinedModel::Gpt52Pro,
+            PredefinedModel::Gpt52,
+            PredefinedModel::GeminiPro,
+            PredefinedModel::GeminiFlash,
+        ]
+    }
+
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            PredefinedModel::ClaudeOpus => "Anthropic Claude Opus 4.5",
+            PredefinedModel::ClaudeSonnet => "Anthropic Claude Sonnet 4.5",
+            PredefinedModel::ClaudeHaiku => "Anthropic Claude Haiku 4.5",
+            PredefinedModel::Gpt52Pro => "OpenAI GPT 5.2 Pro",
+            PredefinedModel::Gpt52 => "OpenAI GPT 5.2",
+            PredefinedModel::GeminiPro => "Google Gemini 3 Pro",
+            PredefinedModel::GeminiFlash => "Google Gemini 3 Flash",
+        }
+    }
+
+    /// Short model name without provider prefix (e.g., "Opus 4.5").
+    #[must_use]
+    pub const fn model_name(self) -> &'static str {
+        match self {
+            PredefinedModel::ClaudeOpus => "Opus 4.5",
+            PredefinedModel::ClaudeSonnet => "Sonnet 4.5",
+            PredefinedModel::ClaudeHaiku => "Haiku 4.5",
+            PredefinedModel::Gpt52Pro => "GPT 5.2 Pro",
+            PredefinedModel::Gpt52 => "GPT 5.2",
+            PredefinedModel::GeminiPro => "Gemini 3 Pro",
+            PredefinedModel::GeminiFlash => "Gemini 3 Flash",
+        }
+    }
+
+    /// Provider company name (e.g., "Anthropic", "OpenAI", "Google").
+    #[must_use]
+    pub const fn firm_name(self) -> &'static str {
+        match self {
+            PredefinedModel::ClaudeOpus
+            | PredefinedModel::ClaudeSonnet
+            | PredefinedModel::ClaudeHaiku => "Anthropic",
+            PredefinedModel::Gpt52 | PredefinedModel::Gpt52Pro => "OpenAI",
+            PredefinedModel::GeminiPro | PredefinedModel::GeminiFlash => "Google",
+        }
+    }
+
+    /// Canonical model identifier used for API calls and config.
+    #[must_use]
+    pub const fn model_id(self) -> &'static str {
+        match self {
+            PredefinedModel::ClaudeOpus => "claude-opus-4-5-20251101",
+            PredefinedModel::ClaudeSonnet => "claude-sonnet-4-5-20250514",
+            PredefinedModel::ClaudeHaiku => "claude-haiku-4-5-20251001",
+            PredefinedModel::Gpt52Pro => "gpt-5.2-pro",
+            PredefinedModel::Gpt52 => "gpt-5.2",
+            PredefinedModel::GeminiPro => "gemini-3-pro-preview",
+            PredefinedModel::GeminiFlash => "gemini-3-flash-preview",
+        }
+    }
+
+    #[must_use]
+    pub const fn provider(self) -> Provider {
+        match self {
+            PredefinedModel::ClaudeOpus
+            | PredefinedModel::ClaudeSonnet
+            | PredefinedModel::ClaudeHaiku => Provider::Claude,
+            PredefinedModel::Gpt52 | PredefinedModel::Gpt52Pro => Provider::OpenAI,
+            PredefinedModel::GeminiPro | PredefinedModel::GeminiFlash => Provider::Gemini,
+        }
+    }
+
+    #[must_use]
+    pub fn to_model_name(self) -> ModelName {
+        ModelName::from_predefined(self)
+    }
+
+    #[must_use]
+    pub fn from_model_id(raw: &str) -> Option<Self> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        Self::all()
+            .iter()
+            .copied()
+            .find(|model| model.model_id().eq_ignore_ascii_case(trimmed))
+    }
+
+    #[must_use]
+    pub fn from_provider_and_id(provider: Provider, raw: &str) -> Option<Self> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        Self::all().iter().copied().find(|model| {
+            model.provider() == provider && model.model_id().eq_ignore_ascii_case(trimmed)
+        })
+    }
 }
 
 #[derive(Debug, Error)]
@@ -303,12 +401,14 @@ pub enum ModelParseError {
     OpenAIMinimum(String),
     #[error("Gemini model must start with gemini- (got {0})")]
     GeminiPrefix(String),
+    #[error("unknown model name {0}")]
+    UnknownModel(String),
 }
 
-/// Provider-scoped model name with validation status.
+/// Provider-scoped model name.
 ///
-/// This type prevents mixing model names across providers and makes unknown names explicit.
-/// The [`ModelNameKind`] distinguishes verified models from user-supplied ones.
+/// This type prevents mixing model names across providers and ensures only
+/// known models can be constructed.
 ///
 /// # Memory Optimization
 ///
@@ -321,13 +421,11 @@ pub enum ModelParseError {
 /// - Claude: must start with `claude-`
 /// - OpenAI: must start with `gpt-5` (GPT-5.x series minimum)
 /// - Gemini: must start with `gemini-`
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ModelName {
     provider: Provider,
     #[serde(rename = "model")]
     name: Cow<'static, str>,
-    #[serde(default)]
-    kind: ModelNameKind,
 }
 
 impl ModelName {
@@ -351,31 +449,18 @@ impl ModelName {
             return Err(ModelParseError::GeminiPrefix(trimmed.to_string()));
         }
 
-        if let Some(known) = provider
-            .available_models()
-            .iter()
-            .find(|model| model.eq_ignore_ascii_case(trimmed))
-        {
-            return Ok(Self {
-                provider,
-                name: Cow::Borrowed(*known),
-                kind: ModelNameKind::Known,
-            });
-        }
+        let Some(model) = PredefinedModel::from_provider_and_id(provider, trimmed) else {
+            return Err(ModelParseError::UnknownModel(trimmed.to_string()));
+        };
 
-        Ok(Self {
-            provider,
-            name: Cow::Owned(trimmed.to_string()),
-            kind: ModelNameKind::Unverified,
-        })
+        Ok(Self::from_predefined(model))
     }
 
     #[must_use]
-    pub const fn known(provider: Provider, name: &'static str) -> Self {
+    pub const fn from_predefined(model: PredefinedModel) -> Self {
         Self {
-            provider,
-            name: Cow::Borrowed(name),
-            kind: ModelNameKind::Known,
+            provider: model.provider(),
+            name: Cow::Borrowed(model.model_id()),
         }
     }
 
@@ -390,14 +475,32 @@ impl ModelName {
     }
 
     #[must_use]
-    pub const fn kind(&self) -> ModelNameKind {
-        self.kind
+    pub fn predefined(&self) -> PredefinedModel {
+        PredefinedModel::from_provider_and_id(self.provider, self.as_str())
+            .expect("ModelName should always be constructed from a known model")
     }
 }
 
 impl std::fmt::Display for ModelName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.name.fmt(f)
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawModelName {
+            provider: Provider,
+            #[serde(rename = "model")]
+            model: String,
+        }
+
+        let raw = RawModelName::deserialize(deserializer)?;
+        ModelName::parse(raw.provider, &raw.model).map_err(serde::de::Error::custom)
     }
 }
 
@@ -690,19 +793,16 @@ impl OutputLimits {
         })
     }
 
-    /// Get max output tokens.
     #[must_use]
     pub const fn max_output_tokens(&self) -> u32 {
         self.max_output_tokens
     }
 
-    /// Get thinking budget if enabled.
     #[must_use]
     pub const fn thinking_budget(&self) -> Option<u32> {
         self.thinking_budget
     }
 
-    /// Check if thinking is enabled.
     #[must_use]
     pub const fn has_thinking(&self) -> bool {
         self.thinking_budget.is_some()
@@ -713,8 +813,10 @@ impl OutputLimits {
 pub enum StreamEvent {
     /// Text content delta.
     TextDelta(String),
-    /// Provider reasoning content delta (Claude extended thinking or OpenAI summaries).
+    /// Provider reasoning content delta (Claude extended thinking or OpenAI reasoning summaries).
     ThinkingDelta(String),
+    /// Encrypted thinking signature for API replay (Claude extended thinking).
+    ThinkingSignature(String),
     /// Tool call started - emitted when a `tool_use` content block begins.
     ToolCallStart {
         id: String,
@@ -776,7 +878,6 @@ impl ApiUsage {
         self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
     }
 
-    /// Check if this usage has any data (non-zero tokens).
     #[must_use]
     pub const fn has_data(&self) -> bool {
         self.input_tokens > 0 || self.output_tokens > 0
@@ -803,7 +904,6 @@ pub struct ToolDefinition {
 }
 
 impl ToolDefinition {
-    /// Create a new tool definition.
     pub fn new(
         name: impl Into<String>,
         description: impl Into<String>,
@@ -831,7 +931,6 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
-    /// Create a new tool call.
     pub fn new(
         id: impl Into<String>,
         name: impl Into<String>,
@@ -845,7 +944,6 @@ impl ToolCall {
         }
     }
 
-    /// Create a new tool call with an optional thought signature.
     pub fn new_with_thought_signature(
         id: impl Into<String>,
         name: impl Into<String>,
@@ -874,7 +972,6 @@ pub struct ToolResult {
 }
 
 impl ToolResult {
-    /// Create a successful tool result.
     pub fn success(
         tool_call_id: impl Into<String>,
         tool_name: impl Into<String>,
@@ -888,7 +985,6 @@ impl ToolResult {
         }
     }
 
-    /// Create an error tool result.
     pub fn error(
         tool_call_id: impl Into<String>,
         tool_name: impl Into<String>,
@@ -987,6 +1083,10 @@ impl AssistantMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkingMessage {
     content: NonEmptyString,
+    /// Encrypted signature for replaying thinking blocks to the API.
+    /// Required by Claude API when continuing conversations with thinking enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
     timestamp: SystemTime,
     #[serde(flatten)]
     model: ModelName,
@@ -997,6 +1097,17 @@ impl ThinkingMessage {
     pub fn new(model: ModelName, content: NonEmptyString) -> Self {
         Self {
             content,
+            signature: None,
+            timestamp: SystemTime::now(),
+            model,
+        }
+    }
+
+    #[must_use]
+    pub fn with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self {
+        Self {
+            content,
+            signature: Some(signature),
             timestamp: SystemTime::now(),
             model,
         }
@@ -1005,6 +1116,11 @@ impl ThinkingMessage {
     #[must_use]
     pub fn content(&self) -> &str {
         self.content.as_str()
+    }
+
+    #[must_use]
+    pub fn signature(&self) -> Option<&str> {
+        self.signature.as_deref()
     }
 
     #[must_use]
@@ -1054,19 +1170,25 @@ impl Message {
         Self::Assistant(AssistantMessage::new(model, content))
     }
 
-    /// Create a thinking message (provider reasoning content).
     #[must_use]
     pub fn thinking(model: ModelName, content: NonEmptyString) -> Self {
         Self::Thinking(ThinkingMessage::new(model, content))
     }
 
-    /// Create a tool use message (assistant requesting a tool call).
+    #[must_use]
+    pub fn thinking_with_signature(
+        model: ModelName,
+        content: NonEmptyString,
+        signature: String,
+    ) -> Self {
+        Self::Thinking(ThinkingMessage::with_signature(model, content, signature))
+    }
+
     #[must_use]
     pub fn tool_use(call: ToolCall) -> Self {
         Self::ToolUse(call)
     }
 
-    /// Create a tool result message (result of executing a tool).
     #[must_use]
     pub fn tool_result(result: ToolResult) -> Self {
         Self::ToolResult(result)
@@ -1111,13 +1233,11 @@ impl CacheableMessage {
         }
     }
 
-    /// Create a message with no cache hint.
     #[must_use]
     pub fn plain(message: Message) -> Self {
         Self::new(message, CacheHint::None)
     }
 
-    /// Create a message marked for caching.
     #[must_use]
     pub fn cached(message: Message) -> Self {
         Self::new(message, CacheHint::Ephemeral)

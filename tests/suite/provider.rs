@@ -1,7 +1,7 @@
 //! Provider and API configuration tests
 
 use forge_engine::{ApiConfig, ApiKey};
-use forge_types::{ModelName, ModelNameKind, Provider};
+use forge_types::{ModelName, ModelParseError, PredefinedModel, Provider};
 
 #[test]
 fn provider_parse_aliases() {
@@ -45,22 +45,21 @@ fn provider_env_vars() {
 #[test]
 fn model_name_parse_known() {
     let model = ModelName::parse(Provider::Claude, "claude-opus-4-5-20251101").unwrap();
-    assert_eq!(model.kind(), ModelNameKind::Known);
+    assert_eq!(model.predefined(), PredefinedModel::ClaudeOpus);
     assert_eq!(model.provider(), Provider::Claude);
 }
 
 #[test]
 fn model_name_parse_known_case_insensitive() {
     let model = ModelName::parse(Provider::OpenAI, "GPT-5.2").unwrap();
-    assert_eq!(model.kind(), ModelNameKind::Known);
+    assert_eq!(model.predefined(), PredefinedModel::Gpt52);
     assert_eq!(model.as_str(), "gpt-5.2"); // Normalized to known spelling
 }
 
 #[test]
 fn model_name_parse_unknown() {
-    let model = ModelName::parse(Provider::Claude, "claude-future-model").unwrap();
-    assert_eq!(model.kind(), ModelNameKind::Unverified);
-    assert_eq!(model.as_str(), "claude-future-model");
+    let model = ModelName::parse(Provider::Claude, "claude-future-model");
+    assert!(matches!(model, Err(ModelParseError::UnknownModel(_))));
 }
 
 #[test]
@@ -74,8 +73,7 @@ fn model_name_parse_empty_fails() {
 
 #[test]
 fn model_name_known_constructor() {
-    let model = ModelName::known(Provider::OpenAI, "gpt-4o");
-    assert_eq!(model.kind(), ModelNameKind::Known);
+    let model = ModelName::from_predefined(PredefinedModel::Gpt52);
     assert_eq!(model.provider(), Provider::OpenAI);
 }
 
@@ -111,13 +109,13 @@ fn api_config_rejects_provider_mismatch() {
 #[test]
 fn api_config_accessors() {
     let key = ApiKey::OpenAI("sk-secret".to_string());
-    let model = ModelName::known(Provider::OpenAI, "gpt-4o");
+    let model = ModelName::from_predefined(PredefinedModel::Gpt52);
 
     let config = ApiConfig::new(key, model).unwrap();
 
     assert_eq!(config.provider(), Provider::OpenAI);
     assert_eq!(config.api_key(), "sk-secret");
-    assert_eq!(config.model().as_str(), "gpt-4o");
+    assert_eq!(config.model().as_str(), "gpt-5.2");
 }
 
 #[test]
@@ -126,7 +124,7 @@ fn provider_default_models_exist() {
         let model = provider.default_model();
         assert!(!model.as_str().is_empty());
         assert_eq!(model.provider(), *provider);
-        assert_eq!(model.kind(), ModelNameKind::Known);
+        assert_eq!(model.predefined().provider(), *provider);
     }
 }
 
@@ -135,11 +133,12 @@ fn provider_available_models_not_empty() {
     for provider in Provider::all() {
         let models = provider.available_models();
         assert!(!models.is_empty(), "{provider:?} has no available models");
+        assert!(models.iter().all(|model| model.provider() == *provider));
     }
 }
 
 #[test]
 fn model_name_display() {
-    let model = ModelName::known(Provider::Claude, "claude-opus-4-5-20251101");
+    let model = ModelName::from_predefined(PredefinedModel::ClaudeOpus);
     assert_eq!(format!("{model}"), "claude-opus-4-5-20251101");
 }

@@ -125,7 +125,6 @@ pub async fn check(url: &Url, config: &ResolvedConfig) -> Result<RobotsResult, W
     }
 }
 
-/// Evaluate a cached robots entry.
 fn evaluate_cached(robots: &CachedRobots, path: &str, user_agent: &str) -> RobotsResult {
     match robots {
         CachedRobots::Parsed(r) => r.check(path, user_agent),
@@ -133,7 +132,6 @@ fn evaluate_cached(robots: &CachedRobots, path: &str, user_agent: &str) -> Robot
     }
 }
 
-/// Cache a robots.txt result.
 async fn cache_robots(origin: &str, robots: CachedRobots, ttl: Duration, max_entries: usize) {
     let entry = CacheEntry {
         entry: robots,
@@ -161,7 +159,6 @@ async fn cache_robots(origin: &str, robots: CachedRobots, ttl: Duration, max_ent
     }
 }
 
-/// Compute the origin key for caching.
 fn compute_origin(url: &Url) -> String {
     let scheme = url.scheme();
     let host = url.host_str().unwrap_or("");
@@ -186,7 +183,6 @@ enum FetchResult {
     AllowAll,
 }
 
-/// Fetch robots.txt for a URL's origin.
 ///
 /// Handles FR-WF-ROBOTS-REDIR-02: Allow http→https redirect, same host/port.
 async fn fetch_robots(url: &Url, config: &ResolvedConfig) -> Result<FetchResult, WebFetchError> {
@@ -316,7 +312,6 @@ async fn fetch_robots(url: &Url, config: &ResolvedConfig) -> Result<FetchResult,
     }
 }
 
-/// Build the robots.txt URL for an origin.
 fn build_robots_url(url: &Url) -> Result<Url, WebFetchError> {
     let scheme = url.scheme();
     let host = url
@@ -339,7 +334,6 @@ fn build_robots_url(url: &Url) -> Result<Url, WebFetchError> {
         .map_err(|e| WebFetchError::new(ErrorCode::InvalidUrl, e.to_string(), false))
 }
 
-/// Validate a redirect for robots.txt fetching.
 ///
 /// FR-WF-ROBOTS-REDIR-02: Allow http→https upgrade, but host/port must match exactly.
 pub fn is_valid_robots_redirect(original: &Url, redirect: &Url) -> bool {
@@ -436,7 +430,6 @@ pub struct RobotsGroup {
 }
 
 impl Robots {
-    /// Check if a path is allowed for a user-agent.
     ///
     /// Implements FR-WF-ROBOTS-UA-01 through FR-WF-ROBOTS-UA-03:
     /// - Most specific user-agent group wins (longest substring match)
@@ -498,7 +491,6 @@ impl Robots {
 }
 
 impl RobotsGroup {
-    /// Check if path is disallowed, returning the matching rule if so.
     ///
     /// FR-WF-ROBOTS-MATCH-01: Path prefix matching.
     /// FR-WF-ROBOTS-MATCH-02: Wildcard (*) support.
@@ -546,14 +538,12 @@ impl RobotsGroup {
     }
 }
 
-/// Calculate the effective length of a pattern for comparison.
 ///
 /// Wildcards (*) and anchors ($) don't contribute to length.
 fn effective_length(pattern: &str) -> usize {
     pattern.chars().filter(|&c| c != '*' && c != '$').count()
 }
 
-/// Check if a path matches a robots.txt rule pattern.
 ///
 /// Supports:
 /// - Prefix matching (default)
@@ -578,7 +568,6 @@ fn path_matches(path: &str, pattern: &str) -> bool {
     }
 }
 
-/// Match a path against a pattern with wildcards.
 fn wildcard_match(path: &str, pattern: &str, anchored: bool) -> bool {
     let parts: Vec<&str> = pattern.split('*').collect();
 
@@ -642,7 +631,6 @@ fn wildcard_match(path: &str, pattern: &str, anchored: bool) -> bool {
     true
 }
 
-/// Parse robots.txt content per RFC 9309.
 ///
 /// Implements FR-WF-ROBOTS-PARSE-01:
 /// - Permissive line-level parsing
@@ -714,7 +702,6 @@ pub fn parse(content: &str) -> Result<Robots, WebFetchError> {
     Ok(robots)
 }
 
-/// Clear the robots.txt cache (for testing).
 #[cfg(test)]
 pub async fn clear_cache() {
     let mut cache = cache().write().await;

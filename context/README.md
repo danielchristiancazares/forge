@@ -1,8 +1,8 @@
 # forge-context
 
-> Note: This is an implementation-focused overview of the current summarization system; the authoritative spec is `docs/CONTEXT_INFINITY_SRD.md`.
+> Note: This is an implementation-focused overview of the current distillation system; the authoritative spec is `docs/CONTEXT_INFINITY_SRD.md`.
 
-Context Infinity™ is Forge's system for managing unlimited conversation context with LLMs. It preserves complete conversation history while automatically summarizing older content to fit within model-specific token limits.
+Context Infinity™ is Forge's system for managing unlimited conversation context with LLMs. It preserves complete conversation history while automatically distilling older content to fit within model-specific token limits.
 
 ## LLM-TOC
 <!-- toc:start -->
@@ -15,8 +15,8 @@ Context Infinity™ is Forge's system for managing unlimited conversation contex
 | 98-166 | Core Concepts |
 | 167-233 | Token Budget Calculation |
 | 234-324 | Context Building Algorithm |
-| 325-355 | When Summarization Triggers |
-| 356-413 | Summarization Process |
+| 325-355 | When Distillation Triggers |
+| 356-413 | Distillation Process |
 | 414-443 | Model Switching (Context Adaptation) |
 | 444-549 | Stream Journal (Crash Recovery) |
 | 550-594 | Token Counting |
@@ -38,7 +38,7 @@ Context Infinity™ is Forge's system for managing unlimited conversation contex
 
 ## Overview
 
-The core principle is **never discard, always compress**: messages are never deleted from history. Instead, when the context window fills up, older messages are summarized into compact representations that preserve essential information.
+The core principle is **never discard, always compress**: messages are never deleted from history. Instead, when the context window fills up, older messages are distilled into compact representations that preserve essential information.
 
 ```
                     ContextManager
@@ -55,11 +55,11 @@ WorkingContext -----> API Messages
 
 ## Design Principles
 
-1. **Append-only history**: Messages are never deleted. Summaries link to original messages, enabling restoration when switching to models with larger context windows.
+1. **Append-only history**: Messages are never deleted. Distillates link to original messages, enabling restoration when switching to models with larger context windows.
 
 2. **Type-driven correctness**: `PreparedContext` serves as a proof token that context was successfully built within budget before an API call.
 
-3. **Explicit summarization**: The manager signals when summarization is needed rather than silently truncating. Callers control when and how summarization occurs.
+3. **Explicit distillation**: The manager signals when distillation is needed rather than silently truncating. Callers control when and how distillation occurs.
 
 4. **Write-ahead durability**: Stream deltas are persisted to SQLite before display, ensuring recoverability after crashes.
 
@@ -70,9 +70,9 @@ WorkingContext -----> API Messages
 | Component | Purpose |
 |-----------|---------|
 | `ContextManager` | Orchestrates all context management operations |
-| `FullHistory` | Append-only storage for messages and summaries |
+| `FullHistory` | Append-only storage for messages and distillates |
 | `TokenCounter` | Accurate token counting via tiktoken (cl100k_base) |
-| `ModelRegistry` | Model-specific token limits with prefix matching |
+| `ModelRegistry` | Model-specific token limits from the predefined catalog |
 | `WorkingContext` | Derived view of what to send to the API |
 | `StreamJournal` | SQLite-backed crash recovery for streaming responses |
 | `Librarian` | Intelligent fact extraction and retrieval using Gemini Flash |
@@ -84,12 +84,12 @@ WorkingContext -----> API Messages
 context/src/
   lib.rs              # Module exports and public API
   manager.rs          # ContextManager - main orchestrator
-  history.rs          # FullHistory, MessageId, SummaryId, Summary
+  history.rs          # FullHistory, MessageId, DistillateId, Distillate
   model_limits.rs     # ModelLimits, ModelRegistry
   token_counter.rs    # TokenCounter (tiktoken wrapper)
   working_context.rs  # WorkingContext, ContextSegment, ContextUsage
   stream_journal.rs   # StreamJournal, ActiveJournal (crash recovery)
-  summarization.rs    # LLM-based summarization via cheaper models
+  distillation.rs     # LLM-based distillation via cheaper models
   tool_journal.rs     # ToolJournal (tool batch crash recovery)
   librarian.rs        # Librarian - intelligent fact extraction/retrieval
   fact_store.rs       # FactStore - SQLite persistence for facts
@@ -104,7 +104,7 @@ History is **never truncated**. Every message is stored with:
 - `MessageId`: Monotonically increasing identifier (0, 1, 2, ...)
 - `Message`: The actual content (User, Assistant, or System)
 - `token_count`: Cached token count for the message
-- `summary_id`: Optional link to a summary that covers this message
+- `distillate_id`: Optional link to a Distillate that covers this message
 
 ```rust
 pub enum HistoryEntry {
@@ -114,48 +114,48 @@ pub enum HistoryEntry {
         token_count: u32,
         created_at: SystemTime,
     },
-    Summarized {
+    Distilled {
         id: MessageId,
         message: Message,
         token_count: u32,
-        summary_id: SummaryId,  // Links to the covering summary
+        distillate_id: DistillateId,  // Links to the covering Distillate
         created_at: SystemTime,
     },
 }
 ```
 
-When messages are summarized, they transition from `Original` to `Summarized` but remain in history. The original content is always accessible.
+When messages are distilled, they transition from `Original` to `Distilled` but remain in history. The original content is always accessible.
 
-### Summaries
+### Distillates
 
-A `Summary` represents a compressed version of a contiguous range of messages:
+A `Distillate` represents a distilled version of a contiguous range of messages:
 
 ```rust
-pub struct Summary {
-    id: SummaryId,
+pub struct Distillate {
+    id: DistillateId,
     covers: Range<MessageId>,      // [start, end) of messages covered
-    content: NonEmptyString,       // The summarized text
-    token_count: u32,              // Tokens in the summary
+    content: NonEmptyString,       // The distilled text
+    token_count: u32,              // Tokens in the Distillate
     original_tokens: u32,          // Tokens in original messages
     created_at: SystemTime,
     generated_by: String,          // Model that generated this
 }
 ```
 
-Key invariant: Summaries must cover **contiguous** message ranges. Non-contiguous summarization is not supported to maintain chronological coherence.
+Key invariant: distillates must cover **contiguous** message ranges. Non-contiguous distillation is not supported to maintain chronological coherence.
 
 ### Working Context (Derived View)
 
 The `WorkingContext` is rebuilt on-demand and represents what will actually be sent to the LLM API. It mixes:
 
 1. **Original messages** - sent verbatim
-2. **Summaries** - injected as system messages with `[Earlier conversation summary]` prefix
+2. **Distillates** - injected as system messages with `[Earlier conversation Distillate]` prefix
 
 ```rust
 pub enum ContextSegment {
     Original { id: MessageId, tokens: u32 },
-    Summarized {
-        summary_id: SummaryId,
+    Distilled {
+        distillate_id: DistillateId,
         replaces: Vec<MessageId>,  // Original IDs this replaces
         tokens: u32,
     },
@@ -203,7 +203,9 @@ The safety margin (5% capped at 4096) accounts for:
 When a user configures a smaller output limit than the model's maximum, more tokens become available for input context. Use `set_output_limit()` to adjust:
 
 ```rust
-let mut manager = ContextManager::new("claude-opus-4-5-20251101");
+use forge_types::PredefinedModel;
+
+let mut manager = ContextManager::new(PredefinedModel::ClaudeOpus.to_model_name());
 
 // Model has 64k max output, but user configured 16k
 manager.set_output_limit(16_000);
@@ -218,18 +220,15 @@ The reserved output is clamped to the model's `max_output` - requesting more tha
 
 ### Known Model Limits
 
-| Model Prefix | Context Window | Max Output |
-|--------------|---------------|------------|
-| `claude-opus-4-5` | 200,000 | 64,000 |
-| `claude-sonnet-4-5` | 200,000 | 64,000 |
-| `claude-haiku-4-5` | 200,000 | 64,000 |
+| Model | Context Window | Max Output |
+|-------|---------------|------------|
+| `claude-opus-4-5-20251101` | 200,000 | 64,000 |
+| `claude-sonnet-4-5-20250514` | 200,000 | 64,000 |
+| `claude-haiku-4-5-20251001` | 200,000 | 64,000 |
 | `gpt-5.2-pro` | 400,000 | 128,000 |
 | `gpt-5.2` | 400,000 | 128,000 |
-| `gemini-3-pro` | 1,048,576 | 65,536 |
-| `gemini-3-flash` | 1,048,576 | 65,536 |
-| Unknown | 8,192 | 4,096 |
-
-Model lookup uses **prefix matching** - `claude-opus-4-5-20251101` matches `claude-opus-4-5`.
+| `gemini-3-pro-preview` | 1,048,576 | 65,536 |
+| `gemini-3-flash-preview` | 1,048,576 | 65,536 |
 
 ## Context Building Algorithm
 
@@ -237,32 +236,32 @@ The `build_working_context()` algorithm runs in five phases:
 
 ### Phase 1: Reserve Recent Messages
 
-The N most recent messages (default: 4) are **always included**. These represent the immediate conversation context and are never summarized.
+The N most recent messages (default: 4) are **always included**. These represent the immediate conversation context and are never distilled.
 
 ```rust
-let preserve_count = self.summarization_config.preserve_recent; // 4
+let preserve_count = self.distillation_config.preserve_recent; // 4
 let recent_start = entries.len().saturating_sub(preserve_count);
 let tokens_for_recent: u32 = entries[recent_start..].iter()
     .map(|e| e.token_count())
     .sum();
 ```
 
-If recent messages alone exceed the budget, summarization fails with an error.
+If recent messages alone exceed the budget, distillation fails with an error.
 
 ### Phase 2: Partition Older Messages into Blocks
 
 Older messages are grouped into contiguous blocks:
 
-- **Unsummarized Block**: Consecutive messages with no summary
-- **Summarized Block**: Consecutive messages covered by the same summary
+- **Undistilled Block** (`Undistilled`): Consecutive messages with no Distillate
+- **Distilled Block** (`Distilled`): Consecutive messages covered by the same Distillate
 
 ```rust
 enum Block {
-    Unsummarized(Vec<(MessageId, u32)>),
-    Summarized {
-        summary_id: SummaryId,
+    Undistilled(Vec<(MessageId, u32)>),
+    Distilled {
+        distillate_id: DistillateId,
         messages: Vec<(MessageId, u32)>,
-        summary_tokens: u32,
+        distillate_tokens: u32,
     },
 }
 ```
@@ -277,40 +276,40 @@ remaining_budget = effective_budget - tokens_for_recent
 
 For each block (newest first):
 
-1. **Summarized Block**:
+1. **Distilled Block** (`Distilled`):
    - If original messages fit: include originals (better quality)
-   - Else if summary fits: include summary
-   - Else: skip (will need re-summarization)
+   - Else if Distillate fits: include Distillate
+   - Else: skip (will need re-distillation)
 
-2. **Unsummarized Block**:
+2. **Undistilled Block** (`Undistilled`):
    - Include as many recent messages as fit
-   - Mark the rest as needing summarization
+   - Mark the rest as needing distillation
 
 ### Phase 4: Assemble Working Context
 
 Selected segments are arranged in chronological order:
 
 ```text
-[Older summaries/messages] -> [Recent messages always included]
+[Older distillates/messages] -> [Recent messages always included]
 ```
 
-### Phase 5: Return or Request Summarization
+### Phase 5: Return or Request Distillation
 
 If all content fits: return `Ok(WorkingContext)`
 
-If unsummarized messages don't fit:
+If Undistilled messages don't fit:
 
 ```rust
-Err(ContextBuildError::SummarizationNeeded(SummarizationNeeded {
+Err(ContextBuildError::DistillationNeeded(DistillationNeeded {
     excess_tokens: u32,
-    messages_to_summarize: Vec<MessageId>,
+    messages_to_distill: Vec<MessageId>,
     suggestion: String,
 }))
 ```
 
 ### Error: Recent Messages Too Large
 
-If the N most recent messages alone exceed the budget, summarization cannot help. This is an unrecoverable error:
+If the N most recent messages alone exceed the budget, distillation cannot help. This is an unrecoverable error:
 
 ```rust
 Err(ContextBuildError::RecentMessagesTooLarge {
@@ -322,13 +321,13 @@ Err(ContextBuildError::RecentMessagesTooLarge {
 
 The user must either reduce their input or switch to a model with a larger context window.
 
-## When Summarization Triggers
+## When Distillation Triggers
 
-Summarization is triggered when:
+Distillation is triggered when:
 
-1. **Context budget exceeded**: `build_working_context()` returns `SummarizationNeeded`
+1. **Context budget exceeded**: `build_working_context()` returns `DistillationNeeded`
 2. **Model switch to smaller context**: Switching from 200k to 8k model
-3. **Manual request**: User invokes `/summarize` command
+3. **Manual request**: User invokes `/distill` command
 
 The decision flow:
 
@@ -338,48 +337,48 @@ push_message() -> usage_status()
                       v
                +------+------+
                |             |
-          Ready(usage)   NeedsSummarization
+          Ready(usage)   NeedsDistillation
                |             |
                v             v
-          Continue      prepare_summarization()
+          Continue      prepare_distillation()
                              |
                              v
-                    PendingSummarization
+                    PendingDistillation
                              |
                              v
-                    generate_summary() [async]
+                    generate_distillation() [async]
                              |
                              v
-                    complete_summarization()
+                    complete_distillation()
 ```
 
-## Summarization Process
+## Distillation Process
 
 ### Configuration
 
 ```rust
-pub struct SummarizationConfig {
+pub struct DistillationConfig {
     pub target_ratio: f32,      // 0.15 = compress to 15% of original
-    pub preserve_recent: usize, // 4 = never summarize last 4 messages
+    pub preserve_recent: usize, // 4 = never distill last 4 messages
 }
 ```
 
-### Prepare Summarization
+### Prepare Distillation
 
 ```rust
-pub fn prepare_summarization(&mut self, message_ids: &[MessageId]) 
-    -> Option<PendingSummarization>
+pub fn prepare_distillation(&mut self, message_ids: &[MessageId]) 
+    -> Option<PendingDistillation>
 ```
 
 1. Sort and deduplicate message IDs
-2. Extract first contiguous run (summaries must be contiguous)
+2. Extract first contiguous run (distillations must be contiguous)
 3. Calculate target tokens: `original_tokens * target_ratio`
-4. Allocate a `SummaryId`
-5. Return `PendingSummarization` with messages to summarize
+4. Allocate a `DistillateId`
+5. Return `PendingDistillation` with messages to distill
 
-### Generate Summary (Async)
+### Generate Distillation (Async)
 
-Summarization uses cheaper/faster models:
+Distillation uses cheaper/faster models:
 
 - **Claude**: `claude-haiku-4-5`
 - **OpenAI**: `gpt-5-nano`
@@ -394,22 +393,22 @@ The prompt instructs the model to:
 - Preserve essential code snippets and file paths
 - Note unresolved questions or pending actions
 
-### Complete Summarization
+### Complete Distillation
 
 ```rust
-pub fn complete_summarization(
+pub fn complete_distillation(
     &mut self,
-    summary_id: SummaryId,
-    scope: SummarizationScope,
+    distillate_id: DistillateId,
+    scope: DistillationScope,
     content: NonEmptyString,
     generated_by: String,
 )
 ```
 
-1. Count tokens in the generated summary
-2. Create `Summary` with metadata
+1. Count tokens in the generated distillate
+2. Create `Distillate` with metadata
 3. Add to history
-4. Mark covered messages as `Summarized`
+4. Mark covered messages as `Distilled`
 
 ## Model Switching (Context Adaptation)
 
@@ -421,7 +420,7 @@ pub enum ContextAdaptation {
     Shrinking {
         old_budget: u32,
         new_budget: u32,
-        needs_summarization: bool,
+        needs_distillation: bool,
     },
     Expanding {
         old_budget: u32,
@@ -433,13 +432,13 @@ pub enum ContextAdaptation {
 
 ### Shrinking (e.g., Claude 200k -> GPT-4 8k)
 
-If current context exceeds new budget, `needs_summarization` is true. The app should trigger summarization before the next API call.
+If current context exceeds new budget, `needs_distillation` is true. The app should trigger distillation before the next API call.
 
 ### Expanding (e.g., GPT-4 8k -> Claude 200k)
 
-Previously summarized messages can be restored to their originals. The `try_restore_messages()` method returns how many messages would use originals in the new budget.
+Previously distilled messages can be restored to their originals. The `try_restore_messages()` method returns how many messages would use originals in the new budget.
 
-This is **automatic** - no re-summarization needed. The working context builder prefers originals when budget allows.
+This is **automatic** - no re-distillation needed. The working context builder prefers originals when budget allows.
 
 ## Stream Journal (Crash Recovery)
 
@@ -564,15 +563,15 @@ Methods like `append_text()` require `&mut ActiveJournal`, ensuring:
 
 ## Token Counting
 
-Token counting uses tiktoken's `cl100k_base` encoding, compatible with GPT-4, GPT-3.5, and Claude models.
+Token counting uses tiktoken's `o200k_base` encoding, accurate for `gpt-5.2` and `gpt-5.2-pro`.
 
 ### Token Counting Accuracy
 
-**Important**: Token counts are **approximate**. The `cl100k_base` encoding provides:
+**Important**: Token counts are **approximate**. The `o200k_base` encoding provides:
 
-- **Exact counts** for GPT-4 and GPT-3.5 models
-- **Approximate counts** for Claude models (~5-10% variance, Anthropic uses a different tokenizer)
-- **Approximate counts** for GPT-5.x models (may use updated tokenization)
+- **Accurate counts** for `gpt-5.2` and `gpt-5.2-pro`
+- **Approximate counts** for Claude models (~5-10% variance, Anthropic uses a proprietary tokenizer)
+- **Approximate counts** for Gemini models (Google uses a proprietary tokenizer)
 
 The 5% safety margin in `ModelLimits::effective_input_budget()` compensates for these inaccuracies. For precise counts, use the provider's native token counting endpoint when available.
 
@@ -590,6 +589,7 @@ impl TokenCounter {
 ```
 
 Per-message overhead: **~4 tokens** for role markers and formatting. This approximation covers:
+
 - Role name (e.g., "user", "assistant")
 - Message structure/delimiters
 
@@ -601,7 +601,7 @@ The tiktoken encoder is expensive to initialize. `TokenCounter` uses a singleton
 static ENCODER: OnceLock<Option<CoreBPE>> = OnceLock::new();
 
 fn get_encoder() -> Option<&'static CoreBPE> {
-    ENCODER.get_or_init(|| cl100k_base().ok()).as_ref()
+    ENCODER.get_or_init(|| o200k_base().ok()).as_ref()
 }
 ```
 
@@ -615,7 +615,7 @@ The `ContextUsage` struct provides UI-friendly statistics:
 pub struct ContextUsage {
     pub used_tokens: u32,
     pub budget_tokens: u32,
-    pub summarized_segments: usize,
+    pub distilled_segments: usize,
 }
 ```
 
@@ -643,19 +643,22 @@ In the Forge application, persistent files live under the OS local data director
 ### History Serialization
 
 ```rust
+use forge_types::PredefinedModel;
+
 // Save
 context_manager.save("<data_dir>/history.json")?;
 
 // Load
-let manager = ContextManager::load("<data_dir>/history.json", "claude-opus-4")?;
+let manager =
+    ContextManager::load("<data_dir>/history.json", PredefinedModel::ClaudeOpus.to_model_name())?;
 ```
 
 The serialization format validates:
 
 - Message IDs are sequential (0, 1, 2, ...)
-- Summary IDs are sequential
-- Summary ranges reference valid messages
-- Summarized messages reference valid summaries
+- Distillate IDs are sequential
+- Distillate ranges reference valid messages
+- Distilled (`Distilled`) messages reference valid Distillates
 
 ### Stream Journal Location
 
@@ -686,10 +689,10 @@ The system follows Forge's type-driven philosophy (see `DESIGN.md`):
 | Type | Purpose |
 |------|---------|
 | `MessageId` | Proof of message existence in history |
-| `SummaryId` | Proof of summary existence |
+| `DistillateId` | Proof of Distillate existence |
 | `ActiveJournal` | Proof that a stream is in-flight (RAII) |
 | `PreparedContext` | Proof that context fits within budget |
-| `SummarizationNeeded` | Explicit error requiring caller action |
+| `DistillationNeeded` | Explicit error requiring caller action |
 | `NonEmptyString` | Message content guaranteed non-empty |
 
 ### PreparedContext as Proof
@@ -697,7 +700,7 @@ The system follows Forge's type-driven philosophy (see `DESIGN.md`):
 The `prepare()` method returns a proof that context is ready:
 
 ```rust
-pub fn prepare(&self) -> Result<PreparedContext<'_>, SummarizationNeeded>
+pub fn prepare(&self) -> Result<PreparedContext<'_>, DistillationNeeded>
 ```
 
 `PreparedContext` can only be created if the working context fits within budget. Callers cannot accidentally send over-budget context to the API.
@@ -707,15 +710,15 @@ pub fn prepare(&self) -> Result<PreparedContext<'_>, SummarizationNeeded>
 ### Adding a New Provider
 
 1. Add model limits to `KNOWN_MODELS` in `model_limits.rs`
-2. Add summarization model in `summarization.rs`
-3. Implement `generate_summary_*` for the new provider
+2. Add distillation model in `distillation.rs`
+3. Implement `generate_distillation_*` for the new provider
 
-### Adjusting Summarization Behavior
+### Adjusting Distillation Behavior
 
-Modify `SummarizationConfig`:
+Modify `DistillationConfig`:
 
 ```rust
-SummarizationConfig {
+DistillationConfig {
     target_ratio: 0.10,   // More aggressive compression
     preserve_recent: 6,   // Keep more recent messages
 }
@@ -732,17 +735,17 @@ fn count_message(&self, msg: &Message) -> u32;
 
 ## Limitations
 
-1. **Summarization requires API call**: Summarization uses LLM calls (`claude-haiku-4-5`, `gpt-5-nano`, or `gemini-3-pro-preview`), adding latency and cost.
+1. **Distillation requires API call**: Distillation uses LLM calls (`claude-haiku-4-5`, `gpt-5-nano`, or `gemini-3-pro-preview`), adding latency and cost.
 
-2. **Contiguous ranges only**: Summaries must cover contiguous message ranges. Selective summarization is not supported to maintain chronological coherence.
+2. **Contiguous ranges only**: distillates must cover contiguous message ranges. Selective distillation is not supported to maintain chronological coherence.
 
-3. **Token counting approximation**: The `cl100k_base` encoding is accurate for GPT models but approximate for Claude (~5-10% variance). The 5% safety margin compensates.
+3. **Token counting approximation**: The `o200k_base` encoding is accurate for `gpt-5.2` / `gpt-5.2-pro` but approximate for Claude and Gemini (~5-10% variance). The 5% safety margin compensates.
 
-4. **No streaming summarization**: Summaries are generated with non-streaming API calls (60 second timeout).
+4. **No streaming distillation**: distillates are generated with non-streaming API calls (60 second timeout).
 
-5. **Single summary per range**: A message range can only have one summary. Re-summarization replaces the existing summary (orphaning the old one).
+5. **Single Distillate per range**: A message range can only have one Distillate. Re-distillation replaces the existing Distillate (orphaning the old one).
 
-6. **Recent messages cannot be summarized**: The N most recent messages (default: 4) are always preserved verbatim. If these alone exceed the budget, the error is unrecoverable.
+6. **Recent messages cannot be distilled**: The N most recent messages (default: 4) are always preserved verbatim. If these alone exceed the budget, the error is unrecoverable.
 
 7. **Stream journal crash window**: Stream deltas are buffered before SQLite persistence. A crash can lose up to 25 deltas (or 200ms of content, whichever comes first). The flush threshold and interval are configurable via environment variables.
 
@@ -760,6 +763,7 @@ Instead of sending full conversation history to the LLM, the Librarian:
 2. **Retrieves** relevant facts for new queries (pre-flight)
 
 The API call then includes:
+
 - System prompt
 - Retrieved facts (what Librarian determines is relevant)
 - Recent N messages (immediate context)
@@ -914,23 +918,24 @@ for result in results {
 The main orchestrator for context management.
 
 ```rust
-use forge_context::{ContextManager, PreparedContext, ContextBuildError, SummarizationNeeded};
+use forge_context::{ContextAdaptation, ContextBuildError, ContextManager, PreparedContext};
+use forge_types::PredefinedModel;
 
 // Create a manager for a specific model
-let mut manager = ContextManager::new("claude-opus-4-5-20251101");
+let mut manager = ContextManager::new(PredefinedModel::ClaudeOpus.to_model_name());
 
 // Add messages to history
 let msg_id = manager.push_message(Message::try_user("Hello!")?);
 
 // Switch models (triggers adaptation logic)
-match manager.switch_model("gpt-4") {
-    ContextAdaptation::Shrinking { needs_summarization, .. } => {
-        if needs_summarization {
-            // Handle summarization requirement
+match manager.switch_model(PredefinedModel::Gpt52.to_model_name()) {
+    ContextAdaptation::Shrinking { needs_distillation, .. } => {
+        if needs_distillation {
+            // Handle distillation requirement
         }
     }
     ContextAdaptation::Expanding { can_restore, .. } => {
-        // More context available; can restore summarized messages
+        // More context available; can restore distilled messages
     }
     ContextAdaptation::NoChange => {}
 }
@@ -942,9 +947,9 @@ match manager.prepare() {
         let usage = prepared.usage();
         // Make API call with messages...
     }
-    Err(ContextBuildError::SummarizationNeeded(needed)) => {
-        // Must summarize before proceeding
-        let ids = needed.messages_to_summarize;
+    Err(ContextBuildError::DistillationNeeded(needed)) => {
+        // Must distill before proceeding
+        let ids = needed.messages_to_distill;
     }
     Err(ContextBuildError::RecentMessagesTooLarge { required_tokens, budget_tokens, .. }) => {
         // Unrecoverable: user must reduce input or switch models
@@ -961,14 +966,14 @@ match manager.prepare() {
 | `push_message_with_step_id(msg, id)` | Add message with stream step ID for crash recovery |
 | `has_step_id(id)` | Check if step ID exists (for idempotent recovery) |
 | `rollback_last_message(id)` | Remove last message if ID matches (transactional rollback) |
-| `switch_model(name)` | Change model, returns `ContextAdaptation` |
+| `switch_model(model)` | Change model, returns `ContextAdaptation` |
 | `set_output_limit(limit)` | Configure output limit for more input budget |
 | `prepare()` | Build context proof or return `ContextBuildError` |
-| `prepare_summarization(ids)` | Create async summarization request |
-| `complete_summarization(...)` | Apply generated summary to history |
+| `prepare_distillation(ids)` | Create async distillation request |
+| `complete_distillation(...)` | Apply generated distillation to history |
 | `usage_status()` | Get current usage with explicit status |
 | `current_limits()` | Get current model's `ModelLimits` |
-| `current_limits_source()` | Get where limits came from (`Prefix`, `Override`, `DefaultFallback`) |
+| `current_limits_source()` | Get where limits came from (`Catalog` or `Override`) |
 | `save(path)` / `load(path, model)` | Persistence |
 
 #### `PreparedContext<'a>`
@@ -996,7 +1001,7 @@ pub enum ContextAdaptation {
     Shrinking {
         old_budget: u32,
         new_budget: u32,
-        needs_summarization: bool,
+        needs_distillation: bool,
     },
     Expanding {
         old_budget: u32,
@@ -1012,8 +1017,8 @@ Error returned when context cannot be built within budget:
 
 ```rust
 pub enum ContextBuildError {
-    /// Older messages need summarization to fit within budget.
-    SummarizationNeeded(SummarizationNeeded),
+    /// Older messages need distillation to fit within budget.
+    DistillationNeeded(DistillationNeeded),
     /// The most recent N messages alone exceed the budget (unrecoverable).
     RecentMessagesTooLarge {
         required_tokens: u32,
@@ -1023,30 +1028,30 @@ pub enum ContextBuildError {
 }
 ```
 
-#### `SummarizationNeeded`
+#### `DistillationNeeded`
 
-Details about summarization needed to proceed:
+Details about distillation needed to proceed:
 
 ```rust
-pub struct SummarizationNeeded {
+pub struct DistillationNeeded {
     pub excess_tokens: u32,
-    pub messages_to_summarize: Vec<MessageId>,
+    pub messages_to_distill: Vec<MessageId>,
     pub suggestion: String,
 }
 ```
 
 #### `ContextUsageStatus`
 
-Usage state with explicit summarization status, returned by `usage_status()`:
+Usage state with explicit distillation status, returned by `usage_status()`:
 
 ```rust
 pub enum ContextUsageStatus {
     /// Context fits within budget
     Ready(ContextUsage),
-    /// Context exceeds budget, summarization needed
-    NeedsSummarization {
+    /// Context exceeds budget, distillation needed
+    NeedsDistillation {
         usage: ContextUsage,
-        needed: SummarizationNeeded,
+        needed: DistillationNeeded,
     },
     /// Recent messages alone exceed budget (unrecoverable)
     RecentMessagesTooLarge {
@@ -1057,25 +1062,25 @@ pub enum ContextUsageStatus {
 }
 ```
 
-#### `PendingSummarization`
+#### `PendingDistillation`
 
-Request for async summarization, returned by `prepare_summarization()`:
+Request for async distillation, returned by `prepare_distillation()`:
 
 ```rust
-pub struct PendingSummarization {
-    pub scope: SummarizationScope,           // Contiguous range of message IDs
-    pub messages: Vec<(MessageId, Message)>, // Messages to summarize
+pub struct PendingDistillation {
+    pub scope: DistillationScope,            // Contiguous range of message IDs
+    pub messages: Vec<(MessageId, Message)>, // Messages to distill
     pub original_tokens: u32,                // Total tokens in originals
-    pub target_tokens: u32,                  // Target summary size
+    pub target_tokens: u32,                  // Target Distillate size
 }
 ```
 
-#### `SummarizationScope`
+#### `DistillationScope`
 
-Contiguous set of message IDs to summarize (passed to `complete_summarization()`):
+Contiguous set of message IDs to distill (passed to `complete_distillation()`):
 
 ```rust
-pub struct SummarizationScope {
+pub struct DistillationScope {
     ids: Vec<MessageId>,
     range: Range<MessageId>,  // [start, end) exclusive
 }
@@ -1085,10 +1090,10 @@ pub struct SummarizationScope {
 
 #### `FullHistory`
 
-Append-only storage for all conversation messages and summaries.
+Append-only storage for all conversation messages and distillates.
 
 ```rust
-use forge_context::{FullHistory, MessageId, SummaryId};
+use forge_context::{FullHistory, MessageId, DistillateId};
 
 let mut history = FullHistory::new();
 
@@ -1099,12 +1104,12 @@ let id: MessageId = history.push(message, token_count);
 let entry = history.get_entry(id);
 println!("Content: {}", entry.message().content());
 println!("Tokens: {}", entry.token_count());
-println!("Summarized: {}", entry.is_summarized());
+println!("Distilled: {}", entry.is_distilled());
 
 // Statistics
 println!("Total messages: {}", history.len());
 println!("Total tokens: {}", history.total_tokens());
-println!("Summarized count: {}", history.summarized_count());
+println!("Distilled count: {}", history.distilled_count());
 ```
 
 #### `HistoryEntry`
@@ -1119,29 +1124,29 @@ pub enum HistoryEntry {
         token_count: u32,
         created_at: SystemTime,
     },
-    Summarized {
+    Distilled {
         id: MessageId,
         message: Message,
         token_count: u32,
-        summary_id: SummaryId,
+        distillate_id: DistillateId,
         created_at: SystemTime,
     },
 }
 ```
 
-#### `Summary`
+#### `Distillate`
 
-Represents compressed conversation segments:
+Represents distilled conversation segments:
 
 ```rust
-pub struct Summary {
-    id: SummaryId,
+pub struct Distillate {
+    id: DistillateId,
     covers: Range<MessageId>,  // [start, end) of original messages
     content: NonEmptyString,
     token_count: u32,
     original_tokens: u32,      // For compression ratio tracking
     created_at: SystemTime,
-    generated_by: String,      // Model that created summary
+    generated_by: String,      // Model that created Distillate
 }
 ```
 
@@ -1149,19 +1154,20 @@ pub struct Summary {
 
 #### `ModelRegistry`
 
-Registry with prefix-based model lookup:
+Registry with catalog-based model lookup:
 
 ```rust
-use forge_context::{ModelRegistry, ModelLimits, ResolvedModelLimits};
+use forge_context::{ModelLimits, ModelLimitsSource, ModelRegistry, ResolvedModelLimits};
+use forge_types::PredefinedModel;
 
 let registry = ModelRegistry::new();
 
-// Lookup by exact name or prefix
-let resolved: ResolvedModelLimits = registry.get("claude-opus-4-20250514");
+// Lookup by exact catalog model
+let model = PredefinedModel::ClaudeOpus.to_model_name();
+let resolved: ResolvedModelLimits = registry.get(&model);
 
 match resolved.source() {
-    ModelLimitsSource::Prefix("claude-opus-4") => { /* matched prefix */ }
-    ModelLimitsSource::DefaultFallback => { /* unknown model */ }
+    ModelLimitsSource::Catalog(model) => { /* matched catalog */ }
     ModelLimitsSource::Override => { /* custom override */ }
 }
 
@@ -1171,19 +1177,17 @@ println!("Max output: {}", limits.max_output());
 println!("Effective input budget: {}", limits.effective_input_budget());
 ```
 
-**Known model prefixes:**
+**Known models:**
 
-| Prefix | Context Window | Max Output |
-|--------|---------------|------------|
-| `claude-opus-4-5` | 200,000 | 64,000 |
-| `claude-sonnet-4-5` | 200,000 | 64,000 |
-| `claude-haiku-4-5` | 200,000 | 64,000 |
+| Model | Context Window | Max Output |
+|-------|---------------|------------|
+| `claude-opus-4-5-20251101` | 200,000 | 64,000 |
+| `claude-sonnet-4-5-20250514` | 200,000 | 64,000 |
+| `claude-haiku-4-5-20251001` | 200,000 | 64,000 |
 | `gpt-5.2-pro` | 400,000 | 128,000 |
 | `gpt-5.2` | 400,000 | 128,000 |
-| `gemini-3-pro` | 1,048,576 | 65,536 |
-| `gemini-3-flash` | 1,048,576 | 65,536 |
-
-Unknown models fall back to 8,192 context / 4,096 output.
+| `gemini-3-pro-preview` | 1,048,576 | 65,536 |
+| `gemini-3-flash-preview` | 1,048,576 | 65,536 |
 
 #### `ModelLimits`
 
@@ -1417,33 +1421,33 @@ journal.append_assistant_delta(batch_id, "Hello")?;
 journal.append_assistant_delta(batch_id, " world")?;
 ```
 
-### Summarization
+### Distillation
 
-#### `generate_summary`
+#### `generate_distillation`
 
-Async function to generate summaries via LLM:
+Async function to generate distillations via LLM:
 
 ```rust
-use forge_context::{generate_summary, summarization_model, TokenCounter};
+use forge_context::{generate_distillation, distillation_model, TokenCounter};
 use forge_providers::ApiConfig;
 
-// Get the summarization model for current provider
-let model_name = summarization_model(Provider::Claude);
+// Get the distillation model for current provider
+let model_name = distillation_model(Provider::Claude);
 // Returns "claude-haiku-4-5" (cheaper/faster)
 
-// Generate summary
+// Generate distillation
 let counter = TokenCounter::new();
-let summary_text = generate_summary(
+let distilled_text = generate_distillation(
     &api_config,
     &counter,
-    &messages_to_summarize,  // &[(MessageId, Message)]
-    target_tokens,           // Target size for summary
+    &messages_to_distill,  // &[(MessageId, Message)]
+    target_tokens,          // Target size for distillation Distillate
 ).await?;
 ```
 
-The function validates that input doesn't exceed the summarizer model's context limit before making the API call.
+The function validates that input doesn't exceed the distiller model's context limit before making the API call.
 
-**Summarization models used:**
+**Distillation models used:**
 
 | Provider | Model | Context Limit |
 |----------|-------|---------------|
@@ -1630,8 +1634,8 @@ A piece of the working context:
 ```rust
 pub enum ContextSegment {
     Original { id: MessageId, tokens: u32 },
-    Summarized {
-        summary_id: SummaryId,
+    Distilled {
+        distillate_id: DistillateId,
         replaces: Vec<MessageId>,
         tokens: u32,
     },
@@ -1646,7 +1650,7 @@ Statistics for UI display:
 pub struct ContextUsage {
     pub used_tokens: u32,
     pub budget_tokens: u32,
-    pub summarized_segments: usize,
+    pub distilled_segments: usize,
 }
 
 impl ContextUsage {
@@ -1660,13 +1664,13 @@ impl ContextUsage {
 
 ```rust
 use forge_context::{
-    ContextManager, PreparedContext, ContextBuildError,
-    StreamJournal, ActiveJournal, generate_summary, TokenCounter,
+    ActiveJournal, ContextBuildError, ContextManager, PreparedContext, StreamJournal, TokenCounter,
+    generate_distillation,
 };
-use forge_types::Message;
+use forge_types::{Message, PredefinedModel};
 
 // Initialize
-let mut manager = ContextManager::new("claude-opus-4-5");
+let mut manager = ContextManager::new(PredefinedModel::ClaudeOpus.to_model_name());
 let mut journal = StreamJournal::open("<data_dir>/stream_journal.db")?;
 let counter = TokenCounter::new();
 
@@ -1700,22 +1704,22 @@ let user_msg_id = manager.push_message(Message::try_user("Explain Rust lifetimes
 // Prepare context
 let prepared = match manager.prepare() {
     Ok(p) => p,
-    Err(ContextBuildError::SummarizationNeeded(needed)) => {
-        // Summarization needed - handle async
-        let pending = manager.prepare_summarization(&needed.messages_to_summarize)
+    Err(ContextBuildError::DistillationNeeded(needed)) => {
+        // Distillation needed - handle async
+        let pending = manager.prepare_distillation(&needed.messages_to_distill)
             .expect("messages exist");
         
-        let summary_text = generate_summary(
+        let distilled_text = generate_distillation(
             &api_config,
             &counter,
             &pending.messages,
             pending.target_tokens,
         ).await?;
         
-        manager.complete_summarization(
+        manager.complete_distillation(
             pending.scope,
-            NonEmptyString::new(&summary_text)?,
-            "claude-haiku-4-5".to_string(),
+            NonEmptyString::new(&distilled_text)?,
+            PredefinedModel::ClaudeHaiku.model_id().to_string(),
         )?;
         
         manager.prepare()?  // Should succeed now
@@ -1729,7 +1733,7 @@ let prepared = match manager.prepare() {
 
 // Make API call with streaming
 let api_messages = prepared.api_messages();
-let mut active = journal.begin_session("claude-opus-4-5")?;
+let mut active = journal.begin_session(PredefinedModel::ClaudeOpus.model_id())?;
 let step_id = active.step_id();
 
 for chunk in stream_response(&api_messages).await {
@@ -1759,7 +1763,7 @@ journal.commit_and_prune_step(step_id)?;
 MessageId -----> HistoryEntry -----> Message
      |               |
      |               v
-     +--------> SummaryId -----> Summary
+     +--------> DistillateId -----> Distillate
                     |
                     v
               ContextSegment
@@ -1775,7 +1779,7 @@ MessageId -----> HistoryEntry -----> Message
 
 The crate uses `anyhow::Result` for most fallible operations and custom error types for domain-specific failures:
 
-- `SummarizationNeeded`: Returned when context exceeds budget and summarization is required
+- `DistillationNeeded`: Returned when context exceeds budget and distillation is required
 - `anyhow::Error`: Used for I/O, database, and API errors
 
 ## Dependencies
@@ -1784,7 +1788,7 @@ The crate uses `anyhow::Result` for most fallible operations and custom error ty
 - `forge-providers`: API configuration (`ApiConfig`)
 - `tiktoken-rs`: Token counting
 - `rusqlite`: Stream journal persistence
-- `reqwest`: HTTP client for summarization API calls
+- `reqwest`: HTTP client for distillation API calls
 - `serde`/`serde_json`: Serialization
 
 ## Testing
@@ -1795,3 +1799,5 @@ cargo test -p forge-context -- --nocapture  # With output
 ```
 
 The crate includes comprehensive unit tests for all modules. Integration tests requiring API keys are marked with `#[ignore]`.
+
+

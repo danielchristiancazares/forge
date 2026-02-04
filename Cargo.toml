@@ -35,7 +35,7 @@ tokio = { version = "1.42", default-features = false }
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 futures-util = "0.3"
-chromiumoxide = "0.6"
+chromiumoxide = { version = "0.6", default-features = false, features = ["tokio-runtime", "bytes"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -45,17 +45,18 @@ toml_edit = "0.22"
 
 # Tooling
 regex = "1"
-uuid = { version = "1.11", features = ["v4"] }
+uuid = { version = "1.11", default-features = false, features = ["v4"] }
+rand = "0.8"
 base64 = "0.22"
-globset = "0.4"
-jsonschema = "0.17"
+globset = { version = "0.4", default-features = false }
+jsonschema = { version = "0.17", default-features = false }
 sha2 = "0.10"
 url = "2.5"
 ignore = "0.4"
-chrono = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # HTML parsing
-scraper = "0.23"
+scraper = { version = "0.23", default-features = false, features = ["errors"] }
 
 # Error handling
 anyhow = "1.0"
@@ -80,7 +81,7 @@ unicode-segmentation = "1.12"
 unicode-normalization = "0.1"
 
 # Markdown parsing
-pulldown-cmark = "0.12"
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 
 # Unix libc bindings (for getuid)
 libc = "0.2"

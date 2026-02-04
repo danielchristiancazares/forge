@@ -112,7 +112,6 @@ impl InputHistory {
 
     /// Navigate to the next (newer) prompt.
     ///
-    /// Returns the next newer prompt, or the stashed draft if at the newest.
     /// Returns `None` if not currently navigating.
     pub fn navigate_prompt_down(&mut self) -> Option<&str> {
         match self.prompt_index {
@@ -156,7 +155,6 @@ impl InputHistory {
 
     /// Navigate to the next (newer) command.
     ///
-    /// Returns the next newer command, or the stashed draft if at the newest.
     /// Returns `None` if not currently navigating.
     pub fn navigate_command_down(&mut self) -> Option<&str> {
         match self.command_index {

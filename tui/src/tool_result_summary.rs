@@ -1,11 +1,11 @@
-//! Tool result summarization and render decision logic.
+//! Tool result distillation and render decision logic.
 //!
-//! Determines whether tool results should be rendered in full or as compact summaries.
+//! Determines whether tool results should be rendered in full or as compact summarys.
 //! The decision depends on:
 //!
-//! - **Tool type**: `Edit` and `Write` always render full (never summarized)
+//! - **Tool type**: `Edit` and `Write` always render full (never Distilled)
 //! - **Content analysis**: Diff-like content (with `@@`, `---`, `+++`) renders full
-//! - **Tool-specific parsing**: Each tool type has custom summary logic
+//! - **Tool-specific parsing**: Each tool type has custom Summary logic
 //!
 //! # Summary Formats
 //!
@@ -81,18 +81,18 @@ impl ToolKind {
 /// Determines how to render a tool result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ToolResultRender {
-    /// Show full output (never summarize).
+    /// Show full output (never distill).
     Full {
         /// Apply diff-aware styling (colored +/- lines).
         diff_aware: bool,
     },
-    /// Show compact summary line.
+    /// Show compact Summary line.
     Summary(String),
 }
 
 /// Decide how to render a tool result based on tool type and content.
 ///
-/// Write/Edit always return `Full` (never summarized).
+/// Write/Edit always return `Full` (never Distilled).
 /// Other tools may return `Summary` or `Full` based on content.
 pub(crate) fn tool_result_render_decision(
     tool_meta: Option<&ToolCallMeta>,
@@ -102,7 +102,7 @@ pub(crate) fn tool_result_render_decision(
 ) -> ToolResultRender {
     let kind = tool_meta.map(|m| m.kind);
 
-    // Invariant: Write and Edit are NEVER summarized
+    // Invariant: Write and Edit are NEVER Distilled
     match kind {
         Some(ToolKind::Edit) => return ToolResultRender::Full { diff_aware: true },
         Some(ToolKind::Write) => return ToolResultRender::Full { diff_aware: false },
@@ -114,7 +114,7 @@ pub(crate) fn tool_result_render_decision(
         return ToolResultRender::Full { diff_aware: true };
     }
 
-    // Otherwise, generate tool-specific summary
+    // Otherwise, generate tool-specific Summary
     let summary = format_tool_result_summary(tool_meta, content, is_error, max_width);
     ToolResultRender::Summary(summary)
 }
@@ -141,21 +141,21 @@ pub(crate) fn format_tool_result_summary(
 
     match tool_call_meta.map(|meta| meta.kind) {
         Some(ToolKind::Read) => {
-            summarize_read(tool_call_meta.and_then(|meta| meta.read_range), content)
+            distill_read(tool_call_meta.and_then(|meta| meta.read_range), content)
         }
         Some(ToolKind::Search) => {
-            summarize_search(content).unwrap_or_else(|| summarize_generic(content, max_width))
+            distill_search(content).unwrap_or_else(|| distill_generic(content, max_width))
         }
-        Some(ToolKind::Glob) => summarize_glob(content),
-        Some(ToolKind::Shell) => summarize_shell(content, is_error, max_width),
+        Some(ToolKind::Glob) => distill_glob(content),
+        Some(ToolKind::Shell) => distill_shell(content, is_error, max_width),
         Some(ToolKind::GitStatus) => {
-            summarize_git_status(content).unwrap_or_else(|| summarize_generic(content, max_width))
+            distill_git_status(content).unwrap_or_else(|| distill_generic(content, max_width))
         }
-        _ => summarize_generic(content, max_width),
+        _ => distill_generic(content, max_width),
     }
 }
 
-fn summarize_read(range: Option<ReadRange>, content: &str) -> String {
+fn distill_read(range: Option<ReadRange>, content: &str) -> String {
     if let Some(summary) = range.and_then(format_read_range) {
         return summary;
     }
@@ -168,7 +168,7 @@ fn summarize_read(range: Option<ReadRange>, content: &str) -> String {
     }
 }
 
-fn summarize_search(content: &str) -> Option<String> {
+fn distill_search(content: &str) -> Option<String> {
     let (match_count, file_count) = parse_search_counts(content)?;
     let match_label = pluralize(match_count, "match", "matches");
     if file_count > 0 {
@@ -181,13 +181,13 @@ fn summarize_search(content: &str) -> Option<String> {
     Some(format!("{match_count} {match_label}"))
 }
 
-fn summarize_glob(content: &str) -> String {
+fn distill_glob(content: &str) -> String {
     let count = parse_glob_count(content).unwrap_or_else(|| count_non_empty_lines(content));
     let label = pluralize(count, "file", "files");
     format!("{count} {label}")
 }
 
-fn summarize_shell(content: &str, is_error: bool, max_width: usize) -> String {
+fn distill_shell(content: &str, is_error: bool, max_width: usize) -> String {
     let (stdout, exit_code) = parse_command_output(content);
     let first = first_non_empty_line(stdout.as_deref().unwrap_or(content));
     let fallback_line = first_line(content);
@@ -215,13 +215,13 @@ fn summarize_shell(content: &str, is_error: bool, max_width: usize) -> String {
     truncate_to(&summary, max_width)
 }
 
-fn summarize_git_status(content: &str) -> Option<String> {
+fn distill_git_status(content: &str) -> Option<String> {
     let stdout = parse_stdout_from_json(content).unwrap_or_else(|| content.to_string());
     let counts = parse_git_porcelain_counts(&stdout)?;
     Some(render_git_status_counts(counts))
 }
 
-fn summarize_generic(content: &str, max_width: usize) -> String {
+fn distill_generic(content: &str, max_width: usize) -> String {
     let line_count = content.lines().count();
     if line_count <= 1 {
         truncate_to(first_line(content).unwrap_or_default(), max_width)
@@ -563,7 +563,7 @@ mod tests {
     fn edit_is_always_full_even_without_diff_markers() {
         let call = ToolCall::new("call_1", "Edit", json!({}));
         let meta = ToolCallMeta::from_call(&call);
-        // Content has no diff markers (summary lines only)
+        // Content has no diff markers (Summary lines only)
         let content = "modified: a\nmodified: b\n";
         let result = tool_result_render_decision(Some(&meta), content, false, 80);
         assert!(matches!(

@@ -22,7 +22,7 @@ This directory contains utility scripts for development, testing, and maintenanc
 | Script | Language | Description |
 | ------ | -------- | ----------- |
 | `coverage.ps1` | PowerShell | Generates a code coverage report for the entire workspace |
-| `toc-gen` | Rust (CLI) | Updates LLM-TOC line ranges and section summaries |
+| `toc-gen` | Rust (CLI) | Updates LLM-TOC line ranges and section Distillates |
 
 ## Usage
 
@@ -55,3 +55,4 @@ Check whether a README's TOC is current:
 ```powershell
 cargo run --manifest-path scripts/toc-gen/Cargo.toml -- check README.md
 ```
+

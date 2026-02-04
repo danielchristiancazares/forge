@@ -259,7 +259,6 @@ The key's provider is encoded in its type, preventing the invalid state of using
 pub struct ModelName {
     provider: Provider,
     name: Cow<'static, str>,
-    kind: ModelNameKind,
 }
 ```
 
@@ -268,8 +267,10 @@ Validation rules by provider:
 | Provider | Prefix Requirement | Example Valid |
 | :--- | :--- | :--- |
 | Claude | Must start with `claude-` | `claude-opus-4-5-20251101` |
-| OpenAI | Must start with `gpt-5` | `gpt-5.2`, `gpt-5.2-pro`, `gpt-5.2-2025-12-11` |
+| OpenAI | Must start with `gpt-5` | `gpt-5.2`, `gpt-5.2-pro` |
 | Gemini | Must start with `gemini-` | `gemini-3-pro-preview` |
+
+Models must also exist in the predefined catalog (`PredefinedModel`).
 
 ### OutputLimits - Token Budgets
 
@@ -364,7 +365,7 @@ fn extract_sse_data(event: &str) -> Option<String>
 pub enum StreamEvent {
     /// Text content delta
     TextDelta(String),
-    /// Provider reasoning content delta (Claude extended thinking or OpenAI summaries)
+    /// Provider reasoning content delta (Claude extended thinking or OpenAI reasoning summaries)
     ThinkingDelta(String),
     /// Tool call started - emitted when a tool_use content block begins
     ToolCallStart {
@@ -488,7 +489,7 @@ Note: This uses the OpenAI Responses API (not Chat Completions) for GPT-5.2 supp
 {
   "model": "gpt-5.2",
   "input": [
-    { "role": "developer", "content": "Context summary" },
+    { "role": "developer", "content": "Context Distillate" },
     { "role": "user", "content": "Hello" },
     { "type": "function_call", "call_id": "...", "name": "...", "arguments": "..." },
     { "type": "function_call_output", "call_id": "...", "output": "..." }
@@ -739,16 +740,15 @@ pub use forge_types;
 
 Token limits are defined in `forge-context/src/model_limits.rs`:
 
-| Model Prefix | Context Window | Max Output |
+| Model | Context Window | Max Output |
 | :--- | :--- | :--- |
-| `claude-opus-4-5` | 200,000 | 64,000 |
-| `claude-sonnet-4-5` | 200,000 | 64,000 |
-| `claude-haiku-4-5` | 200,000 | 64,000 |
+| `claude-opus-4-5-20251101` | 200,000 | 64,000 |
+| `claude-sonnet-4-5-20250514` | 200,000 | 64,000 |
+| `claude-haiku-4-5-20251001` | 200,000 | 64,000 |
 | `gpt-5.2-pro` | 400,000 | 128,000 |
 | `gpt-5.2` | 400,000 | 128,000 |
-| `gemini-3-pro` | 1,048,576 | 65,536 |
-| `gemini-3-flash` | 1,048,576 | 65,536 |
-| Unknown models | 8,192 | 4,096 |
+| `gemini-3-pro-preview` | 1,048,576 | 65,536 |
+| `gemini-3-flash-preview` | 1,048,576 | 65,536 |
 
 ---
 
@@ -1060,3 +1060,4 @@ match config.provider() {
 | `MAX_SSE_BUFFER_BYTES` | 4 MiB | Buffer size limit |
 | `MAX_SSE_PARSE_ERRORS` | 3 | Consecutive parse error threshold |
 | `MAX_ERROR_BODY_BYTES` | 32 KiB | Error response size limit |
+

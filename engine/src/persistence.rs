@@ -48,7 +48,7 @@ impl App {
             return;
         }
 
-        match ContextManager::load(&path, self.model.as_str()) {
+        match ContextManager::load(&path, self.model.clone()) {
             Ok(mut loaded_manager) => {
                 let count = loaded_manager.history().len();
                 // Sync output limit before replacing context manager

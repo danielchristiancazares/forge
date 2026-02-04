@@ -12,7 +12,7 @@ use tokio::process::Command;
 use unicode_normalization::UnicodeNormalization;
 
 use super::{
-    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, redact_summary, sanitize_output,
+    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, redact_distillate, sanitize_output,
 };
 
 const SEARCH_TOOL_NAME: &str = "Search";
@@ -253,8 +253,8 @@ impl ToolExecutor for SearchTool {
                 message: e.to_string(),
             })?;
         let path = typed.path.unwrap_or_else(|| ".".to_string());
-        let summary = format!("Search '{}' in {}", typed.pattern, path);
-        Ok(redact_summary(&summary))
+        let distillate = format!("Search '{}' in {}", typed.pattern, path);
+        Ok(redact_distillate(&distillate))
     }
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {

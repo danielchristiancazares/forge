@@ -18,7 +18,6 @@ pub struct PanelEffect {
 }
 
 impl PanelEffect {
-    /// Create a slide-in-right effect.
     #[must_use]
     pub fn slide_in_right(duration: Duration) -> Self {
         Self {
@@ -28,7 +27,6 @@ impl PanelEffect {
         }
     }
 
-    /// Create a slide-out-right effect.
     #[must_use]
     pub fn slide_out_right(duration: Duration) -> Self {
         Self {
@@ -60,7 +58,6 @@ impl PanelEffect {
         self.elapsed >= self.duration
     }
 
-    /// Get the effect kind.
     #[must_use]
     pub fn kind(&self) -> PanelEffectKind {
         self.kind

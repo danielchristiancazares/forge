@@ -45,7 +45,10 @@ use crossterm::{
 use ratatui::{TerminalOptions, Viewport, prelude::*};
 use std::{
     env,
+    fs::{self, OpenOptions},
     io::{Stdout, Write, stdout},
+    path::PathBuf,
+    sync::Mutex,
     time::Duration,
 };
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
@@ -55,6 +58,79 @@ use forge_tui::{
     INLINE_VIEWPORT_HEIGHT, InlineOutput, InputPump, clear_inline_viewport, draw, draw_inline,
     handle_events, inline_viewport_height,
 };
+fn init_tracing() {
+    let env_filter = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new("info"))
+        .unwrap_or_else(|_| EnvFilter::try_new("warn").expect("warn filter is valid"));
+
+    let (log_file, init_warnings) = open_forge_log_file();
+
+    if let Some((log_path, file)) = log_file {
+        tracing_subscriber::registry()
+            .with(fmt::layer().with_ansi(false).with_writer(Mutex::new(file)))
+            .with(env_filter)
+            .init();
+
+        tracing::info!(path = %log_path.display(), "Logging initialized");
+        for warning in init_warnings {
+            tracing::warn!("{warning}");
+        }
+        return;
+    }
+
+    // If we can't open a log file, prefer "no logs" over corrupting the TUI
+    // by writing to stdout/stderr.
+    tracing_subscriber::registry().with(env_filter).init();
+}
+
+fn open_forge_log_file() -> (Option<(PathBuf, std::fs::File)>, Vec<String>) {
+    let candidates = forge_log_file_candidates();
+    let mut warnings = Vec::new();
+
+    for candidate in candidates {
+        if let Some(parent) = candidate.parent()
+            && let Err(e) = fs::create_dir_all(parent)
+        {
+            warnings.push(format!(
+                "Failed to create log dir {}: {e}",
+                parent.display()
+            ));
+            continue;
+        }
+
+        match OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&candidate)
+        {
+            Ok(file) => return (Some((candidate, file)), warnings),
+            Err(e) => {
+                warnings.push(format!(
+                    "Failed to open log file {}: {e}",
+                    candidate.display()
+                ));
+            }
+        }
+    }
+
+    (None, warnings)
+}
+
+fn forge_log_file_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    // Primary: ~/.forge/logs/forge.log
+    if let Some(config_path) = ForgeConfig::path()
+        && let Some(config_dir) = config_path.parent()
+    {
+        candidates.push(config_dir.join("logs").join("forge.log"));
+    }
+
+    // Fallback: ./.forge/logs/forge.log (useful in constrained environments)
+    candidates.push(PathBuf::from(".forge").join("logs").join("forge.log"));
+
+    candidates
+}
 
 /// Display mode for the terminal UI.
 ///
@@ -213,10 +289,7 @@ impl Drop for TerminalSession {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(EnvFilter::from_default_env())
-        .init();
+    init_tracing();
 
     assets::init();
 

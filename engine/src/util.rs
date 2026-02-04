@@ -1,6 +1,6 @@
 //! Small pure helper functions.
 
-use forge_types::{ApiKey, ModelName, Provider};
+use forge_types::{ApiKey, ModelName, PredefinedModel, Provider};
 
 /// Wrap a raw API key string in the provider-specific `ApiKey` enum variant.
 #[inline]
@@ -29,23 +29,7 @@ pub fn truncate_with_ellipsis(raw: &str, max: usize) -> String {
 /// Used for crash recovery when we need to reconstruct the model from stored metadata.
 /// Falls back to None if the model name cannot be parsed.
 pub fn parse_model_name_from_string(name: &str) -> Option<ModelName> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    // Detect provider from model name prefix
-    let provider = if trimmed.to_ascii_lowercase().starts_with("claude-") {
-        Provider::Claude
-    } else if trimmed.to_ascii_lowercase().starts_with("gpt-") {
-        Provider::OpenAI
-    } else if trimmed.to_ascii_lowercase().starts_with("gemini-") {
-        Provider::Gemini
-    } else {
-        return None;
-    };
-
-    ModelName::parse(provider, trimmed).ok()
+    PredefinedModel::from_model_id(name).map(ModelName::from_predefined)
 }
 
 #[cfg(test)]
@@ -104,11 +88,8 @@ mod tests {
 
     #[test]
     fn parse_model_name_gemini_with_date() {
-        // Test the format from the original bug report
         let model = parse_model_name_from_string("gemini-2.5-pro-preview-05-06");
-        assert!(model.is_some());
-        let model = model.unwrap();
-        assert_eq!(model.provider(), Provider::Gemini);
+        assert!(model.is_none());
     }
 
     #[test]

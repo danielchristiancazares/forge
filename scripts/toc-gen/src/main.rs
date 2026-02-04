@@ -490,7 +490,7 @@ async fn call_anthropic(
     section_content: &str,
 ) -> Result<String> {
     let prompt = format!(
-        "Summarize this README section in 3-8 words for a table of contents entry. \
+        "Distill this README section into 3-8 words for a table of contents entry. \
         Return ONLY the summary text, no quotes or explanation.\n\n\
         Section heading: {}\n\nContent:\n{}",
         heading,
@@ -528,7 +528,7 @@ async fn call_openai(
     section_content: &str,
 ) -> Result<String> {
     let prompt = format!(
-        "Summarize this README section in 3-8 words for a table of contents entry. \
+        "Distill this README section into 3-8 words for a table of contents entry. \
         Return ONLY the summary text, no quotes or explanation.\n\n\
         Section heading: {}\n\nContent:\n{}",
         heading,
@@ -556,3 +556,4 @@ async fn call_openai(
 
     Ok(text)
 }
+

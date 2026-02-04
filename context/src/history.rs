@@ -1,7 +1,7 @@
 //! Full conversation history storage.
 //!
 //! The history is append-only - messages are never discarded.
-//! Summarization adds `Summary` entries and links messages to them,
+//! Distillation adds `Distillate` entries and links messages to them,
 //! but original messages remain accessible.
 
 use anyhow::{Result, anyhow};
@@ -12,8 +12,6 @@ use std::time::SystemTime;
 use forge_types::{Message, NonEmptyString};
 
 use crate::StepId;
-
-/// Unique identifier for a message in history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MessageId(u64);
 
@@ -36,12 +34,10 @@ impl MessageId {
         self.0
     }
 }
-
-/// Unique identifier for a summary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SummaryId(u64);
+pub struct DistillateId(u64);
 
-impl SummaryId {
+impl DistillateId {
     const fn new(id: u64) -> Self {
         Self(id)
     }
@@ -63,13 +59,12 @@ pub enum HistoryEntry {
         /// Stream journal step ID for crash recovery linkage (assistant messages only)
         stream_step_id: Option<StepId>,
     },
-    Summarized {
+    Distilled {
         id: MessageId,
         message: Message,
         token_count: u32,
-        summary_id: SummaryId,
+        distillate_id: DistillateId,
         created_at: SystemTime,
-        /// Stream journal step ID for crash recovery linkage (assistant messages only)
         stream_step_id: Option<StepId>,
     },
 }
@@ -80,9 +75,8 @@ struct HistoryEntrySerde {
     message: Message,
     token_count: u32,
     #[serde(default)]
-    summary_id: Option<SummaryId>,
+    distillate_id: Option<DistillateId>,
     created_at: SystemTime,
-    /// Stream journal step ID for crash recovery linkage
     #[serde(default)]
     stream_step_id: Option<StepId>,
 }
@@ -100,22 +94,22 @@ impl From<&HistoryEntry> for HistoryEntrySerde {
                 id: *id,
                 message: message.clone(),
                 token_count: *token_count,
-                summary_id: None,
+                distillate_id: None,
                 created_at: *created_at,
                 stream_step_id: *stream_step_id,
             },
-            HistoryEntry::Summarized {
+            HistoryEntry::Distilled {
                 id,
                 message,
                 token_count,
-                summary_id,
+                distillate_id,
                 created_at,
                 stream_step_id,
             } => Self {
                 id: *id,
                 message: message.clone(),
                 token_count: *token_count,
-                summary_id: Some(*summary_id),
+                distillate_id: Some(*distillate_id),
                 created_at: *created_at,
                 stream_step_id: *stream_step_id,
             },
@@ -129,17 +123,17 @@ impl From<HistoryEntrySerde> for HistoryEntry {
             id,
             message,
             token_count,
-            summary_id,
+            distillate_id,
             created_at,
             stream_step_id,
         } = entry;
 
-        match summary_id {
-            Some(summary_id) => HistoryEntry::Summarized {
+        match distillate_id {
+            Some(distillate_id) => HistoryEntry::Distilled {
                 id,
                 message,
                 token_count,
-                summary_id,
+                distillate_id,
                 created_at,
                 stream_step_id,
             },
@@ -208,14 +202,14 @@ impl HistoryEntry {
     #[must_use]
     pub fn id(&self) -> MessageId {
         match self {
-            HistoryEntry::Original { id, .. } | HistoryEntry::Summarized { id, .. } => *id,
+            HistoryEntry::Original { id, .. } | HistoryEntry::Distilled { id, .. } => *id,
         }
     }
 
     #[must_use]
     pub fn message(&self) -> &Message {
         match self {
-            HistoryEntry::Original { message, .. } | HistoryEntry::Summarized { message, .. } => {
+            HistoryEntry::Original { message, .. } | HistoryEntry::Distilled { message, .. } => {
                 message
             }
         }
@@ -225,14 +219,14 @@ impl HistoryEntry {
     pub fn token_count(&self) -> u32 {
         match self {
             HistoryEntry::Original { token_count, .. }
-            | HistoryEntry::Summarized { token_count, .. } => *token_count,
+            | HistoryEntry::Distilled { token_count, .. } => *token_count,
         }
     }
 
     #[must_use]
-    pub fn summary_id(&self) -> Option<SummaryId> {
+    pub fn distillate_id(&self) -> Option<DistillateId> {
         match self {
-            HistoryEntry::Summarized { summary_id, .. } => Some(*summary_id),
+            HistoryEntry::Distilled { distillate_id, .. } => Some(*distillate_id),
             HistoryEntry::Original { .. } => None,
         }
     }
@@ -242,16 +236,16 @@ impl HistoryEntry {
     pub fn stream_step_id(&self) -> Option<StepId> {
         match self {
             HistoryEntry::Original { stream_step_id, .. }
-            | HistoryEntry::Summarized { stream_step_id, .. } => *stream_step_id,
+            | HistoryEntry::Distilled { stream_step_id, .. } => *stream_step_id,
         }
     }
 
     #[must_use]
-    pub fn is_summarized(&self) -> bool {
-        matches!(self, HistoryEntry::Summarized { .. })
+    pub fn is_distilled(&self) -> bool {
+        matches!(self, HistoryEntry::Distilled { .. })
     }
 
-    pub fn mark_summarized(&mut self, summary_id: SummaryId) {
+    pub fn mark_distilled(&mut self, distillate_id: DistillateId) {
         let updated = match self {
             HistoryEntry::Original {
                 id,
@@ -260,18 +254,18 @@ impl HistoryEntry {
                 created_at,
                 stream_step_id,
             }
-            | HistoryEntry::Summarized {
+            | HistoryEntry::Distilled {
                 id,
                 message,
                 token_count,
                 created_at,
                 stream_step_id,
                 ..
-            } => HistoryEntry::Summarized {
+            } => HistoryEntry::Distilled {
                 id: *id,
                 message: message.clone(),
                 token_count: *token_count,
-                summary_id,
+                distillate_id,
                 created_at: *created_at,
                 stream_step_id: *stream_step_id,
             },
@@ -281,28 +275,27 @@ impl HistoryEntry {
     }
 }
 
-/// A summary that represents a range of messages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Summary {
-    id: SummaryId,
-    /// The range of message IDs this summary covers [start, end).
+pub struct Distillate {
+    id: DistillateId,
+    /// The range of message IDs this Distillate covers [start, end).
     covers: Range<MessageId>,
-    /// The summarized content.
+    /// The Distilled content.
     content: NonEmptyString,
-    /// Token count of the summary.
+    /// Token count of the Distillate.
     token_count: u32,
     /// Total tokens of original messages (for compression ratio tracking).
     original_tokens: u32,
-    /// When this summary was created.
+    /// When this Distillate was created.
     created_at: SystemTime,
-    /// Which model generated this summary.
+    /// Which model generated this Distillate.
     generated_by: String,
 }
 
-impl Summary {
+impl Distillate {
     #[must_use]
     pub fn new(
-        id: SummaryId,
+        id: DistillateId,
         covers: Range<MessageId>,
         content: NonEmptyString,
         token_count: u32,
@@ -337,7 +330,7 @@ impl Summary {
 
     #[cfg(test)]
     #[must_use]
-    /// Compression ratio (summary tokens / original tokens).
+    /// Compression ratio (Distillate tokens / original tokens).
     /// Lower is better compression.
     pub fn compression_ratio(&self) -> f32 {
         if self.original_tokens == 0 {
@@ -349,7 +342,7 @@ impl Summary {
 
     #[cfg(test)]
     #[must_use]
-    /// Tokens saved by using this summary instead of originals.
+    /// Tokens saved by using this Distillate instead of originals.
     pub fn tokens_saved(&self) -> u32 {
         self.original_tokens.saturating_sub(self.token_count)
     }
@@ -359,17 +352,17 @@ impl Summary {
 #[derive(Debug, Default)]
 pub struct FullHistory {
     entries: Vec<HistoryEntry>,
-    summaries: Vec<Summary>,
+    distillates: Vec<Distillate>,
     next_message_id: u64,
-    next_summary_id: u64,
+    next_distillate_id: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct FullHistorySerde {
     entries: Vec<HistoryEntrySerde>,
-    summaries: Vec<Summary>,
+    distillates: Vec<Distillate>,
     next_message_id: u64,
-    next_summary_id: u64,
+    next_distillate_id: u64,
 }
 
 impl From<&FullHistory> for FullHistorySerde {
@@ -380,9 +373,9 @@ impl From<&FullHistory> for FullHistorySerde {
                 .iter()
                 .map(HistoryEntrySerde::from)
                 .collect(),
-            summaries: history.summaries.clone(),
+            distillates: history.distillates.clone(),
             next_message_id: history.next_message_id,
-            next_summary_id: history.next_summary_id,
+            next_distillate_id: history.next_distillate_id,
         }
     }
 }
@@ -410,9 +403,9 @@ impl FullHistorySerde {
     fn into_history(self) -> Result<FullHistory, String> {
         let FullHistorySerde {
             entries,
-            summaries,
+            distillates,
             next_message_id,
-            next_summary_id,
+            next_distillate_id,
         } = self;
 
         let expected_next_message_id = entries.len() as u64;
@@ -422,34 +415,34 @@ impl FullHistorySerde {
             ));
         }
 
-        let expected_next_summary_id = summaries.len() as u64;
-        if next_summary_id != expected_next_summary_id {
+        let expected_next_distillate_id = distillates.len() as u64;
+        if next_distillate_id != expected_next_distillate_id {
             return Err(format!(
-                "next_summary_id {next_summary_id} does not match summary count {expected_next_summary_id}"
+                "next_distillate_id {next_distillate_id} does not match Distillate count {expected_next_distillate_id}"
             ));
         }
 
-        for (index, summary) in summaries.iter().enumerate() {
+        for (index, distillate) in distillates.iter().enumerate() {
             let expected_id = index as u64;
-            if summary.id.0 != expected_id {
+            if distillate.id.0 != expected_id {
                 return Err(format!(
-                    "summary id {} does not match position {}",
-                    summary.id.0, expected_id
+                    "distillate id {} does not match position {}",
+                    distillate.id.0, expected_id
                 ));
             }
 
-            let start = summary.covers.start.as_u64();
-            let end = summary.covers.end.as_u64();
+            let start = distillate.covers.start.as_u64();
+            let end = distillate.covers.end.as_u64();
             if start > end {
                 return Err(format!(
-                    "summary id {} has invalid range {}..{}",
-                    summary.id.0, start, end
+                    "distillate id {} has invalid range {}..{}",
+                    distillate.id.0, start, end
                 ));
             }
             if end > next_message_id {
                 return Err(format!(
-                    "summary id {} covers past last message ({})",
-                    summary.id.0, next_message_id
+                    "distillate id {} covers past last message ({})",
+                    distillate.id.0, next_message_id
                 ));
             }
         }
@@ -464,24 +457,24 @@ impl FullHistorySerde {
                 ));
             }
 
-            if let Some(summary_id) = entry.summary_id {
-                let summary_index = summary_id.0 as usize;
-                if summary_index >= summaries.len() {
+            if let Some(distillate_id) = entry.distillate_id {
+                let distillate_index = distillate_id.0 as usize;
+                if distillate_index >= distillates.len() {
                     return Err(format!(
-                        "entry {} references missing summary {}",
+                        "entry {} references missing Distillate {}",
                         entry.id.as_u64(),
-                        summary_id.0
+                        distillate_id.0
                     ));
                 }
 
-                let summary = &summaries[summary_index];
+                let distillate = &distillates[distillate_index];
                 let entry_id = entry.id.as_u64();
-                let start = summary.covers.start.as_u64();
-                let end = summary.covers.end.as_u64();
+                let start = distillate.covers.start.as_u64();
+                let end = distillate.covers.end.as_u64();
                 if entry_id < start || entry_id >= end {
                     return Err(format!(
-                        "entry {} references summary {} but is outside {}..{}",
-                        entry_id, summary_id.0, start, end
+                        "entry {} references distillate {} but is outside {}..{}",
+                        entry_id, distillate_id.0, start, end
                     ));
                 }
             }
@@ -491,9 +484,9 @@ impl FullHistorySerde {
 
         Ok(FullHistory {
             entries,
-            summaries,
+            distillates,
             next_message_id,
-            next_summary_id,
+            next_distillate_id,
         })
     }
 }
@@ -545,75 +538,74 @@ impl FullHistory {
             .any(|e| e.stream_step_id() == Some(step_id))
     }
 
-    /// Add a summary for a range of messages.
+    /// Add a Distillate for a range of messages.
     ///
-    /// Under normal operation, summaries should only cover previously-unsummarized
-    /// messages. If a message is already summarized by another summary, the old
-    /// summary becomes orphaned (no messages reference it). This is detected and
+    /// Under normal operation, distillates should only cover previously-undistilled
+    /// messages. If a message is already Distilled by another Distillate, the old
+    /// Distillate becomes orphaned (no messages reference it). This is detected and
     /// logged but allowed to proceed.
-    pub fn add_summary(&mut self, summary: Summary) -> Result<SummaryId> {
-        let expected_id = SummaryId::new(self.summaries.len() as u64);
-        if summary.id != expected_id {
+    pub fn add_distillate(&mut self, distillate: Distillate) -> Result<DistillateId> {
+        let expected_id = DistillateId::new(self.distillates.len() as u64);
+        if distillate.id != expected_id {
             return Err(anyhow!(
-                "summary id {} does not match expected id {}",
-                summary.id.0,
+                "distillate id {} does not match expected id {}",
+                distillate.id.0,
                 expected_id.0
             ));
         }
 
-        let start = summary.covers.start.as_u64();
-        let end = summary.covers.end.as_u64();
+        let start = distillate.covers.start.as_u64();
+        let end = distillate.covers.end.as_u64();
         if start >= end {
             return Err(anyhow!(
-                "summary id {} has invalid range {}..{}",
-                summary.id.0,
+                "Distillate id {} has invalid range {}..{}",
+                distillate.id.0,
                 start,
                 end
             ));
         }
         if end > self.entries.len() as u64 {
             return Err(anyhow!(
-                "summary id {} covers past last message ({})",
-                summary.id.0,
+                "distillate id {} covers past last message ({})",
+                distillate.id.0,
                 self.entries.len()
             ));
         }
 
-        // Check for already-summarized messages in the range.
-        // This shouldn't happen under normal operation but detect it for debugging.
-        let mut orphaned_summaries: Vec<SummaryId> = Vec::new();
+        // Check for already-Distilled messages in the range.
+        let mut orphaned_distillates: Vec<DistillateId> = Vec::new();
         for entry in &self.entries {
             let entry_id = entry.id().as_u64();
             if entry_id >= start
                 && entry_id < end
-                && let Some(old_summary_id) = entry.summary_id()
-                && !orphaned_summaries.contains(&old_summary_id)
+                && let Some(old_distillate_id) = entry.distillate_id()
+                && !orphaned_distillates.contains(&old_distillate_id)
             {
-                orphaned_summaries.push(old_summary_id);
+                orphaned_distillates.push(old_distillate_id);
             }
         }
 
-        if !orphaned_summaries.is_empty() {
-            // Log but proceed - the old summaries will become orphaned.
-            // This indicates either hierarchical summarization or a bug.
+        if !orphaned_distillates.is_empty() {
+            // Log but proceed - the old distillates will become orphaned.
+            // This indicates either hierarchical distillation or a bug.
             tracing::warn!(
-                "Summary {} overlaps with existing summaries {:?}. \
-                 Old summaries will become orphaned.",
-                summary.id.0,
-                orphaned_summaries.iter().map(|s| s.0).collect::<Vec<_>>()
+                "distillate {} overlaps with existing distillates {:?}. \
+                 Old distillates will become orphaned.",
+                distillate.id.0,
+                orphaned_distillates.iter().map(|s| s.0).collect::<Vec<_>>()
             );
         }
 
-        // Mark covered messages as summarized (overwrites any previous summary_id).
+        // Mark covered messages as distilled (overwrites any previous distillate_id).
         for entry in &mut self.entries {
             let entry_id = entry.id().as_u64();
             if entry_id >= start && entry_id < end {
-                entry.mark_summarized(summary.id);
+                entry.mark_distilled(distillate.id);
             }
         }
 
-        self.summaries.push(summary);
-        self.next_summary_id = self.summaries.len() as u64;
+        self.distillates.push(distillate);
+        self.next_distillate_id = self.distillates.len() as u64;
         Ok(expected_id)
     }
 
@@ -623,16 +615,16 @@ impl FullHistory {
         &self.entries
     }
 
-    /// Number of summaries in history.
+    /// Number of distillates in history.
     #[must_use]
-    pub fn summaries_len(&self) -> usize {
-        self.summaries.len()
+    pub fn distillates_len(&self) -> usize {
+        self.distillates.len()
     }
 
-    /// Next summary ID to assign.
+    /// Next Distillate ID to assign.
     #[must_use]
-    pub fn next_summary_id(&self) -> SummaryId {
-        SummaryId::new(self.summaries.len() as u64)
+    pub fn next_distillate_id(&self) -> DistillateId {
+        DistillateId::new(self.distillates.len() as u64)
     }
 
     /// Get a specific entry by ID.
@@ -642,10 +634,10 @@ impl FullHistory {
         &self.entries[index]
     }
 
-    /// Get a specific summary by ID.
+    /// Get a specific distillate by ID.
     #[must_use]
-    pub fn summary(&self, id: SummaryId) -> &Summary {
-        &self.summaries[id.0 as usize]
+    pub fn distillate(&self, id: DistillateId) -> &Distillate {
+        &self.distillates[id.0 as usize]
     }
 
     /// Total tokens across all original messages.
@@ -659,7 +651,6 @@ impl FullHistory {
         self.entries.len()
     }
 
-    /// Returns true if history has no entries.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
@@ -678,12 +669,9 @@ impl FullHistory {
             return None;
         }
 
-        // Verify the entry is not summarized - we should never rollback summarized messages
-        if last.is_summarized() {
-            tracing::warn!(
-                "Attempted to rollback summarized message {:?}, refusing",
-                id
-            );
+        // Verify the entry is not Distilled - we should never rollback Distilled messages
+        if last.is_distilled() {
+            tracing::warn!("Attempted to rollback Distilled message {:?}, refusing", id);
             return None;
         }
 
@@ -692,27 +680,28 @@ impl FullHistory {
         Some(entry.message().clone())
     }
 
-    /// Count of summarized messages.
+    /// Count of Distilled messages.
     #[must_use]
-    pub fn summarized_count(&self) -> usize {
-        self.entries.iter().filter(|e| e.is_summarized()).count()
+    pub fn distilled_count(&self) -> usize {
+        self.entries.iter().filter(|e| e.is_distilled()).count()
     }
 
-    /// Find orphaned summaries (summaries with no messages referencing them).
+    /// Find orphaned distillates (distillates with no messages referencing them).
     ///
     /// Under normal operation, this should return an empty vector. Non-empty
-    /// results indicate either hierarchical re-summarization occurred or a bug.
+    /// results indicate either hierarchical re-distillation occurred or a bug.
     #[must_use]
-    pub fn orphaned_summaries(&self) -> Vec<SummaryId> {
-        let mut referenced: std::collections::HashSet<SummaryId> = std::collections::HashSet::new();
+    pub fn orphaned_distillates(&self) -> Vec<DistillateId> {
+        let mut referenced: std::collections::HashSet<DistillateId> =
+            std::collections::HashSet::new();
 
         for entry in &self.entries {
-            if let Some(summary_id) = entry.summary_id() {
-                referenced.insert(summary_id);
+            if let Some(distillate_id) = entry.distillate_id() {
+                referenced.insert(distillate_id);
             }
         }
 
-        self.summaries
+        self.distillates
             .iter()
             .map(|s| s.id)
             .filter(|id| !referenced.contains(id))
@@ -756,47 +745,47 @@ mod tests {
     }
 
     #[test]
-    fn test_summary_creation() {
+    fn test_distillate_creation() {
         let mut history = FullHistory::new();
 
         let id1 = history.push(make_test_message("First"), 100);
         let id2 = history.push(make_test_message("Second"), 100);
         let _id3 = history.push(make_test_message("Third"), 100);
 
-        let summary_id = SummaryId::new(history.summaries_len() as u64);
-        let summary = Summary::new(
-            summary_id,
+        let distillate_id = DistillateId::new(history.distillates_len() as u64);
+        let distillate = Distillate::new(
+            distillate_id,
             id1..MessageId::new(id2.as_u64() + 1),
-            NonEmptyString::new("Summary of first two").expect("non-empty summary"),
+            NonEmptyString::new("Distillate of first two").expect("non-empty Distillate"),
             30,
             200,
             "test-model".to_string(),
         );
 
-        history.add_summary(summary).expect("summary add");
+        history.add_distillate(distillate).expect("Distillate add");
 
-        // First two should be summarized
-        assert!(history.get_entry(id1).is_summarized());
-        assert!(history.get_entry(id2).is_summarized());
+        // First two should be Distilled
+        assert!(history.get_entry(id1).is_distilled());
+        assert!(history.get_entry(id2).is_distilled());
         // Third should not
-        assert!(!history.entries()[2].is_summarized());
+        assert!(!history.entries()[2].is_distilled());
 
-        assert_eq!(history.summarized_count(), 2);
+        assert_eq!(history.distilled_count(), 2);
     }
 
     #[test]
     fn test_compression_ratio() {
-        let summary = Summary::new(
-            SummaryId::new(0),
+        let distillate = Distillate::new(
+            DistillateId::new(0),
             MessageId::new(0)..MessageId::new(10),
-            NonEmptyString::new("Summary").expect("non-empty summary"),
+            NonEmptyString::new("Distillate").expect("non-empty Distillate"),
             50,
             500,
             "test-model".to_string(),
         );
 
-        assert!((summary.compression_ratio() - 0.1).abs() < 0.001);
-        assert_eq!(summary.tokens_saved(), 450);
+        assert!((distillate.compression_ratio() - 0.1).abs() < 0.001);
+        assert_eq!(distillate.tokens_saved(), 450);
     }
 
     #[test]
@@ -814,33 +803,33 @@ mod tests {
     }
 
     #[test]
-    fn test_orphaned_summaries_none_initially() {
+    fn test_orphaned_distillates_none_initially() {
         let mut history = FullHistory::new();
 
         history.push(make_test_message("First"), 100);
         history.push(make_test_message("Second"), 100);
 
-        // No summaries yet, so no orphans
-        assert!(history.orphaned_summaries().is_empty());
+        // No distillates yet, so no orphans
+        assert!(history.orphaned_distillates().is_empty());
 
-        // Add a summary
-        let summary_id = history.next_summary_id();
-        let summary = Summary::new(
-            summary_id,
+        // Add a Distillate
+        let distillate_id = history.next_distillate_id();
+        let distillate = Distillate::new(
+            distillate_id,
             MessageId::new(0)..MessageId::new(2),
-            NonEmptyString::new("Summary").expect("non-empty"),
+            NonEmptyString::new("Distillate").expect("non-empty"),
             30,
             200,
             "test-model".to_string(),
         );
-        history.add_summary(summary).expect("add summary");
+        history.add_distillate(distillate).expect("add Distillate");
 
-        // Summary is referenced, so still no orphans
-        assert!(history.orphaned_summaries().is_empty());
+        // Distillate is referenced, so still no orphans
+        assert!(history.orphaned_distillates().is_empty());
     }
 
     #[test]
-    fn test_overlapping_summary_creates_orphan() {
+    fn test_overlapping_distillate_creates_orphan() {
         let mut history = FullHistory::new();
 
         // Add 4 messages
@@ -848,54 +837,58 @@ mod tests {
             history.push(make_test_message(&format!("Message {i}")), 100);
         }
 
-        // Create first summary covering messages 0-2
-        let summary0_id = history.next_summary_id();
-        let summary0 = Summary::new(
-            summary0_id,
+        // Create first Distillate covering messages 0-2
+        let distillate0_id = history.next_distillate_id();
+        let distillate0 = Distillate::new(
+            distillate0_id,
             MessageId::new(0)..MessageId::new(2),
-            NonEmptyString::new("First summary").expect("non-empty"),
+            NonEmptyString::new("First Distillate").expect("non-empty"),
             30,
             200,
             "test-model".to_string(),
         );
-        history.add_summary(summary0).expect("add summary 0");
+        history
+            .add_distillate(distillate0)
+            .expect("add Distillate 0");
 
-        // Verify messages 0-1 point to summary 0
+        // Verify messages 0-1 point to Distillate 0
         assert_eq!(
-            history.get_entry(MessageId::new(0)).summary_id(),
-            Some(summary0_id)
+            history.get_entry(MessageId::new(0)).distillate_id(),
+            Some(distillate0_id)
         );
         assert_eq!(
-            history.get_entry(MessageId::new(1)).summary_id(),
-            Some(summary0_id)
+            history.get_entry(MessageId::new(1)).distillate_id(),
+            Some(distillate0_id)
         );
-        assert!(history.orphaned_summaries().is_empty());
+        assert!(history.orphaned_distillates().is_empty());
 
-        // Create overlapping summary covering messages 0-4 (includes already-summarized 0-1)
-        let summary1_id = history.next_summary_id();
-        let summary1 = Summary::new(
-            summary1_id,
+        // Create overlapping Distillate covering messages 0-4 (includes already-Distilled 0-1)
+        let distillate1_id = history.next_distillate_id();
+        let distillate1 = Distillate::new(
+            distillate1_id,
             MessageId::new(0)..MessageId::new(4),
-            NonEmptyString::new("Bigger summary").expect("non-empty"),
+            NonEmptyString::new("Bigger Distillate").expect("non-empty"),
             50,
             400,
             "test-model".to_string(),
         );
-        history.add_summary(summary1).expect("add summary 1");
+        history
+            .add_distillate(distillate1)
+            .expect("add Distillate 1");
 
-        // Now messages 0-3 should point to summary 1
+        // Now messages 0-3 should point to Distillate 1
         for i in 0..4 {
             assert_eq!(
-                history.get_entry(MessageId::new(i)).summary_id(),
-                Some(summary1_id),
-                "message {i} should point to summary 1"
+                history.get_entry(MessageId::new(i)).distillate_id(),
+                Some(distillate1_id),
+                "message {i} should point to Distillate 1"
             );
         }
 
-        // Summary 0 should now be orphaned (no messages reference it)
-        let orphans = history.orphaned_summaries();
+        // Distillate 0 should now be orphaned (no messages reference it)
+        let orphans = history.orphaned_distillates();
         assert_eq!(orphans.len(), 1);
-        assert_eq!(orphans[0], summary0_id);
+        assert_eq!(orphans[0], distillate0_id);
     }
 
     #[test]
@@ -944,28 +937,28 @@ mod tests {
     }
 
     #[test]
-    fn test_pop_if_last_refuses_summarized() {
+    fn test_pop_if_last_refuses_distilled() {
         let mut history = FullHistory::new();
 
         let id1 = history.push(make_test_message("First"), 100);
         let id2 = history.push(make_test_message("Second"), 100);
 
-        // Create a summary covering both messages
-        let summary_id = history.next_summary_id();
-        let summary = Summary::new(
-            summary_id,
+        // Create a Distillate covering both messages
+        let distillate_id = history.next_distillate_id();
+        let distillate = Distillate::new(
+            distillate_id,
             id1..MessageId::new(id2.as_u64() + 1),
-            NonEmptyString::new("Summary").expect("non-empty"),
+            NonEmptyString::new("Distillate").expect("non-empty"),
             30,
             200,
             "test-model".to_string(),
         );
-        history.add_summary(summary).expect("add summary");
+        history.add_distillate(distillate).expect("add Distillate");
 
-        // Both messages should now be summarized
-        assert!(history.get_entry(id2).is_summarized());
+        // Both messages should now be Distilled
+        assert!(history.get_entry(id2).is_distilled());
 
-        // Try to pop the last (summarized) message - should refuse
+        // Try to pop the last (Distilled) message - should refuse
         let popped = history.pop_if_last(id2);
         assert!(popped.is_none());
         assert_eq!(history.len(), 2); // Nothing was removed

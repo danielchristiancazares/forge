@@ -12,7 +12,7 @@ use serde_json::Value;
 pub fn format_tool_call_compact(name: &str, args: &Value) -> String {
     let display_name = canonical_tool_name(name);
 
-    // Special case: Edit displays as Edit(path) showing patch file summary
+    // Special case: Edit displays as Edit(path) showing patch file Summary
     if name == "Edit" {
         if let Some(obj) = args.as_object()
             && let Some(path) = format_patch_summary(obj)

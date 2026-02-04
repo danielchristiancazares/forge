@@ -1,7 +1,3 @@
-//! Markdown to ratatui rendering
-//!
-//! Includes a simple render cache to avoid re-parsing unchanged markdown content.
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -24,10 +20,11 @@ struct CacheKey {
     content_hash: u64,
     style_hash: u64,
     palette_hash: u64,
+    soft_breaks_as_newlines: bool,
 }
 
 impl CacheKey {
-    fn new(content: &str, style: Style, palette: &Palette) -> Self {
+    fn new(content: &str, style: Style, palette: &Palette, soft_breaks_as_newlines: bool) -> Self {
         use std::collections::hash_map::DefaultHasher;
 
         let mut content_hasher = DefaultHasher::new();
@@ -55,6 +52,7 @@ impl CacheKey {
             content_hash: content_hasher.finish(),
             style_hash: style_hasher.finish(),
             palette_hash: palette_hasher.finish(),
+            soft_breaks_as_newlines,
         }
     }
 }
@@ -108,7 +106,26 @@ pub fn clear_render_cache() {
 /// Uses an internal cache to avoid re-parsing unchanged content.
 #[must_use]
 pub fn render_markdown(content: &str, base_style: Style, palette: &Palette) -> Vec<Line<'static>> {
-    let key = CacheKey::new(content, base_style, palette);
+    render_markdown_with_soft_breaks(content, base_style, palette, false)
+}
+
+/// Render markdown content while preserving single newlines as hard line breaks.
+#[must_use]
+pub(crate) fn render_markdown_preserve_newlines(
+    content: &str,
+    base_style: Style,
+    palette: &Palette,
+) -> Vec<Line<'static>> {
+    render_markdown_with_soft_breaks(content, base_style, palette, true)
+}
+
+fn render_markdown_with_soft_breaks(
+    content: &str,
+    base_style: Style,
+    palette: &Palette,
+    soft_breaks_as_newlines: bool,
+) -> Vec<Line<'static>> {
+    let key = CacheKey::new(content, base_style, palette, soft_breaks_as_newlines);
 
     // Check cache first
     let cached = RENDER_CACHE.with(|cache| cache.borrow().get(&key).cloned());
@@ -118,13 +135,13 @@ pub fn render_markdown(content: &str, base_style: Style, palette: &Palette) -> V
     }
 
     // Cache miss - render and store
-    let renderer = MarkdownRenderer::new(base_style, *palette);
+    let renderer = MarkdownRenderer::new(base_style, *palette, soft_breaks_as_newlines);
     let lines = renderer.render(content);
 
     RENDER_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
 
-        // Simple eviction: clear half the cache when full
+        // Eviction: clear half when full
         if cache.len() >= CACHE_MAX_ENTRIES {
             let keys_to_remove: Vec<_> =
                 cache.keys().take(CACHE_MAX_ENTRIES / 2).cloned().collect();
@@ -166,10 +183,19 @@ struct MarkdownRenderer {
 
     // List state
     list_stack: Vec<Option<u64>>,
+
+    // Render options
+    soft_breaks_as_newlines: bool,
 }
 
 impl MarkdownRenderer {
-    fn new(base_style: Style, palette: Palette) -> Self {
+    fn is_html_br_tag(s: &str) -> bool {
+        // Common variants produced by LLMs / HTML serializers.
+        // Keep this small and strict to avoid accidentally treating arbitrary HTML as a line break.
+        matches!(s, "<br>" | "<br/>" | "<br />" | "<BR>" | "<BR/>" | "<BR />")
+    }
+
+    fn new(base_style: Style, palette: Palette, soft_breaks_as_newlines: bool) -> Self {
         Self {
             base_style,
             palette,
@@ -186,6 +212,7 @@ impl MarkdownRenderer {
             current_cell: String::new(),
             table_alignments: Vec::new(),
             list_stack: Vec::new(),
+            soft_breaks_as_newlines,
         }
     }
 
@@ -218,9 +245,9 @@ impl MarkdownRenderer {
             Event::Code(code) => self.handle_inline_code(&code),
             Event::SoftBreak => self.handle_soft_break(),
             Event::HardBreak => self.flush_line(),
-            // Render HTML/XML-like content as plain text to avoid silent content loss.
+            // Handle HTML/XML content: convert known tags, render others as text.
             // LLM responses may contain XML-like tags that pulldown_cmark parses as HTML.
-            Event::Html(html) | Event::InlineHtml(html) => self.handle_text(&html),
+            Event::Html(html) | Event::InlineHtml(html) => self.handle_html(&html),
             _ => {}
         }
     }
@@ -355,8 +382,41 @@ impl MarkdownRenderer {
 
     fn handle_soft_break(&mut self) {
         if !self.in_code_block && !self.in_table {
-            self.current_spans.push(Span::raw(" "));
+            if self.soft_breaks_as_newlines {
+                self.flush_line();
+            } else {
+                self.current_spans.push(Span::raw(" "));
+            }
         }
+    }
+
+    fn handle_html(&mut self, html: &str) {
+        let trimmed = html.trim();
+
+        if Self::is_html_br_tag(trimmed) {
+            // Code blocks should preserve text literally.
+            // (In practice pulldown-cmark shouldn't emit Html events inside code blocks,
+            // but this keeps semantics correct.)
+            if self.in_code_block {
+                self.handle_text(html);
+                return;
+            }
+
+            if self.in_table {
+                // Tables are rendered as single-line rows in our TUI.
+                // Treat <br> as a space separator so we don't inject newlines into spans.
+                if !self.current_cell.ends_with(char::is_whitespace) {
+                    self.current_cell.push(' ');
+                }
+                return;
+            }
+
+            self.flush_line();
+            return;
+        }
+
+        // For other HTML/XML content, render as text to avoid silent content loss
+        self.handle_text(html);
     }
 
     fn current_style(&self) -> Style {
@@ -688,6 +748,81 @@ mod tests {
         assert!(
             all_text.contains("thinking") || all_text.contains("important"),
             "HTML/XML content should appear in rendered output: {all_text}"
+        );
+    }
+
+    #[test]
+    fn test_br_tag_renders_as_line_break() {
+        clear_render_cache();
+
+        // <br> tags (common in LLM output) should become line breaks
+        let content = "Line one<br>Line two";
+        let palette = Palette::standard();
+        let lines = render_markdown(content, Style::default(), &palette);
+
+        // Should have two separate lines, not "<br>" as literal text
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+
+        assert!(
+            !all_text.contains("<br>"),
+            "<br> should not appear as literal text: {all_text}"
+        );
+        assert!(
+            all_text.contains("Line one") && all_text.contains("Line two"),
+            "Both lines should be present: {all_text}"
+        );
+    }
+
+    #[test]
+    fn test_preserve_newlines_as_line_breaks() {
+        clear_render_cache();
+
+        let content = "Line one\nLine two";
+        let palette = Palette::standard();
+        let lines = render_markdown_preserve_newlines(content, Style::default(), &palette);
+
+        let rendered_lines: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+
+        let line_one_idx = rendered_lines
+            .iter()
+            .position(|text| text.contains("Line one"));
+        let line_two_idx = rendered_lines
+            .iter()
+            .position(|text| text.contains("Line two"));
+
+        assert!(line_one_idx.is_some(), "Should contain 'Line one'");
+        assert!(line_two_idx.is_some(), "Should contain 'Line two'");
+        assert_ne!(line_one_idx, line_two_idx, "Lines should be separate");
+    }
+
+    #[test]
+    fn test_br_in_table_cell() {
+        clear_render_cache();
+
+        // <br> inside table cells should create multi-line cells
+        let content = "| Header |\n|--------|\n| Line1<br>Line2 |";
+        let palette = Palette::standard();
+        let lines = render_markdown(content, Style::default(), &palette);
+
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+
+        assert!(
+            !all_text.contains("<br>"),
+            "<br> in table should not appear as literal text: {all_text}"
+        );
+        // Both parts should be in the output
+        assert!(
+            all_text.contains("Line1") && all_text.contains("Line2"),
+            "Both lines should be present in table: {all_text}"
         );
     }
 

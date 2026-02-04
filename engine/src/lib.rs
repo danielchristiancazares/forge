@@ -6,7 +6,7 @@
 //! - **Input modes**: Vim-style modal editing (Normal, Insert, Command, Model)
 //! - **Streaming**: LLM response streaming with tool call handling
 //! - **Tool execution**: Approval flow, crash recovery, and result journaling
-//! - **Context management**: Token budgeting, summarization triggers
+//! - **Context management**: Token budgeting, distillation triggers
 //! - **Persistence**: Session state, history, and checkpoint recovery
 //!
 //! # Architecture
@@ -14,7 +14,7 @@
 //! The engine uses dual state machines:
 //!
 //! 1. **Input state** ([`InputState`]): Controls which input mode is active
-//! 2. **Operation state** ([`OperationState`]): Tracks async operations (streaming, summarization)
+//! 2. **Operation state** ([`OperationState`]): Tracks async operations (streaming, distillation)
 //!
 //! The TUI layer (`forge_tui`) reads state from `App` and forwards input back to it.
 //! No rendering logic lives in this crate.
@@ -43,19 +43,18 @@ pub use ui::{
 
 pub use forge_context::{
     ActiveJournal, ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus,
-    ExtractionResult, Fact, FactType, FullHistory, Librarian, MessageId, ModelLimits,
-    ModelLimitsSource, ModelRegistry, PendingSummarization, PreparedContext, RecoveredStream,
-    RecoveredToolBatch, RetrievalResult, StreamJournal, SummarizationNeeded, SummarizationScope,
-    TokenCounter, ToolBatchId, ToolJournal, generate_summary, retrieve_relevant,
-    summarization_model,
+    DistillationNeeded, DistillationScope, ExtractionResult, Fact, FactType, FullHistory,
+    Librarian, MessageId, ModelLimits, ModelLimitsSource, ModelRegistry, PendingDistillation,
+    PreparedContext, RecoveredStream, RecoveredToolBatch, RetrievalResult, StreamJournal,
+    TokenCounter, ToolBatchId, ToolJournal, distillation_model, generate_distillation,
+    retrieve_relevant,
 };
 pub use forge_providers::{self, ApiConfig, gemini::GeminiCache, gemini::GeminiCacheConfig};
 pub use forge_types::{
     ApiKey, ApiUsage, CacheHint, CacheableMessage, EmptyStringError, Message, ModelName,
-    ModelNameKind, NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort,
-    OpenAIReasoningSummary, OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation,
-    OutputLimits, Provider, StreamEvent, StreamFinishReason, ToolCall, ToolDefinition, ToolResult,
-    sanitize_terminal_text,
+    NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort, OpenAIReasoningSummary,
+    OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation, OutputLimits, Provider,
+    StreamEvent, StreamFinishReason, ToolCall, ToolDefinition, ToolResult, sanitize_terminal_text,
 };
 
 mod config;
@@ -73,9 +72,9 @@ mod persistence;
 mod security;
 mod session_state;
 pub use session_state::SessionChangeLog;
+mod distillation;
 mod state;
 mod streaming;
-mod summarization;
 mod tool_loop;
 mod util;
 
@@ -131,11 +130,11 @@ impl TurnUsage {
     }
 }
 
-pub use state::SummarizationTask;
+pub use state::DistillationTask;
 
 use state::{
-    ActiveStream, DataDir, OperationState, SummarizationRetry, SummarizationRetryState,
-    SummarizationStart, SummarizationState, ToolLoopPhase, ToolRecoveryDecision,
+    ActiveStream, DataDir, DistillationStart, DistillationState, OperationState, ToolLoopPhase,
+    ToolRecoveryDecision,
 };
 
 /// Accumulator for a single tool call during streaming.
@@ -179,6 +178,8 @@ pub struct StreamingMessage {
     content: String,
     /// Provider thinking/reasoning deltas (if captured).
     thinking: String,
+    /// Encrypted signature for replaying thinking blocks (Claude extended thinking).
+    thinking_signature: Option<String>,
     /// Whether we should capture thinking deltas at all (default: false).
     ///
     /// This keeps the default behavior (discard thinking) while allowing
@@ -216,6 +217,7 @@ impl StreamingMessage {
             model,
             content: String::new(),
             thinking: String::new(),
+            thinking_signature: None,
             capture_thinking,
             receiver,
             tool_calls: Vec::new(),
@@ -245,6 +247,12 @@ impl StreamingMessage {
         &self.thinking
     }
 
+    /// Returns the thinking signature for API replay, if captured.
+    #[must_use]
+    pub fn thinking_signature(&self) -> Option<&str> {
+        self.thinking_signature.as_deref()
+    }
+
     /// API-reported token usage accumulated during streaming.
     #[must_use]
     pub fn usage(&self) -> ApiUsage {
@@ -264,6 +272,15 @@ impl StreamingMessage {
             StreamEvent::ThinkingDelta(thinking) => {
                 if self.capture_thinking {
                     self.thinking.push_str(&thinking);
+                }
+                None
+            }
+            StreamEvent::ThinkingSignature(signature_delta) => {
+                // Always capture signature for API replay, regardless of thinking display preference.
+                // Signatures arrive as deltas that must be concatenated.
+                match &mut self.thinking_signature {
+                    Some(existing) => existing.push_str(&signature_delta),
+                    None => self.thinking_signature = Some(signature_delta),
                 }
                 None
             }
@@ -410,11 +427,6 @@ impl SystemPrompts {
     }
 }
 
-pub(crate) const MAX_SUMMARIZATION_ATTEMPTS: u8 = 5;
-pub(crate) const SUMMARIZATION_RETRY_BASE_MS: u64 = 500;
-pub(crate) const SUMMARIZATION_RETRY_MAX_MS: u64 = 8000;
-pub(crate) const SUMMARIZATION_RETRY_JITTER_MS: u64 = 200;
-
 pub struct App {
     input: InputState,
     display: Vec<DisplayItem>,
@@ -434,9 +446,9 @@ pub struct App {
     stream_journal: StreamJournal,
     /// Current operation state.
     state: OperationState,
-    /// Whether `ContextInfinity` (automatic summarization) is enabled.
+    /// Whether memory (automatic distillation) is enabled.
     /// This is determined at init from config/env and does not change during runtime.
-    context_infinity: bool,
+    memory_enabled: bool,
     /// Validated output limits (max tokens + optional thinking budget).
     /// Invariant: if thinking is enabled, budget < `max_tokens`.
     output_limits: OutputLimits,
@@ -820,7 +832,7 @@ impl App {
     fn tool_approval_ref(&self) -> Option<&state::ApprovalState> {
         match &self.tool_loop_state()?.phase {
             ToolLoopPhase::AwaitingApproval(approval) => Some(approval),
-            ToolLoopPhase::Executing(_) => None,
+            ToolLoopPhase::Processing(_) | ToolLoopPhase::Executing(_) => None,
         }
     }
 
@@ -828,15 +840,15 @@ impl App {
     fn tool_approval_mut(&mut self) -> Option<&mut state::ApprovalState> {
         match &mut self.tool_loop_state_mut()?.phase {
             ToolLoopPhase::AwaitingApproval(approval) => Some(approval),
-            ToolLoopPhase::Executing(_) => None,
+            ToolLoopPhase::Processing(_) | ToolLoopPhase::Executing(_) => None,
         }
     }
 
     #[inline]
-    fn tool_exec_ref(&self) -> Option<&state::ActiveToolExecution> {
+    fn tool_exec_ref(&self) -> Option<&tool_loop::ActiveExecution> {
         match &self.tool_loop_state()?.phase {
             ToolLoopPhase::Executing(exec) => Some(exec),
-            ToolLoopPhase::AwaitingApproval(_) => None,
+            ToolLoopPhase::AwaitingApproval(_) | ToolLoopPhase::Processing(_) => None,
         }
     }
 
@@ -857,15 +869,12 @@ impl App {
     }
 
     pub fn tool_loop_current_call_id(&self) -> Option<&str> {
-        self.tool_exec_ref()?
-            .current_call
-            .as_ref()
-            .map(|c| c.id.as_str())
+        Some(self.tool_exec_ref()?.spawned.call().id.as_str())
     }
 
     pub fn tool_loop_output_lines(&self) -> Option<&[String]> {
         let exec = self.tool_exec_ref()?;
-        let current_id = exec.current_call.as_ref()?.id.as_str();
+        let current_id = exec.spawned.call().id.as_str();
         exec.output_lines.get(current_id).map(Vec::as_slice)
     }
 
@@ -952,16 +961,14 @@ impl App {
     /// Returns a description of why the app is busy, or None if idle.
     ///
     /// This centralizes busy-state checks to ensure consistency across
-    /// `start_streaming`, `start_summarization`, and UI queries.
+    /// `start_streaming`, `start_distillation`, and UI queries.
     fn busy_reason(&self) -> Option<&'static str> {
         match &self.state {
             OperationState::Idle => None,
             OperationState::Streaming(_) => Some("streaming a response"),
             OperationState::ToolLoop(_) => Some("tool execution in progress"),
             OperationState::ToolRecovery(_) => Some("tool recovery pending"),
-            OperationState::Summarizing(_) | OperationState::SummarizationRetry(_) => {
-                Some("summarization in progress")
-            }
+            OperationState::Distilling(_) => Some("distillation in progress"),
         }
     }
 
@@ -982,8 +989,8 @@ impl App {
         self.cached_usage_status = None;
     }
 
-    pub fn context_infinity_enabled(&self) -> bool {
-        self.context_infinity
+    pub fn memory_enabled(&self) -> bool {
+        self.memory_enabled
     }
 
     /// Queue a system notification to be injected into the next API request.
@@ -1098,11 +1105,11 @@ impl App {
     /// Persists the model to `~/.forge/config.toml` for future sessions.
     pub fn set_model(&mut self, model: ModelName) {
         self.model = model.clone();
-        if self.context_infinity_enabled() {
+        if self.memory_enabled() {
             self.handle_context_adaptation();
         } else {
             self.context_manager
-                .set_model_without_adaptation(self.model.as_str());
+                .set_model_without_adaptation(self.model.clone());
         }
 
         self.clamp_output_limits_to_model();
@@ -1116,16 +1123,16 @@ impl App {
     /// Handle context adaptation after a model switch.
     ///
     /// This method is called after `set_model()` to handle the context adaptation result:
-    /// - If shrinking with `needs_summarization`, starts background summarization
-    /// - If expanding, attempts to restore previously summarized messages
+    /// - If shrinking with `needs_distillation`, starts background distillation
+    /// - If expanding, attempts to restore previously distilled messages
     fn handle_context_adaptation(&mut self) {
-        let adaptation = self.context_manager.switch_model(self.model.as_str());
+        let adaptation = self.context_manager.switch_model(self.model.clone());
         self.invalidate_usage_cache();
 
         match adaptation {
             ContextAdaptation::NoChange
             | ContextAdaptation::Shrinking {
-                needs_summarization: false,
+                needs_distillation: false,
                 ..
             } => {
                 // No action needed
@@ -1133,14 +1140,14 @@ impl App {
             ContextAdaptation::Shrinking {
                 old_budget,
                 new_budget,
-                needs_summarization: true,
+                needs_distillation: true,
             } => {
                 self.push_notification(format!(
-                    "Context budget shrank {}k → {}k; summarizing...",
+                    "Context budget shrank {}k → {}k; distilling...",
                     old_budget / 1000,
                     new_budget / 1000
                 ));
-                self.start_summarization();
+                self.start_distillation();
             }
             ContextAdaptation::Expanding {
                 old_budget,
@@ -1164,8 +1171,7 @@ impl App {
 
     /// Poll background tasks and update wall-clock based timers.
     pub fn tick(&mut self) {
-        self.poll_summarization();
-        self.poll_summarization_retry();
+        self.poll_distillation();
         self.poll_tool_loop();
 
         let now = Instant::now();

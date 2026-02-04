@@ -31,7 +31,6 @@ pub struct FilePickerState {
 }
 
 impl FilePickerState {
-    /// Create a new file picker state.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -135,7 +134,6 @@ impl FilePickerState {
             .collect()
     }
 
-    /// Get the file at the selected index (within filtered results).
     #[must_use]
     pub fn get_selected(&self, selected: usize) -> Option<&FileEntry> {
         self.filtered
@@ -143,7 +141,6 @@ impl FilePickerState {
             .and_then(|&idx| self.all_files.get(idx))
     }
 
-    /// Get the count of filtered results.
     #[must_use]
     pub fn filtered_count(&self) -> usize {
         self.filtered.len()

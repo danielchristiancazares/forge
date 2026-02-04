@@ -34,7 +34,7 @@ fn test_app() -> App {
         source: DataDirSource::Fallback,
     };
     let output_limits = OutputLimits::new(4096);
-    let mut context_manager = ContextManager::new(model.as_str());
+    let mut context_manager = ContextManager::new(model.clone());
     context_manager.set_output_limit(output_limits.max_output_tokens());
     let tool_settings = App::tool_settings_from_config(None);
     let mut tool_registry = tools::ToolRegistry::default();
@@ -64,7 +64,7 @@ fn test_app() -> App {
         context_manager,
         stream_journal,
         state: OperationState::Idle,
-        context_infinity: true,
+        memory_enabled: true,
         output_limits,
         cache_enabled: false,
         openai_options: OpenAIRequestOptions::default(),
@@ -110,8 +110,8 @@ fn last_notification(app: &App) -> Option<&str> {
 #[test]
 fn openai_options_default_upgrade_for_gpt_52_pro() {
     let app = test_app();
-    let pro_model = ModelName::known(Provider::OpenAI, "gpt-5.2-pro");
-    let base_model = ModelName::known(Provider::OpenAI, "gpt-5.2");
+    let pro_model = ModelName::from_predefined(PredefinedModel::Gpt52Pro);
+    let base_model = ModelName::from_predefined(PredefinedModel::Gpt52);
 
     let pro_options = app.openai_options_for_model(&pro_model);
     let base_options = app.openai_options_for_model(&base_model);
@@ -364,6 +364,54 @@ fn process_stream_events_applies_deltas_and_done() {
 }
 
 #[test]
+fn process_stream_events_persists_thinking_signature_when_hidden() {
+    let mut app = test_app();
+
+    let (tx, rx) = mpsc::channel(1024);
+    let streaming = StreamingMessage::new(
+        app.model.clone(),
+        rx,
+        app.tool_settings.limits.max_tool_args_bytes,
+    );
+    let (abort_handle, _abort_registration) = AbortHandle::new_pair();
+    let journal = app
+        .stream_journal
+        .begin_session(app.model.as_str())
+        .expect("journal session");
+    app.state = OperationState::Streaming(ActiveStream {
+        message: streaming,
+        journal,
+        abort_handle,
+        tool_batch_id: None,
+        tool_call_seq: 0,
+        tool_args_journal_bytes: std::collections::HashMap::new(),
+        turn: crate::input_modes::TurnContext::new_for_tests(),
+    });
+
+    tx.try_send(StreamEvent::ThinkingSignature("sig".to_string()))
+        .expect("send signature");
+    tx.try_send(StreamEvent::TextDelta("hello".to_string()))
+        .expect("send delta");
+    tx.try_send(StreamEvent::Done).expect("send done");
+
+    app.process_stream_events();
+
+    let entries = app.history().entries();
+    assert_eq!(entries.len(), 2);
+    let thinking_entry = entries.first().expect("thinking message");
+    let assistant_entry = entries.last().expect("assistant message");
+
+    let Message::Thinking(thinking) = thinking_entry.message() else {
+        panic!("expected thinking message first");
+    };
+    assert_eq!(thinking.content(), "[Thinking hidden]");
+    assert_eq!(thinking.signature(), Some("sig"));
+
+    assert!(matches!(assistant_entry.message(), Message::Assistant(_)));
+    assert_eq!(assistant_entry.message().content(), "hello");
+}
+
+#[test]
 fn process_stream_events_respects_budget() {
     let mut app = test_app();
 
@@ -441,7 +489,7 @@ fn queue_message_sets_pending_user_message() {
 }
 
 #[tokio::test]
-async fn summarization_not_needed_starts_queued_request() {
+async fn distillation_not_needed_starts_queued_request() {
     let mut app = test_app();
     app.input = InputState::Insert(DraftInput {
         text: "queued".to_string(),
@@ -454,9 +502,9 @@ async fn summarization_not_needed_starts_queued_request() {
         .queue_message()
         .expect("queued message");
 
-    let result = app.start_summarization_with_attempt(Some(queued), 1);
+    let result = app.try_start_distillation(Some(queued));
 
-    assert_eq!(result, SummarizationStart::NotNeeded);
+    assert_eq!(result, DistillationStart::NotNeeded);
     assert!(matches!(app.state, OperationState::Streaming(_)));
 }
 
@@ -601,7 +649,7 @@ fn streaming_message_into_message_empty_fails() {
 #[test]
 fn streaming_message_provider_and_model() {
     let (_tx, rx) = mpsc::channel(1024);
-    let model = ModelName::known(Provider::OpenAI, "gpt-5.2");
+    let model = ModelName::from_predefined(PredefinedModel::Gpt52);
     let stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
     assert_eq!(stream.provider(), Provider::OpenAI);
@@ -646,6 +694,11 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
             "patch": "LP1\nF foo.txt\nT\nhello\n.\nEND\n"
         }),
     );
+    let thinking = Message::thinking_with_signature(
+        app.model.clone(),
+        NonEmptyString::new("thinking").expect("non-empty"),
+        "sig".to_string(),
+    );
     app.handle_tool_calls(
         "assistant".to_string(),
         vec![call],
@@ -654,6 +707,7 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
         StepId::new(1),
         None,
         crate::input_modes::TurnContext::new_for_tests(),
+        Some(thinking),
     );
 
     match &app.state {
@@ -661,7 +715,9 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
             ToolLoopPhase::AwaitingApproval(ref approval) => {
                 assert_eq!(approval.requests.len(), 1);
             }
-            ToolLoopPhase::Executing(_) => panic!("expected awaiting approval"),
+            ToolLoopPhase::Processing(_) | ToolLoopPhase::Executing(_) => {
+                panic!("expected awaiting approval")
+            }
         },
         _ => panic!("expected tool loop state"),
     }
@@ -669,6 +725,12 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
     app.resolve_tool_approval(tools::ApprovalDecision::DenyAll);
 
     assert!(matches!(app.state, OperationState::Idle));
+    let entries = app.history().entries();
+    let thinking_entry = entries.first().expect("thinking message");
+    let Message::Thinking(thinking) = thinking_entry.message() else {
+        panic!("expected thinking message first");
+    };
+    assert_eq!(thinking.signature(), Some("sig"));
     let last = app.history().entries().last().expect("tool result");
     assert!(matches!(last.message(), Message::ToolResult(_)));
     assert_eq!(last.message().content(), "Tool call denied by user");
@@ -701,12 +763,15 @@ async fn tool_loop_preserves_order_after_approval() {
         StepId::new(1),
         None,
         crate::input_modes::TurnContext::new_for_tests(),
+        None,
     );
 
     match &app.state {
         OperationState::ToolLoop(state) => match state.phase {
             ToolLoopPhase::AwaitingApproval(_) => {}
-            ToolLoopPhase::Executing(_) => panic!("expected awaiting approval"),
+            ToolLoopPhase::Processing(_) | ToolLoopPhase::Executing(_) => {
+                panic!("expected awaiting approval")
+            }
         },
         _ => panic!("expected tool loop state"),
     }
@@ -748,6 +813,7 @@ async fn tool_loop_write_then_read_same_batch() {
         StepId::new(1),
         None,
         crate::input_modes::TurnContext::new_for_tests(),
+        None,
     );
 
     // In Permissive mode, neither write_file nor read_file requires approval,
@@ -781,27 +847,26 @@ async fn tool_loop_write_then_read_same_batch() {
 }
 
 #[tokio::test]
-async fn summarization_failure_sets_retry_with_queued_request() {
+async fn distillation_failure_goes_to_idle_no_retry() {
     let mut app = test_app();
 
     let content = NonEmptyString::new("alpha").expect("non-empty");
     let msg_id = app.push_history_message(Message::user(content));
     let pending = app
         .context_manager
-        .prepare_summarization(&[msg_id])
-        .expect("pending summarization");
+        .prepare_distillation(&[msg_id])
+        .expect("pending distillation");
 
     let config =
         ApiConfig::new(ApiKey::Claude("test".to_string()), app.model.clone()).expect("api config");
     let handle = tokio::spawn(async { Err(anyhow!("boom")) });
 
-    let task = SummarizationTask {
+    let task = DistillationTask {
         scope: pending.scope,
         generated_by: "test".to_string(),
         handle,
-        attempt: 1,
     };
-    app.state = OperationState::Summarizing(SummarizationState {
+    app.state = OperationState::Distilling(DistillationState {
         task,
         queued: Some(QueuedUserMessage {
             config: config.clone(),
@@ -809,19 +874,12 @@ async fn summarization_failure_sets_retry_with_queued_request() {
         }),
     });
 
-    let before = Instant::now();
     tokio::task::yield_now().await;
-    app.poll_summarization();
+    app.poll_distillation();
 
-    match &app.state {
-        OperationState::SummarizationRetry(state) => {
-            assert_eq!(state.retry.attempt, 2);
-            assert!(state.retry.ready_at >= before);
-            let queued = state.queued.as_ref().expect("queued request");
-            assert_eq!(queued.config.model().as_str(), config.model().as_str());
-        }
-        _ => panic!("expected SummarizationRetry with queued"),
-    }
+    // With transport-layer retries handling transient failures, distillation errors
+    // go directly to Idle state (no engine-level retry).
+    assert!(matches!(app.state, OperationState::Idle));
 }
 
 #[test]
@@ -843,6 +901,7 @@ fn tool_loop_max_iterations_short_circuits() {
         StepId::new(1),
         None,
         crate::input_modes::TurnContext::new_for_tests(),
+        None,
     );
 
     assert!(matches!(app.state, OperationState::Idle));

@@ -18,9 +18,14 @@ tokio = { workspace = true, features = ["time"] }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+rand.workspace = true
 
 anyhow.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
 
 tracing.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
+tokio-test.workspace = true

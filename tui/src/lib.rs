@@ -65,7 +65,7 @@ use forge_types::{ToolResult, sanitize_terminal_text};
 
 use self::diff_render::render_tool_result_lines;
 pub use self::markdown::clear_render_cache;
-use self::markdown::render_markdown;
+use self::markdown::{render_markdown, render_markdown_preserve_newlines};
 use self::shared::{
     ToolCallStatus, ToolCallStatusKind, collect_approval_view, collect_tool_statuses,
     message_header_parts, provider_color, wrapped_line_count_exact, wrapped_line_rows,
@@ -482,7 +482,8 @@ fn build_dynamic_message_lines(
                 .fg(palette.text_muted)
                 .add_modifier(Modifier::ITALIC);
             let thinking = sanitize_terminal_text(streaming.thinking());
-            let mut rendered_thinking = render_markdown(thinking.as_ref(), thinking_style, palette);
+            let mut rendered_thinking =
+                render_markdown_preserve_newlines(thinking.as_ref(), thinking_style, palette);
 
             if !rendered_thinking.is_empty() {
                 let first_line = &mut rendered_thinking[0];
@@ -712,7 +713,7 @@ fn build_dynamic_message_lines(
                             }
                         }
                     } else {
-                        // For completed tools, show last meaningful line as summary
+                        // For completed tools, show last meaningful line as Summary
                         let last_line = output_lines.iter().rev().find(|l| {
                             !l.starts_with("▶ ") && !l.starts_with("✓ ") && !l.trim().is_empty()
                         });
@@ -854,7 +855,8 @@ fn render_message_static(
                 .fg(palette.text_muted)
                 .add_modifier(Modifier::ITALIC);
             let content = sanitize_terminal_text(msg.content());
-            let mut rendered = render_markdown(content.as_ref(), content_style, palette);
+            let mut rendered =
+                render_markdown_preserve_newlines(content.as_ref(), content_style, palette);
 
             if rendered.is_empty() {
                 lines.push(Line::from(vec![Span::styled(
@@ -977,10 +979,10 @@ pub(crate) fn draw_input(
     };
 
     let usage_status = app.context_usage_status();
-    // 0 = ready, 1 = needs summarization, 2 = recent messages too large (unrecoverable)
+    // 0 = ready, 1 = needs distillation, 2 = recent messages too large (unrecoverable)
     let (usage, severity_override) = match &usage_status {
         ContextUsageStatus::Ready(usage) => (usage, 0),
-        ContextUsageStatus::NeedsSummarization { usage, .. } => (usage, 1),
+        ContextUsageStatus::NeedsDistillation { usage, .. } => (usage, 1),
         ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => (usage, 2),
     };
     let pct = usage.percentage();
@@ -1332,9 +1334,10 @@ fn draw_inline_model_selector(
         let marker = if is_selected { glyphs.selected } else { " " };
         let num = i + 1;
 
-        let left = format!(" {marker} {num}  {}", model.model_name());
+        let prefix = format!(" {marker} ");
+        let label = format!("{num}.  {}", model.model_name());
         let right = model.firm_name();
-        let left_width = left.chars().count();
+        let left_width = prefix.chars().count() + label.chars().count();
         let right_width = right.chars().count();
         let gap = 2usize;
         let filler = content_width.saturating_sub(left_width + right_width + gap);
@@ -1345,7 +1348,12 @@ fn draw_inline_model_selector(
             None
         };
 
-        let mut left_style = if is_selected {
+        let mut arrow_style = Style::default().fg(palette.peach);
+        if let Some(bg) = bg {
+            arrow_style = arrow_style.bg(bg);
+        }
+
+        let mut label_style = if is_selected {
             Style::default()
                 .fg(palette.text_primary)
                 .add_modifier(Modifier::BOLD)
@@ -1353,7 +1361,7 @@ fn draw_inline_model_selector(
             Style::default().fg(palette.text_secondary)
         };
         if let Some(bg) = bg {
-            left_style = left_style.bg(bg);
+            label_style = label_style.bg(bg);
         }
 
         let mut filler_style = Style::default();
@@ -1369,7 +1377,8 @@ fn draw_inline_model_selector(
         }
 
         lines.push(Line::from(vec![
-            Span::styled(left, left_style),
+            Span::styled(prefix, arrow_style),
+            Span::styled(label, label_style),
             Span::styled(" ".repeat(filler), filler_style),
             Span::styled(" ".repeat(gap), filler_style),
             Span::styled(right.to_string(), right_style),
@@ -1408,7 +1417,7 @@ fn draw_inline_model_selector(
     let usage_status = app.context_usage_status();
     let (usage, severity_override) = match &usage_status {
         ContextUsageStatus::Ready(usage) => (usage, 0),
-        ContextUsageStatus::NeedsSummarization { usage, .. } => (usage, 1),
+        ContextUsageStatus::NeedsDistillation { usage, .. } => (usage, 1),
         ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => (usage, 2),
     };
     let pct = usage.percentage();
@@ -1691,9 +1700,10 @@ pub fn draw_model_selector(
     let mut push_row = |label: &str, selected: bool, muted: bool, tag: Option<(&str, Style)>| {
         row_index += 1;
 
-        let prefix = if selected { glyphs.selected } else { " " };
-        let left = format!(" {prefix} {row_index:>2}  {label}");
-        let left_width = left.width();
+        let marker = if selected { glyphs.selected } else { " " };
+        let prefix = format!(" {marker} ");
+        let label_text = format!("{row_index:>2}.  {label}");
+        let left_width = prefix.width() + label_text.width();
         let (right_text, right_style) = tag.unwrap_or(("", Style::default()));
         let right_width = right_text.width();
         let gap = if right_text.is_empty() { 0 } else { 2 };
@@ -1705,7 +1715,12 @@ pub fn draw_model_selector(
             None
         };
 
-        let mut left_style = if selected {
+        let mut arrow_style = Style::default().fg(palette.peach);
+        if let Some(bg) = bg {
+            arrow_style = arrow_style.bg(bg);
+        }
+
+        let mut label_style = if selected {
             Style::default()
                 .fg(palette.text_primary)
                 .add_modifier(Modifier::BOLD)
@@ -1715,7 +1730,7 @@ pub fn draw_model_selector(
             Style::default().fg(palette.text_secondary)
         };
         if let Some(bg) = bg {
-            left_style = left_style.bg(bg);
+            label_style = label_style.bg(bg);
         }
 
         let mut filler_style = Style::default();
@@ -1729,7 +1744,8 @@ pub fn draw_model_selector(
         }
 
         lines.push(Line::from(vec![
-            Span::styled(left, left_style),
+            Span::styled(prefix, arrow_style),
+            Span::styled(label_text, label_style),
             Span::styled(" ".repeat(filler), filler_style),
             Span::styled(" ".repeat(gap), filler_style),
             Span::styled(right_text.to_string(), right_style),

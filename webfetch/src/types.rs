@@ -81,8 +81,6 @@ impl WebFetchInput {
         })
     }
 
-    /// Set the max chunk tokens.
-    ///
     /// # Errors
     ///
     /// Returns error if value is outside [128, 2048] (FR-WF-02a).
@@ -107,27 +105,23 @@ impl WebFetchInput {
         Ok(self)
     }
 
-    /// Set the `no_cache` flag.
     #[must_use]
     pub fn with_no_cache(mut self, no_cache: bool) -> Self {
         self.no_cache = no_cache;
         self
     }
 
-    /// Set the `force_browser` flag.
     #[must_use]
     pub fn with_force_browser(mut self, force_browser: bool) -> Self {
         self.force_browser = force_browser;
         self
     }
 
-    /// Get the parsed URL.
     #[must_use]
     pub fn url(&self) -> &Url {
         &self.url
     }
 
-    /// Get the original URL string as provided by the caller.
     #[must_use]
     pub fn original_url(&self) -> &str {
         &self.original_url
@@ -238,7 +232,7 @@ pub enum Note {
 }
 
 impl Note {
-    /// Get the canonical ordering for notes (FR-WF-NOTES-ORDER-01).
+    /// Canonical ordering per FR-WF-NOTES-ORDER-01.
     #[must_use]
     pub fn order(&self) -> u8 {
         match self {
@@ -351,27 +345,23 @@ impl WebFetchConfig {
     /// Default robots.txt cache TTL in hours.
     pub const DEFAULT_ROBOTS_CACHE_TTL_HOURS: u32 = 24;
 
-    /// Get the effective timeout.
     #[must_use]
     pub fn timeout_seconds(&self) -> u32 {
         self.timeout_seconds
             .unwrap_or(Self::DEFAULT_TIMEOUT_SECONDS)
     }
 
-    /// Get the effective max redirects.
     #[must_use]
     pub fn max_redirects(&self) -> u32 {
         self.max_redirects.unwrap_or(Self::DEFAULT_MAX_REDIRECTS)
     }
 
-    /// Get the effective default max chunk tokens.
     #[must_use]
     pub fn default_max_chunk_tokens(&self) -> u32 {
         self.default_max_chunk_tokens
             .unwrap_or(Self::DEFAULT_MAX_CHUNK_TOKENS)
     }
 
-    /// Get the effective max download bytes.
     #[must_use]
     pub fn max_download_bytes(&self) -> u64 {
         self.max_download_bytes
@@ -472,7 +462,6 @@ pub struct WebFetchError {
 }
 
 impl WebFetchError {
-    /// Create a new error.
     pub fn new(code: ErrorCode, message: impl Into<String>, retryable: bool) -> Self {
         Self {
             code,

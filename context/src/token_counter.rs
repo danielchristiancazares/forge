@@ -1,11 +1,11 @@
 //! Token counting using tiktoken.
 //!
-//! This module provides **approximate** token counting using the `cl100k_base`
-//! encoding from tiktoken. While reasonably accurate for `OpenAI` models (GPT-4,
-//! GPT-3.5), token counts may differ for:
+//! This module provides **approximate** token counting using the `o200k_base`
+//! encoding from tiktoken. This encoding is accurate for OpenAI models
+//! (`gpt-5.2`, `gpt-5.2-pro`) and serves as a reasonable approximation for others:
 //!
-//! - **Claude models**: Anthropic uses a different tokenizer; counts may vary by ~5-10%
-//! - **GPT-5.x models**: May use updated tokenization not reflected in `cl100k_base`
+//! - **Claude models**: Anthropic uses a proprietary tokenizer; counts may vary by ~5-10%
+//! - **Gemini models**: Google uses a proprietary tokenizer; counts may vary
 //! - **Message overhead**: The fixed 4-token overhead per message is an approximation
 //!
 //! The 5% safety margin in `ModelLimits::effective_input_budget()` helps account
@@ -13,7 +13,7 @@
 //! token counting endpoint when available.
 
 use std::sync::OnceLock;
-use tiktoken_rs::{CoreBPE, cl100k_base};
+use tiktoken_rs::{CoreBPE, o200k_base};
 
 use forge_types::Message;
 
@@ -25,12 +25,12 @@ static ENCODER: OnceLock<Option<CoreBPE>> = OnceLock::new();
 
 /// Returns a reference to the shared encoder instance.
 ///
-/// Initializes the encoder on first call using `cl100k_base` encoding.
+/// Initializes the encoder on first call using `o200k_base` encoding.
 fn get_encoder() -> Option<&'static CoreBPE> {
-    ENCODER.get_or_init(|| cl100k_base().ok()).as_ref()
+    ENCODER.get_or_init(|| o200k_base().ok()).as_ref()
 }
 
-/// Thread-safe approximate token counter using tiktoken's `cl100k_base` encoding.
+/// Thread-safe approximate token counter using tiktoken's `o200k_base` encoding.
 ///
 /// **Note**: Token counts are approximate. See module documentation for accuracy
 /// considerations across different providers and models.
@@ -84,7 +84,7 @@ impl TokenCounter {
         let encoder = get_encoder();
         if encoder.is_none() {
             tracing::error!(
-                "Failed to initialize tiktoken cl100k_base encoder. Falling back to byte-length estimates."
+                "Failed to initialize tiktoken o200k_base encoder. Falling back to byte-length estimates."
             );
         }
 
@@ -177,7 +177,6 @@ mod tests {
     #[test]
     fn new_creates_counter() {
         let counter = TokenCounter::new();
-        // Just verify it doesn't panic
         let _ = counter.count_str("test");
     }
 
@@ -197,11 +196,9 @@ mod tests {
     fn count_str_simple_text() {
         let counter = TokenCounter::new();
 
-        // "Hello" is typically 1 token
         let tokens = counter.count_str("Hello");
         assert!(tokens >= 1);
 
-        // "Hello, world!" is typically 4 tokens
         let tokens = counter.count_str("Hello, world!");
         assert!(tokens >= 1);
     }
@@ -213,7 +210,6 @@ mod tests {
         let text = "The quick brown fox jumps over the lazy dog.";
         let tokens = counter.count_str(text);
 
-        // Should be roughly 10 tokens
         assert!(tokens >= 5);
         assert!(tokens <= 20);
     }
@@ -222,11 +218,9 @@ mod tests {
     fn count_str_unicode() {
         let counter = TokenCounter::new();
 
-        // Unicode characters may take multiple tokens
         let tokens = counter.count_str("Hello, world!");
         let tokens_cn = counter.count_str("Hello, world! :)");
 
-        // Both should produce valid token counts
         assert!(tokens > 0);
         assert!(tokens_cn > 0);
     }
@@ -240,7 +234,6 @@ mod tests {
 }"#;
         let tokens = counter.count_str(code);
 
-        // Code should tokenize reasonably
         assert!(tokens >= 5);
     }
 
@@ -251,10 +244,9 @@ mod tests {
 
         let tokens = counter.count_message(&msg);
 
-        // Should include content + role + overhead
         let content_tokens = counter.count_str("Hello!");
         let role_tokens = counter.count_str("user");
-        let expected_min = content_tokens + role_tokens + 4; // 4 = MESSAGE_OVERHEAD
+        let expected_min = content_tokens + role_tokens + 4;
 
         assert_eq!(tokens, expected_min);
     }
@@ -267,7 +259,6 @@ mod tests {
         let content_tokens = counter.count_str("Hi");
         let message_tokens = counter.count_message(&msg);
 
-        // Message tokens should be greater than just content
         assert!(message_tokens > content_tokens);
     }
 
@@ -312,19 +303,16 @@ mod tests {
         let copied = counter;
         let cloned = counter;
 
-        // All should work identically
         assert_eq!(counter.count_str("test"), copied.count_str("test"));
         assert_eq!(counter.count_str("test"), cloned.count_str("test"));
     }
 
     #[test]
     fn multiple_counters_share_encoder() {
-        // Creating multiple counters should be cheap
         let counter1 = TokenCounter::new();
         let counter2 = TokenCounter::new();
         let counter3 = TokenCounter::default();
 
-        // All should produce the same results
         let text = "The quick brown fox";
         assert_eq!(counter1.count_str(text), counter2.count_str(text));
         assert_eq!(counter2.count_str(text), counter3.count_str(text));
@@ -335,7 +323,6 @@ mod tests {
         let counter = TokenCounter::new();
         let text = "This is a test sentence for token counting.";
 
-        // Multiple calls should return the same result
         let count1 = counter.count_str(text);
         let count2 = counter.count_str(text);
         let count3 = counter.count_str(text);

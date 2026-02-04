@@ -3,7 +3,7 @@ name = "forge-context"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Context window management with summarization and persistence"
+description = "Context window management with distillation and persistence"
 
 [lints]
 workspace = true

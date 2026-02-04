@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
+use tracing::debug;
 
 use forge_engine::{App, InputMode};
 
@@ -17,13 +18,65 @@ const INPUT_POLL_TIMEOUT: Duration = Duration::from_millis(25); // shutdown resp
 const INPUT_CHANNEL_CAPACITY: usize = 1024; // bounded: no OOM
 const MAX_EVENTS_PER_FRAME: usize = 64; // never starve rendering
 
-/// Threshold for detecting rapid keypresses that indicate paste without bracketed paste support.
-/// If keys arrive faster than this, treat Enter as newline instead of submit.
-const PASTE_DETECTION_THRESHOLD: Duration = Duration::from_millis(5);
+/// Heuristics for detecting paste when the terminal doesn't emit `Event::Paste`.
+///
+/// On Windows, crossterm reads input via WinAPI records (not VT input sequences), so paste
+/// arrives as a burst of key events. During a paste burst, bare `Enter` should insert a newline
+/// instead of submitting the message.
+const PASTE_INTER_KEY_THRESHOLD: Duration = Duration::from_millis(20);
+const PASTE_IDLE_TIMEOUT: Duration = Duration::from_millis(75);
+const PASTE_QUEUE_THRESHOLD: usize = 32;
 
 enum InputMsg {
     Event(Event),
     Error(String),
+}
+#[derive(Debug)]
+struct PasteDetector {
+    last_key_time: Instant,
+    active_until: Instant,
+}
+
+impl PasteDetector {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_key_time: now,
+            active_until: now,
+        }
+    }
+
+    fn reset(&mut self, now: Instant) {
+        self.last_key_time = now;
+        self.active_until = now;
+    }
+
+    fn update(&mut self, now: Instant, backlog: usize, event: &Event) -> bool {
+        // Only key press + repeat events participate in detection.
+        let is_key_event = matches!(
+            event,
+            Event::Key(KeyEvent {
+                kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                ..
+            })
+        );
+
+        let was_active = now < self.active_until;
+        let backlog_high = backlog >= PASTE_QUEUE_THRESHOLD;
+        let rapid =
+            is_key_event && now.duration_since(self.last_key_time) < PASTE_INTER_KEY_THRESHOLD;
+
+        let active = was_active || backlog_high || rapid;
+
+        if is_key_event {
+            if active {
+                // Keep paste mode alive across frame pacing and scheduling hiccups.
+                self.active_until = now + PASTE_IDLE_TIMEOUT;
+            }
+            self.last_key_time = now;
+        }
+
+        active
+    }
 }
 
 /// Dedicated blocking input reader. Rendering consumes events via `try_recv` only.
@@ -31,10 +84,7 @@ pub struct InputPump {
     rx: mpsc::Receiver<InputMsg>,
     stop: Arc<AtomicBool>,
     join: Option<tokio::task::JoinHandle<()>>,
-    /// Tracks last key event time for paste detection fallback.
-    /// When bracketed paste isn't supported, rapid keystrokes indicate paste.
-    /// Initialized to creation time - first keystroke is never "rapid".
-    last_key_time: Instant,
+    paste: PasteDetector,
 }
 
 impl InputPump {
@@ -45,16 +95,21 @@ impl InputPump {
         let stop2 = stop.clone();
 
         let join = tokio::task::spawn_blocking(move || input_loop(stop2, tx));
+        let now = Instant::now();
         Self {
             rx,
             stop,
             join: Some(join),
-            last_key_time: Instant::now(),
+            paste: PasteDetector::new(now),
         }
     }
 
     /// Deterministic shutdown (use before tearing down terminal session / switching modes).
     pub async fn shutdown(&mut self) {
+        // Close the receiver first to ensure the input thread unblocks if it is currently
+        // backpressured on a send (e.g., during a large paste).
+        self.rx.close();
+
         self.stop.store(true, Ordering::Release);
         if let Some(join) = self.join.take() {
             let _ = join.await;
@@ -71,6 +126,10 @@ impl Default for InputPump {
 impl Drop for InputPump {
     fn drop(&mut self) {
         // Best-effort stop if caller exits early; do not block in Drop.
+        //
+        // Close the receiver to ensure the input thread unblocks if it is currently waiting on
+        // channel capacity (e.g., during a large paste).
+        self.rx.close();
         self.stop.store(true, Ordering::Release);
     }
 }
@@ -80,18 +139,21 @@ fn input_loop(stop: Arc<AtomicBool>, tx: mpsc::Sender<InputMsg>) {
         match event::poll(INPUT_POLL_TIMEOUT) {
             Ok(true) => match event::read() {
                 Ok(ev) => {
-                    // Bounded queue: if full, drop (prevents unbounded memory growth).
-                    // With no mouse capture, this should be extremely rare in practice.
-                    let _ = tx.try_send(InputMsg::Event(ev));
+                    // Bounded queue: apply backpressure instead of dropping events.
+                    // This preserves correctness (e.g., multi-line pastes) while still
+                    // preventing unbounded memory growth.
+                    if tx.blocking_send(InputMsg::Event(ev)).is_err() {
+                        break;
+                    }
                 }
                 Err(e) => {
-                    let _ = tx.try_send(InputMsg::Error(e.to_string()));
+                    let _ = tx.blocking_send(InputMsg::Error(e.to_string()));
                     break;
                 }
             },
             Ok(false) => {}
             Err(e) => {
-                let _ = tx.try_send(InputMsg::Error(e.to_string()));
+                let _ = tx.blocking_send(InputMsg::Error(e.to_string()));
                 break;
             }
         }
@@ -101,16 +163,27 @@ fn input_loop(stop: Arc<AtomicBool>, tx: mpsc::Sender<InputMsg>) {
 /// Drain queued input events without blocking rendering.
 /// Returns true if the app should quit (same semantics as before).
 pub fn handle_events(app: &mut App, input: &mut InputPump) -> Result<bool> {
-    let now = Instant::now();
     for _ in 0..MAX_EVENTS_PER_FRAME {
         match input.rx.try_recv() {
             Ok(InputMsg::Event(ev)) => {
-                // Detect rapid keypresses that indicate paste without bracketed paste support
-                let rapid_input =
-                    now.duration_since(input.last_key_time) < PASTE_DETECTION_THRESHOLD;
-                input.last_key_time = now;
+                let now = Instant::now();
+                let backlog = input.rx.len();
 
-                if apply_event(app, ev, rapid_input) {
+                let paste_active = if app.input_mode() == InputMode::Insert {
+                    input.paste.update(now, backlog, &ev)
+                } else {
+                    input.paste.reset(now);
+                    false
+                };
+
+                if paste_active {
+                    debug!(
+                        backlog,
+                        "Input paste detection active (fallback heuristics)"
+                    );
+                }
+
+                if apply_event(app, ev, paste_active) {
                     return Ok(true);
                 }
             }
@@ -125,9 +198,9 @@ pub fn handle_events(app: &mut App, input: &mut InputPump) -> Result<bool> {
 }
 
 /// Apply a single input event to the app.
-/// `rapid_input` indicates keystroke arrived very quickly after the previous one,
-/// suggesting paste without bracketed paste support.
-fn apply_event(app: &mut App, event: Event, rapid_input: bool) -> bool {
+/// `paste_active` indicates the input stream looks like a paste burst (fallback when the
+/// terminal doesn't emit `Event::Paste`).
+fn apply_event(app: &mut App, event: Event, paste_active: bool) -> bool {
     match event {
         Event::Key(key) => {
             // Handle press + repeat events (ignore releases)
@@ -162,7 +235,7 @@ fn apply_event(app: &mut App, event: Event, rapid_input: bool) -> bool {
 
             match app.input_mode() {
                 InputMode::Normal => handle_normal_mode(app, key),
-                InputMode::Insert => handle_insert_mode(app, key, rapid_input),
+                InputMode::Insert => handle_insert_mode(app, key, paste_active),
                 InputMode::Command => handle_command_mode(app, key),
                 InputMode::ModelSelect => handle_model_select_mode(app, key),
                 InputMode::FileSelect => handle_file_select_mode(app, key),
@@ -311,10 +384,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
 }
 
 /// Handle insert mode input.
-/// `rapid_input` indicates this keystroke arrived very quickly after the previous one,
-/// which suggests paste without bracketed paste support - in this case, Enter inserts
-/// a newline instead of submitting.
-fn handle_insert_mode(app: &mut App, key: KeyEvent, rapid_input: bool) {
+/// `paste_active` indicates the input stream looks like a paste burst. In this case, bare Enter
+/// inserts a newline instead of submitting.
+fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
     // Tool approval modal takes priority over insert mode
     if app.tool_approval_requests().is_some() {
         match key.code {
@@ -342,13 +414,13 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent, rapid_input: bool) {
 
     // Handle newline insertion:
     // - Explicit: Ctrl+Enter, Shift+Enter, Ctrl+J
-    // - Implicit: bare Enter during rapid input (paste without bracketed paste support)
+    // - Implicit: bare Enter during a paste burst (fallback when `Event::Paste` isn't emitted)
     let is_explicit_newline = matches!(
         (key.code, key.modifiers),
         (KeyCode::Enter, m) if m.contains(KeyModifiers::CONTROL) || m.contains(KeyModifiers::SHIFT)
     ) || matches!(key, KeyEvent { code: KeyCode::Char('j'), modifiers: m, .. } if m.contains(KeyModifiers::CONTROL));
 
-    let is_paste_newline = rapid_input && key.code == KeyCode::Enter && key.modifiers.is_empty();
+    let is_paste_newline = paste_active && key.code == KeyCode::Enter && key.modifiers.is_empty();
 
     if is_explicit_newline || is_paste_newline {
         let Some(token) = app.insert_token() else {

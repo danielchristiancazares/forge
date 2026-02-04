@@ -2,7 +2,7 @@
 
 A vim-modal terminal user interface for interacting with Claude, GPT, and Gemini, featuring adaptive context management and an agentic tool execution framework.
 
-Forge brings the efficiency of vim-style modal editing to AI conversation, letting you navigate, compose, and manage conversations without leaving your terminal. With Context Infinity™, Forge automatically summarizes older messages to stay within model limits while preserving full conversation history. The Tool Executor Framework enables the LLM to read files, apply patches, and run shell commands - all with interactive approval and crash recovery.
+Forge brings the efficiency of vim-style modal editing to AI conversation, letting you navigate, compose, and manage conversations without leaving your terminal. With Context Infinity™, Forge automatically distills older messages to stay within model limits while preserving full conversation history. The Tool Executor Framework enables the LLM to read files, apply patches, and run shell commands - all with interactive approval and crash recovery.
 
 ## LLM-TOC
 <!-- toc:start -->
@@ -13,15 +13,15 @@ Forge brings the efficiency of vim-style modal editing to AI conversation, letti
 | 62-71 | Requirements |
 | 72-97 | Installation |
 | 98-141 | Quick Start: First Run, Basic Usage |
-| 142-270 | Configuration: Full Reference |
-| 271-363 | Keyboard Shortcuts: All Modes |
-| 364-383 | Commands Reference |
-| 384-412 | Workspace Structure |
+| 142-269 | Configuration: Full Reference |
+| 270-362 | Keyboard Shortcuts: All Modes |
+| 363-381 | Commands Reference |
+| 382-412 | Workspace Structure |
 | 413-447 | Development |
 | 448-517 | Troubleshooting |
 | 518-557 | Documentation Index |
-| 558-568 | Contributing |
-| 569-571 | License |
+| 558-568 | Contributing and License |
+| 569-572 | License |
 <!-- toc:end -->
 
 ## Features
@@ -38,7 +38,7 @@ Forge brings the efficiency of vim-style modal editing to AI conversation, letti
 
 Forge's adaptive context management system keeps conversations flowing without hitting model limits:
 
-- **Automatic Summarization**: When context fills up, older messages are compressed into summaries that preserve key information
+- **Automatic Distillation**: When context fills up, older messages are compressed into distillates that preserve key information
 - **Never Lose History**: Original messages are preserved and can be restored when switching to models with larger context windows
 - **Crash Recovery**: Streaming responses are journaled to SQLite before display, so crashes never lose your work
 - **Token Usage Display**: Real-time visibility into context usage with color-coded warnings
@@ -149,7 +149,6 @@ Create `~/.forge/config.toml` for persistent configuration. All settings are opt
 [app]
 model = "claude-opus-4-5-20251101"   # Model name (provider inferred from prefix)
 tui = "full"                           # "full" (alternate screen) or "inline"
-max_output_tokens = 16000              # Limit model output length
 show_thinking = false                  # Render provider thinking/reasoning in UI
 
 # Accessibility options
@@ -179,7 +178,7 @@ thinking_budget_tokens = 10000         # Token budget for thinking
 
 [openai]
 reasoning_effort = "high"              # "low", "medium", "high", or "xhigh" (GPT-5+)
-reasoning_summary = "auto"             # "none", "auto", "concise", "detailed" (GPT-5+, shown when show_thinking=true)
+reasoning_summary = "auto"                # "none", "auto", "concise", "detailed" (GPT-5+, shown when show_thinking=true)
 verbosity = "high"                     # "low", "medium", or "high" (GPT-5+)
 truncation = "auto"                    # "auto" or "disabled"
 # gpt-5.2-pro defaults to xhigh when reasoning_effort is unset.
@@ -277,7 +276,7 @@ description = "City name, e.g. 'Seattle, WA'"
 | `q` | Quit application |
 | `i` | Enter Insert mode |
 | `a` | Enter Insert mode at end of line |
-| `o` | Enter Insert mode with cleared line |
+| `o` | Toggle thinking visibility |
 | `:` or `/` | Enter Command mode |
 | `m` | Open model selector |
 | `f` | Toggle files panel |
@@ -369,13 +368,12 @@ Enter Command mode by pressing `:` or `/` in Normal mode.
 | :--- | :--- | :--- |
 | `/quit` | `/q` | Exit the application |
 | `/clear` | - | Clear conversation and reset context |
-| `/cancel` | - | Abort active streaming, tool execution, or summarization |
+| `/cancel` | - | Abort active streaming, tool execution, or distillation |
 | `/model [name]` | - | Set model or open model selector (no argument) |
 | `/context` | `/ctx` | Show context usage statistics |
 | `/journal` | `/jrnl` | Show stream journal statistics |
-| `/summarize` | `/distill` | Manually trigger summarization |
+| `/distill` | - | Manually trigger distillation |
 | `/screen` | - | Toggle between full-screen and inline mode |
-| `/tools` | - | Show tool status |
 | `/rewind [id\|last] [scope]` | `/rw` | Rewind to an automatic checkpoint (scope: `code`, `conversation`, or `both`) |
 | `/undo` | - | Undo the last user turn (rewind to last turn checkpoint) |
 | `/retry` | - | Undo the last user turn and restore its prompt into the input box |
@@ -388,14 +386,16 @@ Forge is organized as a Cargo workspace with focused crates:
 ```text
 forge/
 ├── cli/            # Binary entry point, terminal session management
+├── context/        # Context Infinity: token counting, distillation, persistence
 ├── engine/         # Core state machine, commands, streaming orchestration
-├── tui/            # Terminal UI rendering (ratatui), input handling
-├── context/        # Context Infinity: token counting, summarization, persistence
 ├── providers/      # LLM API clients (Claude, OpenAI, Gemini)
+├── tui/            # Terminal UI rendering (ratatui), input handling
 ├── types/          # Core domain types (Message, Provider, ModelName)
 ├── webfetch/       # Web page fetching and parsing
-├── tests/          # Integration tests
-└── docs/           # Architecture and design documentation
+│
+├── tests/          # Integration tests (not a workspace crate)
+├── docs/           # Architecture and design documentation
+└── scripts/        # Development and maintenance scripts
 ```
 
 ### Crate Responsibilities
@@ -405,7 +405,7 @@ forge/
 | `cli` | Application entry point, terminal lifecycle, event loop |
 | `engine` | Input modes, async operations, tool execution, configuration |
 | `tui` | Full-screen and inline rendering, markdown, theming |
-| `context` | Token budgeting, summarization, crash recovery journals |
+| `context` | Token budgeting, distillation, crash recovery journals |
 | `providers` | HTTP clients, SSE parsing, provider-specific formatting (Claude, OpenAI, Gemini) |
 | `types` | Shared types ensuring compile-time correctness |
 | `webfetch` | Chromium-based web fetching for `web_fetch` tool |
@@ -569,3 +569,4 @@ Contributions are welcome! Please ensure:
 ## License
 
 This project is currently unlicensed. Please contact the maintainer for licensing information.
+

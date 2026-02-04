@@ -771,12 +771,12 @@ impl crate::App {
                 .map(forge_context::HistoryEntry::id)
                 .ok_or_else(|| "History unexpectedly empty".to_string())?;
 
-            // rollback_last_message returns None if the entry is summarized or not the last
+            // rollback_last_message returns None if the entry is Distilled or not the last
             let _removed = self
                 .context_manager
                 .rollback_last_message(last_id)
                 .ok_or_else(|| {
-                    "Cannot rewind conversation (unexpected summarized tail)".to_string()
+                    "Cannot rewind conversation (unexpected Distilled tail)".to_string()
                 })?;
             current = self.context_manager.history().len();
         }
@@ -796,14 +796,14 @@ impl crate::App {
             return Ok(());
         }
 
-        // `ContextManager::rollback_last_message` refuses to remove summarized entries.
+        // `ContextManager::rollback_last_message` refuses to remove Distilled entries.
         // Preflight ensures we won't partially truncate and then fail.
         let blocked = entries[target_len..]
             .iter()
-            .any(|e| e.summary_id().is_some());
+            .any(|e| e.distillate_id().is_some());
         if blocked {
             return Err(
-                "Cannot rewind conversation past summarized messages (possible future enhancement)"
+                "Cannot rewind conversation past Distilled messages (possible future enhancement)"
                     .to_string(),
             );
         }

@@ -126,7 +126,6 @@ pub async fn extract_facts(
     let (system, user_input) = build_extraction_prompt(user_message, assistant_message);
     let response = call_librarian(api_key, &system, &user_input).await?;
 
-    // Parse JSON response
     let facts: Vec<FactJson> = serde_json::from_str(&response)
         .map_err(|e| anyhow!("Failed to parse extraction response: {e}\nResponse: {response}"))?;
 
@@ -167,7 +166,6 @@ pub async fn retrieve_relevant(
     let (system, user_input) = build_retrieval_prompt(user_query, available_facts);
     let response = call_librarian(api_key, &system, &user_input).await?;
 
-    // Parse JSON response (array of indices)
     let indices: Vec<usize> = serde_json::from_str(&response)
         .map_err(|e| anyhow!("Failed to parse retrieval response: {e}\nResponse: {response}"))?;
 
@@ -236,7 +234,6 @@ async fn call_librarian(
 
     let json: serde_json::Value = response.json().await?;
 
-    // Extract text from Gemini's response format
     let text = json["candidates"]
         .as_array()
         .and_then(|arr| arr.first())
@@ -279,10 +276,6 @@ pub fn format_facts_for_context(facts: &[Fact]) -> String {
     output
 }
 
-// ============================================================================
-// High-Level Librarian API
-// ============================================================================
-
 use super::fact_store::FactStore;
 use std::path::Path;
 
@@ -298,7 +291,6 @@ pub struct Librarian {
 }
 
 impl Librarian {
-    /// Create a new Librarian with persistent storage.
     pub fn open(path: impl AsRef<Path>, api_key: String) -> Result<Self> {
         let store = FactStore::open(path)?;
         Ok(Self {
@@ -308,7 +300,6 @@ impl Librarian {
         })
     }
 
-    /// Create a new Librarian with in-memory storage (for testing).
     pub fn open_in_memory(api_key: String) -> Result<Self> {
         let store = FactStore::open_in_memory()?;
         Ok(Self {
@@ -318,18 +309,15 @@ impl Librarian {
         })
     }
 
-    /// Set the turn counter (for recovery/loading).
     pub fn set_turn_counter(&mut self, turn: u64) {
         self.turn_counter = turn;
     }
 
-    /// Get the current turn counter.
     #[must_use]
     pub fn turn_counter(&self) -> u64 {
         self.turn_counter
     }
 
-    /// Get the number of stored facts.
     #[must_use]
     pub fn fact_count(&self) -> usize {
         self.store.fact_count()

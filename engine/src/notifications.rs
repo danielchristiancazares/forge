@@ -62,7 +62,6 @@ pub struct NotificationQueue {
 }
 
 impl NotificationQueue {
-    /// Create a new empty notification queue.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -93,7 +92,6 @@ impl NotificationQueue {
         self.pending.is_empty()
     }
 
-    /// Get the number of pending notifications.
     #[must_use]
     #[allow(dead_code)] // Public API for future use
     pub fn len(&self) -> usize {

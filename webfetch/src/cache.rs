@@ -70,7 +70,6 @@ pub struct CacheEntry {
 }
 
 impl CacheEntry {
-    /// Create a new cache entry.
     pub fn new(
         final_url: String,
         title: Option<String>,
@@ -149,7 +148,6 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// Create a new cache instance.
     pub fn new(settings: &CacheSettings) -> Result<Self, WebFetchError> {
         let dir = settings.dir.clone();
 
@@ -176,7 +174,6 @@ impl Cache {
         Ok(cache)
     }
 
-    /// Get a cached entry if valid.
     ///
     /// FR-WF-CCH-READ-01: Cache read failures are treated as cache miss.
     /// Updates `last_accessed_at` on hit (but does NOT slide TTL).
@@ -378,7 +375,6 @@ impl Cache {
         (entries, bytes)
     }
 
-    /// Get the path for a cache entry.
     ///
     /// Layout: `{cache_dir}/{first2}/{keyhex}.json`
     fn entry_path(&self, key: &str) -> PathBuf {
@@ -449,7 +445,6 @@ pub fn format_rfc3339(time: SystemTime) -> String {
     let minutes = (remaining % 3600) / 60;
     let seconds = remaining % 60;
 
-    // Simple date calculation (good enough for our purposes)
     let (year, month, day) = days_to_ymd(days);
 
     format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")

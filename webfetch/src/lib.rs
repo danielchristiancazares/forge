@@ -335,7 +335,6 @@ fn decode_body(body: &[u8], charset: Option<&str>) -> Result<String, WebFetchErr
 /// - Very little text content (< 50 visible chars after stripping tags)
 /// - This catches SPA shells with just `<div id="root"></div>`
 fn is_spa_heuristic(html: &str) -> bool {
-    // Simple heuristic: if body has < 50 visible text characters, might be SPA
     // We take first 1000 chars to sample, then strip tags
     let text_content: String = html.chars().take(1000).collect();
 
@@ -344,7 +343,6 @@ fn is_spa_heuristic(html: &str) -> bool {
     visible_estimate.trim().len() < 50
 }
 
-/// Very simple HTML tag stripping for SPA detection.
 fn strip_html_tags(s: &str) -> String {
     let mut result = String::new();
     let mut in_tag = false;

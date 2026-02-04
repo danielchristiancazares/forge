@@ -24,3 +24,4 @@ serde.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
 
 anyhow.workspace = true
+tracing.workspace = true

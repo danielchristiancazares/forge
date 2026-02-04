@@ -3,19 +3,18 @@
 //! This module contains the core state machine for tracking what the App is currently doing.
 //! These types are internal to the engine crate.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Instant;
 
 use futures_util::future::AbortHandle;
-use tokio::sync::mpsc;
 
-use forge_context::{RecoveredToolBatch, StepId, SummarizationScope, ToolBatchId};
-use forge_types::{ModelName, ToolCall, ToolResult};
+use forge_context::{DistillationScope, RecoveredToolBatch, StepId, ToolBatchId};
+use forge_types::{Message, ModelName, ToolCall, ToolResult};
 
 use crate::StreamingMessage;
-use crate::input_modes::{ChangeRecorder, TurnContext};
-use crate::tools::{self, ConfirmationRequest};
+use crate::input_modes::TurnContext;
+use crate::tool_loop::{ActiveExecution, ToolQueue};
+use crate::tools::ConfirmationRequest;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DataDirSource {
@@ -50,51 +49,37 @@ pub(crate) struct ActiveStream {
     pub(crate) turn: TurnContext,
 }
 
-/// A background summarization task.
+/// A background distillation task.
 ///
-/// Holds the state for an in-progress summarization operation:
-/// - The message IDs being summarized
+/// Holds the state for an in-progress distillation operation:
+/// - The message IDs being distilled
 /// - The `JoinHandle` for the async task
 #[derive(Debug)]
-pub struct SummarizationTask {
-    pub(crate) scope: SummarizationScope,
+pub struct DistillationTask {
+    pub(crate) scope: DistillationScope,
     pub(crate) generated_by: String,
     pub(crate) handle: tokio::task::JoinHandle<anyhow::Result<String>>,
-    pub(crate) attempt: u8,
-}
-
-#[derive(Debug)]
-pub(crate) struct SummarizationRetry {
-    pub(crate) attempt: u8,
-    pub(crate) ready_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SummarizationStart {
+pub(crate) enum DistillationStart {
     Started,
     NotNeeded,
     Failed,
 }
 
 #[derive(Debug)]
-pub(crate) struct SummarizationState {
-    pub(crate) task: SummarizationTask,
+pub(crate) struct DistillationState {
+    pub(crate) task: DistillationTask,
     /// When present, a validated user request is waiting to be streamed once
-    /// summarization completes.
-    pub(crate) queued: Option<crate::QueuedUserMessage>,
-}
-
-#[derive(Debug)]
-pub(crate) struct SummarizationRetryState {
-    pub(crate) retry: SummarizationRetry,
-    /// When present, a validated user request is waiting to be streamed once
-    /// summarization completes.
+    /// distillation completes.
     pub(crate) queued: Option<crate::QueuedUserMessage>,
 }
 
 #[derive(Debug)]
 pub(crate) struct ToolBatch {
     pub(crate) assistant_text: String,
+    pub(crate) thinking_message: Option<Message>,
     pub(crate) calls: Vec<ToolCall>,
     pub(crate) results: Vec<ToolResult>,
     pub(crate) model: ModelName,
@@ -116,22 +101,38 @@ pub(crate) struct ApprovalState {
     pub(crate) expanded: Option<usize>,
 }
 
-#[derive(Debug)]
-pub(crate) struct ActiveToolExecution {
-    pub(crate) queue: VecDeque<ToolCall>,
-    pub(crate) current_call: Option<ToolCall>,
-    pub(crate) join_handle: Option<tokio::task::JoinHandle<ToolResult>>,
-    pub(crate) event_rx: Option<mpsc::Receiver<tools::ToolEvent>>,
-    pub(crate) abort_handle: Option<AbortHandle>,
-    pub(crate) output_lines: HashMap<String, Vec<String>>,
-    pub(crate) remaining_capacity_bytes: usize,
-    pub(crate) turn_recorder: ChangeRecorder,
-}
-
+/// Tool loop phase state machine (IFA §8.1: State as Location).
+///
+/// # State Machine
+/// ```text
+/// ┌────────────────────────┐  approval given   ┌─────────────────────┐
+/// │ AwaitingApproval(...)  │ ─────────────────> │ Processing(queue)   │
+/// └────────────────────────┘                    └─────────────────────┘
+///                                                      │
+///                                                      │ spawn_next_tool()
+///                                                      v
+///                                               ┌─────────────────────┐
+///                                               │ Executing(active)   │
+///                                               └─────────────────────┘
+///                                                      │
+///                                                      │ tool completes
+///                                                      v
+///                                               ┌─────────────────────┐
+///                                               │ Processing(queue)   │
+///                                               └─────────────────────┘
+///                                                      │
+///                                      queue empty?    │
+///                                                      v
+///                                               [commit batch]
+/// ```
 #[derive(Debug)]
 pub(crate) enum ToolLoopPhase {
+    /// Awaiting user approval for dangerous tool calls.
     AwaitingApproval(ApprovalState),
-    Executing(ActiveToolExecution),
+    /// Has queue but no active execution (between tools or before first spawn).
+    Processing(ToolQueue),
+    /// Has active execution (SpawnedTool is required, not optional).
+    Executing(ActiveExecution),
 }
 
 #[derive(Debug)]
@@ -168,6 +169,5 @@ pub(crate) enum OperationState {
     Streaming(ActiveStream),
     ToolLoop(Box<ToolLoopState>),
     ToolRecovery(ToolRecoveryState),
-    Summarizing(SummarizationState),
-    SummarizationRetry(SummarizationRetryState),
+    Distilling(DistillationState),
 }

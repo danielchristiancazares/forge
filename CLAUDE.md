@@ -32,7 +32,7 @@ openai = "${OPENAI_API_KEY}"
 google = "${GEMINI_API_KEY}"
 
 [context]
-infinity = true            # Enable summarization-based context management
+infinity = true            # Enable distillation-based context management
 
 [anthropic]
 cache_enabled = true
@@ -86,12 +86,12 @@ forge/
 | `tui` | `markdown.rs` | Markdown to ratatui conversion |
 | `tui` | `effects.rs` | Modal animations (PopScale, SlideUp) |
 | `tui` | `tool_display.rs` | Tool result rendering |
-| `context` | `manager.rs` | Context orchestration, summarization triggers |
-| `context` | `history.rs` | Persistent storage (`MessageId`, `SummaryId`) |
+| `context` | `manager.rs` | Context orchestration, distillation triggers |
+| `context` | `history.rs` | Persistent storage (`MessageId`, `DistillateId`) |
 | `context` | `stream_journal.rs` | SQLite WAL for crash recovery |
 | `context` | `tool_journal.rs` | Tool execution journaling |
 | `context` | `working_context.rs` | Token budget allocation |
-| `context` | `summarization.rs` | Summary generation |
+| `context` | `distillation.rs` | Distillate generation |
 | `context` | `model_limits.rs` | Per-model token limits |
 | `context` | `token_counter.rs` | Token counting |
 | `context` | `fact_store.rs` | Fact extraction and storage |
@@ -152,7 +152,7 @@ The codebase enforces correctness through types (see `DESIGN.md`):
 `Provider` enum (Claude, OpenAI, Gemini) with:
 
 - `default_model()` → provider's default model
-- `available_models()` → known model list
+- `available_models()` → known model catalog (`PredefinedModel`)
 - `parse_model(raw)` → validates model name, returns `ModelName`
 
 | Provider | Default Model | Context | Output |
@@ -165,13 +165,13 @@ Adding a provider: extend `Provider` enum, implement all match arms, add module 
 
 ### Context Infinity™ (`context/`)
 
-Adaptive context management with automatic summarization:
+Adaptive context management with automatic distillation:
 
-- `manager.rs` - orchestrates token counting, triggers summarization
-- `history.rs` - persistent storage with `MessageId`/`SummaryId`
+- `manager.rs` - orchestrates token counting, triggers distillation
+- `history.rs` - persistent storage with `MessageId`/`DistillateId`
 - `working_context.rs` - builds working context within token budget
 - `stream_journal.rs` - SQLite WAL for crash recovery
-- `summarization.rs` - summary generation logic
+- `distillation.rs` - Distillate generation logic
 - `model_limits.rs` - per-model token limits
 - `token_counter.rs` - token counting utilities
 
@@ -240,7 +240,7 @@ All mode styles use `fg(bg_dark)` + `bg(<color>)` + `BOLD` modifier.
 |----------|-------------|
 | `engine/README.md` | Engine state machine and orchestration |
 | `tui/README.md` | TUI system, rendering, input handling |
-| `context/README.md` | Context management, summarization, journaling |
+| `context/README.md` | Context management, distillation, journaling |
 | `providers/README.md` | LLM API clients, SSE streaming |
 | `types/README.md` | Core domain types, newtypes |
 | `webfetch/README.md` | URL fetching, HTML-to-Markdown |
@@ -264,7 +264,7 @@ cargo test --test integration_test      # Integration tests only
 ### Claude API Limits
 
 - **Max 4 `cache_control` blocks**: System prompt uses 1 slot, leaving 3 for messages
-- Summaries are `Message::System` and get cache hints - can exceed limit if not capped
+- Distillates are `Message::System` and get cache hints - can exceed limit if not capped
 
 ### Platform Differences
 
@@ -306,7 +306,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## Commit Style
 
-Conventional commits: `type(scope): summary`
+Conventional commits: `type(scope): description`
 
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
 
@@ -319,3 +319,4 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
 - Use method references over closures when possible per https://rust-lang.github.io/rust-clippy/master/index.html#redundant_closure_for_method_calls
 - When writing tests, prefer comparing the equality of entire objects over fields one by one.
 - When making a change that adds or changes an API, ensure that the documentation in the `docs/` folder is up to date if applicable.
+

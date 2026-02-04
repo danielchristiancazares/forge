@@ -5,13 +5,11 @@
 //!
 //! # Provider-Specific Prompts
 //!
-//! Each LLM provider has an optimized system prompt:
-//!
 //! | Provider | File | Description |
 //! |----------|------|-------------|
-//! | Claude | `base_prompt_claude.md` | Anthropic Claude models |
-//! | OpenAI | `base_prompt_openai.md` | OpenAI GPT models |
-//! | Gemini | `base_prompt_gemini.md` | Google Gemini models |
+//! | Claude | `base_prompt.md` | Shared prompt for Anthropic/OpenAI |
+//! | OpenAI | `base_prompt.md` | Shared prompt for Anthropic/OpenAI |
+//! | Gemini | `base_prompt_gemini.md` | Google Gemini models (gRPC, different capabilities) |
 //!
 //! # Initialization
 //!
@@ -22,14 +20,9 @@ use std::sync::OnceLock;
 
 use forge_engine::SystemPrompts;
 
-const CLAUDE_PROMPT_RAW: &str = include_str!(concat!(
+const BASE_PROMPT_RAW: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/assets/base_prompt_claude.md"
-));
-
-const OPENAI_PROMPT_RAW: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/assets/base_prompt_openai.md"
+    "/assets/base_prompt.md"
 ));
 
 const GEMINI_PROMPT_RAW: &str = include_str!(concat!(
@@ -37,8 +30,7 @@ const GEMINI_PROMPT_RAW: &str = include_str!(concat!(
     "/assets/base_prompt_gemini.md"
 ));
 
-static CLAUDE_PROMPT: OnceLock<String> = OnceLock::new();
-static OPENAI_PROMPT: OnceLock<String> = OnceLock::new();
+static BASE_PROMPT: OnceLock<String> = OnceLock::new();
 static GEMINI_PROMPT: OnceLock<String> = OnceLock::new();
 
 /// Eagerly initializes all system prompts.
@@ -46,8 +38,7 @@ static GEMINI_PROMPT: OnceLock<String> = OnceLock::new();
 /// Call this at startup to avoid lazy initialization overhead on first use.
 /// Safe to call multiple times (subsequent calls are no-ops).
 pub fn init() {
-    let _ = CLAUDE_PROMPT.set(CLAUDE_PROMPT_RAW.to_string());
-    let _ = OPENAI_PROMPT.set(OPENAI_PROMPT_RAW.to_string());
+    let _ = BASE_PROMPT.set(BASE_PROMPT_RAW.to_string());
     let _ = GEMINI_PROMPT.set(GEMINI_PROMPT_RAW.to_string());
 }
 
@@ -57,13 +48,12 @@ pub fn init() {
 /// Falls back to lazy initialization if [`init`] was not called.
 #[must_use]
 pub fn system_prompts() -> SystemPrompts {
+    let base = BASE_PROMPT
+        .get_or_init(|| BASE_PROMPT_RAW.to_string())
+        .as_str();
     SystemPrompts {
-        claude: CLAUDE_PROMPT
-            .get_or_init(|| CLAUDE_PROMPT_RAW.to_string())
-            .as_str(),
-        openai: OPENAI_PROMPT
-            .get_or_init(|| OPENAI_PROMPT_RAW.to_string())
-            .as_str(),
+        claude: base,
+        openai: base,
         gemini: GEMINI_PROMPT
             .get_or_init(|| GEMINI_PROMPT_RAW.to_string())
             .as_str(),

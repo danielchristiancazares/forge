@@ -219,7 +219,7 @@ impl FactStore {
                 "constraint" => FactType::Constraint,
                 "code_state" => FactType::CodeState,
                 "pinned" => FactType::Pinned,
-                _ => continue, // Skip unknown types
+                _ => continue,
             };
 
             let entities = self.get_entities_for_fact(id)?;
@@ -311,7 +311,6 @@ impl FactStore {
         Ok(facts)
     }
 
-    /// Get the count of stored facts.
     #[must_use]
     pub fn fact_count(&self) -> usize {
         self.db
@@ -342,10 +341,6 @@ impl FactStore {
         let ids = self.store_facts(&[fact], turn_number)?;
         Ok(ids.into_iter().next().unwrap_or(0))
     }
-
-    // ========================================================================
-    // Source Tracking for Staleness Detection
-    // ========================================================================
 
     /// Record or update a source file's SHA256 hash.
     ///
@@ -402,13 +397,11 @@ impl FactStore {
             .context("Failed to start transaction")?;
 
         for path in source_paths {
-            // Compute current SHA256 of the file
             let sha256 = match compute_file_sha256(path) {
                 Ok(hash) => hash,
-                Err(_) => continue, // Skip files that can't be read
+                Err(_) => continue,
             };
 
-            // Upsert the source record
             let updated_at = system_time_to_iso8601(SystemTime::now());
             tx.execute(
                 "INSERT INTO fact_sources (file_path, sha256, updated_at) VALUES (?1, ?2, ?3)
@@ -425,7 +418,6 @@ impl FactStore {
                 )
                 .context("Failed to get source ID")?;
 
-            // Link all facts to this source
             for &fact_id in fact_ids {
                 tx.execute(
                     "INSERT OR IGNORE INTO fact_source_links (fact_id, source_id) VALUES (?1, ?2)",
@@ -478,7 +470,6 @@ impl FactStore {
             let mut stale_sources = Vec::new();
 
             for source in sources {
-                // Check if file still exists and compare SHA
                 match compute_file_sha256(&source.file_path) {
                     Ok(current_sha) => {
                         if current_sha != source.sha256 {
@@ -486,7 +477,6 @@ impl FactStore {
                         }
                     }
                     Err(_) => {
-                        // File missing or unreadable = stale
                         stale_sources.push(source.file_path);
                     }
                 }

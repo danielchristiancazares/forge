@@ -3,16 +3,12 @@
 //! These tests cover the highest-risk areas identified during code review:
 //! 1. Tool approval workflow (security-critical)
 //! 2. Sandbox preflight validation (security-critical)
-//! 3. Context summarization under pressure
+//! 3. Context distillation under pressure
 //! 4. Cache eviction under memory pressure
 //! 5. Stream journal crash recovery
 
 use forge_engine::{RecoveredStream, StreamJournal};
 use tempfile::tempdir;
-
-// ============================================================================
-// Test 1: Tool Approval Workflow
-// ============================================================================
 
 /// Test that tool calls requiring approval enter the AwaitingApproval state.
 #[test]
@@ -33,10 +29,6 @@ fn tool_plan_partitions_approval_vs_auto_execute() {
     // the engine tests in engine/src/tests.rs
     // Tool approval partitioning is handled by plan_tool_calls()
 }
-
-// ============================================================================
-// Test 2: Sandbox Preflight Validation
-// ============================================================================
 
 /// Test that path traversal attacks are blocked by sandbox validation.
 #[test]
@@ -77,34 +69,26 @@ fn sandbox_allows_valid_paths() {
     }
 }
 
-// ============================================================================
-// Test 3: Context Summarization Under Pressure
-// ============================================================================
-
-/// Test that context manager correctly triggers summarization when budget exhausted.
+/// Test that context manager correctly triggers distillation when budget exhausted.
 #[test]
-fn context_triggers_summarization_when_budget_exhausted() {
+fn context_triggers_distillation_when_budget_exhausted() {
     // The ContextManager.build_working_context() method is private and tested
     // extensively in context/src/manager.rs. This test documents the expected
     // behavior:
     //
     // When token budget is exhausted:
-    // 1. build_working_context() returns Err(ContextBuildError::SummarizationNeeded)
-    // 2. The SummarizationNeeded struct contains messages_to_summarize
+    // 1. build_working_context() returns Err(ContextBuildError::DistillationNeeded)
+    // 2. The DistillationNeeded struct contains messages_to_distill
     // 3. These messages are older messages that exceed the budget
     //
-    // The summarization process:
+    // The distillation process:
     // 1. Messages are partitioned into "preserved" (recent) and "older"
-    // 2. Older messages are collected for summarization
-    // 3. After summarization, the summary replaces the original messages
+    // 2. Older messages are collected for distillation
+    // 3. After distillation, the Distillate replaces the original messages
     //
-    // See context/src/manager.rs test_build_working_context_summarization_needed
-    // Context summarization tested in context crate
+    // See context/src/manager.rs test_build_working_context_distillation_needed
+    // Context distillation tested in context crate
 }
-
-// ============================================================================
-// Test 4: Cache Eviction Under Memory Pressure
-// ============================================================================
 
 // Note: Cache tests require filesystem access and are in webfetch/src/cache.rs
 // This test documents the expected eviction behavior.
@@ -126,10 +110,6 @@ fn cache_eviction_policy_documented() {
 
     // Cache eviction documented in webfetch/src/cache.rs
 }
-
-// ============================================================================
-// Test 5: Stream Journal Crash Recovery
-// ============================================================================
 
 /// Test that incomplete streams are recovered after simulated crash.
 ///

@@ -927,7 +927,6 @@ fn stats_for_db(db: &Connection) -> Result<JournalStats> {
     })
 }
 
-/// Statistics about the journal
 #[derive(Debug, Clone)]
 pub struct JournalStats {
     /// Total number of entries
@@ -946,7 +945,6 @@ fn system_time_to_iso8601(time: SystemTime) -> String {
     let secs = duration.as_secs();
     let millis = duration.subsec_millis();
 
-    // Simple ISO 8601 format without timezone
     chrono_lite_format(secs, millis)
 }
 

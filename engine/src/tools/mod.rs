@@ -129,8 +129,6 @@ pub enum ToolError {
     SandboxViolation(DenialReason),
     #[error("Tool execution failed: {tool}: {message}")]
     ExecutionFailed { tool: String, message: String },
-    #[error("Tool cancelled")]
-    Cancelled,
     #[error("Unknown tool: {name}")]
     UnknownTool { name: String },
     #[error("Duplicate tool registered: {name}")]
@@ -422,8 +420,8 @@ pub fn sanitize_output(output: &str) -> String {
     sanitize_terminal_text(output).into_owned()
 }
 
-/// Redact obvious secrets in summaries (best-effort).
-pub fn redact_summary(raw: &str) -> String {
+/// Redact obvious secrets in output distillates (best-effort).
+pub fn redact_distillate(raw: &str) -> String {
     let mut output = String::with_capacity(raw.len());
     let mut chars = raw.chars().peekable();
     while let Some(ch) = chars.next() {

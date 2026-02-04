@@ -84,7 +84,6 @@ impl Default for ViewState {
 }
 
 impl ViewState {
-    /// Create a new `ViewState` with default values.
     #[must_use]
     pub fn new() -> Self {
         Self::default()

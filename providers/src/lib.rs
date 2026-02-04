@@ -46,6 +46,9 @@
 #![allow(clippy::missing_errors_doc)] // Result-returning functions are self-explanatory
 #![allow(clippy::missing_panics_doc)] // Panics are documented in assertions
 
+pub mod retry;
+pub mod sse_types;
+
 use anyhow::Result;
 use forge_types::{
     ApiKey, ApiUsage, CacheHint, CacheableMessage, Message, ModelName, OpenAIRequestOptions,
@@ -61,6 +64,14 @@ pub use forge_types;
 const CONNECT_TIMEOUT_SECS: u64 = 30;
 /// Max idle time between SSE chunks before aborting.
 const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 60;
+
+// REQ-1: TCP Keepalive (from Anthropic Python SDK)
+// Note: reqwest only exposes tcp_keepalive (idle time); interval/retries use platform defaults.
+const TCP_KEEPALIVE_SECS: u64 = 60;
+
+// REQ-2: Connection pool settings (from httpx defaults)
+const POOL_MAX_IDLE_PER_HOST: usize = 100;
+const POOL_IDLE_TIMEOUT_SECS: u64 = 90;
 
 /// Maximum bytes for SSE buffer before aborting (4 MiB).
 /// Prevents memory exhaustion from malicious/misbehaving servers.
@@ -83,38 +94,70 @@ const MAX_ERROR_BODY_BYTES: usize = 32 * 1024;
 /// - No read/total timeout (SSE streams can run for extended periods)
 /// - Redirects disabled (API endpoints should never redirect)
 /// - HTTPS only
+/// - TCP keepalive (REQ-1): idle 60s, interval 60s, count 5
+/// - Connection pool (REQ-2): 100 per-host, 90s idle timeout
+/// - Platform headers (REQ-6): X-Stainless-Lang, OS, Arch
 ///
-/// For synchronous requests needing a timeout (like summarization),
+/// For synchronous requests needing a timeout (like distillation),
 /// use [`http_client_with_timeout`] instead.
 pub fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
-            .redirect(reqwest::redirect::Policy::none())
-            .https_only(true)
-            .build()
-            .unwrap_or_else(|e| {
-                // This should never fail in practice (only fails if TLS backend unavailable),
-                // but if it does, log and fall back to a default client rather than panicking.
-                tracing::error!("Failed to build custom HTTP client: {e}. Using default.");
-                reqwest::Client::new()
-            })
+        base_client_builder().build().unwrap_or_else(|e| {
+            // This should never fail in practice (only fails if TLS backend unavailable),
+            // but if it does, log and fall back to a default client rather than panicking.
+            tracing::error!("Failed to build custom HTTP client: {e}. Using default.");
+            reqwest::Client::new()
+        })
     })
+}
+
+/// Base client builder with shared configuration.
+///
+/// Applies:
+/// - REQ-1: TCP keepalive settings
+/// - REQ-2: Connection pool limits
+/// - REQ-6: Platform headers (X-Stainless-*)
+fn base_client_builder() -> reqwest::ClientBuilder {
+    use reqwest::header::{HeaderMap, HeaderValue};
+
+    let mut default_headers = HeaderMap::new();
+    // REQ-6: Platform headers
+    default_headers.insert("X-Stainless-Lang", HeaderValue::from_static("rust"));
+    default_headers.insert(
+        "X-Stainless-OS",
+        HeaderValue::from_static(std::env::consts::OS),
+    );
+    default_headers.insert(
+        "X-Stainless-Arch",
+        HeaderValue::from_static(std::env::consts::ARCH),
+    );
+
+    reqwest::Client::builder()
+        // Basic settings
+        .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+        .redirect(reqwest::redirect::Policy::none())
+        .https_only(true)
+        // REQ-1: TCP keepalive
+        .tcp_keepalive(Some(Duration::from_secs(TCP_KEEPALIVE_SECS)))
+        // REQ-2: Connection pool
+        .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST)
+        .pool_idle_timeout(Some(Duration::from_secs(POOL_IDLE_TIMEOUT_SECS)))
+        // REQ-6: Default headers
+        .default_headers(default_headers)
 }
 
 /// HTTP client with a total request timeout for synchronous operations.
 ///
-/// Use this for non-streaming requests like summarization where you want
+/// Use this for non-streaming requests like distillation where you want
 /// to bound the total request time.
+///
+/// Inherits all base client settings (TCP keepalive, pool limits, platform headers).
 ///
 /// Returns `Err` if the client cannot be built (e.g., TLS backend unavailable).
 pub fn http_client_with_timeout(timeout_secs: u64) -> Result<reqwest::Client, reqwest::Error> {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+    base_client_builder()
         .timeout(Duration::from_secs(timeout_secs))
-        .redirect(reqwest::redirect::Policy::none())
-        .https_only(true)
         .build()
 }
 
@@ -491,7 +534,9 @@ pub mod claude {
     use super::{
         ApiConfig, ApiUsage, CacheHint, CacheableMessage, Message, OutputLimits, Result,
         SseParseAction, SseParser, StreamEvent, ToolDefinition, http_client, mpsc,
-        process_sse_stream, read_capped_error_body, send_event,
+        process_sse_stream, read_capped_error_body,
+        retry::{RetryConfig, RetryOutcome, send_with_retry},
+        send_event,
     };
     use serde_json::json;
 
@@ -528,6 +573,20 @@ pub mod claude {
             system_blocks.push(content_block(prompt, CacheHint::Ephemeral));
         }
 
+        // Track pending assistant content blocks for grouping
+        let mut pending_assistant_content: Vec<serde_json::Value> = Vec::new();
+
+        // Helper to flush pending assistant content into a message
+        let flush_assistant =
+            |content: &mut Vec<serde_json::Value>, messages: &mut Vec<serde_json::Value>| {
+                if !content.is_empty() {
+                    messages.push(json!({
+                        "role": "assistant",
+                        "content": std::mem::take(content)
+                    }));
+                }
+            };
+
         for cacheable in messages {
             let msg = &cacheable.message;
             let hint = cacheable.cache_hint;
@@ -537,33 +596,32 @@ pub mod claude {
                     system_blocks.push(content_block(msg.content(), hint));
                 }
                 Message::User(_) => {
+                    // Flush any pending assistant content before user message
+                    flush_assistant(&mut pending_assistant_content, &mut api_messages);
                     api_messages.push(json!({
                         "role": "user",
                         "content": [content_block(msg.content(), hint)]
                     }));
                 }
                 Message::Assistant(_) => {
-                    // Assistant messages sent as strings, not content blocks.
-                    // cache_control can't be applied to assistant messages anyway.
-                    api_messages.push(json!({
-                        "role": "assistant",
-                        "content": msg.content()
+                    // Add text content block to pending assistant content
+                    pending_assistant_content.push(json!({
+                        "type": "text",
+                        "text": msg.content()
                     }));
                 }
                 Message::ToolUse(call) => {
-                    // Tool use is sent as an assistant message with tool_use content block
-                    api_messages.push(json!({
-                        "role": "assistant",
-                        "content": [{
-                            "type": "tool_use",
-                            "id": call.id,
-                            "name": call.name,
-                            "input": call.arguments
-                        }]
+                    // Add tool_use content block to pending assistant content
+                    pending_assistant_content.push(json!({
+                        "type": "tool_use",
+                        "id": call.id,
+                        "name": call.name,
+                        "input": call.arguments
                     }));
                 }
                 Message::ToolResult(result) => {
-                    // Tool result is sent as a user message with tool_result content block
+                    // Flush any pending assistant content before tool result (user role)
+                    flush_assistant(&mut pending_assistant_content, &mut api_messages);
                     api_messages.push(json!({
                         "role": "user",
                         "content": [{
@@ -574,23 +632,21 @@ pub mod claude {
                         }]
                     }));
                 }
-                Message::Thinking(_) => {
-                    // Thinking is not sent back to the API - it's provider-generated
-                    // reasoning that we store for UI display only.
+                Message::Thinking(thinking) => {
+                    // Send thinking as redacted_thinking if we have the signature
+                    if let Some(signature) = thinking.signature() {
+                        pending_assistant_content.push(json!({
+                            "type": "redacted_thinking",
+                            "data": signature
+                        }));
+                    }
+                    // If no signature, skip (legacy thinking without signature)
                 }
             }
         }
 
-        // Check if history contains Assistant or ToolUse messages.
-        // When thinking is enabled, the API requires assistant messages to start with
-        // thinking/redacted_thinking blocks. Since we don't store thinking content,
-        // we must disable thinking when replaying conversations with assistant messages.
-        let has_assistant_history = messages.iter().any(|m| {
-            matches!(
-                m.message,
-                Message::Assistant(_) | Message::Thinking(_) | Message::ToolUse(_)
-            )
-        });
+        // Flush any remaining assistant content
+        flush_assistant(&mut pending_assistant_content, &mut api_messages);
 
         let mut body = serde_json::Map::new();
         body.insert("model".into(), json!(model));
@@ -619,16 +675,27 @@ pub mod claude {
             body.insert("tools".into(), json!(tool_schemas));
         }
 
-        // Only enable thinking for fresh conversations without assistant history.
-        // Conversations with tool use require consistent thinking blocks which we don't store.
-        if let Some(budget) = limits.thinking_budget()
-            && !has_assistant_history
-        {
+        // Enable thinking if configured. We now properly replay thinking with signatures
+        // via redacted_thinking blocks, so this works across multi-turn conversations.
+        if let Some(budget) = limits.thinking_budget() {
             body.insert(
                 "thinking".into(),
                 json!({
                     "type": "enabled",
                     "budget_tokens": budget
+                }),
+            );
+
+            // Add context_management to preserve all thinking blocks for cache efficiency.
+            // Opus 4.5 preserves by default, but this is harmless there and essential for
+            // Sonnet 4.5 / Haiku 4.5 where thinking blocks are stripped by default.
+            body.insert(
+                "context_management".into(),
+                json!({
+                    "edits": [{
+                        "type": "clear_thinking_20251015",
+                        "keep": "all"
+                    }]
                 }),
             );
         }
@@ -640,6 +707,8 @@ pub mod claude {
     // Claude SSE Parser
     // ========================================================================
 
+    use crate::sse_types::claude as typed;
+
     #[derive(Default)]
     struct ClaudeParser {
         /// Current tool call ID for streaming tool arguments
@@ -648,101 +717,93 @@ pub mod claude {
 
     impl SseParser for ClaudeParser {
         fn parse(&mut self, json: &serde_json::Value) -> SseParseAction {
+            // Deserialize into typed event - forward compatible via Unknown variant
+            let event: typed::Event = match serde_json::from_value(json.clone()) {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::debug!("Failed to parse Claude SSE event: {e}");
+                    return SseParseAction::Continue;
+                }
+            };
+
             let mut events = Vec::new();
 
-            // Handle message_start - contains input token usage
-            if json["type"] == "message_start"
-                && let Some(message) = json.get("message")
-                && let Some(usage) = message.get("usage")
-            {
-                // Anthropic's input_tokens is non-cached tokens only.
-                // Total input = input_tokens + cache_read + cache_creation
-                let non_cached = usage["input_tokens"].as_u64().unwrap_or(0) as u32;
-                let cache_read = usage["cache_read_input_tokens"].as_u64().unwrap_or(0) as u32;
-                let cache_creation =
-                    usage["cache_creation_input_tokens"].as_u64().unwrap_or(0) as u32;
-                let total_input = non_cached
-                    .saturating_add(cache_read)
-                    .saturating_add(cache_creation);
-                events.push(StreamEvent::Usage(ApiUsage {
-                    input_tokens: total_input,
-                    cache_read_tokens: cache_read,
-                    cache_creation_tokens: cache_creation,
-                    output_tokens: 0,
-                }));
-            }
-
-            // Handle message_delta - contains output token usage
-            if json["type"] == "message_delta"
-                && let Some(usage) = json.get("usage")
-            {
-                let output_tokens = usage["output_tokens"].as_u64().unwrap_or(0) as u32;
-                if output_tokens > 0 {
-                    events.push(StreamEvent::Usage(ApiUsage {
-                        input_tokens: 0,
-                        cache_read_tokens: 0,
-                        cache_creation_tokens: 0,
-                        output_tokens,
-                    }));
-                }
-            }
-
-            // Handle content_block_start for tool_use
-            if json["type"] == "content_block_start"
-                && let Some(block) = json.get("content_block")
-                && block["type"] == "tool_use"
-            {
-                let Some(id) = block["id"].as_str().filter(|s| !s.is_empty()) else {
-                    return SseParseAction::Error("Claude tool call missing id".to_string());
-                };
-                let Some(name) = block["name"].as_str().filter(|s| !s.is_empty()) else {
-                    return SseParseAction::Error("Claude tool call missing name".to_string());
-                };
-                self.current_tool_id = Some(id.to_string());
-                events.push(StreamEvent::ToolCallStart {
-                    id: id.to_string(),
-                    name: name.to_string(),
-                    thought_signature: None,
-                });
-            }
-
-            if json["type"] == "content_block_delta" {
-                if let Some(delta_type) = json["delta"]["type"].as_str() {
-                    match delta_type {
-                        "text_delta" => {
-                            if let Some(text) = json["delta"]["text"].as_str() {
-                                events.push(StreamEvent::TextDelta(text.to_string()));
-                            }
-                        }
-                        "thinking_delta" => {
-                            if let Some(thinking) = json["delta"]["thinking"].as_str() {
-                                events.push(StreamEvent::ThinkingDelta(thinking.to_string()));
-                            }
-                        }
-                        "input_json_delta" => {
-                            if let Some(json_chunk) = json["delta"]["partial_json"].as_str()
-                                && let Some(ref id) = self.current_tool_id
-                            {
-                                events.push(StreamEvent::ToolCallDelta {
-                                    id: id.clone(),
-                                    arguments: json_chunk.to_string(),
-                                });
-                            }
-                        }
-                        _ => {}
+            match event {
+                typed::Event::MessageStart { message } => {
+                    if let Some(usage) = message.usage {
+                        events.push(StreamEvent::Usage(ApiUsage {
+                            input_tokens: usage.total_input_tokens(),
+                            cache_read_tokens: usage.cache_read_input_tokens,
+                            cache_creation_tokens: usage.cache_creation_input_tokens,
+                            output_tokens: 0,
+                        }));
                     }
-                } else if let Some(text) = json["delta"]["text"].as_str() {
-                    events.push(StreamEvent::TextDelta(text.to_string()));
                 }
-            }
 
-            // Reset tool ID when content block ends
-            if json["type"] == "content_block_stop" {
-                self.current_tool_id = None;
-            }
+                typed::Event::MessageDelta { usage } => {
+                    if let Some(usage) = usage
+                        && usage.output_tokens > 0
+                    {
+                        events.push(StreamEvent::Usage(ApiUsage {
+                            input_tokens: 0,
+                            cache_read_tokens: 0,
+                            cache_creation_tokens: 0,
+                            output_tokens: usage.output_tokens,
+                        }));
+                    }
+                }
 
-            if json["type"] == "message_stop" {
-                return SseParseAction::Done;
+                typed::Event::ContentBlockStart { content_block, .. } => {
+                    if let typed::ContentBlock::ToolUse { id, name } = content_block {
+                        if id.is_empty() {
+                            return SseParseAction::Error(
+                                "Claude tool call missing id".to_string(),
+                            );
+                        }
+                        if name.is_empty() {
+                            return SseParseAction::Error(
+                                "Claude tool call missing name".to_string(),
+                            );
+                        }
+                        self.current_tool_id = Some(id.clone());
+                        events.push(StreamEvent::ToolCallStart {
+                            id,
+                            name,
+                            thought_signature: None,
+                        });
+                    }
+                }
+
+                typed::Event::ContentBlockDelta { delta, .. } => match delta {
+                    typed::Delta::TextDelta { text } => {
+                        events.push(StreamEvent::TextDelta(text));
+                    }
+                    typed::Delta::ThinkingDelta { thinking } => {
+                        events.push(StreamEvent::ThinkingDelta(thinking));
+                    }
+                    typed::Delta::SignatureDelta { signature } => {
+                        events.push(StreamEvent::ThinkingSignature(signature));
+                    }
+                    typed::Delta::InputJsonDelta { partial_json } => {
+                        if let Some(ref id) = self.current_tool_id {
+                            events.push(StreamEvent::ToolCallDelta {
+                                id: id.clone(),
+                                arguments: partial_json,
+                            });
+                        }
+                    }
+                    typed::Delta::Unknown => {}
+                },
+
+                typed::Event::ContentBlockStop { .. } => {
+                    self.current_tool_id = None;
+                }
+
+                typed::Event::MessageStop => {
+                    return SseParseAction::Done;
+                }
+
+                typed::Event::Ping | typed::Event::Unknown => {}
             }
 
             if events.is_empty() {
@@ -766,6 +827,7 @@ pub mod claude {
         tx: mpsc::Sender<StreamEvent>,
     ) -> Result<()> {
         let client = http_client();
+        let retry_config = RetryConfig::default();
 
         let body = build_request_body(
             config.model().as_str(),
@@ -775,14 +837,46 @@ pub mod claude {
             tools,
         );
 
-        let response = client
-            .post(API_URL)
-            .header("x-api-key", config.api_key())
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+        let api_key = config.api_key().to_string();
+        let body_json = body.clone();
+
+        // Wrap request with retry logic (REQ-4)
+        // Streaming requests omit X-Stainless-Timeout (no total timeout)
+        let outcome = send_with_retry(
+            || {
+                client
+                    .post(API_URL)
+                    .header("x-api-key", &api_key)
+                    .header("anthropic-version", "2023-06-01")
+                    .header(
+                        "anthropic-beta",
+                        "interleaved-thinking-2025-05-14,context-management-2025-06-27",
+                    )
+                    .header("content-type", "application/json")
+                    .json(&body_json)
+            },
+            None, // No timeout header for streaming
+            &retry_config,
+        )
+        .await;
+
+        let response = match outcome {
+            RetryOutcome::Success(resp) | RetryOutcome::HttpError(resp) => resp,
+            RetryOutcome::ConnectionError { attempts, source } => {
+                let _ = send_event(
+                    &tx,
+                    StreamEvent::Error(format!(
+                        "Request failed after {attempts} attempts: {source}"
+                    )),
+                )
+                .await;
+                return Ok(());
+            }
+            RetryOutcome::NonRetryable(e) => {
+                let _ = send_event(&tx, StreamEvent::Error(format!("Request failed: {e}"))).await;
+                return Ok(());
+            }
+        };
 
         if !response.status().is_success() {
             let status = response.status();
@@ -811,7 +905,9 @@ pub mod claude {
             let limits = OutputLimits::new(1024);
 
             let messages = vec![
-                CacheableMessage::plain(Message::system(NonEmptyString::new("summary").unwrap())),
+                CacheableMessage::plain(Message::system(
+                    NonEmptyString::new("Distillate").unwrap(),
+                )),
                 CacheableMessage::plain(Message::try_user("hi").unwrap()),
             ];
 
@@ -819,7 +915,7 @@ pub mod claude {
 
             let system = body.get("system").unwrap().as_array().unwrap();
             assert_eq!(system.len(), 1);
-            assert_eq!(system[0]["text"].as_str(), Some("summary"));
+            assert_eq!(system[0]["text"].as_str(), Some("Distillate"));
 
             let msgs = body.get("messages").unwrap().as_array().unwrap();
             assert_eq!(msgs.len(), 1);
@@ -832,7 +928,7 @@ pub mod claude {
             let limits = OutputLimits::new(1024);
 
             let messages = vec![CacheableMessage::plain(Message::system(
-                NonEmptyString::new("summary").unwrap(),
+                NonEmptyString::new("Distillate").unwrap(),
             ))];
 
             let body = build_request_body(model.as_str(), &messages, limits, Some("prompt"), None);
@@ -844,7 +940,7 @@ pub mod claude {
                 system[0]["cache_control"]["type"].as_str(),
                 Some("ephemeral")
             );
-            assert_eq!(system[1]["text"].as_str(), Some("summary"));
+            assert_eq!(system[1]["text"].as_str(), Some("Distillate"));
         }
 
         #[test]
@@ -936,7 +1032,9 @@ pub mod openai {
     use super::{
         ApiConfig, ApiUsage, CacheableMessage, Message, OutputLimits, Result, SseParseAction,
         SseParser, StreamEvent, ToolDefinition, http_client, mpsc, process_sse_stream,
-        read_capped_error_body, send_event,
+        read_capped_error_body,
+        retry::{RetryConfig, RetryOutcome, send_with_retry},
+        send_event,
     };
     use forge_types::OpenAIReasoningSummary;
     use serde_json::{Value, json};
@@ -944,50 +1042,11 @@ pub mod openai {
 
     const API_URL: &str = "https://api.openai.com/v1/responses";
 
-    fn extract_error_message(payload: &Value) -> Option<String> {
-        payload
-            .get("error")
-            .and_then(|error| error.get("message"))
-            .and_then(|value| value.as_str())
-            .or_else(|| {
-                payload
-                    .get("response")
-                    .and_then(|response| response.get("error"))
-                    .and_then(|error| error.get("message"))
-                    .and_then(|value| value.as_str())
-            })
-            .map(std::string::ToString::to_string)
-    }
-
-    fn extract_incomplete_reason(payload: &Value) -> Option<String> {
-        payload
-            .get("response")
-            .and_then(|response| response.get("incomplete_details"))
-            .and_then(|details| details.get("reason"))
-            .and_then(|value| value.as_str())
-            .map(std::string::ToString::to_string)
-    }
-
-    fn resolve_call_id(
-        item_id: Option<&str>,
-        call_id: Option<&str>,
-        item_to_call: &HashMap<String, String>,
-    ) -> Option<String> {
-        if let Some(call_id) = call_id {
-            return Some(call_id.to_string());
-        }
-        if let Some(item_id) = item_id {
-            if let Some(mapped) = item_to_call.get(item_id) {
-                return Some(mapped.clone());
-            }
-            return Some(item_id.to_string());
-        }
-        None
-    }
-
     // ========================================================================
     // OpenAI SSE Parser
     // ========================================================================
+
+    use crate::sse_types::openai as typed;
 
     #[derive(Default)]
     struct OpenAIParser {
@@ -995,180 +1054,241 @@ pub mod openai {
         text_delta_seen: HashSet<String>,
         /// Track which item_ids have received reasoning summary deltas
         reasoning_delta_seen: HashSet<String>,
+        /// Track whether the last reasoning summary part for an item ended with a newline
+        reasoning_part_last_newline: HashMap<String, bool>,
+        /// Map item_id -> call_id for tool calls
         item_to_call: HashMap<String, String>,
+        /// Track which call_ids have received argument deltas
         call_has_delta: HashSet<String>,
+    }
+
+    impl OpenAIParser {
+        /// Resolve call_id from item_id or direct call_id.
+        fn resolve_call_id(&self, item_id: Option<&str>, call_id: Option<&str>) -> Option<String> {
+            if let Some(call_id) = call_id {
+                return Some(call_id.to_string());
+            }
+            if let Some(item_id) = item_id {
+                if let Some(mapped) = self.item_to_call.get(item_id) {
+                    return Some(mapped.clone());
+                }
+                return Some(item_id.to_string());
+            }
+            None
+        }
     }
 
     impl SseParser for OpenAIParser {
         fn parse(&mut self, json: &Value) -> SseParseAction {
+            // Deserialize into typed event - forward compatible via Unknown variant
+            let event: typed::Event = match serde_json::from_value(json.clone()) {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::debug!("Failed to parse OpenAI SSE event: {e}");
+                    return SseParseAction::Continue;
+                }
+            };
+
             let mut events = Vec::new();
 
-            match json["type"].as_str().unwrap_or("") {
-                "response.output_item.added" => {
-                    let item = json.get("item").or_else(|| json.get("output_item"));
-                    if let Some(item) = item
-                        && item.get("type").and_then(|value| value.as_str())
-                            == Some("function_call")
+            match event {
+                typed::Event::OutputItemAdded { item_id, item } => {
+                    if let Some(typed::OutputItem::FunctionCall {
+                        id,
+                        call_id,
+                        name,
+                        arguments,
+                    }) = item
                     {
-                        let item_id = item.get("id").and_then(|v| v.as_str());
-                        let call_id = item.get("call_id").and_then(|v| v.as_str()).or(item_id);
-                        let name = item.get("name").and_then(|v| v.as_str());
-                        let Some(call_id) = call_id else {
+                        // Resolve call_id: prefer call_id, fall back to id
+                        let resolved_call_id = call_id.or(id.clone());
+                        let Some(call_id) = resolved_call_id.filter(|s| !s.trim().is_empty())
+                        else {
                             return SseParseAction::Error(
                                 "OpenAI tool call missing id".to_string(),
                             );
                         };
-                        let Some(name) = name.filter(|value| !value.trim().is_empty()) else {
+                        let Some(name) = name.filter(|s| !s.trim().is_empty()) else {
                             return SseParseAction::Error(
                                 "OpenAI tool call missing name".to_string(),
                             );
                         };
-                        let call_id = call_id.to_string();
-                        if call_id.trim().is_empty() {
-                            return SseParseAction::Error(
-                                "OpenAI tool call missing id".to_string(),
-                            );
+
+                        // Track item_id -> call_id mapping for later deltas
+                        if let Some(ref item_id) = item_id {
+                            self.item_to_call.insert(item_id.clone(), call_id.clone());
                         }
-                        if let Some(item_id) = item_id {
-                            self.item_to_call
-                                .insert(item_id.to_string(), call_id.clone());
+                        if let Some(ref id) = id {
+                            self.item_to_call.insert(id.clone(), call_id.clone());
                         }
+
                         events.push(StreamEvent::ToolCallStart {
                             id: call_id.clone(),
-                            name: name.to_string(),
+                            name,
                             thought_signature: None,
                         });
-                        if let Some(arguments) = item.get("arguments").and_then(|v| v.as_str())
-                            && !arguments.is_empty()
-                        {
+
+                        // Emit initial arguments if present
+                        if let Some(args) = arguments.filter(|s| !s.is_empty()) {
                             events.push(StreamEvent::ToolCallDelta {
                                 id: call_id.clone(),
-                                arguments: arguments.to_string(),
+                                arguments: args,
                             });
                             self.call_has_delta.insert(call_id);
                         }
                     }
                 }
-                "response.output_text.delta" | "response.refusal.delta" => {
-                    if let Some(delta) = json["delta"].as_str() {
-                        // Track per item_id to handle multi-item responses correctly
-                        if let Some(item_id) = json.get("item_id").and_then(|v| v.as_str()) {
-                            self.text_delta_seen.insert(item_id.to_string());
+
+                typed::Event::OutputTextDelta { item_id, delta }
+                | typed::Event::RefusalDelta { item_id, delta } => {
+                    if let Some(delta) = delta {
+                        if let Some(item_id) = item_id {
+                            self.text_delta_seen.insert(item_id);
                         }
-                        events.push(StreamEvent::TextDelta(delta.to_string()));
+                        events.push(StreamEvent::TextDelta(delta));
                     }
                 }
-                "response.output_text.done" => {
-                    // Only emit fallback text if this specific item never received deltas
-                    let item_id = json.get("item_id").and_then(|v| v.as_str());
+
+                typed::Event::OutputTextDone { item_id, text } => {
+                    // Only emit fallback if no deltas were seen for this item
                     let saw_delta = item_id
-                        .map(|id| self.text_delta_seen.contains(id))
-                        .unwrap_or(false);
-                    if !saw_delta && let Some(text) = json["text"].as_str() {
-                        events.push(StreamEvent::TextDelta(text.to_string()));
+                        .as_ref()
+                        .is_some_and(|id| self.text_delta_seen.contains(id));
+                    if !saw_delta && let Some(text) = text {
+                        events.push(StreamEvent::TextDelta(text));
                     }
                 }
-                "response.reasoning_summary_text.delta" => {
-                    if let Some(delta) = json["delta"].as_str() {
-                        // Track per item_id
-                        if let Some(item_id) = json.get("item_id").and_then(|v| v.as_str()) {
-                            self.reasoning_delta_seen.insert(item_id.to_string());
+
+                typed::Event::ReasoningSummaryDelta { item_id, delta } => {
+                    if let Some(delta) = delta {
+                        if let Some(item_id) = item_id {
+                            self.reasoning_delta_seen.insert(item_id);
                         }
-                        events.push(StreamEvent::ThinkingDelta(delta.to_string()));
+                        events.push(StreamEvent::ThinkingDelta(delta));
                     }
                 }
-                "response.reasoning_summary_text.done" => {
-                    // Only emit fallback if this specific item never received deltas
-                    let item_id = json.get("item_id").and_then(|v| v.as_str());
+
+                typed::Event::ReasoningSummaryDone { item_id, text } => {
+                    // Only emit fallback if no deltas were seen for this item
                     let saw_delta = item_id
-                        .map(|id| self.reasoning_delta_seen.contains(id))
-                        .unwrap_or(false);
-                    if !saw_delta && let Some(text) = json["text"].as_str() {
-                        events.push(StreamEvent::ThinkingDelta(text.to_string()));
+                        .as_ref()
+                        .is_some_and(|id| self.reasoning_delta_seen.contains(id));
+                    if !saw_delta && let Some(text) = text {
+                        events.push(StreamEvent::ThinkingDelta(text));
                     }
                 }
-                "response.reasoning_summary_part.added" => {
-                    if let Some(part) = json.get("part")
-                        && let Some(text) = part.get("text").and_then(|value| value.as_str())
+
+                typed::Event::ReasoningSummaryPartAdded { item_id, part } => {
+                    if let Some(part) = part
+                        && let Some(text) = part.text
                     {
-                        // Track per item_id
-                        if let Some(item_id) = json.get("item_id").and_then(|v| v.as_str()) {
-                            self.reasoning_delta_seen.insert(item_id.to_string());
+                        if let Some(ref item_id) = item_id {
+                            self.reasoning_delta_seen.insert(item_id.clone());
+                            let mut summary = text;
+                            if let Some(ended_with_newline) =
+                                self.reasoning_part_last_newline.get(item_id)
+                            {
+                                let starts_with_newline =
+                                    summary.starts_with('\n') || summary.starts_with('\r');
+                                if !*ended_with_newline && !starts_with_newline {
+                                    summary.insert(0, '\n');
+                                }
+                            }
+                            let ends_with_newline =
+                                summary.ends_with('\n') || summary.ends_with('\r');
+                            self.reasoning_part_last_newline
+                                .insert(item_id.clone(), ends_with_newline);
+                            events.push(StreamEvent::ThinkingDelta(summary));
+                        } else {
+                            events.push(StreamEvent::ThinkingDelta(text));
                         }
-                        events.push(StreamEvent::ThinkingDelta(text.to_string()));
                     }
                 }
-                "response.function_call_arguments.delta" => {
-                    let item_id = json.get("item_id").and_then(|v| v.as_str());
-                    let call_id = json.get("call_id").and_then(|v| v.as_str());
-                    let resolved = resolve_call_id(item_id, call_id, &self.item_to_call);
-                    if let Some(delta) = json.get("delta").and_then(|v| v.as_str())
-                        && let Some(call_id) = resolved
-                    {
+
+                typed::Event::FunctionCallArgumentsDelta {
+                    item_id,
+                    call_id,
+                    delta,
+                } => {
+                    let resolved = self.resolve_call_id(item_id.as_deref(), call_id.as_deref());
+                    if let Some(delta) = delta {
+                        let Some(call_id) = resolved else {
+                            return SseParseAction::Error(
+                                "OpenAI tool call delta missing id".to_string(),
+                            );
+                        };
                         events.push(StreamEvent::ToolCallDelta {
                             id: call_id.clone(),
-                            arguments: delta.to_string(),
+                            arguments: delta,
                         });
                         self.call_has_delta.insert(call_id);
-                    } else if json.get("delta").and_then(|v| v.as_str()).is_some() {
-                        return SseParseAction::Error(
-                            "OpenAI tool call delta missing id".to_string(),
-                        );
                     }
                 }
-                "response.function_call_arguments.done" => {
-                    let item_id = json.get("item_id").and_then(|v| v.as_str());
-                    let call_id = json.get("call_id").and_then(|v| v.as_str());
-                    let resolved = resolve_call_id(item_id, call_id, &self.item_to_call);
-                    if let Some(arguments) = json.get("arguments").and_then(|v| v.as_str())
-                        && let Some(call_id) = resolved
-                    {
+
+                typed::Event::FunctionCallArgumentsDone {
+                    item_id,
+                    call_id,
+                    arguments,
+                } => {
+                    let resolved = self.resolve_call_id(item_id.as_deref(), call_id.as_deref());
+                    if let Some(arguments) = arguments {
+                        let Some(call_id) = resolved else {
+                            return SseParseAction::Error(
+                                "OpenAI tool call args missing id".to_string(),
+                            );
+                        };
+                        // Only emit if no deltas were seen for this call
                         if !self.call_has_delta.contains(&call_id) && !arguments.is_empty() {
                             events.push(StreamEvent::ToolCallDelta {
                                 id: call_id.clone(),
-                                arguments: arguments.to_string(),
+                                arguments,
                             });
                         }
                         self.call_has_delta.insert(call_id);
-                    } else if json.get("arguments").and_then(|v| v.as_str()).is_some() {
-                        return SseParseAction::Error(
-                            "OpenAI tool call args missing id".to_string(),
-                        );
                     }
                 }
-                "response.completed" => {
-                    // Extract usage from response.usage if present
-                    if let Some(usage) = json.get("response").and_then(|r| r.get("usage")) {
-                        let input_tokens = usage["input_tokens"].as_u64().unwrap_or(0) as u32;
-                        let output_tokens = usage["output_tokens"].as_u64().unwrap_or(0) as u32;
-                        let cached_tokens = usage
-                            .get("input_tokens_details")
-                            .and_then(|d| d.get("cached_tokens"))
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0) as u32;
 
+                typed::Event::Completed { response } => {
+                    if let Some(response) = response
+                        && let Some(usage) = response.usage
+                    {
+                        let cached_tokens =
+                            usage.input_tokens_details.map_or(0, |d| d.cached_tokens);
                         events.push(StreamEvent::Usage(ApiUsage {
-                            input_tokens,
+                            input_tokens: usage.input_tokens,
                             cache_read_tokens: cached_tokens,
                             cache_creation_tokens: 0, // OpenAI doesn't report this
-                            output_tokens,
+                            output_tokens: usage.output_tokens,
                         }));
                     }
-                    // Always emit Done after response.completed to properly terminate stream
                     events.push(StreamEvent::Done);
                     return SseParseAction::Emit(events);
                 }
-                "response.incomplete" => {
-                    let reason = extract_incomplete_reason(json)
+
+                typed::Event::Incomplete { response } => {
+                    let reason = response
+                        .and_then(|r| r.incomplete_details)
+                        .and_then(|d| d.reason)
                         .unwrap_or_else(|| "Response incomplete".to_string());
                     return SseParseAction::Error(reason);
                 }
-                "response.failed" | "error" => {
-                    let message = extract_error_message(json)
+
+                typed::Event::Failed { response, error } => {
+                    let message = error
+                        .and_then(|e| e.message)
+                        .or_else(|| response.and_then(|r| r.error).and_then(|e| e.message))
                         .unwrap_or_else(|| "Response failed".to_string());
                     return SseParseAction::Error(message);
                 }
-                _ => {}
+
+                typed::Event::Error { error } => {
+                    let message = error
+                        .and_then(|e| e.message)
+                        .unwrap_or_else(|| "Unknown error".to_string());
+                    return SseParseAction::Error(message);
+                }
+
+                typed::Event::Unknown => {}
             }
 
             if events.is_empty() {
@@ -1309,16 +1429,45 @@ pub mod openai {
         tx: mpsc::Sender<StreamEvent>,
     ) -> Result<()> {
         let client = http_client();
+        let retry_config = RetryConfig::default();
 
         let body = build_request_body(config, messages, limits, system_prompt, tools);
 
-        let response = client
-            .post(API_URL)
-            .header("Authorization", format!("Bearer {}", config.api_key()))
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+        let auth_header = format!("Bearer {}", config.api_key());
+        let body_json = body.clone();
+
+        // Wrap request with retry logic (REQ-4)
+        // Streaming requests omit X-Stainless-Timeout (no total timeout)
+        let outcome = send_with_retry(
+            || {
+                client
+                    .post(API_URL)
+                    .header("Authorization", &auth_header)
+                    .header("content-type", "application/json")
+                    .json(&body_json)
+            },
+            None, // No timeout header for streaming
+            &retry_config,
+        )
+        .await;
+
+        let response = match outcome {
+            RetryOutcome::Success(resp) | RetryOutcome::HttpError(resp) => resp,
+            RetryOutcome::ConnectionError { attempts, source } => {
+                let _ = send_event(
+                    &tx,
+                    StreamEvent::Error(format!(
+                        "Request failed after {attempts} attempts: {source}"
+                    )),
+                )
+                .await;
+                return Ok(());
+            }
+            RetryOutcome::NonRetryable(e) => {
+                let _ = send_event(&tx, StreamEvent::Error(format!("Request failed: {e}"))).await;
+                return Ok(());
+            }
+        };
 
         if !response.status().is_success() {
             let status = response.status();
@@ -1360,7 +1509,9 @@ pub mod openai {
             let config = ApiConfig::new(key, model).unwrap();
 
             let messages = vec![
-                CacheableMessage::plain(Message::system(NonEmptyString::new("summary").unwrap())),
+                CacheableMessage::plain(Message::system(
+                    NonEmptyString::new("Distillate").unwrap(),
+                )),
                 CacheableMessage::plain(Message::try_user("hi").unwrap()),
             ];
 
@@ -1370,7 +1521,7 @@ pub mod openai {
             assert_eq!(input.len(), 2);
             // Message::System maps to "developer" per OpenAI Model Spec hierarchy
             assert_eq!(input[0]["role"].as_str(), Some("developer"));
-            assert_eq!(input[0]["content"].as_str(), Some("summary"));
+            assert_eq!(input[0]["content"].as_str(), Some("Distillate"));
             assert_eq!(input[1]["role"].as_str(), Some("user"));
         }
 
@@ -1381,7 +1532,7 @@ pub mod openai {
             let config = ApiConfig::new(key, model).unwrap();
 
             let messages = vec![CacheableMessage::plain(Message::system(
-                NonEmptyString::new("summary").unwrap(),
+                NonEmptyString::new("Distillate").unwrap(),
             ))];
 
             let body = build_request_body(
@@ -1576,19 +1727,45 @@ pub mod openai {
         }
 
         #[test]
-        fn emits_reasoning_summary_done_when_no_delta() {
+        fn inserts_newline_between_reasoning_summary_parts() {
             let mut state = OpenAIParser::default();
+            let _ = collect_events(
+                json!({
+                    "type": "response.reasoning_summary_part.added",
+                    "item_id": "item_1",
+                    "part": { "text": "First section." }
+                }),
+                &mut state,
+            );
             let events = collect_events(
                 json!({
-                    "type": "response.reasoning_summary_text.done",
-                    "text": "summary text"
+                    "type": "response.reasoning_summary_part.added",
+                    "item_id": "item_1",
+                    "part": { "text": "Second section." }
                 }),
                 &mut state,
             );
             assert_eq!(events.len(), 1);
             assert!(matches!(
                 &events[0],
-                StreamEvent::ThinkingDelta(text) if text == "summary text"
+                StreamEvent::ThinkingDelta(text) if text == "\nSecond section."
+            ));
+        }
+
+        #[test]
+        fn emits_reasoning_summary_done_when_no_delta() {
+            let mut state = OpenAIParser::default();
+            let events = collect_events(
+                json!({
+                    "type": "response.reasoning_summary_text.done",
+                    "text": "Summary text"
+                }),
+                &mut state,
+            );
+            assert_eq!(events.len(), 1);
+            assert!(matches!(
+                &events[0],
+                StreamEvent::ThinkingDelta(text) if text == "Summary text"
             ));
         }
 
@@ -1669,6 +1846,7 @@ pub mod gemini {
     use super::{
         ApiConfig, CacheableMessage, Message, OutputLimits, Result, SseParseAction, SseParser,
         StreamEvent, ToolDefinition, http_client, mpsc, process_sse_stream, read_capped_error_body,
+        retry::{RetryConfig, RetryOutcome, send_with_retry},
         send_event,
     };
     use chrono::{DateTime, Utc};
@@ -2046,42 +2224,7 @@ pub mod gemini {
     // Gemini SSE Parser
     // ========================================================================
 
-    /// Map Gemini finishReason to SseParseAction.
-    fn handle_finish_reason(reason: &str) -> Option<SseParseAction> {
-        match reason {
-            "STOP" | "MAX_TOKENS" => Some(SseParseAction::Done),
-            "SAFETY" => Some(SseParseAction::Error(
-                "Content filtered by safety settings".to_string(),
-            )),
-            "RECITATION" => Some(SseParseAction::Error(
-                "Response blocked: recitation".to_string(),
-            )),
-            "LANGUAGE" => Some(SseParseAction::Error("Unsupported language".to_string())),
-            "BLOCKLIST" => Some(SseParseAction::Error(
-                "Content contains blocked terms".to_string(),
-            )),
-            "PROHIBITED_CONTENT" => Some(SseParseAction::Error(
-                "Prohibited content detected".to_string(),
-            )),
-            "SPII" => Some(SseParseAction::Error("Sensitive PII detected".to_string())),
-            "MALFORMED_FUNCTION_CALL" => Some(SseParseAction::Error(
-                "Invalid function call generated".to_string(),
-            )),
-            "MISSING_THOUGHT_SIGNATURE" => Some(SseParseAction::Error(
-                "Missing thought signature in request".to_string(),
-            )),
-            "TOO_MANY_TOOL_CALLS" => Some(SseParseAction::Error(
-                "Too many consecutive tool calls".to_string(),
-            )),
-            "UNEXPECTED_TOOL_CALL" => Some(SseParseAction::Error(
-                "Tool call but no tools enabled".to_string(),
-            )),
-            "OTHER" => Some(SseParseAction::Error(
-                "Generation stopped: unknown reason".to_string(),
-            )),
-            _ => None, // Unknown reason, continue processing
-        }
-    }
+    use crate::sse_types::gemini as typed;
 
     /// Parser state for Gemini SSE streams.
     #[derive(Default)]
@@ -2089,68 +2232,56 @@ pub mod gemini {
 
     impl SseParser for GeminiParser {
         fn parse(&mut self, json: &Value) -> SseParseAction {
+            // Deserialize into typed response
+            let response: typed::Response = match serde_json::from_value(json.clone()) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::debug!("Failed to parse Gemini SSE response: {e}");
+                    return SseParseAction::Continue;
+                }
+            };
+
             // Check for error response
-            if let Some(error) = json.get("error") {
-                let message = error
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Unknown error");
-                return SseParseAction::Error(message.to_string());
+            if let Some(error) = response.error {
+                return SseParseAction::Error(error.message_or_default().to_string());
             }
 
             let mut events = Vec::new();
+            let mut finish_action: Option<SseParseAction> = None;
 
             // Process candidates
-            // Track if we should terminate after emitting events
-            let mut finish_action = None;
-
-            if let Some(candidates) = json.get("candidates").and_then(|v| v.as_array()) {
+            if let Some(candidates) = response.candidates {
                 for candidate in candidates {
                     // Process content parts FIRST (before checking finish reason)
                     // This ensures we don't drop final content when finishReason is present
-                    if let Some(content) = candidate.get("content")
-                        && let Some(parts) = content.get("parts").and_then(|v| v.as_array())
+                    if let Some(content) = candidate.content
+                        && let Some(parts) = content.parts
                     {
                         for part in parts {
-                            // Check for thinking content
-                            let is_thought =
-                                part.get("thought").and_then(Value::as_bool) == Some(true);
-
                             // Text content
-                            if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                                if is_thought {
-                                    events.push(StreamEvent::ThinkingDelta(text.to_string()));
+                            if let Some(text) = part.text {
+                                if part.thought {
+                                    events.push(StreamEvent::ThinkingDelta(text));
                                 } else {
-                                    events.push(StreamEvent::TextDelta(text.to_string()));
+                                    events.push(StreamEvent::TextDelta(text));
                                 }
                             }
 
                             // Function call
-                            if let Some(func_call) = part.get("functionCall") {
-                                let name = func_call
-                                    .get("name")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let args = func_call.get("args").cloned().unwrap_or(json!({}));
+                            if let Some(func_call) = part.function_call {
+                                let name = func_call.name.unwrap_or_default();
 
                                 // Generate UUID for tool call ID (Gemini doesn't provide one)
                                 let id = format!("call_{}", Uuid::new_v4());
 
-                                // Extract thought signature from the part (Gemini requires this
-                                // to be echoed back when thinking mode is enabled)
-                                let thought_signature = part
-                                    .get("thoughtSignature")
-                                    .and_then(|v| v.as_str())
-                                    .map(String::from);
-
                                 events.push(StreamEvent::ToolCallStart {
                                     id: id.clone(),
                                     name,
-                                    thought_signature,
+                                    thought_signature: part.thought_signature,
                                 });
 
                                 // Send arguments as a single delta
+                                let args = func_call.args.unwrap_or(json!({}));
                                 if let Ok(args_str) = serde_json::to_string(&args) {
                                     events.push(StreamEvent::ToolCallDelta {
                                         id,
@@ -2162,10 +2293,13 @@ pub mod gemini {
                     }
 
                     // Check finish reason AFTER processing content
-                    if let Some(reason) = candidate.get("finishReason").and_then(|v| v.as_str())
-                        && let Some(action) = handle_finish_reason(reason)
-                    {
-                        finish_action = Some(action);
+                    if let Some(reason_str) = candidate.finish_reason {
+                        let reason = typed::FinishReason::parse(&reason_str);
+                        if reason.is_success() {
+                            finish_action = Some(SseParseAction::Done);
+                        } else if let Some(msg) = reason.error_message() {
+                            finish_action = Some(SseParseAction::Error(msg.to_string()));
+                        }
                     }
                 }
             }
@@ -2206,6 +2340,7 @@ pub mod gemini {
         tx: mpsc::Sender<StreamEvent>,
     ) -> Result<()> {
         let client = http_client();
+        let retry_config = RetryConfig::default();
         let model = config.model().as_str();
         let url = format!("{API_BASE}/models/{model}:streamGenerateContent?alt=sse");
 
@@ -2220,13 +2355,41 @@ pub mod gemini {
             cache,
         );
 
-        let response = client
-            .post(&url)
-            .header("x-goog-api-key", config.api_key())
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+        let api_key = config.api_key().to_string();
+        let body_json = body.clone();
+
+        // Wrap request with retry logic (REQ-4)
+        // Streaming requests omit X-Stainless-Timeout (no total timeout)
+        let outcome = send_with_retry(
+            || {
+                client
+                    .post(&url)
+                    .header("x-goog-api-key", &api_key)
+                    .header("content-type", "application/json")
+                    .json(&body_json)
+            },
+            None, // No timeout header for streaming
+            &retry_config,
+        )
+        .await;
+
+        let response = match outcome {
+            RetryOutcome::Success(resp) | RetryOutcome::HttpError(resp) => resp,
+            RetryOutcome::ConnectionError { attempts, source } => {
+                let _ = send_event(
+                    &tx,
+                    StreamEvent::Error(format!(
+                        "Request failed after {attempts} attempts: {source}"
+                    )),
+                )
+                .await;
+                return Ok(());
+            }
+            RetryOutcome::NonRetryable(e) => {
+                let _ = send_event(&tx, StreamEvent::Error(format!("Request failed: {e}"))).await;
+                return Ok(());
+            }
+        };
 
         if !response.status().is_success() {
             let status = response.status();
@@ -2480,21 +2643,24 @@ pub mod gemini {
         }
 
         #[test]
-        fn handle_finish_reason_stop() {
-            let action = handle_finish_reason("STOP");
-            assert!(matches!(action, Some(SseParseAction::Done)));
+        fn finish_reason_stop_is_success() {
+            let reason = typed::FinishReason::parse("STOP");
+            assert!(reason.is_success());
+            assert!(reason.error_message().is_none());
         }
 
         #[test]
-        fn handle_finish_reason_safety() {
-            let action = handle_finish_reason("SAFETY");
-            assert!(matches!(action, Some(SseParseAction::Error(_))));
+        fn finish_reason_safety_is_error() {
+            let reason = typed::FinishReason::parse("SAFETY");
+            assert!(!reason.is_success());
+            assert!(reason.error_message().is_some());
         }
 
         #[test]
-        fn handle_finish_reason_unknown() {
-            let action = handle_finish_reason("UNKNOWN_REASON");
-            assert!(action.is_none());
+        fn finish_reason_unknown_continues() {
+            let reason = typed::FinishReason::parse("UNKNOWN_REASON");
+            // Unknown reasons should continue processing (not error)
+            assert!(reason.error_message().is_none());
         }
 
         #[test]

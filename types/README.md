@@ -297,13 +297,16 @@ let model = Provider::Gemini.default_model();
 assert_eq!(model.as_str(), "gemini-3-pro-preview");
 
 // List available models
-let models: &[&str] = Provider::Claude.available_models();
+let models = Provider::Claude.available_models();
+let model_ids: Vec<&'static str> = models.iter().map(|model| model.model_id()).collect();
 // ["claude-opus-4-5-20251101", "claude-sonnet-4-5-20250514", "claude-haiku-4-5-20251001"]
 
-let models: &[&str] = Provider::OpenAI.available_models();
-// ["gpt-5.2", "gpt-5.2-pro", "gpt-5.2-2025-12-11"]
+let models = Provider::OpenAI.available_models();
+let model_ids: Vec<&'static str> = models.iter().map(|model| model.model_id()).collect();
+// ["gpt-5.2", "gpt-5.2-pro"]
 
-let models: &[&str] = Provider::Gemini.available_models();
+let models = Provider::Gemini.available_models();
+let model_ids: Vec<&'static str> = models.iter().map(|model| model.model_id()).collect();
 // ["gemini-3-pro-preview", "gemini-3-flash-preview"]
 
 // Parse model name with validation
@@ -320,6 +323,7 @@ A provider-scoped model name that prevents mixing models across providers.
 - Claude models must start with `claude-`
 - OpenAI models must start with `gpt-5`
 - Gemini models must start with `gemini-`
+- Model names must exist in the predefined catalog
 - Empty model names are rejected
 
 **Fields:**
@@ -328,22 +332,21 @@ A provider-scoped model name that prevents mixing models across providers.
 | ----- | ---- | ----------- |
 | `provider` | `Provider` | The provider this model belongs to |
 | `name` | `Cow<'static, str>` | The model name string |
-| `kind` | `ModelNameKind` | Whether model is known or user-supplied |
 
 **Construction:**
 
 ```rust
-use forge_types::{Provider, ModelName, ModelNameKind, ModelParseError};
+use forge_types::{Provider, ModelName, ModelParseError, PredefinedModel};
 
 // Parse from user input (validates prefix, checks known list)
 let model = Provider::Claude.parse_model("claude-opus-4-5-20251101")?;
 assert_eq!(model.provider(), Provider::Claude);
 assert_eq!(model.as_str(), "claude-opus-4-5-20251101");
-assert_eq!(model.kind(), ModelNameKind::Known);
+assert_eq!(model.predefined(), PredefinedModel::ClaudeOpus);
 
-// Unknown models are accepted but marked as Unverified
-let model = Provider::Claude.parse_model("claude-future-model")?;
-assert_eq!(model.kind(), ModelNameKind::Unverified);
+// Unknown models are rejected
+let model = Provider::Claude.parse_model("claude-future-model");
+assert!(matches!(model, Err(ModelParseError::UnknownModel(_))));
 
 // Validation errors
 let result = Provider::OpenAI.parse_model("gpt-4o");
@@ -356,29 +359,17 @@ let result = Provider::OpenAI.parse_model("");
 assert!(matches!(result, Err(ModelParseError::Empty)));
 
 // Create known model directly (for internal/const use)
-const OPUS: ModelName = ModelName::known(Provider::Claude, "claude-opus-4-5-20251101");
+const OPUS: ModelName = ModelName::from_predefined(PredefinedModel::ClaudeOpus);
 ```
 
 **Memory Optimization:**
 
-Known models use `Cow::Borrowed` to avoid allocation:
+Model names always use `Cow::Borrowed` to avoid allocation:
 
 ```rust
 // Known model - no heap allocation
 let known = Provider::Claude.default_model();  // Cow::Borrowed
-
-// User-supplied model - allocates
-let custom = Provider::Claude.parse_model("claude-custom-v1")?;  // Cow::Owned
 ```
-
-### ModelNameKind
-
-Indicates whether a model name was verified against the known model list.
-
-| Variant | Description |
-| ------- | ----------- |
-| `Known` | Model exists in `Provider::available_models()` |
-| `Unverified` | User-supplied model name not in known list (default) |
 
 ### ModelParseError
 
@@ -390,6 +381,7 @@ Errors that occur when parsing a model name.
 | `ClaudePrefix(String)` | Claude model missing `claude-` prefix | "Claude model must start with claude-" |
 | `OpenAIMinimum(String)` | OpenAI model missing `gpt-5` prefix | "OpenAI model must start with gpt-5" |
 | `GeminiPrefix(String)` | Gemini model missing `gemini-` prefix | "Gemini model must start with gemini-" |
+| `UnknownModel(String)` | Model name not in the predefined catalog | "unknown model name" |
 
 ---
 
@@ -664,7 +656,7 @@ Events emitted during streaming API responses.
 | Variant | Description |
 | ------- | ----------- |
 | `TextDelta(String)` | Incremental text content |
-| `ThinkingDelta(String)` | Provider reasoning content (Claude extended thinking or OpenAI summaries) |
+| `ThinkingDelta(String)` | Provider reasoning content (Claude extended thinking or OpenAI reasoning summaries) |
 | `ToolCallStart { id, name, thought_signature }` | Tool use content block began |
 | `ToolCallDelta { id, arguments }` | Tool call JSON arguments chunk |
 | `Usage(ApiUsage)` | API-reported token usage from provider |
@@ -1181,9 +1173,9 @@ SystemMessage        UserMessage          AssistantMessage
                                                 v
                                             CacheHint
 
-Provider -----> ModelName (scoped)
+Provider -----> PredefinedModel
     |               |
-    |               +---> ModelNameKind
+    |               +---> ModelName (scoped)
     |
     +-----> ApiKey (scoped)
     |
@@ -1214,6 +1206,7 @@ OutputLimits (validated invariants)
 | `ModelParseError::ClaudePrefix` | `ModelName::parse()` | Claude model without `claude-` prefix |
 | `ModelParseError::OpenAIMinimum` | `ModelName::parse()` | OpenAI model without `gpt-5` prefix |
 | `ModelParseError::GeminiPrefix` | `ModelName::parse()` | Gemini model without `gemini-` prefix |
+| `ModelParseError::UnknownModel` | `ModelName::parse()` | Model name not in the predefined catalog |
 | `OutputLimitsError::ThinkingBudgetTooSmall` | `OutputLimits::with_thinking()` | `thinking_budget < 1024` |
 | `OutputLimitsError::ThinkingBudgetTooLarge` | `OutputLimits::with_thinking()` | `thinking_budget >= max_output_tokens` |
 
@@ -1233,7 +1226,7 @@ The test suite verifies:
 
 - `NonEmptyString` rejects empty and whitespace-only strings
 - `Provider::parse()` handles all aliases correctly
-- `ModelName::parse()` validates provider prefix requirements
+- `ModelName::parse()` validates provider prefix requirements and known model list
 - `OutputLimits::with_thinking()` enforces budget constraints
 - `ApiUsage` arithmetic and aggregation functions
 - `sanitize_terminal_text()` strips all dangerous escape sequences
@@ -1251,12 +1244,13 @@ The test suite verifies:
    - `display_name()` - human-readable name
    - `env_var()` - environment variable for API key
    - `default_model()` - create default `ModelName`
-   - `available_models()` - list of known model names
+   - `available_models()` - list of known models (`PredefinedModel`)
    - `parse()` - add parsing aliases
-   - `from_model_name()` - add prefix detection
+   - `from_model_name()` - add model id detection
    - `all()` - add to static slice
-3. Add variant to `ApiKey` enum
-4. Update `ModelName::parse()` if provider has prefix requirements
+3. Add variant(s) to `PredefinedModel` with canonical model IDs
+4. Add variant to `ApiKey` enum
+5. Update `ModelName::parse()` if provider has prefix requirements
 
 ### Adding a New Message Type
 
@@ -1274,3 +1268,4 @@ Follow the pattern of `OpenAIReasoningEffort`:
 2. Implement `parse(&str) -> Option<Self>` for user input
 3. Implement `as_str(self) -> &'static str` for API serialization
 4. Mark default variant with `#[default]`
+

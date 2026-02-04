@@ -578,7 +578,6 @@ fn convert_list_item_content(output: &mut String, li: ElementRef<'_>, ctx: &mut 
             output.push('\n');
         }
     } else {
-        // Simple list item
         let mut content = String::new();
         convert_children(&mut content, li, ctx);
         output.push_str(collapse_whitespace(&content).trim());
@@ -652,7 +651,6 @@ fn convert_link(output: &mut String, element: ElementRef<'_>, ctx: &mut Conversi
     let text = collapse_whitespace(&text);
 
     if text.is_empty() {
-        // Just output the URL for empty link text
         output.push_str(&resolved_href);
     } else {
         output.push('[');

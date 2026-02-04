@@ -592,8 +592,8 @@ fn complete_command_arg(
         (CommandKind::Model, 0) => app
             .provider()
             .available_models()
-            .iter()
-            .map(ToString::to_string)
+            .into_iter()
+            .map(|model| model.model_id().to_string())
             .collect(),
         (CommandKind::Rewind, 0) => {
             let mut v = vec![

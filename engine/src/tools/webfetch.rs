@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use forge_webfetch::{Note, TruncationReason, WebFetchOutput};
 
 use super::{
-    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, redact_summary, sanitize_output,
+    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, redact_distillate, sanitize_output,
 };
 
 const WEBFETCH_TOOL_NAME: &str = "WebFetch";
@@ -126,8 +126,8 @@ impl ToolExecutor for WebFetchTool {
             serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
                 message: e.to_string(),
             })?;
-        let summary = format!("Fetch URL: {}", typed.url);
-        Ok(redact_summary(&summary))
+        let distillate = format!("Fetch URL: {}", typed.url);
+        Ok(redact_distillate(&distillate))
     }
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {

@@ -12,11 +12,6 @@ use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-// =============================================================================
-// Test Helpers
-// =============================================================================
-
-/// Create a default test config with cache disabled.
 fn test_config() -> WebFetchConfig {
     WebFetchConfig {
         enabled: true,
@@ -44,7 +39,6 @@ fn test_config() -> WebFetchConfig {
     }
 }
 
-/// Create a test config that keeps SSRF protections enabled.
 fn test_config_secure() -> WebFetchConfig {
     let mut config = test_config();
     if let Some(security) = config.security.as_mut() {
@@ -53,7 +47,6 @@ fn test_config_secure() -> WebFetchConfig {
     config
 }
 
-/// Create a test config with caching enabled.
 fn test_config_with_cache(cache_dir: &Path) -> WebFetchConfig {
     let mut config = test_config();
     config.max_cache_entries = Some(100);
@@ -63,7 +56,6 @@ fn test_config_with_cache(cache_dir: &Path) -> WebFetchConfig {
     config
 }
 
-/// Create simple HTML content.
 fn simple_html(title: &str, body: &str) -> String {
     let filler = "Additional text ensures extraction passes minimum length checks for tests.";
     format!(
@@ -83,7 +75,6 @@ fn simple_html(title: &str, body: &str) -> String {
     )
 }
 
-/// Create HTML with multiple sections for chunking tests.
 fn multi_section_html() -> String {
     let extra = "This filler sentence increases the token count for chunking tests. ".repeat(12);
     format!(
@@ -116,7 +107,6 @@ fn multi_section_html() -> String {
     )
 }
 
-/// Set up a mock server with robots.txt allowing all.
 async fn setup_mock_server_with_robots(html: &str) -> MockServer {
     let server = MockServer::start().await;
 
@@ -140,10 +130,6 @@ async fn setup_mock_server_with_robots(html: &str) -> MockServer {
 
     server
 }
-
-// =============================================================================
-// Basic Fetch Tests
-// =============================================================================
 
 #[tokio::test]
 async fn test_basic_fetch_success() {
@@ -218,10 +204,6 @@ async fn test_fetch_preserves_requested_url() {
     // requested_url should be preserved exactly as given
     assert!(output.requested_url.starts_with(&requested));
 }
-
-// =============================================================================
-// Robots.txt Tests
-// =============================================================================
 
 #[tokio::test]
 async fn test_robots_disallow_blocks_fetch() {
@@ -320,10 +302,6 @@ async fn test_robots_user_agent_specific_rules() {
         .expect("fetch should succeed");
     assert_eq!(output.title, Some("Allowed".to_string()));
 }
-
-// =============================================================================
-// Extraction Tests
-// =============================================================================
 
 #[tokio::test]
 async fn test_extraction_removes_boilerplate() {
@@ -427,10 +405,6 @@ async fn test_extraction_converts_links() {
     assert!(all_text.contains("/page"));
 }
 
-// =============================================================================
-// Chunking Tests
-// =============================================================================
-
 #[tokio::test]
 async fn test_chunking_respects_max_tokens() {
     let server = MockServer::start().await;
@@ -520,10 +494,6 @@ async fn test_chunking_tracks_headings() {
         "Expected some chunks to have heading context"
     );
 }
-
-// =============================================================================
-// Cache Tests
-// =============================================================================
 
 #[tokio::test]
 async fn test_cache_hit_returns_cached_content() {
@@ -623,10 +593,6 @@ async fn test_cache_rechunks_with_different_token_limit() {
     );
 }
 
-// =============================================================================
-// Error Handling Tests
-// =============================================================================
-
 #[tokio::test]
 async fn test_invalid_url_rejected() {
     let result = WebFetchInput::new("not-a-url");
@@ -723,10 +689,6 @@ async fn test_http_500_error() {
     assert_eq!(err.code, ErrorCode::Http5xx);
 }
 
-// =============================================================================
-// Content Type Tests
-// =============================================================================
-
 #[tokio::test]
 async fn test_non_html_content_type_rejected() {
     let server = MockServer::start().await;
@@ -757,10 +719,6 @@ async fn test_non_html_content_type_rejected() {
     let err = result.unwrap_err();
     assert_eq!(err.code, ErrorCode::UnsupportedContentType);
 }
-
-// =============================================================================
-// Redirect Tests
-// =============================================================================
 
 #[tokio::test]
 async fn test_redirect_followed() {
@@ -806,10 +764,6 @@ async fn test_redirect_followed() {
     );
     assert_eq!(output.title, Some("New Page".to_string()));
 }
-
-// =============================================================================
-// Output Format Tests
-// =============================================================================
 
 #[tokio::test]
 async fn test_output_has_fetched_at_timestamp() {

@@ -11,7 +11,6 @@ use forge_engine::{App, Message, Provider, ToolResult, sanitize_terminal_text};
 use crate::theme::{Glyphs, Palette, styles};
 use crate::tool_display;
 
-/// Get the color for a given provider.
 pub(crate) fn provider_color(provider: Provider, palette: &Palette) -> Color {
     match provider {
         Provider::Claude => palette.provider_claude,

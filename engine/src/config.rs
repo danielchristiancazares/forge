@@ -41,8 +41,6 @@ impl ConfigError {
 pub struct AppConfig {
     pub model: Option<String>,
     pub tui: Option<String>,
-    /// Maximum output tokens for responses. Overrides model default.
-    pub max_output_tokens: Option<u32>,
     /// Use ASCII-only glyphs for icons and spinners.
     pub ascii_only: Option<bool>,
     /// Enable a high-contrast color palette.
@@ -476,7 +474,6 @@ impl ForgeConfig {
     }
 }
 
-/// Returns the path to the forge config file.
 pub fn config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".forge").join("config.toml"))
 }
@@ -657,7 +654,6 @@ mod tests {
 [app]
 model = "claude-opus-4-5-20251101"
 tui = "full"
-max_output_tokens = 4096
 ascii_only = true
 high_contrast = false
 reduced_motion = true
@@ -666,7 +662,6 @@ reduced_motion = true
         let app = config.app.unwrap();
         assert_eq!(app.model, Some("claude-opus-4-5-20251101".to_string()));
         assert_eq!(app.tui, Some("full".to_string()));
-        assert_eq!(app.max_output_tokens, Some(4096));
         assert_eq!(app.ascii_only, Some(true));
         assert_eq!(app.high_contrast, Some(false));
         assert_eq!(app.reduced_motion, Some(true));
@@ -982,7 +977,7 @@ fn persist_model_preserves_other_settings() {
     let original = r#"# My config
 [app]
 model = "old-model"
-max_output_tokens = 8000
+ascii_only = true
 
 [api_keys]
 anthropic = "sk-test"
@@ -1005,7 +1000,7 @@ anthropic = "sk-test"
         "Model should be updated"
     );
     assert!(
-        result.contains("max_output_tokens = 8000"),
+        result.contains("ascii_only = true"),
         "Other settings should be preserved"
     );
     assert!(

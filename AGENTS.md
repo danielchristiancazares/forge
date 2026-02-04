@@ -49,7 +49,7 @@ Forge is a Rust Cargo workspace split into focused crates. Key paths:
 - Temp files: `tempfile`.
 
 ## Commit & Pull Request Guidelines
-- Commit format follows Conventional Commits: `type(scope): summary` (scope optional). Examples: `feat(engine): add rewind`, `fix: resolve clippy lints`.
+- Commit format follows Conventional Commits: `type(scope): description` (scope optional). Examples: `feat(engine): add rewind`, `fix: resolve clippy lints`.
 - Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
 - Keep commits cohesive; run `just verify` before pushing.
 - After Rust changes, run `just verify` before you stage or commit any files.
@@ -61,3 +61,4 @@ Forge is a Rust Cargo workspace split into focused crates. Key paths:
 
 ## Agent Notes
 - Other agent and architecture guidance lives in submodule `README.md` files.
+

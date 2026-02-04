@@ -5,7 +5,7 @@
 **Forge** is a vim-modal Terminal User Interface (TUI) for interacting with Large Language Models (LLMs). It distinguishes itself with:
 
 -   **Modal Editing:** Vim-inspired modes (Normal, Insert, Command, Model Select) for efficient navigation and composition.
--   **Context Infinity™:** An adaptive context management system that automatically summarizes older conversation history to stay within token limits without losing continuity.
+-   **Context Infinity™:** An adaptive context management system that automatically distills older conversation history to stay within token limits without losing continuity.
 -   **Agentic Tool Use:** A secure, interactive framework allowing LLMs to execute local tools (filesystem, git, shell) with user approval and crash recovery.
 -   **Multi-Provider Support:** First-class support for Claude (Anthropic), GPT (OpenAI), and Gemini (Google).
 -   **Invariant-First Architecture:** A strict design philosophy where invalid states are unrepresentable in the core.
@@ -29,7 +29,7 @@ The project is a Rust workspace divided into focused crates to enforce separatio
 | **`cli`** | `cli/` | Binary entry point, terminal session lifecycle, main event loop, and signal handling. |
 | **`engine`** | `engine/` | Core business logic, state machines (`InputState`, `OperationState`), tool execution, and command dispatch. |
 | **`tui`** | `tui/` | UI rendering (`ratatui`), input event handling, and theming. Handles "Full" and "Inline" modes. |
-| **`context`** | `context/` | Context Infinity: token counting, context budgeting, summarization, and SQLite persistence. |
+| **`context`** | `context/` | Context Infinity: token counting, context budgeting, distillation, and SQLite persistence. |
 | **`providers`** | `providers/` | HTTP/SSE clients for LLM APIs (Claude, OpenAI, Gemini). |
 | **`types`** | `types/` | Shared domain types (`Message`, `ModelName`, `ToolCall`) with no IO/async dependencies. |
 | **`webfetch`** | `webfetch/` | Chromium-based web fetching, SSRF protection, and content extraction. |
@@ -57,7 +57,7 @@ The entry point. It manages the terminal session and the main event loop.
 The "brain" of the application. TUI-agnostic.
 
 *   **Input State Machine:** `Normal`, `Insert` (with `DraftInput`), `Command`, `ModelSelect`.
-*   **Operation State Machine:** `Idle`, `Streaming`, `ToolLoop`, `Summarizing`, `ToolRecovery`. Mutually exclusive.
+*   **Operation State Machine:** `Idle`, `Streaming`, `ToolLoop`, `Distilling`, `ToolRecovery`. Mutually exclusive.
 *   **Tool Executor:**
     *   **Journaling:** Tool calls are persisted to `ToolJournal` before execution.
     *   **Approval:** `AwaitingApproval` state allows user review before side effects.
@@ -69,8 +69,8 @@ The "brain" of the application. TUI-agnostic.
 Implements **Context Infinity™**.
 
 *   **Append-Only History:** Messages are never deleted. They are stored in `FullHistory`.
-*   **Working Context:** A derived view built on-demand. It mixes original messages and `Summary` objects to fit the model's budget.
-*   **Summarization:** Triggered when the budget is exceeded. Background tasks summarize older message blocks using cheaper models (e.g., `claude-haiku`).
+*   **Working Context:** A derived view built on-demand. It mixes original messages and `Distillate` objects to fit the model's budget.
+*   **Distillation:** Triggered when the budget is exceeded. Background tasks distill older message blocks using cheaper models (e.g., `claude-haiku`).
 *   **Librarian:** A background system that extracts structured facts from conversations and retrieves them for future context ("Long-term memory").
 *   **Stream Journal:** SQLite WAL ensures that streaming responses are durable per-chunk.
 
