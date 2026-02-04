@@ -288,7 +288,8 @@ fn err(message: &str) -> PatchError {
 pub fn parse_file(bytes: &[u8]) -> Result<FileContent, PatchError> {
     let mut lines: Vec<String> = Vec::new();
     let mut buf: Vec<u8> = Vec::new();
-    let mut eol_kind: Option<EolKind> = None;
+    let mut lf_count: usize = 0;
+    let mut crlf_count: usize = 0;
     let mut final_newline = false;
 
     let mut i = 0;
@@ -300,13 +301,13 @@ pub fn parse_file(bytes: &[u8]) -> Result<FileContent, PatchError> {
                 }
                 push_line(&mut lines, &mut buf)?;
                 final_newline = true;
-                set_eol(&mut eol_kind, EolKind::CrLf)?;
+                crlf_count += 1;
                 i += 2;
             }
             b'\n' => {
                 push_line(&mut lines, &mut buf)?;
                 final_newline = true;
-                set_eol(&mut eol_kind, EolKind::Lf)?;
+                lf_count += 1;
                 i += 1;
             }
             b => {
@@ -324,6 +325,14 @@ pub fn parse_file(bytes: &[u8]) -> Result<FileContent, PatchError> {
     if lines.is_empty() {
         final_newline = false;
     }
+
+    // Determine EOL kind via majority vote; LF wins ties (more portable).
+    // This normalizes mixed EOL files at the boundary per IFA §10.1.
+    let eol_kind = match (lf_count, crlf_count) {
+        (0, 0) => None,
+        (lf, crlf) if crlf > lf => Some(EolKind::CrLf),
+        _ => Some(EolKind::Lf),
+    };
 
     Ok(FileContent {
         lines,
@@ -395,17 +404,6 @@ fn push_line(lines: &mut Vec<String>, buf: &mut Vec<u8>) -> Result<(), PatchErro
     let line = String::from_utf8(buf.clone()).map_err(|_| err("Invalid UTF-8 in file"))?;
     lines.push(line);
     buf.clear();
-    Ok(())
-}
-
-fn set_eol(target: &mut Option<EolKind>, new: EolKind) -> Result<(), PatchError> {
-    if let Some(existing) = target {
-        if *existing != new {
-            return Err(err("Mixed EOL detected"));
-        }
-    } else {
-        *target = Some(new);
-    }
     Ok(())
 }
 
@@ -795,10 +793,30 @@ mod tests {
     }
 
     #[test]
-    fn parse_file_mixed_eol_rejected() {
-        let result = parse_file(b"line1\nline2\r\n");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().message.contains("Mixed EOL"));
+    fn parse_file_mixed_eol_normalized_to_majority() {
+        // 1 LF, 1 CRLF -> tie -> LF wins
+        let content = parse_file(b"line1\nline2\r\n").unwrap();
+        assert_eq!(content.lines, vec!["line1", "line2"]);
+        assert!(content.final_newline);
+        assert_eq!(content.eol_kind, Some(EolKind::Lf));
+    }
+
+    #[test]
+    fn parse_file_mixed_eol_crlf_majority() {
+        // 1 LF, 2 CRLF -> CRLF wins
+        let content = parse_file(b"line1\r\nline2\nline3\r\n").unwrap();
+        assert_eq!(content.lines, vec!["line1", "line2", "line3"]);
+        assert!(content.final_newline);
+        assert_eq!(content.eol_kind, Some(EolKind::CrLf));
+    }
+
+    #[test]
+    fn parse_file_mixed_eol_lf_majority() {
+        // 2 LF, 1 CRLF -> LF wins
+        let content = parse_file(b"line1\nline2\r\nline3\n").unwrap();
+        assert_eq!(content.lines, vec!["line1", "line2", "line3"]);
+        assert!(content.final_newline);
+        assert_eq!(content.eol_kind, Some(EolKind::Lf));
     }
 
     #[test]
@@ -1131,6 +1149,17 @@ mod tests {
         let content = parse_file(original).unwrap();
         let emitted = emit_file(&content);
         assert_eq!(emitted, original);
+    }
+
+    #[test]
+    fn roundtrip_mixed_eol_normalized() {
+        // Mixed EOL input: 2 CRLF, 1 LF -> normalizes to CRLF
+        let mixed = b"line1\r\nline2\nline3\r\n";
+        let content = parse_file(mixed).unwrap();
+        assert_eq!(content.eol_kind, Some(EolKind::CrLf));
+        let emitted = emit_file(&content);
+        // Output is normalized to consistent CRLF
+        assert_eq!(emitted, b"line1\r\nline2\r\nline3\r\n");
     }
 
     // ========================================================================
