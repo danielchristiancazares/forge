@@ -235,6 +235,8 @@ pub(crate) struct ApprovalItem {
     pub(crate) risk_label: String,
     pub(crate) summary: Option<String>,
     pub(crate) details: Vec<String>,
+    /// Homoglyph warnings formatted for display.
+    pub(crate) homoglyph_warnings: Vec<String>,
 }
 
 pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<ApprovalView> {
@@ -271,11 +273,25 @@ pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<Appro
             Vec::new()
         };
 
+        // Format homoglyph warnings for display
+        let homoglyph_warnings: Vec<String> = req
+            .warnings
+            .iter()
+            .map(|w| {
+                format!(
+                    "Mixed scripts in '{}': {}",
+                    w.field_name,
+                    w.scripts_display()
+                )
+            })
+            .collect();
+
         items.push(ApprovalItem {
             tool_name,
             risk_label,
             summary,
             details,
+            homoglyph_warnings,
         });
     }
 

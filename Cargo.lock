@@ -892,6 +892,7 @@ dependencies = [
 name = "forge-engine"
 version = "0.0.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "base64 0.22.1",
  "chrono",
@@ -966,6 +967,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "unicode-script",
 ]
 
 [[package]]
@@ -3524,6 +3526,12 @@ checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
 dependencies = [
  "tinyvec",
 ]
+
+[[package]]
+name = "unicode-script"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "383ad40bb927465ec0ce7720e033cb4ca06912855fc35db31b5755d0de75b1ee"
 
 [[package]]
 name = "unicode-segmentation"

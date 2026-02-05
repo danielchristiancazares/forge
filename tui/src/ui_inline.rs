@@ -518,6 +518,14 @@ fn append_approval_lines(lines: &mut Vec<Line>, view: &ApprovalView, palette: &P
             lines.push(Line::from(format!("     {summary}")));
         }
 
+        // Render homoglyph warnings
+        for warning in &item.homoglyph_warnings {
+            lines.push(Line::from(Span::styled(
+                format!("     ⚠ {warning}"),
+                Style::default().fg(palette.warning),
+            )));
+        }
+
         for line in &item.details {
             lines.push(Line::from(format!("       {line}")));
         }

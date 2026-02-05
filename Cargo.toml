@@ -44,6 +44,7 @@ toml = "0.8"
 toml_edit = "0.22"
 
 # Tooling
+aho-corasick = "1.1"
 regex = "1"
 uuid = { version = "1.11", default-features = false, features = ["v4"] }
 rand = "0.8"
@@ -79,6 +80,7 @@ dirs = "5.0"
 unicode-width = "0.2"
 unicode-segmentation = "1.12"
 unicode-normalization = "0.1"
+unicode-script = "0.5"
 
 # Markdown parsing
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }

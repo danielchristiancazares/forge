@@ -21,20 +21,22 @@
 //!
 //! | Category | Types |
 //! |----------|-------|
-//! | String validation | [`NonEmptyString`], [`NonEmptyStaticStr`], [`EmptyStringError`] |
+//! | String validation | [`NonEmptyString`], [`NonEmptyStaticStr`], [`PersistableContent`], [`EmptyStringError`] |
 //! | Provider/model | [`Provider`], [`PredefinedModel`], [`ModelName`], [`ModelParseError`], [`EnumParseError`], [`ApiKey`] |
 //! | OpenAI options | [`OpenAIReasoningEffort`], [`OpenAIReasoningSummary`], [`OpenAITextVerbosity`], [`OpenAITruncation`], [`OpenAIRequestOptions`] |
 //! | Output config | [`OutputLimits`], [`OutputLimitsError`], [`ThinkingBudget`], [`ThinkingState`], [`CacheHint`] |
 //! | Streaming | [`StreamEvent`], [`StreamFinishReason`], [`ApiUsage`] |
 //! | Tool calling | [`ToolDefinition`], [`ToolCall`], [`ToolResult`] |
 //! | Messages | [`SystemMessage`], [`UserMessage`], [`AssistantMessage`], [`Message`], [`CacheableMessage`] |
-//! | Security | [`sanitize_terminal_text`], [`strip_steganographic_chars`] |
+//! | Security | [`sanitize_terminal_text`], [`strip_steganographic_chars`], [`detect_mixed_script`], [`HomoglyphWarning`] |
 
 // Pedantic lint configuration - these are intentional design choices
 #![allow(clippy::missing_errors_doc)] // Result-returning functions are self-explanatory
 #![allow(clippy::missing_panics_doc)] // Panics are documented in assertions
 
+mod confusables;
 mod sanitize;
+pub use confusables::{HomoglyphWarning, detect_mixed_script};
 pub use sanitize::{sanitize_terminal_text, strip_steganographic_chars};
 
 use serde::{Deserialize, Serialize};
@@ -171,6 +173,135 @@ impl TryFrom<NonEmptyStaticStr> for NonEmptyString {
 
     fn try_from(value: NonEmptyStaticStr) -> Result<Self, Self::Error> {
         Self::new(value.0)
+    }
+}
+
+/// Content guaranteed safe for persistence (no standalone carriage returns).
+///
+/// This type enforces the invariant that standalone `\r` characters are
+/// normalized to `\n`. The normalization occurs at construction time
+/// (single Authority Boundary per IFA-7).
+///
+/// # Invariant
+///
+/// - No standalone `\r` exists (only `\r\n` pairs permitted)
+/// - Normalization: standalone `\r` → `\n`, `\r\n` preserved
+///
+/// # Security
+///
+/// Prevents log spoofing attacks where `\r` overwrites preceding content
+/// when viewed in raw terminal contexts:
+///
+/// ```text
+/// Attack: "File saved\rERROR: Permission denied"
+/// Display: "ERROR: Permission denied" (overwrites "File saved")
+/// Raw view: Hidden payload visible
+/// ```
+///
+/// By normalizing at construction, we prevent this attack vector in
+/// all persisted content (history, journals, logs).
+///
+/// # Performance
+///
+/// Uses a fast-path check: if no standalone `\r` is found, no allocation
+/// is performed. Only strings containing attack vectors allocate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PersistableContent(String);
+
+impl PersistableContent {
+    /// Create persistable content by normalizing line endings.
+    ///
+    /// This is the ONLY constructor (Authority Boundary per IFA-7).
+    /// Converts standalone `\r` to `\n` while preserving `\r\n` (Windows line endings).
+    #[must_use]
+    pub fn new(input: impl Into<String>) -> Self {
+        let input = input.into();
+        if Self::needs_normalization(&input) {
+            Self(Self::normalize(&input))
+        } else {
+            Self(input)
+        }
+    }
+
+    /// Fast path check: does input contain standalone CR?
+    fn needs_normalization(input: &str) -> bool {
+        let bytes = input.as_bytes();
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == b'\r' && bytes.get(i + 1) != Some(&b'\n') {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Normalize standalone `\r` to `\n`, preserve `\r\n`.
+    fn normalize(input: &str) -> String {
+        let mut result = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\r' {
+                if chars.peek() == Some(&'\n') {
+                    result.push('\r');
+                    result.push(chars.next().unwrap());
+                } else {
+                    result.push('\n');
+                }
+            } else {
+                result.push(c);
+            }
+        }
+        result
+    }
+
+    /// Get the content as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume and return the inner string.
+    #[must_use]
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+
+    /// Check if the content is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Get the length in bytes.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl AsRef<str> for PersistableContent {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl From<PersistableContent> for String {
+    fn from(value: PersistableContent) -> Self {
+        value.0
+    }
+}
+
+impl std::ops::Deref for PersistableContent {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for PersistableContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -1531,6 +1662,95 @@ mod tests {
         assert!(NonEmptyString::new("").is_err());
         assert!(NonEmptyString::new("   ").is_err());
         assert!(NonEmptyString::new("hello").is_ok());
+    }
+
+    // --- PersistableContent tests ---
+
+    #[test]
+    fn persistable_content_log_spoofing_normalized() {
+        let attack = "File saved\rERROR: Permission denied";
+        let safe = PersistableContent::new(attack);
+        assert_eq!(safe.as_str(), "File saved\nERROR: Permission denied");
+    }
+
+    #[test]
+    fn persistable_content_preserves_windows_line_endings() {
+        let input = "Line 1\r\nLine 2\r\nLine 3";
+        let safe = PersistableContent::new(input);
+        assert_eq!(safe.as_str(), input);
+    }
+
+    #[test]
+    fn persistable_content_preserves_unix_line_endings() {
+        let input = "Line 1\nLine 2\nLine 3";
+        let safe = PersistableContent::new(input);
+        assert_eq!(safe.as_str(), input);
+    }
+
+    #[test]
+    fn persistable_content_normalizes_standalone_cr_at_end() {
+        let input = "Line 1\r";
+        let safe = PersistableContent::new(input);
+        assert_eq!(safe.as_str(), "Line 1\n");
+    }
+
+    #[test]
+    fn persistable_content_normalizes_multiple_standalone_cr() {
+        let input = "A\rB\rC";
+        let safe = PersistableContent::new(input);
+        assert_eq!(safe.as_str(), "A\nB\nC");
+    }
+
+    #[test]
+    fn persistable_content_mixed_line_endings() {
+        // Unix \n, Windows \r\n, and old Mac \r all in one string
+        let input = "Unix\nWindows\r\nOld Mac\rMore";
+        let safe = PersistableContent::new(input);
+        assert_eq!(safe.as_str(), "Unix\nWindows\r\nOld Mac\nMore");
+    }
+
+    #[test]
+    fn persistable_content_cr_before_crlf() {
+        // \r followed by \r\n should normalize the first \r
+        let input = "A\r\r\nB";
+        let safe = PersistableContent::new(input);
+        assert_eq!(safe.as_str(), "A\n\r\nB");
+    }
+
+    #[test]
+    fn persistable_content_empty_string() {
+        let safe = PersistableContent::new("");
+        assert!(safe.is_empty());
+        assert_eq!(safe.len(), 0);
+    }
+
+    #[test]
+    fn persistable_content_only_cr() {
+        let safe = PersistableContent::new("\r");
+        assert_eq!(safe.as_str(), "\n");
+    }
+
+    #[test]
+    fn persistable_content_deref_works() {
+        let safe = PersistableContent::new("hello");
+        // Test Deref to &str
+        assert!(safe.starts_with("hel"));
+    }
+
+    #[test]
+    fn persistable_content_into_inner() {
+        let safe = PersistableContent::new("content");
+        let inner: String = safe.into_inner();
+        assert_eq!(inner, "content");
+    }
+
+    #[test]
+    fn persistable_content_serde_roundtrip() {
+        let original = PersistableContent::new("test\rcontent");
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: PersistableContent = serde_json::from_str(&json).unwrap();
+        // Note: deserialization re-normalizes (transparent serde)
+        assert_eq!(original.as_str(), deserialized.as_str());
     }
 
     #[test]

@@ -1887,6 +1887,19 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
             )));
         }
 
+        // Render homoglyph warnings with warning styling
+        for warning in &item.homoglyph_warnings {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "    ⚠ ",
+                    Style::default()
+                        .fg(palette.warning)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(warning.clone(), Style::default().fg(palette.warning)),
+            ]));
+        }
+
         for line in &item.details {
             lines.push(Line::from(Span::styled(
                 format!("      {line}"),

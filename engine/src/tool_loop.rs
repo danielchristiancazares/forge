@@ -21,7 +21,7 @@ use crate::state::{
     ApprovalState, JournalStatus, OperationState, ToolBatch, ToolLoopPhase, ToolLoopState,
     ToolPlan, ToolRecoveryDecision, ToolRecoveryState,
 };
-use crate::tools::{self, ConfirmationRequest};
+use crate::tools::{self, ConfirmationRequest, analyze_tool_arguments};
 use crate::util;
 use crate::{
     ApiConfig, App, DEFAULT_TOOL_CAPACITY_BYTES, Message, NonEmptyString, QueuedUserMessage,
@@ -511,12 +511,14 @@ impl App {
                 };
                 let summary = sanitize_terminal_text(&summary).into_owned();
                 let summary = util::truncate_with_ellipsis(&summary, 200);
+                let warnings = analyze_tool_arguments(&call.name, &call.arguments);
                 approval_requests.push(ConfirmationRequest {
                     tool_call_id: call.id.clone(),
                     tool_name: call.name.clone(),
                     summary,
                     risk_level: exec.risk_level(),
                     arguments: call.arguments.clone(),
+                    warnings,
                 });
                 approval_calls.push(call.clone());
             } else {

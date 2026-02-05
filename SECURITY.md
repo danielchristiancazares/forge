@@ -8,6 +8,9 @@ This document describes Forge's defense-in-depth security sanitization infrastru
 - [Terminal Sanitization](#terminal-sanitization)
 - [Steganographic Sanitization](#steganographic-sanitization)
 - [API Key Redaction](#api-key-redaction)
+- [Dynamic Secret Redaction](#dynamic-secret-redaction)
+- [Persistable Content](#persistable-content)
+- [Homoglyph Detection](#homoglyph-detection)
 - [Integration Points](#integration-points)
 - [Threat Model](#threat-model)
 - [Design Decisions](#design-decisions)
@@ -23,8 +26,10 @@ Forge processes untrusted content from multiple sources:
 | Tool output | Both terminal + prompt injection | `sanitize_output` |
 | Error messages | Credential leaks | `sanitize_stream_error` |
 | Recovered history | Stored injection attacks | `sanitize_terminal_text` |
+| Persisted content | Log spoofing via CR | `PersistableContent` |
+| Tool arguments | Homoglyph attacks | `detect_mixed_script` |
 
-All sanitization functions live in `types/src/sanitize.rs` and `engine/src/security.rs`.
+All sanitization functions live in `types/src/sanitize.rs`, `types/src/confusables.rs`, and `engine/src/security.rs`.
 
 ## Terminal Sanitization
 
@@ -195,6 +200,139 @@ let safe = sanitize_stream_error(raw);
 // Result: "Error with sk-*** and red text"
 ```
 
+## Dynamic Secret Redaction
+
+**Type**: `SecretRedactor`
+
+**Location**: `engine/src/security.rs`
+
+In addition to pattern-based API key redaction, Forge provides dynamic secret redaction based on environment variables. At first use, it scans `std::env::vars()` for sensitive variable names and builds an Aho-Corasick automaton for O(n) multi-pattern matching.
+
+### Sensitive Variable Patterns
+
+| Pattern | Examples |
+|---------|----------|
+| `*_KEY` | `AWS_ACCESS_KEY`, `MY_API_KEY` |
+| `*_TOKEN` | `GITHUB_TOKEN`, `AUTH_TOKEN` |
+| `*_SECRET` | `CLIENT_SECRET`, `JWT_SECRET` |
+| `*_PASSWORD` | `DB_PASSWORD`, `ADMIN_PASSWORD` |
+| `AWS_*` | `AWS_SECRET_ACCESS_KEY` |
+| `ANTHROPIC_*`, `OPENAI_*`, `GEMINI_*` | Provider API keys |
+| `GITHUB_TOKEN`, `GH_TOKEN` | GitHub tokens |
+
+### Filtering
+
+Values are only considered secrets if:
+- Length ≥ 16 characters (avoids short values like "true", "1")
+- Not a file path (doesn't start with `/` or `C:\`)
+- Not a plain URL (without credential query parameters)
+- Not purely numeric
+
+### IFA Conformance
+
+The redactor uses a single Authority Boundary via `OnceLock<SecretRedactor>`:
+
+```rust
+static SECRET_REDACTOR: OnceLock<SecretRedactor> = OnceLock::new();
+
+pub fn secret_redactor() -> &'static SecretRedactor {
+    SECRET_REDACTOR.get_or_init(SecretRedactor::from_env)
+}
+```
+
+## Persistable Content
+
+**Type**: `PersistableContent`
+
+**Location**: `types/src/lib.rs`
+
+A proof-carrying type that guarantees content is safe for persistence by normalizing standalone carriage returns (`\r`). This prevents log spoofing attacks where `\r` overwrites previous content when displayed.
+
+### Attack Vector
+
+```
+Stored: "File saved\rERROR: Permission denied"
+Display: "ERROR: Permission denied" (overwrites "File saved")
+```
+
+### Normalization Rules
+
+| Input | Output | Notes |
+|-------|--------|-------|
+| `\r\n` | `\r\n` | Windows line endings preserved |
+| `\r` (standalone) | `\n` | Normalized to newline |
+| `\n` | `\n` | Unix line endings preserved |
+
+### IFA Conformance
+
+`PersistableContent` is a proof-carrying type with a single constructor (Authority Boundary per IFA-7). Persistence functions accept only `PersistableContent`, ensuring the invariant is enforced at the type level.
+
+### Usage Example
+
+```rust
+use forge_types::PersistableContent;
+
+// Clean content passes through
+let clean = PersistableContent::new("Normal text\nWith newlines");
+assert_eq!(clean.as_str(), "Normal text\nWith newlines");
+
+// Log spoofing attack normalized
+let attack = PersistableContent::new("File saved\rERROR: Permission denied");
+assert_eq!(attack.as_str(), "File saved\nERROR: Permission denied");
+
+// Windows line endings preserved
+let windows = PersistableContent::new("Line 1\r\nLine 2");
+assert_eq!(windows.as_str(), "Line 1\r\nLine 2");
+```
+
+## Homoglyph Detection
+
+**Function**: `detect_mixed_script(input: &str, field_name: &str) -> Option<HomoglyphWarning>`
+
+**Location**: `types/src/confusables.rs`
+
+Detects mixed-script content that could indicate homoglyph attacks, where visually-similar characters from different Unicode scripts are used to create deceptive text.
+
+### Attack Vector
+
+```
+Visual: "wget googIe.com"  (looks like "google")
+Actual: Cyrillic 'І' (U+0406) instead of Latin 'l'
+```
+
+### Detection Logic
+
+Only flags Latin mixed with Cyrillic or Greek (highest attack surface for English-language tools). Pure non-Latin scripts (legitimate non-English content) are not flagged.
+
+| Mixed Scripts | Flagged | Reason |
+|---------------|---------|--------|
+| Latin + Cyrillic | Yes | High confusability (а/a, е/e, о/o) |
+| Latin + Greek | Yes | High confusability (ο/o, ν/v) |
+| Pure Cyrillic | No | Legitimate Russian content |
+| Pure Greek | No | Legitimate Greek content |
+| Latin + Japanese | No | Not confusable |
+
+### Integration
+
+Homoglyph detection runs at the boundary when preparing tool approval requests:
+
+```rust
+let warnings = analyze_tool_arguments(&call.name, &call.arguments);
+```
+
+Warnings are displayed in the tool approval UI with yellow styling:
+
+```
+> [x] WebFetch (HIGH)
+    Fetch https://pаypal.com
+    ⚠ Mixed scripts in 'url': Latin, Cyrillic
+```
+
+### IFA Conformance
+
+- **IFA-8 (Mechanism vs Policy)**: `detect_mixed_script` is a mechanism that reports facts. The UI makes the policy decision about how to display warnings.
+- **IFA-11 (Boundary/Core)**: Analysis happens at the boundary. `HomoglyphWarning` is a proof object that the analysis was performed.
+
 ## Integration Points
 
 ### Tool Output Sanitization
@@ -224,13 +362,15 @@ pub fn sanitize_output(output: &str) -> String {
 
 **Location**: `engine/src/security.rs`
 
-Three-pass sanitization for error messages:
+Four-pass sanitization for error messages:
 
 ```rust
 pub fn sanitize_stream_error(raw: &str) -> String {
-    let redacted = redact_api_keys(raw.trim());
-    let terminal_safe = sanitize_terminal_text(&redacted);
-    strip_steganographic_chars(&terminal_safe).into_owned()
+    let trimmed = raw.trim();
+    let pattern_redacted = redact_api_keys(trimmed);       // 1. Pattern-based
+    let value_redacted = secret_redactor().redact(&pattern_redacted);  // 2. Value-based
+    let terminal_safe = sanitize_terminal_text(&value_redacted);       // 3. Terminal
+    strip_steganographic_chars(&terminal_safe).into_owned()            // 4. Stego
 }
 ```
 
@@ -322,7 +462,35 @@ let safe_line = sanitize_terminal_text(line);
 
 **Impact**: Key exposure enabling unauthorized API access.
 
-**Mitigation**: `redact_api_keys` in error handling paths.
+**Mitigation**: Pattern-based `redact_api_keys` plus dynamic `SecretRedactor` in error handling paths.
+
+### Log Spoofing
+
+**Attack**: Malicious content contains standalone carriage returns (`\r`) that overwrite previous content when logs are displayed.
+
+**Example**:
+```
+Stored: "File saved successfully\rERROR: Malware installed"
+Display: "ERROR: Malware installed" (visually overwrites "File saved")
+```
+
+**Impact**: Log tampering, hiding evidence of malicious actions, confusing forensic analysis.
+
+**Mitigation**: `PersistableContent` normalizes standalone `\r` to `\n` before persistence.
+
+### Homoglyph Attacks
+
+**Attack**: LLM suggests commands with visually-deceptive content using characters from different scripts.
+
+**Example**:
+```
+Suggested: "wget googІe.com"  (looks like "google.com")
+Actual: Cyrillic 'І' (U+0406) instead of Latin 'l'
+```
+
+**Impact**: User approves what looks like a safe command, actually executes attack.
+
+**Mitigation**: `detect_mixed_script` warns users in tool approval UI when mixed scripts are detected.
 
 ### DoS Considerations
 
@@ -400,11 +568,15 @@ API key redaction uses pattern matching (`sk-`, `sk-ant-`, `AIza`) rather than e
 
 ## Testing
 
-The sanitization infrastructure has comprehensive test coverage in `types/src/sanitize.rs` and `engine/src/security.rs`:
+The security infrastructure has comprehensive test coverage:
 
 ```bash
-cargo test sanitize       # Run sanitization tests
-cargo test redact         # Run redaction tests
+cargo test sanitize          # Terminal + steganographic sanitization
+cargo test redact            # Pattern-based API key redaction
+cargo test secret_redactor   # Dynamic environment variable redaction
+cargo test persistable       # CR normalization for persistence
+cargo test confusables       # Homoglyph/mixed-script detection
+cargo test analyze_tool      # Tool argument homoglyph analysis
 ```
 
 Test categories:
@@ -413,5 +585,9 @@ Test categories:
 - Steganographic character removal (all categories)
 - Bidi control stripping
 - API key redaction (all providers)
+- Dynamic secret redaction (env var patterns, filtering)
+- CR normalization (standalone CR, CRLF preservation)
+- Mixed-script detection (Latin + Cyrillic/Greek, pure scripts)
+- Tool argument analysis (URL, command, path fields)
 - Composition tests (terminal + stego combined)
 - Edge cases (empty strings, incomplete sequences, mixed content)
