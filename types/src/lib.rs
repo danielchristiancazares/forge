@@ -491,7 +491,6 @@ impl Provider {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PredefinedModel {
     ClaudeOpus,
-    ClaudeSonnet,
     ClaudeHaiku,
     Gpt52Pro,
     Gpt52,
@@ -501,7 +500,6 @@ pub enum PredefinedModel {
 
 const CLAUDE_MODEL_IDS: &[&str] = &[
     "claude-opus-4-6",
-    "claude-sonnet-4-5-20250514",
     "claude-haiku-4-5-20251001",
 ];
 
@@ -511,7 +509,6 @@ const GEMINI_MODEL_IDS: &[&str] = &["gemini-3-pro-preview", "gemini-3-flash-prev
 
 const ALL_MODEL_IDS: &[&str] = &[
     "claude-opus-4-6",
-    "claude-sonnet-4-5-20250514",
     "claude-haiku-4-5-20251001",
     "gpt-5.2-pro",
     "gpt-5.2",
@@ -532,7 +529,6 @@ impl PredefinedModel {
     pub const fn all() -> &'static [PredefinedModel] {
         &[
             PredefinedModel::ClaudeOpus,
-            PredefinedModel::ClaudeSonnet,
             PredefinedModel::ClaudeHaiku,
             PredefinedModel::Gpt52Pro,
             PredefinedModel::Gpt52,
@@ -545,7 +541,6 @@ impl PredefinedModel {
     pub const fn display_name(self) -> &'static str {
         match self {
             PredefinedModel::ClaudeOpus => "Anthropic Claude Opus 4.6",
-            PredefinedModel::ClaudeSonnet => "Anthropic Claude Sonnet 4.5",
             PredefinedModel::ClaudeHaiku => "Anthropic Claude Haiku 4.5",
             PredefinedModel::Gpt52Pro => "OpenAI GPT 5.2 Pro",
             PredefinedModel::Gpt52 => "OpenAI GPT 5.2",
@@ -559,7 +554,6 @@ impl PredefinedModel {
     pub const fn model_name(self) -> &'static str {
         match self {
             PredefinedModel::ClaudeOpus => "Opus 4.6",
-            PredefinedModel::ClaudeSonnet => "Sonnet 4.5",
             PredefinedModel::ClaudeHaiku => "Haiku 4.5",
             PredefinedModel::Gpt52Pro => "GPT 5.2 Pro",
             PredefinedModel::Gpt52 => "GPT 5.2",
@@ -573,7 +567,6 @@ impl PredefinedModel {
     pub const fn firm_name(self) -> &'static str {
         match self {
             PredefinedModel::ClaudeOpus
-            | PredefinedModel::ClaudeSonnet
             | PredefinedModel::ClaudeHaiku => "Anthropic",
             PredefinedModel::Gpt52 | PredefinedModel::Gpt52Pro => "OpenAI",
             PredefinedModel::GeminiPro | PredefinedModel::GeminiFlash => "Google",
@@ -585,7 +578,6 @@ impl PredefinedModel {
     pub const fn model_id(self) -> &'static str {
         match self {
             PredefinedModel::ClaudeOpus => "claude-opus-4-6",
-            PredefinedModel::ClaudeSonnet => "claude-sonnet-4-5-20250514",
             PredefinedModel::ClaudeHaiku => "claude-haiku-4-5-20251001",
             PredefinedModel::Gpt52Pro => "gpt-5.2-pro",
             PredefinedModel::Gpt52 => "gpt-5.2",
@@ -598,7 +590,6 @@ impl PredefinedModel {
     pub const fn provider(self) -> Provider {
         match self {
             PredefinedModel::ClaudeOpus
-            | PredefinedModel::ClaudeSonnet
             | PredefinedModel::ClaudeHaiku => Provider::Claude,
             PredefinedModel::Gpt52 | PredefinedModel::Gpt52Pro => Provider::OpenAI,
             PredefinedModel::GeminiPro | PredefinedModel::GeminiFlash => Provider::Gemini,

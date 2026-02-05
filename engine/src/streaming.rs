@@ -55,6 +55,38 @@ fn build_thinking_message(
     }
 }
 
+/// Geometric grid of cache breakpoint positions (0-indexed message indices).
+///
+/// Each value is approximately 1.5× the previous, providing stability proportional
+/// to position depth: a breakpoint at position P is stable for roughly P/2 messages
+/// of conversation growth before the next grid point is reached and breakpoints shift.
+///
+/// The grid covers conversations up to ~1024 messages. Beyond that, the last three
+/// grid points still provide substantial coverage.
+const CACHE_BREAKPOINT_GRID: &[usize] = &[
+    3, 7, 15, 23, 31, 47, 63, 95, 127, 191, 255, 383, 511, 767, 1023,
+];
+
+/// Select up to 3 cache breakpoint positions from the geometric grid.
+///
+/// Takes the 3 highest grid positions that fit within `eligible` (the number of
+/// messages excluding the fresh tail). This maximizes cache prefix coverage while
+/// maintaining cross-turn stability — breakpoints only shift when the conversation
+/// grows past the next grid boundary, and when they do, the lower breakpoints
+/// typically survive as cache hits.
+///
+/// Returns an empty vec when `eligible` is 0.
+fn cache_breakpoint_positions(eligible: usize) -> Vec<usize> {
+    let fitting: Vec<usize> = CACHE_BREAKPOINT_GRID
+        .iter()
+        .copied()
+        .filter(|&pos| pos < eligible)
+        .collect();
+
+    let start = fitting.len().saturating_sub(3);
+    fitting[start..].to_vec()
+}
+
 impl super::App {
     /// Start streaming response from the API.
     pub fn start_streaming(&mut self, queued: QueuedUserMessage) {
@@ -156,19 +188,16 @@ impl super::App {
         let cache_enabled = self.cache_enabled;
         // system_prompt already retrieved above
         let cacheable_messages: Vec<CacheableMessage> = if cache_enabled {
-            // Cache older messages, keep recent ones fresh
-            // Claude allows max 4 cache_control blocks total
-            // System prompt uses 1 slot, leaving 3 for messages
-            let max_cached = 3;
-            let len = api_messages.len();
-            let recent_threshold = len.saturating_sub(4); // Don't cache last 4 messages
-            let mut cached_count = 0;
+            // Claude allows max 4 cache_control blocks total.
+            // System prompt uses 1 slot, leaving 3 for messages.
+            // Keep the last 4 messages uncached (fresh tail — still evolving).
+            let eligible = api_messages.len().saturating_sub(4);
+            let breakpoints = cache_breakpoint_positions(eligible);
             api_messages
                 .into_iter()
                 .enumerate()
                 .map(|(i, msg)| {
-                    if i < recent_threshold && cached_count < max_cached {
-                        cached_count += 1;
+                    if breakpoints.contains(&i) {
                         CacheableMessage::cached(msg)
                     } else {
                         CacheableMessage::plain(msg)
@@ -763,5 +792,65 @@ async fn get_or_create_gemini_cache(
             tracing::warn!("Failed to create Gemini cache: {e}");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_breakpoint_tests {
+    use super::cache_breakpoint_positions;
+
+    #[test]
+    fn empty_eligible_returns_no_breakpoints() {
+        assert_eq!(cache_breakpoint_positions(0), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn small_eligible_below_first_grid_point() {
+        assert_eq!(cache_breakpoint_positions(3), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn single_grid_point_fits() {
+        // eligible=8: grid points 3 and 7 fit
+        assert_eq!(cache_breakpoint_positions(8), vec![3, 7]);
+    }
+
+    #[test]
+    fn three_grid_points_for_medium_conversation() {
+        // eligible=100: grid points ≤99 are [3,7,15,23,31,47,63,95], last 3 = [47,63,95]
+        assert_eq!(cache_breakpoint_positions(100), vec![47, 63, 95]);
+    }
+
+    #[test]
+    fn stable_across_small_growth() {
+        let base = cache_breakpoint_positions(100);
+        assert_eq!(cache_breakpoint_positions(105), base);
+        assert_eq!(cache_breakpoint_positions(110), base);
+        assert_eq!(cache_breakpoint_positions(120), base);
+        assert_eq!(cache_breakpoint_positions(127), base);
+    }
+
+    #[test]
+    fn shifts_at_grid_boundary() {
+        let before = cache_breakpoint_positions(127);
+        let after = cache_breakpoint_positions(128);
+        assert_eq!(before, vec![47, 63, 95]);
+        assert_eq!(after, vec![63, 95, 127]);
+        // Two positions survive the transition
+        assert_eq!(before[1], after[0]);
+        assert_eq!(before[2], after[1]);
+    }
+
+    #[test]
+    fn large_conversation_coverage() {
+        // 500 messages: highest fitting grid point is 383
+        let positions = cache_breakpoint_positions(500);
+        assert_eq!(positions, vec![191, 255, 383]);
+    }
+
+    #[test]
+    fn max_grid_coverage() {
+        let positions = cache_breakpoint_positions(2000);
+        assert_eq!(positions, vec![511, 767, 1023]);
     }
 }

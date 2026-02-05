@@ -28,6 +28,20 @@ use crate::{
     SystemNotification, TOOL_EVENT_CHANNEL_CAPACITY, TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
 };
 
+fn run_escalation_reason(tool_name: &str, arguments: &serde_json::Value) -> Option<String> {
+    if tool_name != "Run" {
+        return None;
+    }
+
+    let reason = arguments.get("reason")?.as_str()?.trim();
+    if reason.is_empty() {
+        return None;
+    }
+
+    let sanitized = sanitize_terminal_text(reason).into_owned();
+    Some(util::truncate_with_ellipsis(&sanitized, 200))
+}
+
 // ============================================================================
 // SpawnedTool: Proof object for spawned tool execution (IFA §8.1)
 // ============================================================================
@@ -526,6 +540,7 @@ impl App {
                     tool_call_id: call.id.clone(),
                     tool_name: call.name.clone(),
                     summary,
+                    reason: run_escalation_reason(&call.name, &call.arguments),
                     risk_level: exec.risk_level(),
                     arguments: call.arguments.clone(),
                     warnings,

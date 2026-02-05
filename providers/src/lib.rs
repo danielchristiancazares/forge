@@ -584,15 +584,25 @@ pub mod claude {
 
         // Track pending assistant content blocks for grouping
         let mut pending_assistant_content: Vec<serde_json::Value> = Vec::new();
+        let mut pending_assistant_cached = false;
 
-        // Helper to flush pending assistant content into a message
+        // Helper to flush pending assistant content into a message.
+        // If any message in the group had CacheHint::Ephemeral, cache_control
+        // is placed on the last content block (covering the entire prefix through
+        // this assistant turn).
         let flush_assistant =
-            |content: &mut Vec<serde_json::Value>, messages: &mut Vec<serde_json::Value>| {
+            |content: &mut Vec<serde_json::Value>,
+             cached: &mut bool,
+             messages: &mut Vec<serde_json::Value>| {
                 if !content.is_empty() {
+                    if *cached && let Some(last) = content.last_mut() {
+                        last["cache_control"] = json!({"type": "ephemeral"});
+                    }
                     messages.push(json!({
                         "role": "assistant",
                         "content": std::mem::take(content)
                     }));
+                    *cached = false;
                 }
             };
 
@@ -606,7 +616,11 @@ pub mod claude {
                 }
                 Message::User(_) => {
                     // Flush any pending assistant content before user message
-                    flush_assistant(&mut pending_assistant_content, &mut api_messages);
+                    flush_assistant(
+                        &mut pending_assistant_content,
+                        &mut pending_assistant_cached,
+                        &mut api_messages,
+                    );
                     api_messages.push(json!({
                         "role": "user",
                         "content": [content_block(msg.content(), hint)]
@@ -614,6 +628,9 @@ pub mod claude {
                 }
                 Message::Assistant(_) => {
                     // Add text content block to pending assistant content
+                    if matches!(hint, CacheHint::Ephemeral) {
+                        pending_assistant_cached = true;
+                    }
                     pending_assistant_content.push(json!({
                         "type": "text",
                         "text": msg.content()
@@ -621,6 +638,9 @@ pub mod claude {
                 }
                 Message::ToolUse(call) => {
                     // Add tool_use content block to pending assistant content
+                    if matches!(hint, CacheHint::Ephemeral) {
+                        pending_assistant_cached = true;
+                    }
                     pending_assistant_content.push(json!({
                         "type": "tool_use",
                         "id": call.id,
@@ -630,15 +650,23 @@ pub mod claude {
                 }
                 Message::ToolResult(result) => {
                     // Flush any pending assistant content before tool result (user role)
-                    flush_assistant(&mut pending_assistant_content, &mut api_messages);
+                    flush_assistant(
+                        &mut pending_assistant_content,
+                        &mut pending_assistant_cached,
+                        &mut api_messages,
+                    );
+                    let mut block = json!({
+                        "type": "tool_result",
+                        "tool_use_id": result.tool_call_id,
+                        "content": result.content,
+                        "is_error": result.is_error
+                    });
+                    if matches!(hint, CacheHint::Ephemeral) {
+                        block["cache_control"] = json!({"type": "ephemeral"});
+                    }
                     api_messages.push(json!({
                         "role": "user",
-                        "content": [{
-                            "type": "tool_result",
-                            "tool_use_id": result.tool_call_id,
-                            "content": result.content,
-                            "is_error": result.is_error
-                        }]
+                        "content": [block]
                     }));
                 }
                 Message::Thinking(thinking) => {
@@ -655,7 +683,11 @@ pub mod claude {
         }
 
         // Flush any remaining assistant content
-        flush_assistant(&mut pending_assistant_content, &mut api_messages);
+        flush_assistant(
+            &mut pending_assistant_content,
+            &mut pending_assistant_cached,
+            &mut api_messages,
+        );
 
         if is_opus_4_6_model(model)
             && matches!(
@@ -732,7 +764,7 @@ pub mod claude {
             );
 
             // Add context_management to preserve all thinking blocks for cache efficiency.
-            // Essential for Sonnet 4.5 / Haiku 4.5 where thinking blocks are stripped by default.
+            // Essential for Haiku 4.5 where thinking blocks are stripped by default.
             body.insert(
                 "context_management".into(),
                 json!({
@@ -1027,7 +1059,7 @@ pub mod claude {
         #[test]
         fn non_opus_4_6_thinking_keeps_budget_tokens() {
             let model: ModelName = Provider::Claude
-                .parse_model("claude-sonnet-4-5-20250514")
+                .parse_model("claude-haiku-4-5-20251001")
                 .unwrap();
             let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
             let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
@@ -1074,8 +1106,95 @@ pub mod claude {
         fn anthropic_beta_header_kept_for_legacy_thinking_models() {
             let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
             assert_eq!(
-                anthropic_beta_header("claude-sonnet-4-5-20250514", limits),
+                anthropic_beta_header("claude-haiku-4-5-20251001", limits),
                 Some("interleaved-thinking-2025-05-14,context-management-2025-06-27")
+            );
+        }
+
+        #[test]
+        fn tool_result_cache_hint_adds_cache_control() {
+            let model = Provider::Claude.default_model();
+            let result = forge_types::ToolResult::success("call_1", "Read", "file contents");
+            let limits = OutputLimits::new(1024);
+            let messages = vec![
+                CacheableMessage::plain(Message::try_user("hi").unwrap()),
+                CacheableMessage::plain(Message::assistant(
+                    model.clone(),
+                    NonEmptyString::new("I'll read that file").unwrap(),
+                )),
+                CacheableMessage::cached(Message::tool_result(result)),
+            ];
+
+            let body = build_request_body(model.as_str(), &messages, limits, None, None);
+            let api_messages = body["messages"].as_array().unwrap();
+
+            // tool_result is the last user-role message
+            let tool_msg = &api_messages[api_messages.len() - 1];
+            let block = &tool_msg["content"][0];
+            assert_eq!(block["type"].as_str(), Some("tool_result"));
+            assert_eq!(block["cache_control"]["type"].as_str(), Some("ephemeral"));
+        }
+
+        #[test]
+        fn tool_result_plain_has_no_cache_control() {
+            let model = Provider::Claude.default_model();
+            let result = forge_types::ToolResult::success("call_1", "Read", "file contents");
+            let limits = OutputLimits::new(1024);
+            let messages = vec![
+                CacheableMessage::plain(Message::try_user("hi").unwrap()),
+                CacheableMessage::plain(Message::tool_result(result)),
+            ];
+
+            let body = build_request_body(model.as_str(), &messages, limits, None, None);
+            let api_messages = body["messages"].as_array().unwrap();
+            let tool_msg = &api_messages[api_messages.len() - 1];
+            let block = &tool_msg["content"][0];
+            assert_eq!(block["type"].as_str(), Some("tool_result"));
+            assert!(block.get("cache_control").is_none());
+        }
+
+        #[test]
+        fn assistant_group_cache_hint_on_last_block() {
+            let model = Provider::Claude.default_model();
+            let tool_call = forge_types::ToolCall {
+                id: "call_1".to_string(),
+                name: "Read".to_string(),
+                arguments: serde_json::json!({"path": "/tmp/test"}),
+                thought_signature: forge_types::ThoughtSignatureState::Unsigned,
+            };
+            let limits = OutputLimits::new(1024);
+            let messages = vec![
+                CacheableMessage::plain(Message::try_user("hi").unwrap()),
+                // Assistant text + tool_use grouped into one API message.
+                // Mark the tool_use as cached — cache_control goes on last block.
+                CacheableMessage::plain(Message::assistant(
+                    model.clone(),
+                    NonEmptyString::new("Let me read that").unwrap(),
+                )),
+                CacheableMessage::cached(Message::tool_use(tool_call)),
+                // ToolResult triggers flush of the assistant group above.
+                CacheableMessage::plain(Message::tool_result(forge_types::ToolResult::success(
+                    "call_1", "Read", "contents",
+                ))),
+            ];
+
+            let body = build_request_body(model.as_str(), &messages, limits, None, None);
+            let api_messages = body["messages"].as_array().unwrap();
+
+            // Find the assistant message (should have text + tool_use blocks)
+            let assistant_msg = api_messages
+                .iter()
+                .find(|m| m["role"].as_str() == Some("assistant"))
+                .unwrap();
+            let content = assistant_msg["content"].as_array().unwrap();
+            assert_eq!(content.len(), 2);
+
+            // First block (text) should NOT have cache_control
+            assert!(content[0].get("cache_control").is_none());
+            // Last block (tool_use) SHOULD have cache_control
+            assert_eq!(
+                content[1]["cache_control"]["type"].as_str(),
+                Some("ephemeral")
             );
         }
 

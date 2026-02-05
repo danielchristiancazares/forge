@@ -850,6 +850,46 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
 }
 
 #[tokio::test]
+async fn run_approval_request_captures_reason_without_changing_summary() {
+    let mut app = test_app();
+    app.api_keys.clear();
+    app.tool_settings.policy.mode = tools::ApprovalMode::Default;
+    app.tool_settings.policy.denylist.remove("Run");
+
+    let call = ToolCall::new(
+        "call-1",
+        "Run",
+        json!({
+            "command": "echo hello",
+            "reason": "Need to verify the local build toolchain."
+        }),
+    );
+    app.handle_tool_calls(
+        "assistant".to_string(),
+        vec![call],
+        Vec::new(),
+        app.model.clone(),
+        StepId::new(1),
+        None,
+        crate::input_modes::TurnContext::new_for_tests(),
+        None,
+    );
+
+    let requests = app
+        .tool_approval_requests()
+        .expect("approval requests should be present");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].summary,
+        "Run command: echo hello".to_string()
+    );
+    assert_eq!(
+        requests[0].reason,
+        Some("Need to verify the local build toolchain.".to_string())
+    );
+}
+
+#[tokio::test]
 async fn tool_loop_preserves_order_after_approval() {
     let mut app = test_app();
     app.api_keys.clear();

@@ -115,7 +115,7 @@ impl ResolvedModelLimits {
 fn default_limits_for(model: PredefinedModel) -> ModelLimits {
     match model {
         PredefinedModel::ClaudeOpus => ModelLimits::new(1_000_000, 128_000),
-        PredefinedModel::ClaudeSonnet | PredefinedModel::ClaudeHaiku => {
+        PredefinedModel::ClaudeHaiku => {
             ModelLimits::new(200_000, 64_000)
         }
         PredefinedModel::Gpt52Pro | PredefinedModel::Gpt52 => ModelLimits::new(400_000, 128_000),
@@ -408,7 +408,7 @@ mod tests {
             assert_eq!(limits.max_output(), 8000);
 
             // Other Claude models still use defaults
-            let limits = registry.get(&model(PredefinedModel::ClaudeSonnet)).limits();
+            let limits = registry.get(&model(PredefinedModel::ClaudeHaiku)).limits();
             assert_eq!(limits.context_window(), 200_000);
         }
 

@@ -2526,7 +2526,7 @@ fn create_welcome_screen(app: &App, palette: &Palette, glyphs: &Glyphs) -> Parag
 
 /// Format API usage for status bar display.
 ///
-/// Returns a compact string like "API: 12.3k/1.2k (85% hit)" or empty if no data.
+/// Returns a compact string like "Tokens 12.3k in / 1.2k out (85% cached)" or empty if no data.
 fn format_api_usage(usage: Option<&TurnUsage>) -> String {
     let Some(usage) = usage else {
         return String::new();
@@ -2554,8 +2554,8 @@ fn format_api_usage(usage: Option<&TurnUsage>) -> String {
     let output_str = fmt_tokens(output);
 
     if cache_pct > 0.5 {
-        format!("API: {input_str}/{output_str} ({cache_pct:.0}% hit)")
+        format!("Tokens {input_str} in / {output_str} out ({cache_pct:.0}% cached)")
     } else {
-        format!("API: {input_str}/{output_str}")
+        format!("Tokens {input_str} in / {output_str} out")
     }
 }

@@ -1,5 +1,6 @@
 //! Built-in tool executors.
 
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -152,6 +153,14 @@ pub(crate) fn format_unified_diff(
         return String::new();
     }
 
+    // Determine the width needed for line numbers (based on max line count)
+    let max_line = old_text.lines().count().max(new_text.lines().count());
+    let line_num_width = if max_line == 0 {
+        1
+    } else {
+        ((max_line as f64).log10().floor() as usize) + 1
+    };
+
     // Group changes into hunks with 1 line of context, collapsing gaps >3 lines
     let mut i = 0;
     let mut last_output_idx: Option<usize> = None;
@@ -175,7 +184,8 @@ pub(crate) fn format_unified_diff(
                             out.push_str("...\n");
                         }
                     }
-                    out.push(' ');
+                    let line_no = change.old_index().unwrap_or(0) + 1;
+                    write!(out, "{line_no:>line_num_width$}  ").unwrap();
                     out.push_str(change.value().trim_end_matches('\n'));
                     out.push('\n');
                     last_output_idx = Some(i);
@@ -188,7 +198,8 @@ pub(crate) fn format_unified_diff(
                         out.push_str("...\n");
                     }
                 }
-                out.push('-');
+                let line_no = change.old_index().unwrap_or(0) + 1;
+                write!(out, "{line_no:>line_num_width$} -").unwrap();
                 out.push_str(change.value().trim_end_matches('\n'));
                 out.push('\n');
                 last_output_idx = Some(i);
@@ -200,7 +211,8 @@ pub(crate) fn format_unified_diff(
                         out.push_str("...\n");
                     }
                 }
-                out.push('+');
+                let line_no = change.new_index().unwrap_or(0) + 1;
+                write!(out, "{line_no:>line_num_width$} +").unwrap();
                 out.push_str(change.value().trim_end_matches('\n'));
                 out.push('\n');
                 last_output_idx = Some(i);
@@ -1031,7 +1043,8 @@ impl ToolExecutor for RunCommandTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "command": { "type": "string" }
+                "command": { "type": "string" },
+                "reason": { "type": "string" }
             },
             "required": ["command"]
         })

@@ -1196,176 +1196,179 @@ async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
         deadline,
         accumulator,
     } = base;
-    let mut file_list = String::new();
-    for file in files {
-        file_list.push_str(&file.rel_path);
-        file_list.push('\n');
-    }
+    let mut timed_out = false;
+    let mut exit_code = None;
+    let mut stderr_out = None;
 
-    let tmp = tempfile::NamedTempFile::new().map_err(|e| ToolError::ExecutionFailed {
-        tool: SEARCH_TOOL_NAME.to_string(),
-        message: e.to_string(),
-    })?;
-    std::fs::write(tmp.path(), file_list).map_err(|e| ToolError::ExecutionFailed {
-        tool: SEARCH_TOOL_NAME.to_string(),
-        message: e.to_string(),
-    })?;
-
-    let mut cmd = Command::new(&backend.binary);
-    cmd.current_dir(search_root);
-    cmd.arg("--json");
-    cmd.arg("--files-from");
-    cmd.arg(tmp.path());
-    cmd.arg("--max-count");
-    cmd.arg(accumulator.max_matches_per_file.to_string());
-    if context > 0 {
-        cmd.arg("-C");
-        cmd.arg(context.to_string());
-    }
-    if fixed_strings {
-        cmd.arg("-F");
-    }
-    if word_regexp {
-        cmd.arg("-w");
-    }
-    match case_mode {
-        CaseMode::Sensitive => {}
-        CaseMode::Insensitive => {
-            cmd.arg("-i");
-            cmd.arg("--no-unicode");
+    let mut offset = 0usize;
+    let batch_size = 500usize;
+    while offset < files.len() {
+        if Instant::now() >= deadline {
+            timed_out = true;
+            break;
         }
-        CaseMode::Smart => {
-            if pattern_has_ascii_uppercase(pattern) {
-                // treat as sensitive
-            } else {
+        let end = (offset + batch_size).min(files.len());
+        let batch = &files[offset..end];
+        offset = end;
+
+        let mut cmd = Command::new(&backend.binary);
+        cmd.current_dir(search_root);
+        cmd.arg("--json");
+        cmd.arg("--max-count");
+        cmd.arg(accumulator.max_matches_per_file.to_string());
+        if context > 0 {
+            cmd.arg("-C");
+            cmd.arg(context.to_string());
+        }
+        if fixed_strings {
+            cmd.arg("-F");
+        }
+        if word_regexp {
+            cmd.arg("-w");
+        }
+        match case_mode {
+            CaseMode::Sensitive => {}
+            CaseMode::Insensitive => {
                 cmd.arg("-i");
                 cmd.arg("--no-unicode");
             }
-        }
-    }
-    if no_ignore {
-        cmd.arg("--no-ignore");
-    }
-    cmd.arg("--");
-    cmd.arg(pattern);
-
-    let mut child = cmd
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| ToolError::ExecutionFailed {
-            tool: SEARCH_TOOL_NAME.to_string(),
-            message: e.to_string(),
-        })?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| ToolError::ExecutionFailed {
-            tool: SEARCH_TOOL_NAME.to_string(),
-            message: "failed to capture stdout".to_string(),
-        })?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| ToolError::ExecutionFailed {
-            tool: SEARCH_TOOL_NAME.to_string(),
-            message: "failed to capture stderr".to_string(),
-        })?;
-
-    let mut stderr_reader = BufReader::new(stderr);
-    let stderr_task = tokio::spawn(async move {
-        let mut buf = String::new();
-        let _ = stderr_reader.read_to_string(&mut buf).await;
-        buf
-    });
-
-    let mut timed_out = false;
-    let mut stdout_reader = BufReader::new(stdout).lines();
-
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            timed_out = true;
-            let _ = child.kill().await;
-            break;
-        }
-        let line = match tokio::time::timeout(remaining, stdout_reader.next_line()).await {
-            Ok(Ok(line)) => line,
-            Ok(Err(err)) => {
-                return Err(ToolError::ExecutionFailed {
-                    tool: SEARCH_TOOL_NAME.to_string(),
-                    message: err.to_string(),
-                });
+            CaseMode::Smart => {
+                if pattern_has_ascii_uppercase(pattern) {
+                    // treat as sensitive
+                } else {
+                    cmd.arg("-i");
+                    cmd.arg("--no-unicode");
+                }
             }
-            Err(_) => {
+        }
+        if no_ignore {
+            cmd.arg("--no-ignore");
+        }
+        cmd.arg("--");
+        cmd.arg(pattern);
+        for file in batch {
+            cmd.arg(&file.rel_path);
+        }
+
+        let mut child = cmd
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: SEARCH_TOOL_NAME.to_string(),
+                message: e.to_string(),
+            })?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ToolError::ExecutionFailed {
+                tool: SEARCH_TOOL_NAME.to_string(),
+                message: "failed to capture stdout".to_string(),
+            })?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| ToolError::ExecutionFailed {
+                tool: SEARCH_TOOL_NAME.to_string(),
+                message: "failed to capture stderr".to_string(),
+            })?;
+
+        let mut stderr_reader = BufReader::new(stderr);
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = String::new();
+            let _ = stderr_reader.read_to_string(&mut buf).await;
+            buf
+        });
+
+        let mut stdout_reader = BufReader::new(stdout).lines();
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
                 timed_out = true;
                 let _ = child.kill().await;
                 break;
             }
-        };
-        let Some(line) = line else {
-            break;
-        };
-        if line.trim().is_empty() {
-            continue;
+            let line = match tokio::time::timeout(remaining, stdout_reader.next_line()).await {
+                Ok(Ok(line)) => line,
+                Ok(Err(err)) => {
+                    return Err(ToolError::ExecutionFailed {
+                        tool: SEARCH_TOOL_NAME.to_string(),
+                        message: err.to_string(),
+                    });
+                }
+                Err(_) => {
+                    timed_out = true;
+                    let _ = child.kill().await;
+                    break;
+                }
+            };
+            let Some(line) = line else {
+                break;
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+            let value: serde_json::Value =
+                serde_json::from_str(&line).map_err(|e| ToolError::ExecutionFailed {
+                    tool: SEARCH_TOOL_NAME.to_string(),
+                    message: format!("invalid JSON from ripgrep: {e}"),
+                })?;
+            let Some(kind) = value.get("type").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            match kind {
+                "match" => {
+                    if let Some(event) = parse_rg_match(&value, order_root, search_root) {
+                        accumulator.push_match(
+                            event.path,
+                            event.line_number,
+                            event.sort_key,
+                            event.column,
+                            event.line_text,
+                            event.match_text,
+                        );
+                    }
+                }
+                "context" => {
+                    if let Some(event) = parse_rg_context(&value, order_root, search_root) {
+                        accumulator.push_context(
+                            event.path,
+                            event.line_number,
+                            event.sort_key,
+                            event.line_text,
+                        );
+                    }
+                }
+                "error" => {
+                    if let Some(err) = parse_rg_error(&value) {
+                        errors.push(err);
+                    }
+                }
+                _ => {}
+            }
         }
-        let value: serde_json::Value =
-            serde_json::from_str(&line).map_err(|e| ToolError::ExecutionFailed {
-                tool: SEARCH_TOOL_NAME.to_string(),
-                message: format!("invalid JSON from ripgrep: {e}"),
-            })?;
-        let Some(kind) = value.get("type").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        match kind {
-            "match" => {
-                if let Some(event) = parse_rg_match(&value, order_root, search_root) {
-                    accumulator.push_match(
-                        event.path,
-                        event.line_number,
-                        event.sort_key,
-                        event.column,
-                        event.line_text,
-                        event.match_text,
-                    );
-                }
-            }
-            "context" => {
-                if let Some(event) = parse_rg_context(&value, order_root, search_root) {
-                    accumulator.push_context(
-                        event.path,
-                        event.line_number,
-                        event.sort_key,
-                        event.line_text,
-                    );
-                }
-            }
-            "error" => {
-                if let Some(err) = parse_rg_error(&value) {
-                    errors.push(err);
-                }
-            }
-            _ => {}
+
+        let status = child.wait().await.map_err(|e| ToolError::ExecutionFailed {
+            tool: SEARCH_TOOL_NAME.to_string(),
+            message: e.to_string(),
+        })?;
+        exit_code = status.code();
+        let stderr = stderr_task.await.unwrap_or_default();
+        if !stderr.trim().is_empty() {
+            stderr_out = Some(stderr);
+        }
+
+        if timed_out {
+            break;
         }
     }
 
-    let status = child.wait().await.map_err(|e| ToolError::ExecutionFailed {
-        tool: SEARCH_TOOL_NAME.to_string(),
-        message: e.to_string(),
-    })?;
-
-    let stderr = stderr_task.await.unwrap_or_default();
-    let stderr = if stderr.trim().is_empty() {
-        None
-    } else {
-        Some(stderr)
-    };
-
     Ok(BackendRun {
         timed_out,
-        exit_code: status.code(),
-        stderr,
+        exit_code,
+        stderr: stderr_out,
     })
 }
 

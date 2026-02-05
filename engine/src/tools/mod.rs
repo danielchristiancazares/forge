@@ -88,6 +88,8 @@ pub struct ConfirmationRequest {
     pub tool_call_id: String,
     pub tool_name: String,
     pub summary: String,
+    /// Optional user-facing reason provided by the model for escalation prompts.
+    pub reason: Option<String>,
     pub risk_level: RiskLevel,
     pub arguments: Value,
     /// Homoglyph warnings detected in tool arguments.
