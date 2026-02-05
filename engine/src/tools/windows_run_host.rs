@@ -18,9 +18,8 @@ use tokio::process::Child;
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_UILIMIT_DESKTOP,
-    JOB_OBJECT_UILIMIT_DISPLAYSETTINGS, JOB_OBJECT_UILIMIT_EXITWINDOWS,
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOB_OBJECT_UILIMIT_DESKTOP, JOB_OBJECT_UILIMIT_DISPLAYSETTINGS, JOB_OBJECT_UILIMIT_EXITWINDOWS,
     JOB_OBJECT_UILIMIT_GLOBALATOMS, JOB_OBJECT_UILIMIT_HANDLES, JOB_OBJECT_UILIMIT_READCLIPBOARD,
     JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS, JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
     JOBOBJECT_BASIC_UI_RESTRICTIONS, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOBOBJECTINFOCLASS,
@@ -73,7 +72,7 @@ pub(crate) fn attach_process_to_sandbox(child: &Child) -> Result<WindowsHostSand
 
 #[cfg(windows)]
 const fn job_limit_flags() -> u32 {
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 }
 
 #[cfg(windows)]
@@ -133,7 +132,6 @@ fn create_sandbox_job() -> Result<WinHandle, String> {
 fn configure_job_limits(job_handle: HANDLE) -> Result<(), String> {
     let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     limits.BasicLimitInformation.LimitFlags = job_limit_flags();
-    limits.BasicLimitInformation.ActiveProcessLimit = 1;
     set_job_information(job_handle, JobObjectExtendedLimitInformation, &limits)
 }
 
