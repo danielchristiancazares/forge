@@ -266,7 +266,7 @@ Validation rules by provider:
 
 | Provider | Prefix Requirement | Example Valid |
 | :--- | :--- | :--- |
-| Claude | Must start with `claude-` | `claude-opus-4-5-20251101` |
+| Claude | Must start with `claude-` | `claude-opus-4-6` |
 | OpenAI | Must start with `gpt-5` | `gpt-5.2`, `gpt-5.2-pro` |
 | Gemini | Must start with `gemini-` | `gemini-3-pro-preview` |
 
@@ -427,7 +427,7 @@ client.post(API_URL)
 
 ```json
 {
-  "model": "claude-opus-4-5-20251101",
+  "model": "claude-opus-4-6",
   "max_tokens": 4096,
   "stream": true,
   "system": [
@@ -749,7 +749,7 @@ Token limits are defined in `forge-context/src/model_limits.rs`:
 
 | Model | Context Window | Max Output |
 | :--- | :--- | :--- |
-| `claude-opus-4-5-20251101` | 200,000 | 64,000 |
+| `claude-opus-4-6` | 1,000,000 | 128,000 |
 | `claude-sonnet-4-5-20250514` | 200,000 | 64,000 |
 | `claude-haiku-4-5-20251001` | 200,000 | 64,000 |
 | `gpt-5.2-pro` | 400,000 | 128,000 |
@@ -828,7 +828,7 @@ let config = ApiConfig::new(api_key, model)?
 ```rust
 let config = ApiConfig::new(
     ApiKey::Claude("...".into()),
-    Provider::Claude.parse_model("claude-opus-4-5-20251101")?,
+    Provider::Claude.parse_model("claude-opus-4-6")?,
 )?;
 
 // Enable thinking with 4096 token budget

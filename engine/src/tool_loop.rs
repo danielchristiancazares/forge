@@ -304,7 +304,12 @@ impl App {
             }));
             if let JournalStatus::Persisted(id) = journal_status {
                 for result in &results {
-                    let _ = self.tool_journal.record_result(id, result);
+                    if let Err(e) = self.tool_journal.record_result(id, result) {
+                        tracing::warn!(
+                            "Failed to journal max-iterations result for {}: {e}",
+                            result.tool_call_id
+                        );
+                    }
                 }
             }
             self.commit_tool_batch(
@@ -325,7 +330,12 @@ impl App {
         let plan = self.plan_tool_calls(&tool_calls, pre_resolved);
         if let JournalStatus::Persisted(id) = journal_status {
             for result in &plan.pre_resolved {
-                let _ = self.tool_journal.record_result(id, result);
+                if let Err(e) = self.tool_journal.record_result(id, result) {
+                    tracing::warn!(
+                        "Failed to journal pre-resolved result for {}: {e}",
+                        result.tool_call_id
+                    );
+                }
             }
         }
 
@@ -792,6 +802,7 @@ impl App {
                     let Some(completed) = Box::pin(spawned.complete()).now_or_never() else {
                         // Shouldn't happen since is_finished() was true
                         tracing::error!("Tool was finished but complete() didn't return");
+                        self.finish_turn(batch.turn);
                         self.state = OperationState::Idle;
                         return;
                     };
@@ -858,8 +869,13 @@ impl App {
 
                     // Record result to journal
                     let mut batch = batch;
-                    if let JournalStatus::Persisted(id) = &batch.journal_status {
-                        let _ = self.tool_journal.record_result(*id, &result);
+                    if let JournalStatus::Persisted(id) = &batch.journal_status
+                        && let Err(e) = self.tool_journal.record_result(*id, &result)
+                    {
+                        tracing::warn!(
+                            "Failed to journal tool result for {}: {e}",
+                            result.tool_call_id
+                        );
                     }
                     batch.results.push(result);
 
@@ -922,8 +938,13 @@ impl App {
                 continue;
             }
             let result = ToolResult::error(call.id.clone(), call.name.clone(), "Cancelled by user");
-            if let JournalStatus::Persisted(id) = &journal_status {
-                let _ = self.tool_journal.record_result(*id, &result);
+            if let JournalStatus::Persisted(id) = &journal_status
+                && let Err(e) = self.tool_journal.record_result(*id, &result)
+            {
+                tracing::warn!(
+                    "Failed to journal cancelled result for {}: {e}",
+                    result.tool_call_id
+                );
             }
             results.push(result);
         }
@@ -1139,7 +1160,12 @@ impl App {
 
         if let JournalStatus::Persisted(id) = &batch.journal_status {
             for result in &denied_results {
-                let _ = self.tool_journal.record_result(*id, result);
+                if let Err(e) = self.tool_journal.record_result(*id, result) {
+                    tracing::warn!(
+                        "Failed to journal denied result for {}: {e}",
+                        result.tool_call_id
+                    );
+                }
             }
         }
         batch.results.extend(denied_results);
@@ -1235,7 +1261,9 @@ impl App {
 
         // RecoveredToolBatch always has a valid batch_id from the journal
         for result in &results {
-            let _ = self.tool_journal.record_result(batch.batch_id, result);
+            if let Err(e) = self.tool_journal.record_result(batch.batch_id, result) {
+                tracing::warn!("Failed to journal recovery result: {e}");
+            }
         }
 
         let auto_resume = true;

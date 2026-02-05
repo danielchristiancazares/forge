@@ -535,6 +535,22 @@ pub mod claude {
 
     const API_URL: &str = "https://api.anthropic.com/v1/messages";
 
+    fn is_opus_4_6_model(model: &str) -> bool {
+        model.to_ascii_lowercase().starts_with("claude-opus-4-6")
+    }
+
+    fn anthropic_beta_header(model: &str, limits: OutputLimits) -> Option<&'static str> {
+        if is_opus_4_6_model(model) {
+            return Some("context-1m-2025-08-07,compact-2026-01-12");
+        }
+
+        if limits.has_thinking() {
+            Some("interleaved-thinking-2025-05-14,context-management-2025-06-27")
+        } else {
+            None
+        }
+    }
+
     /// Build a content block with optional `cache_control`.
     fn content_block(text: &str, cache_hint: CacheHint) -> serde_json::Value {
         match cache_hint {
@@ -641,6 +657,21 @@ pub mod claude {
         // Flush any remaining assistant content
         flush_assistant(&mut pending_assistant_content, &mut api_messages);
 
+        if is_opus_4_6_model(model)
+            && matches!(
+                api_messages.last(),
+                Some(last) if last
+                    .get("role")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("assistant")
+            )
+        {
+            api_messages.pop();
+            tracing::warn!(
+                "Dropped trailing assistant prefill for Opus 4.6 compatibility (Anthropic no longer accepts assistant-prefilled final turns)"
+            );
+        }
+
         let mut body = serde_json::Map::new();
         body.insert("model".into(), json!(model));
         body.insert("max_tokens".into(), json!(limits.max_output_tokens()));
@@ -668,9 +699,30 @@ pub mod claude {
             body.insert("tools".into(), json!(tool_schemas));
         }
 
-        // Enable thinking if configured. We now properly replay thinking with signatures
-        // via redacted_thinking blocks, so this works across multi-turn conversations.
-        if let ThinkingState::Enabled(budget) = limits.thinking() {
+        // Opus 4.6 always uses adaptive thinking with max effort.
+        if is_opus_4_6_model(model) {
+            body.insert(
+                "thinking".into(),
+                json!({
+                    "type": "adaptive"
+                }),
+            );
+            body.insert(
+                "output_config".into(),
+                json!({
+                    "effort": "max"
+                }),
+            );
+            body.insert(
+                "context_management".into(),
+                json!({
+                    "edits": [{
+                        "type": "compact_20260112"
+                    }]
+                }),
+            );
+        // Legacy thinking mode for pre-4.6 models.
+        } else if let ThinkingState::Enabled(budget) = limits.thinking() {
             body.insert(
                 "thinking".into(),
                 json!({
@@ -680,8 +732,7 @@ pub mod claude {
             );
 
             // Add context_management to preserve all thinking blocks for cache efficiency.
-            // Opus 4.5 preserves by default, but this is harmless there and essential for
-            // Sonnet 4.5 / Haiku 4.5 where thinking blocks are stripped by default.
+            // Essential for Sonnet 4.5 / Haiku 4.5 where thinking blocks are stripped by default.
             body.insert(
                 "context_management".into(),
                 json!({
@@ -733,7 +784,14 @@ pub mod claude {
                     }
                 }
 
-                typed::Event::MessageDelta { usage } => {
+                typed::Event::MessageDelta { delta, usage } => {
+                    if let Some(typed::MessageDeltaInfo {
+                        stop_reason: Some(typed::StopReason::Compaction),
+                    }) = delta
+                    {
+                        tracing::info!("Server-side compaction triggered by Anthropic API");
+                    }
+
                     if let Some(usage) = usage
                         && usage.output_tokens > 0
                     {
@@ -829,6 +887,7 @@ pub mod claude {
             system_prompt,
             tools,
         );
+        let beta_header = anthropic_beta_header(config.model().as_str(), limits);
 
         let api_key = config.api_key().to_string();
         let body_json = body.clone();
@@ -837,16 +896,17 @@ pub mod claude {
         // Streaming requests omit X-Stainless-Timeout (no total timeout)
         let outcome = send_with_retry(
             || {
-                client
+                let mut request = client
                     .post(API_URL)
                     .header("x-api-key", &api_key)
                     .header("anthropic-version", "2023-06-01")
-                    .header(
-                        "anthropic-beta",
-                        "interleaved-thinking-2025-05-14,context-management-2025-06-27",
-                    )
-                    .header("content-type", "application/json")
-                    .json(&body_json)
+                    .header("content-type", "application/json");
+
+                if let Some(beta) = beta_header {
+                    request = request.header("anthropic-beta", beta);
+                }
+
+                request.json(&body_json)
             },
             None, // No timeout header for streaming
             &retry_config,
@@ -889,8 +949,8 @@ pub mod claude {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use forge_types::NonEmptyString;
         use forge_types::Provider;
+        use forge_types::{ModelName, NonEmptyString};
 
         #[test]
         fn hoists_system_messages_into_system_blocks() {
@@ -934,6 +994,89 @@ pub mod claude {
                 Some("ephemeral")
             );
             assert_eq!(system[1]["text"].as_str(), Some("Distillate"));
+        }
+
+        #[test]
+        fn opus_4_6_always_uses_adaptive_and_max_effort() {
+            let model = Provider::Claude.default_model();
+            let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
+            let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+
+            let body = build_request_body(model.as_str(), &messages, limits, None, None);
+
+            assert_eq!(body["thinking"]["type"].as_str(), Some("adaptive"));
+            assert_eq!(body["output_config"]["effort"].as_str(), Some("max"));
+            assert_eq!(
+                body["context_management"]["edits"][0]["type"].as_str(),
+                Some("compact_20260112")
+            );
+        }
+
+        #[test]
+        fn opus_4_6_uses_adaptive_even_when_thinking_not_requested() {
+            let model = Provider::Claude.default_model();
+            let limits = OutputLimits::new(16_000);
+            let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+
+            let body = build_request_body(model.as_str(), &messages, limits, None, None);
+
+            assert_eq!(body["thinking"]["type"].as_str(), Some("adaptive"));
+            assert_eq!(body["output_config"]["effort"].as_str(), Some("max"));
+        }
+
+        #[test]
+        fn non_opus_4_6_thinking_keeps_budget_tokens() {
+            let model: ModelName = Provider::Claude
+                .parse_model("claude-sonnet-4-5-20250514")
+                .unwrap();
+            let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
+            let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+
+            let body = build_request_body(model.as_str(), &messages, limits, None, None);
+
+            assert_eq!(body["thinking"]["type"].as_str(), Some("enabled"));
+            assert_eq!(body["thinking"]["budget_tokens"].as_u64(), Some(4096));
+            assert_eq!(
+                body["context_management"]["edits"][0]["type"].as_str(),
+                Some("clear_thinking_20251015")
+            );
+        }
+
+        #[test]
+        fn opus_4_6_drops_trailing_assistant_prefill() {
+            let model = Provider::Claude.default_model();
+            let limits = OutputLimits::new(1024);
+            let messages = vec![
+                CacheableMessage::plain(Message::try_user("hi").unwrap()),
+                CacheableMessage::plain(Message::assistant(
+                    model.clone(),
+                    NonEmptyString::new("prefill").unwrap(),
+                )),
+            ];
+
+            let body = build_request_body(model.as_str(), &messages, limits, None, None);
+            let request_messages = body["messages"].as_array().unwrap();
+
+            assert_eq!(request_messages.len(), 1);
+            assert_eq!(request_messages[0]["role"].as_str(), Some("user"));
+        }
+
+        #[test]
+        fn anthropic_beta_header_sets_context_1m_for_opus_4_6() {
+            let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
+            assert_eq!(
+                anthropic_beta_header("claude-opus-4-6", limits),
+                Some("context-1m-2025-08-07,compact-2026-01-12")
+            );
+        }
+
+        #[test]
+        fn anthropic_beta_header_kept_for_legacy_thinking_models() {
+            let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
+            assert_eq!(
+                anthropic_beta_header("claude-sonnet-4-5-20250514", limits),
+                Some("interleaved-thinking-2025-05-14,context-management-2025-06-27")
+            );
         }
 
         #[test]
@@ -2269,6 +2412,12 @@ pub mod gemini {
                             // Function call
                             if let Some(func_call) = part.function_call {
                                 let name = func_call.name.unwrap_or_default();
+                                if name.is_empty() {
+                                    tracing::warn!(
+                                        "Gemini function call with empty name, skipping"
+                                    );
+                                    continue;
+                                }
 
                                 // Generate UUID for tool call ID (Gemini doesn't provide one)
                                 let id = format!("call_{}", Uuid::new_v4());

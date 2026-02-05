@@ -294,7 +294,12 @@ impl App {
                 // Idempotency guard: if history already contains this step_id,
                 // the response was already committed - just clean up stale journals
                 if self.context_manager.has_step_id(step_id) {
-                    let _ = self.tool_journal.discard_batch(recovered_batch.batch_id);
+                    if let Err(e) = self.tool_journal.discard_batch(recovered_batch.batch_id) {
+                        tracing::warn!(
+                            "Failed to discard idempotent tool batch {}: {e}",
+                            recovered_batch.batch_id
+                        );
+                    }
                     if self.autosave_history() {
                         self.finalize_journal_commit(step_id);
                     } else {
@@ -325,7 +330,9 @@ impl App {
 
             tracing::warn!("Tool batch recovery found but no stream journal step.");
             self.push_notification("Recovered tool batch but stream journal missing; discarding");
-            let _ = self.tool_journal.discard_batch(recovered_batch.batch_id);
+            if let Err(e) = self.tool_journal.discard_batch(recovered_batch.batch_id) {
+                tracing::warn!("Failed to discard orphaned tool batch: {e}");
+            }
             return None;
         }
 

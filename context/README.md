@@ -222,7 +222,7 @@ The reserved output is clamped to the model's `max_output` - requesting more tha
 
 | Model | Context Window | Max Output |
 |-------|---------------|------------|
-| `claude-opus-4-5-20251101` | 200,000 | 64,000 |
+| `claude-opus-4-6` | 1,000,000 | 128,000 |
 | `claude-sonnet-4-5-20250514` | 200,000 | 64,000 |
 | `claude-haiku-4-5-20251001` | 200,000 | 64,000 |
 | `gpt-5.2-pro` | 400,000 | 128,000 |
@@ -1181,7 +1181,7 @@ println!("Effective input budget: {}", limits.effective_input_budget());
 
 | Model | Context Window | Max Output |
 |-------|---------------|------------|
-| `claude-opus-4-5-20251101` | 200,000 | 64,000 |
+| `claude-opus-4-6` | 1,000,000 | 128,000 |
 | `claude-sonnet-4-5-20250514` | 200,000 | 64,000 |
 | `claude-haiku-4-5-20251001` | 200,000 | 64,000 |
 | `gpt-5.2-pro` | 400,000 | 128,000 |
@@ -1259,7 +1259,7 @@ if let Some(recovered) = journal.recover()? {
 }
 
 // Begin streaming session (model name stored for recovery attribution)
-let mut active: ActiveJournal = journal.begin_session("claude-opus-4-5")?;
+let mut active: ActiveJournal = journal.begin_session("claude-opus-4-6")?;
 
 // Persist each delta BEFORE displaying to user
 active.append_text(&mut journal, "Hello")?;

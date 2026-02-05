@@ -309,7 +309,7 @@ impl std::fmt::Display for PersistableContent {
 ///
 /// | Variant | API | Default Model |
 /// |---------|-----|---------------|
-/// | `Claude` | Anthropic Messages API | `claude-opus-4-5-20251101` |
+/// | `Claude` | Anthropic Messages API | `claude-opus-4-6` |
 /// | `OpenAI` | OpenAI Responses API | `gpt-5.2` |
 /// | `Gemini` | Google GenerateContent API | `gemini-3-pro-preview` |
 ///
@@ -500,7 +500,7 @@ pub enum PredefinedModel {
 }
 
 const CLAUDE_MODEL_IDS: &[&str] = &[
-    "claude-opus-4-5-20251101",
+    "claude-opus-4-6",
     "claude-sonnet-4-5-20250514",
     "claude-haiku-4-5-20251001",
 ];
@@ -510,7 +510,7 @@ const OPENAI_MODEL_IDS: &[&str] = &["gpt-5.2-pro", "gpt-5.2"];
 const GEMINI_MODEL_IDS: &[&str] = &["gemini-3-pro-preview", "gemini-3-flash-preview"];
 
 const ALL_MODEL_IDS: &[&str] = &[
-    "claude-opus-4-5-20251101",
+    "claude-opus-4-6",
     "claude-sonnet-4-5-20250514",
     "claude-haiku-4-5-20251001",
     "gpt-5.2-pro",
@@ -544,7 +544,7 @@ impl PredefinedModel {
     #[must_use]
     pub const fn display_name(self) -> &'static str {
         match self {
-            PredefinedModel::ClaudeOpus => "Anthropic Claude Opus 4.5",
+            PredefinedModel::ClaudeOpus => "Anthropic Claude Opus 4.6",
             PredefinedModel::ClaudeSonnet => "Anthropic Claude Sonnet 4.5",
             PredefinedModel::ClaudeHaiku => "Anthropic Claude Haiku 4.5",
             PredefinedModel::Gpt52Pro => "OpenAI GPT 5.2 Pro",
@@ -558,7 +558,7 @@ impl PredefinedModel {
     #[must_use]
     pub const fn model_name(self) -> &'static str {
         match self {
-            PredefinedModel::ClaudeOpus => "Opus 4.5",
+            PredefinedModel::ClaudeOpus => "Opus 4.6",
             PredefinedModel::ClaudeSonnet => "Sonnet 4.5",
             PredefinedModel::ClaudeHaiku => "Haiku 4.5",
             PredefinedModel::Gpt52Pro => "GPT 5.2 Pro",
@@ -584,7 +584,7 @@ impl PredefinedModel {
     #[must_use]
     pub const fn model_id(self) -> &'static str {
         match self {
-            PredefinedModel::ClaudeOpus => "claude-opus-4-5-20251101",
+            PredefinedModel::ClaudeOpus => "claude-opus-4-6",
             PredefinedModel::ClaudeSonnet => "claude-sonnet-4-5-20250514",
             PredefinedModel::ClaudeHaiku => "claude-haiku-4-5-20251001",
             PredefinedModel::Gpt52Pro => "gpt-5.2-pro",
@@ -1775,14 +1775,15 @@ mod tests {
     fn model_parse_validates_claude_prefix() {
         let provider = Provider::Claude;
         assert!(provider.parse_model("gpt-5.2").is_err());
-        assert!(provider.parse_model("claude-opus-4-5-20251101").is_ok());
+        assert!(provider.parse_model("claude-opus-4-6").is_ok());
+        assert!(provider.parse_model("claude-opus-4-5-20251101").is_err());
     }
 
     #[test]
     fn model_parse_validates_gemini_prefix() {
         let provider = Provider::Gemini;
         assert!(provider.parse_model("gpt-5.2").is_err());
-        assert!(provider.parse_model("claude-opus-4-5-20251101").is_err());
+        assert!(provider.parse_model("claude-opus-4-6").is_err());
         assert!(provider.parse_model("gemini-3-pro-preview").is_ok());
     }
 

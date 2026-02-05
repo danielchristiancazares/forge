@@ -756,8 +756,8 @@ async fn write_patches_to_dir(
             continue;
         };
 
-        total_insertions += ins;
-        total_deletions += del;
+        total_insertions = total_insertions.saturating_add(ins);
+        total_deletions = total_deletions.saturating_add(del);
 
         let patch_filename = format!("{}.patch", sanitize_path_for_filename(&path));
         let patch_path = output_dir.join(&patch_filename);
@@ -1452,15 +1452,19 @@ async fn handle_git_branch(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErro
     let mut cmd_args: Vec<String> = vec!["branch".into()];
 
     if let Some(name) = &req.create {
+        cmd_args.push("--".into()); // Prevent flag injection
         cmd_args.push(name.clone());
     } else if let Some(name) = &req.delete {
         cmd_args.push("-d".into());
+        cmd_args.push("--".into()); // Prevent flag injection
         cmd_args.push(name.clone());
     } else if let Some(name) = &req.force_delete {
         cmd_args.push("-D".into());
+        cmd_args.push("--".into()); // Prevent flag injection
         cmd_args.push(name.clone());
     } else if let Some(old_name) = &req.rename {
         cmd_args.push("-m".into());
+        cmd_args.push("--".into()); // Prevent flag injection
         cmd_args.push(old_name.clone());
         if let Some(new_name) = &req.new_name {
             cmd_args.push(new_name.clone());
@@ -1513,11 +1517,26 @@ async fn handle_git_checkout(ctx: &ToolCtx, args: Value) -> Result<Value, ToolEr
     let mut cmd_args: Vec<String> = vec!["checkout".into()];
 
     if let Some(branch) = &req.create_branch {
+        if branch.starts_with('-') {
+            return Err(ToolError::BadArgs {
+                message: "branch name cannot start with '-'".to_string(),
+            });
+        }
         cmd_args.push("-b".into());
         cmd_args.push(branch.clone());
     } else if let Some(branch) = &req.branch {
+        if branch.starts_with('-') {
+            return Err(ToolError::BadArgs {
+                message: "branch name cannot start with '-'".to_string(),
+            });
+        }
         cmd_args.push(branch.clone());
     } else if let Some(commit) = &req.commit {
+        if commit.starts_with('-') {
+            return Err(ToolError::BadArgs {
+                message: "commit ref cannot start with '-'".to_string(),
+            });
+        }
         cmd_args.push(commit.clone());
     }
 
@@ -1671,6 +1690,11 @@ async fn handle_git_show(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
     let mut cmd_args: Vec<String> = vec!["show".into()];
 
     if let Some(commit) = &req.commit {
+        if commit.starts_with('-') {
+            return Err(ToolError::BadArgs {
+                message: "commit ref cannot start with '-'".to_string(),
+            });
+        }
         cmd_args.push(commit.clone());
     }
     if req.stat {
@@ -1733,6 +1757,11 @@ async fn handle_git_blame(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError
     }
 
     if let Some(commit) = &req.commit {
+        if commit.starts_with('-') {
+            return Err(ToolError::BadArgs {
+                message: "commit ref cannot start with '-'".to_string(),
+            });
+        }
         cmd_args.push(commit.clone());
     }
 

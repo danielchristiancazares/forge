@@ -560,7 +560,7 @@ mod tests {
         use forge_types::ApiKey;
 
         let model = Provider::Claude
-            .parse_model("claude-opus-4-5-20251101")
+            .parse_model("claude-opus-4-6")
             .expect("parse model");
         let config = ApiConfig::new(ApiKey::Claude("fake-key".to_string()), model).expect("config");
         let counter = TokenCounter::new();

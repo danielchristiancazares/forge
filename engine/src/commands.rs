@@ -265,12 +265,16 @@ impl super::App {
                 active.abort_handle().abort();
 
                 // Clean up tool batch if journaled
-                if let ActiveStream::Journaled { tool_batch_id, .. } = &active {
-                    let _ = self.tool_journal.discard_batch(*tool_batch_id);
+                if let ActiveStream::Journaled { tool_batch_id, .. } = &active
+                    && let Err(e) = self.tool_journal.discard_batch(*tool_batch_id)
+                {
+                    tracing::warn!("Failed to discard tool batch on cancel: {e}");
                 }
 
                 // Clean up journal state
-                let _ = active.into_journal().discard(&mut self.stream_journal);
+                if let Err(e) = active.into_journal().discard(&mut self.stream_journal) {
+                    tracing::warn!("Failed to discard stream journal on cancel: {e}");
+                }
 
                 // Rollback the user message since no response was generated
                 self.rollback_pending_user_message();
@@ -331,24 +335,32 @@ impl super::App {
                     OperationState::Streaming(active) => {
                         active.abort_handle().abort();
                         // Clean up tool batch if journaled
-                        if let ActiveStream::Journaled { tool_batch_id, .. } = &active {
-                            let _ = self.tool_journal.discard_batch(*tool_batch_id);
+                        if let ActiveStream::Journaled { tool_batch_id, .. } = &active
+                            && let Err(e) = self.tool_journal.discard_batch(*tool_batch_id)
+                        {
+                            tracing::warn!("Failed to discard tool batch on clear: {e}");
                         }
-                        let _ = active.into_journal().discard(&mut self.stream_journal);
+                        if let Err(e) = active.into_journal().discard(&mut self.stream_journal) {
+                            tracing::warn!("Failed to discard stream journal on clear: {e}");
+                        }
                     }
                     OperationState::ToolLoop(state) => {
                         let ToolLoopState { batch, phase } = *state;
                         if let ToolLoopPhase::Executing(exec) = &phase {
                             exec.spawned.abort();
                         }
-                        if let JournalStatus::Persisted(id) = batch.journal_status {
-                            let _ = self.tool_journal.discard_batch(id);
+                        if let JournalStatus::Persisted(id) = batch.journal_status
+                            && let Err(e) = self.tool_journal.discard_batch(id)
+                        {
+                            tracing::warn!("Failed to discard tool batch on clear: {e}");
                         }
                         self.discard_journal_step(batch.step_id);
                     }
                     OperationState::ToolRecovery(state) => {
                         // RecoveredToolBatch always has a valid batch_id from the journal
-                        let _ = self.tool_journal.discard_batch(state.batch.batch_id);
+                        if let Err(e) = self.tool_journal.discard_batch(state.batch.batch_id) {
+                            tracing::warn!("Failed to discard recovered tool batch on clear: {e}");
+                        }
                         self.discard_journal_step(state.step_id);
                     }
                     OperationState::Distilling(state) => {
@@ -597,8 +609,8 @@ mod tests {
     fn parse_model_command() {
         assert_eq!(Command::parse("model"), Command::Model(None));
         assert_eq!(
-            Command::parse("model claude-opus-4-5-20251101"),
-            Command::Model(Some("claude-opus-4-5-20251101"))
+            Command::parse("model claude-opus-4-6"),
+            Command::Model(Some("claude-opus-4-6"))
         );
         assert_eq!(
             Command::parse("model gpt-5.2"),

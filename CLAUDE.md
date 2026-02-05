@@ -30,7 +30,7 @@ Config: `~/.forge/config.toml` (supports `${ENV_VAR}` expansion)
 
 ```toml
 [app]
-model = "claude-opus-4-5-20251101"  # Provider inferred from model prefix
+model = "claude-opus-4-6"  # Provider inferred from model prefix
 tui = "full"               # or "inline"
 show_thinking = false      # Render provider thinking/reasoning in UI
 ascii_only = false         # ASCII-only glyphs for icons/spinners
@@ -168,7 +168,7 @@ The codebase enforces correctness through types (see `DESIGN.md`):
 
 | Provider | Default Model | Context | Output |
 |----------|---------------|---------|--------|
-| Claude | `claude-opus-4-5-20251101` | 200K | 64K |
+| Claude | `claude-opus-4-6` | 1M | 128K |
 | OpenAI | `gpt-5.2` | 400K | 128K |
 | Gemini | `gemini-3-pro-preview` | 1M | 65K |
 

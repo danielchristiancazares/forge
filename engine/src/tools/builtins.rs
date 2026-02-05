@@ -722,6 +722,16 @@ impl ToolExecutor for ApplyPatchTool {
                     }
                 };
 
+                // Read file once to avoid TOCTOU between hash check and patch application
+                let original_bytes = if existed {
+                    std::fs::read(&resolved).map_err(|e| ToolError::PatchFailed {
+                        file: resolved.clone(),
+                        message: e.to_string(),
+                    })?
+                } else {
+                    Vec::new()
+                };
+
                 // Stale file protection - only for EXISTING files
                 // New files don't need stale check (there's nothing to go stale)
                 if existed {
@@ -736,11 +746,8 @@ impl ToolExecutor for ApplyPatchTool {
                         });
                     };
 
-                    let current_sha =
-                        compute_sha256(&resolved).map_err(|_| ToolError::StaleFile {
-                            file: resolved.clone(),
-                            reason: "File content changed since last read".to_string(),
-                        })?;
+                    // Hash the already-read bytes to avoid TOCTOU race
+                    let current_sha = compute_sha256_bytes(&original_bytes);
                     if current_sha != entry.sha256 {
                         return Err(ToolError::StaleFile {
                             file: resolved.clone(),
@@ -748,15 +755,6 @@ impl ToolExecutor for ApplyPatchTool {
                         });
                     }
                 }
-
-                let original_bytes = if existed {
-                    std::fs::read(&resolved).map_err(|e| ToolError::PatchFailed {
-                        file: resolved.clone(),
-                        message: e.to_string(),
-                    })?
-                } else {
-                    Vec::new()
-                };
 
                 let mut content = if existed {
                     lp1::parse_file(&original_bytes).map_err(|e| ToolError::PatchFailed {

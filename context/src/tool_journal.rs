@@ -655,17 +655,34 @@ fn ensure_secure_dir(path: &Path) -> Result<()> {
 
 fn ensure_secure_db_files(path: &Path) -> Result<()> {
     if !path.exists() {
-        let _file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path)
-            .with_context(|| format!("Failed to create database file: {}", path.display()))?;
+        // Use atomic mode setting on Unix to avoid TOCTOU race between create and chmod
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let _file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .mode(0o600)
+                .open(path)
+                .with_context(|| format!("Failed to create database file: {}", path.display()))?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(path)
+                .with_context(|| format!("Failed to create database file: {}", path.display()))?;
+        }
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        // Ensure permissions are correct even for pre-existing files
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .with_context(|| format!("Failed to set database permissions: {}", path.display()))?;
         for suffix in ["-wal", "-shm"] {
@@ -908,5 +925,40 @@ mod tests {
         let recovered = journal.recover().unwrap().expect("should recover");
         // Invalid JSON should become empty object
         assert!(recovered.calls[0].arguments.is_object());
+    }
+
+    #[test]
+    fn recover_deserializes_escaped_arguments_json() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+
+        let batch_id = journal.begin_streaming_batch("test-model").unwrap();
+        journal
+            .record_call_start(
+                batch_id,
+                0,
+                "call_1",
+                "test_tool",
+                &ThoughtSignatureState::Unsigned,
+            )
+            .unwrap();
+        journal
+            .append_call_args(batch_id, "call_1", r#"{"unicode":"\u26"#)
+            .unwrap();
+        journal
+            .append_call_args(
+                batch_id,
+                "call_1",
+                r#"3A","path":"https:\/\/example.com\/x","msg":"slash\/ok"}"#,
+            )
+            .unwrap();
+
+        let recovered = journal.recover().unwrap().expect("should recover");
+        assert_eq!(recovered.calls.len(), 1);
+        assert_eq!(recovered.calls[0].arguments["unicode"], "\u{263A}");
+        assert_eq!(
+            recovered.calls[0].arguments["path"],
+            "https://example.com/x"
+        );
+        assert_eq!(recovered.calls[0].arguments["msg"], "slash/ok");
     }
 }

@@ -44,9 +44,14 @@ fn provider_env_vars() {
 
 #[test]
 fn model_name_parse_known() {
-    let model = ModelName::parse(Provider::Claude, "claude-opus-4-5-20251101").unwrap();
+    let model = ModelName::parse(Provider::Claude, "claude-opus-4-6").unwrap();
     assert_eq!(model.predefined(), PredefinedModel::ClaudeOpus);
     assert_eq!(model.provider(), Provider::Claude);
+}
+
+#[test]
+fn model_name_parse_rejects_removed_opus_4_5() {
+    assert!(ModelName::parse(Provider::Claude, "claude-opus-4-5-20251101").is_err());
 }
 
 #[test]
@@ -140,5 +145,5 @@ fn provider_available_models_not_empty() {
 #[test]
 fn model_name_display() {
     let model = ModelName::from_predefined(PredefinedModel::ClaudeOpus);
-    assert_eq!(format!("{model}"), "claude-opus-4-5-20251101");
+    assert_eq!(format!("{model}"), "claude-opus-4-6");
 }

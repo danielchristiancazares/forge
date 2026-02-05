@@ -147,7 +147,7 @@ Create `~/.forge/config.toml` for persistent configuration. All settings are opt
 
 ```toml
 [app]
-model = "claude-opus-4-5-20251101"   # Model name (provider inferred from prefix)
+model = "claude-opus-4-6"   # Model name (provider inferred from prefix)
 tui = "full"                           # "full" (alternate screen) or "inline"
 show_thinking = false                  # Render provider thinking/reasoning in UI
 

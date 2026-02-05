@@ -803,7 +803,7 @@ pub fn expand_env_vars(value: &str) -> String {
 
 ```toml
 [app]
-model = "claude-opus-4-5-20251101"  # Provider inferred from prefix
+model = "claude-opus-4-6"  # Provider inferred from prefix
 tui = "full"               # or "inline"
 max_output_tokens = 16000
 ascii_only = false         # ASCII-only glyphs for icons/spinners

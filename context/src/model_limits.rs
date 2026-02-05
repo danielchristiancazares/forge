@@ -114,9 +114,10 @@ impl ResolvedModelLimits {
 
 fn default_limits_for(model: PredefinedModel) -> ModelLimits {
     match model {
-        PredefinedModel::ClaudeOpus
-        | PredefinedModel::ClaudeSonnet
-        | PredefinedModel::ClaudeHaiku => ModelLimits::new(200_000, 64_000),
+        PredefinedModel::ClaudeOpus => ModelLimits::new(1_000_000, 128_000),
+        PredefinedModel::ClaudeSonnet | PredefinedModel::ClaudeHaiku => {
+            ModelLimits::new(200_000, 64_000)
+        }
         PredefinedModel::Gpt52Pro | PredefinedModel::Gpt52 => ModelLimits::new(400_000, 128_000),
         PredefinedModel::GeminiPro | PredefinedModel::GeminiFlash => {
             ModelLimits::new(1_048_576, 65_536)
@@ -310,7 +311,7 @@ mod tests {
         }
 
         #[test]
-        fn get_claude_opus_4_5_models() {
+        fn get_claude_opus_4_6_models() {
             let registry = ModelRegistry::new();
 
             let resolved = registry.get(&model(PredefinedModel::ClaudeOpus));
@@ -319,8 +320,8 @@ mod tests {
                 ModelLimitsSource::Catalog(PredefinedModel::ClaudeOpus)
             );
             let limits = resolved.limits();
-            assert_eq!(limits.context_window(), 200_000);
-            assert_eq!(limits.max_output(), 64_000);
+            assert_eq!(limits.context_window(), 1_000_000);
+            assert_eq!(limits.max_output(), 128_000);
         }
 
         #[test]
@@ -394,7 +395,7 @@ mod tests {
 
             // Before override, uses catalog defaults
             let limits = registry.get(&model(PredefinedModel::ClaudeOpus)).limits();
-            assert_eq!(limits.context_window(), 200_000);
+            assert_eq!(limits.context_window(), 1_000_000);
 
             // Set override
             registry.set_override(PredefinedModel::ClaudeOpus, ModelLimits::new(50_000, 8000));

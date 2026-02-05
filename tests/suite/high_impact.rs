@@ -124,7 +124,7 @@ fn stream_journal_recovers_incomplete_stream() {
 
     // Begin a streaming session
     let mut session = journal
-        .begin_session("claude-opus-4-5-test")
+        .begin_session("claude-opus-4-6-test")
         .expect("begin_session should succeed");
 
     // Append some text deltas

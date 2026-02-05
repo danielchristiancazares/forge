@@ -30,6 +30,7 @@ pub mod claude {
             message: MessageInfo,
         },
         MessageDelta {
+            delta: Option<MessageDeltaInfo>,
             usage: Option<OutputUsage>,
         },
         ContentBlockStart {
@@ -85,6 +86,26 @@ pub mod claude {
     pub struct OutputUsage {
         #[serde(default)]
         pub output_tokens: u32,
+    }
+
+    /// Stop reason from message_delta's `delta` field.
+    #[derive(Debug, Deserialize, PartialEq, Eq, Clone, Copy)]
+    #[serde(rename_all = "snake_case")]
+    pub enum StopReason {
+        EndTurn,
+        MaxTokens,
+        StopSequence,
+        ToolUse,
+        Compaction,
+        #[serde(other)]
+        Unknown,
+    }
+
+    /// The `delta` object inside a `message_delta` event.
+    #[derive(Debug, Deserialize)]
+    pub struct MessageDeltaInfo {
+        #[serde(default)]
+        pub stop_reason: Option<StopReason>,
     }
 
     /// Content block in content_block_start.
@@ -272,6 +293,59 @@ pub mod claude {
                     assert_eq!(usage.input_tokens, 100);
                     assert_eq!(usage.cache_read_input_tokens, 0);
                     assert_eq!(usage.cache_creation_input_tokens, 0);
+                }
+                _ => panic!("wrong event type"),
+            }
+        }
+
+        #[test]
+        fn deserialize_message_delta_with_compaction_stop_reason() {
+            let json = r#"{
+                "type": "message_delta",
+                "delta": {"stop_reason": "compaction"},
+                "usage": {"output_tokens": 42}
+            }"#;
+            let event: Event = serde_json::from_str(json).unwrap();
+            match event {
+                Event::MessageDelta { delta, usage } => {
+                    let info = delta.unwrap();
+                    assert_eq!(info.stop_reason, Some(StopReason::Compaction));
+                    assert_eq!(usage.unwrap().output_tokens, 42);
+                }
+                _ => panic!("wrong event type"),
+            }
+        }
+
+        #[test]
+        fn deserialize_message_delta_with_end_turn_stop_reason() {
+            let json = r#"{
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 100}
+            }"#;
+            let event: Event = serde_json::from_str(json).unwrap();
+            match event {
+                Event::MessageDelta { delta, usage } => {
+                    let info = delta.unwrap();
+                    assert_eq!(info.stop_reason, Some(StopReason::EndTurn));
+                    assert_eq!(usage.unwrap().output_tokens, 100);
+                }
+                _ => panic!("wrong event type"),
+            }
+        }
+
+        #[test]
+        fn deserialize_message_delta_unknown_stop_reason() {
+            let json = r#"{
+                "type": "message_delta",
+                "delta": {"stop_reason": "future_reason"},
+                "usage": {"output_tokens": 0}
+            }"#;
+            let event: Event = serde_json::from_str(json).unwrap();
+            match event {
+                Event::MessageDelta { delta, .. } => {
+                    let info = delta.unwrap();
+                    assert_eq!(info.stop_reason, Some(StopReason::Unknown));
                 }
                 _ => panic!("wrong event type"),
             }

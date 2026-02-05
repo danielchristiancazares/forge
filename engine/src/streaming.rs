@@ -227,6 +227,7 @@ impl super::App {
             .await;
 
             if let Err(e) = result {
+                tracing::warn!("LLM streaming request failed: {e}");
                 let _ = tx.send(StreamEvent::Error(e.to_string())).await;
             }
         };
@@ -475,8 +476,10 @@ impl super::App {
                 abort_handle.abort();
 
                 // Discard any in-progress tool batch to prevent stale recovery
-                if let Some(batch_id) = tool_batch_id {
-                    let _ = self.tool_journal.discard_batch(batch_id);
+                if let Some(batch_id) = tool_batch_id
+                    && let Err(e) = self.tool_journal.discard_batch(batch_id)
+                {
+                    tracing::warn!("Failed to discard tool batch on stream error: {e}");
                 }
 
                 let step_id = journal.step_id();

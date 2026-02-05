@@ -739,6 +739,59 @@ fn tool_call_args_overflow_pre_resolved_error() {
     assert_eq!(parsed.calls[0].arguments, json!({}));
 }
 
+#[test]
+fn tool_call_args_json_escaping_is_deserialized_with_serde() {
+    let (_tx, rx) = mpsc::channel(1024);
+    let model = Provider::Claude.default_model();
+    let mut stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
+
+    stream.apply_event(StreamEvent::ToolCallStart {
+        id: "call-1".to_string(),
+        name: "Run".to_string(),
+        thought_signature: ThoughtSignatureState::Unsigned,
+    });
+    stream.apply_event(StreamEvent::ToolCallDelta {
+        id: "call-1".to_string(),
+        arguments: r#"{"url":"https:\/\/example.com\/a","text":"caf\u00e9","emoji":"\ud83d\ude80","quote":"He said \"hi\""}"#.to_string(),
+    });
+
+    let parsed = stream.take_tool_calls();
+    assert_eq!(parsed.calls.len(), 1);
+    assert!(parsed.pre_resolved.is_empty());
+    assert_eq!(parsed.calls[0].arguments["url"], "https://example.com/a");
+    assert_eq!(parsed.calls[0].arguments["text"], "caf\u{00e9}");
+    assert_eq!(parsed.calls[0].arguments["emoji"], "\u{1F680}");
+    assert_eq!(parsed.calls[0].arguments["quote"], "He said \"hi\"");
+}
+
+#[test]
+fn tool_call_args_escaped_sequences_across_deltas_are_deserialized() {
+    let (_tx, rx) = mpsc::channel(1024);
+    let model = Provider::Claude.default_model();
+    let mut stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
+
+    stream.apply_event(StreamEvent::ToolCallStart {
+        id: "call-1".to_string(),
+        name: "Run".to_string(),
+        thought_signature: ThoughtSignatureState::Unsigned,
+    });
+    stream.apply_event(StreamEvent::ToolCallDelta {
+        id: "call-1".to_string(),
+        arguments: r#"{"unicode":"\u26"#.to_string(),
+    });
+    stream.apply_event(StreamEvent::ToolCallDelta {
+        id: "call-1".to_string(),
+        arguments: r#"3A","path":"https:\/\/example.com\/x","msg":"slash\/ok"}"#.to_string(),
+    });
+
+    let parsed = stream.take_tool_calls();
+    assert_eq!(parsed.calls.len(), 1);
+    assert!(parsed.pre_resolved.is_empty());
+    assert_eq!(parsed.calls[0].arguments["unicode"], "\u{263A}");
+    assert_eq!(parsed.calls[0].arguments["path"], "https://example.com/x");
+    assert_eq!(parsed.calls[0].arguments["msg"], "slash/ok");
+}
+
 #[tokio::test]
 async fn tool_loop_awaiting_approval_then_deny_all_commits() {
     let mut app = test_app();

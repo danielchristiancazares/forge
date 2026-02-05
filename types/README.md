@@ -51,7 +51,7 @@ Types that belong to a provider carry that association, preventing cross-provide
 
 ```rust
 // ModelName is bound to its provider
-let model = Provider::Claude.parse_model("claude-opus-4-5-20251101")?;
+let model = Provider::Claude.parse_model("claude-opus-4-6")?;
 assert_eq!(model.provider(), Provider::Claude);
 
 // ApiKey variants are provider-specific
@@ -276,7 +276,7 @@ assert!(Provider::parse("unknown").is_err());
 
 // Infer provider from model name prefix
 assert_eq!(
-    Provider::from_model_name("claude-opus-4-5-20251101").unwrap(),
+    Provider::from_model_name("claude-opus-4-6").unwrap(),
     Provider::Claude
 );
 assert_eq!(Provider::from_model_name("gpt-5.2").unwrap(), Provider::OpenAI);
@@ -297,7 +297,7 @@ for provider in Provider::all() {
 ```rust
 // Get default model for provider
 let model = Provider::Claude.default_model();
-assert_eq!(model.as_str(), "claude-opus-4-5-20251101");
+assert_eq!(model.as_str(), "claude-opus-4-6");
 
 let model = Provider::Gemini.default_model();
 assert_eq!(model.as_str(), "gemini-3-pro-preview");
@@ -305,7 +305,7 @@ assert_eq!(model.as_str(), "gemini-3-pro-preview");
 // List available models
 let models = Provider::Claude.available_models();
 let model_ids: Vec<&'static str> = models.iter().map(|model| model.model_id()).collect();
-// ["claude-opus-4-5-20251101", "claude-sonnet-4-5-20250514", "claude-haiku-4-5-20251001"]
+// ["claude-opus-4-6", "claude-sonnet-4-5-20250514", "claude-haiku-4-5-20251001"]
 
 let models = Provider::OpenAI.available_models();
 let model_ids: Vec<&'static str> = models.iter().map(|model| model.model_id()).collect();
@@ -316,7 +316,7 @@ let model_ids: Vec<&'static str> = models.iter().map(|model| model.model_id()).c
 // ["gemini-3-pro-preview", "gemini-3-flash-preview"]
 
 // Parse model name with validation
-let model = Provider::Claude.parse_model("claude-opus-4-5-20251101")?;
+let model = Provider::Claude.parse_model("claude-opus-4-6")?;
 ```
 
 ### ModelName
@@ -345,9 +345,9 @@ A provider-scoped model name that prevents mixing models across providers.
 use forge_types::{Provider, ModelName, ModelParseError, PredefinedModel};
 
 // Parse from user input (validates prefix, checks known list)
-let model = Provider::Claude.parse_model("claude-opus-4-5-20251101")?;
+let model = Provider::Claude.parse_model("claude-opus-4-6")?;
 assert_eq!(model.provider(), Provider::Claude);
-assert_eq!(model.as_str(), "claude-opus-4-5-20251101");
+assert_eq!(model.as_str(), "claude-opus-4-6");
 assert_eq!(model.predefined(), PredefinedModel::ClaudeOpus);
 
 // Unknown models are rejected
@@ -977,7 +977,7 @@ let msg = AssistantMessage::new(model, content);
 
 assert_eq!(msg.content(), "Hello! How can I help you today?");
 assert_eq!(msg.provider(), Provider::Claude);
-assert_eq!(msg.model().as_str(), "claude-opus-4-5-20251101");
+assert_eq!(msg.model().as_str(), "claude-opus-4-6");
 ```
 
 **Fields:** `content: NonEmptyString`, `timestamp: SystemTime`, `model: ModelName`

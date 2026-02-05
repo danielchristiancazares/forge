@@ -670,7 +670,7 @@ mod tests {
     fn parse_app_config() {
         let toml_str = r#"
 [app]
-model = "claude-opus-4-5-20251101"
+model = "claude-opus-4-6"
 tui = "full"
 ascii_only = true
 high_contrast = false
@@ -678,7 +678,7 @@ reduced_motion = true
 "#;
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         let app = config.app.unwrap();
-        assert_eq!(app.model, Some("claude-opus-4-5-20251101".to_string()));
+        assert_eq!(app.model, Some("claude-opus-4-6".to_string()));
         assert_eq!(app.tui, Some("full".to_string()));
         assert!(app.ascii_only);
         assert!(!app.high_contrast);
