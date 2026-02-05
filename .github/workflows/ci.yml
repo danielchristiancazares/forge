@@ -44,7 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@v1
@@ -54,7 +54,7 @@ jobs:
       - name: Cargo test
         run: cargo test --workspace
 
-  windows-run-host:
+  test-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,8 +62,8 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@v2
-      - name: Cargo test (Windows host isolation)
-        run: cargo test -p forge-engine windows_run_host
+      - name: Cargo test
+        run: cargo test --workspace
 
   coverage:
     runs-on: ubuntu-latest

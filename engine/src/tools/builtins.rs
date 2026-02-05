@@ -1121,8 +1121,10 @@ impl ToolExecutor for RunCommandTool {
             command.env_clear();
             command.envs(sanitized);
 
+            let requires_host_sandbox = prepared.requires_windows_host_sandbox();
+
             #[cfg(windows)]
-            if prepared.requires_windows_host_sandbox() {
+            if requires_host_sandbox {
                 use std::os::windows::process::CommandExt;
                 command
                     .as_std_mut()
@@ -1131,6 +1133,7 @@ impl ToolExecutor for RunCommandTool {
 
             #[cfg(unix)]
             {
+                let _ = requires_host_sandbox;
                 use std::os::unix::process::CommandExt;
                 unsafe {
                     command.as_std_mut().pre_exec(|| {
@@ -1150,7 +1153,7 @@ impl ToolExecutor for RunCommandTool {
             let mut guard = ChildGuard::new(child);
 
             #[cfg(windows)]
-            let _windows_host_sandbox_guard = if prepared.requires_windows_host_sandbox() {
+            let _windows_host_sandbox_guard = if requires_host_sandbox {
                 Some(
                     super::windows_run_host::attach_process_to_sandbox(guard.child_mut()).map_err(
                         |e| ToolError::ExecutionFailed {
