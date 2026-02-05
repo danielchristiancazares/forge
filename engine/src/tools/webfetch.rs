@@ -78,7 +78,7 @@ impl ToolExecutor for WebFetchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Fetch a URL and return structured, chunked markdown content"
+        "Fetch a URL and return structured JSON with chunked markdown content"
     }
 
     fn schema(&self) -> serde_json::Value {

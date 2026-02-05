@@ -125,7 +125,7 @@ impl ToolExecutor for SearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search local files with ugrep or ripgrep"
+        "Search inside file contents with regex/literal matching (not filename search; use Glob for paths)"
     }
 
     fn schema(&self) -> serde_json::Value {
@@ -136,7 +136,7 @@ impl ToolExecutor for SearchTool {
                 "pattern": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Regex pattern to search for in file contents. Use the Glob tool to find files by name."
+                    "description": "Regex pattern to search for inside file contents. This does not match filenames; use Glob to find files by path/name."
                 },
                 "path": {
                     "type": "string",

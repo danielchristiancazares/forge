@@ -177,7 +177,7 @@ impl GitToolKind {
                     "branch": {"type": "string", "description": "Branch to switch to"},
                     "create_branch": {"type": "string", "description": "Create and switch to a new branch (`-b`)"},
                     "commit": {"type": "string", "description": "Checkout a specific commit (detached HEAD)"},
-                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Restore these paths from HEAD or specified commit"}
+                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Restore these paths from index, or from `commit` when provided"}
                 },
                 "required": []
             }),

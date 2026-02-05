@@ -242,16 +242,17 @@ impl ToolExecutor for GlobTool {
     }
 
     fn description(&self) -> &'static str {
-        "Find files matching a glob pattern"
+        "Find file paths by filename/path pattern only (not file contents)"
     }
 
     fn schema(&self) -> serde_json::Value {
         json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Glob pattern to match filenames (e.g., '**/*.rs', 'src/**/*.{ts,tsx}'). Supports brace expansion."
+                    "description": "Glob pattern to match file paths (e.g., '**/*.rs', 'src/**/*.{ts,tsx}'). Matches path names only, never file contents. Supports brace expansion."
                 },
                 "path": {
                     "type": "string",
@@ -470,7 +471,7 @@ impl ToolExecutor for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read file contents"
+        "Read file contents, optionally by line range"
     }
 
     fn schema(&self) -> serde_json::Value {
