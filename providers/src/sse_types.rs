@@ -603,11 +603,24 @@ pub mod gemini {
     ///
     /// Gemini doesn't use event types like Claude/OpenAI. Instead, each
     /// SSE chunk is a complete response object with candidates.
+    /// Token usage data returned by Gemini API.
+    #[derive(Debug, Deserialize, Default)]
+    #[serde(rename_all = "camelCase")]
+    pub struct UsageMetadata {
+        #[serde(default)]
+        pub prompt_token_count: u32,
+        #[serde(default)]
+        pub candidates_token_count: u32,
+        #[serde(default)]
+        pub total_token_count: u32,
+    }
+
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
     pub struct Response {
         pub candidates: Option<Vec<Candidate>>,
         pub error: Option<ErrorInfo>,
+        pub usage_metadata: Option<UsageMetadata>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -832,6 +845,32 @@ pub mod gemini {
             assert!(FinishReason::Stop.error_message().is_none());
             assert!(FinishReason::MaxTokens.error_message().is_none());
             assert!(FinishReason::Safety.error_message().is_some());
+        }
+
+        #[test]
+        fn deserialize_usage_metadata() {
+            let json = r#"{
+                "candidates": [{"content": {"parts": [{"text": "Hello"}]}}],
+                "usageMetadata": {
+                    "promptTokenCount": 100,
+                    "candidatesTokenCount": 50,
+                    "totalTokenCount": 150
+                }
+            }"#;
+            let resp: Response = serde_json::from_str(json).unwrap();
+            let meta = resp.usage_metadata.unwrap();
+            assert_eq!(meta.prompt_token_count, 100);
+            assert_eq!(meta.candidates_token_count, 50);
+            assert_eq!(meta.total_token_count, 150);
+        }
+
+        #[test]
+        fn missing_usage_metadata_defaults() {
+            let json = r#"{
+                "candidates": [{"content": {"parts": [{"text": "Hello"}]}}]
+            }"#;
+            let resp: Response = serde_json::from_str(json).unwrap();
+            assert!(resp.usage_metadata.is_none());
         }
     }
 }

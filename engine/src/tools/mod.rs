@@ -10,6 +10,7 @@ pub mod search;
 pub mod shell;
 pub mod webfetch;
 pub mod windows_run;
+pub mod windows_run_host;
 
 pub use command_blacklist::CommandBlacklist;
 

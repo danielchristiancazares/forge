@@ -50,11 +50,16 @@ pub struct RunSandboxPolicy {
 pub struct PreparedRunCommand {
     command: String,
     warning: Option<String>,
+    requires_windows_host_sandbox: bool,
 }
 
 impl PreparedRunCommand {
-    fn new(command: String, warning: Option<String>) -> Self {
-        Self { command, warning }
+    fn new(command: String, warning: Option<String>, requires_windows_host_sandbox: bool) -> Self {
+        Self {
+            command,
+            warning,
+            requires_windows_host_sandbox,
+        }
     }
 
     #[must_use]
@@ -65,6 +70,11 @@ impl PreparedRunCommand {
     #[must_use]
     pub fn warning(&self) -> Option<&str> {
         self.warning.as_deref()
+    }
+
+    #[must_use]
+    pub fn requires_windows_host_sandbox(&self) -> bool {
+        self.requires_windows_host_sandbox
     }
 }
 
@@ -112,7 +122,7 @@ pub fn prepare_run_command(
         );
     }
     let _ = (shell, policy, unsafe_allow_unsandboxed);
-    Ok(PreparedRunCommand::new(command.to_string(), None))
+    Ok(PreparedRunCommand::new(command.to_string(), None, false))
 }
 
 pub(crate) fn prepare_windows_run_command(
@@ -121,14 +131,35 @@ pub(crate) fn prepare_windows_run_command(
     policy: WindowsRunSandboxPolicy,
     unsafe_allow_unsandboxed: bool,
 ) -> Result<PreparedRunCommand, ToolError> {
+    prepare_windows_run_command_with_host_probe(
+        command,
+        shell,
+        policy,
+        unsafe_allow_unsandboxed,
+        cfg!(windows),
+        default_windows_host_probe,
+    )
+}
+
+fn prepare_windows_run_command_with_host_probe<F>(
+    command: &str,
+    shell: &DetectedShell,
+    policy: WindowsRunSandboxPolicy,
+    unsafe_allow_unsandboxed: bool,
+    check_windows_host: bool,
+    host_probe: F,
+) -> Result<PreparedRunCommand, ToolError>
+where
+    F: FnOnce() -> Result<(), String>,
+{
     if !policy.enabled {
-        return Ok(PreparedRunCommand::new(command.to_string(), None));
+        return Ok(PreparedRunCommand::new(command.to_string(), None, false));
     }
 
     let shell_is_powershell = is_powershell_shell(shell);
     if policy.enforce_powershell_only && !shell_is_powershell {
         return handle_unsandboxed_fallback(
-            command,
+            command.to_string(),
             policy.fallback_mode,
             unsafe_allow_unsandboxed,
             format!(
@@ -154,14 +185,31 @@ pub(crate) fn prepare_windows_run_command(
         }));
     }
 
-    if shell_is_powershell {
-        return Ok(PreparedRunCommand::new(
-            wrap_constrained_powershell(command),
-            None,
-        ));
-    }
+    let command_for_execution = if shell_is_powershell {
+        wrap_constrained_powershell(command)
+    } else {
+        command.to_string()
+    };
 
-    Ok(PreparedRunCommand::new(command.to_string(), None))
+    let requires_windows_host_sandbox = if check_windows_host {
+        if let Err(reason) = host_probe() {
+            return handle_unsandboxed_fallback(
+                command_for_execution,
+                policy.fallback_mode,
+                unsafe_allow_unsandboxed,
+                format!("host isolation unavailable ({reason})"),
+            );
+        }
+        true
+    } else {
+        false
+    };
+
+    Ok(PreparedRunCommand::new(
+        command_for_execution,
+        None,
+        requires_windows_host_sandbox,
+    ))
 }
 
 fn blocked_token<'a>(command: &str, tokens: &'a [&str]) -> Option<&'a str> {
@@ -189,8 +237,12 @@ Set-StrictMode -Version Latest;{command}"
     )
 }
 
+fn default_windows_host_probe() -> Result<(), String> {
+    super::windows_run_host::sandbox_preflight()
+}
+
 fn handle_unsandboxed_fallback(
-    command: &str,
+    command: String,
     mode: RunSandboxFallbackMode,
     unsafe_allow_unsandboxed: bool,
     reason: String,
@@ -211,17 +263,19 @@ To run unsandboxed once, set unsafe_allow_unsandboxed=true."
                 });
             }
             Ok(PreparedRunCommand::new(
-                command.to_string(),
+                command,
                 Some(format!(
                     "WARNING: Windows sandbox unavailable ({reason}); running unsandboxed due to explicit override."
                 )),
+                false,
             ))
         }
         RunSandboxFallbackMode::AllowWithWarning => Ok(PreparedRunCommand::new(
-            command.to_string(),
+            command,
             Some(format!(
                 "WARNING: Windows sandbox unavailable ({reason}); running unsandboxed."
             )),
+            false,
         )),
     }
 }
@@ -341,5 +395,55 @@ mod tests {
         .expect("wrapped command");
         assert!(prepared.command().contains("ConstrainedLanguage"));
         assert!(prepared.command().contains("Set-StrictMode"));
+    }
+
+    #[test]
+    fn host_probe_failure_requires_override_in_prompt_mode() {
+        let err = prepare_windows_run_command_with_host_probe(
+            "Get-ChildItem",
+            &shell("pwsh"),
+            WindowsRunSandboxPolicy::default(),
+            false,
+            true,
+            || Err("job object API unavailable".to_string()),
+        )
+        .unwrap_err();
+        match err {
+            ToolError::ExecutionFailed { message, .. } => {
+                assert!(message.contains("host isolation unavailable"));
+                assert!(message.contains("unsafe_allow_unsandboxed=true"));
+            }
+            _ => panic!("expected execution failure"),
+        }
+    }
+
+    #[test]
+    fn host_probe_failure_with_override_keeps_constrained_language_wrapper() {
+        let prepared = prepare_windows_run_command_with_host_probe(
+            "Get-ChildItem",
+            &shell("pwsh"),
+            WindowsRunSandboxPolicy::default(),
+            true,
+            true,
+            || Err("job object API unavailable".to_string()),
+        )
+        .expect("fallback allowed");
+        assert!(prepared.warning().is_some());
+        assert!(prepared.command().contains("ConstrainedLanguage"));
+        assert!(!prepared.requires_windows_host_sandbox());
+    }
+
+    #[test]
+    fn host_probe_success_marks_host_sandbox_as_required() {
+        let prepared = prepare_windows_run_command_with_host_probe(
+            "Get-ChildItem",
+            &shell("pwsh"),
+            WindowsRunSandboxPolicy::default(),
+            false,
+            true,
+            || Ok(()),
+        )
+        .expect("host sandbox required");
+        assert!(prepared.requires_windows_host_sandbox());
     }
 }

@@ -920,6 +920,7 @@ dependencies = [
  "unicode-normalization",
  "unicode-segmentation",
  "which 7.0.3",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

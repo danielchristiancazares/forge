@@ -1121,6 +1121,14 @@ impl ToolExecutor for RunCommandTool {
             command.env_clear();
             command.envs(sanitized);
 
+            #[cfg(windows)]
+            if prepared.requires_windows_host_sandbox() {
+                use std::os::windows::process::CommandExt;
+                command
+                    .as_std_mut()
+                    .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+            }
+
             #[cfg(unix)]
             {
                 use std::os::unix::process::CommandExt;
@@ -1140,6 +1148,22 @@ impl ToolExecutor for RunCommandTool {
             })?;
 
             let mut guard = ChildGuard::new(child);
+
+            #[cfg(windows)]
+            let _windows_host_sandbox_guard = if prepared.requires_windows_host_sandbox() {
+                Some(
+                    super::windows_run_host::attach_process_to_sandbox(guard.child_mut()).map_err(
+                        |e| ToolError::ExecutionFailed {
+                            tool: "Run".to_string(),
+                            message: format!(
+                                "failed to attach Windows host isolation boundary: {e}"
+                            ),
+                        },
+                    )?,
+                )
+            } else {
+                None
+            };
 
             let stdout =
                 guard

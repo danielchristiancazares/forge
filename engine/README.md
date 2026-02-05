@@ -898,7 +898,7 @@ max_patch_bytes = 524288
 
 [tools.run.windows]
 enabled = true
-fallback_mode = "prompt"     # prompt | deny | allow_with_warning
+fallback_mode = "prompt"     # prompt | deny | allow_with_warning (when host isolation is unavailable)
 
 [[tools.definitions]]
 name = "custom_tool"
