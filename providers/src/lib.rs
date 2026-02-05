@@ -395,6 +395,8 @@ pub struct ApiConfig {
     model: ModelName,
     openai_options: OpenAIRequestOptions,
     gemini_thinking_enabled: bool,
+    anthropic_thinking_mode: &'static str,
+    anthropic_thinking_effort: &'static str,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -419,6 +421,8 @@ impl ApiConfig {
             model,
             openai_options: OpenAIRequestOptions::default(),
             gemini_thinking_enabled: false,
+            anthropic_thinking_mode: "adaptive",
+            anthropic_thinking_effort: "max",
         })
     }
 
@@ -431,6 +435,13 @@ impl ApiConfig {
     #[must_use]
     pub fn with_gemini_thinking_enabled(mut self, enabled: bool) -> Self {
         self.gemini_thinking_enabled = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn with_anthropic_thinking(mut self, mode: &'static str, effort: &'static str) -> Self {
+        self.anthropic_thinking_mode = mode;
+        self.anthropic_thinking_effort = effort;
         self
     }
 
@@ -462,6 +473,16 @@ impl ApiConfig {
     #[must_use]
     pub const fn gemini_thinking_enabled(&self) -> bool {
         self.gemini_thinking_enabled
+    }
+
+    #[must_use]
+    pub const fn anthropic_thinking_mode(&self) -> &str {
+        self.anthropic_thinking_mode
+    }
+
+    #[must_use]
+    pub const fn anthropic_thinking_effort(&self) -> &str {
+        self.anthropic_thinking_effort
     }
 }
 
@@ -572,6 +593,8 @@ pub mod claude {
         limits: OutputLimits,
         system_prompt: Option<&str>,
         tools: Option<&[ToolDefinition]>,
+        thinking_mode: &str,
+        thinking_effort: &str,
     ) -> serde_json::Value {
         let mut system_blocks: Vec<serde_json::Value> = Vec::new();
         let mut api_messages: Vec<serde_json::Value> = Vec::new();
@@ -731,20 +754,24 @@ pub mod claude {
             body.insert("tools".into(), json!(tool_schemas));
         }
 
-        // Opus 4.6 always uses adaptive thinking with max effort.
+        // Opus 4.6 thinking mode and effort are configurable via [anthropic] config.
         if is_opus_4_6_model(model) {
-            body.insert(
-                "thinking".into(),
-                json!({
-                    "type": "adaptive"
-                }),
-            );
-            body.insert(
-                "output_config".into(),
-                json!({
-                    "effort": "max"
-                }),
-            );
+            let mut thinking_obj = json!({"type": thinking_mode});
+            // When mode is "enabled", also emit budget_tokens from OutputLimits
+            if thinking_mode == "enabled"
+                && let ThinkingState::Enabled(budget) = limits.thinking()
+            {
+                thinking_obj["budget_tokens"] = json!(budget.as_u32());
+            }
+            body.insert("thinking".into(), thinking_obj);
+            if thinking_mode != "disabled" {
+                body.insert(
+                    "output_config".into(),
+                    json!({
+                        "effort": thinking_effort
+                    }),
+                );
+            }
             body.insert(
                 "context_management".into(),
                 json!({
@@ -918,6 +945,8 @@ pub mod claude {
             limits,
             system_prompt,
             tools,
+            config.anthropic_thinking_mode(),
+            config.anthropic_thinking_effort(),
         );
         let beta_header = anthropic_beta_header(config.model().as_str(), limits);
 
@@ -996,7 +1025,15 @@ pub mod claude {
                 CacheableMessage::plain(Message::try_user("hi").unwrap()),
             ];
 
-            let body = build_request_body(model.as_str(), &messages, limits, None, None);
+            let body = build_request_body(
+                model.as_str(),
+                &messages,
+                limits,
+                None,
+                None,
+                "adaptive",
+                "max",
+            );
 
             let system = body.get("system").unwrap().as_array().unwrap();
             assert_eq!(system.len(), 1);
@@ -1016,7 +1053,15 @@ pub mod claude {
                 NonEmptyString::new("Distillate").unwrap(),
             ))];
 
-            let body = build_request_body(model.as_str(), &messages, limits, Some("prompt"), None);
+            let body = build_request_body(
+                model.as_str(),
+                &messages,
+                limits,
+                Some("prompt"),
+                None,
+                "adaptive",
+                "max",
+            );
 
             let system = body.get("system").unwrap().as_array().unwrap();
             assert_eq!(system.len(), 2);
@@ -1029,12 +1074,20 @@ pub mod claude {
         }
 
         #[test]
-        fn opus_4_6_always_uses_adaptive_and_max_effort() {
+        fn opus_4_6_default_adaptive_and_max_effort() {
             let model = Provider::Claude.default_model();
             let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
             let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
 
-            let body = build_request_body(model.as_str(), &messages, limits, None, None);
+            let body = build_request_body(
+                model.as_str(),
+                &messages,
+                limits,
+                None,
+                None,
+                "adaptive",
+                "max",
+            );
 
             assert_eq!(body["thinking"]["type"].as_str(), Some("adaptive"));
             assert_eq!(body["output_config"]["effort"].as_str(), Some("max"));
@@ -1050,10 +1103,85 @@ pub mod claude {
             let limits = OutputLimits::new(16_000);
             let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
 
-            let body = build_request_body(model.as_str(), &messages, limits, None, None);
+            let body = build_request_body(
+                model.as_str(),
+                &messages,
+                limits,
+                None,
+                None,
+                "adaptive",
+                "max",
+            );
 
             assert_eq!(body["thinking"]["type"].as_str(), Some("adaptive"));
             assert_eq!(body["output_config"]["effort"].as_str(), Some("max"));
+        }
+
+        #[test]
+        fn opus_4_6_disabled_thinking_mode() {
+            let model = Provider::Claude.default_model();
+            let limits = OutputLimits::new(16_000);
+            let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+
+            let body = build_request_body(
+                model.as_str(),
+                &messages,
+                limits,
+                None,
+                None,
+                "disabled",
+                "max",
+            );
+
+            assert_eq!(body["thinking"]["type"].as_str(), Some("disabled"));
+            // No effort when thinking is disabled
+            assert!(body.get("output_config").is_none());
+            // Compaction still present
+            assert_eq!(
+                body["context_management"]["edits"][0]["type"].as_str(),
+                Some("compact_20260112")
+            );
+        }
+
+        #[test]
+        fn opus_4_6_enabled_thinking_with_budget() {
+            let model = Provider::Claude.default_model();
+            let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
+            let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+
+            let body = build_request_body(
+                model.as_str(),
+                &messages,
+                limits,
+                None,
+                None,
+                "enabled",
+                "high",
+            );
+
+            assert_eq!(body["thinking"]["type"].as_str(), Some("enabled"));
+            assert_eq!(body["thinking"]["budget_tokens"].as_u64(), Some(4096));
+            assert_eq!(body["output_config"]["effort"].as_str(), Some("high"));
+        }
+
+        #[test]
+        fn opus_4_6_effort_levels() {
+            let model = Provider::Claude.default_model();
+            let limits = OutputLimits::new(16_000);
+            let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+
+            for effort in &["low", "medium", "high", "max"] {
+                let body = build_request_body(
+                    model.as_str(),
+                    &messages,
+                    limits,
+                    None,
+                    None,
+                    "adaptive",
+                    effort,
+                );
+                assert_eq!(body["output_config"]["effort"].as_str(), Some(*effort));
+            }
         }
 
         #[test]
@@ -1064,7 +1192,15 @@ pub mod claude {
             let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
             let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
 
-            let body = build_request_body(model.as_str(), &messages, limits, None, None);
+            let body = build_request_body(
+                model.as_str(),
+                &messages,
+                limits,
+                None,
+                None,
+                "adaptive",
+                "max",
+            );
 
             assert_eq!(body["thinking"]["type"].as_str(), Some("enabled"));
             assert_eq!(body["thinking"]["budget_tokens"].as_u64(), Some(4096));
@@ -1086,7 +1222,15 @@ pub mod claude {
                 )),
             ];
 
-            let body = build_request_body(model.as_str(), &messages, limits, None, None);
+            let body = build_request_body(
+                model.as_str(),
+                &messages,
+                limits,
+                None,
+                None,
+                "adaptive",
+                "max",
+            );
             let request_messages = body["messages"].as_array().unwrap();
 
             assert_eq!(request_messages.len(), 1);
@@ -1125,7 +1269,15 @@ pub mod claude {
                 CacheableMessage::cached(Message::tool_result(result)),
             ];
 
-            let body = build_request_body(model.as_str(), &messages, limits, None, None);
+            let body = build_request_body(
+                model.as_str(),
+                &messages,
+                limits,
+                None,
+                None,
+                "adaptive",
+                "max",
+            );
             let api_messages = body["messages"].as_array().unwrap();
 
             // tool_result is the last user-role message
@@ -1145,7 +1297,15 @@ pub mod claude {
                 CacheableMessage::plain(Message::tool_result(result)),
             ];
 
-            let body = build_request_body(model.as_str(), &messages, limits, None, None);
+            let body = build_request_body(
+                model.as_str(),
+                &messages,
+                limits,
+                None,
+                None,
+                "adaptive",
+                "max",
+            );
             let api_messages = body["messages"].as_array().unwrap();
             let tool_msg = &api_messages[api_messages.len() - 1];
             let block = &tool_msg["content"][0];
@@ -1178,7 +1338,15 @@ pub mod claude {
                 ))),
             ];
 
-            let body = build_request_body(model.as_str(), &messages, limits, None, None);
+            let body = build_request_body(
+                model.as_str(),
+                &messages,
+                limits,
+                None,
+                None,
+                "adaptive",
+                "max",
+            );
             let api_messages = body["messages"].as_array().unwrap();
 
             // Find the assistant message (should have text + tool_use blocks)

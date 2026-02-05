@@ -109,21 +109,78 @@ pub struct ThinkingConfig {
     pub budget_tokens: Option<u32>,
 }
 
+/// Thinking mode for Opus 4.6+.
+///
+/// Controls how Claude decides when and how much to think.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AnthropicThinkingMode {
+    /// Claude decides when and how much to think (recommended for Opus 4.6).
+    #[default]
+    Adaptive,
+    /// Manual mode with explicit `budget_tokens`.
+    Enabled,
+    /// No thinking.
+    Disabled,
+}
+
+impl AnthropicThinkingMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Adaptive => "adaptive",
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+/// Effort level for Opus 4.6+.
+///
+/// Controls how eagerly Claude spends tokens on responses and thinking.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AnthropicEffort {
+    Low,
+    Medium,
+    High,
+    #[default]
+    Max,
+}
+
+impl AnthropicEffort {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Max => "max",
+        }
+    }
+}
+
 /// Anthropic/Claude request defaults.
 ///
 /// ```toml
 /// [anthropic]
 /// cache_enabled = true
-/// thinking_enabled = false
+/// thinking_mode = "adaptive"
+/// thinking_effort = "max"
 /// thinking_budget_tokens = 10000
 /// ```
 #[derive(Debug, Default, Deserialize)]
 pub struct AnthropicConfig {
     #[serde(default = "default_true")]
     pub cache_enabled: bool,
+    /// Legacy field for pre-4.6 models. Use `thinking_mode` for Opus 4.6+.
     #[serde(default)]
     pub thinking_enabled: bool,
     pub thinking_budget_tokens: Option<u32>,
+    /// Thinking mode for Opus 4.6+: "adaptive" (default), "enabled", or "disabled".
+    #[serde(default)]
+    pub thinking_mode: AnthropicThinkingMode,
+    /// Effort level for Opus 4.6+: "low", "medium", "high", or "max" (default).
+    #[serde(default)]
+    pub thinking_effort: AnthropicEffort,
 }
 
 /// `OpenAI` Responses API request defaults.
@@ -746,6 +803,52 @@ thinking_budget_tokens = 10000
         assert!(anthropic.cache_enabled);
         assert!(!anthropic.thinking_enabled);
         assert_eq!(anthropic.thinking_budget_tokens, Some(10000));
+        // Defaults when not specified
+        assert_eq!(anthropic.thinking_mode, AnthropicThinkingMode::Adaptive);
+        assert_eq!(anthropic.thinking_effort, AnthropicEffort::Max);
+    }
+
+    #[test]
+    fn parse_anthropic_thinking_mode_and_effort() {
+        let toml_str = r#"
+[anthropic]
+thinking_mode = "disabled"
+thinking_effort = "medium"
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let anthropic = config.anthropic.unwrap();
+        assert_eq!(anthropic.thinking_mode, AnthropicThinkingMode::Disabled);
+        assert_eq!(anthropic.thinking_effort, AnthropicEffort::Medium);
+    }
+
+    #[test]
+    fn parse_anthropic_thinking_mode_enabled_with_budget() {
+        let toml_str = r#"
+[anthropic]
+thinking_mode = "enabled"
+thinking_effort = "high"
+thinking_budget_tokens = 8192
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let anthropic = config.anthropic.unwrap();
+        assert_eq!(anthropic.thinking_mode, AnthropicThinkingMode::Enabled);
+        assert_eq!(anthropic.thinking_effort, AnthropicEffort::High);
+        assert_eq!(anthropic.thinking_budget_tokens, Some(8192));
+    }
+
+    #[test]
+    fn anthropic_thinking_mode_as_str() {
+        assert_eq!(AnthropicThinkingMode::Adaptive.as_str(), "adaptive");
+        assert_eq!(AnthropicThinkingMode::Enabled.as_str(), "enabled");
+        assert_eq!(AnthropicThinkingMode::Disabled.as_str(), "disabled");
+    }
+
+    #[test]
+    fn anthropic_effort_as_str() {
+        assert_eq!(AnthropicEffort::Low.as_str(), "low");
+        assert_eq!(AnthropicEffort::Medium.as_str(), "medium");
+        assert_eq!(AnthropicEffort::High.as_str(), "high");
+        assert_eq!(AnthropicEffort::Max.as_str(), "max");
     }
 
     #[test]

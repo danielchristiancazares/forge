@@ -498,10 +498,7 @@ pub enum PredefinedModel {
     GeminiFlash,
 }
 
-const CLAUDE_MODEL_IDS: &[&str] = &[
-    "claude-opus-4-6",
-    "claude-haiku-4-5-20251001",
-];
+const CLAUDE_MODEL_IDS: &[&str] = &["claude-opus-4-6", "claude-haiku-4-5-20251001"];
 
 const OPENAI_MODEL_IDS: &[&str] = &["gpt-5.2-pro", "gpt-5.2"];
 
@@ -566,8 +563,7 @@ impl PredefinedModel {
     #[must_use]
     pub const fn firm_name(self) -> &'static str {
         match self {
-            PredefinedModel::ClaudeOpus
-            | PredefinedModel::ClaudeHaiku => "Anthropic",
+            PredefinedModel::ClaudeOpus | PredefinedModel::ClaudeHaiku => "Anthropic",
             PredefinedModel::Gpt52 | PredefinedModel::Gpt52Pro => "OpenAI",
             PredefinedModel::GeminiPro | PredefinedModel::GeminiFlash => "Google",
         }
@@ -589,8 +585,7 @@ impl PredefinedModel {
     #[must_use]
     pub const fn provider(self) -> Provider {
         match self {
-            PredefinedModel::ClaudeOpus
-            | PredefinedModel::ClaudeHaiku => Provider::Claude,
+            PredefinedModel::ClaudeOpus | PredefinedModel::ClaudeHaiku => Provider::Claude,
             PredefinedModel::Gpt52 | PredefinedModel::Gpt52Pro => Provider::OpenAI,
             PredefinedModel::GeminiPro | PredefinedModel::GeminiFlash => Provider::Gemini,
         }

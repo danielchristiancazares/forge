@@ -82,6 +82,8 @@ fn test_app() -> App {
         autosave_warning_shown: false,
         gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         gemini_thinking_enabled: false,
+        anthropic_thinking_mode: crate::config::AnthropicThinkingMode::default(),
+        anthropic_thinking_effort: crate::config::AnthropicEffort::default(),
         gemini_cache_config: crate::GeminiCacheConfig::default(),
         librarian: None, // No Gemini API key in tests
         input_history: crate::ui::InputHistory::default(),
@@ -879,10 +881,7 @@ async fn run_approval_request_captures_reason_without_changing_summary() {
         .tool_approval_requests()
         .expect("approval requests should be present");
     assert_eq!(requests.len(), 1);
-    assert_eq!(
-        requests[0].summary,
-        "Run command: echo hello".to_string()
-    );
+    assert_eq!(requests[0].summary, "Run command: echo hello".to_string());
     assert_eq!(
         requests[0].reason,
         Some("Need to verify the local build toolchain.".to_string())

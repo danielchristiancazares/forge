@@ -247,6 +247,13 @@ impl App {
             .map(|cfg| cfg.thinking_enabled)
             .unwrap_or(false);
 
+        let anthropic_thinking_mode = anthropic_config
+            .map(|cfg| cfg.thinking_mode)
+            .unwrap_or_default();
+        let anthropic_thinking_effort = anthropic_config
+            .map(|cfg| cfg.thinking_effort)
+            .unwrap_or_default();
+
         let data_dir = Self::data_dir();
 
         // Initialize Librarian for memory (if enabled and Gemini API key available)
@@ -335,6 +342,8 @@ impl App {
             autosave_warning_shown: false,
             gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             gemini_thinking_enabled,
+            anthropic_thinking_mode,
+            anthropic_thinking_effort,
             gemini_cache_config,
             librarian,
             input_history: crate::ui::InputHistory::default(),

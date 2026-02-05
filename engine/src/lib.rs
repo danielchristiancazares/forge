@@ -483,6 +483,10 @@ pub struct App {
     gemini_cache: std::sync::Arc<tokio::sync::Mutex<Option<GeminiCache>>>,
     /// Whether Gemini thinking mode is enabled via config.
     gemini_thinking_enabled: bool,
+    /// Anthropic thinking mode for Opus 4.6+ ("adaptive", "enabled", "disabled").
+    anthropic_thinking_mode: config::AnthropicThinkingMode,
+    /// Anthropic effort level for Opus 4.6+ ("low", "medium", "high", "max").
+    anthropic_thinking_effort: config::AnthropicEffort,
     /// Gemini cache configuration.
     gemini_cache_config: GeminiCacheConfig,
     /// The Librarian for fact extraction and retrieval (Context Infinity).
