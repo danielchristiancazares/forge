@@ -16,7 +16,7 @@ const STREAM_EVENT_CHANNEL_CAPACITY: usize = 1024;
 const REDACTED_THINKING_PLACEHOLDER: &str = "[Thinking hidden]";
 
 use forge_context::TokenCounter;
-use forge_types::{ModelName, OpenAIReasoningSummary, Provider, ToolDefinition};
+use forge_types::{ModelName, Provider, ToolDefinition};
 
 use super::{
     ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError,
@@ -133,20 +133,11 @@ impl super::App {
         let (tx, rx) = mpsc::channel(STREAM_EVENT_CHANNEL_CAPACITY);
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
-        let capture_thinking = self.ui_options().show_thinking
-            && match config.model().provider() {
-                Provider::Claude | Provider::Gemini => true,
-                Provider::OpenAI => {
-                    self.openai_options.reasoning_summary() != OpenAIReasoningSummary::Disabled
-                }
-            };
-
         let active = ActiveStream::Transient {
-            message: StreamingMessage::new_with_thinking_capture(
+            message: StreamingMessage::new(
                 config.model().clone(),
                 rx,
                 self.tool_settings.limits.max_tool_args_bytes,
-                capture_thinking,
             ),
             journal,
             abort_handle,

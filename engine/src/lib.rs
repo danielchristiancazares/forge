@@ -169,24 +169,15 @@ struct ParsedToolCalls {
 /// in [`ToolCallAccumulator`] structs. Arguments are streamed as JSON strings and
 /// parsed only when the stream completes.
 ///
-/// # Thinking Capture
-///
-/// By default, thinking/reasoning deltas are discarded. Set `capture_thinking: true`
-/// in the constructor to accumulate them for UI rendering.
+/// Thinking/reasoning deltas are always captured for retroactive UI visibility toggle.
 #[derive(Debug)]
 pub struct StreamingMessage {
     model: ModelName,
     content: String,
-    /// Provider thinking/reasoning deltas (if captured).
+    /// Provider thinking/reasoning deltas.
     thinking: String,
     /// Encrypted signature for replaying thinking blocks (Claude extended thinking).
     thinking_signature: ThoughtSignatureState,
-    /// Whether we should capture thinking deltas at all (default: false).
-    ///
-    /// This keeps the default behavior (discard thinking) while allowing
-    /// opt-in UI rendering without forcing a breaking change in the rest of
-    /// the engine.
-    capture_thinking: bool,
     receiver: mpsc::Receiver<StreamEvent>,
     tool_calls: Vec<ToolCallAccumulator>,
     max_tool_args_bytes: usize,
@@ -201,25 +192,11 @@ impl StreamingMessage {
         receiver: mpsc::Receiver<StreamEvent>,
         max_tool_args_bytes: usize,
     ) -> Self {
-        Self::new_with_thinking_capture(model, receiver, max_tool_args_bytes, false)
-    }
-
-    /// Construct a streaming message, optionally capturing provider thinking deltas.
-    ///
-    /// When `capture_thinking` is `false`, thinking events are discarded (current default).
-    #[must_use]
-    pub fn new_with_thinking_capture(
-        model: ModelName,
-        receiver: mpsc::Receiver<StreamEvent>,
-        max_tool_args_bytes: usize,
-        capture_thinking: bool,
-    ) -> Self {
         Self {
             model,
             content: String::new(),
             thinking: String::new(),
             thinking_signature: ThoughtSignatureState::Unsigned,
-            capture_thinking,
             receiver,
             tool_calls: Vec::new(),
             max_tool_args_bytes,
@@ -271,9 +248,9 @@ impl StreamingMessage {
                 None
             }
             StreamEvent::ThinkingDelta(thinking) => {
-                if self.capture_thinking {
-                    self.thinking.push_str(&thinking);
-                }
+                // Always capture thinking content for retroactive visibility toggle.
+                // show_thinking controls UI visibility, not capture.
+                self.thinking.push_str(&thinking);
                 None
             }
             StreamEvent::ThinkingSignature(signature_delta) => {
