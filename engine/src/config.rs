@@ -248,6 +248,8 @@ pub struct ToolsConfig {
     pub apply_patch: Option<ApplyPatchConfig>,
     pub search: Option<SearchConfig>,
     pub webfetch: Option<WebFetchConfig>,
+    /// Run tool hardening controls.
+    pub run: Option<RunConfig>,
     /// Shell configuration for `run_command`.
     pub shell: Option<ShellConfig>,
 }
@@ -340,6 +342,43 @@ pub struct WebFetchConfig {
     pub max_download_bytes: Option<u64>,
     pub cache_dir: Option<String>,
     pub cache_ttl_days: Option<u32>,
+}
+
+/// Configuration for the `Run` tool.
+#[derive(Debug, Default, Deserialize)]
+pub struct RunConfig {
+    pub windows: Option<WindowsRunConfig>,
+}
+
+/// Fallback behavior when Windows sandbox prerequisites are unavailable.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunFallbackMode {
+    /// Require explicit per-call opt-in to run unsandboxed.
+    #[default]
+    Prompt,
+    /// Deny unsandboxed fallback.
+    Deny,
+    /// Allow unsandboxed fallback and attach warnings.
+    AllowWithWarning,
+}
+
+/// Windows-specific Run hardening configuration.
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+pub struct WindowsRunConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub fallback_mode: RunFallbackMode,
+}
+
+impl Default for WindowsRunConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            fallback_mode: RunFallbackMode::Prompt,
+        }
+    }
 }
 
 /// Shell configuration for `run_command` tool.
@@ -955,6 +994,41 @@ args = ["-NoProfile", "-Command"]
             shell.args,
             Some(vec!["-NoProfile".to_string(), "-Command".to_string()])
         );
+    }
+
+    #[test]
+    fn parse_windows_run_config() {
+        let toml_str = r#"
+[tools.run.windows]
+enabled = true
+fallback_mode = "allow_with_warning"
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let windows = config
+            .tools
+            .unwrap()
+            .run
+            .unwrap()
+            .windows
+            .expect("windows run config");
+        assert!(windows.enabled);
+        assert_eq!(windows.fallback_mode, RunFallbackMode::AllowWithWarning);
+    }
+
+    #[test]
+    fn windows_run_config_defaults() {
+        let toml_str = r"
+[tools.run.windows]
+";
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let windows = config
+            .tools
+            .unwrap()
+            .run
+            .unwrap()
+            .windows
+            .expect("windows run config");
+        assert_eq!(windows, WindowsRunConfig::default());
     }
 
     #[test]

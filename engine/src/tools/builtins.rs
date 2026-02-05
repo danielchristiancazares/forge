@@ -16,8 +16,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 use super::{
-    FileCacheEntry, PatchLimits, ReadFileLimits, RiskLevel, SearchToolConfig, ToolCtx, ToolError,
-    ToolExecutor, ToolFut, ToolRegistry, WebFetchToolConfig, redact_distillate, sanitize_output,
+    FileCacheEntry, PatchLimits, ReadFileLimits, RiskLevel, RunSandboxPolicy, SearchToolConfig,
+    ToolCtx, ToolError, ToolExecutor, ToolFut, ToolRegistry, WebFetchToolConfig, redact_distillate,
+    sanitize_output,
 };
 use crate::tools::git;
 
@@ -64,11 +65,12 @@ pub struct WriteFileTool;
 #[derive(Debug, Clone)]
 pub struct RunCommandTool {
     shell: super::DetectedShell,
+    run_policy: RunSandboxPolicy,
 }
 
 impl RunCommandTool {
-    pub fn new(shell: super::DetectedShell) -> Self {
-        Self { shell }
+    pub fn new(shell: super::DetectedShell, run_policy: RunSandboxPolicy) -> Self {
+        Self { shell, run_policy }
     }
 }
 
@@ -114,6 +116,8 @@ struct WriteFileArgs {
 #[derive(Debug, Deserialize)]
 struct RunCommandArgs {
     command: String,
+    #[serde(default)]
+    unsafe_allow_unsandboxed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1044,7 +1048,8 @@ impl ToolExecutor for RunCommandTool {
             "type": "object",
             "properties": {
                 "command": { "type": "string" },
-                "reason": { "type": "string" }
+                "reason": { "type": "string" },
+                "unsafe_allow_unsandboxed": { "type": "boolean" }
             },
             "required": ["command"]
         })
@@ -1067,7 +1072,14 @@ impl ToolExecutor for RunCommandTool {
             serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
                 message: e.to_string(),
             })?;
-        let distillate = format!("Run command: {}", typed.command);
+        let distillate = if typed.unsafe_allow_unsandboxed {
+            format!(
+                "Run command (unsandboxed override requested): {}",
+                typed.command
+            )
+        } else {
+            format!("Run command: {}", typed.command)
+        };
         Ok(redact_distillate(&distillate))
     }
 
@@ -1086,11 +1098,18 @@ impl ToolExecutor for RunCommandTool {
             // Validate against command blacklist BEFORE any execution
             ctx.command_blacklist.validate(&typed.command)?;
 
+            let prepared = super::windows_run::prepare_run_command(
+                &typed.command,
+                &self.shell,
+                self.run_policy,
+                typed.unsafe_allow_unsandboxed,
+            )?;
+
             let mut command = Command::new(&self.shell.binary);
             for arg in &self.shell.args {
                 command.arg(arg);
             }
-            command.arg(&typed.command);
+            command.arg(prepared.command());
             command
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
@@ -1172,7 +1191,15 @@ impl ToolExecutor for RunCommandTool {
             let stderr_content = stderr_task.await.unwrap_or_default();
 
             // Build combined output (stdout + stderr if present)
-            let mut output = stdout_content;
+            let mut output = String::new();
+            if let Some(warning) = prepared.warning() {
+                output.push_str("[sandbox warning]\n");
+                output.push_str(warning);
+                if !stdout_content.trim().is_empty() || !stderr_content.trim().is_empty() {
+                    output.push_str("\n\n");
+                }
+            }
+            output.push_str(&stdout_content);
             if !stderr_content.trim().is_empty() {
                 if !output.is_empty() {
                     output.push_str("\n\n");
@@ -1208,11 +1235,12 @@ pub fn register_builtins(
     search_config: SearchToolConfig,
     webfetch_config: WebFetchToolConfig,
     shell: super::DetectedShell,
+    run_policy: RunSandboxPolicy,
 ) -> Result<(), ToolError> {
     registry.register(Box::new(ReadFileTool::new(read_limits)))?;
     registry.register(Box::new(ApplyPatchTool::new(patch_limits)))?;
     registry.register(Box::new(WriteFileTool))?;
-    registry.register(Box::new(RunCommandTool::new(shell)))?;
+    registry.register(Box::new(RunCommandTool::new(shell, run_policy)))?;
     registry.register(Box::new(GlobTool))?;
     git::register_git_tools(registry)?;
     for name in SearchTool::aliases() {
@@ -1608,6 +1636,18 @@ impl Drop for ChildGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::{DetectedShell, RunSandboxPolicy};
+
+    fn run_tool() -> RunCommandTool {
+        RunCommandTool::new(
+            DetectedShell {
+                binary: std::path::PathBuf::from("pwsh"),
+                args: vec!["-NoProfile".to_string(), "-Command".to_string()],
+                name: "pwsh".to_string(),
+            },
+            RunSandboxPolicy::default(),
+        )
+    }
 
     #[test]
     fn expand_braces_no_braces() {
@@ -1716,6 +1756,30 @@ mod tests {
     fn glob_tool_risk_level_is_low() {
         let tool = GlobTool;
         assert_eq!(tool.risk_level(), RiskLevel::Low);
+    }
+
+    #[test]
+    fn run_tool_schema_exposes_unsandboxed_override_flag() {
+        let tool = run_tool();
+        let schema = tool.schema();
+        let props = schema
+            .get("properties")
+            .expect("properties")
+            .as_object()
+            .expect("properties object");
+        assert!(props.contains_key("unsafe_allow_unsandboxed"));
+    }
+
+    #[test]
+    fn run_tool_approval_summary_marks_unsandboxed_override() {
+        let tool = run_tool();
+        let summary = tool
+            .approval_summary(&serde_json::json!({
+                "command": "Get-ChildItem",
+                "unsafe_allow_unsandboxed": true
+            }))
+            .expect("summary");
+        assert!(summary.contains("unsandboxed override requested"));
     }
 
     #[test]

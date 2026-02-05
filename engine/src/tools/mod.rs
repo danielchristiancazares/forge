@@ -9,6 +9,7 @@ pub mod sandbox;
 pub mod search;
 pub mod shell;
 pub mod webfetch;
+pub mod windows_run;
 
 pub use command_blacklist::CommandBlacklist;
 
@@ -33,6 +34,7 @@ use sandbox::Sandbox;
 pub use search::SearchToolConfig;
 pub use shell::DetectedShell;
 pub use webfetch::WebFetchToolConfig;
+pub use windows_run::{RunSandboxFallbackMode, RunSandboxPolicy, WindowsRunSandboxPolicy};
 
 /// Tool execution future type alias.
 pub type ToolFut<'a> = Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>>;
@@ -379,6 +381,7 @@ pub struct ToolSettings {
     pub sandbox: Sandbox,
     pub env_sanitizer: EnvSanitizer,
     pub command_blacklist: CommandBlacklist,
+    pub run_policy: RunSandboxPolicy,
 }
 
 /// Sanitizes environment variables before executing commands.

@@ -1,0 +1,345 @@
+//! Windows-focused sandbox policy for the `Run` tool.
+//!
+//! This module is policy-first hardening (IFA mechanism/policy split):
+//! - Mechanism: classify shell and command content
+//! - Policy: decide allow/deny/fallback behavior
+
+use std::path::Path;
+
+use super::{DenialReason, DetectedShell, ToolError};
+
+/// Behavior when Windows sandbox prerequisites are unavailable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunSandboxFallbackMode {
+    /// Require explicit opt-in per call before allowing unsandboxed execution.
+    Prompt,
+    /// Never allow unsandboxed execution.
+    Deny,
+    /// Automatically allow unsandboxed execution with a warning.
+    AllowWithWarning,
+}
+
+/// Windows-specific run sandbox policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowsRunSandboxPolicy {
+    pub enabled: bool,
+    pub enforce_powershell_only: bool,
+    pub block_network: bool,
+    pub fallback_mode: RunSandboxFallbackMode,
+}
+
+impl Default for WindowsRunSandboxPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            enforce_powershell_only: true,
+            block_network: true,
+            fallback_mode: RunSandboxFallbackMode::Prompt,
+        }
+    }
+}
+
+/// Aggregate run sandbox policy (platform-specific sub-policies).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RunSandboxPolicy {
+    pub windows: WindowsRunSandboxPolicy,
+}
+
+/// Prepared command after sandbox policy evaluation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedRunCommand {
+    command: String,
+    warning: Option<String>,
+}
+
+impl PreparedRunCommand {
+    fn new(command: String, warning: Option<String>) -> Self {
+        Self { command, warning }
+    }
+
+    #[must_use]
+    pub fn command(&self) -> &str {
+        &self.command
+    }
+
+    #[must_use]
+    pub fn warning(&self) -> Option<&str> {
+        self.warning.as_deref()
+    }
+}
+
+const NETWORK_BLOCKLIST: &[&str] = &[
+    "invoke-webrequest",
+    "invoke-restmethod",
+    "start-bitstransfer",
+    "curl ",
+    "wget ",
+    "bitsadmin",
+    "net.webclient",
+    "http://",
+    "https://",
+];
+
+const PROCESS_ESCAPE_BLOCKLIST: &[&str] = &[
+    "start-process",
+    "powershell ",
+    "pwsh ",
+    "cmd /c",
+    "cmd.exe",
+    "wsl ",
+    "rundll32",
+    "mshta",
+    "regsvr32",
+    "cscript",
+    "wscript",
+];
+
+/// Prepare a command for execution under run sandbox policy.
+///
+/// On non-Windows hosts, this is a no-op passthrough.
+pub fn prepare_run_command(
+    command: &str,
+    shell: &DetectedShell,
+    policy: RunSandboxPolicy,
+    unsafe_allow_unsandboxed: bool,
+) -> Result<PreparedRunCommand, ToolError> {
+    if cfg!(windows) {
+        return prepare_windows_run_command(
+            command,
+            shell,
+            policy.windows,
+            unsafe_allow_unsandboxed,
+        );
+    }
+    let _ = (shell, policy, unsafe_allow_unsandboxed);
+    Ok(PreparedRunCommand::new(command.to_string(), None))
+}
+
+pub(crate) fn prepare_windows_run_command(
+    command: &str,
+    shell: &DetectedShell,
+    policy: WindowsRunSandboxPolicy,
+    unsafe_allow_unsandboxed: bool,
+) -> Result<PreparedRunCommand, ToolError> {
+    if !policy.enabled {
+        return Ok(PreparedRunCommand::new(command.to_string(), None));
+    }
+
+    let shell_is_powershell = is_powershell_shell(shell);
+    if policy.enforce_powershell_only && !shell_is_powershell {
+        return handle_unsandboxed_fallback(
+            command,
+            policy.fallback_mode,
+            unsafe_allow_unsandboxed,
+            format!(
+                "configured shell '{}' is not PowerShell",
+                shell.binary.display()
+            ),
+        );
+    }
+
+    if let Some(token) = blocked_token(command, PROCESS_ESCAPE_BLOCKLIST) {
+        return Err(ToolError::SandboxViolation(DenialReason::LimitsExceeded {
+            message: format!(
+                "Windows Run sandbox blocked potential process escape token '{token}'"
+            ),
+        }));
+    }
+
+    if policy.block_network
+        && let Some(token) = blocked_token(command, NETWORK_BLOCKLIST)
+    {
+        return Err(ToolError::SandboxViolation(DenialReason::LimitsExceeded {
+            message: format!("Windows Run sandbox blocked network token '{token}'"),
+        }));
+    }
+
+    if shell_is_powershell {
+        return Ok(PreparedRunCommand::new(
+            wrap_constrained_powershell(command),
+            None,
+        ));
+    }
+
+    Ok(PreparedRunCommand::new(command.to_string(), None))
+}
+
+fn blocked_token<'a>(command: &str, tokens: &'a [&str]) -> Option<&'a str> {
+    let normalized = command.to_ascii_lowercase();
+    tokens
+        .iter()
+        .copied()
+        .find(|token| normalized.contains(token))
+}
+
+fn is_powershell_shell(shell: &DetectedShell) -> bool {
+    let stem = Path::new(&shell.binary)
+        .file_stem()
+        .and_then(|v| v.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(stem.as_str(), "pwsh" | "powershell")
+}
+
+fn wrap_constrained_powershell(command: &str) -> String {
+    format!(
+        "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';\
+$ExecutionContext.SessionState.LanguageMode='ConstrainedLanguage';\
+Set-StrictMode -Version Latest;{command}"
+    )
+}
+
+fn handle_unsandboxed_fallback(
+    command: &str,
+    mode: RunSandboxFallbackMode,
+    unsafe_allow_unsandboxed: bool,
+    reason: String,
+) -> Result<PreparedRunCommand, ToolError> {
+    match mode {
+        RunSandboxFallbackMode::Deny => Err(ToolError::ExecutionFailed {
+            tool: "Run".to_string(),
+            message: format!("Windows sandbox unavailable: {reason}. Fallback mode is deny."),
+        }),
+        RunSandboxFallbackMode::Prompt => {
+            if !unsafe_allow_unsandboxed {
+                return Err(ToolError::ExecutionFailed {
+                    tool: "Run".to_string(),
+                    message: format!(
+                        "Windows sandbox unavailable: {reason}. \
+To run unsandboxed once, set unsafe_allow_unsandboxed=true."
+                    ),
+                });
+            }
+            Ok(PreparedRunCommand::new(
+                command.to_string(),
+                Some(format!(
+                    "WARNING: Windows sandbox unavailable ({reason}); running unsandboxed due to explicit override."
+                )),
+            ))
+        }
+        RunSandboxFallbackMode::AllowWithWarning => Ok(PreparedRunCommand::new(
+            command.to_string(),
+            Some(format!(
+                "WARNING: Windows sandbox unavailable ({reason}); running unsandboxed."
+            )),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn shell(binary: &str) -> DetectedShell {
+        DetectedShell {
+            binary: PathBuf::from(binary),
+            args: vec!["-NoProfile".to_string(), "-Command".to_string()],
+            name: "test".to_string(),
+        }
+    }
+
+    #[test]
+    fn windows_policy_defaults_are_hardened() {
+        let policy = WindowsRunSandboxPolicy::default();
+        assert!(policy.enabled);
+        assert!(policy.enforce_powershell_only);
+        assert!(policy.block_network);
+        assert_eq!(policy.fallback_mode, RunSandboxFallbackMode::Prompt);
+    }
+
+    #[test]
+    fn powershell_shell_detection_matches_known_variants() {
+        assert!(is_powershell_shell(&shell("pwsh")));
+        assert!(is_powershell_shell(&shell("powershell.exe")));
+        assert!(!is_powershell_shell(&shell("cmd.exe")));
+    }
+
+    #[test]
+    fn blocks_process_escape_tokens() {
+        let err = prepare_windows_run_command(
+            "Start-Process cmd.exe /c whoami",
+            &shell("pwsh"),
+            WindowsRunSandboxPolicy::default(),
+            false,
+        )
+        .unwrap_err();
+        match err {
+            ToolError::SandboxViolation(DenialReason::LimitsExceeded { message }) => {
+                assert!(message.contains("process escape token"));
+            }
+            _ => panic!("expected sandbox violation"),
+        }
+    }
+
+    #[test]
+    fn blocks_network_tokens_when_enabled() {
+        let err = prepare_windows_run_command(
+            "Invoke-WebRequest https://example.com",
+            &shell("pwsh"),
+            WindowsRunSandboxPolicy::default(),
+            false,
+        )
+        .unwrap_err();
+        match err {
+            ToolError::SandboxViolation(DenialReason::LimitsExceeded { message }) => {
+                assert!(message.contains("network token"));
+            }
+            _ => panic!("expected sandbox violation"),
+        }
+    }
+
+    #[test]
+    fn prompt_fallback_requires_explicit_override() {
+        let err = prepare_windows_run_command(
+            "Get-ChildItem",
+            &shell("cmd.exe"),
+            WindowsRunSandboxPolicy {
+                enabled: true,
+                enforce_powershell_only: true,
+                block_network: false,
+                fallback_mode: RunSandboxFallbackMode::Prompt,
+            },
+            false,
+        )
+        .unwrap_err();
+        match err {
+            ToolError::ExecutionFailed { message, .. } => {
+                assert!(message.contains("unsafe_allow_unsandboxed=true"));
+            }
+            _ => panic!("expected execution failure"),
+        }
+    }
+
+    #[test]
+    fn prompt_fallback_allows_when_override_set() {
+        let prepared = prepare_windows_run_command(
+            "Get-ChildItem",
+            &shell("cmd.exe"),
+            WindowsRunSandboxPolicy {
+                enabled: true,
+                enforce_powershell_only: true,
+                block_network: false,
+                fallback_mode: RunSandboxFallbackMode::Prompt,
+            },
+            true,
+        )
+        .expect("fallback allowed");
+        assert!(prepared.warning().is_some());
+        assert_eq!(prepared.command(), "Get-ChildItem");
+    }
+
+    #[test]
+    fn wraps_command_for_constrained_language() {
+        let prepared = prepare_windows_run_command(
+            "Get-ChildItem",
+            &shell("pwsh"),
+            WindowsRunSandboxPolicy::default(),
+            false,
+        )
+        .expect("wrapped command");
+        assert!(prepared.command().contains("ConstrainedLanguage"));
+        assert!(prepared.command().contains("Set-StrictMode"));
+    }
+}

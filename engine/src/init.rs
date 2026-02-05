@@ -190,20 +190,32 @@ impl App {
             })
             .unwrap_or(true);
 
+        // Resolve thinking mode first — it drives OutputLimits construction
+        let mut anthropic_thinking_mode = anthropic_config
+            .map(|cfg| cfg.thinking_mode)
+            .unwrap_or_default();
+        let anthropic_thinking_effort = anthropic_config
+            .map(|cfg| cfg.thinking_effort)
+            .unwrap_or_default();
+
         // Build OutputLimits at the boundary - validates invariants here, not at runtime
         // Use the model's max_output from the registry (provider-specific limits)
         let output_limits = {
             let max_output = context_manager.current_limits().max_output();
 
-            let thinking_enabled = anthropic_config
-                .map(|cfg| cfg.thinking_enabled)
-                .or_else(|| {
-                    config
-                        .as_ref()
-                        .and_then(|cfg| cfg.thinking.as_ref())
-                        .map(|t| t.enabled)
-                })
-                .unwrap_or(false);
+            // thinking_mode = "enabled" implies thinking is on (no separate flag needed).
+            // Legacy thinking_enabled is still honored for pre-4.6 models.
+            let thinking_enabled = anthropic_thinking_mode
+                == config::AnthropicThinkingMode::Enabled
+                || anthropic_config
+                    .map(|cfg| cfg.thinking_enabled)
+                    .or_else(|| {
+                        config
+                            .as_ref()
+                            .and_then(|cfg| cfg.thinking.as_ref())
+                            .map(|t| t.enabled)
+                    })
+                    .unwrap_or(false);
 
             if thinking_enabled {
                 let budget = anthropic_config
@@ -223,6 +235,10 @@ impl App {
                         tracing::warn!(
                             "Invalid thinking config: {e}. Disabling extended thinking."
                         );
+                        if anthropic_thinking_mode == config::AnthropicThinkingMode::Enabled {
+                            tracing::warn!("Falling back to adaptive thinking.");
+                            anthropic_thinking_mode = config::AnthropicThinkingMode::Adaptive;
+                        }
                         OutputLimits::new(max_output)
                     }
                 }
@@ -246,13 +262,6 @@ impl App {
         let gemini_thinking_enabled = gemini_config
             .map(|cfg| cfg.thinking_enabled)
             .unwrap_or(false);
-
-        let anthropic_thinking_mode = anthropic_config
-            .map(|cfg| cfg.thinking_mode)
-            .unwrap_or_default();
-        let anthropic_thinking_effort = anthropic_config
-            .map(|cfg| cfg.thinking_effort)
-            .unwrap_or_default();
 
         let data_dir = Self::data_dir();
 
@@ -294,6 +303,7 @@ impl App {
             tool_settings.search.clone(),
             tool_settings.webfetch.clone(),
             tool_settings.shell.clone(),
+            tool_settings.run_policy,
         ) {
             tracing::warn!("Failed to register built-in tools: {e}");
         }
@@ -582,6 +592,20 @@ impl App {
         let shell = tools::shell::detect_shell(shell_cfg);
         tracing::info!(shell = %shell.name, binary = ?shell.binary, "Detected shell");
 
+        let windows_run_cfg = tools_cfg
+            .and_then(|cfg| cfg.run.as_ref())
+            .and_then(|cfg| cfg.windows.as_ref());
+        let run_policy = tools::RunSandboxPolicy {
+            windows: tools::WindowsRunSandboxPolicy {
+                enabled: windows_run_cfg.map(|cfg| cfg.enabled).unwrap_or(true),
+                enforce_powershell_only: true,
+                block_network: true,
+                fallback_mode: parse_run_fallback_mode(
+                    windows_run_cfg.map(|cfg| cfg.fallback_mode),
+                ),
+            },
+        };
+
         let timeouts = tools::ToolTimeouts {
             default_timeout: Duration::from_secs(
                 tools_cfg
@@ -722,6 +746,7 @@ impl App {
             sandbox,
             env_sanitizer,
             command_blacklist,
+            run_policy,
         }
     }
 }
@@ -732,5 +757,15 @@ fn parse_approval_mode(raw: Option<&str>) -> tools::ApprovalMode {
         Some("strict" | "deny") => tools::ApprovalMode::Strict,
         // "default", "prompt", or anything else
         _ => tools::ApprovalMode::Default,
+    }
+}
+
+fn parse_run_fallback_mode(mode: Option<config::RunFallbackMode>) -> tools::RunSandboxFallbackMode {
+    match mode.unwrap_or_default() {
+        config::RunFallbackMode::Prompt => tools::RunSandboxFallbackMode::Prompt,
+        config::RunFallbackMode::Deny => tools::RunSandboxFallbackMode::Deny,
+        config::RunFallbackMode::AllowWithWarning => {
+            tools::RunSandboxFallbackMode::AllowWithWarning
+        }
     }
 }

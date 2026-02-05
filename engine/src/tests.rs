@@ -45,6 +45,7 @@ fn test_app() -> App {
         tool_settings.search.clone(),
         tool_settings.webfetch.clone(),
         tool_settings.shell.clone(),
+        tool_settings.run_policy,
     );
     let tool_registry = std::sync::Arc::new(tool_registry);
     let tool_definitions = tool_registry.definitions();

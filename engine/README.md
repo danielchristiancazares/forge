@@ -896,6 +896,10 @@ max_scan_bytes = 2097152
 [tools.apply_patch]
 max_patch_bytes = 524288
 
+[tools.run.windows]
+enabled = true
+fallback_mode = "prompt"     # prompt | deny | allow_with_warning
+
 [[tools.definitions]]
 name = "custom_tool"
 description = "A custom tool"
@@ -1882,4 +1886,3 @@ Config remains in the home directory: `~/.forge/config.toml`.
 | `<data_dir>/librarian.db` | Librarian fact store (when enabled) |
 
 All database files use SQLite with WAL mode for durability.
-
