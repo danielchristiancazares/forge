@@ -563,7 +563,12 @@ pub mod claude {
 
     fn anthropic_beta_header(model: &str, limits: OutputLimits) -> Option<&'static str> {
         if is_opus_4_6_model(model) {
-            return Some("context-1m-2025-08-07,compact-2026-01-12");
+            // NOTE: Server-side compaction (compact-2026-01-12) is intentionally NOT
+            // enabled here. Forge maintains its own client-side conversation history
+            // and does not reconcile it after server compaction, causing an infinite
+            // loop: full history → compaction → tool calls → full history → compaction.
+            // Use Forge's client-side distillation instead.
+            return Some("context-1m-2025-08-07");
         }
 
         if limits.has_thinking() {
@@ -773,14 +778,6 @@ pub mod claude {
                     }),
                 );
             }
-            body.insert(
-                "context_management".into(),
-                json!({
-                    "edits": [{
-                        "type": "compact_20260112"
-                    }]
-                }),
-            );
         // Legacy thinking mode for pre-4.6 models.
         } else if let ThinkingState::Enabled(budget) = limits.thinking() {
             body.insert(
@@ -1104,10 +1101,8 @@ pub mod claude {
 
             assert_eq!(body["thinking"]["type"].as_str(), Some("adaptive"));
             assert_eq!(body["output_config"]["effort"].as_str(), Some("max"));
-            assert_eq!(
-                body["context_management"]["edits"][0]["type"].as_str(),
-                Some("compact_20260112")
-            );
+            // Server-side compaction is disabled (conflicts with client-side distillation)
+            assert!(body.get("context_management").is_none());
         }
 
         #[test]
@@ -1149,11 +1144,8 @@ pub mod claude {
             assert_eq!(body["thinking"]["type"].as_str(), Some("disabled"));
             // No effort when thinking is disabled
             assert!(body.get("output_config").is_none());
-            // Compaction still present
-            assert_eq!(
-                body["context_management"]["edits"][0]["type"].as_str(),
-                Some("compact_20260112")
-            );
+            // Server-side compaction is disabled (conflicts with client-side distillation)
+            assert!(body.get("context_management").is_none());
         }
 
         #[test]
@@ -1255,7 +1247,7 @@ pub mod claude {
             let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
             assert_eq!(
                 anthropic_beta_header("claude-opus-4-6", limits),
-                Some("context-1m-2025-08-07,compact-2026-01-12")
+                Some("context-1m-2025-08-07")
             );
         }
 
