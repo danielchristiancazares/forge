@@ -8,6 +8,33 @@ use std::path::Path;
 
 use super::{DenialReason, DetectedShell, ToolError};
 
+/// Command text views for Windows `Run` sandbox evaluation.
+///
+/// - `raw`: what will be executed (after wrapping).
+/// - `policy_text`: normalized view used for token/pattern checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RunCommandText<'a> {
+    raw: &'a str,
+    policy_text: &'a str,
+}
+
+impl<'a> RunCommandText<'a> {
+    #[must_use]
+    pub(crate) fn new(raw: &'a str, policy_text: &'a str) -> Self {
+        Self { raw, policy_text }
+    }
+
+    #[must_use]
+    pub(crate) fn raw(&self) -> &'a str {
+        self.raw
+    }
+
+    #[must_use]
+    pub(crate) fn policy_text(&self) -> &'a str {
+        self.policy_text
+    }
+}
+
 /// Behavior when Windows sandbox prerequisites are unavailable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunSandboxFallbackMode {
@@ -82,8 +109,8 @@ const NETWORK_BLOCKLIST: &[&str] = &[
     "invoke-webrequest",
     "invoke-restmethod",
     "start-bitstransfer",
-    "curl ",
-    "wget ",
+    "curl.exe",
+    "wget.exe",
     "bitsadmin",
     "net.webclient",
     "http://",
@@ -92,11 +119,11 @@ const NETWORK_BLOCKLIST: &[&str] = &[
 
 const PROCESS_ESCAPE_BLOCKLIST: &[&str] = &[
     "start-process",
-    "powershell ",
-    "pwsh ",
+    "powershell.exe",
+    "pwsh.exe",
     "cmd /c",
     "cmd.exe",
-    "wsl ",
+    "wsl.exe",
     "rundll32",
     "mshta",
     "regsvr32",
@@ -107,8 +134,8 @@ const PROCESS_ESCAPE_BLOCKLIST: &[&str] = &[
 /// Prepare a command for execution under run sandbox policy.
 ///
 /// On non-Windows hosts, this is a no-op passthrough.
-pub fn prepare_run_command(
-    command: &str,
+pub(crate) fn prepare_run_command(
+    command: RunCommandText<'_>,
     shell: &DetectedShell,
     policy: RunSandboxPolicy,
     unsafe_allow_unsandboxed: bool,
@@ -122,11 +149,15 @@ pub fn prepare_run_command(
         );
     }
     let _ = (shell, policy, unsafe_allow_unsandboxed);
-    Ok(PreparedRunCommand::new(command.to_string(), None, false))
+    Ok(PreparedRunCommand::new(
+        command.raw().to_string(),
+        None,
+        false,
+    ))
 }
 
 pub(crate) fn prepare_windows_run_command(
-    command: &str,
+    command: RunCommandText<'_>,
     shell: &DetectedShell,
     policy: WindowsRunSandboxPolicy,
     unsafe_allow_unsandboxed: bool,
@@ -142,7 +173,7 @@ pub(crate) fn prepare_windows_run_command(
 }
 
 fn prepare_windows_run_command_with_host_probe<F>(
-    command: &str,
+    command: RunCommandText<'_>,
     shell: &DetectedShell,
     policy: WindowsRunSandboxPolicy,
     unsafe_allow_unsandboxed: bool,
@@ -153,13 +184,17 @@ where
     F: FnOnce() -> Result<(), String>,
 {
     if !policy.enabled {
-        return Ok(PreparedRunCommand::new(command.to_string(), None, false));
+        return Ok(PreparedRunCommand::new(
+            command.raw().to_string(),
+            None,
+            false,
+        ));
     }
 
     let shell_is_powershell = is_powershell_shell(shell);
     if policy.enforce_powershell_only && !shell_is_powershell {
         return handle_unsandboxed_fallback(
-            command.to_string(),
+            command.raw().to_string(),
             policy.fallback_mode,
             unsafe_allow_unsandboxed,
             format!(
@@ -169,7 +204,7 @@ where
         );
     }
 
-    if let Some(token) = blocked_token(command, PROCESS_ESCAPE_BLOCKLIST) {
+    if let Some(token) = blocked_token(command.policy_text(), PROCESS_ESCAPE_BLOCKLIST) {
         return Err(ToolError::SandboxViolation(DenialReason::LimitsExceeded {
             message: format!(
                 "Windows Run sandbox blocked potential process escape token '{token}'"
@@ -178,7 +213,7 @@ where
     }
 
     if policy.block_network
-        && let Some(token) = blocked_token(command, NETWORK_BLOCKLIST)
+        && let Some(token) = blocked_token(command.policy_text(), NETWORK_BLOCKLIST)
     {
         return Err(ToolError::SandboxViolation(DenialReason::LimitsExceeded {
             message: format!("Windows Run sandbox blocked network token '{token}'"),
@@ -186,9 +221,9 @@ where
     }
 
     let command_for_execution = if shell_is_powershell {
-        wrap_constrained_powershell(command)
+        wrap_constrained_powershell(command.raw())
     } else {
-        command.to_string()
+        command.raw().to_string()
     };
 
     let requires_windows_host_sandbox = if check_windows_host {
@@ -220,7 +255,7 @@ fn blocked_token<'a>(command: &str, tokens: &'a [&str]) -> Option<&'a str> {
         .find(|token| normalized.contains(token))
 }
 
-fn is_powershell_shell(shell: &DetectedShell) -> bool {
+pub(crate) fn is_powershell_shell(shell: &DetectedShell) -> bool {
     let stem = Path::new(&shell.binary)
         .file_stem()
         .and_then(|v| v.to_str())
@@ -294,6 +329,10 @@ mod tests {
         }
     }
 
+    fn cmd(command: &str) -> RunCommandText<'_> {
+        RunCommandText::new(command, command)
+    }
+
     #[test]
     fn windows_policy_defaults_are_hardened() {
         let policy = WindowsRunSandboxPolicy::default();
@@ -313,7 +352,7 @@ mod tests {
     #[test]
     fn blocks_process_escape_tokens() {
         let err = prepare_windows_run_command(
-            "Start-Process cmd.exe /c whoami",
+            cmd("Start-Process cmd.exe /c whoami"),
             &shell("pwsh"),
             WindowsRunSandboxPolicy::default(),
             false,
@@ -330,7 +369,7 @@ mod tests {
     #[test]
     fn blocks_network_tokens_when_enabled() {
         let err = prepare_windows_run_command(
-            "Invoke-WebRequest https://example.com",
+            cmd("Invoke-WebRequest https://example.com"),
             &shell("pwsh"),
             WindowsRunSandboxPolicy::default(),
             false,
@@ -347,7 +386,7 @@ mod tests {
     #[test]
     fn prompt_fallback_requires_explicit_override() {
         let err = prepare_windows_run_command(
-            "Get-ChildItem",
+            cmd("Get-ChildItem"),
             &shell("cmd.exe"),
             WindowsRunSandboxPolicy {
                 enabled: true,
@@ -369,7 +408,7 @@ mod tests {
     #[test]
     fn prompt_fallback_allows_when_override_set() {
         let prepared = prepare_windows_run_command(
-            "Get-ChildItem",
+            cmd("Get-ChildItem"),
             &shell("cmd.exe"),
             WindowsRunSandboxPolicy {
                 enabled: true,
@@ -387,7 +426,7 @@ mod tests {
     #[test]
     fn wraps_command_for_constrained_language() {
         let prepared = prepare_windows_run_command(
-            "Get-ChildItem",
+            cmd("Get-ChildItem"),
             &shell("pwsh"),
             WindowsRunSandboxPolicy::default(),
             false,
@@ -400,7 +439,7 @@ mod tests {
     #[test]
     fn host_probe_failure_requires_override_in_prompt_mode() {
         let err = prepare_windows_run_command_with_host_probe(
-            "Get-ChildItem",
+            cmd("Get-ChildItem"),
             &shell("pwsh"),
             WindowsRunSandboxPolicy::default(),
             false,
@@ -420,7 +459,7 @@ mod tests {
     #[test]
     fn host_probe_failure_with_override_keeps_constrained_language_wrapper() {
         let prepared = prepare_windows_run_command_with_host_probe(
-            "Get-ChildItem",
+            cmd("Get-ChildItem"),
             &shell("pwsh"),
             WindowsRunSandboxPolicy::default(),
             true,
@@ -436,7 +475,7 @@ mod tests {
     #[test]
     fn host_probe_success_marks_host_sandbox_as_required() {
         let prepared = prepare_windows_run_command_with_host_probe(
-            "Get-ChildItem",
+            cmd("Get-ChildItem"),
             &shell("pwsh"),
             WindowsRunSandboxPolicy::default(),
             false,

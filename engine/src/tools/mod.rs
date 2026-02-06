@@ -4,6 +4,8 @@ pub mod builtins;
 pub mod command_blacklist;
 pub mod git;
 pub mod lp1;
+pub mod memory;
+pub mod powershell_ast;
 pub mod recall;
 pub mod sandbox;
 pub mod search;

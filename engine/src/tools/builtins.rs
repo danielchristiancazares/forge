@@ -45,6 +45,7 @@ fn path_string_without_verbatim_prefix(path: &Path) -> String {
     s.to_string()
 }
 use crate::tools::lp1::{self, FileContent};
+use crate::tools::memory::MemoryTool;
 use crate::tools::recall::RecallTool;
 use crate::tools::search::SearchTool;
 use crate::tools::webfetch::WebFetchTool;
@@ -116,6 +117,11 @@ struct WriteFileArgs {
 #[derive(Debug, Deserialize)]
 struct RunCommandArgs {
     command: String,
+    // Model-provided justification shown to the user during tool approval (plumbed through
+    // the tool loop). The `Run` executor intentionally does not read this value.
+    #[allow(dead_code)]
+    #[serde(default)]
+    reason: Option<String>,
     #[serde(default)]
     unsafe_allow_unsandboxed: bool,
 }
@@ -1095,11 +1101,30 @@ impl ToolExecutor for RunCommandTool {
                 });
             }
 
+            let policy_text = if cfg!(windows)
+                && self.run_policy.windows.enabled
+                && super::windows_run::is_powershell_shell(&self.shell)
+            {
+                Some(
+                    super::powershell_ast::policy_text_for_command(
+                        &self.shell.binary,
+                        &typed.command,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            let policy_text = policy_text
+                .as_ref()
+                .map(super::powershell_ast::PowerShellPolicyText::as_str)
+                .unwrap_or(typed.command.as_str());
+
             // Validate against command blacklist BEFORE any execution
-            ctx.command_blacklist.validate(&typed.command)?;
+            ctx.command_blacklist.validate(policy_text)?;
 
             let prepared = super::windows_run::prepare_run_command(
-                &typed.command,
+                super::windows_run::RunCommandText::new(&typed.command, policy_text),
                 &self.shell,
                 self.run_policy,
                 typed.unsafe_allow_unsandboxed,
@@ -1275,6 +1300,7 @@ pub fn register_builtins(
     }
     registry.register(Box::new(WebFetchTool::new(webfetch_config)))?;
     registry.register(Box::new(RecallTool))?;
+    registry.register(Box::new(MemoryTool))?;
     Ok(())
 }
 
