@@ -194,6 +194,7 @@ fn extract_sse_data(event: &str) -> Option<String> {
     if found { Some(data) } else { None }
 }
 
+#[derive(Debug)]
 enum SseParseAction {
     /// Continue processing, no event to emit
     Continue,
@@ -816,6 +817,10 @@ pub mod claude {
     struct ClaudeParser {
         /// Current tool call ID for streaming tool arguments
         current_tool_id: Option<String>,
+        /// Server-side compaction is in progress — the API will send a new
+        /// `message_start` after the current `message_stop`, so we must NOT
+        /// treat that `message_stop` as end-of-stream.
+        compacting: bool,
     }
 
     impl SseParser for ClaudeParser {
@@ -849,6 +854,7 @@ pub mod claude {
                     }) = delta
                     {
                         tracing::info!("Server-side compaction triggered by Anthropic API");
+                        self.compacting = true;
                     }
 
                     if let Some(usage) = usage
@@ -910,7 +916,14 @@ pub mod claude {
                 }
 
                 typed::Event::MessageStop => {
-                    return SseParseAction::Done;
+                    if self.compacting {
+                        // Compaction: the API will immediately start a new message
+                        // stream with the compacted context. Keep reading.
+                        self.compacting = false;
+                        // Fall through to Continue — do NOT signal Done.
+                    } else {
+                        return SseParseAction::Done;
+                    }
                 }
 
                 typed::Event::Ping | typed::Event::Unknown => {}
@@ -1429,6 +1442,115 @@ pub mod claude {
                     }
                 }
                 _ => panic!("Expected Emit action"),
+            }
+        }
+
+        #[test]
+        fn claude_parser_continues_through_compaction() {
+            let mut parser = ClaudeParser::default();
+
+            // Phase 1: Pre-compaction content
+            let text_event = serde_json::json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "text_delta", "text": "before compaction" }
+            });
+            match parser.parse(&text_event) {
+                SseParseAction::Emit(events) => {
+                    assert_eq!(events.len(), 1);
+                    assert!(
+                        matches!(&events[0], StreamEvent::TextDelta(t) if t == "before compaction")
+                    );
+                }
+                _ => panic!("Expected Emit for pre-compaction text"),
+            }
+
+            // Phase 2: Server signals compaction via message_delta
+            let compaction_delta = serde_json::json!({
+                "type": "message_delta",
+                "delta": { "stop_reason": "compaction" },
+                "usage": { "output_tokens": 42 }
+            });
+            match parser.parse(&compaction_delta) {
+                SseParseAction::Emit(events) => {
+                    assert_eq!(events.len(), 1);
+                    assert!(matches!(&events[0], StreamEvent::Usage(u) if u.output_tokens == 42));
+                }
+                _ => panic!("Expected Emit with usage for compaction delta"),
+            }
+            assert!(parser.compacting, "compacting flag should be set");
+
+            // Phase 3: message_stop during compaction should NOT end the stream
+            let message_stop = serde_json::json!({ "type": "message_stop" });
+            match parser.parse(&message_stop) {
+                SseParseAction::Continue => {}
+                SseParseAction::Done => {
+                    panic!("message_stop during compaction must not signal Done")
+                }
+                other => panic!("Expected Continue, got {other:?}"),
+            }
+            assert!(
+                !parser.compacting,
+                "compacting flag should be cleared after message_stop"
+            );
+
+            // Phase 4: New message_start from compacted continuation
+            let new_start = serde_json::json!({
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": 500,
+                        "cache_read_input_tokens": 200,
+                        "cache_creation_input_tokens": 0
+                    }
+                }
+            });
+            match parser.parse(&new_start) {
+                SseParseAction::Emit(events) => {
+                    assert_eq!(events.len(), 1);
+                    assert!(matches!(&events[0], StreamEvent::Usage(u) if u.input_tokens == 700));
+                }
+                _ => panic!("Expected Emit for post-compaction message_start"),
+            }
+
+            // Phase 5: Post-compaction content continues normally
+            let post_text = serde_json::json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "text_delta", "text": "after compaction" }
+            });
+            match parser.parse(&post_text) {
+                SseParseAction::Emit(events) => {
+                    assert_eq!(events.len(), 1);
+                    assert!(
+                        matches!(&events[0], StreamEvent::TextDelta(t) if t == "after compaction")
+                    );
+                }
+                _ => panic!("Expected Emit for post-compaction text"),
+            }
+
+            // Phase 6: Normal message_stop after compaction ends the stream
+            match parser.parse(&message_stop) {
+                SseParseAction::Done => {}
+                _ => panic!("Final message_stop should signal Done"),
+            }
+        }
+
+        #[test]
+        fn claude_parser_normal_stop_without_compaction() {
+            let mut parser = ClaudeParser::default();
+
+            let end_turn_delta = serde_json::json!({
+                "type": "message_delta",
+                "delta": { "stop_reason": "end_turn" },
+                "usage": { "output_tokens": 100 }
+            });
+            parser.parse(&end_turn_delta);
+
+            let message_stop = serde_json::json!({ "type": "message_stop" });
+            match parser.parse(&message_stop) {
+                SseParseAction::Done => {}
+                _ => panic!("Normal message_stop should signal Done"),
             }
         }
     }
