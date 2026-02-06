@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 
-use forge_engine::{App, Message, Provider, ToolResult, sanitize_terminal_text};
+use forge_engine::{App, Message, Provider, ToolResult, sanitize_display_text};
 
 use crate::theme::{Glyphs, Palette, styles};
 use crate::tool_display;
@@ -107,7 +107,7 @@ pub(crate) fn tool_status_signature(statuses: Option<&[ToolCallStatus]>) -> Opti
 }
 
 fn first_result_line(result: &ToolResult, max_len: usize) -> Option<String> {
-    let content = sanitize_terminal_text(&result.content);
+    let content = sanitize_display_text(&result.content);
     content
         .lines()
         .next()
@@ -181,7 +181,7 @@ pub(crate) fn message_header_parts(
         }
         Message::ToolUse(call) => {
             let compact = tool_display::format_tool_call_compact(&call.name, &call.arguments);
-            let compact = sanitize_terminal_text(&compact).into_owned();
+            let compact = sanitize_display_text(&compact);
             (
                 glyphs.tool.to_string(),
                 compact,
@@ -249,19 +249,20 @@ pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<Appro
 
     let mut items = Vec::with_capacity(requests.len());
     for (i, req) in requests.iter().enumerate() {
-        let tool_name = sanitize_terminal_text(&req.tool_name).into_owned();
+        let tool_name = sanitize_display_text(&req.tool_name);
         let risk_label = format!("{:?}", req.risk_level).to_uppercase();
         let summary = if req.summary.trim().is_empty() {
             None
         } else {
-            let summary = sanitize_terminal_text(&req.summary);
+            let summary = sanitize_display_text(&req.summary);
             Some(truncate_with_ellipsis(
-                summary.as_ref(),
+                &summary,
                 max_width.saturating_sub(6),
             ))
         };
         let details = if expanded == Some(i) {
             if let Ok(details) = serde_json::to_string_pretty(&req.arguments) {
+                let details = sanitize_display_text(&details);
                 details
                     .lines()
                     .map(|line| truncate_with_ellipsis(line, max_width.saturating_sub(6)))
@@ -278,11 +279,11 @@ pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<Appro
             .warnings
             .iter()
             .map(|w| {
-                format!(
+                sanitize_display_text(&format!(
                     "Mixed scripts in '{}': {}",
                     w.field_name,
                     w.scripts_display()
-                )
+                ))
             })
             .collect();
 

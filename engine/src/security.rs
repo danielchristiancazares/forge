@@ -18,6 +18,7 @@ use std::sync::OnceLock;
 use aho_corasick::AhoCorasick;
 use forge_types::{sanitize_terminal_text, strip_steganographic_chars};
 use globset::{GlobBuilder, GlobSetBuilder};
+use regex::Regex;
 
 /// Minimum length for env var values to be considered secrets.
 /// Avoids false positives on short values ("true", "1", "yes").
@@ -167,9 +168,15 @@ fn looks_like_non_secret(value: &str) -> bool {
 #[allow(dead_code)] // Public API, currently unused by dependents in this workspace.
 #[must_use]
 pub fn sanitize_display_text(input: &str) -> String {
-    let pattern_redacted = redact_api_keys(input);
+    // Normalize away terminal controls before redacting. This prevents escape-based
+    // token splitting from bypassing literal pattern matching.
+    let terminal_safe = sanitize_terminal_text(input);
+    let pattern_redacted = redact_api_keys(terminal_safe.as_ref());
     let value_redacted = secret_redactor().redact(&pattern_redacted);
-    sanitize_terminal_text(&value_redacted).into_owned()
+    match value_redacted {
+        std::borrow::Cow::Borrowed(_) => pattern_redacted,
+        std::borrow::Cow::Owned(v) => v,
+    }
 }
 
 static SECRET_REDACTOR: OnceLock<SecretRedactor> = OnceLock::new();
@@ -190,84 +197,171 @@ pub fn secret_redactor() -> &'static SecretRedactor {
 /// 4. Strip steganographic characters
 pub fn sanitize_stream_error(raw: &str) -> String {
     let trimmed = raw.trim();
-    let pattern_redacted = redact_api_keys(trimmed);
+    let terminal_safe = sanitize_terminal_text(trimmed);
+    let pattern_redacted = redact_api_keys(terminal_safe.as_ref());
     let value_redacted = secret_redactor().redact(&pattern_redacted);
-    let terminal_safe = sanitize_terminal_text(&value_redacted);
-    strip_steganographic_chars(&terminal_safe).into_owned()
+    strip_steganographic_chars(&value_redacted).into_owned()
 }
 
-/// Redact API keys from a string.
+/// Redact sensitive tokens from a string.
 ///
-/// Detects patterns for various providers:
+/// Detects and redacts common high-risk token formats:
 /// - OpenAI: `sk-...` → `sk-***`
 /// - Anthropic: `sk-ant-...` → `sk-ant-***`
 /// - Google/Gemini: `AIza...` → `AIza***`
+/// - GitHub: `ghp_...`, `github_pat_...` → `<prefix>***`
+/// - AWS access keys: `AKIA...`/`ASIA...` → `<prefix>***` (and paired secret keys)
+/// - Stripe: `sk_live_...`, `rk_test_...`, `whsec_...` → `<prefix>***`
+/// - Bearer JWTs: `Bearer <jwt>` → `Bearer [REDACTED]`
+/// - PEM private keys: `-----BEGIN ... PRIVATE KEY----- ...` → `[REDACTED]`
+/// - Hex private keys: `PRIVATE_KEY=0x...` → `PRIVATE_KEY=[REDACTED]`
 pub fn redact_api_keys(raw: &str) -> String {
-    let mut output = String::with_capacity(raw.len());
-    let mut chars = raw.chars().peekable();
-    while let Some(ch) = chars.next() {
-        // Check for OpenAI/Anthropic keys: sk-...
-        if ch == 's' {
-            let mut lookahead = chars.clone();
-            if lookahead.next() == Some('k') && lookahead.next() == Some('-') {
-                // Consume "k-"
-                chars.next();
-                chars.next();
-                // Check if it's Anthropic (sk-ant-) by peeking further
-                let mut ant_lookahead = chars.clone();
-                let is_anthropic = ant_lookahead.next() == Some('a')
-                    && ant_lookahead.next() == Some('n')
-                    && ant_lookahead.next() == Some('t')
-                    && ant_lookahead.next() == Some('-');
-                if is_anthropic {
-                    // Consume "ant-"
-                    chars.next();
-                    chars.next();
-                    chars.next();
-                    chars.next();
-                    output.push_str("sk-ant-***");
-                } else {
-                    output.push_str("sk-***");
-                }
-                // Skip remaining key characters
-                while let Some(&next_ch) = chars.peek() {
-                    if is_key_delimiter(next_ch) {
-                        break;
-                    }
-                    chars.next();
-                }
-                continue;
-            }
-        }
-        // Check for Google/Gemini keys: AIza...
-        if ch == 'A' {
-            let mut lookahead = chars.clone();
-            if lookahead.next() == Some('I')
-                && lookahead.next() == Some('z')
-                && lookahead.next() == Some('a')
-            {
-                // Consume "Iza"
-                chars.next();
-                chars.next();
-                chars.next();
-                output.push_str("AIza***");
-                // Skip remaining key characters
-                while let Some(&next_ch) = chars.peek() {
-                    if is_key_delimiter(next_ch) {
-                        break;
-                    }
-                    chars.next();
-                }
-                continue;
-            }
-        }
-        output.push(ch);
-    }
-    output
+    pattern_redactor().redact(raw)
 }
 
-fn is_key_delimiter(ch: char) -> bool {
-    ch.is_whitespace() || matches!(ch, '"' | '\'' | ',' | '}' | ']' | ')' | '\\')
+static PATTERN_REDACTOR: OnceLock<PatternRedactor> = OnceLock::new();
+
+fn pattern_redactor() -> &'static PatternRedactor {
+    PATTERN_REDACTOR.get_or_init(PatternRedactor::new)
+}
+
+#[derive(Debug)]
+struct PatternRedactor {
+    // Multiline / block formats
+    pem_private_key_block: Regex,
+
+    // AWS
+    aws_access_key_pair: Regex,
+    aws_access_key_id: Regex,
+    aws_secret_access_key_assignment: Regex,
+
+    // GitHub
+    github_token: Regex,
+    github_pat_token: Regex,
+
+    // Stripe
+    stripe_api_key: Regex,
+    stripe_webhook_secret: Regex,
+
+    // Bearer / JWT
+    bearer_jwt: Regex,
+    jwt: Regex,
+
+    // Private keys
+    hex_private_key_assignment: Regex,
+
+    // Provider API keys
+    anthropic_key: Regex,
+    openai_key: Regex,
+    gemini_key: Regex,
+}
+
+impl PatternRedactor {
+    fn new() -> Self {
+        Self {
+            pem_private_key_block: Regex::new(
+                r"(?s)(-----BEGIN [^-\n]*PRIVATE KEY-----).*?(-----END [^-\n]*PRIVATE KEY-----)",
+            )
+            .expect("valid PEM private key regex"),
+
+            aws_access_key_pair: Regex::new(
+                r"\b((?:AKIA|ASIA|AIDA|AROA|AGPA|AIPA|ANPA|ANVA))[A-Z0-9]{16}(\s+)[A-Za-z0-9/+=]{40}\b",
+            )
+            .expect("valid AWS access key pair regex"),
+            aws_access_key_id: Regex::new(
+                r"\b((?:AKIA|ASIA|AIDA|AROA|AGPA|AIPA|ANPA|ANVA))[A-Z0-9]{16}\b",
+            )
+            .expect("valid AWS access key id regex"),
+            aws_secret_access_key_assignment: Regex::new(
+                r"(?i)\b(aws_secret_access_key)(\s*[:=]\s*)[A-Za-z0-9/+=]{40}\b",
+            )
+            .expect("valid AWS secret access key assignment regex"),
+
+            github_token: Regex::new(r"\b(gh(?:p|o|u|s|r)_)[A-Za-z0-9]{20,}\b")
+                .expect("valid GitHub token regex"),
+            github_pat_token: Regex::new(r"\b(github_pat_)[A-Za-z0-9_]{20,}\b")
+                .expect("valid GitHub fine-grained PAT regex"),
+
+            stripe_api_key: Regex::new(
+                r"\b((?:sk|rk|pk)_(?:test|live)_)[A-Za-z0-9]{10,}\b",
+            )
+            .expect("valid Stripe API key regex"),
+            stripe_webhook_secret: Regex::new(r"\b(whsec_)[A-Za-z0-9]{10,}\b")
+                .expect("valid Stripe webhook secret regex"),
+
+            bearer_jwt: Regex::new(
+                r"(?i)\b(Bearer)(\s+)[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2,}",
+            )
+            .expect("valid Bearer JWT regex"),
+            jwt: Regex::new(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
+                .expect("valid JWT regex"),
+
+            hex_private_key_assignment: Regex::new(
+                r"(?i)\b(PRIVATE_KEY)(\s*[:=]\s*)0x[0-9a-f]{64}\b",
+            )
+            .expect("valid hex private key assignment regex"),
+
+            // Provider API keys
+            anthropic_key: Regex::new(r"sk-ant-[A-Za-z0-9_-]+")
+                .expect("valid Anthropic API key regex"),
+            // OpenAI keys are `sk-...`, but **do not** match the Anthropic prefix (`sk-ant-...`),
+            // otherwise we'd double-redact `sk-ant-***` into `sk-******`.
+            openai_key: Regex::new(
+                r"sk-(?:[^a][A-Za-z0-9_-]*|a[^n][A-Za-z0-9_-]*|an[^t][A-Za-z0-9_-]*|ant[^-][A-Za-z0-9_-]*)",
+            )
+            .expect("valid OpenAI API key regex"),
+            gemini_key: Regex::new(r"AIza[0-9A-Za-z_-]+").expect("valid Gemini API key regex"),
+        }
+    }
+
+    fn redact(&self, raw: &str) -> String {
+        let mut output = raw.to_string();
+
+        // More-specific patterns first (avoid leaving partially redacted secrets behind).
+        apply_if_match(
+            &self.pem_private_key_block,
+            "$1\n[REDACTED]\n$2",
+            &mut output,
+        );
+
+        apply_if_match(&self.aws_access_key_pair, "$1***$2[REDACTED]", &mut output);
+        apply_if_match(
+            &self.aws_secret_access_key_assignment,
+            "$1$2[REDACTED]",
+            &mut output,
+        );
+        apply_if_match(&self.aws_access_key_id, "$1***", &mut output);
+
+        apply_if_match(&self.github_pat_token, "$1***", &mut output);
+        apply_if_match(&self.github_token, "$1***", &mut output);
+
+        apply_if_match(&self.stripe_webhook_secret, "$1***", &mut output);
+        apply_if_match(&self.stripe_api_key, "$1***", &mut output);
+
+        apply_if_match(&self.bearer_jwt, "$1$2[REDACTED]", &mut output);
+        apply_if_match(&self.jwt, "[REDACTED]", &mut output);
+
+        apply_if_match(
+            &self.hex_private_key_assignment,
+            "$1$2[REDACTED]",
+            &mut output,
+        );
+
+        // Provider keys last; `sk-ant-` must run before `sk-`.
+        apply_if_match(&self.anthropic_key, "sk-ant-***", &mut output);
+        apply_if_match(&self.openai_key, "sk-***", &mut output);
+        apply_if_match(&self.gemini_key, "AIza***", &mut output);
+
+        output
+    }
+}
+
+fn apply_if_match(re: &Regex, replacement: &str, output: &mut String) {
+    if !re.is_match(output) {
+        return;
+    }
+    let replaced = re.replace_all(output.as_str(), replacement).into_owned();
+    *output = replaced;
 }
 
 #[cfg(test)]
@@ -341,6 +435,68 @@ mod tests {
             output,
             "anthropic: sk-ant-***, openai: sk-***, google: AIza***"
         );
+    }
+
+    #[test]
+    fn redact_api_keys_redacts_github_tokens() {
+        let input = "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12 and github_pat_1234567890_abcdefghijklmnopqrstuvwxyz";
+        let output = redact_api_keys(input);
+        assert!(output.contains("ghp_***"));
+        assert!(output.contains("github_pat_***"));
+        assert!(!output.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"));
+        assert!(!output.contains("github_pat_1234567890_abcdefghijklmnopqrstuvwxyz"));
+    }
+
+    #[test]
+    fn redact_api_keys_redacts_aws_access_key_id() {
+        let input = "AWS access key: AKIAIOSFODNN7EXAMPLE";
+        let output = redact_api_keys(input);
+        assert_eq!(output, "AWS access key: AKIA***");
+    }
+
+    #[test]
+    fn redact_api_keys_redacts_aws_access_key_pair() {
+        let input = "AWS AKIAIOSFODNN7EXAMPLE wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        let output = redact_api_keys(input);
+        assert!(output.contains("AKIA***"));
+        assert!(output.contains("[REDACTED]"));
+        assert!(!output.contains("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"));
+    }
+
+    #[test]
+    fn redact_api_keys_redacts_stripe_keys() {
+        let input = "stripe=sk_live_51HG3bEK7ypQ9a0b1c2d3e4f5g6h7i8j9k0lmnopqrstuvwx whsec_1234567890abcdefghijklmnopqrstuvwxyz";
+        let output = redact_api_keys(input);
+        assert!(output.contains("sk_live_***"));
+        assert!(output.contains("whsec_***"));
+        assert!(!output.contains("sk_live_51HG3bEK7ypQ9a0b1c2d3e4f5g6h7i8j9k0lmnopqrstuvwx"));
+    }
+
+    #[test]
+    fn redact_api_keys_redacts_bearer_jwt() {
+        let input = "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+        let output = redact_api_keys(input);
+        assert!(output.contains("Bearer [REDACTED]"));
+        assert!(!output.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."));
+    }
+
+    #[test]
+    fn redact_api_keys_redacts_pem_private_key_block() {
+        let input =
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0Z3V\n-----END RSA PRIVATE KEY-----";
+        let output = redact_api_keys(input);
+        assert!(output.contains("-----BEGIN RSA PRIVATE KEY-----"));
+        assert!(output.contains("[REDACTED]"));
+        assert!(output.contains("-----END RSA PRIVATE KEY-----"));
+        assert!(!output.contains("MIIEpAIBAAKCAQEA0Z3V"));
+    }
+
+    #[test]
+    fn redact_api_keys_redacts_hex_private_key_assignment() {
+        let key = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let input = format!("PRIVATE_KEY={key}");
+        let output = redact_api_keys(&input);
+        assert_eq!(output, "PRIVATE_KEY=[REDACTED]");
     }
 
     #[test]
