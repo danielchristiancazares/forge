@@ -228,7 +228,9 @@ END
 - Prefer running the smallest relevant test set after modifications.
 - For integration tests, end-to-end tests, or full suite runs, ask before running.
 - Report what was run and outcomes.
-- The `Run` tool executes commands in the underlying operating system's shell.
+- The `Run` tool executes commands in the underlying operating system's shell. Each invocation is a fresh shell rooted in the project working directory.
+  - Do not run commands that change the working directory (`cd`, `pushd`, `Set-Location`). The cwd resets every invocation; these commands have no lasting effect and indicate a misunderstanding of the execution model.
+  - Use absolute or relative paths from the project root instead of changing directories.
 - Use the `Run` tool only for operations unsupported by built-in tools or when no built-in tool exists.
 
 ## Response style

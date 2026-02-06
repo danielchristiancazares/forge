@@ -261,6 +261,7 @@ END
 9. Run the smallest relevant test set after modifications.
 10. Ask before running integration/e2e/full test suites.
 11. Report what was run and outcomes.
+12. Each `Run` invocation is a fresh shell rooted in the project working directory. Do not run commands that change directory (`cd`, `pushd`, `Set-Location`); the cwd resets every invocation. Use absolute or relative paths from the project root instead.
 
 ## Coding philosophy
 
