@@ -60,8 +60,9 @@ use unicode_width::UnicodeWidthStr;
 use forge_engine::{
     App, ChangeKind, ContextUsageStatus, DisplayItem, FileDiff, InputMode, Message,
     PredefinedModel, Provider, TurnUsage, UiOptions, command_specs, find_match_positions,
+    sanitize_display_text,
 };
-use forge_types::{ToolResult, sanitize_terminal_text};
+use forge_types::ToolResult;
 
 use self::diff_render::render_tool_result_lines;
 pub use self::markdown::clear_render_cache;
@@ -479,9 +480,9 @@ fn build_dynamic_message_lines(
             let thinking_style = Style::default()
                 .fg(palette.text_muted)
                 .add_modifier(Modifier::ITALIC);
-            let thinking = sanitize_terminal_text(streaming.thinking());
+            let thinking = sanitize_display_text(streaming.thinking());
             let mut rendered_thinking =
-                render_markdown_preserve_newlines(thinking.as_ref(), thinking_style, palette);
+                render_markdown_preserve_newlines(&thinking, thinking_style, palette);
 
             if !rendered_thinking.is_empty() {
                 let first_line = &mut rendered_thinking[0];
@@ -510,8 +511,8 @@ fn build_dynamic_message_lines(
             }
         } else {
             let content_style = Style::default().fg(palette.text_secondary);
-            let content = sanitize_terminal_text(streaming.content());
-            let mut rendered = render_markdown(content.as_ref(), content_style, palette);
+            let content = sanitize_display_text(streaming.content());
+            let mut rendered = render_markdown(&content, content_style, palette);
 
             if rendered.is_empty() {
                 if has_thinking {
@@ -565,7 +566,7 @@ fn build_dynamic_message_lines(
                 rendered_shell_view = true;
                 let spinner = spinner_frame(app.tick_count(), app.ui_options());
                 let display = tool_display::format_tool_call_compact(&call.name, &call.arguments);
-                let display = sanitize_terminal_text(&display).into_owned();
+                let display = sanitize_display_text(&display);
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!(" {spinner} "),
@@ -586,7 +587,7 @@ fn build_dynamic_message_lines(
                 let connector_style = Style::default().fg(palette.text_muted);
                 let output_style = Style::default().fg(palette.text_secondary);
                 for (index, line) in output_window.iter().enumerate() {
-                    let safe_line = sanitize_terminal_text(line).into_owned();
+                    let safe_line = sanitize_display_text(line);
                     if index == 0 {
                         lines.push(Line::from(vec![
                             Span::styled(format!(" {} ", glyphs.tree_connector), connector_style),
@@ -661,12 +662,12 @@ fn build_dynamic_message_lines(
                     ),
                 };
 
-                let name = sanitize_terminal_text(&status.name);
-                let id = sanitize_terminal_text(&status.id);
+                let name = sanitize_display_text(&status.name);
+                let id = sanitize_display_text(&status.id);
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {icon} "), style),
                     Span::styled(
-                        format!("{} ({}) [{label}]", name.as_ref(), id.as_ref()),
+                        format!("{name} ({id}) [{label}]"),
                         Style::default().fg(palette.text_muted),
                     ),
                 ]));
@@ -694,19 +695,19 @@ fn build_dynamic_message_lines(
                             if line.is_empty() {
                                 continue;
                             }
-                            let safe_line = sanitize_terminal_text(line);
+                            let safe_line = sanitize_display_text(line);
                             if i == 0 {
                                 lines.push(Line::from(vec![
                                     Span::styled(
                                         format!("    {connector} "),
                                         Style::default().fg(palette.text_muted),
                                     ),
-                                    Span::styled(safe_line.into_owned(), output_style),
+                                    Span::styled(safe_line, output_style),
                                 ]));
                             } else {
                                 lines.push(Line::from(vec![
                                     Span::raw("      "),
-                                    Span::styled(safe_line.into_owned(), output_style),
+                                    Span::styled(safe_line, output_style),
                                 ]));
                             }
                         }
@@ -716,13 +717,13 @@ fn build_dynamic_message_lines(
                             !l.starts_with("▶ ") && !l.starts_with("✓ ") && !l.trim().is_empty()
                         });
                         if let Some(line) = last_line {
-                            let safe_line = sanitize_terminal_text(line);
+                            let safe_line = sanitize_display_text(line);
                             lines.push(Line::from(vec![
                                 Span::styled(
                                     format!("    {connector} "),
                                     Style::default().fg(palette.text_muted),
                                 ),
-                                Span::styled(safe_line.into_owned(), output_style),
+                                Span::styled(safe_line, output_style),
                             ]));
                         }
                     }
@@ -755,8 +756,8 @@ fn render_message_static(
     match msg {
         Message::User(_) => {
             let content_style = Style::default().fg(palette.text_primary);
-            let content = sanitize_terminal_text(msg.content());
-            let mut rendered = render_markdown(content.as_ref(), content_style, palette);
+            let content = sanitize_display_text(msg.content());
+            let mut rendered = render_markdown(&content, content_style, palette);
 
             if rendered.is_empty() {
                 lines.push(Line::from(vec![Span::styled(
@@ -782,7 +783,7 @@ fn render_message_static(
             ]));
         }
         Message::ToolResult(result) => {
-            let content = sanitize_terminal_text(&result.content);
+            let content = sanitize_display_text(&result.content);
 
             match tool_result_render_decision(tool_call_meta, &content, result.is_error, 80) {
                 ToolResultRender::Full { diff_aware } => {
@@ -793,7 +794,7 @@ fn render_message_static(
                     };
                     if diff_aware {
                         lines.extend(render_tool_result_lines(
-                            content.as_ref(),
+                            &content,
                             content_style,
                             palette,
                             "  ",
@@ -826,8 +827,8 @@ fn render_message_static(
                 Message::Assistant(_) => Style::default().fg(palette.text_secondary),
                 _ => Style::default().fg(palette.text_muted),
             };
-            let content = sanitize_terminal_text(msg.content());
-            let mut rendered = render_markdown(content.as_ref(), content_style, palette);
+            let content = sanitize_display_text(msg.content());
+            let mut rendered = render_markdown(&content, content_style, palette);
 
             if rendered.is_empty() {
                 lines.push(Line::from(vec![Span::styled(
@@ -850,9 +851,8 @@ fn render_message_static(
             let content_style = Style::default()
                 .fg(palette.text_muted)
                 .add_modifier(Modifier::ITALIC);
-            let content = sanitize_terminal_text(msg.content());
-            let mut rendered =
-                render_markdown_preserve_newlines(content.as_ref(), content_style, palette);
+            let content = sanitize_display_text(msg.content());
+            let mut rendered = render_markdown_preserve_newlines(&content, content_style, palette);
 
             if rendered.is_empty() {
                 lines.push(Line::from(vec![Span::styled(

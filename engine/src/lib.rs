@@ -71,6 +71,7 @@ mod input_modes;
 mod notifications;
 mod persistence;
 mod security;
+pub use security::sanitize_display_text;
 mod session_state;
 pub use session_state::SessionChangeLog;
 mod distillation;

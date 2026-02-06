@@ -11,8 +11,7 @@ use ratatui::{
     widgets::{Clear, Paragraph, Widget, Wrap},
 };
 
-use forge_engine::{App, DisplayItem, InputMode, Message, PredefinedModel};
-use forge_types::sanitize_terminal_text;
+use forge_engine::{App, DisplayItem, InputMode, Message, PredefinedModel, sanitize_display_text};
 
 use crate::draw_input;
 use crate::shared::{
@@ -214,8 +213,8 @@ impl InlineOutput {
                     lines.push(Line::from("Tool output:"));
                 }
                 for line in &output_lines[self.last_tool_output_len..] {
-                    let safe_line = sanitize_terminal_text(line);
-                    lines.push(Line::from(format!("  {}", safe_line.as_ref())));
+                    let safe_line = sanitize_display_text(line);
+                    lines.push(Line::from(format!("  {safe_line}")));
                 }
                 self.last_tool_output_len = output_lines.len();
             }
@@ -299,7 +298,7 @@ fn append_message_lines(
     match msg {
         Message::User(_) => {
             let content_style = Style::default().fg(palette.text_primary);
-            let content = sanitize_terminal_text(msg.content());
+            let content = sanitize_display_text(msg.content());
             let mut first = true;
 
             for content_line in content.lines() {
@@ -346,7 +345,7 @@ fn append_message_lines(
             ]));
         }
         Message::ToolResult(result) => {
-            let content = sanitize_terminal_text(&result.content);
+            let content = sanitize_display_text(&result.content);
 
             match tool_result_render_decision(tool_call_meta, &content, result.is_error, 60) {
                 ToolResultRender::Full { diff_aware } => {
@@ -391,7 +390,7 @@ fn append_message_lines(
                 Message::Assistant(_) => Style::default().fg(palette.text_secondary),
                 _ => Style::default().fg(palette.text_muted),
             };
-            let content = sanitize_terminal_text(msg.content());
+            let content = sanitize_display_text(msg.content());
             let mut first = true;
 
             for content_line in content.lines() {
@@ -430,7 +429,7 @@ fn append_message_lines(
             let content_style = Style::default()
                 .fg(palette.text_muted)
                 .add_modifier(Modifier::ITALIC);
-            let content = sanitize_terminal_text(msg.content());
+            let content = sanitize_display_text(msg.content());
 
             // Header line with icon and "Thinking" label
             lines.push(Line::from(vec![Span::styled(
@@ -469,13 +468,9 @@ fn append_tool_status_lines(lines: &mut Vec<Line>, statuses: &[ToolCallStatus], 
             ToolCallStatusKind::Pending => glyphs.bullet,
         };
 
-        let name = sanitize_terminal_text(&status.name);
-        let id = sanitize_terminal_text(&status.id);
-        lines.push(Line::from(format!(
-            "  {icon} {} ({})",
-            name.as_ref(),
-            id.as_ref()
-        )));
+        let name = sanitize_display_text(&status.name);
+        let id = sanitize_display_text(&status.id);
+        lines.push(Line::from(format!("  {icon} {name} ({id})")));
         if let Some(reason) = status.reason.as_ref() {
             lines.push(Line::from(format!("     {reason}")));
         }

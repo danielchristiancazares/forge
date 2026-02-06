@@ -157,6 +157,21 @@ fn looks_like_non_secret(value: &str) -> bool {
 }
 
 /// Single global instance (IFA-7 compliant).
+///
+/// Sanitize text for display by redacting secrets and stripping terminal controls.
+///
+/// Applies three sanitization passes:
+/// 1. Redact pattern-based API keys (OpenAI `sk-*`, Anthropic `sk-ant-*`, Gemini `AIza*`)
+/// 2. Redact value-based secrets from environment variables
+/// 3. Strip terminal escape sequences and steganographic characters
+#[allow(dead_code)] // Public API, currently unused by dependents in this workspace.
+#[must_use]
+pub fn sanitize_display_text(input: &str) -> String {
+    let pattern_redacted = redact_api_keys(input);
+    let value_redacted = secret_redactor().redact(&pattern_redacted);
+    sanitize_terminal_text(&value_redacted).into_owned()
+}
+
 static SECRET_REDACTOR: OnceLock<SecretRedactor> = OnceLock::new();
 
 /// Get the global secret redactor instance.
