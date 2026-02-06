@@ -1203,8 +1203,8 @@ impl ToolExecutor for RunCommandTool {
 
             #[cfg(unix)]
             {
-                let _ = requires_host_sandbox;
                 use std::os::unix::process::CommandExt;
+                let _ = requires_host_sandbox;
                 unsafe {
                     command.as_std_mut().pre_exec(|| {
                         if libc::setsid() == -1 {
