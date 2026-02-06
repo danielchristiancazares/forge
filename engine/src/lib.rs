@@ -571,6 +571,24 @@ impl App {
         }
     }
 
+    /// Close the files panel (no-op if already hidden).
+    pub fn close_files_panel(&mut self) {
+        if !self.view.files_panel.visible {
+            return;
+        }
+        if self.view.ui_options.reduced_motion {
+            self.view.files_panel_effect = None;
+            let panel = &mut self.view.files_panel;
+            panel.visible = false;
+            panel.expanded = None;
+            panel.diff_scroll = 0;
+            return;
+        }
+        self.view.files_panel_effect =
+            Some(PanelEffect::slide_out_right(Duration::from_millis(180)));
+        self.view.last_frame = Instant::now();
+    }
+
     pub fn files_panel_visible(&self) -> bool {
         self.view.files_panel.visible
     }
