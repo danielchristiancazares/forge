@@ -1136,6 +1136,9 @@ impl ToolExecutor for RunCommandTool {
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
+            #[cfg(unix)]
+            use std::os::unix::process::CommandExt;
+
             let typed: RunCommandArgs =
                 serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
                     message: e.to_string(),
@@ -1203,7 +1206,6 @@ impl ToolExecutor for RunCommandTool {
 
             #[cfg(unix)]
             {
-                use std::os::unix::process::CommandExt;
                 let _ = requires_host_sandbox;
                 unsafe {
                     command.as_std_mut().pre_exec(|| {
