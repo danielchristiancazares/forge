@@ -636,12 +636,13 @@ async fn read_to_end_limited<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
         let remaining = max_bytes.saturating_sub(buf.len());
         if remaining == 0 {
             truncated = true;
-            continue;
+            break;
         }
         let take = remaining.min(n);
         buf.extend_from_slice(&tmp[..take]);
         if take < n {
             truncated = true;
+            break;
         }
     }
 
