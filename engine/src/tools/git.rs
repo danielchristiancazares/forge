@@ -64,9 +64,10 @@ impl GitToolKind {
                 "Show working tree status: staged, modified, and untracked files."
             }
             GitToolKind::Diff => {
-                "Show file changes in the working tree or staging area. \
-                 For basic diffs, omit from_ref/to_ref/output_dir entirely — do NOT pass empty strings. \
-                 To compare two refs, ALL THREE of from_ref, to_ref, and output_dir must be provided together."
+                "Show file changes. Omit from_ref for working-tree diff. \
+                 Set from_ref (e.g. \"HEAD\", \"main\") to diff that ref against the working tree. \
+                 Set both from_ref and to_ref for ref-to-ref comparison. \
+                 Add output_dir to write per-file patches to disk instead of inline output."
             }
             GitToolKind::Restore => {
                 "Discard uncommitted changes to specific files. WARNING: destructive."
@@ -106,9 +107,9 @@ impl GitToolKind {
                     "unified": {"type": "integer", "minimum": 0, "description": "Number of context lines (`-U<N>`)"},
                     "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional path list to diff (passed after `--`)"},
                     "max_bytes": {"type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "Maximum bytes captured from stdout before truncation"},
-                    "from_ref": {"type": "string", "description": "Starting git ref (tag, branch, or commit SHA) for ref-to-ref comparison. Omit entirely for working-tree diffs — do NOT pass an empty string. Requires to_ref and output_dir."},
-                    "to_ref": {"type": "string", "description": "Ending git ref (tag, branch, or commit SHA) for ref-to-ref comparison. Omit entirely for working-tree diffs — do NOT pass an empty string. Requires from_ref and output_dir."},
-                    "output_dir": {"type": "string", "description": "Directory to write per-file patch files (created if missing). Required when using from_ref/to_ref; omit otherwise."}
+                    "from_ref": {"type": "string", "description": "Git ref to diff from (branch, tag, or SHA). Examples: \"HEAD\", \"HEAD~3\", \"main\". Omit for index-vs-working-tree diff. Use alone to diff ref vs working tree. Use with to_ref for ref-to-ref comparison."},
+                    "to_ref": {"type": "string", "description": "Git ref to diff to (branch, tag, or SHA). Only used with from_ref for ref-to-ref comparison (e.g. from_ref=\"main\", to_ref=\"HEAD\")."},
+                    "output_dir": {"type": "string", "description": "Directory to write per-file patch files instead of inline output (created if missing). Works alone for working-tree diff, or with from_ref/to_ref for ref-based diffs."}
                 },
                 "required": []
             }),
@@ -290,10 +291,10 @@ impl ToolExecutor for GitTool {
             GitToolKind::Status => "Git status".to_string(),
             GitToolKind::Diff => {
                 let typed: GitDiffArgs = parse_args(args)?;
-                if let (Some(from_ref), Some(to_ref)) = (typed.from_ref, typed.to_ref) {
-                    format!("Git diff {from_ref}..{to_ref}")
-                } else {
-                    "Git diff".to_string()
+                match (typed.from_ref, typed.to_ref) {
+                    (Some(from_ref), Some(to_ref)) => format!("Git diff {from_ref}..{to_ref}"),
+                    (Some(from_ref), None) => format!("Git diff {from_ref}"),
+                    _ => "Git diff".to_string(),
                 }
             }
             GitToolKind::Restore => {
@@ -676,9 +677,11 @@ struct FileDiffEntry {
 }
 
 #[derive(Serialize)]
-struct DiffDistillate {
-    from_ref: String,
-    to_ref: String,
+struct DiffSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to_ref: Option<String>,
     generated_at: String,
     files: Vec<FileDiffEntry>,
     stats: DiffStats,
@@ -709,8 +712,8 @@ fn parse_numstat_line(line: &str) -> Option<(u32, u32, String, bool)> {
 async fn write_patches_to_dir(
     ctx: &ToolCtx,
     working_dir: &Path,
-    from_ref: &str,
-    to_ref: &str,
+    from_ref: Option<&str>,
+    to_ref: Option<&str>,
     output_dir: &Path,
     timeout_ms: u64,
 ) -> Result<Value, ToolError> {
@@ -721,11 +724,18 @@ async fn write_patches_to_dir(
             message: format!("Failed to create output directory: {e}"),
         })?;
 
-    let numstat_args = vec![
-        "diff".into(),
-        format!("{from_ref}..{to_ref}"),
-        "--numstat".into(),
-    ];
+    // Build the ref range arg: "from..to", just "from", or omit entirely.
+    let ref_range: Option<String> = match (from_ref, to_ref) {
+        (Some(f), Some(t)) => Some(format!("{f}..{t}")),
+        (Some(f), None) => Some(f.to_string()),
+        _ => None,
+    };
+
+    let mut numstat_args: Vec<String> = vec!["diff".into()];
+    if let Some(r) = &ref_range {
+        numstat_args.push(r.clone());
+    }
+    numstat_args.push("--numstat".into());
 
     let numstat_exec = run_git(
         ctx,
@@ -764,12 +774,12 @@ async fn write_patches_to_dir(
         let patch_filename = format!("{}.patch", sanitize_path_for_filename(&path));
         let patch_path = output_dir.join(&patch_filename);
 
-        let patch_args = vec![
-            "diff".into(),
-            format!("{from_ref}..{to_ref}"),
-            "--".into(),
-            path.clone(),
-        ];
+        let mut patch_args: Vec<String> = vec!["diff".into()];
+        if let Some(r) = &ref_range {
+            patch_args.push(r.clone());
+        }
+        patch_args.push("--".into());
+        patch_args.push(path.clone());
         let patch_exec = run_git(
             ctx,
             working_dir,
@@ -824,9 +834,9 @@ async fn write_patches_to_dir(
         });
     }
 
-    let distillate = DiffDistillate {
-        from_ref: from_ref.to_string(),
-        to_ref: to_ref.to_string(),
+    let summary = DiffSummary {
+        from_ref: from_ref.map(ToString::to_string),
+        to_ref: to_ref.map(ToString::to_string),
         generated_at: chrono::Utc::now().to_rfc3339(),
         stats: DiffStats {
             files_changed: files.len(),
@@ -836,20 +846,20 @@ async fn write_patches_to_dir(
         files,
     };
 
-    let distillate_json =
-        serde_json::to_string_pretty(&distillate).map_err(|e| ToolError::ExecutionFailed {
+    let summary_json =
+        serde_json::to_string_pretty(&summary).map_err(|e| ToolError::ExecutionFailed {
             tool: "GitDiff".to_string(),
-            message: format!("Failed to serialize distillate: {e}"),
+            message: format!("Failed to serialize diff summary: {e}"),
         })?;
-    let distillate_path = output_dir.join("_distillate.json");
-    tokio::fs::write(&distillate_path, &distillate_json)
+    let summary_path = output_dir.join("_summary.json");
+    tokio::fs::write(&summary_path, &summary_json)
         .await
         .map_err(|e| ToolError::ExecutionFailed {
             tool: "GitDiff".to_string(),
-            message: format!("Failed to write distillate: {e}"),
+            message: format!("Failed to write diff summary: {e}"),
         })?;
 
-    Ok(json!(distillate))
+    Ok(json!(summary))
 }
 
 // ===== Argument types =====
@@ -1094,24 +1104,31 @@ async fn handle_git_diff(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
     let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
     let working_dir = ctx.working_dir.clone();
 
-    if let (Some(from_ref), Some(to_ref), Some(output_dir)) = (
-        req.from_ref.as_ref(),
-        req.to_ref.as_ref(),
-        req.output_dir.as_ref(),
-    ) {
+    // When output_dir is provided, write per-file patches to disk.
+    // Refs are optional: omit both for working-tree diff, provide from_ref alone
+    // to diff against working tree, or both for ref-to-ref comparison.
+    if let Some(output_dir) = req.output_dir.as_ref() {
         let output_dir = ctx
             .sandbox
             .resolve_path_for_create(output_dir, &working_dir)?;
-        let distillate =
-            write_patches_to_dir(ctx, &working_dir, from_ref, to_ref, &output_dir, timeout_ms)
-                .await?;
+        let summary = write_patches_to_dir(
+            ctx,
+            &working_dir,
+            req.from_ref.as_deref(),
+            req.to_ref.as_deref(),
+            &output_dir,
+            timeout_ms,
+        )
+        .await?;
 
-        let files_changed = distillate["stats"]["files_changed"].as_u64().unwrap_or(0);
+        let files_changed = summary["stats"]["files_changed"].as_u64().unwrap_or(0);
+        let desc = match (req.from_ref.as_ref(), req.to_ref.as_ref()) {
+            (Some(f), Some(t)) => format!("Diff between {f} and {t}"),
+            (Some(f), None) => format!("Diff of {f} vs working tree"),
+            _ => "Working tree diff".to_string(),
+        };
         let text = format!(
-            "Diff between {} and {}: {} files changed. Patches written to {}",
-            from_ref,
-            to_ref,
-            files_changed,
+            "{desc}: {files_changed} files changed. Patches written to {}",
             output_dir.display()
         );
 
@@ -1121,29 +1138,20 @@ async fn handle_git_diff(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
             json!([{"type": "text", "text": text}]),
         );
         response.insert("isError".to_string(), json!(false));
-        response.insert("from_ref".to_string(), json!(from_ref));
-        response.insert("to_ref".to_string(), json!(to_ref));
+        if let Some(from_ref) = &req.from_ref {
+            response.insert("from_ref".to_string(), json!(from_ref));
+        }
+        if let Some(to_ref) = &req.to_ref {
+            response.insert("to_ref".to_string(), json!(to_ref));
+        }
         response.insert(
             "output_dir".to_string(),
             json!(output_dir.display().to_string()),
         );
-        response.insert("stats".to_string(), distillate["stats"].clone());
-        response.insert("files".to_string(), distillate["files"].clone());
+        response.insert("stats".to_string(), summary["stats"].clone());
+        response.insert("files".to_string(), summary["files"].clone());
 
         return Ok(Value::Object(response));
-    }
-
-    if req.from_ref.is_some() || req.to_ref.is_some() {
-        if req.output_dir.is_none() {
-            return Err(ToolError::BadArgs {
-                message: "output_dir is required when using from_ref and to_ref".to_string(),
-            });
-        }
-        if req.from_ref.is_none() || req.to_ref.is_none() {
-            return Err(ToolError::BadArgs {
-                message: "both from_ref and to_ref are required together".to_string(),
-            });
-        }
     }
 
     let max_cap = effective_max_bytes(ctx).min(MAX_OUTPUT_BYTES);
@@ -1164,6 +1172,16 @@ async fn handle_git_diff(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
         && u >= 0
     {
         cmd_args.push(format!("-U{u}"));
+    }
+
+    // Ref-to-ref inline comparison (without output_dir).
+    // `from_ref` alone → `git diff <from_ref>` (ref vs working tree).
+    // Both refs → `git diff <from_ref> <to_ref>`.
+    if let Some(from_ref) = &req.from_ref {
+        cmd_args.push(from_ref.clone());
+        if let Some(to_ref) = &req.to_ref {
+            cmd_args.push(to_ref.clone());
+        }
     }
 
     if let Some(paths) = &req.paths
