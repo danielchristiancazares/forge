@@ -64,7 +64,9 @@ impl GitToolKind {
                 "Show working tree status: staged, modified, and untracked files."
             }
             GitToolKind::Diff => {
-                "Show file changes in the working tree or staging area. When from_ref, to_ref, and output_dir are provided, writes per-file patches to the directory."
+                "Show file changes in the working tree or staging area. \
+                 For basic diffs, omit from_ref/to_ref/output_dir entirely — do NOT pass empty strings. \
+                 To compare two refs, ALL THREE of from_ref, to_ref, and output_dir must be provided together."
             }
             GitToolKind::Restore => {
                 "Discard uncommitted changes to specific files. WARNING: destructive."
@@ -104,9 +106,9 @@ impl GitToolKind {
                     "unified": {"type": "integer", "minimum": 0, "description": "Number of context lines (`-U<N>`)"},
                     "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional path list to diff (passed after `--`)"},
                     "max_bytes": {"type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "Maximum bytes captured from stdout before truncation"},
-                    "from_ref": {"type": "string", "description": "Starting ref (tag/branch/commit) for ref-to-ref comparison"},
-                    "to_ref": {"type": "string", "description": "Ending ref (tag/branch/commit) for ref-to-ref comparison"},
-                    "output_dir": {"type": "string", "description": "Directory to write per-file patches (creates if missing). Required with from_ref/to_ref."}
+                    "from_ref": {"type": "string", "description": "Starting git ref (tag, branch, or commit SHA) for ref-to-ref comparison. Omit entirely for working-tree diffs — do NOT pass an empty string. Requires to_ref and output_dir."},
+                    "to_ref": {"type": "string", "description": "Ending git ref (tag, branch, or commit SHA) for ref-to-ref comparison. Omit entirely for working-tree diffs — do NOT pass an empty string. Requires from_ref and output_dir."},
+                    "output_dir": {"type": "string", "description": "Directory to write per-file patch files (created if missing). Required when using from_ref/to_ref; omit otherwise."}
                 },
                 "required": []
             }),
@@ -1079,7 +1081,15 @@ async fn handle_git_status(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErro
 }
 
 async fn handle_git_diff(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError> {
-    let req: GitDiffArgs = parse_args(&args)?;
+    let mut req: GitDiffArgs = parse_args(&args)?;
+
+    // Treat empty/whitespace-only strings as absent — models sometimes pass ""
+    // instead of omitting the field, which causes git to interpret them as paths.
+    for opt in [&mut req.from_ref, &mut req.to_ref, &mut req.output_dir] {
+        if opt.as_ref().is_some_and(|s| s.trim().is_empty()) {
+            *opt = None;
+        }
+    }
 
     let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
     let working_dir = ctx.working_dir.clone();

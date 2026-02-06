@@ -145,10 +145,25 @@ const MAX_GLOB_LIMIT: usize = 10_000;
 /// - `...` between changes separated by >3 unchanged lines
 /// - Red (`-`) for deletions, green (`+`) for additions
 pub(crate) fn format_unified_diff(
+    path: &str,
+    old_bytes: &[u8],
+    new_bytes: &[u8],
+    existed: bool,
+) -> String {
+    format_unified_diff_width(path, old_bytes, new_bytes, existed, 0)
+}
+
+/// Like `format_unified_diff`, but accepts a minimum line-number column width.
+///
+/// When multiple files are displayed together, callers should pre-compute the
+/// max line count across all files and pass the resulting digit width so that
+/// every section aligns consistently.  Pass `0` to auto-detect from the file.
+pub(crate) fn format_unified_diff_width(
     _path: &str,
     old_bytes: &[u8],
     new_bytes: &[u8],
     _existed: bool,
+    min_line_num_width: usize,
 ) -> String {
     let old_text = std::str::from_utf8(old_bytes).unwrap_or("");
     let new_text = std::str::from_utf8(new_bytes).unwrap_or("");
@@ -165,11 +180,12 @@ pub(crate) fn format_unified_diff(
 
     // Determine the width needed for line numbers (based on max line count)
     let max_line = old_text.lines().count().max(new_text.lines().count());
-    let line_num_width = if max_line == 0 {
+    let auto_width = if max_line == 0 {
         1
     } else {
         ((max_line as f64).log10().floor() as usize) + 1
     };
+    let line_num_width = auto_width.max(min_line_num_width);
 
     // Group changes into hunks with 1 line of context, collapsing gaps >3 lines
     let mut i = 0;
@@ -717,9 +733,6 @@ impl ToolExecutor for ApplyPatchTool {
             })?;
 
             let mut staged: Vec<StagedFile> = Vec::new();
-            // Human-visible diff (unified-diff-style) derived from the LP1 ops.
-            // We only include diffs for files that actually changed on disk.
-            let mut diff_sections: Vec<String> = Vec::new();
             for file_patch in &patch.files {
                 let resolved = ctx
                     .sandbox
@@ -819,14 +832,6 @@ impl ToolExecutor for ApplyPatchTool {
                 let new_bytes = lp1::emit_file(&content);
                 let changed = new_bytes != original_bytes;
 
-                if changed {
-                    let diff =
-                        format_unified_diff(&file_patch.path, &original_bytes, &new_bytes, existed);
-                    if !diff.is_empty() {
-                        diff_sections.push(diff);
-                    }
-                }
-
                 staged.push(StagedFile {
                     path: resolved,
                     existed,
@@ -838,6 +843,46 @@ impl ToolExecutor for ApplyPatchTool {
             }
 
             let any_changed = staged.iter().any(|s| s.changed);
+
+            // Compute a global line-number column width so multi-file diffs
+            // align consistently.  Each file's max(old_lines, new_lines) is
+            // considered; the widest across all changed files wins.
+            let global_max_line = staged
+                .iter()
+                .filter(|s| s.changed)
+                .map(|s| {
+                    let old_lines = std::str::from_utf8(&s.original_bytes)
+                        .unwrap_or("")
+                        .lines()
+                        .count();
+                    let new_lines = std::str::from_utf8(&s.bytes).unwrap_or("").lines().count();
+                    old_lines.max(new_lines)
+                })
+                .max()
+                .unwrap_or(0);
+            let global_line_num_width = if global_max_line == 0 {
+                1
+            } else {
+                ((global_max_line as f64).log10().floor() as usize) + 1
+            };
+
+            // Human-visible diff (unified-diff-style) derived from the LP1 ops.
+            let mut diff_sections: Vec<String> = Vec::new();
+            for file in &staged {
+                if !file.changed {
+                    continue;
+                }
+                let diff = format_unified_diff_width(
+                    &file.path.to_string_lossy(),
+                    &file.original_bytes,
+                    &file.bytes,
+                    file.existed,
+                    global_line_num_width,
+                );
+                if !diff.is_empty() {
+                    diff_sections.push(diff);
+                }
+            }
             let changed_count = staged.iter().filter(|s| s.changed).count();
 
             if any_changed {
