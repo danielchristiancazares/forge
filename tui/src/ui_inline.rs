@@ -469,8 +469,7 @@ fn append_tool_status_lines(lines: &mut Vec<Line>, statuses: &[ToolCallStatus], 
         };
 
         let name = sanitize_display_text(&status.name);
-        let id = sanitize_display_text(&status.id);
-        lines.push(Line::from(format!("  {icon} {name} ({id})")));
+        lines.push(Line::from(format!("  {icon} {name}")));
         if let Some(reason) = status.reason.as_ref() {
             lines.push(Line::from(format!("     {reason}")));
         }

@@ -663,11 +663,10 @@ fn build_dynamic_message_lines(
                 };
 
                 let name = sanitize_display_text(&status.name);
-                let id = sanitize_display_text(&status.id);
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {icon} "), style),
                     Span::styled(
-                        format!("{name} ({id}) [{label}]"),
+                        format!("{name} [{label}]"),
                         Style::default().fg(palette.text_muted),
                     ),
                 ]));
