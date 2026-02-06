@@ -14,7 +14,8 @@ use tokio::process::Command;
 use unicode_normalization::UnicodeNormalization;
 
 use super::{
-    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, redact_distillate, sanitize_output,
+    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, parse_args, redact_distillate,
+    sanitize_output,
 };
 
 const SEARCH_TOOL_NAME: &str = "Search";
@@ -241,19 +242,12 @@ impl ToolExecutor for SearchTool {
         false
     }
 
-    fn requires_approval(&self) -> bool {
-        false
-    }
-
     fn risk_level(&self) -> RiskLevel {
         RiskLevel::Medium
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
-        let typed: SearchArgs =
-            serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
-                message: e.to_string(),
-            })?;
+        let typed: SearchArgs = parse_args(args)?;
         let path = typed.path.unwrap_or_else(|| ".".to_string());
         let distillate = format!("Search '{}' in {}", typed.pattern, path);
         Ok(redact_distillate(&distillate))
@@ -262,10 +256,7 @@ impl ToolExecutor for SearchTool {
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
             ctx.allow_truncation = false;
-            let typed: SearchArgs =
-                serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
-                    message: e.to_string(),
-                })?;
+            let typed: SearchArgs = parse_args(&args)?;
 
             let pattern = typed.pattern.trim().to_string();
             if pattern.is_empty() {

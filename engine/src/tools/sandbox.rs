@@ -16,6 +16,19 @@ pub struct Sandbox {
     allow_absolute: bool,
 }
 
+/// Strip Windows extended-length path prefix (`\\?\`) if present.
+fn strip_extended_prefix(path: &Path) -> &Path {
+    #[cfg(windows)]
+    {
+        if let Some(s) = path.as_os_str().to_str()
+            && let Some(stripped) = s.strip_prefix(r"\\?\")
+        {
+            return Path::new(stripped);
+        }
+    }
+    path
+}
+
 impl Sandbox {
     pub fn new(
         allowed_roots: Vec<PathBuf>,
@@ -72,6 +85,21 @@ impl Sandbox {
             .unwrap_or_else(|| PathBuf::from("."))
     }
 
+    /// Try to truncate an absolute path to a resolved path within an allowed root.
+    ///
+    /// Handles `\\?\` prefix mismatches on Windows (e.g. LLM passes `C:\foo`
+    /// but allowed roots are stored as `\\?\C:\foo` from canonicalization).
+    fn truncate_to_allowed_root(&self, path: &Path) -> Option<PathBuf> {
+        let clean = strip_extended_prefix(path);
+        self.allowed_roots.iter().find_map(|root| {
+            let clean_root = strip_extended_prefix(root);
+            clean
+                .strip_prefix(clean_root)
+                .ok()
+                .map(|rel| root.join(rel))
+        })
+    }
+
     /// Validate and resolve a path within the sandbox.
     pub fn resolve_path(&self, path: &str, working_dir: &Path) -> Result<PathBuf, ToolError> {
         if contains_unsafe_path_chars(path) {
@@ -92,7 +120,11 @@ impl Sandbox {
             ));
         }
         let resolved = if input.is_absolute() {
-            if !self.allow_absolute {
+            if self.allow_absolute {
+                input
+            } else if let Some(truncated) = self.truncate_to_allowed_root(&input) {
+                truncated
+            } else {
                 return Err(ToolError::SandboxViolation(
                     DenialReason::PathOutsideSandbox {
                         attempted: input.clone(),
@@ -100,7 +132,6 @@ impl Sandbox {
                     },
                 ));
             }
-            input
         } else {
             working_dir.join(input)
         };
@@ -177,7 +208,11 @@ impl Sandbox {
             ));
         }
         let resolved = if input.is_absolute() {
-            if !self.allow_absolute {
+            if self.allow_absolute {
+                input
+            } else if let Some(truncated) = self.truncate_to_allowed_root(&input) {
+                truncated
+            } else {
                 return Err(ToolError::SandboxViolation(
                     DenialReason::PathOutsideSandbox {
                         attempted: input.clone(),
@@ -185,7 +220,6 @@ impl Sandbox {
                     },
                 ));
             }
-            input
         } else {
             working_dir.join(input)
         };
@@ -529,12 +563,36 @@ mod tests {
     }
 
     #[test]
-    fn resolve_path_rejects_absolute_when_disallowed() {
+    fn resolve_path_rejects_absolute_outside_roots() {
         let temp = tempdir().unwrap();
         let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], false).unwrap();
 
         let result = sandbox.resolve_path("/etc/passwd", temp.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_path_truncates_absolute_within_roots() {
+        let temp = tempdir().unwrap();
+        std::fs::write(temp.path().join("file.txt"), "content").unwrap();
+        let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], false).unwrap();
+
+        // LLM passes the canonical absolute path — should be truncated, not rejected
+        let canonical_root = std::fs::canonicalize(temp.path()).unwrap();
+        let abs_file = canonical_root.join("file.txt");
+        let result = sandbox.resolve_path(abs_file.to_str().unwrap(), temp.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn resolve_path_truncates_absolute_root_itself() {
+        let temp = tempdir().unwrap();
+        let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], false).unwrap();
+
+        // LLM passes the root directory as an absolute path
+        let canonical_root = std::fs::canonicalize(temp.path()).unwrap();
+        let result = sandbox.resolve_path(canonical_root.to_str().unwrap(), temp.path());
+        assert!(result.is_ok());
     }
 
     #[test]

@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut};
+use super::{RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, parse_args};
 
 /// Tool for storing facts in the Librarian's memory.
 #[derive(Debug, Default)]
@@ -49,28 +49,18 @@ impl ToolExecutor for MemoryTool {
         true
     }
 
-    fn requires_approval(&self) -> bool {
-        false
-    }
-
     fn risk_level(&self) -> RiskLevel {
         RiskLevel::Low
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
-        let typed: MemoryArgs =
-            serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
-                message: e.to_string(),
-            })?;
+        let typed: MemoryArgs = parse_args(args)?;
         Ok(format!("Memorize: {}", typed.content))
     }
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
-            let typed: MemoryArgs =
-                serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
-                    message: e.to_string(),
-                })?;
+            let typed: MemoryArgs = parse_args(&args)?;
 
             if typed.content.trim().is_empty() {
                 return Err(ToolError::BadArgs {

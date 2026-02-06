@@ -15,7 +15,8 @@ use tokio::process::Command;
 use tokio::time;
 
 use super::{
-    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, redact_distillate, sanitize_output,
+    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, parse_args, redact_distillate,
+    sanitize_output,
 };
 
 const DEFAULT_GIT_TIMEOUT_MS: u64 = 30_000;
@@ -505,12 +506,6 @@ fn build_git_response(
     }
 
     payload
-}
-
-fn parse_args<T: serde::de::DeserializeOwned>(args: &Value) -> Result<T, ToolError> {
-    serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
-        message: e.to_string(),
-    })
 }
 
 fn clamp_bytes(requested: Option<usize>, default: usize, max: usize) -> usize {

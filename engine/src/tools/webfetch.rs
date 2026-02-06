@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use forge_webfetch::{Note, TruncationReason, WebFetchOutput};
 
 use super::{
-    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, redact_distillate, sanitize_output,
+    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, parse_args, redact_distillate,
+    sanitize_output,
 };
 
 const WEBFETCH_TOOL_NAME: &str = "WebFetch";
@@ -124,10 +125,7 @@ impl ToolExecutor for WebFetchTool {
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
-        let typed: WebFetchArgs =
-            serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
-                message: e.to_string(),
-            })?;
+        let typed: WebFetchArgs = parse_args(args)?;
         let distillate = format!("Fetch URL: {}", typed.url);
         Ok(redact_distillate(&distillate))
     }
@@ -135,10 +133,7 @@ impl ToolExecutor for WebFetchTool {
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
             ctx.allow_truncation = false;
-            let typed: WebFetchArgs =
-                serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
-                    message: e.to_string(),
-                })?;
+            let typed: WebFetchArgs = parse_args(&args)?;
 
             if typed.url.trim().is_empty() {
                 return Err(ToolError::BadArgs {

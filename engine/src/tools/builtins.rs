@@ -17,8 +17,8 @@ use tokio::process::Command;
 
 use super::{
     FileCacheEntry, PatchLimits, ReadFileLimits, RiskLevel, RunSandboxPolicy, SearchToolConfig,
-    ToolCtx, ToolError, ToolExecutor, ToolFut, ToolRegistry, WebFetchToolConfig, redact_distillate,
-    sanitize_output,
+    ToolCtx, ToolError, ToolExecutor, ToolFut, ToolRegistry, WebFetchToolConfig, parse_args,
+    redact_distillate, sanitize_output,
 };
 use crate::tools::git;
 
@@ -313,19 +313,8 @@ impl ToolExecutor for GlobTool {
         false
     }
 
-    fn requires_approval(&self) -> bool {
-        false
-    }
-
-    fn risk_level(&self) -> RiskLevel {
-        RiskLevel::Low
-    }
-
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
-        let typed: GlobArgs =
-            serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
-                message: e.to_string(),
-            })?;
+        let typed: GlobArgs = parse_args(args)?;
         let base = typed.path.as_deref().unwrap_or(".");
         Ok(redact_distillate(&format!(
             "Glob {} in {}",
@@ -335,9 +324,7 @@ impl ToolExecutor for GlobTool {
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
-            let typed: GlobArgs = serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
-                message: e.to_string(),
-            })?;
+            let typed: GlobArgs = parse_args(&args)?;
 
             if typed.pattern.trim().is_empty() {
                 return Err(ToolError::BadArgs {
@@ -529,19 +516,8 @@ impl ToolExecutor for ReadFileTool {
         false
     }
 
-    fn requires_approval(&self) -> bool {
-        false
-    }
-
-    fn risk_level(&self) -> RiskLevel {
-        RiskLevel::Low
-    }
-
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
-        let typed: ReadFileArgs =
-            serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
-                message: e.to_string(),
-            })?;
+        let typed: ReadFileArgs = parse_args(args)?;
         let mut distillate = format!("Read {}", typed.path);
         if let Some(start) = typed.start_line {
             if let Some(end) = typed.end_line {
@@ -558,10 +534,7 @@ impl ToolExecutor for ReadFileTool {
         const HASH_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024; // 10MB
 
         Box::pin(async move {
-            let typed: ReadFileArgs =
-                serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
-                    message: e.to_string(),
-                })?;
+            let typed: ReadFileArgs = parse_args(&args)?;
             if typed.path.trim().is_empty() {
                 return Err(ToolError::BadArgs {
                     message: "path must not be empty".to_string(),
@@ -695,10 +668,7 @@ impl ToolExecutor for ApplyPatchTool {
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
-        let typed: ApplyPatchArgs =
-            serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
-                message: e.to_string(),
-            })?;
+        let typed: ApplyPatchArgs = parse_args(args)?;
         let patch = lp1::parse_patch(&typed.patch).map_err(|e| ToolError::BadArgs {
             message: e.to_string(),
         })?;
@@ -717,10 +687,7 @@ impl ToolExecutor for ApplyPatchTool {
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
-            let typed: ApplyPatchArgs =
-                serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
-                    message: e.to_string(),
-                })?;
+            let typed: ApplyPatchArgs = parse_args(&args)?;
             if typed.patch.len() > self.limits.max_patch_bytes {
                 return Err(ToolError::BadArgs {
                     message: "Patch exceeds max_patch_bytes".to_string(),
@@ -974,10 +941,7 @@ impl ToolExecutor for WriteFileTool {
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
-        let typed: WriteFileArgs =
-            serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
-                message: e.to_string(),
-            })?;
+        let typed: WriteFileArgs = parse_args(args)?;
         let distillate = format!(
             "Write new file: {} ({} bytes)",
             typed.path,
@@ -988,10 +952,7 @@ impl ToolExecutor for WriteFileTool {
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
-            let typed: WriteFileArgs =
-                serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
-                    message: e.to_string(),
-                })?;
+            let typed: WriteFileArgs = parse_args(&args)?;
 
             if typed.path.trim().is_empty() {
                 return Err(ToolError::BadArgs {
@@ -1114,15 +1075,12 @@ impl ToolExecutor for RunCommandTool {
         true
     }
 
-    fn risk_level(&self) -> super::RiskLevel {
-        super::RiskLevel::High
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::High
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
-        let typed: RunCommandArgs =
-            serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
-                message: e.to_string(),
-            })?;
+        let typed: RunCommandArgs = parse_args(args)?;
         let distillate = if typed.unsafe_allow_unsandboxed {
             format!(
                 "Run command (unsandboxed override requested): {}",
@@ -1139,10 +1097,7 @@ impl ToolExecutor for RunCommandTool {
             #[cfg(unix)]
             use std::os::unix::process::CommandExt;
 
-            let typed: RunCommandArgs =
-                serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
-                    message: e.to_string(),
-                })?;
+            let typed: RunCommandArgs = parse_args(&args)?;
             if typed.command.trim().is_empty() {
                 return Err(ToolError::BadArgs {
                     message: "command must not be empty".to_string(),

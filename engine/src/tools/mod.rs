@@ -254,6 +254,12 @@ pub trait ToolExecutor: Send + Sync + std::panic::UnwindSafe {
     fn execute<'a>(&'a self, args: Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
 }
 
+pub(crate) fn parse_args<T: serde::de::DeserializeOwned>(args: &Value) -> Result<T, ToolError> {
+    serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
+        message: e.to_string(),
+    })
+}
+
 /// Tool registry for executors.
 #[derive(Default)]
 pub struct ToolRegistry {

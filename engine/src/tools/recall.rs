@@ -7,7 +7,7 @@ use forge_context::FactWithStaleness;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, sanitize_output};
+use super::{ToolCtx, ToolError, ToolExecutor, ToolFut, parse_args, sanitize_output};
 
 /// Tool for recalling facts from the Librarian.
 #[derive(Debug, Default)]
@@ -47,28 +47,14 @@ impl ToolExecutor for RecallTool {
         false
     }
 
-    fn requires_approval(&self) -> bool {
-        false
-    }
-
-    fn risk_level(&self) -> RiskLevel {
-        RiskLevel::Low
-    }
-
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
-        let typed: RecallArgs =
-            serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
-                message: e.to_string(),
-            })?;
+        let typed: RecallArgs = parse_args(args)?;
         Ok(format!("Recall facts about: {}", typed.query))
     }
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
-            let typed: RecallArgs =
-                serde_json::from_value(args).map_err(|e| ToolError::BadArgs {
-                    message: e.to_string(),
-                })?;
+            let typed: RecallArgs = parse_args(&args)?;
 
             if typed.query.trim().is_empty() {
                 return Err(ToolError::BadArgs {
