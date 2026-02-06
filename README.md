@@ -2,14 +2,14 @@
 
 A vim-modal terminal user interface for interacting with Claude, GPT, and Gemini, featuring adaptive context management and an agentic tool execution framework.
 
-Forge brings the efficiency of vim-style modal editing to AI conversation, letting you navigate, compose, and manage conversations without leaving your terminal. With Context Infinity™, Forge automatically distills older messages to stay within model limits while preserving full conversation history. The Tool Executor Framework enables the LLM to read files, apply patches, and run shell commands - all with interactive approval and crash recovery.
+Forge brings the efficiency of vim-style modal editing to AI conversation, letting you navigate, compose, and manage conversations without leaving your terminal. With distillation, Forge automatically compresses older messages to stay within model limits while preserving full conversation history. The Tool Executor Framework enables the LLM to read files, apply patches, and run shell commands - all with interactive approval and crash recovery.
 
 ## LLM-TOC
 <!-- toc:start -->
 | Lines | Section |
 | --- | --- |
 | 7-26 | LLM-TOC |
-| 27-61 | Features: Core Capabilities, Context Infinity, Tool Executor |
+| 27-61 | Features: Core Capabilities, Distillation, Tool Executor |
 | 62-71 | Requirements |
 | 72-97 | Installation |
 | 98-141 | Quick Start: First Run, Basic Usage |
@@ -34,7 +34,7 @@ Forge brings the efficiency of vim-style modal editing to AI conversation, letti
 - **Rich Markdown Rendering**: Tables with box-drawing borders, syntax-highlighted code blocks, lists, and formatting
 - **Streaming Responses**: Real-time token streaming with animated indicators
 
-### Context Infinity™
+### Distillation
 
 Forge's adaptive context management system keeps conversations flowing without hitting model limits:
 
@@ -262,7 +262,7 @@ description = "City name, e.g. 'Seattle, WA'"
 | `OPENAI_API_KEY` | GPT API key (fallback if not in config) |
 | `GEMINI_API_KEY` | Gemini API key (fallback if not in config) |
 | `FORGE_TUI` | Override TUI mode: `full` or `inline` |
-| `FORGE_CONTEXT_INFINITY` | Override context infinity: `1` or `0` |
+| `FORGE_CONTEXT_INFINITY` | Override distillation: `1` or `0` |
 | `FORGE_STREAM_IDLE_TIMEOUT_SECS` | Override streaming idle timeout in seconds (default: 60) |
 | `FORGE_STREAM_JOURNAL_FLUSH_THRESHOLD` | Override stream journal flush threshold in deltas (default: 25) |
 | `FORGE_STREAM_JOURNAL_FLUSH_INTERVAL_MS` | Override stream journal flush interval in ms (default: 200) |
@@ -386,7 +386,7 @@ Forge is organized as a Cargo workspace with focused crates:
 ```text
 forge/
 ├── cli/            # Binary entry point, terminal session management
-├── context/        # Context Infinity: token counting, distillation, persistence
+├── context/        # Distillation: token counting, context budgeting, persistence
 ├── engine/         # Core state machine, commands, streaming orchestration
 ├── providers/      # LLM API clients (Claude, OpenAI, Gemini)
 ├── tui/            # Terminal UI rendering (ratatui), input handling
@@ -524,7 +524,7 @@ Detailed documentation is available in each crate:
 | [`cli/README.md`](cli/README.md) | CLI entry point and terminal session lifecycle |
 | [`engine/README.md`](engine/README.md) | Core state machine and orchestration |
 | [`tui/README.md`](tui/README.md) | Terminal UI rendering and input handling |
-| [`context/README.md`](context/README.md) | Context Infinity implementation |
+| [`context/README.md`](context/README.md) | Distillation implementation |
 | [`providers/README.md`](providers/README.md) | LLM API clients (Claude, OpenAI, Gemini) |
 | [`types/README.md`](types/README.md) | Core domain types |
 | [`webfetch/README.md`](webfetch/README.md) | Web page fetching and HTML-to-markdown |
@@ -569,4 +569,3 @@ Contributions are welcome! Please ensure:
 ## License
 
 This project is currently unlicensed. Please contact the maintainer for licensing information.
-

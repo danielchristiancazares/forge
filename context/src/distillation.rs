@@ -45,53 +45,38 @@ const OPENAI_API_URL: &str = "https://api.openai.com/v1/responses";
 /// Gemini API endpoint (non-streaming).
 const GEMINI_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
 
+/// Distillation prompt template loaded from cli/assets/distillation.md
+const DISTILLATION_PROMPT_TEMPLATE: &str = include_str!("../../cli/assets/distillation.md");
+
 /// Build a distillation prompt for a slice of messages.
-///
-/// The prompt instructs the LLM to:
-/// - Preserve key facts, decisions, and important context
-/// - Maintain chronological flow of the conversation
-/// - Stay within the target token count
-/// - Use clear, concise language
 ///
 /// # Arguments
 /// * `messages` - Slice of (`MessageId`, Message) tuples to distill
 /// * `target_tokens` - Target token count for the distillation
 ///
 /// # Returns
-/// A tuple of (`system_instruction`, `conversation_text`) for the API call.
+/// A tuple of (`system_instruction`, `user_prompt`) for the API call.
+/// The user prompt contains the full template with conversation log and file list inlined.
 pub fn build_distillation_prompt(
     messages: &[(MessageId, Message)],
     target_tokens: u32,
 ) -> (String, String) {
-    let system_instruction = format!(
-        r#"You are a conversation distiller. Your task is to create a concise distillate of the following conversation.
+    let system_instruction =
+        DISTILLATION_PROMPT_TEMPLATE.replace("{target_tokens}", &target_tokens.to_string());
 
-REQUIREMENTS:
-1. Preserve all key facts, decisions, and important context
-2. Maintain the chronological flow of topics discussed
-3. Keep the Distillate under approximately {target_tokens} tokens
-4. Use clear, direct language
-5. Preserve any code snippets, file paths, or technical details that are essential
-6. Note any unresolved questions or pending actions
-7. Format as a coherent narrative, not bullet points
+    let mut conversation_log = String::new();
+    let mut file_paths = std::collections::BTreeSet::new();
 
-OUTPUT FORMAT:
-Write the Distillate as a continuous narrative that captures the essence of the conversation. Start directly with the content - do not include preamble like "This conversation..." or "Distillate:"."#
-    );
-
-    let mut conversation_text = String::new();
     for (id, message) in messages {
         let role = match message {
             Message::System(_) => "System",
             Message::User(_) => "User",
             Message::Assistant(_) => "Assistant",
-            Message::Thinking(_) => {
-                // Skip thinking content in distillations - it's internal reasoning
-                continue;
-            }
+            Message::Thinking(_) => continue,
             Message::ToolUse(call) => {
+                extract_file_paths(&call.arguments, &mut file_paths);
                 let _ = write!(
-                    conversation_text,
+                    conversation_log,
                     "[Message {}] Assistant (Tool Call: {}): {}\n\n",
                     id.as_u64(),
                     call.name,
@@ -102,7 +87,7 @@ Write the Distillate as a continuous narrative that captures the essence of the 
             Message::ToolResult(result) => {
                 let status = if result.is_error { "Error" } else { "Result" };
                 let _ = write!(
-                    conversation_text,
+                    conversation_log,
                     "[Message {}] Tool {}: {}\n\n",
                     id.as_u64(),
                     status,
@@ -112,7 +97,7 @@ Write the Distillate as a continuous narrative that captures the essence of the 
             }
         };
         let _ = write!(
-            conversation_text,
+            conversation_log,
             "[Message {}] {}: {}\n\n",
             id.as_u64(),
             role,
@@ -120,7 +105,36 @@ Write the Distillate as a continuous narrative that captures the essence of the 
         );
     }
 
-    (system_instruction, conversation_text)
+    let file_list = if file_paths.is_empty() {
+        "(none detected)".to_string()
+    } else {
+        file_paths.into_iter().collect::<Vec<_>>().join("\n")
+    };
+
+    let user_message = format!("Conversation:\n{conversation_log}\nActive files:\n{file_list}");
+
+    (system_instruction, user_message)
+}
+
+/// Extract file paths from tool call arguments.
+fn extract_file_paths(args: &serde_json::Value, paths: &mut std::collections::BTreeSet<String>) {
+    if let Some(obj) = args.as_object() {
+        for key in ["path", "file_path", "source", "destination"] {
+            if let Some(serde_json::Value::String(p)) = obj.get(key)
+                && !p.is_empty()
+            {
+                paths.insert(p.clone());
+            }
+        }
+        // Glob/Search results sometimes have paths in nested arrays
+        if let Some(serde_json::Value::Array(arr)) = obj.get("paths") {
+            for item in arr {
+                if let Some(p) = item.as_str() {
+                    paths.insert(p.to_string());
+                }
+            }
+        }
+    }
 }
 
 /// Get the distiller model's input token limit for a provider.
@@ -481,32 +495,36 @@ mod tests {
     #[test]
     fn test_build_distillation_prompt_basic() {
         let messages = make_test_messages();
-        let (system, conversation) = build_distillation_prompt(&messages, 500);
+        let (system, user_prompt) = build_distillation_prompt(&messages, 500);
 
-        assert!(system.contains("distiller"));
+        // System instruction contains the distillation template with target tokens
+        assert!(system.contains("distilling"));
         assert!(system.contains("500"));
-        assert!(system.contains("Preserve"));
-        assert!(system.contains("key facts"));
 
-        assert!(conversation.contains("User:"));
-        assert!(conversation.contains("Hello, can you help me with Rust?"));
-        assert!(conversation.contains("lifetimes"));
-        assert!(conversation.contains("[Message 0]"));
-        assert!(conversation.contains("[Message 1]"));
+        // Conversation log inlined in user prompt
+        assert!(user_prompt.contains("User:"));
+        assert!(user_prompt.contains("Hello, can you help me with Rust?"));
+        assert!(user_prompt.contains("lifetimes"));
+        assert!(user_prompt.contains("[Message 0]"));
+        assert!(user_prompt.contains("[Message 1]"));
+        // File list present (none detected for plain user messages)
+        assert!(user_prompt.contains("(none detected)"));
     }
 
     #[test]
     fn test_build_distillation_prompt_empty() {
         let messages: Vec<(MessageId, Message)> = vec![];
-        let (system, conversation) = build_distillation_prompt(&messages, 100);
+        let (system, user_prompt) = build_distillation_prompt(&messages, 100);
 
-        // System instruction should still be generated
-        assert!(system.contains("distiller"));
-        assert!(conversation.is_empty());
+        // System instruction contains template with target tokens
+        assert!(system.contains("distilling"));
+        assert!(system.contains("100"));
+        // User prompt still has file list placeholder
+        assert!(user_prompt.contains("(none detected)"));
     }
 
     #[test]
-    fn test_build_distillation_prompt_target_tokens_in_instruction() {
+    fn test_build_distillation_prompt_target_tokens_in_system() {
         let messages = make_test_messages();
 
         let (system_500, _) = build_distillation_prompt(&messages, 500);
@@ -545,11 +563,11 @@ mod tests {
             ),
         ];
 
-        let (_, conversation) = build_distillation_prompt(&messages, 500);
+        let (_, prompt) = build_distillation_prompt(&messages, 500);
 
-        let first_pos = conversation.find("First message").unwrap();
-        let second_pos = conversation.find("Second message").unwrap();
-        let third_pos = conversation.find("Third message").unwrap();
+        let first_pos = prompt.find("First message").unwrap();
+        let second_pos = prompt.find("Second message").unwrap();
+        let third_pos = prompt.find("Third message").unwrap();
 
         assert!(first_pos < second_pos);
         assert!(second_pos < third_pos);
@@ -595,10 +613,10 @@ mod tests {
             Message::system(NonEmptyString::new("You are a helpful assistant.").expect("msg")),
         )];
 
-        let (_, conversation) = build_distillation_prompt(&messages, 500);
-        assert!(conversation.contains("System:"));
-        assert!(conversation.contains("You are a helpful assistant."));
-        assert!(conversation.contains("[Message 0]"));
+        let (_, prompt) = build_distillation_prompt(&messages, 500);
+        assert!(prompt.contains("System:"));
+        assert!(prompt.contains("You are a helpful assistant."));
+        assert!(prompt.contains("[Message 0]"));
     }
 
     #[test]
@@ -613,9 +631,9 @@ mod tests {
             ),
         )];
 
-        let (_, conversation) = build_distillation_prompt(&messages, 500);
-        assert!(conversation.contains("Assistant:"));
-        assert!(conversation.contains("Hello! How can I help?"));
+        let (_, prompt) = build_distillation_prompt(&messages, 500);
+        assert!(prompt.contains("Assistant:"));
+        assert!(prompt.contains("Hello! How can I help?"));
     }
 
     #[test]
@@ -627,10 +645,37 @@ mod tests {
 
         let messages = vec![(MessageId::new_for_test(0), Message::ToolUse(tool_call))];
 
-        let (_, conversation) = build_distillation_prompt(&messages, 500);
-        assert!(conversation.contains("Tool Call: Read"));
-        assert!(conversation.contains("/tmp/test.txt"));
-        assert!(conversation.contains("[Message 0]"));
+        let (_, prompt) = build_distillation_prompt(&messages, 500);
+        assert!(prompt.contains("Tool Call: Read"));
+        assert!(prompt.contains("/tmp/test.txt"));
+        assert!(prompt.contains("[Message 0]"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_tool_use_extracts_file_paths() {
+        use forge_types::ToolCall;
+        use serde_json::json;
+
+        let messages = vec![
+            (
+                MessageId::new_for_test(0),
+                Message::ToolUse(ToolCall::new("c1", "Read", json!({"path": "src/main.rs"}))),
+            ),
+            (
+                MessageId::new_for_test(1),
+                Message::ToolUse(ToolCall::new(
+                    "c2",
+                    "Edit",
+                    json!({"file_path": "src/lib.rs"}),
+                )),
+            ),
+        ];
+
+        let (_, prompt) = build_distillation_prompt(&messages, 500);
+        // File list should contain both extracted paths
+        assert!(prompt.contains("src/lib.rs"));
+        assert!(prompt.contains("src/main.rs"));
+        assert!(!prompt.contains("(none detected)"));
     }
 
     #[test]
@@ -646,9 +691,9 @@ mod tests {
 
         let messages = vec![(MessageId::new_for_test(0), Message::ToolResult(result))];
 
-        let (_, conversation) = build_distillation_prompt(&messages, 500);
-        assert!(conversation.contains("Tool Result:"));
-        assert!(conversation.contains("File contents here"));
+        let (_, prompt) = build_distillation_prompt(&messages, 500);
+        assert!(prompt.contains("Tool Result:"));
+        assert!(prompt.contains("File contents here"));
     }
 
     #[test]
@@ -664,9 +709,9 @@ mod tests {
 
         let messages = vec![(MessageId::new_for_test(0), Message::ToolResult(result))];
 
-        let (_, conversation) = build_distillation_prompt(&messages, 500);
-        assert!(conversation.contains("Tool Error:"));
-        assert!(conversation.contains("File not found"));
+        let (_, prompt) = build_distillation_prompt(&messages, 500);
+        assert!(prompt.contains("Tool Error:"));
+        assert!(prompt.contains("File not found"));
     }
 
     // Note: Integration tests that actually call the API would go in tests/

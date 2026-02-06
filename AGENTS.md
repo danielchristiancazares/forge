@@ -5,7 +5,7 @@ Forge is a Rust Cargo workspace split into focused crates. Key paths:
 - `cli/` entry point and terminal session
 - `engine/` state machines, commands, tool executor
 - `tui/` rendering and input handling
-- `context/` Context Infinity, token budgeting, SQLite journals
+- `context/` distillation, token budgeting, SQLite journals
 - `providers/` LLM clients (Claude/OpenAI/Gemini)
 - `types/` shared domain types (no IO)
 - `webfetch/` URL fetching and parsing
@@ -61,4 +61,3 @@ Forge is a Rust Cargo workspace split into focused crates. Key paths:
 
 ## Agent Notes
 - Other agent and architecture guidance lives in submodule `README.md` files.
-
