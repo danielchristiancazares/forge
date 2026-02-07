@@ -1004,6 +1004,17 @@ pub(crate) fn draw_input(
         format!("{context_str}  {api_usage_str}")
     };
 
+    // Format LSP diagnostics indicator
+    let lsp_snap = app.lsp_snapshot();
+    let diag_str = lsp_snap.status_string();
+    let diag_color = if lsp_snap.error_count > 0 {
+        Some(palette.red)
+    } else if lsp_snap.warning_count > 0 {
+        Some(palette.yellow)
+    } else {
+        None
+    };
+
     let padding_v: u16 = match mode {
         InputMode::Normal | InputMode::ModelSelect => 0,
         InputMode::Insert if multiline => 0,
@@ -1215,13 +1226,16 @@ pub(crate) fn draw_input(
             .title_top(Line::from(vec![Span::styled(mode_text, mode_style)]))
             .title_top(Line::from(hints).alignment(Alignment::Right))
             .title_bottom(Line::from(vec![Span::styled(model_text, model_style)]))
-            .title_bottom(
-                Line::from(vec![Span::styled(
-                    usage_str,
-                    Style::default().fg(usage_color),
-                )])
-                .alignment(Alignment::Right),
-            )
+            .title_bottom({
+                let mut spans = vec![Span::styled(usage_str, Style::default().fg(usage_color))];
+                if let Some(color) = diag_color {
+                    spans.push(Span::styled(
+                        format!("  {diag_str}"),
+                        Style::default().fg(color),
+                    ));
+                }
+                Line::from(spans).alignment(Alignment::Right)
+            })
             .padding(input_padding),
     );
 

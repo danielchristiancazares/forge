@@ -78,6 +78,11 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         help_label: "retry",
         description: "Undo the last user turn and restore its prompt into the input box",
     },
+    CommandSpec {
+        palette_label: "problems, diag",
+        help_label: "problems",
+        description: "Show LSP diagnostics (compiler errors/warnings)",
+    },
 ];
 
 #[must_use]
@@ -102,6 +107,7 @@ pub(crate) enum CommandKind {
     Rewind,
     Undo,
     Retry,
+    Problems,
 }
 
 impl CommandKind {
@@ -177,6 +183,14 @@ const COMMAND_ALIASES: &[CommandAlias] = &[
         name: "retry",
         kind: CommandKind::Retry,
     },
+    CommandAlias {
+        name: "problems",
+        kind: CommandKind::Problems,
+    },
+    CommandAlias {
+        name: "diag",
+        kind: CommandKind::Problems,
+    },
 ];
 
 pub(crate) fn command_aliases() -> &'static [CommandAlias] {
@@ -211,6 +225,7 @@ pub(crate) enum Command<'a> {
     },
     Undo,
     Retry,
+    Problems,
     Unknown(&'a str),
     Empty,
 }
@@ -252,6 +267,7 @@ impl<'a> Command<'a> {
             },
             CommandKind::Undo => Command::Undo,
             CommandKind::Retry => Command::Retry,
+            CommandKind::Problems => Command::Problems,
         }
     }
 }
@@ -575,6 +591,23 @@ impl super::App {
                 if let Some(text) = prompt {
                     self.input.draft_mut().set_text(text);
                     self.input = std::mem::take(&mut self.input).into_insert();
+                }
+            }
+            Command::Problems => {
+                let snapshot = self.lsp_snapshot.clone();
+                if snapshot.is_empty() {
+                    self.push_notification("No diagnostics");
+                } else {
+                    let mut lines = vec![format!(
+                        "Diagnostics: {} error(s), {} warning(s)",
+                        snapshot.error_count, snapshot.warning_count
+                    )];
+                    for (path, diags) in &snapshot.files {
+                        for diag in diags {
+                            lines.push(format!("  {}", diag.display_with_path(path)));
+                        }
+                    }
+                    self.push_notification(lines.join("\n"));
                 }
             }
             Command::Unknown(cmd) => {

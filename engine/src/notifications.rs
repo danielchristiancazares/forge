@@ -20,7 +20,7 @@
 /// Each variant represents a specific system event that the model should
 /// be aware of. Only events that affect model behavior belong here;
 /// pure UI feedback should use `push_notification` instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SystemNotification {
     /// User approved tool calls.
     ToolsApproved {
@@ -31,6 +31,11 @@ pub enum SystemNotification {
     ToolsDenied {
         /// Number of tools denied.
         count: u8,
+    },
+    /// Compiler/linter diagnostics found in recently edited files.
+    DiagnosticsFound {
+        /// Pre-formatted summary (e.g. "src/main.rs:42: error: expected `;`").
+        summary: String,
     },
 }
 
@@ -47,6 +52,9 @@ impl SystemNotification {
             }
             Self::ToolsDenied { count } => {
                 format!("[System: User denied {count} tool call(s)]")
+            }
+            Self::DiagnosticsFound { summary } => {
+                format!("[System: Compiler errors detected]\n{summary}")
             }
         }
     }

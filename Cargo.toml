@@ -3,6 +3,7 @@ members = [
     "cli",
     "context",
     "engine",
+    "lsp",
     "providers",
     "tui",
     "types",
@@ -23,6 +24,7 @@ forge-providers = { path = "providers" }
 forge-context = { path = "context" }
 forge-engine = { path = "engine" }
 forge-tui = { path = "tui" }
+forge-lsp = { path = "lsp" }
 forge-webfetch = { path = "webfetch" }
 
 # TUI framework

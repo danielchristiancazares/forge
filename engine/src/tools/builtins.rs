@@ -991,8 +991,8 @@ impl ToolExecutor for WriteFileTool {
                     return Err(ToolError::ExecutionFailed {
                         tool: "Write".to_string(),
                         message: format!(
-                            "file already exists: {}. Use apply_patch to modify existing files.",
-                            resolved.display()
+                            "file already exists: {}. Use Edit to modify existing files.",
+                            display_path(&resolved)
                         ),
                     });
                 }

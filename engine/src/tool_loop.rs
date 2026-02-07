@@ -1313,6 +1313,9 @@ impl App {
         let working_dir = self.tool_settings.sandbox.working_dir();
         let (report, created, modified) = turn.finish(&working_dir);
 
+        // Notify LSP servers about file changes
+        self.notify_lsp_file_changes(&created, &modified);
+
         // Aggregate turn changes into session-wide log
         self.session_changes.merge_turn(&created, &modified);
 

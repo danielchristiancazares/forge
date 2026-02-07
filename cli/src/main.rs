@@ -320,6 +320,8 @@ async fn main() -> Result<()> {
         }
     }
 
+    app.shutdown_lsp().await;
+
     if let Err(e) = app.save_history() {
         eprintln!("Failed to save history: {e}");
     }

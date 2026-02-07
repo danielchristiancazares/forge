@@ -75,6 +75,7 @@ pub use security::sanitize_display_text;
 mod session_state;
 pub use session_state::SessionChangeLog;
 mod distillation;
+mod lsp_integration;
 mod state;
 mod streaming;
 mod tool_loop;
@@ -510,6 +511,12 @@ pub struct App {
     last_turn_usage: Option<TurnUsage>,
     /// Queue of pending system notifications to inject into next API request.
     notification_queue: notifications::NotificationQueue,
+    /// LSP client manager for language server diagnostics.
+    lsp: Option<std::sync::Arc<tokio::sync::Mutex<forge_lsp::LspManager>>>,
+    /// Cached diagnostics snapshot for UI display and agent feedback.
+    lsp_snapshot: forge_lsp::DiagnosticsSnapshot,
+    /// Pending diagnostics check: edited files + deadline for deferred error injection.
+    pending_diag_check: Option<(Vec<std::path::PathBuf>, Instant)>,
 }
 
 impl App {
@@ -1181,6 +1188,7 @@ impl App {
     pub fn tick(&mut self) {
         self.poll_distillation();
         self.poll_tool_loop();
+        self.poll_lsp_events();
 
         let now = Instant::now();
 

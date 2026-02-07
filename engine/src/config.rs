@@ -20,6 +20,8 @@ pub struct ForgeConfig {
     pub google: Option<GeminiConfig>,
     /// Tool configurations for function calling.
     pub tools: Option<ToolsConfig>,
+    /// LSP client configuration for language server diagnostics.
+    pub lsp: Option<forge_lsp::LspConfig>,
 }
 
 #[derive(Debug)]

@@ -898,6 +898,7 @@ dependencies = [
  "chrono",
  "dirs",
  "forge-context",
+ "forge-lsp",
  "forge-providers",
  "forge-types",
  "forge-webfetch",
@@ -921,6 +922,19 @@ dependencies = [
  "unicode-segmentation",
  "which 7.0.3",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "forge-lsp"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
