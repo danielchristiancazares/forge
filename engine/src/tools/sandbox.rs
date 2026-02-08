@@ -373,17 +373,65 @@ fn contains_unsafe_path_chars(input: &str) -> bool {
     input.chars().any(is_unsafe_path_char)
 }
 
+/// Check if a character is unsafe for filesystem path use.
+///
+/// Blocks control characters, Bidi overrides, AND the full steganographic
+/// character set. Invisible characters in paths cause platform-dependent
+/// behavior and can be used to bypass security checks or confuse users.
+///
+/// This is intentionally a superset of the Bidi-only check that was here
+/// previously. The steganographic set mirrors `is_steganographic()` in
+/// `types/src/sanitize.rs` but is maintained separately because path
+/// validation has different semantics (reject vs strip).
 fn is_unsafe_path_char(c: char) -> bool {
     matches!(
         c,
+        // === C0/C1 control characters and DEL ===
         '\u{0000}'..='\u{001f}'
             | '\u{007f}'
             | '\u{0080}'..='\u{009f}'
-            | '\u{061c}'
-            | '\u{200e}'
-            | '\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2066}'..='\u{2069}'
+
+        // === Bidi controls (Trojan Source) ===
+            | '\u{061c}'     // Arabic Letter Mark
+            | '\u{200e}'     // LRM
+            | '\u{200f}'     // RLM
+            | '\u{202a}'..='\u{202e}'  // LRE, RLE, PDF, LRO, RLO
+
+        // === Steganographic / invisible characters ===
+
+        // Zero-width characters — binary steganography carriers
+            | '\u{200b}'..='\u{200d}' // ZWSP, ZWNJ, ZWJ
+
+        // Word joiner, invisible math operators, Bidi isolates
+            | '\u{2060}'..='\u{2069}'
+
+        // Zero Width No-Break Space (BOM as non-leading)
+            | '\u{feff}'
+
+        // Unicode Tags block — ASCII smuggling vector
+            | '\u{e0000}'..='\u{e007f}'
+
+        // Variation selectors — steganographic encoding via glyph selection
+            | '\u{fe00}'..='\u{fe0f}'     // VS1–VS16
+            | '\u{e0100}'..='\u{e01ef}'   // VS17–VS256 (Supplementary)
+
+        // Soft hyphen — token-splitting attacks
+            | '\u{00ad}'
+
+        // Combining grapheme joiner — token boundary manipulation
+            | '\u{034f}'
+
+        // Interlinear annotation controls (hidden text layers)
+            | '\u{fff9}'..='\u{fffb}'
+
+        // Invisible filler characters
+            | '\u{115f}'  // Hangul Choseong Filler
+            | '\u{1160}'  // Hangul Jungseong Filler
+            | '\u{3164}'  // Hangul Filler
+            | '\u{ffa0}'  // Halfwidth Hangul Filler
+            | '\u{180e}'  // Mongolian Vowel Separator
+            | '\u{17b4}'  // Khmer Vowel Inherent Aq
+            | '\u{17b5}'  // Khmer Vowel Inherent Aa
     )
 }
 
@@ -436,6 +484,52 @@ mod tests {
         assert!(is_unsafe_path_char('\u{202e}')); // RLO
         assert!(is_unsafe_path_char('\u{2066}')); // LRI
         assert!(is_unsafe_path_char('\u{2069}')); // PDI
+    }
+
+    #[test]
+    fn zero_width_chars_are_unsafe() {
+        assert!(is_unsafe_path_char('\u{200b}')); // ZWSP
+        assert!(is_unsafe_path_char('\u{200c}')); // ZWNJ
+        assert!(is_unsafe_path_char('\u{200d}')); // ZWJ
+    }
+
+    #[test]
+    fn unicode_tags_are_unsafe() {
+        assert!(is_unsafe_path_char('\u{e0000}'));
+        assert!(is_unsafe_path_char('\u{e0041}')); // Tag 'A'
+        assert!(is_unsafe_path_char('\u{e007f}'));
+    }
+
+    #[test]
+    fn variation_selectors_are_unsafe() {
+        assert!(is_unsafe_path_char('\u{fe00}')); // VS1
+        assert!(is_unsafe_path_char('\u{fe0f}')); // VS16
+        assert!(is_unsafe_path_char('\u{e0100}')); // VS17
+        assert!(is_unsafe_path_char('\u{e01ef}')); // VS256
+    }
+
+    #[test]
+    fn soft_hyphen_is_unsafe() {
+        assert!(is_unsafe_path_char('\u{00ad}'));
+    }
+
+    #[test]
+    fn steganographic_fillers_are_unsafe() {
+        assert!(is_unsafe_path_char('\u{feff}')); // BOM / ZWNBSP
+        assert!(is_unsafe_path_char('\u{034f}')); // CGJ
+        assert!(is_unsafe_path_char('\u{115f}')); // Hangul Choseong Filler
+        assert!(is_unsafe_path_char('\u{3164}')); // Hangul Filler
+        assert!(is_unsafe_path_char('\u{180e}')); // Mongolian Vowel Separator
+    }
+
+    #[test]
+    fn path_with_zwsp_flagged() {
+        assert!(contains_unsafe_path_chars("src/ma\u{200b}in.rs"));
+    }
+
+    #[test]
+    fn path_with_unicode_tags_flagged() {
+        assert!(contains_unsafe_path_chars("src/\u{e0041}\u{e0042}main.rs"));
     }
 
     // ========================================================================
