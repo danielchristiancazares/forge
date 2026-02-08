@@ -808,9 +808,7 @@ impl App {
         }
     }
 
-    // ========================================================================
     // Tool loop state helpers (private, inline)
-    // ========================================================================
 
     #[inline]
     fn tool_loop_state(&self) -> Option<&state::ToolLoopState> {
@@ -852,9 +850,7 @@ impl App {
         }
     }
 
-    // ========================================================================
     // Tool loop public accessors
-    // ========================================================================
 
     pub fn tool_loop_calls(&self) -> Option<&[ToolCall]> {
         Some(&self.tool_loop_state()?.batch.calls)
@@ -1312,13 +1308,10 @@ impl App {
         self.enter_normal_mode();
     }
 
-    // ========================================================================
     // File select mode (@ reference feature)
-    // ========================================================================
 
     /// Enter file select mode, scanning files from the current directory.
     pub fn enter_file_select_mode(&mut self) {
-        // Scan files if not already scanned
         if !self.file_picker.is_scanned() {
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             self.file_picker.scan_files(&cwd);

@@ -6,19 +6,18 @@ Terminal user interface rendering and input handling for Forge, built on [ratatu
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-27 | Header, Intro, LLM-TOC, Table of Contents |
-| 28-39 | Purpose and Responsibility |
-| 40-55 | Module Overview |
-| 56-105 | Rendering |
-| 106-616 | Key Modules: lib.rs, input.rs, theme.rs, markdown.rs, effects.rs, shared.rs, tool_display.rs, tool_result_Distillate.rs, diff_render.rs |
-| 617-650 | Public API |
-| 651-692 | Developer Notes |
+| 1-25 | Header, Intro, LLM-TOC, Table of Contents |
+| 27-37 | Purpose and Responsibility |
+| 39-77 | Module Overview and Rendering |
+| 78-623 | Key Modules: lib.rs, input.rs, theme.rs, markdown.rs, effects.rs, shared.rs, tool_display.rs, tool_result_summary.rs, diff_render.rs |
+| 625-651 | Public API |
+| 653-696 | Developer Notes |
 
 ## Table of Contents
 
 1. [Purpose and Responsibility](#purpose-and-responsibility)
 2. [Module Overview](#module-overview)
-3. [Full-Screen vs Inline Rendering](#full-screen-vs-inline-rendering)
+3. [Rendering](#rendering)
 4. [Key Modules](#key-modules)
 5. [Public API](#public-api)
 6. [Developer Notes](#developer-notes)
@@ -29,7 +28,7 @@ Terminal user interface rendering and input handling for Forge, built on [ratatu
 
 The `forge-tui` crate is responsible for:
 
-- **Rendering**: Drawing the UI to the terminal in both full-screen and inline modes
+- **Rendering**: Drawing the full-screen UI to the terminal via crossterm's alternate screen
 - **Input handling**: Processing keyboard events and dispatching to mode-specific handlers
 - **Theming**: Providing consistent colors, styles, and glyphs across the interface
 - **Markdown rendering**: Converting markdown content to styled terminal output
@@ -41,15 +40,15 @@ This crate is purely presentational. It renders state from `forge-engine` and fo
 
 ```
 tui/src/
-├── lib.rs              # Full-screen rendering, message display, overlays
-├── input.rs            # Keyboard event handling and mode dispatch
-├── theme.rs            # Color palette, styles, and glyphs
-├── markdown.rs         # Markdown to ratatui conversion with caching
-├── effects.rs          # Modal animation transforms
-├── shared.rs           # Rendering helpers shared between modes
-├── tool_display.rs     # Compact tool call formatting
-├── tool_result_Distillate.rs  # Tool result summarization logic
-└── diff_render.rs      # Diff-aware coloring for tool output
+├── lib.rs                  # Full-screen rendering, message display, overlays
+├── input.rs                # Keyboard event handling, paste detection, mode dispatch
+├── theme.rs                # Color palette, styles, and glyphs
+├── markdown.rs             # Markdown to ratatui conversion with caching
+├── effects.rs              # Modal and panel animation transforms
+├── shared.rs               # Rendering helpers shared across the crate
+├── tool_display.rs         # Compact tool call formatting
+├── tool_result_summary.rs  # Tool result summarization logic
+└── diff_render.rs          # Diff-aware coloring for tool output
 ```
 
 ## Rendering
@@ -73,17 +72,8 @@ Features:
 - Command palette overlay for slash commands
 - Model selector overlay with animation effects
 - Tool approval and recovery prompts
+- Files panel with compact and expanded diff views
 - Welcome screen when conversation is empty
-
-### Mode Differences
-
-| Aspect | Full-Screen | Inline |
-|--------|-------------|--------|
-| Terminal | Alternate screen | Normal flow |
-| Message display | Scrollable widget | Terminal scrollback |
-| Markdown | Full parsing | Plain text |
-| Overlays | Centered popups | Transformed input area |
-| Streaming | In-place update | Input area only |
 
 ## Key Modules
 
@@ -93,10 +83,11 @@ Entry point: `draw(frame: &mut Frame, app: &mut App)`
 
 **Layout Structure:**
 1. Clear frame with background color
-2. Split into messages area and input area
-3. Render messages with scrolling
-4. Render input with mode-specific styling
-5. Overlay command palette, model selector, or approval prompts as needed
+2. Split into main area and optional files panel (horizontal)
+3. Split main area into messages area and input area (vertical)
+4. Render messages with scrolling
+5. Render input with mode-specific styling
+6. Overlay command palette, model selector, or approval prompts as needed
 
 **Message Caching:**
 Static message content is cached in a thread-local `MessageLinesCache` to avoid rebuilding every frame. Dynamic content (streaming, tool status) is appended separately.
@@ -115,30 +106,57 @@ Cache is invalidated when:
 **Scrollbar Rendering:**
 Only rendered when content exceeds viewport (`max_scroll > 0`). Uses `max_scroll` as content length for correct thumb positioning.
 
-Entry point: `draw(frame: &mut Frame, app: &mut App)`
-
 ### input.rs - Keyboard Input Handling
 
 Entry point: `handle_events(app: &mut App, input: &mut InputPump) -> Result<bool>`
 
 **Event Processing:**
-1. `InputPump` runs a blocking reader loop (25ms poll) and pushes events into a bounded channel
-2. `handle_events` drains the queue (non-blocking) and ignores `KeyEventKind::Release`
-3. Handle global Ctrl+C for cancellation
-4. Dispatch to mode-specific handler
+1. `InputPump` runs a blocking reader loop (25ms poll) and pushes events into a bounded channel (capacity 1024)
+2. `handle_events` drains up to 64 events per frame (non-blocking) and ignores `KeyEventKind::Release`
+3. Handle global Ctrl+C for cancellation (cancels active operation or exits)
+4. Handle global Esc for cancellation (only in Normal mode with no panel/modal active)
+5. Dispatch to mode-specific handler
+
+**Paste Detection:**
+On Windows, crossterm delivers paste as a burst of rapid key events rather than `Event::Paste`. The `PasteDetector` uses heuristics to identify these bursts and treats bare `Enter` as a newline insertion (instead of message submission) during a detected paste:
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `PASTE_INTER_KEY_THRESHOLD` | 20ms | Max gap between keys to consider rapid |
+| `PASTE_IDLE_TIMEOUT` | 75ms | How long paste mode stays active after last rapid key |
+| `PASTE_QUEUE_THRESHOLD` | 32 | Backlog size that immediately triggers paste mode |
 
 **Mode Handlers:**
 
 | Mode | Handler | Key Behaviors |
 |------|---------|---------------|
 | Normal | `handle_normal_mode` | Navigation, mode entry, quit |
-| Insert | `handle_insert_mode` | Text editing, message send |
-| Command | `handle_command_mode` | Command input, execution |
+| Insert | `handle_insert_mode` | Text editing, message send, paste handling |
+| Command | `handle_command_mode` | Command input, tab completion, execution |
 | ModelSelect | `handle_model_select_mode` | Selection, confirmation |
 | FileSelect | `handle_file_select_mode` | File filtering and insertion |
 
 **Modal Priority:**
 Tool approval and recovery modals take priority over mode-specific handling. When active, they intercept key events regardless of input mode.
+
+**Key Bindings (Tool Approval Modal):**
+
+| Key | Action |
+|-----|--------|
+| `k` / `Up` | Move cursor up |
+| `j` / `Down` | Move cursor down |
+| `Space` | Toggle selection |
+| `Tab` | Toggle details |
+| `a` | Approve all |
+| `d` / `Esc` | Request deny all |
+| `Enter` | Activate (approve selected) |
+
+**Key Bindings (Tool Recovery Modal):**
+
+| Key | Action |
+|-----|--------|
+| `r` / `R` | Resume recovered batch |
+| `d` / `D` / `Esc` | Discard recovered batch |
 
 **Key Bindings (Normal Mode):**
 
@@ -147,9 +165,9 @@ Tool approval and recovery modals take priority over mode-specific handling. Whe
 | `q` | Quit |
 | `i` | Insert mode |
 | `a` | Insert at end |
-| `o` | Insert with clear |
+| `o` | Toggle thinking visibility |
 | `:` / `/` | Command mode |
-| `m` | Model selector |
+| `m` | Model selector (blocked during active operations) |
 | `f` | Toggle files panel |
 | `k` / `Up` | Scroll up |
 | `j` / `Down` | Scroll down |
@@ -159,25 +177,41 @@ Tool approval and recovery modals take priority over mode-specific handling. Whe
 | `PageDown` | Page down |
 | `Ctrl+U` | Page up (or scroll diff up when files panel expanded) |
 | `Ctrl+D` | Page down (or scroll diff down when files panel expanded) |
-| `Left` | Scroll up by chunk |
+| `Left` | Scroll up by 20% chunk |
 | `Tab` / `Shift+Tab` | Files panel: next/previous file |
 | `Enter` / `Esc` | Files panel: collapse expanded diff |
+| `Backspace` | Files panel: collapse expanded diff, or close panel if compact |
 
 **Key Bindings (Insert Mode):**
 
 | Key | Action |
 |-----|--------|
 | `Esc` | Normal mode |
-| `Enter` | Send message |
+| `Enter` | Send message (or insert newline during detected paste) |
 | `Ctrl+Enter` / `Shift+Enter` / `Ctrl+J` | Insert newline |
 | `Up` / `Down` | Navigate prompt history |
-| `Backspace` | Delete backward |
+| `Backspace` | Exit to Normal mode if draft empty, otherwise delete backward |
 | `Delete` | Delete forward |
 | `Left` / `Right` | Move cursor |
 | `Ctrl+U` | Clear line |
 | `Ctrl+W` | Delete word backward |
 | `Home` / `End` | Jump to start/end |
 | `@` | Open file selector |
+
+**Key Bindings (Command Mode):**
+
+| Key | Action |
+|-----|--------|
+| `Esc` | Normal mode |
+| `Enter` | Execute command |
+| `Up` / `Down` | Navigate command history |
+| `Backspace` | Exit to Normal mode if empty, otherwise delete backward |
+| `Left` / `Right` | Move cursor |
+| `Home` / `Ctrl+A` | Jump to start |
+| `End` / `Ctrl+E` | Jump to end |
+| `Ctrl+W` | Delete word backward |
+| `Ctrl+U` | Clear line |
+| `Tab` | Tab completion |
 
 **Key Bindings (Model Select Mode):**
 
@@ -187,7 +221,7 @@ Tool approval and recovery modals take priority over mode-specific handling. Whe
 | `Enter` | Confirm selection |
 | `j` / `Down` | Move selection down |
 | `k` / `Up` | Move selection up |
-| `1`-`9` | Direct selection by index |
+| `1`-`9` | Direct selection by index (selects and confirms) |
 
 **Key Bindings (File Select Mode):**
 
@@ -251,6 +285,7 @@ pub struct Glyphs {
     pub system: &'static str,           // "●" or "S"
     pub user: &'static str,             // "○" or "U"
     pub assistant: &'static str,        // "◇" or "A"
+    pub thinking: &'static str,         // "◦" or "?"
     pub tool: &'static str,             // "⊙" or "T"
     pub tool_result_ok: &'static str,   // "✓" or "OK"
     pub tool_result_err: &'static str,  // "✗" or "ERR"
@@ -314,7 +349,7 @@ pub mod styles {
 
 ### markdown.rs - Markdown Rendering
 
-Entry point: `render_markdown(content: &str, base_style: Style, palette: &Palette) -> Vec<Line<'static>>`
+Entry point: `render_markdown(content: &str, base_style: Style, palette: &Palette, max_width: u16) -> Vec<Line<'static>>`
 
 **Features:**
 - Headings (bold, with spacing)
@@ -322,8 +357,9 @@ Entry point: `render_markdown(content: &str, base_style: Style, palette: &Palett
 - Code blocks with fence markers (```language)
 - Inline code (peach colored, bold)
 - Ordered and unordered lists with nesting (4-space indent per level)
-- Tables with box-drawing borders (unicode width aware)
+- Tables with box-drawing borders (unicode width aware, cell wrapping)
 - Paragraphs with automatic spacing
+- `<br>` tag handling (converted to line breaks)
 
 **Caching:**
 Thread-local cache with automatic eviction:
@@ -336,13 +372,13 @@ thread_local! {
 }
 ```
 
-Cache key combines content hash, style hash, and palette hash. Eviction removes half the cache when full.
+Cache key combines content hash, style hash, palette hash, `soft_breaks_as_newlines` flag, and `max_width`. Eviction removes half the cache when full.
 
 **Streaming Support:**
 Handles incomplete code blocks (common during streaming) by rendering partial content with opening fence.
 
 **HTML/XML Handling:**
-Renders HTML and XML-like content as plain text rather than silently dropping it. This preserves LLM output that may contain XML-like tags.
+Renders HTML and XML-like content as plain text rather than silently dropping it. This preserves LLM output that may contain XML-like tags. `<br>` tags are recognized and converted to actual line breaks.
 
 **Table Rendering:**
 
@@ -354,7 +390,10 @@ Renders HTML and XML-like content as plain text rather than silently dropping it
 └───────┴───────┴───────┘
 ```
 
-Uses `unicode-width` for proper handling of CJK characters and emoji.
+Uses `unicode-width` for proper handling of CJK characters and emoji. When the table exceeds `max_width`, column widths are proportionally shrunk and cell content is word-wrapped. A minimum column width of 3 characters is enforced.
+
+**Soft Break Mode:**
+An internal `render_markdown_preserve_newlines` variant treats soft breaks (single newlines) as hard line breaks. This is used for content where the original line structure should be preserved.
 
 ### effects.rs - Modal and Panel Animations
 
@@ -414,7 +453,7 @@ fn ease_out_cubic(t: f32) -> f32 {
 
 ### shared.rs - Shared Rendering Helpers
 
-Common utilities used by both full-screen and inline rendering. All functions are `pub(crate)`.
+Common utilities used across the crate. All functions are `pub(crate)`.
 
 **Provider Colors:**
 ```rust
@@ -440,7 +479,6 @@ pub(crate) struct ToolCallStatus {
 }
 
 pub(crate) fn collect_tool_statuses(app: &App, reason_max_len: usize) -> Option<Vec<ToolCallStatus>>
-pub(crate) fn tool_status_signature(statuses: Option<&[ToolCallStatus]>) -> Option<String>
 ```
 
 **Message Headers:**
@@ -452,17 +490,18 @@ pub(crate) fn message_header_parts(msg: &Message, palette: &Palette, glyphs: &Gl
 Returns the appropriate icon, display name, and style for each message type:
 - System: muted bold
 - User: green bold
-- Assistant: provider-colored
+- Assistant: provider-colored (no name label -- color encodes provider)
+- Thinking: provider-colored, italic
 - ToolUse: accent bold with compact tool name
 - ToolResult: success/error with ok/error icon
 
 **Wrapped Line Counting:**
 ```rust
 pub(crate) fn wrapped_line_count_exact(lines: &[Line], width: u16) -> usize
-pub(crate) fn wrapped_line_count(lines: &[Line], width: u16) -> u16  // Capped to u16
 pub(crate) fn wrapped_line_rows(lines: &[Line], width: u16) -> Vec<usize>
-pub(crate) fn truncate_with_ellipsis(raw: &str, max: usize) -> String
 ```
+
+Note: `truncate_with_ellipsis` has moved to `forge_types`.
 
 **Approval View:**
 Collects and formats tool approval requests for display:
@@ -470,16 +509,16 @@ Collects and formats tool approval requests for display:
 ```rust
 pub(crate) struct ApprovalItem {
     pub tool_name: String,
-    pub risk_label: String,     // "HIGH", "MEDIUM", "LOW"
-    pub Distillate: Option<String>,
-    pub details: Vec<String>,   // Expanded JSON args
+    pub risk_label: String,          // "HIGH", "MEDIUM", "LOW"
+    pub summary: Option<String>,
+    pub details: Vec<String>,        // Expanded JSON args
+    pub homoglyph_warnings: Vec<String>,  // Mixed-script warnings
 }
 
 pub(crate) struct ApprovalView {
     pub items: Vec<ApprovalItem>,
     pub selected: Vec<bool>,
     pub cursor: usize,
-    pub expanded: Option<usize>,
     pub any_selected: bool,
     pub deny_confirm: bool,
 }
@@ -496,66 +535,73 @@ pub fn format_tool_call_compact(name: &str, args: &Value) -> String
 ```
 
 Examples:
-- `Search("foo.*bar")` instead of `{"pattern": "foo.*bar"}`
+- `Search(foo.*bar)` instead of `{"pattern": "foo.*bar"}`
 - `Read(src/main.rs)` instead of `{"path": "src/main.rs"}`
+- `Edit(src/main.rs)` or `Edit(3 files)` (parses LP1 patch format)
 - `GitCommit(feat(tui): add display)` for structured commit args
 - `GitAdd(-A)` or `GitAdd(3 file(s))`
+- `GitDiff(main..feature)` or `GitDiff(--cached)`
+- `GitBranch(create feature-x)` or `GitBranch(-a)`
+- `GitCheckout(main)` or `GitCheckout(-b new-branch)`
 
 **Canonical Names:**
 Tool names are expected in PascalCase from the tool registry. The function maps them to display names:
 
-| Tool Name | Display |
-|-----------|---------|
+| Tool Name | Category |
+|-----------|----------|
 | `Read`, `Write`, `Edit`, `Delete`, `Move`, `Copy` | File operations |
 | `ListDir`, `Outline` | Directory/code inspection |
 | `Glob`, `Search` | Search operations |
-| `GitStatus`, `GitDiff`, `GitAdd`, `GitCommit`, etc. | Git operations |
+| `GitStatus`, `GitDiff`, `GitAdd`, `GitCommit`, `GitStash`, `GitRestore`, `GitBranch`, `GitCheckout`, `GitShow`, `GitLog`, `GitBlame` | Git operations |
 | `Pwsh`, `Run` | Shell commands |
 | `WebFetch` | URL fetching |
+| `Recall` | Memory retrieval |
 | `Build`, `Test` | Build system operations |
 
-Unknown tools pass through as-is.
+Unknown tools pass through as-is, with fallback key extraction from common argument names (`pattern`, `path`, `query`, `command`, `url`, `file`, `name`).
 
-### tool_result_Distillate.rs - Tool Result Summarization
+### tool_result_summary.rs - Tool Result Summarization
 
 Determines how to render tool results:
 
 ```rust
-pub enum ToolResultRender {
+pub(crate) enum ToolResultRender {
     Full { diff_aware: bool },  // Show complete output
-    Distillate(String),            // Show compact Distillate
+    Summary(String),            // Show compact summary
 }
 ```
 
 **Tool Kinds:**
 ```rust
 pub(crate) enum ToolKind {
-    Read,     // File reading
-    Search,   // Content search (ripgrep)
-    Glob,     // File pattern matching
-    Shell,    // Shell commands (Run/Pwsh)
-    Edit,     // File editing
-    Write,    // File creation
-    GitStatus,// Git status
-    Other,    // Everything else
+    Read,      // File reading
+    Search,    // Content search (ripgrep)
+    Glob,      // File pattern matching
+    Shell,     // Shell commands (Run/Pwsh)
+    Edit,      // File editing
+    Write,     // File creation
+    GitStatus, // Git status
+    GitCommit, // Git commit
+    Other,     // Everything else
 }
 ```
 
 **Render Decision:**
-- `Edit` always renders full with `diff_aware: true` (never Distilled)
-- `Write` always renders full with `diff_aware: false` (never Distilled)
-- Content with diff markers (`---`, `+++`, `@@`) gets `Full { diff_aware: true }`
-- Other tools get tool-specific Distillates
+- `Edit` always renders full with `diff_aware: true` (never summarized)
+- `Write` always renders full with `diff_aware: false` (never summarized)
+- Content with diff markers (`---`, `+++`, `@@`, `diff --git`) gets `Full { diff_aware: true }`
+- Other tools get tool-specific summaries
 
-**Tool-Specific Distillates:**
+**Tool-Specific Summaries:**
 
-| Tool | Distillate Format |
+| Tool | Summary Format |
 |------|----------------|
 | Read | "42 lines" or "lines 1-50" (if range specified in args) |
 | Search | "3 matches in 2 files" (parsed from JSON output) |
 | Glob | "5 files" (from JSON array or line count) |
 | Run/Pwsh | "exit 0: first output line" (parsed from JSON or text) |
 | GitStatus | "1 staged, 2 modified, 3 untracked" (git porcelain format) |
+| GitCommit | "abc1234 feat: add feature" (short hash + commit message) |
 | Other | Line count or truncated first line |
 
 ### diff_render.rs - Diff-Aware Coloring
@@ -570,7 +616,7 @@ pub fn render_tool_result_lines(content: &str, base_style: Style, palette: &Pale
 
 | Line Pattern | Color |
 |--------------|-------|
-| `---` / `+++` / `diff --git` | Muted, bold (header) |
+| `---` / `+++` / `diff --git` / `index ` / `new file mode` / `deleted file mode` | Muted, bold (header) |
 | `@@` | Accent, bold (hunk header) |
 | `-` prefix | Error (red) |
 | `+` prefix | Success (green) |
@@ -583,7 +629,7 @@ pub fn render_tool_result_lines(content: &str, base_style: Style, palette: &Pale
 ```rust
 // Rendering
 pub fn draw(frame: &mut Frame, app: &mut App)
-
+pub fn draw_model_selector(frame: &mut Frame, app: &mut App, palette: &Palette, glyphs: &Glyphs, elapsed: Duration)
 
 // Theme
 pub fn palette(options: UiOptions) -> Palette
@@ -600,6 +646,7 @@ pub fn handle_events(app: &mut App, input: &mut InputPump) -> Result<bool>
 
 // Markdown
 pub mod markdown
+pub fn render_markdown(content: &str, base_style: Style, palette: &Palette, max_width: u16) -> Vec<Line<'static>>
 pub fn clear_render_cache()
 ```
 
@@ -608,14 +655,16 @@ pub fn clear_render_cache()
 ### Platform Considerations
 
 - **Windows**: Filter to `KeyEventKind::Press` only; release events are sent separately
+- **Windows paste**: Paste arrives as rapid key bursts (not `Event::Paste`); the `PasteDetector` heuristic handles this
 - **Terminal compatibility**: Use `ascii_only` option for terminals without Unicode support
 - **Accessibility**: `reduced_motion` disables spinner animation; `high_contrast` switches to basic colors
 
 ### Performance
 
 - **Message caching**: Static content is cached; only dynamic content (streaming, tool status) rebuilds each frame
-- **Markdown caching**: Parsed results cached by content+style hash with LRU-style eviction
+- **Markdown caching**: Parsed results cached by content+style+width hash with LRU-style eviction
 - **Wrapped line counting**: Use `wrapped_line_count_exact` for accuracy; expensive for large content
+- **Event throttling**: Max 64 events processed per frame to avoid starving rendering
 
 ### Common Pitfalls
 
@@ -634,8 +683,8 @@ pub fn clear_render_cache()
 ### Adding New Input Modes
 
 1. Add handler in `input.rs`
-2. Add to dispatch in `handle_events`
-3. Handle modal priority (approval/recovery)
+2. Add to dispatch in `handle_events` (within `apply_event`)
+3. Handle modal priority (approval/recovery interceptors)
 4. Update key hints in `draw_input`
 
 ### Extending Theme
@@ -644,4 +693,3 @@ pub fn clear_render_cache()
 2. Add style function to `styles` module
 3. Update `high_contrast()` fallback
 4. Consider `ascii_only` glyph fallbacks
-

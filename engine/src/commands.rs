@@ -83,9 +83,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
     COMMAND_SPECS
 }
 
-// ============================================================================
 // Command name normalization / aliasing (used by parsing + tab completion)
-// ============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandKind {
@@ -261,19 +259,17 @@ impl super::App {
             OperationState::Streaming(active) => {
                 active.abort_handle().abort();
 
-                // Clean up tool batch if journaled
                 if let ActiveStream::Journaled { tool_batch_id, .. } = &active
                     && let Err(e) = self.tool_journal.discard_batch(*tool_batch_id)
                 {
                     tracing::warn!("Failed to discard tool batch on cancel: {e}");
                 }
 
-                // Clean up journal state
                 if let Err(e) = active.into_journal().discard(&mut self.stream_journal) {
                     tracing::warn!("Failed to discard stream journal on cancel: {e}");
                 }
 
-                // Rollback the user message since no response was generated
+                // Rollback the user message since no response was generated.
                 self.rollback_pending_user_message();
 
                 self.push_notification("Streaming cancelled");
@@ -314,7 +310,6 @@ impl super::App {
     }
 
     pub fn process_command(&mut self, command: EnteredCommand) {
-        // Record command to history for Up/Down navigation
         if !command.raw.is_empty() {
             self.record_command(&command.raw);
         }
@@ -330,7 +325,6 @@ impl super::App {
                 match state {
                     OperationState::Streaming(active) => {
                         active.abort_handle().abort();
-                        // Clean up tool batch if journaled
                         if let ActiveStream::Journaled { tool_batch_id, .. } = &active
                             && let Err(e) = self.tool_journal.discard_batch(*tool_batch_id)
                         {
@@ -396,7 +390,6 @@ impl super::App {
                         }
                     }
                 } else {
-                    // Enter model selection mode with TUI list
                     self.enter_model_select_mode();
                 }
             }
@@ -493,7 +486,6 @@ impl super::App {
                     return;
                 }
 
-                // /rewind or /rewind list shows available checkpoints
                 if matches!(target, Some("list" | "ls")) || target.is_none() {
                     self.show_checkpoint_list();
                     return;
@@ -564,7 +556,6 @@ impl super::App {
                     return;
                 }
 
-                // Restore prompt into draft and drop the user into Insert mode.
                 if let Some(text) = prompt {
                     self.input.draft_mut().set_text(text);
                     self.input = std::mem::take(&mut self.input).into_insert();
@@ -599,10 +590,6 @@ impl super::App {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ========================================================================
-    // Command parsing tests
-    // ========================================================================
 
     #[test]
     fn parse_quit_commands() {
@@ -665,12 +652,10 @@ mod tests {
 
     #[test]
     fn parse_case_insensitive_and_slash_prefix() {
-        // Commands should be case-insensitive
         assert_eq!(Command::parse("QUIT"), Command::Quit);
         assert_eq!(Command::parse("Clear"), Command::Clear);
         assert_eq!(Command::parse("MODEL"), Command::Model(None));
 
-        // Leading slash should be accepted
         assert_eq!(Command::parse("/quit"), Command::Quit);
         assert_eq!(Command::parse("/clear"), Command::Clear);
         assert_eq!(
@@ -678,7 +663,6 @@ mod tests {
             Command::Model(Some("gpt-5"))
         );
 
-        // Bare "/" should be treated as empty
         assert_eq!(Command::parse("/"), Command::Empty);
     }
 

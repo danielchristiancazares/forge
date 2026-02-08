@@ -605,9 +605,7 @@ pub fn config_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    // ========================================================================
     // expand_env_vars tests
-    // ========================================================================
 
     #[test]
     fn expand_env_vars_no_vars() {
@@ -688,9 +686,7 @@ mod tests {
         }
     }
 
-    // ========================================================================
     // toml_to_json tests
-    // ========================================================================
 
     #[test]
     fn toml_to_json_string() {
@@ -760,9 +756,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ========================================================================
     // ForgeConfig parsing tests
-    // ========================================================================
 
     #[test]
     fn parse_empty_config() {
@@ -1124,9 +1118,7 @@ type = "string"
         assert_eq!(tool_def.parameters["type"], "object");
     }
 
-    // ========================================================================
     // ConfigError tests
-    // ========================================================================
 
     #[test]
     fn config_error_path_accessor() {
@@ -1145,20 +1137,16 @@ type = "string"
     }
 }
 
-// ========================================================================
 // persist_model tests
-// ========================================================================
 
 #[test]
 fn persist_model_creates_new_config() {
     let tmp_dir = tempfile::tempdir().unwrap();
     let config_path = tmp_dir.path().join("config.toml");
 
-    // Create a mock config_path function by writing directly
     let content = "";
     std::fs::write(&config_path, content).unwrap();
 
-    // Parse and update
     let mut doc = content.parse::<toml_edit::DocumentMut>().unwrap();
     if !doc.contains_key("app") {
         doc["app"] = toml_edit::Item::Table(toml_edit::Table::new());
@@ -1166,7 +1154,6 @@ fn persist_model_creates_new_config() {
     doc["app"]["model"] = toml_edit::value("gpt-4o");
     std::fs::write(&config_path, doc.to_string()).unwrap();
 
-    // Verify
     let result = std::fs::read_to_string(&config_path).unwrap();
     assert!(result.contains("[app]"));
     assert!(result.contains("model = \"gpt-4o\""));
@@ -1188,12 +1175,10 @@ anthropic = "sk-test"
 "#;
     std::fs::write(&config_path, original).unwrap();
 
-    // Parse and update
     let mut doc = original.parse::<toml_edit::DocumentMut>().unwrap();
     doc["app"]["model"] = toml_edit::value("new-model");
     std::fs::write(&config_path, doc.to_string()).unwrap();
 
-    // Verify
     let result = std::fs::read_to_string(&config_path).unwrap();
     assert!(
         result.contains("# My config"),

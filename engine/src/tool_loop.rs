@@ -37,9 +37,7 @@ fn run_escalation_reason(tool_name: &str, arguments: &serde_json::Value) -> Opti
     Some(util::truncate_with_ellipsis(&sanitized, 200))
 }
 
-// ============================================================================
 // SpawnedTool: Proof object for spawned tool execution (IFA §8.1)
-// ============================================================================
 
 #[derive(Debug)]
 pub(crate) struct SpawnedTool {
@@ -113,7 +111,6 @@ impl SpawnedTool {
             return Err(self);
         };
 
-        // Destructure self to take ownership of all fields
         let Self {
             call,
             join_handle: _,
@@ -135,9 +132,7 @@ impl SpawnedTool {
     }
 }
 
-// ============================================================================
 // ToolQueue: Queue state without active execution
-// ============================================================================
 
 #[derive(Debug)]
 pub(crate) struct ToolQueue {
@@ -166,9 +161,7 @@ impl ToolQueue {
     }
 }
 
-// ============================================================================
 // ActiveExecution: State with a spawned tool (requires SpawnedTool)
-// ============================================================================
 
 #[derive(Debug)]
 pub(crate) struct ActiveExecution {

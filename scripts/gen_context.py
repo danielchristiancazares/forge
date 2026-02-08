@@ -206,31 +206,45 @@ def format_metadata(data: dict) -> tuple[list[str], list[str]]:
             meta_lines.append(f"  {pkg['name']} (leaf)")
     meta_lines.append("")
 
-    # External dependencies (name + version, grouped by crate, deduplicated)
+    # External dependencies (name + version + features, grouped by crate)
     meta_lines.append("External dependencies per crate:")
     for pkg in packages:
-        ext_deps = sorted(set(
-            f"{d['name']} {d.get('req', '')}" for d in pkg.get("dependencies", []) if d["name"] not in pkg_names
-        ), key=str.lower)
+        ext_deps = []
+        for d in pkg.get("dependencies", []):
+            if d["name"] in pkg_names:
+                continue
+            feats = d.get("features", [])
+            label = f"{d['name']} {d.get('req', '')}"
+            if feats:
+                label += f" [{', '.join(sorted(feats))}]"
+            ext_deps.append(label)
+        ext_deps = sorted(set(ext_deps), key=str.lower)
         if ext_deps:
             meta_lines.append(f"  {pkg['name']}:")
             for dep in ext_deps:
                 meta_lines.append(f"    {dep}")
     meta_lines.append("")
 
-    # Features per crate
-    feat_lines.append("Features per crate:")
+    # Dependency feature flags activated per crate
+    feat_lines.append("Dependency feature flags per crate:")
     for pkg in packages:
-        features = pkg.get("features", {})
-        if features:
+        dep_feats: list[str] = []
+        for d in pkg.get("dependencies", []):
+            feats = d.get("features", [])
+            if feats:
+                dep_feats.append(f"    {d['name']}: {', '.join(sorted(feats))}")
+        # Also show crate-declared features if any
+        own_features = pkg.get("features", {})
+        if dep_feats or own_features:
             feat_lines.append(f"  {pkg['name']}:")
-            for fname, fdeps in sorted(features.items()):
-                if fdeps:
-                    feat_lines.append(f"    {fname} = [{', '.join(fdeps)}]")
-                else:
-                    feat_lines.append(f"    {fname}")
-        else:
-            feat_lines.append(f"  {pkg['name']}: (none)")
+            if own_features:
+                for fname, fdeps in sorted(own_features.items()):
+                    if fdeps:
+                        feat_lines.append(f"    [own] {fname} = [{', '.join(fdeps)}]")
+                    else:
+                        feat_lines.append(f"    [own] {fname}")
+            for line in sorted(dep_feats, key=str.lower):
+                feat_lines.append(line)
 
     return meta_lines, feat_lines
 

@@ -281,9 +281,7 @@ fn err(message: &str) -> PatchError {
     }
 }
 
-// ============================
 // File content representation
-// ============================
 
 pub fn parse_file(bytes: &[u8]) -> Result<FileContent, PatchError> {
     let mut lines: Vec<String> = Vec::new();
@@ -477,9 +475,7 @@ fn apply_final_newline(content: &mut FileContent, value: bool) {
 mod tests {
     use super::*;
 
-    // ========================================================================
     // parse_patch tests
-    // ========================================================================
 
     #[test]
     fn parse_minimal_patch() {
@@ -562,9 +558,7 @@ mod tests {
         assert!(err.message.contains("Missing file path"));
     }
 
-    // ========================================================================
     // Operation parsing tests
-    // ========================================================================
 
     #[test]
     fn parse_replace_op() {
@@ -749,9 +743,7 @@ mod tests {
         assert_eq!(patch.files[0].path, "test.txt");
     }
 
-    // ========================================================================
     // parse_file tests
-    // ========================================================================
 
     #[test]
     fn parse_file_empty() {
@@ -833,9 +825,7 @@ mod tests {
         assert!(result.unwrap_err().message.contains("Invalid UTF-8"));
     }
 
-    // ========================================================================
     // emit_file tests
-    // ========================================================================
 
     #[test]
     fn emit_file_empty() {
@@ -903,9 +893,7 @@ mod tests {
         assert_eq!(bytes, b"test\n");
     }
 
-    // ========================================================================
     // apply_ops tests
-    // ========================================================================
 
     #[test]
     fn apply_replace_single_line() {
@@ -1123,9 +1111,7 @@ mod tests {
         assert!(!content.final_newline);
     }
 
-    // ========================================================================
     // Roundtrip tests
-    // ========================================================================
 
     #[test]
     fn roundtrip_lf() {
@@ -1162,9 +1148,7 @@ mod tests {
         assert_eq!(emitted, b"line1\r\nline2\r\nline3\r\n");
     }
 
-    // ========================================================================
     // PatchError tests
-    // ========================================================================
 
     #[test]
     fn patch_error_display() {

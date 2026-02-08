@@ -6,19 +6,19 @@ This document provides comprehensive documentation for the `forge` CLI crate - t
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-39 | Header, Table of Contents |
-| 40-82 | Overview: responsibilities, file structure, dependencies |
-| 83-125 | Architecture Diagram: main() flow, mode switching, terminal session lifecycle |
-| 126-177 | Module Structure: main.rs types and functions, assets.rs constants and statics |
-| 178-274 | Terminal Session Management: TerminalSession, init/cleanup sequences, error handling |
-| 275-367 | Terminal Mode |
-| 368-561 | Main Event Loop: input pump, frame cadence, run_app |
-| 562-639 | Asset Management: compile-time embedding, provider-specific prompts, OnceLock initialization |
-| 640-722 | Startup and Shutdown Sequence: initialization order, cleanup guarantees |
-| 723-757 | Configuration Resolution: UI mode config, file location, example |
-| 758-788 | Error Handling: error types, sources, recovery strategy |
-| 789-875 | Extension Guide: adding UI modes, assets, startup flags, modifying event loop |
-| 876-882 | Related Documentation: links to other crate READMEs |
+| 1-37 | Header, Table of Contents |
+| 38-80 | Overview: responsibilities, file structure, dependencies |
+| 81-115 | Architecture Diagram: main() flow, terminal session lifecycle |
+| 116-177 | Module Structure: main.rs types and functions, assets.rs constants and statics |
+| 178-260 | Terminal Session Management: TerminalSession, init/cleanup sequences, error handling |
+| 261-272 | Terminal Mode |
+| 273-325 | Main Event Loop: input pump, frame cadence, run_app |
+| 326-427 | Asset Management: compile-time embedding, provider-specific prompts, OnceLock initialization |
+| 428-525 | Startup and Shutdown Sequence: initialization order, cleanup guarantees |
+| 526-560 | Configuration Resolution: file location, example |
+| 561-595 | Error Handling: error types, sources, recovery strategy |
+| 596-650 | Extension Guide: adding assets, startup flags, modifying event loop |
+| 651-660 | Related Documentation: links to other crate READMEs |
 
 ## Table of Contents
 
@@ -26,8 +26,8 @@ This document provides comprehensive documentation for the `forge` CLI crate - t
 2. [Architecture Diagram](#architecture-diagram)
 3. [Module Structure](#module-structure)
 4. [Terminal Session Management](#terminal-session-management)
-5. [UI Mode System](#ui-mode-system)
-6. [Main Event Loops](#main-event-loops)
+5. [Terminal Mode](#terminal-mode)
+6. [Main Event Loop](#main-event-loop)
 7. [Asset Management](#asset-management)
 8. [Startup and Shutdown Sequence](#startup-and-shutdown-sequence)
 9. [Configuration Resolution](#configuration-resolution)
@@ -39,7 +39,7 @@ This document provides comprehensive documentation for the `forge` CLI crate - t
 
 ## Overview
 
-The `forge` CLI crate is the application entry point that orchestrates terminal setup, UI mode selection, and the main event loop. It bridges the `forge-engine` (application state) and `forge-tui` (rendering) crates, providing RAII-based terminal session management with proper cleanup guarantees.
+The `forge` CLI crate is the application entry point that orchestrates terminal setup, tracing initialization, and the main event loop. It bridges the `forge-engine` (application state) and `forge-tui` (rendering) crates, providing RAII-based terminal session management with proper cleanup guarantees.
 
 ### Key Responsibilities
 
@@ -48,6 +48,7 @@ The `forge` CLI crate is the application entry point that orchestrates terminal 
 | **Terminal Session** | RAII-based setup/teardown of raw mode, alternate screen, bracketed paste |
 | **Event Loop Execution** | Tick-based loop coordinating async tasks, streaming, rendering, and input |
 | **Asset Loading** | Compile-time embedding and runtime initialization of provider-specific system prompts |
+| **Tracing** | File-based logging to `~/.forge/logs/forge.log` with fallback candidates |
 
 ### File Structure
 
@@ -55,12 +56,13 @@ The `forge` CLI crate is the application entry point that orchestrates terminal 
 cli/
 ├── Cargo.toml                              # Binary manifest (package name: "forge")
 ├── assets/
-│   ├── prompt.md                           # Default system prompt (Claude, OpenAI)
-│   ├── gemini_prompt.md                    # Gemini-specific system prompt
-│   ├── contextinfinity_extraction.md       # Context Infinity extraction prompt
-│   └── contextinfinity_retrieval.md        # Context Infinity retrieval prompt
+│   ├── base_prompt.md                      # Base system prompt (Claude, OpenAI)
+│   ├── base_prompt_gemini.md               # Gemini-specific system prompt
+│   ├── distillation.md                     # Distillation prompt template
+│   ├── contextinfinity_extraction.md       # Context Infinity fact extraction prompt
+│   └── contextinfinity_retrieval.md        # Context Infinity fact retrieval prompt
 └── src/
-    ├── main.rs                             # Entry point, event loops, terminal session
+    ├── main.rs                             # Entry point, event loop, terminal session
     └── assets.rs                           # Compile-time asset embedding
 ```
 
@@ -69,12 +71,15 @@ cli/
 | Crate | Purpose |
 |-------|---------|
 | `forge-engine` | Application state machine (`App`, `ForgeConfig`, `SystemPrompts`) |
-| `forge-tui` | Rendering functions (`draw`, `handle_events`) |
-| `forge-types` | Core domain types |
+| `forge-tui` | Rendering functions (`draw`, `handle_events`, `InputPump`) |
 | `ratatui` | Terminal UI framework |
 | `crossterm` | Cross-platform terminal manipulation |
-| `tokio` | Async runtime |
-| `tracing-subscriber` | Logging infrastructure |
+| `tokio` | Async runtime (multi-thread, macros) |
+| `anyhow` | Flexible error handling |
+| `tracing` | Structured logging facade |
+| `tracing-subscriber` | Logging infrastructure (fmt layer, env filter) |
+
+Dev-dependencies: `forge-types`, `tokio-test`, `wiremock`, `serde_json`, `tempfile`, `pretty_assertions`, `insta`, `vt100`.
 
 ---
 
@@ -84,9 +89,9 @@ cli/
 +-------------------------------------------------------------------------+
 |                              main()                                      |
 |  +--------------------------------------------------------------------+ |
-|  |  1. Initialize tracing                                              | |
-|  |  2. Load assets (provider-specific system prompts)                  | |
-|  |  3. Create App with system prompts                                  | |
+|  |  1. init_tracing() - file-based logging                            | |
+|  |  2. assets::init() - eagerly load system prompts                   | |
+|  |  3. App::new(assets::system_prompts()) - create app                | |
 |  +--------------------------------------------------------------------+ |
 |                                |                                         |
 |                                v                                         |
@@ -97,7 +102,9 @@ cli/
 |                                |                                         |
 |                                v                                         |
 |  +--------------------------------------------------------------------+ |
-|  |  app.save_history()  <- Persist conversation on exit               | |
+|  |  app.shutdown_lsp()     <- Shut down LSP servers                   | |
+|  |  app.save_history()     <- Persist conversation on exit            | |
+|  |  app.save_session()     <- Persist session state on exit           | |
 |  +--------------------------------------------------------------------+ |
 +-------------------------------------------------------------------------+
 ```
@@ -108,7 +115,7 @@ cli/
 
 ### `main.rs`
 
-The primary module containing the application entry point and all core types.
+The primary module containing the application entry point, terminal session management, tracing initialization, and the main event loop.
 
 #### Types
 
@@ -116,14 +123,23 @@ The primary module containing the application entry point and all core types.
 |------|-------------|
 | `TerminalSession` | RAII wrapper for terminal state with guaranteed cleanup on drop |
 
+#### Constants
+
+| Constant | Type | Description |
+|----------|------|-------------|
+| `FRAME_DURATION` | `Duration` | 8ms frame interval (~120 FPS render cadence) |
+
 #### Functions
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `main` | `async fn main() -> Result<()>` | Application entry point |
-| `run_app` | `async fn run_app<B>(terminal, app) -> Result<()>` | Main event loop |
+| `run_app` | `async fn run_app<B>(terminal, app) -> Result<()>` | Main event loop (generic over backend) |
+| `init_tracing` | `fn init_tracing()` | Initialize file-based tracing subscriber |
+| `open_forge_log_file` | `fn open_forge_log_file() -> (Option<(PathBuf, File)>, Vec<String>)` | Try candidate log file paths, return first success and any warnings |
+| `forge_log_file_candidates` | `fn forge_log_file_candidates() -> Vec<PathBuf>` | Return ordered list of candidate log file paths |
 
-Note: The generic bound `B` requires `Backend + Write` with `B::Error: Send + Sync + 'static` for all event loop functions.
+Note: The generic bound `B` on `run_app` requires `Backend + Write` with `B::Error: Send + Sync + 'static`.
 
 ### `assets.rs`
 
@@ -133,14 +149,14 @@ Asset management module for compile-time embedded resources with provider-specif
 
 | Constant | Description |
 |----------|-------------|
-| `DEFAULT_PROMPT_RAW` | Default system prompt loaded via `include_str!` at compile time |
-| `GEMINI_PROMPT_RAW` | Gemini-specific system prompt loaded via `include_str!` at compile time |
+| `BASE_PROMPT_RAW` | Base system prompt loaded via `include_str!` from `assets/base_prompt.md` |
+| `GEMINI_PROMPT_RAW` | Gemini-specific system prompt loaded via `include_str!` from `assets/base_prompt_gemini.md` |
 
 #### Statics
 
 | Static | Type | Description |
 |--------|------|-------------|
-| `DEFAULT_PROMPT` | `OnceLock<String>` | Lazily initialized default system prompt |
+| `BASE_PROMPT` | `OnceLock<String>` | Lazily initialized base system prompt |
 | `GEMINI_PROMPT` | `OnceLock<String>` | Lazily initialized Gemini-specific system prompt |
 
 #### Functions
@@ -161,7 +177,6 @@ The `TerminalSession` struct provides RAII-based terminal lifecycle management, 
 ```rust
 struct TerminalSession {
     terminal: Terminal<CrosstermBackend<Stdout>>,
-    use_alternate_screen: bool,
 }
 ```
 
@@ -198,10 +213,10 @@ if let Err(err) = execute!(out, EnableBracketedPaste) {
     return Err(err.into());
 }
 
-// Stage 3: Alternate screen (full mode) - clean up both on failure
-if use_alternate_screen && let Err(err) = execute!(out, EnterAlternateScreen) {
+// Stage 3: Alternate screen - clean up raw mode and bracketed paste on failure
+if let Err(err) = execute!(out, EnterAlternateScreen) {
     let _ = disable_raw_mode();
-    let _ = execute!(out, DisableBracketedPaste);
+    let _ = execute!(out, LeaveAlternateScreen, DisableBracketedPaste);
     return Err(err.into());
 }
 
@@ -210,11 +225,10 @@ let terminal = match Terminal::new(backend) {
     Ok(t) => t,
     Err(err) => {
         let _ = disable_raw_mode();
-        if use_alternate_screen {
-            let _ = execute!(out, LeaveAlternateScreen, DisableBracketedPaste);
-        } else {
-            let _ = execute!(out, DisableBracketedPaste);
-        }
+        // Disable alternate scroll mode
+        let _ = out.write_all(b"\x1b[?1007l");
+        let _ = out.flush();
+        let _ = execute!(out, LeaveAlternateScreen, DisableBracketedPaste);
         return Err(err.into());
     }
 };
@@ -247,11 +261,11 @@ The event loop runs at a fixed 8ms (~120 FPS) cadence:
 
 ```
 1. frames.tick().await (fixed cadence)
-2. handle_events(app, input) — drain input queue (non-blocking)
-3. app.tick() — advance animations, poll background tasks
-4. app.process_stream_events() — apply streaming chunks to UI
+2. handle_events(app, input) -- drain input queue (non-blocking)
+3. app.tick() -- advance animations, poll background tasks
+4. app.process_stream_events() -- apply streaming chunks to UI
 5. Clear transcript if requested (terminal.clear())
-6. terminal.draw(...) — render frame
+6. terminal.draw(...) -- render frame
 ```
 
 ```rust
@@ -267,7 +281,11 @@ where
     let result: Result<()> = loop {
         frames.tick().await;
 
-        let quit_now = handle_events(app, &mut input)?;
+        // Non-blocking input (drain queue only)
+        let quit_now = match handle_events(app, &mut input) {
+            Ok(q) => q,
+            Err(e) => break Err(e),
+        };
         if quit_now {
             break Ok(());
         }
@@ -275,11 +293,15 @@ where
         app.tick();
         app.process_stream_events();
 
-        if app.take_clear_transcript() {
-            terminal.clear()?;
+        if app.take_clear_transcript()
+            && let Err(e) = terminal.clear()
+        {
+            break Err(e.into());
         }
 
-        terminal.draw(|frame| draw(frame, app))?;
+        if let Err(e) = terminal.draw(|frame| draw(frame, app)) {
+            break Err(e.into());
+        }
     };
 
     input.shutdown().await;
@@ -305,12 +327,14 @@ The `assets.rs` module handles compile-time embedding of static resources with s
 System prompts are embedded at compile time using `include_str!`:
 
 ```rust
-const DEFAULT_PROMPT_RAW: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/prompt.md"));
+const BASE_PROMPT_RAW: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/base_prompt.md"
+));
 
 const GEMINI_PROMPT_RAW: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/assets/gemini_prompt.md"
+    "/assets/base_prompt_gemini.md"
 ));
 ```
 
@@ -322,48 +346,62 @@ This ensures:
 
 ### Provider-Specific Prompts
 
-The `SystemPrompts` struct provides different prompts optimized for each LLM provider:
+The `SystemPrompts` struct provides different prompts optimized for each LLM provider. The `claude` and `openai` fields both reference the same base prompt, while `gemini` gets its own specialized prompt:
 
 ```rust
 pub fn system_prompts() -> SystemPrompts {
+    let base = BASE_PROMPT
+        .get_or_init(|| BASE_PROMPT_RAW.to_string())
+        .as_str();
     SystemPrompts {
-        default: DEFAULT_PROMPT.get_or_init(|| DEFAULT_PROMPT_RAW.to_string()).as_str(),
-        gemini: GEMINI_PROMPT.get_or_init(|| GEMINI_PROMPT_RAW.to_string()).as_str(),
+        claude: base,
+        openai: base,
+        gemini: GEMINI_PROMPT
+            .get_or_init(|| GEMINI_PROMPT_RAW.to_string())
+            .as_str(),
     }
 }
 ```
 
-| Prompt | File | Used By |
-|--------|------|---------|
-| `default` | `assets/prompt.md` | Claude, OpenAI |
-| `gemini` | `assets/gemini_prompt.md` | Gemini models |
+| Field | File | Used By |
+|-------|------|---------|
+| `claude` | `assets/base_prompt.md` | Claude models |
+| `openai` | `assets/base_prompt.md` | OpenAI models (same base prompt) |
+| `gemini` | `assets/base_prompt_gemini.md` | Gemini models |
 
 ### Additional Assets
 
-The `assets/` directory contains additional prompts used by Context Infinity:
+The `assets/` directory contains additional prompts used by the `context` crate (not loaded by `assets.rs`):
 
-| File | Purpose |
-|------|---------|
-| `contextinfinity_extraction.md` | Prompt for extracting key information during distillation |
-| `contextinfinity_retrieval.md` | Prompt for retrieving relevant context from Distillates |
+| File | Loaded By | Purpose |
+|------|-----------|---------|
+| `distillation.md` | `context::distillation` | Template for generating conversation distillates |
+| `contextinfinity_extraction.md` | `context::librarian` | Prompt for extracting key facts during memory operations |
+| `contextinfinity_retrieval.md` | `context::librarian` | Prompt for retrieving relevant facts from memory |
 
-These are loaded by the `context` crate, not directly by `assets.rs`.
+These files live in `cli/assets/` but are referenced via relative `include_str!` paths from the `context` crate.
 
 ### Lazy Initialization Pattern
 
 ```rust
-static DEFAULT_PROMPT: OnceLock<String> = OnceLock::new();
+static BASE_PROMPT: OnceLock<String> = OnceLock::new();
 static GEMINI_PROMPT: OnceLock<String> = OnceLock::new();
 
 pub fn init() {
-    let _ = DEFAULT_PROMPT.set(DEFAULT_PROMPT_RAW.to_string());
+    let _ = BASE_PROMPT.set(BASE_PROMPT_RAW.to_string());
     let _ = GEMINI_PROMPT.set(GEMINI_PROMPT_RAW.to_string());
 }
 
 pub fn system_prompts() -> SystemPrompts {
+    let base = BASE_PROMPT
+        .get_or_init(|| BASE_PROMPT_RAW.to_string())
+        .as_str();
     SystemPrompts {
-        default: DEFAULT_PROMPT.get_or_init(|| DEFAULT_PROMPT_RAW.to_string()).as_str(),
-        gemini: GEMINI_PROMPT.get_or_init(|| GEMINI_PROMPT_RAW.to_string()).as_str(),
+        claude: base,
+        openai: base,
+        gemini: GEMINI_PROMPT
+            .get_or_init(|| GEMINI_PROMPT_RAW.to_string())
+            .as_str(),
     }
 }
 ```
@@ -379,12 +417,15 @@ pub fn system_prompts() -> SystemPrompts {
 ### Startup Sequence
 
 ```
-1. Initialize tracing subscriber
-   - fmt::layer() for human-readable output
-   - EnvFilter for RUST_LOG-based filtering
+1. Initialize tracing subscriber (init_tracing)
+   - Resolve log file: ~/.forge/logs/forge.log (primary)
+     or ./.forge/logs/forge.log (fallback)
+   - fmt::layer() writing to log file (ANSI disabled)
+   - EnvFilter for RUST_LOG-based filtering (default: info)
+   - If no log file can be opened: no-op subscriber (avoids corrupting TUI)
 
 2. Initialize assets
-   - assets::init() - eagerly load all system prompts
+   - assets::init() - eagerly load all system prompts into OnceLock
 
 3. Create application
    - App::new(assets::system_prompts())
@@ -394,7 +435,19 @@ pub fn system_prompts() -> SystemPrompts {
    - Create TerminalSession (alternate screen)
    - Run event loop
 ```
-```
+
+### Tracing Initialization Detail
+
+The `init_tracing()` function sets up file-based logging to avoid corrupting TUI output:
+
+1. Build an `EnvFilter` from `RUST_LOG` env var, falling back to `"info"`, then `"warn"`
+2. Try candidate log file paths via `forge_log_file_candidates()`:
+   - Primary: `~/.forge/logs/forge.log` (derived from `ForgeConfig::path()`)
+   - Fallback: `./.forge/logs/forge.log` (for constrained environments)
+3. Open the first candidate that succeeds (create dirs as needed)
+4. If a log file is available: register a `fmt::layer()` writing to it (ANSI disabled, wrapped in `Mutex`)
+5. If no log file can be opened: register a no-op subscriber (silent, no output)
+6. Log any warnings accumulated during candidate resolution
 
 ### Shutdown Sequence
 
@@ -403,20 +456,24 @@ pub fn system_prompts() -> SystemPrompts {
    - User pressed 'q' or Ctrl+C
    - Or unrecoverable error occurred
 
-2. TerminalSession drops
+2. TerminalSession drops (scoped block)
    - Raw mode disabled
    - Alternate screen exited
    - Cursor restored
 
-3. Save conversation history
+3. Shut down LSP servers
+   - app.shutdown_lsp().await
+   - Graceful LSP server shutdown
+
+4. Save conversation history
    - app.save_history()
-   - Errors logged but don't prevent exit
+   - Errors printed to stderr but don't prevent exit
 
-4. Save session state
+5. Save session state
    - app.save_session()
-   - Errors logged but don't prevent exit
+   - Errors printed to stderr but don't prevent exit
 
-5. Return from main()
+6. Return from main()
    - Exit code 0 on success
 ```
 
@@ -428,12 +485,20 @@ Errors are handled at different levels:
 |-------|----------|
 | Terminal setup | Partial cleanup, return error |
 | Event loop | Return error, drop session, print to stderr |
-| History save | Log error, continue shutdown |
+| LSP shutdown | Best-effort, always continues |
+| History save | Print to stderr, continue shutdown |
+| Session save | Print to stderr, continue shutdown |
 
 ```rust
-// After event loop
+// After event loop and session drop
+app.shutdown_lsp().await;
+
 if let Err(e) = app.save_history() {
     eprintln!("Failed to save history: {e}");
+}
+
+if let Err(e) = app.save_session() {
+    eprintln!("Failed to save session: {e}");
 }
 ```
 
@@ -487,12 +552,15 @@ async fn main() -> Result<()> {
 | Drawing | Backend write errors |
 | Event polling | I/O errors |
 | History save | File system errors |
+| Session save | File system errors |
+| Log file open | Directory creation failure, permission errors |
 
 ### Recovery Strategy
 
 - **Terminal errors**: Partial cleanup and propagate
 - **Rendering errors**: Propagate to main loop, trigger shutdown
-- **History save errors**: Log and continue (non-fatal)
+- **History/session save errors**: Print to stderr and continue (non-fatal)
+- **Log file errors**: Fall back to no-op subscriber (silent)
 
 ---
 
@@ -557,4 +625,3 @@ When modifying the event loop, preserve these invariants:
 | `tui/README.md` | Comprehensive TUI rendering documentation |
 | `engine/README.md` | Engine state machine and App API |
 | `context/README.md` | Context management system |
-

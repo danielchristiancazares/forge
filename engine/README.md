@@ -7,20 +7,23 @@ This document provides comprehensive documentation for the `forge-engine` crate 
 | Lines | Section |
 | :--- | :--- |
 | 1-40 | Header, Table of Contents |
-| 41-114 | Overview: responsibilities, file structure, dependencies |
-| 115-149 | Architecture Diagram: App structure with InputState, OperationState, components |
-| 150-305 | State Machine Design: OperationState enum, states, transition diagrams |
-| 306-387 | Input Mode System: InputState enum, DraftInput, mode transitions |
-| 388-492 | Type-Driven Design Patterns: proof tokens, InsertToken, CommandToken, mode wrappers |
-| 493-590 | Streaming Orchestration: ActiveStream, StreamingMessage, lifecycle, journal recovery |
-| 591-672 | Command System: built-in commands table, rewind details, Command enum |
-| 673-735 | Context Management Integration: ContextManager, distillation retry, model switch adaptation |
-| 736-915 | Configuration: ForgeConfig structure, loading, env expansion, config sections |
-| 916-1066 | Tool Execution System: ToolRegistry, built-in tools, approval workflow, sandbox |
-| 1067-1150 | System Notifications: SystemNotification enum, NotificationQueue, security model |
-| 1151-1400 | Public API Reference: App lifecycle, state queries, mode transitions, streaming ops |
-| 1401-1700 | Extension Guide: adding commands, input modes, providers, async operation states |
-| 1701-1850 | Re-exported Types, Error Handling, Thread Safety, Data Directory |
+| 41-120 | Overview: responsibilities, file structure, dependencies |
+| 121-155 | Architecture Diagram: App structure with InputState, OperationState, components |
+| 156-330 | State Machine Design: OperationState enum, ActiveStream typestate, state transitions |
+| 331-412 | Input Mode System: InputState enum, DraftInput, mode transitions |
+| 413-525 | Type-Driven Design Patterns: proof tokens, InsertToken, CommandToken, mode wrappers |
+| 526-640 | Streaming Orchestration: ActiveStream typestate, StreamingMessage, lifecycle |
+| 641-730 | Command System: built-in commands table, tab completion, Command enum |
+| 731-800 | Context Management Integration: ContextManager, distillation, model switch adaptation |
+| 801-1020 | Configuration: ForgeConfig structure, loading, env expansion, config sections |
+| 1021-1190 | Tool Execution System: ToolRegistry, built-in tools, approval workflow, sandbox |
+| 1191-1310 | System Notifications: SystemNotification enum, NotificationQueue, security model |
+| 1311-1370 | LSP Integration: compiler diagnostics feedback loop |
+| 1371-1430 | Files Panel: session change tracking, diff display, panel animations |
+| 1431-1460 | Input History: prompt and command recall with Up/Down navigation |
+| 1461-1730 | Public API Reference: App lifecycle, state queries, mode transitions, streaming ops |
+| 1731-2050 | Extension Guide: adding commands, input modes, providers, async operation states |
+| 2051-2220 | Re-exported Types, Error Handling, Thread Safety, Data Directory |
 
 ## Table of Contents
 
@@ -35,8 +38,11 @@ This document provides comprehensive documentation for the `forge-engine` crate 
 9. [Configuration](#configuration)
 10. [Tool Execution System](#tool-execution-system)
 11. [System Notifications](#system-notifications)
-12. [Public API Reference](#public-api-reference)
-13. [Extension Guide](#extension-guide)
+12. [LSP Integration](#lsp-integration)
+13. [Files Panel](#files-panel)
+14. [Input History](#input-history)
+15. [Public API Reference](#public-api-reference)
+16. [Extension Guide](#extension-guide)
 
 ---
 
@@ -51,10 +57,12 @@ The `forge-engine` crate is the heart of the Forge application - a TUI-agnostic 
 | **Input Mode State Machine** | Vim-style modal editing (Normal, Insert, Command, ModelSelect, FileSelect) |
 | **Async Operation State Machine** | Mutually exclusive states for streaming, tool execution, distilling, idle |
 | **Streaming Management** | Non-blocking LLM response streaming with crash recovery |
-| **Tool Execution** | Built-in tools (ReadFile, WriteFile, ApplyPatch, RunCommand, Glob, Search, WebFetch) |
+| **Tool Execution** | Built-in tools (Read, Write, Edit, Run, Glob, Search, WebFetch, Recall, Memory) |
 | **Context Infinity** | Adaptive context window management with automatic distillation |
 | **Provider Abstraction** | Unified interface for Claude, OpenAI, and Gemini APIs |
 | **History Persistence** | Conversation storage and recovery across sessions |
+| **LSP Integration** | Compiler diagnostics feedback via Language Server Protocol |
+| **Files Panel** | Session-wide file change tracking with inline diff display |
 
 ### File Structure
 
@@ -67,38 +75,46 @@ engine/
     ├── config.rs               # ForgeConfig parsing (TOML + env expansion)
     ├── state.rs                # OperationState enum and state transitions
     ├── input_modes.rs          # Proof tokens (InsertToken, CommandToken, etc.)
-    ├── commands.rs             # Command enum and typed parsing
+    ├── commands.rs             # Command enum, CommandSpec, tab completion
     ├── checkpoints.rs          # Checkpoint management for rewind/undo
-    ├── session_state.rs        # Session state management (turn tracking)
+    ├── session_state.rs        # SessionChangeLog, session persistence
     ├── streaming.rs            # start_streaming, process_stream_events
-    ├── summarization.rs        # Summarization task spawn and retry logic
+    ├── distillation.rs         # Distillation task spawn and polling
     ├── tool_loop.rs            # Tool execution loop, approval workflow
     ├── init.rs                 # App::new() constructor, tool settings defaults
     ├── errors.rs               # Error formatting, API key redaction
     ├── persistence.rs          # History save/load logic
     ├── security.rs             # Input sanitization and security checks
     ├── notifications.rs        # SystemNotification enum, NotificationQueue
+    ├── lsp_integration.rs      # LSP event polling, diagnostics injection
     ├── util.rs                 # Utility functions
     ├── tests.rs                # Integration tests for engine logic
     ├── tools/
     │   ├── mod.rs              # ToolRegistry, ToolExecutor trait, ToolError
-    │   ├── builtins.rs         # Built-in tool implementations
+    │   ├── builtins.rs         # Built-in tool implementations (Read, Write, Edit, Run, Glob)
     │   ├── git.rs              # Git tool executors (status, diff, commit, etc.)
     │   ├── lp1.rs              # LP1 patch format parser and applier
     │   ├── sandbox.rs          # Sandbox path resolution and enforcement
     │   ├── search.rs           # Search tool (ugrep/ripgrep backend)
     │   ├── shell.rs            # Shell detection and command execution
     │   ├── webfetch.rs         # WebFetch tool for URL fetching
-    │   └── recall.rs           # Recall tool for Context Infinity fact queries
+    │   ├── recall.rs           # Recall tool for Context Infinity fact queries
+    │   ├── memory.rs           # Memory tool for Librarian fact storage
+    │   ├── phase_gate.rs       # PhaseGate tool (hidden, Gemini-only)
+    │   ├── command_blacklist.rs # Command blacklist for blocking destructive commands
+    │   ├── powershell_ast.rs   # PowerShell AST analysis for safety checks
+    │   ├── windows_run.rs      # Windows Run sandbox policy and isolation
+    │   └── windows_run_host.rs # Windows Job Object host process isolation
     └── ui/
         ├── mod.rs              # UI types re-exports
         ├── display.rs          # DisplayItem enum
         ├── file_picker.rs      # File picker state and filtering
+        ├── history.rs          # InputHistory for prompt/command recall
         ├── input.rs            # InputState, DraftInput, InputMode
-        ├── modal.rs            # ModalEffect animations
-        ├── panel.rs            # Files panel state and effects
+        ├── modal.rs            # ModalEffect animations (PopScale, SlideUp, Shake)
+        ├── panel.rs            # PanelEffect animations (SlideInRight, SlideOutRight)
         ├── scroll.rs           # ScrollState tracking
-        └── view_state.rs       # ViewState, UiOptions for UI state
+        └── view_state.rs       # ViewState, UiOptions, FilesPanelState, ChangeKind
 ```
 
 ### Dependencies
@@ -111,6 +127,14 @@ The engine depends on several workspace crates:
 | `forge-context` | Context window management, distillation, persistence |
 | `forge-providers` | LLM API clients (Claude, OpenAI, Gemini) |
 | `forge-webfetch` | URL fetching for web-based tools |
+| `forge-lsp` | Language Server Protocol client for compiler diagnostics |
+
+Platform-specific dependencies:
+
+| Dependency | Platform | Purpose |
+| :--- | :--- | :--- |
+| `libc` | Unix | File permission checks for secure config handling |
+| `windows-sys` | Windows | Job Object API for Run tool process isolation |
 
 ---
 
@@ -123,15 +147,15 @@ The engine depends on several workspace crates:
 │  │                       InputState                                   │  │
 │  │   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────────────┐ ┌───────────┐ │  │
 │  │   │  Normal  │ │  Insert  │ │ Command  │ │  ModelSelect    │ │ FileSelect│ │  │
-│  │   │ (Draft)  │ │ (Draft)  │ │(Draft,Cmd)│ │(Draft,Selected) │ │(Draft,Filter)││  │
+│  │   │ (Draft)  │ │ (Draft)  │ │(Draft,Cmd)│ │(Draft,Selected) │ │(Draft,Filt)│ │  │
 │  │   └──────────┘ └──────────┘ └──────────┘ └─────────────────┘ └───────────┘ │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 │                                                                          │
 │  ┌───────────────────────────────────────────────────────────────────┐  │
 │  │                     OperationState                                 │  │
 │  │   ┌─────────────────────────────────────────────────────────────┐ │  │
-│  │   │ Idle | Streaming | ToolLoop | ToolRecovery |                │ │  │
-│  │   │ Summarizing | SummarizationRetry                            │ │  │
+│  │   │ Idle | Streaming(ActiveStream) | ToolLoop | ToolRecovery | │ │  │
+│  │   │ Distilling(DistillationState)                               │ │  │
 │  │   └─────────────────────────────────────────────────────────────┘ │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 │                                                                          │
@@ -143,6 +167,11 @@ The engine depends on several workspace crates:
 │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐  │
 │  │  ToolRegistry    │  │  Display Items   │  │  ViewState           │  │
 │  │  (tool executor) │  │ (Vec<DisplayItem>)│  │  (status, scroll)   │  │
+│  └──────────────────┘  └──────────────────┘  └──────────────────────┘  │
+│                                                                          │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐  │
+│  │  LSP Manager     │  │  SessionChanges  │  │  InputHistory        │  │
+│  │  (forge-lsp)     │  │  (file tracking) │  │  (prompt/cmd recall) │  │
 │  └──────────────────┘  └──────────────────┘  └──────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -167,50 +196,87 @@ pub(crate) enum OperationState {
 }
 ```
 
+### ActiveStream - Typestate Encoding for Journal Status
+
+The `ActiveStream` type uses a typestate pattern to track whether tool call journaling is active. A stream begins as `Transient` (no tool calls detected yet) and transitions irreversibly to `Journaled` when the first tool call is detected:
+
+```rust
+pub(crate) enum ActiveStream {
+    /// Stream without tool call journaling (no tool calls yet).
+    Transient {
+        message: StreamingMessage,
+        journal: ActiveJournal,
+        abort_handle: AbortHandle,
+        tool_call_seq: usize,
+        tool_args_journal_bytes: HashMap<String, usize>,
+        turn: TurnContext,
+    },
+    /// Stream with tool call journaling active (crash-recoverable).
+    Journaled {
+        tool_batch_id: ToolBatchId,
+        message: StreamingMessage,
+        journal: ActiveJournal,
+        abort_handle: AbortHandle,
+        tool_call_seq: usize,
+        tool_args_journal_bytes: HashMap<String, usize>,
+        turn: TurnContext,
+    },
+}
+```
+
+Accessor methods (`message()`, `journal()`, `abort_handle()`, etc.) work on both variants, while the `tool_batch_id` field is only available in the `Journaled` variant.
+
 ### Supporting State Types
 
 ```rust
-// Active streaming state
-struct ActiveStream {
-    message: StreamingMessage,           // Accumulating response content
-    journal: ActiveJournal,              // RAII handle for crash recovery
-    abort_handle: AbortHandle,           // For cancellation
-    tool_batch_id: Option<ToolBatchId>,  // Current tool batch (if resuming after tools)
-    tool_call_seq: usize,                // Tool call sequence counter
-}
-
-// Tool loop sub-states
-enum ToolLoopPhase {
-    AwaitingApproval(ApprovalState),      // Waiting for user to approve/deny
-    Executing(ActiveToolExecution),       // Tools executing sequentially
-}
-
-struct ToolLoopState {
-    batch: ToolBatch,                     // Calls, results, model info
-    phase: ToolLoopPhase,
-}
-
-// Crash recovery state
-struct ToolRecoveryState {
-    batch: RecoveredToolBatch,            // Incomplete batch from crash
-    step_id: StepId,                      // Journal step for recovery
-    model: ModelName,                     // Model that made the calls
-}
-
 // Distillation task
 struct DistillationTask {
     scope: DistillationScope,                          // Which messages to distill
-    generated_by: String,                               // Model that generated the Distillate
+    generated_by: String,                               // Model that generated the distillate
     handle: JoinHandle<anyhow::Result<String>>,         // Async task handle
 }
 
-// Distillation state
+// Distillation state with typestate encoding for message queueing
 enum DistillationState {
     Running(DistillationTask),
     CompletedWithQueued {
         task: DistillationTask,
         message: QueuedUserMessage,
     },
+}
+
+// Tool batch (unit of execution)
+struct ToolBatch {
+    assistant_text: String,
+    thinking_message: Option<Message>,
+    calls: Vec<ToolCall>,
+    results: Vec<ToolResult>,
+    model: ModelName,
+    step_id: StepId,
+    journal_status: JournalStatus,
+    execute_now: Vec<ToolCall>,       // Safe tools (auto-approved)
+    approval_calls: Vec<ToolCall>,    // Dangerous tools (need approval)
+    turn: TurnContext,
+}
+
+// Tool loop sub-states
+enum ToolLoopPhase {
+    AwaitingApproval(ApprovalState),  // Waiting for user to approve/deny
+    Processing(ToolQueue),            // Between tools or before first spawn
+    Executing(ActiveExecution),       // Tool actively running
+}
+
+// Approval workflow with deny confirmation
+enum ApprovalState {
+    Selecting(ApprovalData),          // User is selecting which tools to approve
+    ConfirmingDeny(ApprovalData),     // User pressed 'd'; awaiting second press to confirm
+}
+
+// Crash recovery state
+struct ToolRecoveryState {
+    batch: RecoveredToolBatch,        // Incomplete batch from crash
+    step_id: StepId,                  // Journal step for recovery
+    model: ModelName,                 // Model that made the calls
 }
 ```
 
@@ -235,8 +301,8 @@ enum DistillationState {
     │      ┌────┴────┐               │                                        │
     │      ▼         ▼               v                                        │
     │  ┌────────┐  finish    ┌─────────────────────┐                          │
-    │  │ToolLoop│   │        │   (poll_app()       │                          │
-    │  └───┬────┘   │        │  processes result)  │                          │
+    │  │ToolLoop│   │        │  poll_distillation() │                          │
+    │  └───┬────┘   │        │  processes result    │                          │
     │      │        │        └─────────────────────┘                          │
     │   approve/    │                                                         │
     │   deny/done   │                                                         │
@@ -272,14 +338,18 @@ enum DistillationState {
     │           │ ApproveAll    │ DenyAll       │ ApproveSelected        │
     │           v               v               v                        │
     │  ┌────────────────┐  ┌────────────┐  ┌────────────────────┐        │
-    │  │   Executing    │  │   commit   │  │     Executing      │        │
-    │  │ (all approved) │  │ (errors)   │  │ (partial approval) │        │
+    │  │  Processing    │  │   commit   │  │    Processing      │        │
+    │  │   (queue)      │  │ (errors)   │  │   (partial queue)  │        │
     │  └───────┬────────┘  └──────┬─────┘  └─────────┬──────────┘        │
     │          │                  │                  │                   │
-    │          │ for each call:   │                  │                   │
-    │          │   execute()      │                  │                   │
-    │          │   journal result │                  │                   │
-    │          v                  v                  v                   │
+    │          │ spawn_next_tool  │                  │                   │
+    │          v                  │                  v                   │
+    │  ┌────────────────┐        │          ┌────────────────┐           │
+    │  │   Executing    │        │          │   Executing    │           │
+    │  │ (active tool)  │        │          │ (active tool)  │           │
+    │  └───────┬────────┘        │          └───────┬────────┘           │
+    │          │ tool completes  │                  │                   │
+    │          v                 │                  v                   │
     │  ┌──────────────────────────────────────────────────────────────┐  │
     │  │                    commit_tool_batch()                        │  │
     │  │   - Persist results to history                                │  │
@@ -304,6 +374,8 @@ This state machine design provides several guarantees:
 | **Request queueing** | `CompletedWithQueued` holds a pending request during distillation |
 | **Tool batch atomicity** | All tools in a batch are approved/denied together |
 | **Clean transitions** | `replace_with_idle()` ensures proper state cleanup |
+| **Journal typestate** | `ActiveStream::Transient` vs `Journaled` enforced at type level |
+| **Deny confirmation** | `ApprovalState` requires double-press for deny (prevents accidental denial) |
 
 ---
 
@@ -315,11 +387,11 @@ The engine implements a vim-style modal editing system with five distinct modes.
 
 ```rust
 pub(crate) enum InputState {
-    Normal(DraftInput),                         // Navigation mode
-    Insert(DraftInput),                         // Text editing mode
-    Command { draft: DraftInput, command: DraftInput }, // Slash command entry
-    ModelSelect { draft: DraftInput, selected: usize }, // Model picker overlay
-    FileSelect { draft: DraftInput, filter: DraftInput }, // File picker overlay
+    Normal(DraftInput),                                     // Navigation mode
+    Insert(DraftInput),                                     // Text editing mode
+    Command { draft: DraftInput, command: DraftInput },     // Slash command entry
+    ModelSelect { draft: DraftInput, selected: usize },     // Model picker overlay
+    FileSelect { draft: DraftInput, filter: DraftInput, selected: usize }, // File picker overlay
 }
 ```
 
@@ -342,10 +414,22 @@ fn byte_index_at(&self, grapheme_index: usize) -> usize {
     self.text
         .grapheme_indices(true)
         .nth(grapheme_index)
-        .map(|(i, _)| i)
-        .unwrap_or(self.text.len())
+        .map_or(self.text.len(), |(i, _)| i)
 }
 ```
+
+Key `DraftInput` methods:
+
+| Method | Description |
+| :--- | :--- |
+| `enter_char(c)` | Insert character at cursor position |
+| `enter_newline()` | Insert newline at cursor position |
+| `enter_text(s)` | Insert multi-character string at cursor |
+| `delete_char()` | Delete character before cursor (backspace) |
+| `delete_char_forward()` | Delete character after cursor (delete) |
+| `delete_word_backwards()` | Delete previous word (Ctrl+W) |
+| `set_text(s)` | Replace text and move cursor to end |
+| `clear()` | Clear text and reset cursor |
 
 ### Mode Transition Diagram
 
@@ -370,6 +454,7 @@ fn byte_index_at(&self, grapheme_index: usize) -> usize {
 ┌───────────┐   │               │
 │FileSelect │<──┘               │
 │Draft+Filt │                   │
+│+Selected  │                   │
 └─────┬─────┘                   │
       │ Esc/Enter               │
       └─────────────────────────┘
@@ -385,7 +470,7 @@ fn byte_index_at(&self, grapheme_index: usize) -> usize {
 | `enter_insert_mode_with_clear()` | Insert mode with cleared draft |
 | `enter_command_mode()` | Transition to Command, start new command string |
 | `enter_model_select_mode()` | Open model picker with animation |
-| `enter_file_select_mode()` | Open file picker and start filtering |
+| `enter_file_select_mode()` | Open file picker, scan files from cwd |
 
 ---
 
@@ -445,10 +530,31 @@ pub struct InsertMode<'a> {
 
 impl<'a> InsertMode<'a> {
     pub fn enter_char(&mut self, c: char);
+    pub fn enter_newline(&mut self);
+    pub fn enter_text(&mut self, text: &str);
     pub fn delete_char(&mut self);
+    pub fn delete_char_forward(&mut self);
+    pub fn delete_word_backwards(&mut self);
+    pub fn clear_line(&mut self);
     pub fn move_cursor_left(&mut self);
     pub fn move_cursor_right(&mut self);
     pub fn queue_message(self) -> Option<QueuedUserMessage>; // Consumes self
+}
+```
+
+```rust
+/// Mode wrapper for safe command operations.
+pub struct CommandMode<'a> {
+    app: &'a mut App,
+}
+
+impl<'a> CommandMode<'a> {
+    pub fn push_char(&mut self, c: char);
+    pub fn delete_char(&mut self);
+    pub fn move_cursor_left(&mut self);
+    pub fn move_cursor_right(&mut self);
+    pub fn tab_complete(&mut self);  // Shell-style tab completion
+    pub fn take_command(self) -> Option<EnteredCommand>; // Consumes self
 }
 ```
 
@@ -457,7 +563,7 @@ impl<'a> InsertMode<'a> {
 ```rust
 /// Proof that a non-empty user message was queued.
 ///
-/// The `config` captures the model/provider at queue time. If summarization runs
+/// The `config` captures the model/provider at queue time. If distillation runs
 /// before streaming starts, the original config is preserved.
 #[derive(Debug)]
 pub struct QueuedUserMessage {
@@ -498,13 +604,18 @@ Only `CommandMode::take_command()` can create this type, ensuring the command wa
 
 The engine manages streaming LLM responses with crash recovery, journaling, and proper resource cleanup.
 
-### ActiveStream - In-Flight Request State
+### ActiveStream - Typestate for Journal Status
+
+As described in the State Machine Design section, `ActiveStream` uses a typestate pattern:
+
+- **Transient**: No tool calls detected yet. Stream content is journaled for crash recovery, but no tool batch has been opened in the `ToolJournal`.
+- **Journaled**: At least one tool call was detected. A `ToolBatchId` is allocated and tool calls are persisted to the `ToolJournal` for crash recovery.
+
+The transition from `Transient` to `Journaled` is irreversible:
 
 ```rust
-struct ActiveStream {
-    message: StreamingMessage,   // Accumulating response content
-    journal: ActiveJournal,      // RAII handle for crash recovery
-    abort_handle: AbortHandle,   // For cancellation
+impl ActiveStream {
+    pub(crate) fn transition_to_journaled(self, batch_id: ToolBatchId) -> Self;
 }
 ```
 
@@ -514,8 +625,13 @@ struct ActiveStream {
 /// A message being streamed - existence proves streaming is active.
 pub struct StreamingMessage {
     model: ModelName,
-    content: String,  // Accumulated response text
-    receiver: mpsc::UnboundedReceiver<StreamEvent>,
+    content: String,            // Accumulated response text
+    thinking: String,           // Accumulated thinking/reasoning text
+    thinking_signature: ThoughtSignatureState,  // Encrypted thinking signature (Claude)
+    receiver: mpsc::Receiver<StreamEvent>,
+    tool_calls: Vec<ToolCallAccumulator>,
+    max_tool_args_bytes: usize,
+    usage: ApiUsage,            // API-reported token usage
 }
 ```
 
@@ -523,6 +639,8 @@ The `StreamingMessage` provides:
 
 - Type-level proof that streaming is active (ownership semantics)
 - Event-based content accumulation via channel
+- Tool call argument accumulation with size limits
+- Thinking content capture (always captured, UI controls visibility)
 - Conversion to complete `Message` when done
 
 ### Streaming Lifecycle
@@ -545,28 +663,9 @@ loop {
 
 ### Stream Event Processing
 
-```rust
-pub fn process_stream_events(&mut self) {
-    loop {
-        let event = match active.message.try_recv_event() {
-            Ok(event) => event,
-            Err(TryRecvError::Empty) => break,  // No more events
-            Err(TryRecvError::Disconnected) => StreamEvent::Error(...),
-        };
+The `process_stream_events()` method processes up to `DEFAULT_STREAM_EVENT_BUDGET` (512) events per call to avoid starving the render loop. Consecutive `TextDelta` and `ThinkingDelta` events are coalesced into single appends for efficiency.
 
-        // Persist BEFORE display (crash recovery)
-        active.journal.append_text(&mut self.stream_journal, text)?;
-
-        // Apply to UI
-        let finish_reason = active.message.apply_event(event);
-
-        if let Some(reason) = finish_reason {
-            self.finish_streaming(reason);
-            return;
-        }
-    }
-}
-```
+Terminal control sequences in model output are sanitized via `sanitize_terminal_text()` before display.
 
 ### Journal-Based Crash Recovery
 
@@ -590,6 +689,10 @@ pub fn check_crash_recovery(&mut self) -> Option<RecoveredStream> {
 }
 ```
 
+### Cache Breakpoint Strategy
+
+For Claude prompt caching, the engine places cache breakpoints using a geometric grid strategy to balance cache hit rates against the 4-breakpoint limit imposed by the Anthropic API. The system prompt uses 1 slot, leaving 3 for conversation messages.
+
 ---
 
 ## Command System
@@ -607,11 +710,10 @@ The engine provides a slash command system for user actions.
 | `/context` | `/ctx` | Show context usage stats |
 | `/journal` | `/jrnl` | Show journal statistics |
 | `/distill` | - | Trigger distillation |
-| `/tools` | - | Show tool status |
 | `/rewind [id\|last] [scope]` | `/rw` | Rewind to an automatic checkpoint |
 | `/undo` | - | Rewind to the latest turn checkpoint (conversation only) |
 | `/retry` | - | Rewind to the latest turn checkpoint and restore the prompt into the draft |
-| `/help` | - | List available commands |
+| `/problems` | `/diag` | Show LSP diagnostics (compiler errors/warnings) |
 
 **Rewind Command Details:**
 
@@ -641,35 +743,42 @@ pub(crate) enum Command<'a> {
     Clear,
     Cancel,
     Model(Option<&'a str>),
-    Provider(Option<&'a str>),
     Context,
     Journal,
-    Summarize,
-    Screen,
-    Tools,
+    Distill,
     Rewind { target: Option<&'a str>, scope: Option<&'a str> },
     Undo,
     Retry,
-    Help,
+    Problems,
     Unknown(&'a str),
     Empty,
 }
 
 impl<'a> Command<'a> {
     pub fn parse(raw: &'a str) -> Self {
-        let parts: Vec<&str> = raw.split_whitespace().collect();
-        match parts.first().copied() {
-            Some("q" | "quit") => Command::Quit,
-            Some("clear") => Command::Clear,
-            Some("rewind" | "rw") => Command::Rewind {
-                target: parts.get(1).copied(),
-                scope: parts.get(2).copied(),
-            },
-            Some("undo") => Command::Undo,
-            Some("retry") => Command::Retry,
-            // ... etc
-        }
+        // Accepts optional leading `/`, case-insensitive
+        // Uses normalize_command_name() for alias resolution
     }
+}
+```
+
+### Tab Completion and Command Aliases
+
+Command names support tab completion via `CommandKind` and `CommandAlias` types. The `CommandMode::tab_complete()` method provides shell-style completion for:
+
+- Command names (e.g., typing `dis` + Tab completes to `distill`)
+- Model arguments for `/model` (e.g., `model cl` + Tab completes to `model claude-opus-4-6`)
+- Rewind targets and scopes
+
+### CommandSpec
+
+The `CommandSpec` struct and `command_specs()` function provide command metadata for the palette and help display:
+
+```rust
+pub struct CommandSpec {
+    pub palette_label: &'static str,  // Display in command palette
+    pub help_label: &'static str,     // Display in help output
+    pub description: &'static str,    // Brief description
 }
 ```
 
@@ -687,7 +796,7 @@ let api_messages = match self.context_manager.prepare() {
     Ok(prepared) => prepared.api_messages(),
     Err(ContextBuildError::DistillationNeeded(needed)) => {
         // Queue the request, start distillation
-        self.start_distillation(Some(config));
+        self.try_start_distillation(Some(queued_request));
         return;
     }
     Err(ContextBuildError::RecentMessagesTooLarge { .. }) => {
@@ -697,12 +806,22 @@ let api_messages = match self.context_manager.prepare() {
 };
 ```
 
-### Summarization Retry with Backoff
+### Distillation
 
-```rust
-// Distillation uses the cheapest model for each provider (e.g. Claude Haiku or Gemini Flash).
-// The distillation task runs in the background and is polled by the engine's main loop.
-```
+Distillation replaces older messages with a compressed summary to free context budget. The engine delegates to the cheapest model for each provider (e.g., Claude Haiku or Gemini Flash) via `distillation_model()`.
+
+Key design decisions:
+
+- **No engine-level retries**: Transport-layer retries in `providers/src/retry.rs` handle transient HTTP failures. The engine only sees errors after those retries are exhausted.
+- **Queued request support**: If a user message triggers distillation, the message is queued via `DistillationState::CompletedWithQueued` and automatically streamed after distillation completes.
+- **Provider consistency**: When a request is queued during distillation, the original `ApiConfig` (key + model) is preserved even if the user switches providers during distillation.
+
+The distillation lifecycle:
+
+1. `try_start_distillation()` checks if distillation is needed and spawns the background task
+2. `poll_distillation()` (called from `tick()`) checks if the task completed
+3. On success: applies the distillation result via `context_manager.complete_distillation()`
+4. On failure: rolls back any queued request and notifies the user
 
 ### Model Switch Adaptation
 
@@ -731,7 +850,7 @@ fn handle_context_adaptation(&mut self) {
 
 ## Configuration
 
-The engine uses a TOML-based configuration system.
+The engine uses a TOML-based configuration system with environment variable expansion.
 
 ### ForgeConfig Structure
 
@@ -747,16 +866,21 @@ pub struct ForgeConfig {
     pub openai: Option<OpenAIConfig>,
     pub google: Option<GeminiConfig>,
     pub tools: Option<ToolsConfig>,
+    pub lsp: Option<forge_lsp::LspConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub struct AppConfig {
     pub model: Option<String>,
     pub tui: Option<String>,
-    pub max_output_tokens: Option<u32>,
-    pub ascii_only: Option<bool>,
-    pub high_contrast: Option<bool>,
-    pub reduced_motion: Option<bool>,
+    #[serde(default)]
+    pub ascii_only: bool,
+    #[serde(default)]
+    pub high_contrast: bool,
+    #[serde(default)]
+    pub reduced_motion: bool,
+    #[serde(default)]
+    pub show_thinking: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -765,8 +889,16 @@ pub struct ToolsConfig {
     pub max_tool_iterations_per_user_turn: Option<u32>,
     pub definitions: Vec<ToolDefinitionConfig>,
     pub sandbox: Option<ToolSandboxConfig>,
+    pub timeouts: Option<ToolTimeoutsConfig>,
+    pub output: Option<ToolOutputConfig>,
+    pub environment: Option<ToolEnvironmentConfig>,
     pub approval: Option<ToolApprovalConfig>,
-    // ... specialized tool configs (read_file, search, etc.)
+    pub read_file: Option<ReadFileConfig>,
+    pub apply_patch: Option<ApplyPatchConfig>,
+    pub search: Option<SearchConfig>,
+    pub webfetch: Option<WebFetchConfig>,
+    pub run: Option<RunConfig>,
+    pub shell: Option<ShellConfig>,
 }
 ```
 
@@ -774,10 +906,16 @@ pub struct ToolsConfig {
 
 ```rust
 impl ForgeConfig {
-    pub fn load() -> Option<Self> {
+    pub fn load() -> Result<Option<Self>, ConfigError> {
         let path = dirs::home_dir()?.join(".forge").join("config.toml");
-        let content = std::fs::read_to_string(&path).ok()?;
-        toml::from_str(&content).ok()
+        // Returns Ok(None) if file doesn't exist
+        // Returns Err(ConfigError::Read{..}) or Err(ConfigError::Parse{..}) on errors
+    }
+
+    pub fn persist_model(model: &str) -> std::io::Result<()> {
+        // Uses toml_edit to preserve comments and formatting
+        // Creates config file and parent directory if needed
+        // Secure permissions on Unix (0o700 dir, 0o600 file)
     }
 }
 ```
@@ -798,11 +936,10 @@ pub fn expand_env_vars(value: &str) -> String {
 ```toml
 [app]
 model = "claude-opus-4-6"  # Provider inferred from prefix
-tui = "full"               # or "inline"
-max_output_tokens = 16000
 ascii_only = false         # ASCII-only glyphs for icons/spinners
 high_contrast = false      # High-contrast color palette
 reduced_motion = false     # Disable modal animations
+show_thinking = false      # Render provider thinking/reasoning in UI
 ```
 
 #### [api_keys]
@@ -818,7 +955,7 @@ google = "${GEMINI_API_KEY}"
 
 ```toml
 [context]
-infinity = true  # Enable Context Infinity
+memory = true  # Enable memory (librarian fact extraction/retrieval)
 ```
 
 #### [anthropic]
@@ -826,16 +963,35 @@ infinity = true  # Enable Context Infinity
 ```toml
 [anthropic]
 cache_enabled = true
-thinking_enabled = false
-thinking_budget_tokens = 10000
+thinking_mode = "adaptive"       # adaptive | enabled | disabled (Opus 4.6+)
+thinking_effort = "max"          # low | medium | high | max (Opus 4.6+)
+thinking_enabled = false         # Legacy field for pre-4.6 models
+thinking_budget_tokens = 10000   # Only used when thinking_mode = "enabled"
 ```
+
+**Anthropic Thinking Modes:**
+
+| Mode | Description |
+| :--- | :--- |
+| `adaptive` (default) | Claude decides when and how much to think |
+| `enabled` | Manual mode with explicit `budget_tokens` |
+| `disabled` | No thinking |
+
+**Anthropic Effort Levels:**
+
+| Level | Description |
+| :--- | :--- |
+| `low` | Minimal thinking effort |
+| `medium` | Moderate thinking effort |
+| `high` | High thinking effort |
+| `max` (default) | Maximum thinking effort |
 
 #### [openai]
 
 ```toml
 [openai]
 reasoning_effort = "high"  # low | medium | high | xhigh
-reasoning_Distillate = "auto" # none | auto | concise | detailed (shown when show_thinking=true)
+reasoning_summary = "auto" # none | auto | concise | detailed (shown when show_thinking=true)
 verbosity = "high"         # low | medium | high
 truncation = "auto"        # auto | none | preserve
 ```
@@ -856,12 +1012,6 @@ cache_ttl_seconds = 3600   # Cache TTL
 max_tool_calls_per_batch = 8
 max_tool_iterations_per_user_turn = 4
 
-[tools.approval]
-mode = "enabled"           # disabled | parse_only | enabled
-```
-
-max_tool_args_bytes = 262144
-
 [tools.sandbox]
 allowed_roots = ["."]
 denied_patterns = ["**/.git/**"]
@@ -877,11 +1027,9 @@ shell_commands_seconds = 300
 max_bytes = 102400
 
 [tools.approval]
-enabled = true
-mode = "prompt"            # auto | prompt | deny
-allowlist = ["read_file"]
-denylist = ["run_command"]
-prompt_side_effects = true
+mode = "default"           # permissive | default | strict
+allowlist = ["Read"]
+denylist = ["Run"]
 
 [tools.read_file]
 max_file_read_bytes = 204800
@@ -890,16 +1038,44 @@ max_scan_bytes = 2097152
 [tools.apply_patch]
 max_patch_bytes = 524288
 
+[tools.search]
+binary = "rg"
+fallback_binary = "grep"
+default_timeout_ms = 5000
+default_max_results = 100
+max_matches_per_file = 50
+max_files = 1000
+max_file_size_bytes = 1048576
+
+[tools.webfetch]
+user_agent = "CustomBot/1.0"
+timeout_seconds = 30
+max_redirects = 5
+default_max_chunk_tokens = 2000
+max_download_bytes = 10485760
+cache_dir = "/tmp/webfetch"
+cache_ttl_days = 7
+
+[tools.shell]
+binary = "pwsh"
+args = ["-NoProfile", "-Command"]
+
 [tools.run.windows]
 enabled = true
-fallback_mode = "prompt"     # prompt | deny | allow_with_warning (when host isolation is unavailable)
+fallback_mode = "prompt"     # prompt | deny | allow_with_warning
 
 [[tools.definitions]]
 name = "custom_tool"
 description = "A custom tool"
 [tools.definitions.parameters]
 type = "object"
+```
 
+#### [lsp]
+
+```toml
+[lsp]
+# LSP client configuration (see forge-lsp crate for options)
 ```
 
 ### Configuration Precedence
@@ -909,7 +1085,7 @@ type = "object"
 | API Keys | Config file -> Environment variables |
 | Provider | Config file -> Auto-detect from available keys -> Default (Claude) |
 | Model | Config file -> Provider default |
-| Context Infinity | Config file -> Environment variable -> Default (true) |
+| Memory | Config file -> `FORGE_CONTEXT_INFINITY` env var -> Default (false) |
 
 ---
 
@@ -947,17 +1123,23 @@ pub trait ToolExecutor: Send + Sync + std::panic::UnwindSafe {
     fn is_side_effecting(&self) -> bool;
     fn requires_approval(&self) -> bool { false }
     fn risk_level(&self) -> RiskLevel {
-        if self.is_side_effecting() {
-            RiskLevel::Medium
-        } else {
-            RiskLevel::Low
-        }
+        if self.is_side_effecting() { RiskLevel::Medium } else { RiskLevel::Low }
     }
-    fn approval_Distillate(&self, args: &Value) -> Result<String, ToolError>;
+    fn approval_summary(&self, args: &Value) -> Result<String, ToolError>;
     fn timeout(&self) -> Option<Duration> { None }
+    fn is_hidden(&self) -> bool { false }
+    fn target_provider(&self) -> Option<Provider> { None }
     fn execute<'a>(&'a self, args: Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
 }
 ```
+
+**Notable trait methods:**
+
+| Method | Description |
+| :--- | :--- |
+| `is_hidden()` | Hidden tools execute normally but are invisible in the UI |
+| `target_provider()` | If set, the tool definition is only sent to the specified provider |
+| `approval_summary()` | Human-readable summary for the approval prompt |
 
 ### Built-in Tools
 
@@ -965,30 +1147,32 @@ pub trait ToolExecutor: Send + Sync + std::panic::UnwindSafe {
 
 | Tool | Description | Side Effects |
 |------|-------------|--------------|
-| `read_file` | Read file contents with optional line range | No |
-| `write_file` | Write content to a new file (fails if exists) | Yes |
-| `apply_patch` | Apply LP1 patches to files | Yes |
-| `run_command` | Execute shell commands | Yes |
+| `Read` | Read file contents with optional line range | No |
+| `Write` | Write content to a new file (fails if exists) | Yes |
+| `Edit` | Apply edits to existing files | Yes |
+| `Run` | Execute shell commands (with sandbox isolation on Windows) | Yes |
 | `Glob` | Find files matching glob patterns | No |
 | `Search` | Search file contents with regex (aliases: `search`, `rg`, `ripgrep`, `ugrep`, `ug`) | No |
 | `WebFetch` | Fetch and parse web page content | No |
-| `recall` | Query Librarian fact store for past context (Context Infinity) | No |
+| `Recall` | Query Librarian fact store for past context (Context Infinity) | No |
+| `Memory` | Store facts in the Librarian's memory (Context Infinity) | Yes |
+| `PhaseGate` | Force generation boundaries in Gemini (hidden, Gemini-only) | No |
 
 #### Git Tools
 
 | Tool | Description | Side Effects |
 |------|-------------|--------------|
-| `git_status` | Show working tree status | No |
-| `git_diff` | Show file changes in working tree or staging area | No |
-| `git_log` | Show commit history | No |
-| `git_show` | Show commit details and diff | No |
-| `git_blame` | Show revision and author for each line | No |
-| `git_add` | Stage files for commit | Yes |
-| `git_commit` | Create a conventional commit | Yes |
-| `git_branch` | List, create, rename, or delete branches | Yes |
-| `git_checkout` | Switch branches or restore files | Yes |
-| `git_restore` | Discard uncommitted changes (destructive) | Yes |
-| `git_stash` | Stash changes in working directory | Yes |
+| `GitStatus` | Show working tree status | No |
+| `GitDiff` | Show file changes in working tree or staging area | No |
+| `GitLog` | Show commit history | No |
+| `GitShow` | Show commit details and diff | No |
+| `GitBlame` | Show revision and author for each line | No |
+| `GitAdd` | Stage files for commit | Yes |
+| `GitCommit` | Create a conventional commit | Yes |
+| `GitBranch` | List, create, rename, or delete branches | Yes |
+| `GitCheckout` | Switch branches or restore files | Yes |
+| `GitRestore` | Discard uncommitted changes (destructive) | Yes |
+| `GitStash` | Stash changes in working directory | Yes |
 
 ### Tool Approval Workflow
 
@@ -1002,15 +1186,11 @@ pub enum ApprovalMode {
 }
 ```
 
-Approval policy:
+The `ApprovalState` enforces a double-press pattern for deny actions:
 
-```rust
-pub struct Policy {
-    pub mode: ApprovalMode,
-    pub allowlist: HashSet<String>,  // Tools that skip approval
-    pub denylist: HashSet<String>,   // Tools always denied
-}
-```
+1. User presses `d` -> enters `ConfirmingDeny` state, cursor moves to Deny button
+2. User presses `d` again (or Enter) -> executes denial
+3. Any other key -> cancels deny confirmation, returns to `Selecting` state
 
 ### Sandbox Enforcement
 
@@ -1032,6 +1212,25 @@ Default denied patterns:
 - `**/.env*` - Environment files
 - `**/secrets/**` - Secret directories
 
+### Command Blacklist
+
+The `CommandBlacklist` blocks catastrophic shell commands (e.g., `rm -rf /`, `format C:`) before they reach the shell. Commands are checked against patterns and denied with a `DenialReason::CommandBlacklisted` error.
+
+### Windows Run Sandbox
+
+On Windows, the `Run` tool can isolate processes using Job Objects via `windows-sys`. The `WindowsRunConfig` controls:
+
+- `enabled` (default: `true`): Whether to use Job Object isolation
+- `fallback_mode` (default: `prompt`): Behavior when isolation is unavailable (`prompt`, `deny`, or `allow_with_warning`)
+
+### Homoglyph Detection
+
+Tool arguments are analyzed for Unicode homoglyph attacks (mixed-script characters) before approval. High-risk fields are checked per tool type:
+
+- `WebFetch`: `url` field
+- `Run`/`Pwsh`: `command` field
+- `Read`/`Write`/`Edit`: `path` and `file_path` fields
+
 ### ToolError Enum
 
 ```rust
@@ -1040,7 +1239,6 @@ pub enum ToolError {
     Timeout { tool: String, elapsed: Duration },
     SandboxViolation(DenialReason),
     ExecutionFailed { tool: String, message: String },
-    Cancelled,
     UnknownTool { name: String },
     DuplicateTool { name: String },
     DuplicateToolCallId { id: String },
@@ -1049,17 +1247,32 @@ pub enum ToolError {
 }
 ```
 
+### DenialReason Enum
+
+```rust
+pub enum DenialReason {
+    Denylisted { tool: String },
+    PathOutsideSandbox { attempted: PathBuf, resolved: PathBuf },
+    DeniedPatternMatched { attempted: PathBuf, pattern: String },
+    LimitsExceeded { message: String },
+    CommandBlacklisted { command: String, reason: String },
+}
+```
+
 ### Tool Execution Flow
 
 ```
 1. LLM response contains tool_calls
-2. Enter ToolLoop(AwaitingApproval) state
-3. Display tool calls for user review
-4. User approves/denies (or auto based on config)
-5. Execute approved tools sequentially
-6. Journal each result for crash recovery
-7. Commit batch to history
-8. Auto-resume streaming with tool results
+2. ActiveStream transitions to Journaled (if not already)
+3. ToolBatch created: safe calls partitioned from dangerous calls
+4. Safe tools added to execute_now, dangerous to approval_calls
+5. If approval needed: enter AwaitingApproval state
+6. User approves/denies (with double-press deny confirmation)
+7. Approved tools queued in ToolQueue
+8. Tools executed sequentially: Processing -> Executing -> Processing
+9. Each result journaled for crash recovery
+10. Batch committed to history
+11. Auto-resume streaming with tool results
 ```
 
 ---
@@ -1083,24 +1296,20 @@ This creates a clean trust boundary: the small, finite set of notification varia
 /// A system notification that Forge can inject into the conversation.
 ///
 /// This is a closed enum - only Forge code can construct these variants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SystemNotification {
-    /// Context was Distilled to fit within token budget.
-    ContextDistilled,
-    /// Session was recovered after a crash.
-    SessionRecovered,
     /// User approved tool calls.
     ToolsApproved { count: u8 },
     /// User denied tool calls.
     ToolsDenied { count: u8 },
-    /// Context budget is running low.
-    ContextBudgetWarning,
-    /// Model was switched during the session.
-    ModelSwitched,
+    /// Compiler/linter diagnostics found in recently edited files.
+    DiagnosticsFound { summary: String },
 }
 ```
 
 Each variant represents a specific system event that the model should be aware of. The enum is intentionally closed - only Forge code can construct these variants, preventing injection attacks.
+
+**Note**: The enum derives `Clone` and `PartialEq` (not `Copy`) because `DiagnosticsFound` contains a `String`.
 
 ### NotificationQueue
 
@@ -1112,20 +1321,10 @@ pub struct NotificationQueue {
 }
 
 impl NotificationQueue {
-    /// Create a new empty notification queue.
     pub fn new() -> Self;
-
-    /// Push a notification to the queue.
-    /// Duplicate notifications are deduplicated to avoid redundant messages.
-    pub fn push(&mut self, notification: SystemNotification);
-
-    /// Take all pending notifications, clearing the queue.
+    pub fn push(&mut self, notification: SystemNotification);  // Deduplicates
     pub fn take(&mut self) -> Vec<SystemNotification>;
-
-    /// Check if the queue is empty.
     pub fn is_empty(&self) -> bool;
-
-    /// Get the number of pending notifications.
     pub fn len(&self) -> usize;
 }
 ```
@@ -1136,60 +1335,20 @@ All notifications are prefixed with `[System: ...]` to clearly mark them as syst
 
 | Notification | Formatted Output |
 | :--- | :--- |
-| `ContextDistilled` | `[System: Earlier messages were distilled to fit context budget]` |
-| `SessionRecovered` | `[System: Session recovered after unexpected termination]` |
 | `ToolsApproved { count: 3 }` | `[System: User approved 3 tool call(s)]` |
 | `ToolsDenied { count: 1 }` | `[System: User denied 1 tool call(s)]` |
-| `ContextBudgetWarning` | `[System: Context budget running low, consider distilling]` |
-| `ModelSwitched` | `[System: Model was switched during session]` |
+| `DiagnosticsFound { summary }` | `[System: Compiler errors detected]\n{summary}` |
 
 ### Injection Mechanism
 
 Notifications are injected into the API request at the start of streaming:
 
-```rust
-// In start_streaming():
-// 1. Prepare the API messages from context
-let api_messages = self.context_manager.prepare()?.api_messages();
-
-// 2. Convert to cacheable format
-let cacheable_messages = /* ... */;
-
-// 3. Inject pending notifications as an assistant message
-let cacheable_messages = self.inject_pending_notifications(cacheable_messages);
-
-// 4. Send to provider
-forge_providers::send_message(&config, &cacheable_messages, /* ... */);
-```
-
-The `inject_pending_notifications` method:
-
-1. Takes all queued notifications via `notification_queue.take()`
-2. Formats each notification using `SystemNotification::format()`
-3. Combines them into a single string (newline-separated)
-4. Appends as an assistant message at the **tail** of the message list
+1. Take all queued notifications via `notification_queue.take()`
+2. Format each notification using `SystemNotification::format()`
+3. Combine into a single string (newline-separated)
+4. Append as an assistant message at the **tail** of the message list
 
 **Cache impact**: Injection at the tail preserves the cache prefix, ensuring previously cached context remains valid.
-
-### Usage Pattern
-
-Queue notifications in response to system events:
-
-```rust
-// Model switch
-self.queue_notification(SystemNotification::ModelSwitched);
-
-// Tool approval
-self.queue_notification(SystemNotification::ToolsApproved { count: 3 });
-
-// Session recovery
-self.queue_notification(SystemNotification::SessionRecovered);
-
-// Summarization complete
-self.queue_notification(SystemNotification::ContextDistilled);
-```
-
-The notifications are automatically drained and injected on the next API request.
 
 ### Design Rationale
 
@@ -1200,6 +1359,118 @@ The notifications are automatically drained and injected on the next API request
 | **Batch injection** | Multiple notifications combined into single message |
 | **Cache-safe** | Appended at tail, preserving cache prefix |
 | **Extensibility** | Add new variants to `SystemNotification` enum |
+
+---
+
+## LSP Integration
+
+The engine integrates with Language Server Protocol clients via the `forge-lsp` crate to provide compiler diagnostics feedback to the LLM.
+
+### Architecture
+
+The LSP manager (`forge_lsp::LspManager`) is lazily started on the first tool batch execution. It runs as a background process communicating via stdio with language servers (e.g., `rust-analyzer`, `gopls`).
+
+### Diagnostics Flow
+
+1. **File changes detected**: When tools modify files, the paths are recorded in `session_changes` and a deferred diagnostics check is scheduled (3-second delay to allow the language server to process changes).
+
+2. **Polling**: `poll_lsp_events()` runs during each `tick()` call, processing up to 32 LSP events per tick. Events update `lsp_snapshot`, which caches the current diagnostics state.
+
+3. **Injection**: When the deferred check fires and errors are detected, a `DiagnosticsFound` system notification is queued. This is injected as an assistant message on the next API request, informing the model about compiler errors in recently edited files.
+
+### User Interface
+
+The `/problems` (alias: `/diag`) command displays the current diagnostics snapshot:
+
+```
+Diagnostics: 2 error(s), 1 warning(s)
+  src/main.rs:42:5: error: expected `;`
+  src/lib.rs:10:1: warning: unused import
+  src/main.rs:50:10: error: mismatched types
+```
+
+---
+
+## Files Panel
+
+The engine tracks all files created and modified during the session and provides an interactive files panel for reviewing changes.
+
+### SessionChangeLog
+
+The `SessionChangeLog` maintains two ordered sets:
+
+- `created`: Files that did not exist before and were created during the session
+- `modified`: Files that existed before and were modified during the session
+
+Files are tracked via the `ChangeRecorder` in `TurnContext`, which captures per-turn file changes with diff statistics.
+
+### FilesPanelState
+
+```rust
+pub struct FilesPanelState {
+    pub visible: bool,                  // Whether the panel is visible
+    pub selected: usize,                // Index into the flattened file list
+    pub expanded: Option<PathBuf>,      // Which file's diff is expanded
+    pub diff_scroll: usize,             // Scroll offset within the diff view
+}
+```
+
+### FileDiff
+
+The `FileDiff` enum represents the result of diff generation:
+
+```rust
+pub enum FileDiff {
+    Diff(String),       // Unified diff between baseline and current
+    Created(String),    // File created (show full content as additions)
+    Deleted,            // File no longer exists on disk
+    Binary(usize),      // Binary file (show size only)
+    Error(String),      // Error reading file
+}
+```
+
+### Panel Animations
+
+The files panel uses `PanelEffect` for slide-in/slide-out animations:
+
+```rust
+pub enum PanelEffectKind {
+    SlideInRight,   // Panel appearing from the right
+    SlideOutRight,  // Panel disappearing to the right
+}
+```
+
+Animations respect the `reduced_motion` config option - when enabled, panel visibility toggles instantly without animation.
+
+---
+
+## Input History
+
+The engine provides prompt and command recall via the `InputHistory` type.
+
+### Design
+
+```rust
+pub struct InputHistory {
+    prompts: Vec<String>,    // Previously submitted user prompts (max 100)
+    commands: Vec<String>,   // Previously executed slash commands (max 50)
+    // Navigation state (not serialized):
+    prompt_index: Option<usize>,
+    command_index: Option<usize>,
+    prompt_stash: Option<String>,
+    command_stash: Option<String>,
+}
+```
+
+### Navigation Behavior
+
+**Up arrow** (first press): Stashes the current draft, shows the most recent entry.
+**Up arrow** (subsequent): Shows progressively older entries.
+**Down arrow**: Shows the next newer entry. At the newest entry, restores the stashed draft.
+
+Navigation is reset after submitting a prompt or command. The history buffers (prompts and commands) are persisted across sessions; navigation state is not.
+
+Duplicate suppression: consecutive identical entries are not added to history.
 
 ---
 
@@ -1215,10 +1486,10 @@ The central state container. All application state flows through this struct.
 use forge_engine::App;
 
 // Create a new application instance
-let mut app = App::new()?;
+let mut app = App::new(system_prompts)?;
 
 // Main loop operations
-app.tick();                      // Advance animations and poll background tasks
+app.tick();                      // Advance animations, poll background tasks
 app.process_stream_events();     // Apply streaming response chunks
 ```
 
@@ -1243,6 +1514,7 @@ if let Some(token) = app.insert_token() {
 if let Some(token) = app.command_token() {
     let mut cmd = app.command_mode(token);
     cmd.push_char('q');
+    cmd.tab_complete();  // Shell-style tab completion
     if let Some(entered) = cmd.take_command() {
         app.process_command(entered);
     }
@@ -1257,8 +1529,10 @@ Represents an active streaming response. Existence of this type proves streaming
 // Access current streaming state
 if let Some(streaming) = app.streaming() {
     let content = streaming.content();      // Accumulated text so far
+    let thinking = streaming.thinking();    // Accumulated thinking text
     let provider = streaming.provider();    // Which provider is streaming
     let model = streaming.model_name();     // The model being used
+    let usage = streaming.usage();          // API-reported token usage
 }
 ```
 
@@ -1318,6 +1592,8 @@ in the content pane and are not sent to the model.
 
 #### `PredefinedModel`
 
+Available predefined models for the model selector:
+
 ```rust
 pub enum PredefinedModel {
     ClaudeOpus,
@@ -1338,11 +1614,13 @@ Animation state for TUI overlay transitions:
 pub enum ModalEffectKind {
     PopScale,  // Scale-in effect for model selector
     SlideUp,   // Slide animation
+    Shake,     // Shake animation (e.g., invalid model selection)
 }
 
 // Creating effects
 let effect = ModalEffect::pop_scale(Duration::from_millis(700));
 let effect = ModalEffect::slide_up(Duration::from_millis(300));
+let effect = ModalEffect::shake(Duration::from_millis(360));
 
 // Animation queries
 let progress = effect.progress();     // 0.0 to 1.0
@@ -1350,35 +1628,54 @@ let finished = effect.is_finished();
 let kind = effect.kind();
 ```
 
+#### `PanelEffect`
+
+Animation state for the files panel:
+
+```rust
+pub enum PanelEffectKind {
+    SlideInRight,   // Panel sliding in from right
+    SlideOutRight,  // Panel sliding out to right
+}
+
+let effect = PanelEffect::slide_in_right(Duration::from_millis(180));
+let effect = PanelEffect::slide_out_right(Duration::from_millis(180));
+```
+
 ### App Instance Interface
 
 | Method | Description |
 | :--- | :--- |
-| `App::new(system_prompt)` | Create instance, load config, recover crashes |
-| `tick()` | Advance tick counter, poll background tasks |
+| `App::new(system_prompts)` | Create instance, load config, recover crashes |
+| `tick()` | Poll background tasks, update wall-clock timers |
 | `frame_elapsed()` | Get time since last frame for animations |
 | `should_quit()` | Check if quit was requested |
 | `request_quit()` | Signal application exit |
-| `save_history()` | Persist conversation to disk |
+| `process_stream_events()` | Apply pending stream chunks |
+| `process_command(entered)` | Execute a parsed command |
 
 ### State Queries
 
 | Method | Return Type | Description |
 |--------|-------------|-------------|
 | `input_mode()` | `InputMode` | Current input mode |
-| `is_loading()` | `bool` | Whether streaming is active |
-| `is_empty()` | `bool` | No messages and not streaming |
+| `is_loading()` | `bool` | Whether any async operation is active |
+| `is_empty()` | `bool` | No history messages and not streaming |
 | `streaming()` | `Option<&StreamingMessage>` | Access active stream |
 | `history()` | `&FullHistory` | Full conversation history |
 | `display_items()` | `&[DisplayItem]` | Items to render |
+| `display_version()` | `usize` | Version counter for render caching |
 | `provider()` | `Provider` | Current LLM provider |
 | `model()` | `&str` | Current model name |
 | `has_api_key(provider)` | `bool` | Check if API key is configured |
-| `context_infinity_enabled()` | `bool` | Whether adaptive context is on |
-| `context_usage_status()` | `ContextUsageStatus` | Token usage statistics |
-| `is_in_tool_loop()` | `bool` | Whether in tool execution |
-| `is_awaiting_tool_approval()` | `bool` | Whether waiting for tool approval |
-| `pending_tool_calls()` | `Option<&[ToolCall]>` | Get pending tool calls |
+| `memory_enabled()` | `bool` | Whether memory/distillation is on |
+| `context_usage_status()` | `ContextUsageStatus` | Token usage statistics (cached) |
+| `is_tool_hidden(name)` | `bool` | Whether a tool is hidden from UI |
+| `last_turn_usage()` | `Option<&TurnUsage>` | API usage from last completed turn |
+| `ui_options()` | `UiOptions` | Current UI configuration |
+| `session_changes()` | `&SessionChangeLog` | Session-wide file change log |
+| `files_panel_visible()` | `bool` | Whether files panel is visible |
+| `files_panel_state()` | `&FilesPanelState` | Files panel interactive state |
 
 ### Mode Transitions
 
@@ -1401,36 +1698,77 @@ let kind = effect.kind();
 | Method | Description |
 |--------|-------------|
 | `start_streaming(queued)` | Begin API request |
-| `process_stream_events()` | Apply pending stream chunks |
+| `process_stream_events()` | Apply pending stream chunks (budget: 512 events) |
 
 ### Tool Approval Operations
 
 | Method | Description |
 |--------|-------------|
-| `approve_all_tools()` | Approve all pending tool calls |
-| `deny_all_tools()` | Deny all pending tool calls |
-| `approve_selected_tools(indices)` | Approve specific tool calls |
+| `tool_approval_approve_all()` | Approve all pending tool calls |
+| `tool_approval_deny_all()` | Initiate deny (requires double-press) |
+| `tool_approval_confirm_selected()` | Confirm currently selected tools |
+| `tool_approval_activate()` | Enter-key action (context-dependent) |
+| `tool_approval_toggle()` | Toggle selection on current tool |
+| `tool_approval_toggle_details()` | Expand/collapse tool call details |
+| `tool_approval_move_up()` | Move cursor up in approval list |
+| `tool_approval_move_down()` | Move cursor down in approval list |
+| `tool_approval_deny_confirm()` | Check if in deny confirmation state |
 
 ### Model Management
 
 | Method | Description |
 |--------|-------------|
-| `set_model(model)` | Set specific model |
+| `set_model(model)` | Set specific model (persists to config) |
 | `model_select_index()` | Currently selected index |
 | `model_select_move_up()` | Move selection up |
 | `model_select_move_down()` | Move selection down |
+| `model_select_set_index(idx)` | Set selection to specific index |
 | `model_select_confirm()` | Apply selection, exit mode |
+
+### Files Panel Operations
+
+| Method | Description |
+|--------|-------------|
+| `toggle_files_panel()` | Toggle panel visibility with animation |
+| `close_files_panel()` | Close panel (no-op if hidden) |
+| `files_panel_next()` | Select next file (wrapping) |
+| `files_panel_prev()` | Select previous file (wrapping) |
+| `files_panel_collapse()` | Collapse expanded diff |
+| `files_panel_scroll_diff_down()` | Scroll diff view down |
+| `files_panel_scroll_diff_up()` | Scroll diff view up |
+| `files_panel_diff()` | Generate diff for expanded file |
+| `ordered_files()` | Get ordered list of changed files |
+
+### Input History Operations
+
+| Method | Description |
+|--------|-------------|
+| `navigate_history_up()` | Previous prompt (Insert mode) |
+| `navigate_history_down()` | Next prompt (Insert mode) |
+| `navigate_command_history_up()` | Previous command (Command mode) |
+| `navigate_command_history_down()` | Next command (Command mode) |
 
 ### Scrolling
 
 | Method | Description |
 |--------|-------------|
-| `scroll_up()` | Scroll message view up |
-| `scroll_down()` | Scroll message view down |
+| `scroll_up()` | Scroll message view up (3 lines) |
+| `scroll_down()` | Scroll message view down (3 lines) |
+| `scroll_page_up()` | Scroll up by a page (10 lines) |
+| `scroll_page_down()` | Scroll down by a page (10 lines) |
+| `scroll_up_chunk()` | Scroll up by 20% of content |
 | `scroll_to_top()` | Jump to beginning |
 | `scroll_to_bottom()` | Jump to end, enable auto-scroll |
 | `scroll_offset_from_top()` | Current scroll position |
 | `update_scroll_max(max)` | Update scrollable range |
+
+### Miscellaneous
+
+| Method | Description |
+|--------|-------------|
+| `toggle_thinking()` | Toggle thinking/reasoning visibility |
+| `take_clear_transcript()` | Check and clear transcript-clear flag |
+| `cancel_active_operation()` | Cancel any in-progress operation |
 
 ---
 
@@ -1441,52 +1779,52 @@ let kind = effect.kind();
 1. **Add command variant to `Command` enum** (`engine/src/commands.rs`):
 
 ```rust
-// Command uses a lifetime parameter for efficiency (borrows from input)
 pub(crate) enum Command<'a> {
     // ... existing commands ...
     MyCommand(Option<&'a str>),
 }
+```
 
-impl<'a> Command<'a> {
-    pub fn parse(raw: &'a str) -> Self {
-        let parts: Vec<&str> = raw.split_whitespace().collect();
-        match parts.first().copied() {
-            // ... existing matches ...
-            Some("mycommand" | "mc") => {
-                Command::MyCommand(parts.get(1).copied())
-            }
-            Some(cmd) => Command::Unknown(cmd),
-            None => Command::Empty,
-        }
+2. **Add `CommandKind` variant and aliases**:
+
+```rust
+pub(crate) enum CommandKind {
+    // ... existing kinds ...
+    MyCommand,
+}
+
+// In COMMAND_ALIASES:
+CommandAlias { name: "mycommand", kind: CommandKind::MyCommand },
+CommandAlias { name: "mc", kind: CommandKind::MyCommand },
+```
+
+3. **Add match arm in `Command::parse()`**:
+
+```rust
+CommandKind::MyCommand => Command::MyCommand(parts.get(1).copied()),
+```
+
+4. **Handle command in `process_command()`** (`engine/src/commands.rs`):
+
+```rust
+Command::MyCommand(arg) => {
+    if let Some(value) = arg {
+        self.push_notification(format!("MyCommand executed with: {value}"));
+    } else {
+        self.push_notification("Usage: :mycommand <arg>");
     }
 }
 ```
 
-1. **Handle command in `process_command()`** (`engine/src/lib.rs`):
+5. **Add `CommandSpec` for palette/help display**:
 
 ```rust
-pub fn process_command(&mut self, command: EnteredCommand) {
-    match Command::parse(&command.raw) {
-        // ... existing handlers ...
-        Command::MyCommand(arg) => {
-            if let Some(value) = arg {
-                self.push_notification(format!("MyCommand executed with: {value}"));
-            } else {
-                self.push_notification("Usage: :mycommand <arg>");
-            }
-        }
-    }
-}
-```
-
-1. **Update help text**:
-
-```rust
-Command::Help => {
-    self.push_notification(
-        "Commands: /q(uit), /clear, /mycommand, ..."  // Add new command
-    );
-}
+// In COMMAND_SPECS:
+CommandSpec {
+    palette_label: "mycommand, mc",
+    help_label: "mycommand",
+    description: "Does something useful",
+},
 ```
 
 ### Adding a New Input Mode
@@ -1499,12 +1837,12 @@ pub(crate) enum InputState {
     Insert(DraftInput),
     Command { draft: DraftInput, command: DraftInput },
     ModelSelect { draft: DraftInput, selected: usize },
-    FileSelect { draft: DraftInput, filter: DraftInput },
+    FileSelect { draft: DraftInput, filter: DraftInput, selected: usize },
     MyMode { draft: DraftInput, custom_state: MyState },  // New mode
 }
 ```
 
-1. **Add mode enum variant** (`engine/src/input_modes.rs`):
+2. **Add mode enum variant** (`engine/src/ui/input.rs`):
 
 ```rust
 pub enum InputMode {
@@ -1517,19 +1855,20 @@ pub enum InputMode {
 }
 ```
 
-1. **Add transition method**:
+3. **Add transition method**:
 
 ```rust
 impl InputState {
     pub(crate) fn into_my_mode(self) -> InputState {
         match self {
-            InputState::Normal(draft) | InputState::Insert(draft) => {
+            InputState::Normal(draft) | InputState::Insert(draft) |
+            InputState::Command { draft, .. } | InputState::ModelSelect { draft, .. } |
+            InputState::FileSelect { draft, .. } => {
                 InputState::MyMode {
                     draft,
                     custom_state: MyState::default(),
                 }
             }
-            // Handle other variants...
         }
     }
 }
@@ -1541,7 +1880,7 @@ impl App {
 }
 ```
 
-1. **Add proof token pattern** (optional):
+4. **Add proof token pattern** (optional):
 
 ```rust
 pub struct MyModeToken(());
@@ -1567,7 +1906,7 @@ impl<'a> MyMode<'a> {
 }
 ```
 
-1. **Handle in TUI input handler** (`tui/src/input.rs`):
+5. **Handle in TUI input handler** (`tui/src/input.rs`):
 
 ```rust
 pub async fn handle_events(app: &mut App) -> Result<bool> {
@@ -1600,35 +1939,38 @@ impl Provider {
             "claude" | "anthropic" => Some(Self::Claude),
             "openai" | "gpt" => Some(Self::OpenAI),
             "gemini" | "google" => Some(Self::Gemini),
-            "myprovider" | "mp" => Some(Self::MyProvider),  // New parsing
+            "myprovider" | "mp" => Some(Self::MyProvider),
             _ => None,
-        }
-    }
-
-    pub fn default_model(&self) -> ModelName {
-        match self {
-            Self::Claude => ModelName::from_predefined(PredefinedModel::ClaudeOpus),
-            Self::OpenAI => ModelName::from_predefined(PredefinedModel::Gpt52),
-            Self::Gemini => ModelName::from_predefined(PredefinedModel::GeminiPro),
-            Self::MyProvider => ModelName::from_predefined(PredefinedModel::MyProviderModel),
         }
     }
 }
 ```
 
-1. **Add API client** (`providers/src/my_provider.rs`)
+2. **Add API client** (`providers/src/my_provider.rs`)
 
-2. **Update config structure** (`engine/src/config.rs`):
+3. **Update config structure** (`engine/src/config.rs`):
 
 ```rust
 pub struct ApiKeys {
     pub anthropic: Option<String>,
     pub openai: Option<String>,
+    pub google: Option<String>,
     pub my_provider: Option<String>,  // New key
 }
 ```
 
-1. **Update key loading in `App::new()`** (`engine/src/init.rs`)
+4. **Add system prompt** to `SystemPrompts` (`engine/src/lib.rs`):
+
+```rust
+pub struct SystemPrompts {
+    pub claude: &'static str,
+    pub openai: &'static str,
+    pub gemini: &'static str,
+    pub my_provider: &'static str,  // New prompt
+}
+```
+
+5. **Update key loading in `App::new()`** (`engine/src/init.rs`)
 
 ### Adding a New Built-in Tool
 
@@ -1638,7 +1980,7 @@ pub struct ApiKeys {
 pub struct MyTool;
 
 impl ToolExecutor for MyTool {
-    fn name(&self) -> &'static str { "my_tool" }
+    fn name(&self) -> &'static str { "MyTool" }
 
     fn description(&self) -> &'static str {
         "Does something useful"
@@ -1656,9 +1998,15 @@ impl ToolExecutor for MyTool {
 
     fn is_side_effecting(&self) -> bool { false }
 
-    fn approval_Distillate(&self, args: &Value) -> Result<String, ToolError> {
+    // Optional: hide from UI
+    fn is_hidden(&self) -> bool { false }
+
+    // Optional: restrict to a specific provider
+    fn target_provider(&self) -> Option<Provider> { None }
+
+    fn approval_summary(&self, args: &Value) -> Result<String, ToolError> {
         let arg1 = args["arg1"].as_str().unwrap_or("?");
-        Ok(format!("Run my_tool with arg: {arg1}"))
+        Ok(format!("Run MyTool with arg: {arg1}"))
     }
 
     fn execute<'a>(&'a self, args: Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
@@ -1676,13 +2024,19 @@ impl ToolExecutor for MyTool {
 }
 ```
 
-1. **Register in `App::new()`** (`engine/src/init.rs`):
+2. **Register in `App::new()`** (`engine/src/init.rs`):
 
 Tool registration occurs during application initialization. Add your tool to the registry setup in `init.rs`:
 
 ```rust
 // In App::new() initialization
 registry.register(Box::new(MyTool))?;
+```
+
+3. **Add module declaration** (`engine/src/tools/mod.rs`):
+
+```rust
+pub mod my_tool;
 ```
 
 ### Adding a New Async Operation State
@@ -1693,36 +2047,57 @@ registry.register(Box::new(MyTool))?;
 pub(crate) enum OperationState {
     Idle,
     Streaming(ActiveStream),
-    Summarizing(SummarizationState),
-    // ... existing states ...
+    ToolLoop(Box<ToolLoopState>),
+    ToolRecovery(ToolRecoveryState),
+    Distilling(DistillationState),
     MyOperation(MyOperationState),  // New operation
 }
 ```
 
-1. **Add state transition guards**:
+2. **Add state transition guards**:
 
 ```rust
 pub fn start_my_operation(&mut self) {
+    if self.busy_reason().is_some() {
+        self.push_notification("Cannot start: busy with other operation");
+        return;
+    }
+    self.state = OperationState::MyOperation(state);
+}
+```
+
+3. **Add polling in `tick()`**:
+
+```rust
+pub fn tick(&mut self) {
+    self.poll_distillation();
+    self.poll_tool_loop();
+    self.poll_lsp_events();
+    self.poll_journal_cleanup();
+    self.poll_my_operation();  // New polling
+    // ... wall-clock timers ...
+}
+```
+
+4. **Handle in `busy_reason()`**:
+
+```rust
+fn busy_reason(&self) -> Option<&'static str> {
     match &self.state {
-        OperationState::Idle => {
-            // Start operation
-            self.state = OperationState::MyOperation(state);
-        }
-        _ => {
-            self.push_notification("Cannot start: busy with other operation");
-        }
+        OperationState::Idle => None,
+        OperationState::MyOperation(_) => Some("my operation in progress"),
+        // ... existing arms ...
     }
 }
 ```
 
-1. **Add polling in `tick()`**:
+5. **Handle in `cancel_active_operation()`**:
 
 ```rust
-pub fn tick(&mut self) {
-    self.tick = self.tick.wrapping_add(1);
-    self.poll_summarization();
-    self.poll_summarization_retry();
-    self.poll_my_operation();  // New polling
+OperationState::MyOperation(state) => {
+    // Clean up the operation
+    self.push_notification("My operation cancelled");
+    true
 }
 ```
 
@@ -1738,20 +2113,38 @@ The engine re-exports commonly needed types from its dependencies:
 | :--- | :--- |
 | `ContextManager` | Orchestrates token counting and distillation |
 | `ContextAdaptation` | Result of model switch (shrinking/expanding) |
+| `ContextBuildError` | Error from context preparation |
 | `ContextUsageStatus` | Token usage statistics |
+| `DistillationNeeded` | Data about which messages need distillation |
+| `DistillationScope` | Scope of a distillation operation |
+| `PendingDistillation` | Prepared distillation request |
 | `FullHistory` | Complete message history |
 | `MessageId` | Unique identifier for messages |
 | `StreamJournal` | WAL for crash recovery |
 | `ActiveJournal` | RAII handle for stream journaling |
 | `ToolJournal` | WAL for tool execution recovery |
+| `ToolBatchId` | Unique identifier for tool batches |
 | `ModelLimits` | Token limits for a model |
+| `ModelLimitsSource` | Where limits came from (catalog vs override) |
+| `ModelRegistry` | Model catalog for limit lookups |
 | `TokenCounter` | Token counting utilities |
+| `PreparedContext` | Proof that context was built within budget |
+| `RecoveredStream` | Stream recovered from crash |
+| `RecoveredToolBatch` | Tool batch recovered from crash |
+| `Librarian` | Fact extraction and retrieval engine |
+| `Fact`, `FactType` | Librarian fact types |
+| `ExtractionResult`, `RetrievalResult` | Librarian operation results |
+| `distillation_model` | Function to get cheapest model per provider |
+| `generate_distillation` | Function to generate a distillation |
+| `retrieve_relevant` | Function to retrieve relevant facts |
 
 ### From `forge-providers`
 
 | Type | Description |
 |------|-------------|
 | `ApiConfig` | API request configuration |
+| `GeminiCache` | Active Gemini context cache |
+| `GeminiCacheConfig` | Gemini cache configuration |
 
 ### From `forge-types`
 
@@ -1761,13 +2154,27 @@ The engine re-exports commonly needed types from its dependencies:
 | `ModelName` | Provider-scoped model identifier |
 | `Message` | User/Assistant/System message |
 | `NonEmptyString` | Guaranteed non-empty string |
+| `NonEmptyStaticStr` | Compile-time guaranteed non-empty static string |
 | `ApiKey` | Provider-specific API key |
+| `ApiUsage` | Token usage statistics from API |
 | `StreamEvent` | Streaming response events |
 | `StreamFinishReason` | How streaming ended |
 | `OutputLimits` | Max tokens and thinking budget |
+| `ThinkingState` | Whether thinking is enabled/disabled |
+| `ThoughtSignature` | Encrypted thinking signature (Claude) |
+| `ThoughtSignatureState` | Signed or unsigned thinking state |
 | `ToolCall` | Tool invocation from LLM |
 | `ToolResult` | Result of tool execution |
 | `ToolDefinition` | Tool schema for API |
+| `CacheHint` | Cache breakpoint hint |
+| `CacheableMessage` | Message with cache hints |
+| `OpenAIRequestOptions` | OpenAI-specific request parameters |
+| `OpenAIReasoningEffort` | OpenAI reasoning effort level |
+| `OpenAIReasoningSummary` | OpenAI reasoning summary format |
+| `OpenAITextVerbosity` | OpenAI text verbosity level |
+| `OpenAITruncation` | OpenAI truncation strategy |
+| `PredefinedModel` | Predefined model enum for picker |
+| `sanitize_terminal_text` | Strip terminal control sequences |
 
 ### Defined in `forge-engine`
 
@@ -1782,6 +2189,30 @@ The engine re-exports commonly needed types from its dependencies:
 | `InsertMode<'a>` | Safe wrapper for insert mode operations |
 | `CommandMode<'a>` | Safe wrapper for command mode operations |
 | `TurnUsage` | Aggregated API usage for a user turn |
+| `FileDiff` | Diff result for files panel display |
+| `SystemPrompts` | Provider-specific system prompt container |
+| `SessionChangeLog` | Session-wide file creation/modification log |
+| `DistillationTask` | Background distillation task handle |
+| `CommandSpec` | Command metadata for palette/help |
+| `command_specs()` | Get all command specs |
+| `ForgeConfig` | Configuration root type |
+| `AppConfig` | Application configuration section |
+| `ViewState` | View-related state for rendering |
+| `UiOptions` | UI configuration (theme, motion, glyphs) |
+| `InputMode` | Current input mode enum |
+| `InputHistory` | Prompt and command recall history |
+| `DraftInput` | Text buffer with cursor tracking |
+| `ScrollState` | Scroll position tracking |
+| `DisplayItem` | Renderable item (history ref or local message) |
+| `ModalEffect` | Modal overlay animation state |
+| `ModalEffectKind` | Modal animation type (PopScale, SlideUp, Shake) |
+| `PanelEffect` | Panel animation state |
+| `PanelEffectKind` | Panel animation type (SlideInRight, SlideOutRight) |
+| `FilesPanelState` | Files panel interactive state |
+| `ChangeKind` | File change classification (Modified, Created) |
+| `FileEntry` | File entry for file picker |
+| `FilePickerState` | File picker filtering state |
+| `find_match_positions` | Fuzzy match position finder |
 
 ---
 
@@ -1826,40 +2257,25 @@ fn redact_api_keys(raw: &str) -> String {
 
 ### Tool Errors
 
-```rust
-pub enum ToolError {
-    BadArgs { message: String },
-    Timeout { tool: String, elapsed: Duration },
-    SandboxViolation(DenialReason),
-    ExecutionFailed { tool: String, message: String },
-    Cancelled,
-    UnknownTool { name: String },
-    DuplicateTool { name: String },
-    DuplicateToolCallId { id: String },
-    PatchFailed { file: PathBuf, message: String },
-    StaleFile { file: PathBuf, reason: String },
-}
-```
-
-### Distillation Retry
-
-Failed distillations are retried with exponential backoff:
-
-- Base delay: 500ms
-- Max delay: 8000ms
-- Jitter: 0-200ms
-- Max attempts: 5
+See [ToolError Enum](#toolerror-enum) and [DenialReason Enum](#denialreason-enum) in the Tool Execution System section.
 
 ---
 
 ## Thread Safety
 
-The `App` struct is not thread-safe and should be used from a single async task. Background operations (summarization, streaming, tool execution) are spawned as separate Tokio tasks that communicate via channels:
+The `App` struct is not thread-safe and should be used from a single async task. Background operations (distillation, streaming, tool execution) are spawned as separate Tokio tasks that communicate via channels:
 
-- **Streaming**: `mpsc::unbounded_channel()` for `StreamEvent` delivery
-- **Summarization**: `tokio::task::JoinHandle` polled via `is_finished()`
+- **Streaming**: `mpsc::Receiver<StreamEvent>` for event delivery (bounded channel)
+- **Distillation**: `tokio::task::JoinHandle` polled via `is_finished()` + `now_or_never()`
 - **Tool execution**: Sequential execution with journal persistence
 - **Cancellation**: `AbortHandle` for graceful task termination
+- **LSP**: `Arc<Mutex<Option<LspManager>>>` for lazy initialization from async task
+
+Shared state behind `Arc<Mutex<...>>`:
+- `gemini_cache`: Gemini context cache (updated from streaming tasks)
+- `librarian`: Fact extraction/retrieval (accessed from async extraction tasks)
+- `tool_file_cache`: File hash cache for stale file detection
+- `lsp`: LSP manager (lazily populated from startup task)
 
 ---
 
@@ -1874,9 +2290,9 @@ Config remains in the home directory: `~/.forge/config.toml`.
 | Path | Purpose |
 | :--- | :--- |
 | `<data_dir>/history.json` | Conversation history (JSON) |
-| `<data_dir>/session.json` | Draft input and input history |
+| `<data_dir>/session.json` | Draft input, input history, session state |
 | `<data_dir>/stream_journal.db` | WAL for stream crash recovery |
 | `<data_dir>/tool_journal.db` | WAL for tool execution recovery |
-| `<data_dir>/librarian.db` | Librarian fact store (when enabled) |
+| `<data_dir>/librarian.db` | Librarian fact store (when memory enabled) |
 
 All database files use SQLite with WAL mode for durability.

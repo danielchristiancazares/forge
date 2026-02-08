@@ -10,9 +10,7 @@ use std::sync::{Arc, Mutex};
 use super::ui::{DraftInput, InputState};
 use super::{ApiConfig, App, Message, NonEmptyString, OperationState};
 
-// ============================================================================
 // Turn change tracking
-// ============================================================================
 
 /// Proof that a user turn is active.
 #[derive(Debug)]
@@ -249,9 +247,7 @@ pub struct CommandMode<'a> {
     pub(crate) app: &'a mut App,
 }
 
-// ============================================================================
 // Token factory methods (called from App)
-// ============================================================================
 
 impl App {
     /// Get proof token if currently in Insert mode.
@@ -275,9 +271,7 @@ impl App {
     }
 }
 
-// ============================================================================
 // InsertMode operations
-// ============================================================================
 
 impl InsertMode<'_> {
     fn draft_mut(&mut self) -> &mut DraftInput {
@@ -413,9 +407,7 @@ impl InsertMode<'_> {
     }
 }
 
-// ============================================================================
 // CommandMode operations
-// ============================================================================
 
 impl CommandMode<'_> {
     fn command_mut(&mut self) -> Option<&mut DraftInput> {
@@ -525,9 +517,7 @@ impl CommandMode<'_> {
     }
 }
 
-// ============================================================================
 // Command tab-completion helpers
-// ============================================================================
 
 fn compute_command_tab_completion(app: &App, line: &str, cursor_byte: usize) -> Option<String> {
     let cursor_byte = cursor_byte.min(line.len());

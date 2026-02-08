@@ -2,38 +2,39 @@
 
 > Note: This is an implementation-focused overview of the current distillation system; the authoritative spec is `docs/CONTEXT_INFINITY_SRD.md`.
 
-Context Infinity™ is Forge's system for managing unlimited conversation context with LLMs. It preserves complete conversation history while automatically distilling older content to fit within model-specific token limits.
+Context Infinity is Forge's system for managing unlimited conversation context with LLMs. It preserves complete conversation history while automatically distilling older content to fit within model-specific token limits.
 
 ## LLM-TOC
 <!-- toc:start -->
 | Lines | Section |
 | --- | --- |
 | 7-38 | LLM-TOC |
-| 39-55 | Overview |
-| 56-65 | Design Principles |
-| 66-97 | Architecture |
-| 98-166 | Core Concepts |
-| 167-232 | Token Budget Calculation |
-| 233-323 | Context Building Algorithm |
-| 324-354 | When Distillation Triggers |
-| 355-412 | Distillation Process |
-| 413-442 | Model Switching (Context Adaptation) |
-| 443-563 | Stream Journal (Crash Recovery) |
-| 564-609 | Token Counting |
-| 610-637 | Usage Statistics |
-| 638-668 | Persistence |
-| 669-684 | Configuration |
-| 685-707 | Type-Driven Design |
-| 708-735 | Extension Points |
-| 736-753 | Limitations |
-| 754-851 | The Librarian |
-| 852-911 | Fact Store |
-| 912-1662 | Public API |
-| 1663-1759 | Complete Workflow Example |
-| 1760-1777 | Type Relationships |
-| 1778-1784 | Error Handling |
-| 1785-1793 | Dependencies |
-| 1794-1803 | Testing |
+| 40-55 | Overview |
+| 57-65 | Design Principles |
+| 67-100 | Architecture |
+| 101-171 | Core Concepts |
+| 173-236 | Token Budget Calculation |
+| 238-327 | Context Building Algorithm |
+| 329-360 | When Distillation Triggers |
+| 362-420 | Distillation Process |
+| 422-450 | Model Switching (Context Adaptation) |
+| 452-582 | Stream Journal (Crash Recovery) |
+| 584-628 | Token Counting |
+| 630-656 | Usage Statistics |
+| 658-687 | Persistence |
+| 689-703 | Configuration |
+| 705-726 | Type-Driven Design |
+| 728-754 | Extension Points |
+| 756-772 | Limitations |
+| 774-870 | The Librarian |
+| 872-930 | Fact Store |
+| 932-974 | Atomic Write Helpers |
+| 976-1766 | Public API |
+| 1768-1867 | Complete Workflow Example |
+| 1869-1885 | Type Relationships |
+| 1887-1892 | Error Handling |
+| 1894-1905 | Dependencies |
+| 1907-1915 | Testing |
 <!-- toc:end -->
 
 ## Overview
@@ -71,12 +72,13 @@ WorkingContext -----> API Messages
 | :--- | :--- |
 | `ContextManager` | Orchestrates all context management operations |
 | `FullHistory` | Append-only storage for messages and distillates |
-| `TokenCounter` | Accurate token counting via tiktoken (cl100k_base) |
+| `TokenCounter` | Accurate token counting via tiktoken (o200k_base) |
 | `ModelRegistry` | Model-specific token limits from the predefined catalog |
 | `WorkingContext` | Derived view of what to send to the API |
 | `StreamJournal` | SQLite-backed crash recovery for streaming responses |
 | `Librarian` | Intelligent fact extraction and retrieval using Gemini Flash |
 | `FactStore` | SQLite-backed persistent storage for extracted facts |
+| `atomic_write` | Safe file writes via temp-file-and-rename pattern |
 
 ### Directory Structure
 
@@ -93,6 +95,7 @@ context/src/
   tool_journal.rs     # ToolJournal (tool batch crash recovery)
   librarian.rs        # Librarian - intelligent fact extraction/retrieval
   fact_store.rs       # FactStore - SQLite persistence for facts
+  atomic_write.rs     # Atomic file write helpers (temp file + rename)
 ```
 
 ## Core Concepts
@@ -105,6 +108,7 @@ History is **never truncated**. Every message is stored with:
 - `Message`: The actual content (User, Assistant, or System)
 - `token_count`: Cached token count for the message
 - `distillate_id`: Optional link to a Distillate that covers this message
+- `stream_step_id`: Optional link to a stream journal step (assistant messages only)
 
 ```rust
 pub enum HistoryEntry {
@@ -113,6 +117,7 @@ pub enum HistoryEntry {
         message: Message,
         token_count: u32,
         created_at: SystemTime,
+        stream_step_id: Option<StepId>,
     },
     Distilled {
         id: MessageId,
@@ -120,6 +125,7 @@ pub enum HistoryEntry {
         token_count: u32,
         distillate_id: DistillateId,  // Links to the covering Distillate
         created_at: SystemTime,
+        stream_step_id: Option<StepId>,
     },
 }
 ```
@@ -367,13 +373,13 @@ pub struct DistillationConfig {
 ### Prepare Distillation
 
 ```rust
-pub fn prepare_distillation(&mut self, message_ids: &[MessageId]) 
+pub fn prepare_distillation(&mut self, message_ids: &[MessageId])
     -> Option<PendingDistillation>
 ```
 
 1. Sort and deduplicate message IDs
 2. Extract first contiguous run (distillations must be contiguous)
-3. Calculate target tokens: `original_tokens * target_ratio`
+3. Calculate target tokens: `original_tokens * target_ratio`, clamped to 64-2048 range
 4. Allocate a `DistillateId`
 5. Return `PendingDistillation` with messages to distill
 
@@ -381,10 +387,11 @@ pub fn prepare_distillation(&mut self, message_ids: &[MessageId])
 
 Distillation uses cheaper/faster models:
 
-- **Claude**: `claude-haiku-4-5-20251001`
-- **Gemini**: `gemini-3-flash-preview`
+- **Claude**: `claude-haiku-4-5` (200k context, 190k input limit)
+- **OpenAI**: `gpt-5-nano` (400k context, 380k input limit)
+- **Gemini**: `gemini-3-pro-preview` (1M context, 950k input limit)
 
-The prompt instructs the model to:
+The prompt is loaded from `cli/assets/distillation.md` and instructs the model to:
 
 - Preserve key facts, decisions, and important context
 - Maintain chronological flow
@@ -393,22 +400,24 @@ The prompt instructs the model to:
 - Preserve essential code snippets and file paths
 - Note unresolved questions or pending actions
 
+API calls use a 60-second timeout with automatic retry logic.
+
 ### Complete Distillation
 
 ```rust
 pub fn complete_distillation(
     &mut self,
-    distillate_id: DistillateId,
     scope: DistillationScope,
     content: NonEmptyString,
     generated_by: String,
-)
+) -> Result<DistillateId>
 ```
 
 1. Count tokens in the generated distillate
 2. Create `Distillate` with metadata
 3. Add to history
 4. Mark covered messages as `Distilled`
+5. Return the allocated `DistillateId`
 
 ## Model Switching (Context Adaptation)
 
@@ -477,6 +486,14 @@ CREATE TABLE stream_journal (
     sealed INTEGER DEFAULT 0,
     PRIMARY KEY(step_id, seq)
 );
+
+-- Tracks which steps have been committed to history (for crash recovery)
+CREATE TABLE step_metadata (
+    step_id INTEGER PRIMARY KEY,
+    model_name TEXT,
+    committed INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL
+);
 ```
 
 ### Lifecycle
@@ -533,7 +550,7 @@ let text = active.seal(&mut journal)?;
 
 // 2. Save to history (must succeed before pruning)
 let step_id = active.step_id();
-manager.push_message_with_step_id(Message::assistant(...), step_id);
+manager.push_message_with_step_id(Message::assistant(model_name, ...), step_id);
 manager.save("<data_dir>/history.json")?;
 
 // 3. ONLY after history is persisted, prune the journal
@@ -552,6 +569,9 @@ pub struct ActiveJournal {
     step_id: StepId,
     next_seq: u64,
     model_name: String,
+    pending_deltas: Vec<StreamDelta>,  // Buffered deltas awaiting flush
+    has_flushed: bool,                 // Whether at least one flush has occurred
+    last_flush: Instant,               // Timestamp of last flush
 }
 ```
 
@@ -629,8 +649,8 @@ usage.format_compact() // "2.1k / 200k (1%)" or "50k / 200k (25%) [2S]"
 
 ```rust
 pub fn severity(&self) -> u8 {
-    // 0 = green (< 70%)
-    // 1 = yellow (70-90%)
+    // 0 = green (<= 70%)
+    // 1 = yellow (> 70% to <= 90%)
     // 2 = red (> 90%)
 }
 ```
@@ -735,13 +755,13 @@ fn count_message(&self, msg: &Message) -> u32;
 
 ## Limitations
 
-1. **Distillation requires API call**: Distillation uses LLM calls (`claude-haiku-4-5-20251001` or `gemini-3-flash-preview`), adding latency and cost.
+1. **Distillation requires API call**: Distillation uses LLM calls (`claude-haiku-4-5`, `gpt-5-nano`, or `gemini-3-pro-preview`), adding latency and cost.
 
 2. **Contiguous ranges only**: distillates must cover contiguous message ranges. Selective distillation is not supported to maintain chronological coherence.
 
 3. **Token counting approximation**: The `o200k_base` encoding is accurate for `gpt-5.2` / `gpt-5.2-pro` but approximate for Claude and Gemini (~5-10% variance). The 5% safety margin compensates.
 
-4. **No streaming distillation**: distillates are generated with non-streaming API calls (60 second timeout).
+4. **No streaming distillation**: distillates are generated with non-streaming API calls (60 second timeout with retry).
 
 5. **Single Distillate per range**: A message range can only have one Distillate. Re-distillation replaces the existing Distillate (orphaning the old one).
 
@@ -909,6 +929,50 @@ for result in results {
 
 ---
 
+## Atomic Write Helpers
+
+The `atomic_write` module provides safe file writes using a temp-file-and-rename pattern. This prevents data corruption from partial writes during crashes or power loss.
+
+### Overview
+
+All functions create a temporary file in the same directory as the target, write the content, optionally `sync_all()`, then atomically rename. On Windows, where rename-over-existing fails, a backup-and-restore fallback is used.
+
+### Functions
+
+| Function | Description |
+| :--- | :--- |
+| `atomic_write(path, bytes)` | Write with default options (sync enabled, no dir sync) |
+| `atomic_write_with_options(path, bytes, opts)` | Write with custom options, overwrites existing files |
+| `atomic_write_new_with_options(path, bytes, opts)` | Write with custom options, fails if file already exists (no-clobber) |
+
+### Options
+
+```rust
+pub struct AtomicWriteOptions {
+    /// When true, `sync_all()` is called on the temp file before persisting.
+    pub sync_all: bool,         // default: true
+    /// When true, best-effort `sync_all()` is called on the parent directory
+    /// after the file has been persisted (renamed).
+    pub dir_sync: bool,         // default: false
+    /// When set (Unix only), apply this mode to the temp file and final file
+    /// (e.g., `0o600` for owner-only read/write).
+    pub unix_mode: Option<u32>, // default: None
+}
+```
+
+### Windows Fallback
+
+When `atomic_write_with_options` encounters a rename failure on Windows (target already exists), it performs a backup-and-restore fallback:
+
+1. Rename existing file to `<name>.bak`
+2. Attempt to rename temp file to target
+3. On success: delete the `.bak` file
+4. On failure: restore from `.bak` to prevent data loss
+
+The `atomic_write_new_with_options` variant uses `persist_noclobber` and does not perform this fallback -- it simply fails if the target exists.
+
+---
+
 ## Public API
 
 ### Core Types
@@ -967,13 +1031,18 @@ match manager.prepare() {
 | `has_step_id(id)` | Check if step ID exists (for idempotent recovery) |
 | `rollback_last_message(id)` | Remove last message if ID matches (transactional rollback) |
 | `switch_model(model)` | Change model, returns `ContextAdaptation` |
+| `set_model_without_adaptation(model)` | Update model limits without triggering distillation |
 | `set_output_limit(limit)` | Configure output limit for more input budget |
 | `prepare()` | Build context proof or return `ContextBuildError` |
 | `prepare_distillation(ids)` | Create async distillation request |
-| `complete_distillation(...)` | Apply generated distillation to history |
+| `complete_distillation(...)` | Apply generated distillation, returns `Result<DistillateId>` |
 | `usage_status()` | Get current usage with explicit status |
 | `current_limits()` | Get current model's `ModelLimits` |
 | `current_limits_source()` | Get where limits came from (`Catalog` or `Override`) |
+| `current_model()` | Get the current `ModelName` |
+| `history()` | Get a reference to the underlying `FullHistory` |
+| `recent_messages_only(count)` | Get the N most recent messages in chronological order |
+| `preserve_recent_count()` | Get the configured preserve_recent count |
 | `save(path)` / `load(path, model)` | Persistence |
 
 #### `PreparedContext<'a>`
@@ -1123,6 +1192,7 @@ pub enum HistoryEntry {
         message: Message,
         token_count: u32,
         created_at: SystemTime,
+        stream_step_id: Option<StepId>,
     },
     Distilled {
         id: MessageId,
@@ -1130,6 +1200,7 @@ pub enum HistoryEntry {
         token_count: u32,
         distillate_id: DistillateId,
         created_at: SystemTime,
+        stream_step_id: Option<StepId>,
     },
 }
 ```
@@ -1209,7 +1280,7 @@ The safety margin (5% capped at 4096) accounts for token counting inaccuracies a
 
 #### `TokenCounter`
 
-Accurate token counting using tiktoken's cl100k_base encoding:
+Accurate token counting using tiktoken's o200k_base encoding:
 
 ```rust
 use forge_context::TokenCounter;
@@ -1352,10 +1423,11 @@ let mut journal = ToolJournal::open("<data_dir>/tool_journal.db")?;
 
 // Check for crash recovery on startup
 if let Some(recovered) = journal.recover()? {
-    println!("Recovered batch {} with {} calls, {} results",
+    println!("Recovered batch {} with {} calls, {} results, {} corrupted",
         recovered.batch_id,
         recovered.calls.len(),
         recovered.results.len(),
+        recovered.corrupted_args.len(),
     );
     // User can resume or discard
     journal.discard_batch(recovered.batch_id)?;
@@ -1363,10 +1435,10 @@ if let Some(recovered) = journal.recover()? {
 
 // Begin a new tool batch
 let calls = vec![ToolCall::new("call_1", "read_file", json!({"path": "foo.rs"}))];
-let batch_id: ToolBatchId = journal.begin_batch("claude-opus-4", "assistant text", &calls)?;
+let batch_id: ToolBatchId = journal.begin_batch("claude-opus-4-6", "assistant text", &calls)?;
 
 // Record results as tools execute
-let result = ToolResult::success("call_1", "file contents...");
+let result = ToolResult::success("call_1", "read_file", "file contents...");
 journal.record_result(batch_id, &result)?;
 
 // Commit when complete (prunes batch data)
@@ -1394,8 +1466,24 @@ pub struct RecoveredToolBatch {
     pub assistant_text: String,
     pub calls: Vec<ToolCall>,
     pub results: Vec<ToolResult>,
+    /// Tool calls whose arguments failed to parse (substituted with {})
+    pub corrupted_args: Vec<CorruptedToolArgs>,
 }
 ```
+
+#### `CorruptedToolArgs`
+
+Information about tool call arguments that failed to parse during recovery:
+
+```rust
+pub struct CorruptedToolArgs {
+    pub tool_call_id: String,
+    pub raw_json: String,
+    pub parse_error: String,
+}
+```
+
+During recovery, tool calls with empty arguments, oversized arguments (>1MB), or invalid JSON are recorded as corrupted. The tool call is still recovered with empty arguments (`{}`), and the corruption details are preserved for diagnostic purposes.
 
 #### Streaming Batch Support
 
@@ -1403,10 +1491,10 @@ For tool batches created during streaming (before arguments are complete):
 
 ```rust
 // Begin streaming batch with empty calls
-let batch_id = journal.begin_streaming_batch("claude-opus-4")?;
+let batch_id = journal.begin_streaming_batch("claude-opus-4-6")?;
 
 // Record call start as stream events arrive
-journal.record_call_start(batch_id, 0, "call_1", "read_file", None)?;
+journal.record_call_start(batch_id, 0, "call_1", "read_file", &thought_signature_state)?;
 
 // Append arguments as they stream in
 journal.append_call_args(batch_id, "call_1", r#"{"path":"#)?;
@@ -1444,14 +1532,15 @@ let distilled_text = generate_distillation(
 ).await?;
 ```
 
-The function validates that input doesn't exceed the distiller model's context limit before making the API call.
+The function validates that input doesn't exceed the distiller model's context limit before making the API call. Calls use a 60-second timeout with automatic retry logic.
 
 **Distillation models used:**
 
-| Provider | Model | Context Limit |
+| Provider | Model | Input Limit |
 | :--- | :--- | :--- |
-| Claude | `claude-haiku-4-5-20251001` | 190,000 tokens |
+| Claude | `claude-haiku-4-5` | 190,000 tokens |
 | OpenAI | `gpt-5-nano` | 380,000 tokens |
+| Gemini | `gemini-3-pro-preview` | 950,000 tokens |
 
 ### Librarian
 
@@ -1503,7 +1592,24 @@ librarian.clear()?;  // Reset for testing
 | `all_facts()` | Get all stored facts |
 | `fact_count()` | Number of stored facts |
 | `turn_counter()` | Current turn number |
+| `increment_turn()` | Increment the turn counter before storing new exchange facts |
+| `set_turn_counter(turn)` | Set the turn counter to a specific value |
+| `api_key()` | Get the API key (for making async calls without holding the lock) |
 | `clear()` | Delete all facts |
+
+#### Standalone Functions
+
+Two public standalone functions are available for making Librarian API calls without holding a `Librarian` instance (useful for async contexts where SQLite's `!Send` constraint is problematic):
+
+```rust
+use forge_context::{extract_facts, retrieve_relevant};
+
+// Extract facts from an exchange
+let result = extract_facts(api_key, "user message", "assistant response").await?;
+
+// Retrieve relevant facts for a query
+let result = retrieve_relevant(api_key, "query", &available_facts).await?;
+```
 
 #### `Fact`
 
@@ -1562,8 +1668,8 @@ use forge_context::format_facts_for_context;
 let formatted = format_facts_for_context(&facts);
 // Returns markdown with emoji prefixes:
 // ## Relevant Context
-// 📁 File src/lib.rs contains the App struct
-// 🔧 Chose async/await for concurrency
+// (file icon) File src/lib.rs contains the App struct
+// (wrench icon) Chose async/await for concurrency
 ```
 
 ### Fact Store
@@ -1666,7 +1772,7 @@ use forge_context::{
     ActiveJournal, ContextBuildError, ContextManager, PreparedContext, StreamJournal, TokenCounter,
     generate_distillation,
 };
-use forge_types::{Message, PredefinedModel};
+use forge_types::{Message, ModelName, NonEmptyString, PredefinedModel};
 
 // Initialize
 let mut manager = ContextManager::new(PredefinedModel::ClaudeOpus.to_model_name());
@@ -1679,8 +1785,11 @@ if let Some(recovered) = journal.recover()? {
         RecoveredStream::Complete { step_id, partial_text, model_name, .. } => {
             // Check if already in history (idempotent recovery)
             if !manager.has_step_id(step_id) {
+                let model = model_name
+                    .map(|n| ModelName::new(n))
+                    .unwrap_or_else(|| PredefinedModel::ClaudeOpus.to_model_name());
                 manager.push_message_with_step_id(
-                    Message::assistant(NonEmptyString::new(&partial_text)?),
+                    Message::assistant(model, NonEmptyString::new(&partial_text)?),
                     step_id,
                 );
                 manager.save("<data_dir>/history.json")?;
@@ -1688,7 +1797,7 @@ if let Some(recovered) = journal.recover()? {
             journal.commit_and_prune_step(step_id)?;
         }
         RecoveredStream::Errored { step_id, error, .. } => {
-            tracing::warn!("Recovered stream failed: {}", error);
+            tracing::warn!("Recovered stream failed: {error}");
             journal.discard_step(step_id)?;
         }
         RecoveredStream::Incomplete { step_id, .. } => {
@@ -1707,20 +1816,20 @@ let prepared = match manager.prepare() {
         // Distillation needed - handle async
         let pending = manager.prepare_distillation(&needed.messages_to_distill)
             .expect("messages exist");
-        
+
         let distilled_text = generate_distillation(
             &api_config,
             &counter,
             &pending.messages,
             pending.target_tokens,
         ).await?;
-        
+
         manager.complete_distillation(
             pending.scope,
             NonEmptyString::new(&distilled_text)?,
             PredefinedModel::ClaudeHaiku.model_id().to_string(),
         )?;
-        
+
         manager.prepare()?  // Should succeed now
     }
     Err(ContextBuildError::RecentMessagesTooLarge { required_tokens, budget_tokens, .. }) => {
@@ -1731,6 +1840,7 @@ let prepared = match manager.prepare() {
 };
 
 // Make API call with streaming
+let model = PredefinedModel::ClaudeOpus.to_model_name();
 let api_messages = prepared.api_messages();
 let mut active = journal.begin_session(PredefinedModel::ClaudeOpus.model_id())?;
 let step_id = active.step_id();
@@ -1745,7 +1855,7 @@ let full_response = active.seal(&mut journal)?;
 
 // Add assistant response to history with step ID (for idempotent recovery)
 manager.push_message_with_step_id(
-    Message::assistant(NonEmptyString::new(&full_response)?),
+    Message::assistant(model, NonEmptyString::new(&full_response)?),
     step_id,
 );
 
@@ -1783,12 +1893,16 @@ The crate uses `anyhow::Result` for most fallible operations and custom error ty
 
 ## Dependencies
 
-- `forge-types`: Core types (`Message`, `NonEmptyString`, `Provider`)
-- `forge-providers`: API configuration (`ApiConfig`)
-- `tiktoken-rs`: Token counting
-- `rusqlite`: Stream journal persistence
-- `reqwest`: HTTP client for distillation API calls
+- `forge-types`: Core types (`Message`, `NonEmptyString`, `ModelName`, `Provider`)
+- `forge-providers`: API configuration (`ApiConfig`), HTTP client, retry logic
+- `tiktoken-rs`: Token counting (o200k_base encoding)
+- `rusqlite`: SQLite persistence (stream journal, tool journal, fact store)
+- `tempfile`: Temporary file creation for atomic writes
+- `sha2`: SHA256 hashing for fact staleness detection
 - `serde`/`serde_json`: Serialization
+- `anyhow`/`thiserror`: Error handling
+- `tracing`: Structured logging
+- `libc`: Unix-only, for platform-specific operations
 
 ## Testing
 

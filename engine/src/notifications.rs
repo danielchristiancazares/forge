@@ -79,7 +79,6 @@ impl NotificationQueue {
     ///
     /// Duplicate notifications are deduplicated to avoid redundant messages.
     pub fn push(&mut self, notification: SystemNotification) {
-        // Deduplicate: don't add if already present
         if !self.pending.contains(&notification) {
             self.pending.push(notification);
         }
@@ -146,7 +145,6 @@ mod tests {
         queue.push(SystemNotification::ToolsDenied { count: 1 });
         queue.push(SystemNotification::ToolsApproved { count: 1 }); // duplicate
 
-        // Should only have 2 unique notifications
         assert_eq!(queue.len(), 2);
 
         let notifications = queue.take();
@@ -169,7 +167,6 @@ mod tests {
         queue.push(SystemNotification::ToolsApproved { count: 2 });
         queue.push(SystemNotification::ToolsDenied { count: 1 });
 
-        // Different counts are different notifications
         assert_eq!(queue.len(), 3);
     }
 }

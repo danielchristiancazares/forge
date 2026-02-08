@@ -41,7 +41,6 @@ impl super::App {
             return fail_with_rollback(self, queued_request);
         }
 
-        // Try to build working context to see if distillation is needed
         let message_ids = match self.context_manager.prepare() {
             Ok(_) => {
                 if let Some(queued) = queued_request {
@@ -62,7 +61,6 @@ impl super::App {
             }
         };
 
-        // Prepare distillation request
         let Some(pending) = self.context_manager.prepare_distillation(&message_ids) else {
             return fail_with_rollback(self, queued_request);
         };
@@ -109,7 +107,6 @@ impl super::App {
 
         let generated_by = distillation_model(config.provider()).to_string();
 
-        // Spawn background task with real API call
         let counter = TokenCounter::new();
         let handle = tokio::spawn(async move {
             generate_distillation(&config, &counter, &messages, target_tokens).await
@@ -141,12 +138,10 @@ impl super::App {
             _ => return,
         };
 
-        // Check if the task is finished (non-blocking)
         if !finished {
             return;
         }
 
-        // Take ownership of the task
         let (task, queued_request) = match std::mem::replace(&mut self.state, OperationState::Idle)
         {
             OperationState::Distilling(state) => match state {
@@ -165,7 +160,6 @@ impl super::App {
             mut handle,
         } = task;
 
-        // Get the result using now_or_never since we know it's finished
         let result = (&mut handle).now_or_never();
 
         match result {
@@ -180,7 +174,6 @@ impl super::App {
                     return;
                 };
 
-                // Apply the distillation result
                 if let Err(e) = self.context_manager.complete_distillation(
                     scope,
                     distillation_text,
@@ -196,7 +189,6 @@ impl super::App {
                 self.push_notification("Distillation complete");
                 self.autosave_history(); // Persist distilled history immediately
 
-                // If a request was queued waiting for distillation, start it now.
                 if let Some(queued) = queued_request {
                     self.start_streaming(queued);
                 }
@@ -236,7 +228,6 @@ impl super::App {
         self.state = OperationState::Idle;
         let had_pending = queued_request.is_some();
 
-        // Rollback and finish turn if we had a queued request
         if let Some(queued) = queued_request {
             self.rollback_pending_user_message();
             self.finish_turn(queued.turn);

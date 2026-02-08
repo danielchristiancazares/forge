@@ -440,9 +440,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    // ========================================================================
     // is_unsafe_path_char tests
-    // ========================================================================
 
     #[test]
     fn safe_chars_not_flagged() {
@@ -532,9 +530,7 @@ mod tests {
         assert!(contains_unsafe_path_chars("src/\u{e0041}\u{e0042}main.rs"));
     }
 
-    // ========================================================================
     // contains_unsafe_path_chars tests
-    // ========================================================================
 
     #[test]
     fn safe_path_not_flagged() {
@@ -553,9 +549,7 @@ mod tests {
         assert!(contains_unsafe_path_chars("test\u{202e}file"));
     }
 
-    // ========================================================================
     // normalize_path tests
-    // ========================================================================
 
     #[test]
     fn normalize_converts_backslashes() {
@@ -571,9 +565,7 @@ mod tests {
         assert_eq!(normalized, "/home/user/file.txt");
     }
 
-    // ========================================================================
     // Sandbox construction tests
-    // ========================================================================
 
     #[test]
     fn sandbox_new_with_valid_root() {
@@ -621,9 +613,7 @@ mod tests {
         assert_eq!(sandbox.working_dir(), PathBuf::from("."));
     }
 
-    // ========================================================================
     // Sandbox resolve_path tests
-    // ========================================================================
 
     #[test]
     fn resolve_path_relative_path_within_sandbox() {
@@ -732,9 +722,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // ========================================================================
     // Sandbox ensure_path_allowed tests
-    // ========================================================================
 
     #[test]
     fn ensure_path_allowed_within_sandbox() {
@@ -775,9 +763,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ========================================================================
     // DenyPattern tests
-    // ========================================================================
 
     #[test]
     fn deny_pattern_matches_glob() {

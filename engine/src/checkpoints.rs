@@ -577,9 +577,7 @@ fn format_bytes(bytes: usize) -> String {
     }
 }
 
-// ============================================================================
 // App integration (tool-loop checkpointing + /rewind command helpers)
-// ============================================================================
 
 impl crate::App {
     /// Create an automatic conversation-only checkpoint at the start of a user turn.
@@ -781,7 +779,6 @@ impl crate::App {
             current = self.context_manager.history().len();
         }
 
-        // Sync transcript view with truncated history.
         self.rebuild_display_from_history();
         self.invalidate_usage_cache();
         self.pending_user_message = None;
@@ -848,7 +845,6 @@ mod tests {
         assert!(store.is_empty());
         assert!(store.latest_id().is_none());
 
-        // Create a checkpoint with no files (conversation-only)
         let created = store.create_for_files(CheckpointKind::Turn, 5, Vec::<PathBuf>::new());
         assert_eq!(created.id, CheckpointId(0));
         assert_eq!(created.file_count, 0);
@@ -856,7 +852,6 @@ mod tests {
         assert!(!store.is_empty());
         assert_eq!(store.latest_id(), Some(CheckpointId(0)));
 
-        // Verify the checkpoint
         let proof = store.prepare(CheckpointId(0)).unwrap();
         let cp = store.checkpoint(proof);
         assert_eq!(cp.conversation_len(), 5);
@@ -866,14 +861,12 @@ mod tests {
     fn checkpoint_store_prune_after() {
         let mut store = CheckpointStore::default();
 
-        // Create 3 checkpoints
         store.create_for_files(CheckpointKind::Turn, 1, Vec::<PathBuf>::new());
         store.create_for_files(CheckpointKind::Turn, 2, Vec::<PathBuf>::new());
         store.create_for_files(CheckpointKind::Turn, 3, Vec::<PathBuf>::new());
 
         assert_eq!(store.summaries().len(), 3);
 
-        // Prune after checkpoint #1
         store.prune_after(CheckpointId(1));
         assert_eq!(store.summaries().len(), 2);
         assert_eq!(store.latest_id(), Some(CheckpointId(1)));
