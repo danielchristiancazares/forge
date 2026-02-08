@@ -665,6 +665,7 @@ impl ContextManager {
             json.as_bytes(),
             crate::AtomicWriteOptions {
                 sync_all: true,
+                dir_sync: true,
                 unix_mode: Some(0o600),
             },
         )?;

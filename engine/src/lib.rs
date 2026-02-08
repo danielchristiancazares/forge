@@ -28,7 +28,7 @@
 //! - [`QueuedUserMessage`]: Proof that a message is validated and ready to send
 //! - [`PreparedContext`]: Proof that context was built within token budget
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
@@ -443,12 +443,26 @@ pub struct App {
     pending_user_message: Option<(MessageId, String)>,
     /// Tool definitions to send with each request.
     tool_definitions: Vec<ToolDefinition>,
+    /// Tool names hidden from UI rendering (source-of-truth: `ToolExecutor::is_hidden()`).
+    hidden_tools: HashSet<String>,
     /// Tool registry for executors.
     tool_registry: std::sync::Arc<tools::ToolRegistry>,
     /// Tool settings derived from config.
     tool_settings: tools::ToolSettings,
     /// Tool journal for crash recovery.
     tool_journal: ToolJournal,
+    /// Pending stream journal step ID that needs commit+prune cleanup.
+    ///
+    /// Best-effort retries run during `tick()` when idle. If this remains uncleared,
+    /// `StreamJournal::begin_session()` will refuse to start new streams.
+    pending_stream_cleanup: Option<forge_context::StepId>,
+    pending_stream_cleanup_failures: u8,
+    /// Pending tool journal batch ID that needs pruning cleanup.
+    ///
+    /// Best-effort retries run during `tick()` when idle. If this remains uncleared,
+    /// `ToolJournal::begin_*batch()` will refuse to start new batches.
+    pending_tool_cleanup: Option<ToolBatchId>,
+    pending_tool_cleanup_failures: u8,
     /// File hash cache for tool safety checks.
     tool_file_cache: std::sync::Arc<tokio::sync::Mutex<tools::ToolFileCache>>,
     /// Checkpoints for rewind (per-turn conversation checkpoints + tool-edit snapshots).
@@ -479,6 +493,8 @@ pub struct App {
     last_ui_tick: Instant,
     /// Wall-clock timestamp for session autosave cadence (~3s).
     last_session_autosave: Instant,
+    /// Earliest time to attempt journal cleanup retries.
+    next_journal_cleanup_attempt: Instant,
     /// Session-wide log of files created and modified.
     session_changes: SessionChangeLog,
     /// File picker state for "@" reference feature.
@@ -923,6 +939,11 @@ impl App {
         &self.display
     }
 
+    /// Whether the named tool should be hidden from UI rendering.
+    pub fn is_tool_hidden(&self, name: &str) -> bool {
+        self.hidden_tools.contains(name)
+    }
+
     /// Version counter for display changes - used for render caching.
     pub fn display_version(&self) -> usize {
         self.display_version
@@ -1160,6 +1181,7 @@ impl App {
         self.poll_distillation();
         self.poll_tool_loop();
         self.poll_lsp_events();
+        self.poll_journal_cleanup();
 
         let now = Instant::now();
 

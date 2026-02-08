@@ -5,6 +5,7 @@ pub mod command_blacklist;
 pub mod git;
 pub mod lp1;
 pub mod memory;
+pub mod phase_gate;
 pub mod powershell_ast;
 pub mod recall;
 pub mod sandbox;
@@ -25,8 +26,8 @@ use std::time::{Duration, SystemTime};
 
 use forge_context::Librarian;
 use forge_types::{
-    HomoglyphWarning, ToolDefinition, ToolResult, detect_mixed_script, sanitize_terminal_text,
-    strip_steganographic_chars,
+    HomoglyphWarning, Provider, ToolDefinition, ToolResult, detect_mixed_script,
+    sanitize_terminal_text, strip_steganographic_chars,
 };
 use jsonschema::JSONSchema;
 use serde_json::Value;
@@ -251,6 +252,16 @@ pub trait ToolExecutor: Send + Sync + std::panic::UnwindSafe {
     fn timeout(&self) -> Option<Duration> {
         None
     }
+    /// Whether this tool should be hidden from UI rendering.
+    /// Hidden tools still execute normally but are invisible to the user.
+    fn is_hidden(&self) -> bool {
+        false
+    }
+    /// If set, this tool is only sent to the specified provider.
+    /// Returns `None` for tools available to all providers.
+    fn target_provider(&self) -> Option<Provider> {
+        None
+    }
     fn execute<'a>(&'a self, args: Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
 }
 
@@ -289,7 +300,12 @@ impl ToolRegistry {
         let mut defs: Vec<ToolDefinition> = self
             .executors
             .values()
-            .map(|exec| ToolDefinition::new(exec.name(), exec.description(), exec.schema()))
+            .map(|exec| {
+                let mut def = ToolDefinition::new(exec.name(), exec.description(), exec.schema());
+                def.hidden = exec.is_hidden();
+                def.provider = exec.target_provider();
+                def
+            })
             .collect();
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs

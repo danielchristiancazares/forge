@@ -9,15 +9,20 @@ This crate provides the foundational type system that enforces correctness at co
 - [Design Philosophy](#design-philosophy)
 - [Module Structure](#module-structure)
 - [NonEmpty String Types](#nonempty-string-types)
+- [PersistableContent](#persistablecontent)
 - [Provider and Model Types](#provider-and-model-types)
 - [API Key Types](#api-key-types)
 - [OpenAI Request Options](#openai-request-options)
 - [Caching and Output Limits](#caching-and-output-limits)
+- [Thought Signatures](#thought-signatures)
 - [Streaming Events](#streaming-events)
 - [API Usage Tracking](#api-usage-tracking)
 - [Tool Calling Types](#tool-calling-types)
 - [Message Types](#message-types)
 - [Terminal Sanitization](#terminal-sanitization)
+- [Steganographic Sanitization](#steganographic-sanitization)
+- [Homoglyph Detection](#homoglyph-detection)
+- [Text Utilities](#text-utilities)
 - [Type Relationships](#type-relationships)
 - [Error Types Summary](#error-types-summary)
 - [Testing](#testing)
@@ -37,6 +42,10 @@ Types validate their constraints when created, not when used. Once you have a va
 // NonEmptyString: Cannot be empty - fails at construction
 let s = NonEmptyString::new("")?;  // Err(EmptyStringError)
 
+// PersistableContent: Standalone \r normalized at construction
+let safe = PersistableContent::new("attack\roverwrite");
+assert_eq!(safe.as_str(), "attack\noverwrite");
+
 // OutputLimits: thinking_budget constraints enforced at creation
 let limits = OutputLimits::with_thinking(4096, 5000)?;  // Err: budget >= max
 
@@ -55,7 +64,7 @@ let model = Provider::Claude.parse_model("claude-opus-4-6")?;
 assert_eq!(model.provider(), Provider::Claude);
 
 // ApiKey variants are provider-specific
-let key = ApiKey::Claude("sk-ant-...".into());
+let key = ApiKey::claude("sk-ant-...");
 assert_eq!(key.provider(), Provider::Claude);
 ```
 
@@ -65,11 +74,12 @@ assert_eq!(key.provider(), Provider::Claude);
 
 ```rust
 pub enum Message {
-    System(SystemMessage),      // content, timestamp
-    User(UserMessage),          // content, timestamp
-    Assistant(AssistantMessage), // content, timestamp, model
-    ToolUse(ToolCall),          // id, name, arguments, optional thought_signature
-    ToolResult(ToolResult),     // tool_call_id, content, is_error
+    System(SystemMessage),        // content, timestamp
+    User(UserMessage),            // content, timestamp
+    Assistant(AssistantMessage),   // content, timestamp, model
+    Thinking(ThinkingMessage),     // content, signature, timestamp, model
+    ToolUse(ToolCall),            // id, name, arguments, thought_signature
+    ToolResult(ToolResult),       // tool_call_id, content, is_error
 }
 ```
 
@@ -87,6 +97,16 @@ The crate provides both options depending on use case:
 - `Cow<'static, str>` in `ModelName` avoids allocations for known models
 - `Deref` and `AsRef` implementations allow seamless string access
 - `sanitize_terminal_text` returns `Cow::Borrowed` when no changes needed
+- `strip_steganographic_chars` returns `Cow::Borrowed` when no changes needed
+- `PersistableContent::new` skips allocation when no normalization is needed
+
+### 6. Opaque Secret Handling
+
+`SecretString` and `ApiKey` prevent accidental credential disclosure:
+
+- No `Display` impl on `SecretString` (compile error on `format!("{}", secret)`)
+- `Debug` is redacted for both types
+- The only way to access the raw value is via `expose_secret()`
 
 ---
 
@@ -96,8 +116,10 @@ The crate provides both options depending on use case:
 forge-types/
 ├── Cargo.toml
 └── src/
-    ├── lib.rs        # All public types and core implementations
-    └── sanitize.rs   # Terminal text sanitization (security)
+    ├── lib.rs           # All public types and core implementations
+    ├── sanitize.rs      # Terminal text sanitization + steganographic stripping (security)
+    ├── text.rs          # Pure text helpers (truncation)
+    └── confusables.rs   # Homoglyph / mixed-script detection (security)
 ```
 
 **Dependencies** (minimal by design):
@@ -107,6 +129,7 @@ forge-types/
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
+unicode-script = "..."   # For mixed-script / homoglyph detection
 ```
 
 ---
@@ -233,6 +256,79 @@ assert_eq!(err.to_string(), "message content must not be empty");
 
 ---
 
+## PersistableContent
+
+A string type that normalizes standalone `\r` characters to `\n` at construction time, preventing log spoofing attacks where carriage returns overwrite preceding content in terminal display.
+
+**Invariants:**
+
+- No standalone `\r` exists (only `\r\n` pairs are permitted)
+- Normalization: standalone `\r` becomes `\n`; `\r\n` (Windows line endings) is preserved
+
+**Security Rationale:**
+
+```text
+Attack: "File saved\rERROR: Permission denied"
+Display: "ERROR: Permission denied" (overwrites "File saved")
+```
+
+By normalizing at construction, this attack vector is eliminated in all persisted content (history, journals, logs).
+
+**Construction:**
+
+```rust
+use forge_types::PersistableContent;
+
+// Standalone \r normalized to \n
+let safe = PersistableContent::new("File saved\rERROR: Permission denied");
+assert_eq!(safe.as_str(), "File saved\nERROR: Permission denied");
+
+// Windows line endings preserved
+let safe = PersistableContent::new("Line 1\r\nLine 2");
+assert_eq!(safe.as_str(), "Line 1\r\nLine 2");
+
+// Unix line endings preserved
+let safe = PersistableContent::new("Line 1\nLine 2");
+assert_eq!(safe.as_str(), "Line 1\nLine 2");
+
+// Empty strings are valid
+let safe = PersistableContent::new("");
+assert!(safe.is_empty());
+```
+
+**Access:**
+
+```rust
+// Explicit access
+let content: &str = safe.as_str();
+
+// Via Deref (seamless string operations)
+assert!(safe.starts_with("File"));
+
+// Via AsRef<str>
+fn accepts_str(s: impl AsRef<str>) { }
+accepts_str(&safe);
+
+// Length and emptiness
+assert!(!safe.is_empty());
+let len = safe.len();
+
+// Extract inner String
+let raw: String = safe.into_inner();
+let raw: String = safe.into();  // via From trait
+```
+
+**Performance:**
+
+Uses a fast-path check: if no standalone `\r` is found, no allocation is performed. Only strings containing the attack vector allocate.
+
+**Serde Behavior:**
+
+- Uses `#[serde(transparent)]` -- serializes/deserializes as a plain JSON string
+- Deserialization re-normalizes (the `new()` constructor runs on the deserialized string)
+
+---
+
 ## Provider and Model Types
 
 ### Provider
@@ -305,11 +401,11 @@ assert_eq!(model.as_str(), "gemini-3-pro-preview");
 // List available models
 let models = Provider::Claude.available_models();
 let model_ids: Vec<&'static str> = models.iter().map(|model| model.model_id()).collect();
-// ["claude-opus-4-6", "claude-sonnet-4-5-20250514", "claude-haiku-4-5-20251001"]
+// ["claude-opus-4-6", "claude-haiku-4-5-20251001"]
 
 let models = Provider::OpenAI.available_models();
 let model_ids: Vec<&'static str> = models.iter().map(|model| model.model_id()).collect();
-// ["gpt-5.2", "gpt-5.2-pro"]
+// ["gpt-5.2-pro", "gpt-5.2"]
 
 let models = Provider::Gemini.available_models();
 let model_ids: Vec<&'static str> = models.iter().map(|model| model.model_id()).collect();
@@ -317,6 +413,52 @@ let model_ids: Vec<&'static str> = models.iter().map(|model| model.model_id()).c
 
 // Parse model name with validation
 let model = Provider::Claude.parse_model("claude-opus-4-6")?;
+```
+
+### PredefinedModel
+
+Enumeration of known models with associated metadata.
+
+**Variants:**
+
+| Variant | Model ID | Display Name | Model Name | Firm |
+| ------- | -------- | ------------ | ---------- | ---- |
+| `ClaudeOpus` | `claude-opus-4-6` | Anthropic Claude Opus 4.6 | Opus 4.6 | Anthropic |
+| `ClaudeHaiku` | `claude-haiku-4-5-20251001` | Anthropic Claude Haiku 4.5 | Haiku 4.5 | Anthropic |
+| `Gpt52Pro` | `gpt-5.2-pro` | OpenAI GPT 5.2 Pro | GPT 5.2 Pro | OpenAI |
+| `Gpt52` | `gpt-5.2` | OpenAI GPT 5.2 | GPT 5.2 | OpenAI |
+| `GeminiPro` | `gemini-3-pro-preview` | Google Gemini 3 Pro | Gemini 3 Pro | Google |
+| `GeminiFlash` | `gemini-3-flash-preview` | Google Gemini 3 Flash | Gemini 3 Flash | Google |
+
+**Methods:**
+
+```rust
+use forge_types::PredefinedModel;
+
+let model = PredefinedModel::ClaudeOpus;
+
+// Metadata accessors (all const)
+assert_eq!(model.model_id(), "claude-opus-4-6");
+assert_eq!(model.display_name(), "Anthropic Claude Opus 4.6");
+assert_eq!(model.model_name(), "Opus 4.6");
+assert_eq!(model.firm_name(), "Anthropic");
+assert_eq!(model.provider(), Provider::Claude);
+
+// Convert to ModelName
+let model_name = model.to_model_name();
+
+// Parse from model ID string (case-insensitive)
+let parsed = PredefinedModel::from_model_id("gpt-5.2")?;
+assert_eq!(parsed, PredefinedModel::Gpt52);
+
+// Parse scoped to a specific provider
+let parsed = PredefinedModel::from_provider_and_id(Provider::Gemini, "gemini-3-pro-preview")?;
+assert_eq!(parsed, PredefinedModel::GeminiPro);
+
+// List all predefined models
+for m in PredefinedModel::all() {
+    println!("{}: {} ({})", m.model_id(), m.display_name(), m.firm_name());
+}
 ```
 
 ### ModelName
@@ -377,9 +519,34 @@ Model names always use `Cow::Borrowed` to avoid allocation:
 let known = Provider::Claude.default_model();  // Cow::Borrowed
 ```
 
+### EnumParseError
+
+Structured error returned when parsing provider names, model IDs, or OpenAI option strings from user input.
+
+**Fields:**
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `kind` | `EnumKind` | Which enum was being parsed |
+| `raw` | `String` | The invalid input value |
+| `expected` | `&'static [&'static str]` | Valid values |
+
+**EnumKind Variants:**
+
+| Variant | Description |
+| ------- | ----------- |
+| `Provider` | Provider name parsing |
+| `PredefinedModel` | Model ID parsing |
+| `OpenAIReasoningEffort` | Reasoning effort parsing |
+| `OpenAIReasoningSummary` | Reasoning summary parsing |
+| `OpenAITextVerbosity` | Text verbosity parsing |
+| `OpenAITruncation` | Truncation parsing |
+
+**Error message format:** `"invalid {kind} value '{raw}'; expected one of: {expected:?}"`
+
 ### ModelParseError
 
-Errors that occur when parsing a model name.
+Errors that occur when parsing a model name via `ModelName::parse()`.
 
 | Variant | Condition | Message |
 | ------- | --------- | ------- |
@@ -393,17 +560,40 @@ Errors that occur when parsing a model name.
 
 ## API Key Types
 
+### SecretString
+
+An opaque wrapper for secret strings that prevents accidental disclosure in logs and error messages.
+
+**Security Properties:**
+
+- No `Display` impl -- `format!("{}", secret)` is a compile error
+- `Debug` output is redacted: `SecretString(<redacted>)`
+- The only way to access the raw value is via `expose_secret()`
+- Every access point is explicitly visible and greppable
+
+```rust
+use forge_types::SecretString;
+
+let secret = SecretString::new("sk-ant-api03-secret".to_string());
+
+// Access the raw value (deliberately named for auditability)
+assert_eq!(secret.expose_secret(), "sk-ant-api03-secret");
+
+// Debug is redacted
+assert_eq!(format!("{:?}", secret), "SecretString(<redacted>)");
+```
+
 ### ApiKey
 
-A provider-scoped API key that prevents using a key with the wrong provider.
+A provider-scoped API key wrapping `SecretString` to prevent using a key with the wrong provider and prevent accidental credential disclosure.
 
 **Variants:**
 
 ```rust
 pub enum ApiKey {
-    Claude(String),
-    OpenAI(String),
-    Gemini(String),
+    Claude(SecretString),
+    OpenAI(SecretString),
+    Gemini(SecretString),
 }
 ```
 
@@ -412,32 +602,32 @@ pub enum ApiKey {
 **Security:** The `Debug` implementation redacts the key value to prevent accidental credential disclosure in logs or error messages:
 
 ```rust
-let key = ApiKey::Claude("sk-ant-api03-secret".into());
+let key = ApiKey::claude("sk-ant-api03-secret");
 // Debug output: ApiKey::Claude(<redacted>)
 ```
 
-**Usage:**
+**Construction and Usage:**
 
 ```rust
 use forge_types::{ApiKey, Provider};
 
-// Create provider-specific keys
-let claude_key = ApiKey::Claude("sk-ant-api03-...".into());
-let openai_key = ApiKey::OpenAI("sk-proj-...".into());
-let gemini_key = ApiKey::Gemini("AIza...".into());
+// Create provider-specific keys via opaque constructors
+let claude_key = ApiKey::claude("sk-ant-api03-...");
+let openai_key = ApiKey::openai("sk-proj-...");
+let gemini_key = ApiKey::gemini("AIza...");
 
 // Access provider
 assert_eq!(claude_key.provider(), Provider::Claude);
 assert_eq!(openai_key.provider(), Provider::OpenAI);
 assert_eq!(gemini_key.provider(), Provider::Gemini);
 
-// Access key string
-assert_eq!(claude_key.as_str(), "sk-ant-api03-...");
+// Access key string (deliberately named for auditability)
+assert_eq!(claude_key.expose_secret(), "sk-ant-api03-...");
 ```
 
 **Design Rationale:**
 
-By making `ApiKey` a sum type rather than a struct with a provider field, the compiler ensures you cannot accidentally pass a Claude key to OpenAI client code. The key and provider are inseparable.
+By making `ApiKey` a sum type rather than a struct with a provider field, the compiler ensures you cannot accidentally pass a Claude key to OpenAI client code. The key and provider are inseparable. Wrapping in `SecretString` further prevents any accidental disclosure path.
 
 ---
 
@@ -655,6 +845,54 @@ Errors when constructing invalid output limits.
 
 ---
 
+## Thought Signatures
+
+Types for tracking provider-specific thinking/reasoning signatures required for API replay.
+
+### ThoughtSignature
+
+An opaque wrapper for the encrypted thinking signature string that some providers (e.g., Claude) require when replaying conversations with thinking enabled.
+
+```rust
+use forge_types::ThoughtSignature;
+
+let sig = ThoughtSignature::new("encrypted-signature-data");
+assert_eq!(sig.as_str(), "encrypted-signature-data");
+
+// Incremental building during streaming
+let mut sig = ThoughtSignature::new("");
+sig.push_str("partial");
+sig.push_str("-data");
+assert_eq!(sig.as_str(), "partial-data");
+
+// From conversions
+let sig: ThoughtSignature = "sig-abc".into();
+let sig: ThoughtSignature = String::from("sig-abc").into();
+```
+
+### ThoughtSignatureState
+
+Tracks whether a thinking block or tool call has a provider signature attached.
+
+| Variant | Description |
+| ------- | ----------- |
+| `Unsigned` | No signature present |
+| `Signed(ThoughtSignature)` | Signature attached for API replay |
+
+```rust
+use forge_types::{ThoughtSignatureState, ThoughtSignature};
+
+let unsigned = ThoughtSignatureState::Unsigned;
+assert!(!unsigned.is_signed());
+
+let signed = ThoughtSignatureState::Signed(ThoughtSignature::new("sig"));
+assert!(signed.is_signed());
+```
+
+**Serde:** Serializes with `#[serde(tag = "state", content = "signature", rename_all = "snake_case")]`.
+
+---
+
 ## Streaming Events
 
 ### StreamEvent
@@ -665,14 +903,15 @@ Events emitted during streaming API responses.
 | ------- | ----------- |
 | `TextDelta(String)` | Incremental text content |
 | `ThinkingDelta(String)` | Provider reasoning content (Claude extended thinking or OpenAI reasoning summaries) |
-| `ToolCallStart { id, name, thought_signature }` | Tool use content block began |
+| `ThinkingSignature(String)` | Encrypted thinking signature for API replay (Claude extended thinking) |
+| `ToolCallStart { id, name, thought_signature }` | Tool use content block began; `thought_signature` is `ThoughtSignatureState` |
 | `ToolCallDelta { id, arguments }` | Tool call JSON arguments chunk |
 | `Usage(ApiUsage)` | API-reported token usage from provider |
 | `Done` | Stream completed successfully |
 | `Error(String)` | Error occurred during streaming |
 
 ```rust
-use forge_types::{StreamEvent, ApiUsage};
+use forge_types::{StreamEvent, ApiUsage, ThoughtSignatureState};
 
 fn handle_event(event: StreamEvent, response: &mut String, thinking: &mut String) {
     match event {
@@ -682,12 +921,19 @@ fn handle_event(event: StreamEvent, response: &mut String, thinking: &mut String
         StreamEvent::ThinkingDelta(thought) => {
             thinking.push_str(&thought);
         }
+        StreamEvent::ThinkingSignature(sig) => {
+            // Store signature for API replay
+            println!("Thinking signature received: {} bytes", sig.len());
+        }
         StreamEvent::ToolCallStart {
             id,
             name,
-            thought_signature: _,
+            thought_signature,
         } => {
             println!("Tool call started: {} ({})", name, id);
+            if thought_signature.is_signed() {
+                println!("  (has thought signature)");
+            }
         }
         StreamEvent::ToolCallDelta { id, arguments } => {
             println!("Tool {} args: {}", id, arguments);
@@ -829,6 +1075,8 @@ Definition of a tool that can be called by the LLM.
 | `name` | `String` | The function name |
 | `description` | `String` | What the tool does |
 | `parameters` | `serde_json::Value` | JSON Schema for parameters |
+| `hidden` | `bool` | Whether this tool is hidden from UI rendering (default `false`). Hidden tools execute normally but are invisible to the user. |
+| `provider` | `Option<Provider>` | If set, this tool is only included in the tool manifest for the specified provider (default `None`). |
 
 ```rust
 use forge_types::ToolDefinition;
@@ -855,6 +1103,8 @@ let tool = ToolDefinition::new(
 );
 
 assert_eq!(tool.name, "get_weather");
+assert!(!tool.hidden);           // default: visible
+assert!(tool.provider.is_none()); // default: all providers
 ```
 
 ### ToolCall
@@ -868,13 +1118,13 @@ A tool call requested by the LLM during a response.
 | `id` | `String` | Unique identifier (for matching with results) |
 | `name` | `String` | The tool being called |
 | `arguments` | `serde_json::Value` | Parsed JSON arguments |
-| `thought_signature` | `Option<String>` | Optional thought signature (Gemini) |
+| `thought_signature` | `ThoughtSignatureState` | Thought signature state for providers that require it (e.g., Gemini) |
 
 ```rust
-use forge_types::ToolCall;
+use forge_types::{ToolCall, ThoughtSignature, ThoughtSignatureState};
 use serde_json::json;
 
-// Basic construction
+// Basic construction (unsigned)
 let call = ToolCall::new(
     "call_abc123",
     "get_weather",
@@ -886,17 +1136,17 @@ let call = ToolCall::new(
 
 assert_eq!(call.id, "call_abc123");
 assert_eq!(call.name, "get_weather");
-assert!(call.thought_signature.is_none());
+assert!(!call.signature_state().is_signed());
 
-// With thought signature (for Gemini)
-let call = ToolCall::new_with_thought_signature(
+// With thought signature (for providers that require it)
+let call = ToolCall::new_signed(
     "call_xyz789",
     "search",
     json!({"query": "rust programming"}),
-    Some("sig_abc".to_string()),
+    ThoughtSignature::new("sig_abc"),
 );
 
-assert_eq!(call.thought_signature, Some("sig_abc".to_string()));
+assert!(call.signature_state().is_signed());
 ```
 
 ### ToolResult
@@ -982,6 +1232,37 @@ assert_eq!(msg.model().as_str(), "claude-opus-4-6");
 
 **Fields:** `content: NonEmptyString`, `timestamp: SystemTime`, `model: ModelName`
 
+### ThinkingMessage
+
+Provider reasoning/thinking content (Claude extended thinking, Gemini thinking, etc.).
+
+This is separate from `AssistantMessage` because thinking is metadata about the reasoning process, not part of the actual response. It can be shown/hidden independently in the UI.
+
+```rust
+use forge_types::{ThinkingMessage, ModelName, Provider, NonEmptyString};
+
+let model = Provider::Claude.default_model();
+let content = NonEmptyString::new("Let me think about this...")?;
+
+// Without signature
+let msg = ThinkingMessage::new(model.clone(), content.clone());
+assert_eq!(msg.content(), "Let me think about this...");
+assert!(!msg.has_signature());
+assert_eq!(msg.provider(), Provider::Claude);
+assert_eq!(msg.model().as_str(), "claude-opus-4-6");
+
+// With encrypted signature (for API replay)
+let msg = ThinkingMessage::with_signature(
+    model,
+    content,
+    "encrypted-sig-data".to_string(),
+);
+assert!(msg.has_signature());
+assert!(msg.signature_state().is_signed());
+```
+
+**Fields:** `content: NonEmptyString`, `signature: ThoughtSignatureState`, `timestamp: SystemTime`, `model: ModelName`
+
 ### Message
 
 A sum type representing any message in a conversation.
@@ -993,6 +1274,7 @@ A sum type representing any message in a conversation.
 | `System(SystemMessage)` | System prompt | "system" |
 | `User(UserMessage)` | User input | "user" |
 | `Assistant(AssistantMessage)` | Assistant response | "assistant" |
+| `Thinking(ThinkingMessage)` | Provider reasoning content | "assistant" |
 | `ToolUse(ToolCall)` | Tool call request | "assistant" |
 | `ToolResult(ToolResult)` | Tool execution result | "user" |
 
@@ -1008,6 +1290,17 @@ let user = Message::user(NonEmptyString::new("Hi!")?);
 let assistant = Message::assistant(
     Provider::Claude.default_model(),
     NonEmptyString::new("Hello!")?
+);
+
+// Thinking messages
+let thinking = Message::thinking(
+    Provider::Claude.default_model(),
+    NonEmptyString::new("Let me reason...")?
+);
+let thinking_signed = Message::thinking_with_signature(
+    Provider::Claude.default_model(),
+    NonEmptyString::new("Let me reason...")?,
+    "encrypted-sig".to_string(),
 );
 
 // Convenience constructor with validation
@@ -1034,8 +1327,9 @@ let tool_result = Message::tool_result(ToolResult::success(
 assert_eq!(system.role_str(), "system");
 assert_eq!(user.role_str(), "user");
 assert_eq!(assistant.role_str(), "assistant");
-assert_eq!(tool_use.role_str(), "assistant");    // Tool use is from assistant
-assert_eq!(tool_result.role_str(), "user");      // Tool result is sent as user role
+assert_eq!(thinking.role_str(), "assistant");     // Thinking is assistant-role content
+assert_eq!(tool_use.role_str(), "assistant");     // Tool use is from assistant
+assert_eq!(tool_result.role_str(), "user");       // Tool result is sent as user role
 
 // Content access
 assert_eq!(user.content(), "Hello");
@@ -1046,6 +1340,9 @@ match &message {
     Message::User(m) => println!("User: {}", m.content()),
     Message::Assistant(m) => {
         println!("Assistant ({:?}): {}", m.provider(), m.content());
+    }
+    Message::Thinking(m) => {
+        println!("Thinking ({:?}): {}", m.provider(), m.content());
     }
     Message::ToolUse(call) => {
         println!("Tool call: {} with {:?}", call.name, call.arguments);
@@ -1058,7 +1355,7 @@ match &message {
 
 **Serde Behavior:**
 
-- `AssistantMessage` model info is flattened via `#[serde(flatten)]`
+- `AssistantMessage` and `ThinkingMessage` model info is flattened via `#[serde(flatten)]`
 - Each variant serializes with its role and content
 
 ### CacheableMessage
@@ -1157,6 +1454,170 @@ assert_eq!(sanitize_terminal_text("A\x00B\x01C"), "ABC");
 
 ---
 
+## Steganographic Sanitization
+
+### strip_steganographic_chars
+
+Strips invisible Unicode characters used for steganographic prompt injection from untrusted content entering the LLM context.
+
+**Threat Model:**
+
+Untrusted content (web pages, file contents, command output) may contain invisible Unicode payloads that encode instructions the LLM interprets but humans cannot see. The Unicode Tags block (U+E0000-U+E007F) is the sharpest vector: each codepoint maps directly to an ASCII character, enabling plaintext instruction encoding with zero visual presence.
+
+**Stripped Categories:**
+
+| Category | Range | Attack Vector |
+|----------|-------|---------------|
+| Unicode Tags | U+E0000-U+E007F | ASCII smuggling (direct mapping) |
+| Zero-width chars | U+200B-U+200F, U+2060, U+FEFF | Binary steganography |
+| Bidi controls | U+202A-U+202E, U+2066-U+2069, U+061C | Visual spoofing (Trojan Source) |
+| Variation selectors | U+FE00-U+FE0F, U+E0100-U+E01EF | Payload encoding |
+| Invisible operators | U+2061-U+2064 | Hidden semantic content |
+| Interlinear annotations | U+FFF9-U+FFFB | Hidden text layers |
+| Soft hyphen | U+00AD | Token-splitting attacks |
+| Combining grapheme joiner | U+034F | Token manipulation |
+| Hangul fillers | U+115F, U+1160, U+3164, U+FFA0 | Invisible padding |
+| Mongolian vowel separator | U+180E | Format control abuse |
+| Khmer inherent vowels | U+17B4, U+17B5 | Invisible carriers |
+
+**Scope:**
+
+Apply to untrusted content entering the LLM context:
+- Web-fetched content (webfetch extraction output)
+- Tool results (file reads, command output)
+- NOT user direct input (would break emoji ZWJ sequences)
+
+**Performance:**
+Returns `Cow::Borrowed` when no steganographic characters are found (common case), avoiding allocation.
+
+**Composability:**
+
+This function handles a different threat class than `sanitize_terminal_text`:
+- `sanitize_terminal_text`: terminal escape injection (display safety)
+- `strip_steganographic_chars`: invisible prompt injection (LLM context safety)
+
+For untrusted content, apply both:
+
+```rust
+use forge_types::{sanitize_terminal_text, strip_steganographic_chars};
+
+let raw = "Hello\x1b[31m\u{200B}\u{E0041}World\x1b[0m";
+let safe = strip_steganographic_chars(&sanitize_terminal_text(raw));
+assert_eq!(safe, "HelloWorld");
+```
+
+**Examples:**
+
+```rust
+use forge_types::strip_steganographic_chars;
+use std::borrow::Cow;
+
+// Clean text passes through without allocation
+let clean = "Hello, world!";
+match strip_steganographic_chars(clean) {
+    Cow::Borrowed(s) => assert_eq!(s, clean),
+    Cow::Owned(_) => panic!("unexpected allocation"),
+}
+
+// Zero-width spaces stripped
+assert_eq!(strip_steganographic_chars("Hello\u{200B}World"), "HelloWorld");
+
+// Unicode Tags block stripped (ASCII smuggling vector)
+let tags = "Clean\u{E0069}\u{E0067}\u{E006E}\u{E006F}\u{E0072}\u{E0065}Text";
+assert_eq!(strip_steganographic_chars(tags), "CleanText");
+
+// Soft hyphen stripped (token-splitting attack)
+assert_eq!(
+    strip_steganographic_chars("ig\u{00AD}nore previous instructions"),
+    "ignore previous instructions"
+);
+```
+
+---
+
+## Homoglyph Detection
+
+### detect_mixed_script
+
+Detects mixed-script content that could indicate homoglyph attacks, where visually-similar characters from different Unicode scripts create deceptive text (e.g., Cyrillic 'a' looks like Latin 'a').
+
+This function is a **mechanism** (reports the fact) per IFA-8. The caller (UI) makes the **policy** decision about how to display the warning.
+
+**Detection Logic:**
+
+Only flags Latin mixed with Cyrillic, Greek, Armenian, or Cherokee (highest attack surface for English-language tools). Pure non-Latin scripts (legitimate non-English content) are not flagged.
+
+**Fast Path:** ASCII-only strings return `None` immediately without character iteration.
+
+```rust
+use forge_types::detect_mixed_script;
+
+// Cyrillic 'a' (U+0430) looks like Latin 'a'
+let warning = detect_mixed_script("paypal.com", "url");
+assert!(warning.is_some());
+
+// Pure Latin is fine
+assert!(detect_mixed_script("paypal.com", "url").is_none());
+
+// Pure Cyrillic is fine (legitimate Russian content)
+assert!(detect_mixed_script("hello", "text").is_none());
+```
+
+### HomoglyphWarning
+
+Proof object that homoglyph analysis was performed and detected suspicious content.
+
+**Fields:**
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `field_name` | `String` | The field name where mixed scripts were detected (e.g., "url", "command") |
+| `snippet` | `String` | A truncated snippet of the suspicious content for display (max 40 chars) |
+| `scripts` | `Vec<Script>` | The scripts detected in the content |
+
+```rust
+use forge_types::HomoglyphWarning;
+
+// Assuming a warning was returned by detect_mixed_script
+let warning: HomoglyphWarning = /* ... */;
+println!("Mixed scripts in {}: {} ({})",
+    warning.field_name,
+    warning.snippet,
+    warning.scripts_display()  // e.g., "Latin, Cyrillic"
+);
+```
+
+---
+
+## Text Utilities
+
+### truncate_with_ellipsis
+
+Truncates a string to a maximum character length, adding `...` if truncation occurs.
+
+- Trims surrounding whitespace before truncating
+- Uses `char` count (not bytes) to avoid splitting Unicode scalar values
+- Enforces a minimum `max` of 3 so the ellipsis always fits
+
+```rust
+use forge_types::truncate_with_ellipsis;
+
+// Short strings pass through (after trimming)
+assert_eq!(truncate_with_ellipsis("hello", 10), "hello");
+assert_eq!(truncate_with_ellipsis("  hello  ", 10), "hello");
+
+// Exact length unchanged
+assert_eq!(truncate_with_ellipsis("hello", 5), "hello");
+
+// Long strings truncated with ellipsis
+assert_eq!(truncate_with_ellipsis("hello world", 8), "hello...");
+
+// Minimum max is 3
+assert_eq!(truncate_with_ellipsis("hello", 1), "...");
+```
+
+---
+
 ## Type Relationships
 
 ```text
@@ -1167,25 +1628,25 @@ assert_eq!(sanitize_terminal_text("A\x00B\x01C"), "ABC");
     |                     |                      |
 SystemMessage        UserMessage          AssistantMessage
     |                     |                      |
-    +---------------------+-----+----------------+
-                          |     |
-                     +----+     +----+
-                     |              |
-                 ToolCall      ToolResult
-                     |              |
-                     +------+-------+
+    +---------------------+-----+--------+-------+
+                          |     |        |
+                     +----+     +----+   |
+                     |              |    |
+                 ToolCall      ToolResult |
+                     |              |    |
+                     +------+-------+    |
+                            |            |
+                            v            |
+                        Message  <-------+---- ThinkingMessage
                             |
                             v
-                        Message  <------>  CacheableMessage
-                                                |
-                                                v
-                                            CacheHint
+                    CacheableMessage -------> CacheHint
 
 Provider -----> PredefinedModel
     |               |
     |               +---> ModelName (scoped)
     |
-    +-----> ApiKey (scoped)
+    +-----> ApiKey (scoped) -------> SecretString
     |
     +-----> OpenAIRequestOptions
                 |
@@ -1194,13 +1655,25 @@ Provider -----> PredefinedModel
                 +---> OpenAITextVerbosity
                 +---> OpenAITruncation
 
-ToolDefinition (standalone - tool schemas)
+ThoughtSignature -----> ThoughtSignatureState
+                            |
+                            +---> ToolCall.thought_signature
+                            +---> ThinkingMessage.signature
+                            +---> StreamEvent::ToolCallStart
+
+ToolDefinition (standalone - tool schemas, optional hidden + provider)
+
+PersistableContent (standalone - safe-persisted strings)
 
 StreamEvent -----> StreamFinishReason
     |
     +-----> ApiUsage (token tracking)
 
-OutputLimits (validated invariants)
+OutputLimits -----> ThinkingBudget -----> ThinkingState
+
+EnumParseError -----> EnumKind
+
+HomoglyphWarning (proof object from detect_mixed_script)
 ```
 
 ---
@@ -1215,6 +1688,7 @@ OutputLimits (validated invariants)
 | `ModelParseError::OpenAIMinimum` | `ModelName::parse()` | OpenAI model without `gpt-5` prefix |
 | `ModelParseError::GeminiPrefix` | `ModelName::parse()` | Gemini model without `gemini-` prefix |
 | `ModelParseError::UnknownModel` | `ModelName::parse()` | Model name not in the predefined catalog |
+| `EnumParseError` | `Provider::parse()`, `PredefinedModel::from_model_id()`, OpenAI option `parse()` methods | Invalid string for the target enum; includes `kind`, `raw`, and `expected` values |
 | `OutputLimitsError::ThinkingBudgetTooSmall` | `OutputLimits::with_thinking()` | `thinking_budget < 1024` |
 | `OutputLimitsError::ThinkingBudgetTooLarge` | `OutputLimits::with_thinking()` | `thinking_budget >= max_output_tokens` |
 
@@ -1233,12 +1707,21 @@ cargo test -p forge-types
 The test suite verifies:
 
 - `NonEmptyString` rejects empty and whitespace-only strings
+- `PersistableContent` normalizes standalone `\r` to `\n` and preserves `\r\n`
 - `Provider::parse()` handles all aliases correctly
 - `ModelName::parse()` validates provider prefix requirements and known model list
+- `PredefinedModel::from_model_id()` and `from_provider_and_id()` resolve correctly
 - `OutputLimits::with_thinking()` enforces budget constraints
+- `ApiKey` opaque constructors and `expose_secret()` work correctly
 - `ApiUsage` arithmetic and aggregation functions
 - `sanitize_terminal_text()` strips all dangerous escape sequences
 - `sanitize_terminal_text()` preserves safe content without allocation
+- `strip_steganographic_chars()` strips all invisible Unicode injection vectors
+- `strip_steganographic_chars()` preserves normal text without allocation
+- `strip_steganographic_chars()` composes correctly with `sanitize_terminal_text()`
+- `detect_mixed_script()` flags Latin mixed with Cyrillic/Greek/Armenian/Cherokee
+- `detect_mixed_script()` ignores pure non-Latin scripts and ASCII-only input
+- `truncate_with_ellipsis()` truncates correctly and enforces minimum length
 
 ---
 
@@ -1256,9 +1739,10 @@ The test suite verifies:
    - `parse()` - add parsing aliases
    - `from_model_name()` - add model id detection
    - `all()` - add to static slice
-3. Add variant(s) to `PredefinedModel` with canonical model IDs
-4. Add variant to `ApiKey` enum
+3. Add variant(s) to `PredefinedModel` with canonical model IDs and implement all metadata methods (`model_id()`, `display_name()`, `model_name()`, `firm_name()`, `provider()`)
+4. Add variant to `ApiKey` enum with opaque constructor (`ApiKey::new_provider(impl Into<String>)`)
 5. Update `ModelName::parse()` if provider has prefix requirements
+6. Add model ID constants to the relevant `*_MODEL_IDS` array and `ALL_MODEL_IDS`
 
 ### Adding a New Message Type
 
@@ -1273,7 +1757,8 @@ The test suite verifies:
 Follow the pattern of `OpenAIReasoningEffort`:
 
 1. Define enum with `#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]`
-2. Implement `parse(&str) -> Option<Self>` for user input
-3. Implement `as_str(self) -> &'static str` for API serialization
-4. Mark default variant with `#[default]`
-
+2. Add variant to `EnumKind` with display string in `as_str()`
+3. Add a `const` array of valid string values
+4. Implement `parse(&str) -> Result<Self, EnumParseError>` for user input
+5. Implement `as_str(self) -> &'static str` for API serialization
+6. Mark default variant with `#[default]`

@@ -30,6 +30,8 @@ Desktop.ini
 # Bug analysis artifacts
 forge-source.zip
 sha256.txt
+CONTEXT.md
+DIGEST.md
 /gemini-review/
 
 # Test artifacts

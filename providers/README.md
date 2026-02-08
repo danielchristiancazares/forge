@@ -1,26 +1,28 @@
 # forge-providers
 
-LLM API client layer for the Forge application. Provides streaming HTTP communication with Claude, OpenAI, and Gemini APIs through a unified interface.
+LLM API client layer for the Forge application. Provides streaming HTTP communication with Claude, OpenAI, and Gemini APIs through a unified interface, with automatic retry and typed SSE event deserialization.
 
 ## LLM-TOC
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
-|-------|---------|
-| 1-42 | Header, LLM-TOC, Table of Contents |
-| 43-88 | Overview |
-| 89-154 | Architecture |
-| 155-208 | Provider System |
-| 209-304 | Type-Driven Design |
-| 305-404 | SSE Streaming Infrastructure |
-| 405-470 | Claude API Client |
-| 471-564 | OpenAI API Client |
-| 565-684 | Gemini API Client |
-| 685-737 | Public API Reference |
-| 738-754 | Model Limits |
-| 755-934 | Code Examples |
-| 935-971 | Error Handling |
-| 972-1047 | Extension Guide |
-| 1048-1062 | Quick Reference |
+| :--- | :--- |
+| 1-45 | Header, LLM-TOC, Table of Contents |
+| 47-95 | Overview |
+| 97-164 | Architecture |
+| 166-218 | Provider System |
+| 220-333 | Type-Driven Design |
+| 335-438 | SSE Streaming Infrastructure |
+| 440-476 | Typed SSE Event Structures |
+| 478-522 | Retry Infrastructure |
+| 524-633 | Claude API Client |
+| 635-730 | OpenAI API Client |
+| 732-860 | Gemini API Client |
+| 862-920 | Public API Reference |
+| 922-936 | Model Limits |
+| 938-1121 | Code Examples |
+| 1123-1166 | Error Handling |
+| 1168-1253 | Extension Guide |
+| 1255-1274 | Quick Reference |
 
 ## Table of Contents
 
@@ -29,29 +31,32 @@ LLM API client layer for the Forge application. Provides streaming HTTP communic
 3. [Provider System](#provider-system)
 4. [Type-Driven Design](#type-driven-design)
 5. [SSE Streaming Infrastructure](#sse-streaming-infrastructure)
-6. [Claude API Client](#claude-api-client)
-7. [OpenAI API Client](#openai-api-client)
-8. [Gemini API Client](#gemini-api-client)
-9. [Public API Reference](#public-api-reference)
-10. [Model Limits](#model-limits)
-11. [Code Examples](#code-examples)
-12. [Error Handling](#error-handling)
-13. [Extension Guide](#extension-guide)
+6. [Typed SSE Event Structures](#typed-sse-event-structures)
+7. [Retry Infrastructure](#retry-infrastructure)
+8. [Claude API Client](#claude-api-client)
+9. [OpenAI API Client](#openai-api-client)
+10. [Gemini API Client](#gemini-api-client)
+11. [Public API Reference](#public-api-reference)
+12. [Model Limits](#model-limits)
+13. [Code Examples](#code-examples)
+14. [Error Handling](#error-handling)
+15. [Extension Guide](#extension-guide)
 
 ---
 
 ## Overview
 
-The `forge-providers` crate handles all HTTP communication with LLM APIs. It provides a unified streaming interface that abstracts provider differences while preserving provider-specific features like Claude's extended thinking and OpenAI's reasoning controls.
+The `forge-providers` crate handles all HTTP communication with LLM APIs. It provides a unified streaming interface that abstracts provider differences while preserving provider-specific features like Claude's extended thinking modes, OpenAI's reasoning controls, and Gemini's context caching.
 
 ### Key Responsibilities
 
 | Responsibility | Description |
 | :--- | :--- |
-| **HTTP Communication** | Send requests to Claude, OpenAI, and Gemini APIs |
+| **HTTP Communication** | Send requests to Claude, OpenAI, and Gemini APIs with retry |
 | **SSE Parsing** | Parse Server-Sent Events streams from all three providers |
 | **Request Building** | Construct provider-specific request payloads |
 | **Event Normalization** | Convert provider-specific events to unified `StreamEvent` |
+| **Automatic Retry** | Exponential backoff with jitter, `Retry-After` support, idempotency keys |
 | **Context Caching** | Manage Gemini explicit context caches for large prompts |
 | **Configuration Validation** | Ensure API keys match their intended providers |
 
@@ -59,15 +64,17 @@ The `forge-providers` crate handles all HTTP communication with LLM APIs. It pro
 
 ```text
 providers/
-├── Cargo.toml          # Crate manifest
-└── src/
-    └── lib.rs          # All provider implementations
-        ├── SSE parsing functions
-        ├── ApiConfig struct
-        ├── send_message() dispatch
-        ├── pub mod claude
-        ├── pub mod openai
-        └── pub mod gemini
++-- Cargo.toml          # Crate manifest
++-- src/
+    +-- lib.rs          # Provider implementations and dispatch
+    |   +-- SSE parsing functions
+    |   +-- ApiConfig struct
+    |   +-- send_message() dispatch
+    |   +-- pub mod claude
+    |   +-- pub mod openai
+    |   +-- pub mod gemini
+    +-- retry.rs        # HTTP retry with exponential backoff (Stainless SDK compatible)
+    +-- sse_types.rs    # Typed serde structs for Claude, OpenAI, Gemini SSE events
 ```
 
 ### Dependencies
@@ -80,7 +87,8 @@ providers/
 | `tokio` | Async runtime with timeout support |
 | `serde` / `serde_json` | JSON serialization for API payloads |
 | `chrono` | DateTime handling for Gemini cache expiry |
-| `uuid` | Generate tool call IDs for Gemini |
+| `uuid` | Generate tool call IDs for Gemini and idempotency keys |
+| `rand` | Jitter calculation for retry backoff |
 | `anyhow` / `thiserror` | Error handling |
 | `tracing` | Structured logging |
 
@@ -88,66 +96,69 @@ providers/
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           Engine Layer (caller)                              │
-│                                                                              │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                         send_message()                               │   │
-│   │                                                                      │   │
-│   │   ApiConfig ────────────────────────────────────────────────────►   │   │
-│   │   CacheableMessage[] ───────────────────────────────────────────►   │   │
-│   │   OutputLimits ─────────────────────────────────────────────────►   │   │
-│   │   system_prompt ────────────────────────────────────────────────►   │   │
-│   │   tools ────────────────────────────────────────────────────────►   │   │
-│   │   gemini_cache ─────────────────────────────────────────────────►   │   │
-│   │   tx: mpsc::Sender<StreamEvent> ────────────────────────────────►   │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      │ match config.provider()
-                                      ▼
-             ┌────────────────────────┴────────────────────────┐
-             │                        │                        │
-             ▼                        ▼                        ▼
-┌─────────────────────────┐  ┌─────────────────────────┐  ┌─────────────────────────┐
-│  claude::send_message   │  │  openai::send_message   │  │  gemini::send_message   │
-│                         │  │                         │  │                         │
-│ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │
-│ │build_request_body() │ │  │ │build_request_body() │ │  │ │build_request_body() │ │
-│ │- System blocks      │ │  │ │- input items        │ │  │ │- system_instruction │ │
-│ │- Messages array     │ │  │ │- instructions       │ │  │ │- contents array     │ │
-│ │- Cache control      │ │  │ │- reasoning.effort   │ │  │ │- cachedContent ref  │ │
-│ │- Thinking config    │ │  │ │- text.verbosity     │ │  │ │- thinkingConfig     │ │
-│ └─────────────────────┘ │  │ └─────────────────────┘ │  │ └─────────────────────┘ │
-│            │            │  │            │            │  │            │            │
-│            ▼            │  │            ▼            │  │            ▼            │
-│ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │
-│ │   POST to API       │ │  │ │   POST to API       │ │  │ │   POST to API       │ │
-│ │ api.anthropic.com   │ │  │ │ api.openai.com      │ │  │ │ googleapis.com      │ │
-│ │ /v1/messages        │ │  │ │ /v1/responses       │ │  │ │ /v1beta/models/...  │ │
-│ └─────────────────────┘ │  │ └─────────────────────┘ │  │ └─────────────────────┘ │
-│            │            │  │            │            │  │            │            │
-│            ▼            │  │            ▼            │  │            ▼            │
-│ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │  │ ┌─────────────────────┐ │
-│ │process_sse_stream() │ │  │ │process_sse_stream() │ │  │ │process_sse_stream() │ │
-│ │  + ClaudeParser     │ │  │ │  + OpenAIParser     │ │  │ │  + GeminiParser     │ │
-│ └─────────────────────┘ │  │ └─────────────────────┘ │  │ └─────────────────────┘ │
-└─────────────────────────┘  └─────────────────────────┘  └─────────────────────────┘
-             │                        │                        │
-             └────────────────────────┴──────────┬─────────────┘
-                                                 │
-                                                 ▼
-                                    ┌─────────────────────────┐
-                                    │      tx.send(event)     │
-                                    │                         │
-                                    │  StreamEvent::TextDelta │
-                                    │  StreamEvent::ThinkingDelta │
-                                    │  StreamEvent::ToolCallStart │
-                                    │  StreamEvent::ToolCallDelta │
-                                    │  StreamEvent::Done      │
-                                    │  StreamEvent::Error     │
-                                    └─────────────────────────┘
+```text
++-----------------------------------------------------------------------------+
+|                           Engine Layer (caller)                              |
+|                                                                             |
+|   +---------------------------------------------------------------------+   |
+|   |                         send_message()                              |   |
+|   |                                                                     |   |
+|   |   ApiConfig ----------------------------------------------------->  |   |
+|   |   CacheableMessage[] -------------------------------------------->  |   |
+|   |   OutputLimits -------------------------------------------------->  |   |
+|   |   system_prompt ------------------------------------------------->  |   |
+|   |   tools --------------------------------------------------------->  |   |
+|   |   gemini_cache -------------------------------------------------->  |   |
+|   |   tx: mpsc::Sender<StreamEvent> --------------------------------->  |   |
+|   +---------------------------------------------------------------------+   |
++-----------------------------------------------------------------------------+
+                                      |
+                                      | match config.provider()
+                                      v
+             +------------------------+------------------------+
+             |                        |                        |
+             v                        v                        v
++-------------------------+  +-------------------------+  +-------------------------+
+|  claude::send_message   |  |  openai::send_message   |  |  gemini::send_message   |
+|                         |  |                         |  |                         |
+| +---------------------+ |  | +---------------------+ |  | +---------------------+ |
+| |build_request_body() | |  | |build_request_body() | |  | |build_request_body() | |
+| |- System blocks      | |  | |- input items        | |  | |- system_instruction | |
+| |- Messages array     | |  | |- instructions       | |  | |- contents array     | |
+| |- Cache control      | |  | |- reasoning.effort   | |  | |- cachedContent ref  | |
+| |- Thinking config    | |  | |- text.verbosity     | |  | |- thinkingConfig     | |
+| +---------------------+ |  | +---------------------+ |  | +---------------------+ |
+|            |            |  |            |            |  |            |            |
+|            v            |  |            v            |  |            v            |
+| +---------------------+ |  | +---------------------+ |  | +---------------------+ |
+| | send_with_retry()   | |  | | send_with_retry()   | |  | | send_with_retry()   | |
+| |   POST to API       | |  | |   POST to API       | |  | |   POST to API       | |
+| | api.anthropic.com   | |  | | api.openai.com      | |  | | googleapis.com      | |
+| | /v1/messages        | |  | | /v1/responses       | |  | | /v1beta/models/...  | |
+| +---------------------+ |  | +---------------------+ |  | +---------------------+ |
+|            |            |  |            |            |  |            |            |
+|            v            |  |            v            |  |            v            |
+| +---------------------+ |  | +---------------------+ |  | +---------------------+ |
+| |process_sse_stream() | |  | |process_sse_stream() | |  | |process_sse_stream() | |
+| |  + ClaudeParser     | |  | |  + OpenAIParser     | |  | |  + GeminiParser     | |
+| +---------------------+ |  | +---------------------+ |  | +---------------------+ |
++-------------------------+  +-------------------------+  +-------------------------+
+             |                        |                        |
+             +------------------------+----------+-------------+
+                                                 |
+                                                 v
+                                    +-------------------------+
+                                    |      tx.send(event)     |
+                                    |                         |
+                                    |  StreamEvent::TextDelta |
+                                    |  StreamEvent::ThinkingDelta |
+                                    |  StreamEvent::ThinkingSignature |
+                                    |  StreamEvent::ToolCallStart |
+                                    |  StreamEvent::ToolCallDelta |
+                                    |  StreamEvent::Usage     |
+                                    |  StreamEvent::Done      |
+                                    |  StreamEvent::Error     |
+                                    +-------------------------+
 ```
 
 ---
@@ -218,6 +229,8 @@ pub struct ApiConfig {
     model: ModelName,
     openai_options: OpenAIRequestOptions,
     gemini_thinking_enabled: bool,
+    anthropic_thinking_mode: &'static str,
+    anthropic_thinking_effort: &'static str,
 }
 ```
 
@@ -234,24 +247,33 @@ impl ApiConfig {
                 model: model_provider,
             });
         }
-        Ok(Self { api_key, model, openai_options: Default::default() })
+        Ok(Self {
+            api_key,
+            model,
+            openai_options: Default::default(),
+            gemini_thinking_enabled: false,
+            anthropic_thinking_mode: "adaptive",
+            anthropic_thinking_effort: "max",
+        })
     }
 }
 ```
 
 This makes it impossible to create an `ApiConfig` with a Claude API key and an OpenAI model.
 
+Default Anthropic thinking settings are `mode: "adaptive"` and `effort: "max"`.
+
 ### ApiKey - Provider-Scoped Keys
 
 ```rust
 pub enum ApiKey {
-    Claude(String),
-    OpenAI(String),
-    Gemini(String),
+    Claude(SecretString),
+    OpenAI(SecretString),
+    Gemini(SecretString),
 }
 ```
 
-The key's provider is encoded in its type, preventing the invalid state of using an API key with the wrong provider.
+The key's provider is encoded in its type, preventing the invalid state of using an API key with the wrong provider. Keys are constructed via opaque factory methods (`ApiKey::claude(...)`, `ApiKey::openai(...)`, `ApiKey::gemini(...)`) and the inner value is accessed via `expose_secret()`.
 
 ### ModelName - Provider-Scoped Models
 
@@ -352,6 +374,7 @@ This function manages:
 | Event boundaries | Handles both `\n\n` and `\r\n\r\n` delimiters |
 | `[DONE]` marker | Emits `StreamEvent::Done` |
 | Parse errors | 3 consecutive failures trigger abort |
+| Premature EOF | Emits `StreamEvent::Error` if connection closes without completion signal |
 
 ### Low-Level SSE Functions
 
@@ -374,11 +397,13 @@ pub enum StreamEvent {
     TextDelta(String),
     /// Provider reasoning content delta (Claude extended thinking or OpenAI reasoning summaries)
     ThinkingDelta(String),
+    /// Encrypted thinking signature for API replay (Claude extended thinking)
+    ThinkingSignature(String),
     /// Tool call started - emitted when a tool_use content block begins
     ToolCallStart {
         id: String,
         name: String,
-        thought_signature: Option<String>,
+        thought_signature: ThoughtSignatureState,
     },
     /// Tool call arguments delta - emitted as JSON arguments stream in
     ToolCallDelta { id: String, arguments: String },
@@ -390,6 +415,8 @@ pub enum StreamEvent {
     Error(String),
 }
 ```
+
+`ThoughtSignatureState` is an enum distinguishing `Unsigned` tool calls from `Signed(ThoughtSignature)` tool calls (used by Gemini when thinking mode is active).
 
 ### ApiUsage - Token Consumption Tracking
 
@@ -410,6 +437,90 @@ Usage events are emitted during streaming to report token consumption. Claude em
 
 ---
 
+## Typed SSE Event Structures
+
+The `sse_types` module (`providers/src/sse_types.rs`) provides strongly-typed serde structs for provider SSE responses. This replaces stringly-typed JSON key access with compile-time validated deserialization.
+
+### Claude SSE Types (`sse_types::claude`)
+
+| Type | Description |
+| :--- | :--- |
+| `Event` | Top-level event enum tagged by `type` field (MessageStart, MessageDelta, ContentBlockStart, ContentBlockDelta, ContentBlockStop, MessageStop, Ping, Unknown) |
+| `InputUsage` | Input token breakdown: `input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` |
+| `OutputUsage` | Output token count from `message_delta` |
+| `ContentBlock` | Block types: Text, ToolUse, Thinking, Unknown |
+| `Delta` | Delta types: TextDelta, ThinkingDelta, SignatureDelta, InputJsonDelta, Unknown |
+| `StopReason` | EndTurn, MaxTokens, StopSequence, ToolUse, Compaction, Unknown |
+
+### OpenAI SSE Types (`sse_types::openai`)
+
+| Type | Description |
+| :--- | :--- |
+| `Event` | Top-level event enum with `response.*` variants (OutputItemAdded, OutputTextDelta, OutputTextDone, RefusalDelta, ReasoningSummaryDelta, ReasoningSummaryDone, ReasoningSummaryPartAdded, FunctionCallArgumentsDelta, FunctionCallArgumentsDone, Completed, Incomplete, Failed, Error, Unknown) |
+| `OutputItem` | FunctionCall (with id, call_id, name, arguments) or Message |
+| `Usage` | Token counts: `input_tokens`, `output_tokens`, `input_tokens_details` |
+| `ResponseInfo` | Response metadata with usage, error, and incomplete details |
+
+### Gemini SSE Types (`sse_types::gemini`)
+
+| Type | Description |
+| :--- | :--- |
+| `Response` | Top-level response with candidates, error, and `usageMetadata` |
+| `Candidate` | Content and finish reason |
+| `Part` | Text or FunctionCall, with optional `thought` flag and `thoughtSignature` |
+| `FinishReason` | Parsed enum: Stop, MaxTokens, Safety, Recitation, Language, Blocklist, ProhibitedContent, Spii, MalformedFunctionCall, MissingThoughtSignature, TooManyToolCalls, UnexpectedToolCall, Other, Unknown |
+| `UsageMetadata` | Token counts: `promptTokenCount`, `candidatesTokenCount`, `totalTokenCount` |
+
+All types use `#[serde(other)]` on Unknown variants for forward compatibility with new API event types.
+
+---
+
+## Retry Infrastructure
+
+The `retry` module (`providers/src/retry.rs`) implements HTTP retry behavior matching official Anthropic/OpenAI SDKs (Stainless-generated).
+
+### Retry Policy
+
+| Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `max_retries` | 2 | Maximum retries (3 total attempts) |
+| `initial_delay` | 500ms | Backoff before first retry |
+| `max_delay` | 8s | Maximum backoff cap |
+| `jitter_factor` | 0.25 | Down-jitter: multiplier in [0.75, 1.0] |
+
+### Retryable Conditions
+
+- HTTP 408, 409, 429, 5xx (500-599)
+- Connection/timeout errors
+- `x-should-retry: true` header forces retry on any status
+- `x-should-retry: false` header forbids retry on any status
+- `Retry-After` / `Retry-After-Ms` headers respected (capped at 60s)
+
+### Retry Headers
+
+Each request includes:
+
+| Header | Description |
+| :--- | :--- |
+| `X-Stainless-Retry-Count` | 0 for initial request, incremented per retry |
+| `Idempotency-Key` | `stainless-retry-{uuid}`, consistent across all attempts |
+| `X-Stainless-Timeout` | Request timeout in seconds (non-streaming only) |
+
+### RetryOutcome
+
+```rust
+pub enum RetryOutcome {
+    Success(Response),
+    HttpError(Response),
+    ConnectionError { attempts: u32, source: reqwest::Error },
+    NonRetryable(reqwest::Error),
+}
+```
+
+All providers use `send_with_retry` to wrap their HTTP requests. After retry resolution, `handle_response` converts the outcome into either an `ApiResponse::Success` (for SSE stream processing) or sends a `StreamEvent::Error` and returns `ApiResponse::StreamTerminated`.
+
+---
+
 ## Claude API Client
 
 ### Endpoint and Authentication
@@ -423,7 +534,17 @@ client.post(API_URL)
     .header("content-type", "application/json")
 ```
 
+An `anthropic-beta` header is conditionally included:
+
+| Model | Beta Header |
+| :--- | :--- |
+| Opus 4.6 (`claude-opus-4-6*`) | `context-1m-2025-08-07` |
+| Other models with thinking | `interleaved-thinking-2025-05-14,context-management-2025-06-27` |
+| Other models without thinking | None |
+
 ### Request Structure
+
+For Opus 4.6 with adaptive thinking:
 
 ```json
 {
@@ -435,14 +556,44 @@ client.post(API_URL)
   ],
   "messages": [
     { "role": "user", "content": [{ "type": "text", "text": "Hello" }] },
-    { "role": "assistant", "content": "Hi there!" }
+    { "role": "assistant", "content": [{ "type": "text", "text": "Hi" }] }
   ],
   "tools": [
     { "name": "read_file", "description": "...", "input_schema": {...} }
   ],
-  "thinking": { "type": "enabled", "budget_tokens": 4096 }
+  "thinking": { "type": "adaptive" },
+  "output_config": { "effort": "max" }
 }
 ```
+
+### Opus 4.6 Thinking Modes
+
+Opus 4.6 models use a configurable thinking system controlled via `ApiConfig`:
+
+| Thinking Mode | `thinking` Field | `output_config` | Notes |
+| :--- | :--- | :--- | :--- |
+| `"adaptive"` (default) | `{ "type": "adaptive" }` | `{ "effort": "..." }` | Server decides when to think |
+| `"enabled"` | `{ "type": "enabled", "budget_tokens": N }` | `{ "effort": "..." }` | Always think, with explicit budget from `OutputLimits` |
+| `"disabled"` | `{ "type": "disabled" }` | None | No thinking |
+
+Effort levels: `"low"`, `"medium"`, `"high"`, `"max"` (default: `"max"`).
+
+Server-side compaction (`compact-2026-01-12`) is intentionally NOT enabled for Opus 4.6. Forge uses its own client-side distillation and does not reconcile after server compaction.
+
+### Legacy Thinking Mode (Pre-4.6 Models)
+
+Non-Opus-4.6 models with thinking enabled use the classic format:
+
+```json
+{
+  "thinking": { "type": "enabled", "budget_tokens": 4096 },
+  "context_management": {
+    "edits": [{ "type": "clear_thinking_20251015", "keep": "all" }]
+  }
+}
+```
+
+The `context_management` block preserves all thinking blocks for cache efficiency, which is essential for Haiku 4.5 where thinking blocks would otherwise be stripped by default.
 
 ### Message Transformations
 
@@ -451,13 +602,14 @@ client.post(API_URL)
 | System prompt (parameter) | First system block with `cache_control: ephemeral` |
 | `Message::System` | Additional system blocks |
 | `Message::User` | User message with content blocks |
-| `Message::Assistant` | Assistant message as plain string |
-| `Message::ToolUse` | Assistant message with `tool_use` content block |
+| `Message::Assistant` | Assistant text content block (grouped with adjacent ToolUse) |
+| `Message::ToolUse` | Assistant `tool_use` content block (grouped with adjacent Assistant) |
 | `Message::ToolResult` | User message with `tool_result` content block |
+| `Message::Thinking` | `redacted_thinking` block with signature (if signed), otherwise skipped |
 
-### Thinking Mode Constraints
+**Assistant message grouping**: Consecutive `Message::Assistant` and `Message::ToolUse` messages are grouped into a single assistant message with multiple content blocks. If any message in the group has `CacheHint::Ephemeral`, `cache_control` is placed on the last content block.
 
-**Important**: Thinking is automatically disabled when the conversation history contains `Message::Assistant` or `Message::ToolUse` messages. This is because Claude's API requires assistant messages to start with thinking/redacted_thinking blocks when thinking is enabled, but Forge doesn't store thinking content in history.
+**Opus 4.6 trailing assistant prefill**: Trailing assistant messages are automatically dropped for Opus 4.6, as Anthropic no longer accepts assistant-prefilled final turns on this model.
 
 ### Response Parsing
 
@@ -467,10 +619,14 @@ client.post(API_URL)
 | `content_block_start` with `tool_use` | Emit `ToolCallStart` |
 | `content_block_delta` with `text_delta` | Emit `TextDelta` |
 | `content_block_delta` with `thinking_delta` | Emit `ThinkingDelta` |
+| `content_block_delta` with `signature_delta` | Emit `ThinkingSignature` |
 | `content_block_delta` with `input_json_delta` | Emit `ToolCallDelta` |
 | `content_block_stop` | Reset current tool ID |
 | `message_delta` | Emit `Usage` with output token count |
-| `message_stop` | Emit `Done` |
+| `message_delta` with `stop_reason: "compaction"` | Set compaction flag (do not end stream) |
+| `message_stop` | Emit `Done` (unless compacting, then continue) |
+
+**Server-side compaction handling**: If the API signals `stop_reason: "compaction"` in a `message_delta`, the parser sets a compaction flag. The subsequent `message_stop` does NOT end the stream; instead, the API sends a new `message_start` with the compacted context and continues streaming.
 
 **Claude Usage Calculation**: Anthropic reports `input_tokens` as non-cached tokens only. Total input = `input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens`.
 
@@ -478,7 +634,7 @@ client.post(API_URL)
 
 ## OpenAI API Client
 
-### Endpoint and Authentication
+### OpenAI Endpoint and Authentication
 
 ```rust
 const API_URL: &str = "https://api.openai.com/v1/responses";
@@ -488,9 +644,9 @@ client.post(API_URL)
     .header("content-type", "application/json")
 ```
 
-Note: This uses the OpenAI Responses API (not Chat Completions) for GPT-5.2 support.
+Note: This uses the OpenAI Responses API (not Chat Completions) for GPT-5.x support.
 
-### Request Structure
+### OpenAI Request Structure
 
 ```json
 {
@@ -522,6 +678,7 @@ Per the OpenAI Model Spec authority hierarchy:
 | `Message::System` | `"developer"` | "System" is reserved for OpenAI runtime |
 | `Message::User` | `"user"` | Standard user role |
 | `Message::Assistant` | `"assistant"` | Standard assistant role |
+| `Message::Thinking` | (skipped) | Thinking is not sent back to the API |
 | `Message::ToolUse` | `function_call` item | Tool invocation record |
 | `Message::ToolResult` | `function_call_output` item | Tool result record |
 
@@ -532,13 +689,13 @@ For models starting with `gpt-5`, additional parameters are included:
 ```rust
 pub struct OpenAIRequestOptions {
     reasoning_effort: OpenAIReasoningEffort,   // none, low, medium, high, xhigh
-    reasoning_summary: OpenAIReasoningSummary, // none, auto, concise, detailed
+    reasoning_summary: OpenAIReasoningSummary, // disabled, auto, concise, detailed
     verbosity: OpenAITextVerbosity,            // low, medium, high
     truncation: OpenAITruncation,              // auto, disabled
 }
 ```
 
-When `reasoning_summary` is not `None`, it's included in the request:
+When `reasoning_summary` is not `Disabled`, it is included in the request:
 
 ```json
 {
@@ -551,15 +708,17 @@ When `reasoning_summary` is not `None`, it's included in the request:
 
 Reasoning summaries are streamed via `response.reasoning_summary_text.delta` events and emitted as `ThinkingDelta` events.
 
-### Response Parsing
+### OpenAI Response Parsing
 
 | Event Type | Action |
 | :--- | :--- |
 | `response.output_item.added` with `function_call` | Emit `ToolCallStart` (and initial args if present) |
 | `response.output_text.delta` | Emit `TextDelta` |
+| `response.output_text.done` | Emit `TextDelta` (fallback if no prior deltas) |
 | `response.refusal.delta` | Emit `TextDelta` (model refused) |
 | `response.reasoning_summary_text.delta` | Emit `ThinkingDelta` |
-| `response.reasoning_summary_part.added` | Emit `ThinkingDelta` |
+| `response.reasoning_summary_text.done` | Emit `ThinkingDelta` (fallback if no prior deltas) |
+| `response.reasoning_summary_part.added` | Emit `ThinkingDelta` (with newline insertion between parts) |
 | `response.function_call_arguments.delta` | Emit `ToolCallDelta` |
 | `response.function_call_arguments.done` | Emit `ToolCallDelta` (if no prior deltas) |
 | `response.completed` | Emit `Usage` (if usage present) then `Done` |
@@ -572,7 +731,7 @@ The parser maintains state to map `item_id` to `call_id` and tracks which calls 
 
 ## Gemini API Client
 
-### Endpoint and Authentication
+### Gemini Endpoint and Authentication
 
 ```rust
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
@@ -584,7 +743,7 @@ client.post(&url)
     .header("content-type", "application/json")
 ```
 
-### Request Structure
+### Gemini Request Structure
 
 Note: Gemini API uses mixed casing (`system_instruction` snake_case, `generationConfig` camelCase).
 
@@ -621,6 +780,8 @@ Gemini requires consecutive tool calls and tool results to be grouped:
 
 - Multiple consecutive `Message::ToolUse` become a single `model` content entry with multiple `functionCall` parts
 - Multiple consecutive `Message::ToolResult` become a single `user` content entry with multiple `functionResponse` parts
+- `Message::System` is mapped to a `user` role content entry (the top-level `system_instruction` is reserved for the main system prompt parameter)
+- `Message::Thinking` is skipped (not sent back to the API)
 
 ### Thinking Mode
 
@@ -641,11 +802,11 @@ Thinking content is streamed via `ThinkingDelta` events when parts have `"though
 
 ### Thought Signatures
 
-Gemini requires `thoughtSignature` on tool calls when thinking mode was used. This is preserved from `ToolCall.thought_signature`.
+Gemini requires `thoughtSignature` on tool calls when thinking mode was used. This is preserved from `ToolCall.thought_signature` (as `ThoughtSignatureState::Signed`). Tool calls without a signature use `ThoughtSignatureState::Unsigned` and no `thoughtSignature` field is emitted.
 
 ### Schema Sanitization
 
-The `additionalProperties` field is recursively removed from tool parameter schemas, as Gemini doesn't support it.
+The `additionalProperties` field is recursively removed from tool parameter schemas, as Gemini doesn't support it. This applies both to inline tool definitions and to tools included in cached content.
 
 ### Context Caching
 
@@ -657,6 +818,11 @@ pub struct GeminiCache {
     pub expire_time: DateTime<Utc>,
     pub system_prompt_hash: u64,
     pub tools_hash: u64,
+}
+
+pub struct GeminiCacheConfig {
+    pub enabled: bool,
+    pub ttl_seconds: u32,     // default: 3600 (1 hour)
 }
 
 pub async fn create_cache(
@@ -673,20 +839,23 @@ pub async fn create_cache(
 - Gemini 3 Pro: 4,096 tokens (~16,384 characters)
 - Gemini Flash models: 1,024 tokens (~4,096 characters)
 
-**Important**: When using cached content, `system_instruction`, `tools`, and `tool_config` must be part of the cache - they cannot be specified in GenerateContent. The cache is invalidated if either the system prompt or tool definitions change.
+**Important**: When using cached content, `system_instruction`, `tools`, and `tool_config` must be part of the cache -- they cannot be specified in GenerateContent. The cache is invalidated if either the system prompt or tool definitions change.
 
-### Response Parsing
+### Gemini Response Parsing
 
 | Condition | Action |
 | :--- | :--- |
 | `candidates[].content.parts[].text` | Emit `TextDelta` |
 | `candidates[].content.parts[].thought == true` | Emit `ThinkingDelta` |
 | `candidates[].content.parts[].functionCall` | Emit `ToolCallStart` + `ToolCallDelta` |
+| `candidates[].content.parts[].thoughtSignature` | Emit `ToolCallStart` with `ThoughtSignatureState::Signed` |
 | `finishReason` is `STOP` or `MAX_TOKENS` | Emit `Done` |
 | `finishReason` is `SAFETY`, `RECITATION`, etc. | Emit `Error` |
 | `error` field present | Emit `Error` |
 
 Gemini doesn't provide tool call IDs, so the parser generates UUIDs: `call_{uuid}`.
+
+Content parts are processed before checking `finishReason`, ensuring final content is not dropped when both appear in the same SSE chunk.
 
 ---
 
@@ -715,17 +884,22 @@ Returns `Ok(())` on completion. Errors are delivered through `StreamEvent::Error
 | `new(api_key, model)` | `Result<Self, ApiConfigError>` | Create with validation |
 | `with_openai_options(options)` | `Self` | Builder for OpenAI options |
 | `with_gemini_thinking_enabled(enabled)` | `Self` | Builder for Gemini thinking mode |
+| `with_anthropic_thinking(mode, effort)` | `Self` | Builder for Claude thinking mode and effort |
 | `provider()` | `Provider` | Get the provider |
-| `api_key()` | `&str` | Get the API key string |
+| `api_key()` | `&str` | Get the API key string (via `expose_secret()`) |
 | `api_key_owned()` | `ApiKey` | Get a clone of the API key |
 | `model()` | `&ModelName` | Get the model name |
-| `openai_options()` | `OpenAIRequestOptions` | Get OpenAI options |
+| `openai_options()` | `OpenAIRequestOptions` | Get OpenAI options (copy) |
 | `gemini_thinking_enabled()` | `bool` | Check if Gemini thinking is enabled |
+| `anthropic_thinking_mode()` | `&str` | Get Claude thinking mode ("adaptive", "enabled", "disabled") |
+| `anthropic_thinking_effort()` | `&str` | Get Claude thinking effort ("low", "medium", "high", "max") |
 
 ### HTTP Client Functions
 
 ```rust
-/// Shared HTTP client for streaming requests (no total timeout)
+/// Shared HTTP client for streaming requests (no total timeout).
+/// Configured with TCP keepalive, connection pool, HTTPS-only,
+/// platform headers (X-Stainless-*), and redirect disabled.
 pub fn http_client() -> &'static reqwest::Client
 
 /// HTTP client with timeout for synchronous operations
@@ -739,6 +913,8 @@ pub async fn read_capped_error_body(response: reqwest::Response) -> String
 
 ```rust
 pub use forge_types;
+pub mod retry;
+pub mod sse_types;
 ```
 
 ---
@@ -750,7 +926,6 @@ Token limits are defined in `forge-context/src/model_limits.rs`:
 | Model | Context Window | Max Output |
 | :--- | :--- | :--- |
 | `claude-opus-4-6` | 1,000,000 | 128,000 |
-| `claude-sonnet-4-5-20250514` | 200,000 | 64,000 |
 | `claude-haiku-4-5-20251001` | 200,000 | 64,000 |
 | `gpt-5.2-pro` | 400,000 | 128,000 |
 | `gpt-5.2` | 400,000 | 128,000 |
@@ -768,7 +943,7 @@ use forge_providers::{ApiConfig, send_message, forge_types::*};
 use tokio::sync::mpsc;
 
 async fn chat_with_claude() -> anyhow::Result<()> {
-    let api_key = ApiKey::Claude(std::env::var("ANTHROPIC_API_KEY")?);
+    let api_key = ApiKey::claude(std::env::var("ANTHROPIC_API_KEY")?);
     let model = Provider::Claude.default_model();
     let config = ApiConfig::new(api_key, model)?;
 
@@ -809,7 +984,7 @@ async fn chat_with_claude() -> anyhow::Result<()> {
 ### OpenAI with Reasoning Options
 
 ```rust
-let api_key = ApiKey::OpenAI(std::env::var("OPENAI_API_KEY")?);
+let api_key = ApiKey::openai(std::env::var("OPENAI_API_KEY")?);
 let model = Provider::OpenAI.parse_model("gpt-5.2")?;
 
 let options = OpenAIRequestOptions::new(
@@ -823,15 +998,17 @@ let config = ApiConfig::new(api_key, model)?
     .with_openai_options(options);
 ```
 
-### Claude Extended Thinking
+### Claude with Anthropic Thinking Configuration
 
 ```rust
 let config = ApiConfig::new(
-    ApiKey::Claude("...".into()),
+    ApiKey::claude(std::env::var("ANTHROPIC_API_KEY")?),
     Provider::Claude.parse_model("claude-opus-4-6")?,
-)?;
+)?
+// Use "enabled" mode with explicit budget (instead of default "adaptive")
+.with_anthropic_thinking("enabled", "high");
 
-// Enable thinking with 4096 token budget
+// When mode is "enabled", thinking budget comes from OutputLimits
 let limits = OutputLimits::with_thinking(16384, 4096)?;
 
 let (tx, mut rx) = mpsc::channel(32);
@@ -843,8 +1020,11 @@ tokio::spawn(async move {
 while let Some(event) = rx.recv().await {
     match event {
         StreamEvent::ThinkingDelta(thought) => {
-            // Internal reasoning (typically hidden)
+            // Internal reasoning (typically hidden in UI)
             eprint!("[thinking] {}", thought);
+        }
+        StreamEvent::ThinkingSignature(sig) => {
+            // Encrypted signature for replaying thinking blocks
         }
         StreamEvent::TextDelta(text) => print!("{}", text),
         _ => {}
@@ -956,7 +1136,7 @@ pub enum ApiConfigError {
 Streaming errors are delivered as events rather than `Result::Err`:
 
 ```rust
-// Errors during streaming → delivered via channel
+// Errors during streaming -> delivered via channel
 let _ = tx.send(StreamEvent::Error(error_message)).await;
 return Ok(()); // Function succeeds, error communicated via channel
 
@@ -965,6 +1145,14 @@ let chunk = chunk?; // Network errors propagate
 ```
 
 This allows partial responses to be captured before an error occurs.
+
+### Retry Error Handling
+
+After exhausting retries, the `handle_response` function converts `RetryOutcome` variants to `StreamEvent::Error` messages:
+
+- `ConnectionError { attempts, source }` -> `"Request failed after N attempts: ..."`
+- `NonRetryable(error)` -> `"Request failed: ..."`
+- `HttpError(response)` -> `"API error {status}: {body}"` (body capped at 32 KiB)
 
 ### Error Body Reading
 
@@ -986,12 +1174,16 @@ pub async fn read_capped_error_body(response: reqwest::Response) -> String
 
 2. **Extend ApiKey enum** (in `forge-types/src/lib.rs`):
    - Add variant to `ApiKey`
-   - Update `provider()` and `as_str()` methods
+   - Add opaque constructor and update `provider()` / `expose_secret()` methods
 
 3. **Add model limits** (in `forge-context/src/model_limits.rs`):
    - Add entry to `KNOWN_MODELS` array
 
-4. **Add provider module** (in `providers/src/lib.rs`):
+4. **Add typed SSE events** (in `providers/src/sse_types.rs`):
+   - Add a new provider module with serde-tagged event types
+   - Use `#[serde(other)]` on Unknown variants for forward compatibility
+
+5. **Add provider module** (in `providers/src/lib.rs`):
 
 ```rust
 pub mod your_provider {
@@ -1004,7 +1196,7 @@ pub mod your_provider {
 
     impl SseParser for YourProviderParser {
         fn parse(&mut self, json: &serde_json::Value) -> SseParseAction {
-            // Parse provider-specific JSON events
+            // Parse provider-specific JSON events using typed SSE structs
         }
         fn provider_name(&self) -> &'static str { "YourProvider" }
     }
@@ -1021,19 +1213,26 @@ pub mod your_provider {
         tools: Option<&[ToolDefinition]>,
         tx: mpsc::Sender<StreamEvent>,
     ) -> Result<()> {
+        let client = http_client();
+        let retry_config = RetryConfig::default();
         let body = build_request_body(...);
-        let response = http_client()
-            .post(API_URL)
-            .header("Authorization", format!("Bearer {}", config.api_key()))
-            .json(&body)
-            .send()
-            .await?;
+        let body_json = body.clone();
 
-        if !response.status().is_success() {
-            let error_text = read_capped_error_body(response).await;
-            let _ = tx.send(StreamEvent::Error(format!("API error: {}", error_text))).await;
-            return Ok(());
-        }
+        let outcome = send_with_retry(
+            || {
+                client
+                    .post(API_URL)
+                    .header("Authorization", format!("Bearer {}", config.api_key()))
+                    .json(&body_json)
+            },
+            None, // No timeout for streaming
+            &retry_config,
+        ).await;
+
+        let response = match handle_response(outcome, &tx).await? {
+            ApiResponse::Success(resp) => resp,
+            ApiResponse::StreamTerminated => return Ok(()),
+        };
 
         let mut parser = YourProviderParser;
         process_sse_stream(response, &mut parser, &tx).await
@@ -1041,7 +1240,7 @@ pub mod your_provider {
 }
 ```
 
-5. **Update send_message dispatch**:
+1. **Update send_message dispatch**:
 
 ```rust
 match config.provider() {
@@ -1063,8 +1262,11 @@ match config.provider() {
 | Constant | Value | Purpose |
 | :--- | :--- | :--- |
 | `CONNECT_TIMEOUT_SECS` | 30 | HTTP connection timeout |
+| `TCP_KEEPALIVE_SECS` | 60 | TCP keepalive idle time |
+| `POOL_MAX_IDLE_PER_HOST` | 100 | Connection pool max idle per host |
+| `POOL_IDLE_TIMEOUT_SECS` | 90 | Connection pool idle timeout |
 | `DEFAULT_STREAM_IDLE_TIMEOUT_SECS` | 60 | SSE idle timeout |
 | `MAX_SSE_BUFFER_BYTES` | 4 MiB | Buffer size limit |
 | `MAX_SSE_PARSE_ERRORS` | 3 | Consecutive parse error threshold |
+| `MAX_SSE_PARSE_ERROR_PREVIEW` | 160 | Chars logged on parse error |
 | `MAX_ERROR_BODY_BYTES` | 32 KiB | Error response size limit |
-

@@ -303,6 +303,11 @@ impl App {
         }
         let tool_registry = std::sync::Arc::new(tool_registry);
         let tool_definitions = tool_registry.definitions();
+        let hidden_tools: std::collections::HashSet<String> = tool_definitions
+            .iter()
+            .filter(|d| d.hidden)
+            .map(|d| d.name.clone())
+            .collect();
 
         let tool_journal_path = data_dir.join("tool_journal.db");
         let tool_journal = ToolJournal::open(&tool_journal_path)?;
@@ -342,9 +347,14 @@ impl App {
             cached_usage_status: None,
             pending_user_message: None,
             tool_definitions,
+            hidden_tools,
             tool_registry,
             tool_settings,
             tool_journal,
+            pending_stream_cleanup: None,
+            pending_stream_cleanup_failures: 0,
+            pending_tool_cleanup: None,
+            pending_tool_cleanup_failures: 0,
             tool_file_cache,
             checkpoints: crate::checkpoints::CheckpointStore::default(),
             tool_iterations: 0,
@@ -359,6 +369,7 @@ impl App {
             input_history: crate::ui::InputHistory::default(),
             last_ui_tick: Instant::now(),
             last_session_autosave: Instant::now(),
+            next_journal_cleanup_attempt: Instant::now(),
             session_changes: crate::session_state::SessionChangeLog::default(),
             file_picker: crate::ui::FilePickerState::new(),
             turn_usage: None,

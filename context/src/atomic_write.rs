@@ -7,11 +7,20 @@ use std::io::Write;
 use std::path::Path;
 
 use tempfile::NamedTempFile;
+use tracing::debug;
 
 #[derive(Debug, Clone, Copy)]
 pub struct AtomicWriteOptions {
     /// When true, `sync_all()` is called on the temp file before persisting.
     pub sync_all: bool,
+    /// When true, best-effort `sync_all()` is called on the parent directory after
+    /// the file has been persisted (renamed).
+    ///
+    /// This reduces the window where a power loss could lose the directory entry
+    /// even though the rename has logically succeeded.
+    ///
+    /// Best-effort: errors are logged but do not fail the write.
+    pub dir_sync: bool,
     /// When set (Unix only), apply this mode to the temp file before writing and to
     /// the final file after persist (e.g. `0o600`).
     pub unix_mode: Option<u32>,
@@ -21,6 +30,7 @@ impl Default for AtomicWriteOptions {
     fn default() -> Self {
         Self {
             sync_all: true,
+            dir_sync: false,
             unix_mode: None,
         }
     }
@@ -30,6 +40,81 @@ pub fn atomic_write(path: impl AsRef<Path>, bytes: &[u8]) -> std::io::Result<()>
     atomic_write_with_options(path, bytes, AtomicWriteOptions::default())
 }
 
+pub fn atomic_write_new_with_options(
+    path: impl AsRef<Path>,
+    bytes: &[u8],
+    options: AtomicWriteOptions,
+) -> std::io::Result<()> {
+    let path = path.as_ref();
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+
+    let mut tmp = NamedTempFile::new_in(parent)?;
+    #[cfg(unix)]
+    if let Some(mode) = options.unix_mode {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(mode))?;
+    }
+
+    tmp.write_all(bytes)?;
+    if options.sync_all {
+        tmp.as_file().sync_all()?;
+    }
+
+    // Persist (rename) but fail if the destination already exists.
+    if let Err(err) = tmp.persist_noclobber(path) {
+        return Err(err.error);
+    }
+
+    #[cfg(unix)]
+    if let Some(mode) = options.unix_mode {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    }
+
+    if options.dir_sync {
+        best_effort_sync_parent_dir(parent);
+    }
+
+    Ok(())
+}
+
+fn best_effort_sync_parent_dir(parent: &Path) {
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+
+    #[cfg(unix)]
+    {
+        if let Err(e) = std::fs::File::open(parent).and_then(|d| d.sync_all()) {
+            debug!(path = %parent.display(), "Parent directory sync_all failed (best-effort): {e}");
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        // From winbase.h. Required to open a directory handle on Windows.
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true)
+            .write(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+
+        if let Err(e) = opts.open(parent).and_then(|d| d.sync_all()) {
+            debug!(path = %parent.display(), "Parent directory sync_all failed (best-effort): {e}");
+        }
+    }
+}
+
 pub fn atomic_write_with_options(
     path: impl AsRef<Path>,
     bytes: &[u8],
@@ -37,6 +122,11 @@ pub fn atomic_write_with_options(
 ) -> std::io::Result<()> {
     let path = path.as_ref();
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
 
     let mut tmp = NamedTempFile::new_in(parent)?;
     #[cfg(unix)]
@@ -74,6 +164,10 @@ pub fn atomic_write_with_options(
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
     }
 
+    if options.dir_sync {
+        best_effort_sync_parent_dir(parent);
+    }
+
     Ok(())
 }
 
@@ -87,6 +181,7 @@ mod tests {
         let path = dir.path().join("test.txt");
         let opts = AtomicWriteOptions {
             sync_all: false,
+            dir_sync: false,
             unix_mode: None,
         };
 
@@ -107,6 +202,7 @@ mod tests {
         let path = dir.path().join("secure.txt");
         let opts = AtomicWriteOptions {
             sync_all: false,
+            dir_sync: false,
             unix_mode: Some(0o600),
         };
 

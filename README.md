@@ -9,19 +9,19 @@ Forge brings the efficiency of vim-style modal editing to AI conversation, letti
 | Lines | Section |
 | --- | --- |
 | 7-26 | LLM-TOC |
-| 27-61 | Features: Core Capabilities, Distillation, Tool Executor |
+| 27-61 | Features: Core Capabilities, Context Infinity, Tool Executor |
 | 62-71 | Requirements |
 | 72-97 | Installation |
 | 98-141 | Quick Start: First Run, Basic Usage |
-| 142-269 | Configuration: Full Reference |
-| 270-362 | Keyboard Shortcuts: All Modes |
-| 363-381 | Commands Reference |
-| 382-412 | Workspace Structure |
-| 413-447 | Development |
-| 448-517 | Troubleshooting |
-| 518-557 | Documentation Index |
-| 558-568 | Contributing and License |
-| 569-572 | License |
+| 142-267 | Configuration: Full Reference |
+| 268-360 | Keyboard Shortcuts: All Modes |
+| 361-378 | Commands Reference |
+| 379-409 | Workspace Structure |
+| 410-444 | Development |
+| 445-514 | Troubleshooting |
+| 515-554 | Documentation Index |
+| 555-565 | Contributing and License |
+| 566-568 | License |
 <!-- toc:end -->
 
 ## Features

@@ -81,7 +81,10 @@ impl TurnContext {
         self,
         working_dir: &Path,
     ) -> (TurnChangeReport, BTreeSet<PathBuf>, BTreeSet<PathBuf>) {
-        let mut log = self.changes.lock().expect("mutex poisoned");
+        let mut log = self
+            .changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let log = std::mem::take(&mut *log);
         let created = log.created.clone();
         let modified = log.modified.clone();
@@ -92,18 +95,27 @@ impl TurnContext {
 
 impl ChangeRecorder {
     pub(crate) fn record_created(&self, path: PathBuf) {
-        let mut log = self.changes.lock().expect("mutex poisoned");
+        let mut log = self
+            .changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         log.record_created(path);
     }
 
     pub(crate) fn record_modified(&self, path: PathBuf) {
-        let mut log = self.changes.lock().expect("mutex poisoned");
+        let mut log = self
+            .changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         log.record_modified(path);
     }
 
     /// Record diff stats (additions/deletions) for a file.
     pub(crate) fn record_stats(&self, path: PathBuf, additions: u32, deletions: u32) {
-        let mut log = self.changes.lock().expect("mutex poisoned");
+        let mut log = self
+            .changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = log.stats.entry(path).or_default();
         entry.additions = entry.additions.saturating_add(additions);
         entry.deletions = entry.deletions.saturating_add(deletions);
@@ -329,6 +341,17 @@ impl InsertMode<'_> {
 
         // Ignore empty input
         if self.app.draft_text().trim().is_empty() {
+            return None;
+        }
+
+        // Preflight crash recovery BEFORE mutating history.
+        //
+        // If we recover after pushing a new user message, recovered assistant/tool
+        // content would be appended after the new prompt (wrong chronology).
+        let recovered = self.app.check_crash_recovery();
+        if recovered.is_some() || matches!(self.app.state, OperationState::ToolRecovery(_)) {
+            // Recovery may have appended messages and/or entered ToolRecovery.
+            // Don't consume the draft; let the user resume/discard, then re-send.
             return None;
         }
 

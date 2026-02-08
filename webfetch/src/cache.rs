@@ -275,6 +275,7 @@ impl Cache {
             content.as_bytes(),
             AtomicWriteOptions {
                 sync_all: false,
+                dir_sync: false,
                 unix_mode: None,
             },
         )?;

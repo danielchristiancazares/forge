@@ -326,9 +326,15 @@ fn build_message_lines(
         };
         match msg {
             Message::ToolUse(call) => {
+                if app.is_tool_hidden(&call.name) {
+                    continue;
+                }
                 buffered_tool_uses.insert(call.id.as_str(), (msg, ToolCallMeta::from_call(call)));
             }
             Message::ToolResult(result) => {
+                if app.is_tool_hidden(&result.tool_name) {
+                    continue;
+                }
                 if let Some((tool_use_msg, meta)) =
                     buffered_tool_uses.remove(result.tool_call_id.as_str())
                 {

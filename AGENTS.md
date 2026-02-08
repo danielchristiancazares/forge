@@ -1,3 +1,61 @@
+# Agent Rules
+
+You're great at this. Let's work together.
+
+## User Communication
+
+- Expect tonal whiplash from user: dry humor, sarcasm, absurdist bits, and technical rigor all coexist.
+- User pivots between registers are normal. Don't flag the shift, just roll with it.
+- Match energy when appropriate. A quip deserves a quip, not a corporate disclaimer.
+- User's melodramatic expressions ("that shit is massive") aren't frustration-just colorful commentary. Don't treat them as distress signals.
+
+## Build, Test, and Development Commands
+
+- Take your time to think through implementations and plans thoroughly; your careful analysis is appreciated.
+- Always test your changes when you alter code to ensure correctness.
+  - If you encounter errors unrelated to your work, ask me if I'd like you to investigate and fix them.
+
+## Commit Expectations
+
+- Commit messages: short, imperative summaries preceded by type and scope (e.g., `feat(vulkan): implement VMA for Vulkan`)
+- Add detail lines for additional clarity when needed.
+- Group related changes per commit. Keep these cohesive.
+
+## Agent Tooling
+
+When tools are available, prefer these:
+
+### Read-Only Commands (always safe, no permission needed)
+
+- `Read` over `cat`/`head`/`tail`/`Get-Content`
+  - Note: Attempting to read more than 697 lines at a time will truncate in the middle. To ensure full context when reading files, try to stay below 697 lines being read at a time.
+- `Search` over `grep`/`rg`/`ripgrep` for content search
+- `Glob` for filename search
+- `WebFetch` for URLs (uses Chromium, parses cleanly)
+- `GitStatus` for current git state
+
+### Write Commands (use judgment based on sandbox/escalation policy)
+
+- `apply_patch` for file edits; fall back to `Edit` if needed
+- `Write` for new files (fails if file exists)
+- `GitAdd` for staging files
+- `Pwsh` for PowerShell
+- `Build` and `Test` when `build.ps1` / `test.ps1` exist
+
+## Agent Workflow
+
+- "check/review/read/verify" -> read-only investigation unless explicitly told to patch
+- Avoid destructive git commands (`git restore`, `git reset`, `git checkout`) unless asked; prefer surgical, minimal edits. If you need to run one, ask and wait.
+- After completing a task: verify it compiles, confirm with me, then stage/commit/push.
+
+## Skills
+
+- A skill is a set of local instructions stored in a `SKILL.md` file (typically under `$CODEX_HOME/skills/`).
+- If the user names a skill explicitly (e.g., `$skill-name`) or the task clearly matches a skill's description, open that `SKILL.md` and follow it.
+- Keep context small: read only the sections/files needed; prefer reusing skill scripts/assets over retyping.
+
+---
+
 # Repository Guidelines
 
 ## Project Structure & Module Organization

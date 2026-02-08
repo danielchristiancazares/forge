@@ -32,6 +32,7 @@ mod token_counter;
 mod tool_journal;
 mod working_context;
 
+pub use atomic_write::atomic_write_new_with_options;
 pub use atomic_write::{AtomicWriteOptions, atomic_write, atomic_write_with_options};
 pub use distillation::{distillation_model, generate_distillation};
 pub use fact_store::{FactId, FactStore, FactWithStaleness, StoredFact};

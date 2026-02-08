@@ -58,6 +58,9 @@ pub(crate) fn collect_tool_statuses(
 
     let mut statuses = Vec::with_capacity(calls.len());
     for call in calls {
+        if app.is_tool_hidden(&call.name) {
+            continue;
+        }
         let mut reason: Option<String> = None;
         let status = if let Some(result) = results_map.get(call.id.as_str()) {
             if !execute_ids.contains(call.id.as_str()) {

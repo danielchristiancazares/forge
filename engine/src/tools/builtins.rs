@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use similar::{ChangeTag, TextDiff};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use super::{
@@ -46,6 +46,7 @@ fn path_string_without_verbatim_prefix(path: &Path) -> String {
 }
 use crate::tools::lp1::{self, FileContent};
 use crate::tools::memory::MemoryTool;
+use crate::tools::phase_gate::PhaseGateTool;
 use crate::tools::recall::RecallTool;
 use crate::tools::search::SearchTool;
 use crate::tools::webfetch::WebFetchTool;
@@ -982,15 +983,31 @@ impl ToolExecutor for WriteFileTool {
                 })?;
             }
 
-            let bytes = typed.content.as_bytes();
-            let mut file = match tokio::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&resolved)
-                .await
-            {
-                Ok(f) => f,
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            let bytes = typed.content.into_bytes();
+            let byte_len = bytes.len();
+            // Record stats: all lines are additions for a new file
+            // PERF: use bytecount crate if this becomes a hot path.
+            #[allow(clippy::naive_bytecount)]
+            let line_count = bytes.iter().filter(|&&b| b == b'\n').count() as u32
+                + u32::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
+
+            let write_path = resolved.clone();
+            let write_result = tokio::task::spawn_blocking(move || {
+                forge_context::atomic_write_new_with_options(
+                    &write_path,
+                    &bytes,
+                    forge_context::AtomicWriteOptions {
+                        sync_all: true,
+                        dir_sync: true,
+                        unix_mode: None,
+                    },
+                )
+            })
+            .await;
+
+            match write_result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                     return Err(ToolError::ExecutionFailed {
                         tool: "Write".to_string(),
                         message: format!(
@@ -999,24 +1016,19 @@ impl ToolExecutor for WriteFileTool {
                         ),
                     });
                 }
+                Ok(Err(err)) => {
+                    return Err(ToolError::ExecutionFailed {
+                        tool: "Write".to_string(),
+                        message: format!("failed to write {}: {err}", resolved.display()),
+                    });
+                }
                 Err(err) => {
                     return Err(ToolError::ExecutionFailed {
                         tool: "Write".to_string(),
-                        message: format!("failed to create {}: {err}", resolved.display()),
+                        message: format!("failed to write {}: {err}", resolved.display()),
                     });
                 }
-            };
-
-            file.write_all(bytes)
-                .await
-                .map_err(|e| ToolError::ExecutionFailed {
-                    tool: "Write".to_string(),
-                    message: format!("failed to write {}: {e}", resolved.display()),
-                })?;
-            file.flush().await.map_err(|e| ToolError::ExecutionFailed {
-                tool: "Write".to_string(),
-                message: format!("failed to flush {}: {e}", resolved.display()),
-            })?;
+            }
 
             if let Ok(sha) = compute_sha256(&resolved) {
                 let mut cache = ctx.file_cache.lock().await;
@@ -1031,19 +1043,10 @@ impl ToolExecutor for WriteFileTool {
 
             ctx.turn_changes.record_created(resolved.clone());
 
-            // Record stats: all lines are additions for a new file
-            // PERF: use bytecount crate if this becomes a hot path.
-            #[allow(clippy::naive_bytecount)]
-            let line_count = bytes.iter().filter(|&&b| b == b'\n').count() as u32
-                + u32::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
             ctx.turn_changes
                 .record_stats(resolved.clone(), line_count, 0);
 
-            let output = format!(
-                "Created {} ({} bytes)",
-                display_path(&resolved),
-                bytes.len()
-            );
+            let output = format!("Created {} ({} bytes)", display_path(&resolved), byte_len);
             Ok(sanitize_output(&output))
         })
     }
@@ -1306,6 +1309,7 @@ pub fn register_builtins(
     registry.register(Box::new(WebFetchTool::new(webfetch_config)))?;
     registry.register(Box::new(RecallTool))?;
     registry.register(Box::new(MemoryTool))?;
+    registry.register(Box::new(PhaseGateTool))?;
     Ok(())
 }
 

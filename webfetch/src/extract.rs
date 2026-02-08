@@ -244,23 +244,49 @@ fn find_content_root(document: &Html) -> Option<ElementRef<'_>> {
         "body",
     ];
 
+    let mut best: Option<(usize, ElementRef<'_>)> = None;
+
     for selector_str in selectors {
         if let Ok(selector) = Selector::parse(selector_str) {
             for element in document.select(&selector) {
-                // Check if element has meaningful content after boilerplate removal
-                let text: String = element
-                    .text()
-                    .filter(|_| !is_boilerplate_element(element))
-                    .collect();
-
-                if text.chars().filter(|c| !c.is_whitespace()).count() >= MIN_EXTRACTED_CHARS {
+                let len = non_boilerplate_text_len(element);
+                if len >= MIN_EXTRACTED_CHARS {
                     return Some(element);
+                }
+
+                // If nothing meets the threshold, fall back to the "best" non-empty candidate.
+                // This keeps extraction robust for borderline pages where Markdown markup pushes
+                // the final character count over the minimum.
+                if len > 0 && best.as_ref().is_none_or(|(best_len, _)| len > *best_len) {
+                    best = Some((len, element));
                 }
             }
         }
     }
 
-    None
+    best.map(|(_, element)| element)
+}
+
+fn non_boilerplate_text_len(element: ElementRef<'_>) -> usize {
+    if is_boilerplate_element(element) {
+        return 0;
+    }
+
+    let mut count = 0;
+    for child in element.children() {
+        match child.value() {
+            Node::Text(text) => {
+                count += text.chars().filter(|c| !c.is_whitespace()).count();
+            }
+            Node::Element(_) => {
+                if let Some(el) = ElementRef::wrap(child) {
+                    count += non_boilerplate_text_len(el);
+                }
+            }
+            _ => {}
+        }
+    }
+    count
 }
 
 /// Check if an element should be treated as boilerplate.
@@ -975,6 +1001,32 @@ fn normalize_whitespace_final(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_falls_back_when_main_is_boilerplate_heavy() {
+        let nav = "nav ".repeat(MIN_EXTRACTED_CHARS);
+        let article = "real content ".repeat(MIN_EXTRACTED_CHARS);
+        let html = format!(
+            r"
+            <html>
+              <body>
+                <main>
+                  <nav>{nav}</nav>
+                  <p>tiny</p>
+                </main>
+                <article><p>{article}</p></article>
+              </body>
+            </html>
+            "
+        );
+
+        let final_url = Url::parse("https://example.com/").unwrap();
+        let extracted = extract(&html, &final_url).expect("extract should succeed via <article>");
+
+        assert!(extracted.markdown.contains("real content"));
+        assert!(!extracted.markdown.contains("tiny"));
+        assert!(!extracted.markdown.contains("nav"));
+    }
 
     #[test]
     fn test_strip_bom() {

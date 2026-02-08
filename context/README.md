@@ -13,34 +13,34 @@ Context Infinity™ is Forge's system for managing unlimited conversation contex
 | 56-65 | Design Principles |
 | 66-97 | Architecture |
 | 98-166 | Core Concepts |
-| 167-233 | Token Budget Calculation |
-| 234-324 | Context Building Algorithm |
-| 325-355 | When Distillation Triggers |
-| 356-413 | Distillation Process |
-| 414-443 | Model Switching (Context Adaptation) |
-| 444-549 | Stream Journal (Crash Recovery) |
-| 550-594 | Token Counting |
-| 595-622 | Usage Statistics |
-| 623-650 | Persistence |
-| 651-666 | Configuration |
-| 667-689 | Type-Driven Design |
-| 690-717 | Extension Points |
-| 718-735 | Limitations |
-| 736-832 | The Librarian |
-| 833-892 | Fact Store |
-| 893-1617 | Public API |
-| 1618-1714 | Complete Workflow Example |
-| 1715-1732 | Type Relationships |
-| 1733-1739 | Error Handling |
-| 1740-1748 | Dependencies |
-| 1749-1756 | Testing |
+| 167-232 | Token Budget Calculation |
+| 233-323 | Context Building Algorithm |
+| 324-354 | When Distillation Triggers |
+| 355-412 | Distillation Process |
+| 413-442 | Model Switching (Context Adaptation) |
+| 443-563 | Stream Journal (Crash Recovery) |
+| 564-609 | Token Counting |
+| 610-637 | Usage Statistics |
+| 638-668 | Persistence |
+| 669-684 | Configuration |
+| 685-707 | Type-Driven Design |
+| 708-735 | Extension Points |
+| 736-753 | Limitations |
+| 754-851 | The Librarian |
+| 852-911 | Fact Store |
+| 912-1662 | Public API |
+| 1663-1759 | Complete Workflow Example |
+| 1760-1777 | Type Relationships |
+| 1778-1784 | Error Handling |
+| 1785-1793 | Dependencies |
+| 1794-1803 | Testing |
 <!-- toc:end -->
 
 ## Overview
 
 The core principle is **never discard, always compress**: messages are never deleted from history. Instead, when the context window fills up, older messages are distilled into compact representations that preserve essential information.
 
-```
+```text
                     ContextManager
                           |
      +--------------------+--------------------+
@@ -68,7 +68,7 @@ WorkingContext -----> API Messages
 ### Component Overview
 
 | Component | Purpose |
-|-----------|---------|
+| :--- | :--- |
 | `ContextManager` | Orchestrates all context management operations |
 | `FullHistory` | Append-only storage for messages and distillates |
 | `TokenCounter` | Accurate token counting via tiktoken (cl100k_base) |
@@ -80,7 +80,7 @@ WorkingContext -----> API Messages
 
 ### Directory Structure
 
-```
+```text
 context/src/
   lib.rs              # Module exports and public API
   manager.rs          # ContextManager - main orchestrator
@@ -166,7 +166,7 @@ The working context is **ephemeral** - it's computed from history and the curren
 
 ## Token Budget Calculation
 
-### Model Limits
+### Model Limit Structures
 
 Each model has defined limits stored in `ModelRegistry`:
 
@@ -184,12 +184,12 @@ effective_budget = context_window - max_output - safety_margin
 safety_margin = min(available / 20, 4096)  // 5% capped at 4096 tokens
 ```
 
-Example for Claude Opus 4.5 (200k context, 64k output):
+Example for Claude Opus 4.6 (1M context, 128k output):
 
-```
-available = 200,000 - 64,000 = 136,000
-safety_margin = min(136,000 / 20, 4096) = min(6,800, 4096) = 4,096
-effective_budget = 136,000 - 4,096 = 131,904 tokens
+```text
+available = 1,000,000 - 128,000 = 872,000
+safety_margin = min(872,000 / 20, 4096) = 4,096
+effective_budget = 872,000 - 4,096 = 867,904 tokens
 ```
 
 The safety margin (5% capped at 4096) accounts for:
@@ -207,13 +207,13 @@ use forge_types::PredefinedModel;
 
 let mut manager = ContextManager::new(PredefinedModel::ClaudeOpus.to_model_name());
 
-// Model has 64k max output, but user configured 16k
+// Model has 128k max output, but user configured 16k
 manager.set_output_limit(16_000);
 
 // Now effective budget is:
-// 200,000 - 16,000 = 184,000 available
-// safety_margin = min(184,000 / 20, 4096) = 4,096
-// effective_budget = 184,000 - 4,096 = 179,904 (vs 131,904 without config)
+// 1,000,000 - 16,000 = 984,000 available
+// safety_margin = min(984,000 / 20, 4096) = 4,096
+// effective_budget = 984,000 - 4,096 = 979,904 (vs 867,904 without config)
 ```
 
 The reserved output is clamped to the model's `max_output` - requesting more than the model supports has no effect.
@@ -221,9 +221,8 @@ The reserved output is clamped to the model's `max_output` - requesting more tha
 ### Known Model Limits
 
 | Model | Context Window | Max Output |
-|-------|---------------|------------|
+| :--- | :--- | :--- |
 | `claude-opus-4-6` | 1,000,000 | 128,000 |
-| `claude-sonnet-4-5-20250514` | 200,000 | 64,000 |
 | `claude-haiku-4-5-20251001` | 200,000 | 64,000 |
 | `gpt-5.2-pro` | 400,000 | 128,000 |
 | `gpt-5.2` | 400,000 | 128,000 |
@@ -331,7 +330,9 @@ Distillation is triggered when:
 
 The decision flow:
 
-```
+### Distillation Lifecycle
+
+```text
 push_message() -> usage_status()
                       |
                       v
@@ -354,7 +355,7 @@ push_message() -> usage_status()
 
 ## Distillation Process
 
-### Configuration
+### Distillation Config
 
 ```rust
 pub struct DistillationConfig {
@@ -380,9 +381,8 @@ pub fn prepare_distillation(&mut self, message_ids: &[MessageId])
 
 Distillation uses cheaper/faster models:
 
-- **Claude**: `claude-haiku-4-5`
-- **OpenAI**: `gpt-5-nano`
-- **Gemini**: `gemini-3-pro-preview`
+- **Claude**: `claude-haiku-4-5-20251001`
+- **Gemini**: `gemini-3-flash-preview`
 
 The prompt instructs the model to:
 
@@ -456,7 +456,7 @@ To balance crash recovery with UI responsiveness, deltas are buffered in memory 
 
 This means a crash can lose up to the flush threshold deltas if they arrived within the flush interval. The time-based flush bounds this window.
 
-### Configuration
+### Journal Configuration
 
 The flush behavior can be tuned via environment variables:
 
@@ -660,9 +660,9 @@ The serialization format validates:
 - Distillate ranges reference valid messages
 - Distilled (`Distilled`) messages reference valid Distillates
 
-### Stream Journal Location
+### Stream Journal Path
 
-```
+```text
 <data_dir>/stream_journal.db
 ```
 
@@ -687,7 +687,7 @@ FORGE_CONTEXT_INFINITY=0  # Disable
 The system follows Forge's type-driven philosophy (see `DESIGN.md`):
 
 | Type | Purpose |
-|------|---------|
+| :--- | :--- |
 | `MessageId` | Proof of message existence in history |
 | `DistillateId` | Proof of Distillate existence |
 | `ActiveJournal` | Proof that a stream is in-flight (RAII) |
@@ -735,7 +735,7 @@ fn count_message(&self, msg: &Message) -> u32;
 
 ## Limitations
 
-1. **Distillation requires API call**: Distillation uses LLM calls (`claude-haiku-4-5`, `gpt-5-nano`, or `gemini-3-pro-preview`), adding latency and cost.
+1. **Distillation requires API call**: Distillation uses LLM calls (`claude-haiku-4-5-20251001` or `gemini-3-flash-preview`), adding latency and cost.
 
 2. **Contiguous ranges only**: distillates must cover contiguous message ranges. Selective distillation is not supported to maintain chronological coherence.
 
@@ -778,7 +778,7 @@ The Librarian uses **Gemini 3 Flash** (`gemini-3-flash-preview`) for cheap, fast
 The Librarian extracts five types of facts:
 
 | Type | Description | Example |
-|------|-------------|---------|
+| :--- | :--- | :--- |
 | `Entity` | Files, functions, variables, paths, URLs | "File `src/lib.rs` contains the main `App` struct" |
 | `Decision` | Design choices with rationale | "Chose async/await for concurrency because..." |
 | `Constraint` | Limitations or requirements | "Must stay compatible with API v2" |
@@ -795,9 +795,9 @@ pub struct Fact {
 }
 ```
 
-### Lifecycle
+### Librarian Interaction Workflow
 
-```
+```text
 User message arrives
         |
         v
@@ -853,7 +853,7 @@ let related = librarian.search("migrations")?;
 
 The `FactStore` provides SQLite-backed persistence for Librarian-extracted facts with source tracking and staleness detection.
 
-### Schema
+### Fact Store Schema
 
 ```sql
 -- Core fact storage
@@ -890,7 +890,7 @@ for result in results {
 ### Key Operations
 
 | Method | Description |
-|--------|-------------|
+| :--- | :--- |
 | `open(path)` | Open or create persistent store |
 | `open_in_memory()` | Create in-memory store (testing) |
 | `store_facts(facts, turn)` | Store facts with turn number |
@@ -901,9 +901,9 @@ for result in results {
 | `check_staleness(facts)` | Check if source files have changed |
 | `clear()` | Delete all facts (reset) |
 
-### Storage Location
+### Fact Store Location
 
-```
+```text
 <data_dir>/librarian.db
 ```
 
@@ -960,7 +960,7 @@ match manager.prepare() {
 **Key methods:**
 
 | Method | Description |
-|--------|-------------|
+| :--- | :--- |
 | `new(model)` | Create manager for initial model |
 | `push_message(msg)` | Add message, returns `MessageId` |
 | `push_message_with_step_id(msg, id)` | Add message with stream step ID for crash recovery |
@@ -1150,7 +1150,7 @@ pub struct Distillate {
 }
 ```
 
-### Model Limits
+### API Model Registry
 
 #### `ModelRegistry`
 
@@ -1180,9 +1180,8 @@ println!("Effective input budget: {}", limits.effective_input_budget());
 **Known models:**
 
 | Model | Context Window | Max Output |
-|-------|---------------|------------|
+| :--- | :--- | :--- |
 | `claude-opus-4-6` | 1,000,000 | 128,000 |
-| `claude-sonnet-4-5-20250514` | 200,000 | 64,000 |
 | `claude-haiku-4-5-20251001` | 200,000 | 64,000 |
 | `gpt-5.2-pro` | 400,000 | 128,000 |
 | `gpt-5.2` | 400,000 | 128,000 |
@@ -1206,7 +1205,7 @@ let budget = limits.effective_input_budget();
 
 The safety margin (5% capped at 4096) accounts for token counting inaccuracies and overhead from system prompts, formatting, and tool definitions.
 
-### Token Counting
+### API Token Counting
 
 #### `TokenCounter`
 
@@ -1450,8 +1449,8 @@ The function validates that input doesn't exceed the distiller model's context l
 **Distillation models used:**
 
 | Provider | Model | Context Limit |
-|----------|-------|---------------|
-| Claude | `claude-haiku-4-5` | 190,000 tokens |
+| :--- | :--- | :--- |
+| Claude | `claude-haiku-4-5-20251001` | 190,000 tokens |
 | OpenAI | `gpt-5-nano` | 380,000 tokens |
 
 ### Librarian
@@ -1491,7 +1490,7 @@ librarian.clear()?;  // Reset for testing
 **Key methods:**
 
 | Method | Description |
-|--------|-------------|
+| :--- | :--- |
 | `open(path, api_key)` | Create with persistent SQLite storage |
 | `open_in_memory(api_key)` | Create in-memory store (testing) |
 | `retrieve_context(query)` | Async: get relevant facts for pre-flight injection |
@@ -1759,7 +1758,7 @@ journal.commit_and_prune_step(step_id)?;
 
 ## Type Relationships
 
-```
+```text
 MessageId -----> HistoryEntry -----> Message
      |               |
      |               v
@@ -1799,5 +1798,3 @@ cargo test -p forge-context -- --nocapture  # With output
 ```
 
 The crate includes comprehensive unit tests for all modules. Integration tests requiring API keys are marked with `#[ignore]`.
-
-

@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
+use std::time::{Duration, Instant};
 
 use futures_util::future::{AbortHandle, Abortable, FutureExt};
 use tokio::sync::mpsc;
@@ -106,29 +107,31 @@ impl SpawnedTool {
         self.abort_handle.abort();
     }
 
-    pub(crate) async fn complete(self) -> CompletedTool {
+    pub(crate) fn try_complete_now(mut self) -> Result<CompletedTool, Self> {
+        let result = (&mut self.join_handle).now_or_never();
+        let Some(result) = result else {
+            return Err(self);
+        };
+
         // Destructure self to take ownership of all fields
         let Self {
             call,
-            join_handle,
+            join_handle: _,
             mut event_rx,
             abort_handle: _, // No longer needed
         } = self;
 
-        // Await task completion
-        let result = join_handle.await;
-
-        // Drain events AFTER await - events may have been produced while waiting
+        // Drain events AFTER completion - events may have been produced while finishing
         let mut final_events = Vec::new();
         while let Ok(event) = event_rx.try_recv() {
             final_events.push(event);
         }
 
-        CompletedTool {
+        Ok(CompletedTool {
             call,
             result,
             final_events,
-        }
+        })
     }
 }
 
@@ -668,8 +671,6 @@ impl App {
     }
 
     pub(crate) fn poll_tool_loop(&mut self) {
-        use futures_util::future::FutureExt;
-
         let state = match std::mem::replace(&mut self.state, OperationState::Idle) {
             OperationState::ToolLoop(state) => *state,
             other => {
@@ -718,9 +719,6 @@ impl App {
 
                 // Check if the spawned tool has completed
                 if exec.spawned.is_finished() {
-                    // Tool finished - collect result using consuming transition
-                    // We need to use now_or_never to poll synchronously since we can't
-                    // await here. The JoinHandle is finished so this will return immediately.
                     let ActiveExecution {
                         spawned,
                         queue,
@@ -728,13 +726,22 @@ impl App {
                         turn_recorder,
                     } = exec;
 
-                    // Use now_or_never since we know it's finished
-                    let Some(completed) = Box::pin(spawned.complete()).now_or_never() else {
-                        // Shouldn't happen since is_finished() was true
-                        tracing::error!("Tool was finished but complete() didn't return");
-                        self.finish_turn(batch.turn);
-                        self.state = OperationState::Idle;
-                        return;
+                    let completed = match spawned.try_complete_now() {
+                        Ok(completed) => completed,
+                        Err(spawned) => {
+                            // Edge-case: is_finished() was true but join handle isn't ready yet.
+                            // Keep state and retry next tick rather than aborting the turn.
+                            self.state = OperationState::ToolLoop(Box::new(ToolLoopState {
+                                batch,
+                                phase: ToolLoopPhase::Executing(ActiveExecution {
+                                    spawned,
+                                    queue,
+                                    output_lines,
+                                    turn_recorder,
+                                }),
+                            }));
+                            return;
+                        }
                     };
 
                     // Process final events from the completed tool
@@ -926,12 +933,30 @@ impl App {
         }
 
         let autosave_succeeded = self.autosave_history();
+        let mut tool_cleanup_failed = false;
         if autosave_succeeded {
             self.finalize_journal_commit(step_id);
             if let JournalStatus::Persisted(id) = journal_status
                 && let Err(e) = self.tool_journal.commit_batch(id)
             {
                 tracing::warn!("Failed to commit tool batch {id}: {e}");
+                tool_cleanup_failed = true;
+
+                if self.pending_tool_cleanup == Some(id) {
+                    self.pending_tool_cleanup_failures =
+                        self.pending_tool_cleanup_failures.saturating_add(1);
+                } else {
+                    self.pending_tool_cleanup = Some(id);
+                    self.pending_tool_cleanup_failures = 1;
+                    self.push_notification(format!(
+                        "Tool journal cleanup failed; will retry. If tools get stuck, run /clear. ({e})"
+                    ));
+                }
+
+                let after = Instant::now() + Duration::from_secs(1);
+                if self.next_journal_cleanup_attempt < after {
+                    self.next_journal_cleanup_attempt = after;
+                }
             }
         }
 
@@ -944,6 +969,14 @@ impl App {
         if auto_resume && !autosave_succeeded {
             self.push_notification(
                 "Cannot continue tool loop: history save failed. Stopping to prevent data loss.",
+            );
+            self.finish_turn(turn);
+            return;
+        }
+
+        if auto_resume && tool_cleanup_failed {
+            self.push_notification(
+                "Cannot continue tool loop: tool journal cleanup failed. Stopping to prevent stuck state.",
             );
             self.finish_turn(turn);
             return;

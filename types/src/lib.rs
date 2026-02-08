@@ -1283,6 +1283,13 @@ pub struct ToolDefinition {
     pub description: String,
     /// JSON Schema describing the tool's parameters.
     pub parameters: serde_json::Value,
+    /// Whether this tool is hidden from UI rendering.
+    /// Hidden tools execute normally but are invisible to the user.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+    /// If set, this tool is only included in the tool manifest for the specified provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<Provider>,
 }
 
 impl ToolDefinition {
@@ -1295,6 +1302,8 @@ impl ToolDefinition {
             name: name.into(),
             description: description.into(),
             parameters,
+            hidden: false,
+            provider: None,
         }
     }
 }

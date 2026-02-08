@@ -162,11 +162,11 @@ impl super::App {
         let DistillationTask {
             scope,
             generated_by,
-            handle,
+            mut handle,
         } = task;
 
         // Get the result using now_or_never since we know it's finished
-        let result = handle.now_or_never();
+        let result = (&mut handle).now_or_never();
 
         match result {
             Some(Ok(Ok(distillation_text))) => {
@@ -208,8 +208,17 @@ impl super::App {
                 self.handle_distillation_failure(format!("task panicked: {e}"), queued_request);
             }
             None => {
-                // This shouldn't happen since we checked is_finished()
-                self.handle_distillation_failure("task not ready".to_string(), queued_request);
+                // Edge-case: is_finished() was true but join handle isn't ready yet.
+                // Restore state and retry next tick rather than failing the distillation.
+                let task = DistillationTask {
+                    scope,
+                    generated_by,
+                    handle,
+                };
+                self.state = OperationState::Distilling(match queued_request {
+                    Some(message) => DistillationState::CompletedWithQueued { task, message },
+                    None => DistillationState::Running(task),
+                });
             }
         }
     }

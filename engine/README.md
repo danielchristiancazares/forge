@@ -5,7 +5,7 @@ This document provides comprehensive documentation for the `forge-engine` crate 
 ## LLM-TOC
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
-|-------|---------|
+| :--- | :--- |
 | 1-40 | Header, Table of Contents |
 | 41-114 | Overview: responsibilities, file structure, dependencies |
 | 115-149 | Architecture Diagram: App structure with InputState, OperationState, components |
@@ -14,7 +14,7 @@ This document provides comprehensive documentation for the `forge-engine` crate 
 | 388-492 | Type-Driven Design Patterns: proof tokens, InsertToken, CommandToken, mode wrappers |
 | 493-590 | Streaming Orchestration: ActiveStream, StreamingMessage, lifecycle, journal recovery |
 | 591-672 | Command System: built-in commands table, rewind details, Command enum |
-| 673-735 | Context Management Integration: ContextManager, summarization retry, model switch adaptation |
+| 673-735 | Context Management Integration: ContextManager, distillation retry, model switch adaptation |
 | 736-915 | Configuration: ForgeConfig structure, loading, env expansion, config sections |
 | 916-1066 | Tool Execution System: ToolRegistry, built-in tools, approval workflow, sandbox |
 | 1067-1150 | System Notifications: SystemNotification enum, NotificationQueue, security model |
@@ -47,12 +47,12 @@ The `forge-engine` crate is the heart of the Forge application - a TUI-agnostic 
 ### Key Responsibilities
 
 | Responsibility | Description |
-|----------------|-------------|
+| :--- | :--- |
 | **Input Mode State Machine** | Vim-style modal editing (Normal, Insert, Command, ModelSelect, FileSelect) |
-| **Async Operation State Machine** | Mutually exclusive states for streaming, tool execution, summarizing, idle |
+| **Async Operation State Machine** | Mutually exclusive states for streaming, tool execution, distilling, idle |
 | **Streaming Management** | Non-blocking LLM response streaming with crash recovery |
 | **Tool Execution** | Built-in tools (ReadFile, WriteFile, ApplyPatch, RunCommand, Glob, Search, WebFetch) |
-| **Context Infinity** | Adaptive context window management with automatic summarization |
+| **Context Infinity** | Adaptive context window management with automatic distillation |
 | **Provider Abstraction** | Unified interface for Claude, OpenAI, and Gemini APIs |
 | **History Persistence** | Conversation storage and recovery across sessions |
 
@@ -106,9 +106,9 @@ engine/
 The engine depends on several workspace crates:
 
 | Crate | Purpose |
-|-------|---------|
+| :--- | :--- |
 | `forge-types` | Core domain types (Message, Provider, ModelName, ToolCall, etc.) |
-| `forge-context` | Context window management, summarization, persistence |
+| `forge-context` | Context window management, distillation, persistence |
 | `forge-providers` | LLM API clients (Claude, OpenAI, Gemini) |
 | `forge-webfetch` | URL fetching for web-based tools |
 
@@ -163,8 +163,7 @@ pub(crate) enum OperationState {
     Streaming(ActiveStream),                        // API response in progress
     ToolLoop(Box<ToolLoopState>),                   // Tool execution in progress (approval + execution)
     ToolRecovery(ToolRecoveryState),                // Crash recovery: pending user decision
-    Summarizing(SummarizationState),                // Background summarization (queued: Option<...>)
-    SummarizationRetry(SummarizationRetryState),    // Retry after failure (queued: Option<...>)
+    Distilling(DistillationState),                  // Background distillation
 }
 ```
 
@@ -198,50 +197,53 @@ struct ToolRecoveryState {
     model: ModelName,                     // Model that made the calls
 }
 
-// Summarization task
-struct SummarizationTask {
-    scope: SummarizationScope,                          // Which messages to summarize
+// Distillation task
+struct DistillationTask {
+    scope: DistillationScope,                          // Which messages to distill
     generated_by: String,                               // Model that generated the Distillate
     handle: JoinHandle<anyhow::Result<String>>,         // Async task handle
-    attempt: u8,                                        // Retry attempt number
 }
 
-// Summarization state
-struct SummarizationState {
-    task: SummarizationTask,
+// Distillation state
+enum DistillationState {
+    Running(DistillationTask),
+    CompletedWithQueued {
+        task: DistillationTask,
+        message: QueuedUserMessage,
+    },
 }
 ```
 
 ### State Transition Diagram
 
 ```
-                              OperationState
+                               OperationState
     ┌────────────────────────────────────────────────────────────────────────┐
     │                                                                         │
     │     ┌──────────────────────────────────────────────────────────────┐   │
     │     │                          Idle                                 │   │
     │     └──────────────────────────────────────────────────────────────┘   │
     │           │                    │                     │                  │
-    │      start_streaming()   start_summarization()   queue_message()        │
-    │           │                    │               (summarization needed)   │
+    │      start_streaming()   start_distillation()    queue_message()        │
+    │           │                    │               (distillation needed)    │
     │           v                    v                     │                  │
     │     ┌───────────┐        ┌───────────────┐          │                  │
-    │     │ Streaming │        │  Summarizing  │<─────────┘                  │
+    │     │ Streaming │        │  Distilling   │<─────────┘                  │
     │     └─────┬─────┘        └───────────────┘                             │
     │           │                    │                                        │
     │      tool_calls?           success/failure                              │
     │      ┌────┴────┐               │                                        │
     │      ▼         ▼               v                                        │
-    │  ┌────────┐  finish    ┌─────────────────────┐  failure                 │
-    │  │ToolLoop│   │        │ (poll_summarization │──────────┐               │
-    │  └───┬────┘   │        │  processes result)  │          │               │
-    │      │        │        └─────────────────────┘          v               │
-    │   approve/    │                                 ┌─────────────────┐     │
-    │   deny/done   │                                 │ SummarizationRetry│    │
-    │      │        │                                 └─────────────────┘     │
-    │      v        v                                         │               │
-    │     ┌───────────┐  success                         ready_at reached     │
-    │     │   Idle    │<─────────────────────────────────────┘                │
+    │  ┌────────┐  finish    ┌─────────────────────┐                          │
+    │  │ToolLoop│   │        │   (poll_app()       │                          │
+    │  └───┬────┘   │        │  processes result)  │                          │
+    │      │        │        └─────────────────────┘                          │
+    │   approve/    │                                                         │
+    │   deny/done   │                                                         │
+    │      │        │                                                         │
+    │      v        v                                                         │
+    │     ┌───────────┐                                                       │
+    │     │   Idle    │                                                       │
     │     └─────┬─────┘                                                       │
     │           │ or                                                          │
     │           v                                                             │
@@ -295,11 +297,11 @@ struct SummarizationState {
 This state machine design provides several guarantees:
 
 | Guarantee | Implementation |
-|-----------|----------------|
+| :--- | :--- |
 | **No concurrent streaming** | Only one `Streaming` state can exist |
 | **No concurrent tool execution** | Only one `ToolLoop` state can exist |
-| **No concurrent summarization** | Summarizing/Retry states are mutually exclusive |
-| **Request queueing** | `WithQueued` variants hold a pending request during summarization |
+| **No concurrent distillation** | `Distilling` state is mutually exclusive |
+| **Request queueing** | `CompletedWithQueued` holds a pending request during distillation |
 | **Tool batch atomicity** | All tools in a batch are approved/denied together |
 | **Clean transitions** | `replace_with_idle()` ensures proper state cleanup |
 
@@ -597,14 +599,14 @@ The engine provides a slash command system for user actions.
 ### Built-in Commands
 
 | Command | Aliases | Description |
-|---------|---------|-------------|
+| :--- | :--- | :--- |
 | `/quit` | `/q` | Exit application |
 | `/clear` | - | Clear conversation and history |
-| `/cancel` | - | Cancel streaming, tool execution, or summarization |
+| `/cancel` | - | Cancel streaming, tool execution, or distillation |
 | `/model [name]` | - | Set model or open picker |
 | `/context` | `/ctx` | Show context usage stats |
 | `/journal` | `/jrnl` | Show journal statistics |
-| `/summarize` | `/distill` | Trigger summarization |
+| `/distill` | - | Trigger distillation |
 | `/tools` | - | Show tool status |
 | `/rewind [id\|last] [scope]` | `/rw` | Rewind to an automatic checkpoint |
 | `/undo` | - | Rewind to the latest turn checkpoint (conversation only) |
@@ -612,6 +614,7 @@ The engine provides a slash command system for user actions.
 | `/help` | - | List available commands |
 
 **Rewind Command Details:**
+
 - `/rewind` or `/rewind list` - Show available checkpoints
 
 - `/rewind last code` - Rewind last checkpoint, restore only code changes
@@ -623,6 +626,7 @@ The engine provides a slash command system for user actions.
 - Scopes: `code`, `conversation` (or `chat`), `both` (default: `both`)
 
 **Shortcuts:**
+
 - `/undo` - Rewind to the latest turn checkpoint (conversation only)
 
 - `/retry` - Rewind to the latest turn checkpoint and restore the prompt into the draft
@@ -681,9 +685,9 @@ The engine integrates with `forge-context` for adaptive context window managemen
 // In start_streaming():
 let api_messages = match self.context_manager.prepare() {
     Ok(prepared) => prepared.api_messages(),
-    Err(ContextBuildError::SummarizationNeeded(needed)) => {
-        // Queue the request, start summarization
-        self.start_summarization_with_attempt(Some(config), 1);
+    Err(ContextBuildError::DistillationNeeded(needed)) => {
+        // Queue the request, start distillation
+        self.start_distillation(Some(config));
         return;
     }
     Err(ContextBuildError::RecentMessagesTooLarge { .. }) => {
@@ -696,17 +700,8 @@ let api_messages = match self.context_manager.prepare() {
 ### Summarization Retry with Backoff
 
 ```rust
-const MAX_SUMMARIZATION_ATTEMPTS: u8 = 5;
-const SUMMARIZATION_RETRY_BASE_MS: u64 = 500;
-const SUMMARIZATION_RETRY_MAX_MS: u64 = 8000;
-
-fn summarization_retry_delay(attempt: u8) -> Duration {
-    let exponent = attempt.saturating_sub(1).min(10) as u32;
-    let base = SUMMARIZATION_RETRY_BASE_MS.saturating_mul(1u64 << exponent);
-    let capped = base.min(SUMMARIZATION_RETRY_MAX_MS);
-    // Add jitter to prevent thundering herd
-    Duration::from_millis(capped + jitter)
-}
+// Distillation uses the cheapest model for each provider (e.g. Claude Haiku or Gemini Flash).
+// The distillation task runs in the background and is polled by the engine's main loop.
 ```
 
 ### Model Switch Adaptation
@@ -1140,12 +1135,12 @@ impl NotificationQueue {
 All notifications are prefixed with `[System: ...]` to clearly mark them as system-level messages distinct from user or model content:
 
 | Notification | Formatted Output |
-|--------------|------------------|
-| `ContextDistilled` | `[System: Earlier messages were Distilled to fit context budget]` |
+| :--- | :--- |
+| `ContextDistilled` | `[System: Earlier messages were distilled to fit context budget]` |
 | `SessionRecovered` | `[System: Session recovered after unexpected termination]` |
 | `ToolsApproved { count: 3 }` | `[System: User approved 3 tool call(s)]` |
 | `ToolsDenied { count: 1 }` | `[System: User denied 1 tool call(s)]` |
-| `ContextBudgetWarning` | `[System: Context budget running low, consider summarizing]` |
+| `ContextBudgetWarning` | `[System: Context budget running low, consider distilling]` |
 | `ModelSwitched` | `[System: Model was switched during session]` |
 
 ### Injection Mechanism
@@ -1355,10 +1350,10 @@ let finished = effect.is_finished();
 let kind = effect.kind();
 ```
 
-### App Lifecycle
+### App Instance Interface
 
 | Method | Description |
-|--------|-------------|
+| :--- | :--- |
 | `App::new(system_prompt)` | Create instance, load config, recover crashes |
 | `tick()` | Advance tick counter, poll background tasks |
 | `frame_elapsed()` | Get time since last frame for animations |
@@ -1740,8 +1735,8 @@ The engine re-exports commonly needed types from its dependencies:
 ### From `forge-context`
 
 | Type | Description |
-|------|-------------|
-| `ContextManager` | Orchestrates token counting and summarization |
+| :--- | :--- |
+| `ContextManager` | Orchestrates token counting and distillation |
 | `ContextAdaptation` | Result of model switch (shrinking/expanding) |
 | `ContextUsageStatus` | Token usage statistics |
 | `FullHistory` | Complete message history |
@@ -1846,9 +1841,9 @@ pub enum ToolError {
 }
 ```
 
-### Summarization Retry
+### Distillation Retry
 
-Failed summarizations are retried with exponential backoff:
+Failed distillations are retried with exponential backoff:
 
 - Base delay: 500ms
 - Max delay: 8000ms
@@ -1877,7 +1872,7 @@ directory is available, it falls back to `./forge/`.
 Config remains in the home directory: `~/.forge/config.toml`.
 
 | Path | Purpose |
-|------|---------|
+| :--- | :--- |
 | `<data_dir>/history.json` | Conversation history (JSON) |
 | `<data_dir>/session.json` | Draft input and input history |
 | `<data_dir>/stream_journal.db` | WAL for stream crash recovery |

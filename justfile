@@ -41,14 +41,18 @@ cov:
 # Run all checks before committing
 verify: fmt fmt-check lint test
 
-# Create source zip for bug analysis (excludes build artifacts)
+# Generate CONTEXT.md (file tree, state transitions, cargo metadata, features)
+context:
+    cargo metadata --format-version 1 --no-deps | python scripts/gen_context.py > CONTEXT.md
+
+# Create source zip for GPT analysis (pre-generates CONTEXT.md, excludes build artifacts)
 [windows]
-zip:
+zip: context
     Compress-Archive -Path (Get-ChildItem -Path . -Exclude 'target','docs','scripts','*.zip','lcov.info','coverage','sha256.txt' | Where-Object { -not $_.Name.StartsWith('.') }) -DestinationPath forge-source.zip -Force
     Get-FileHash -Algorithm SHA256 forge-source.zip | ForEach-Object { "{0}  {1}" -f $_.Hash, $_.Path } | Set-Content -NoNewline sha256.txt
 
 [unix]
-zip:
+zip: context
     zip -r forge-source.zip . -x 'target/*' -x 'docs/*' -x 'scripts/*' -x '.*' -x '.*/*' -x '*.zip' -x 'lcov.info' -x 'coverage/*' -x 'sha256.txt'
     sha256sum forge-source.zip > sha256.txt || shasum -a 256 forge-source.zip > sha256.txt
 
@@ -104,3 +108,13 @@ digest:
 toc-all:
     just toc README.md
     just toc context/README.md
+
+# Normalize line endings to LF for source and doc files
+[windows]
+fix:
+    Get-ChildItem -Path . -Include *.rs,*.md -Recurse | Where-Object { $_.FullName -notmatch '\\target\\' } | ForEach-Object { $c = [System.IO.File]::ReadAllText($_.FullName); if ($c -match "`r`n") { [System.IO.File]::WriteAllText($_.FullName, ($c -replace "`r`n", "`n")); Write-Host "fixed: $($_.FullName)" } }
+
+[unix]
+fix:
+    find . \( -name '*.rs' -o -name '*.md' \) -not -path './target/*' -exec sed -i 's/\r$//' {} +
+

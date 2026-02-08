@@ -7,6 +7,8 @@
 //! - Journal commit/discard operations
 //! - Message rollback after errors
 
+use std::time::{Duration, Instant};
+
 use forge_context::{RecoveredStream, StepId};
 use forge_types::{Message, NonEmptyStaticStr, NonEmptyString, sanitize_terminal_text};
 
@@ -140,6 +142,7 @@ impl App {
             json.as_bytes(),
             forge_context::AtomicWriteOptions {
                 sync_all: true,
+                dir_sync: true,
                 unix_mode: None,
             },
         )?;
@@ -188,6 +191,68 @@ impl App {
                 tracing::warn!("Session autosave failed: {e}");
                 false
             }
+        }
+    }
+
+    /// Best-effort retry loop for journal cleanup that failed after a successful history save.
+    ///
+    /// This runs only while the app is idle to avoid interfering with streaming/tool execution.
+    pub(crate) fn poll_journal_cleanup(&mut self) {
+        if !matches!(self.state, OperationState::Idle) {
+            return;
+        }
+
+        let now = Instant::now();
+        if now < self.next_journal_cleanup_attempt {
+            return;
+        }
+
+        let mut attempted_any = false;
+
+        if let Some(step_id) = self.pending_stream_cleanup {
+            attempted_any = true;
+            match self.stream_journal.commit_and_prune_step(step_id) {
+                Ok(_) => {
+                    self.pending_stream_cleanup = None;
+                    self.pending_stream_cleanup_failures = 0;
+                }
+                Err(e) => {
+                    self.pending_stream_cleanup_failures =
+                        self.pending_stream_cleanup_failures.saturating_add(1);
+                    tracing::warn!("Failed to retry commit/prune journal step {step_id}: {e}");
+                    if self.pending_stream_cleanup_failures == 3 {
+                        self.push_notification(
+                            "Stream journal cleanup failed repeatedly; run /clear to reset.",
+                        );
+                    }
+                }
+            }
+        }
+
+        if let Some(batch_id) = self.pending_tool_cleanup {
+            attempted_any = true;
+            match self.tool_journal.commit_batch(batch_id) {
+                Ok(()) => {
+                    self.pending_tool_cleanup = None;
+                    self.pending_tool_cleanup_failures = 0;
+                }
+                Err(e) => {
+                    self.pending_tool_cleanup_failures =
+                        self.pending_tool_cleanup_failures.saturating_add(1);
+                    tracing::warn!("Failed to retry commit tool batch {batch_id}: {e}");
+                    if self.pending_tool_cleanup_failures == 3 {
+                        self.push_notification(
+                            "Tool journal cleanup failed repeatedly; run /clear to reset.",
+                        );
+                    }
+                }
+            }
+        }
+
+        if attempted_any
+            && (self.pending_stream_cleanup.is_some() || self.pending_tool_cleanup.is_some())
+        {
+            self.next_journal_cleanup_attempt = now + Duration::from_secs(1);
         }
     }
 
@@ -454,6 +519,23 @@ impl App {
     pub(crate) fn finalize_journal_commit(&mut self, step_id: StepId) {
         if let Err(e) = self.stream_journal.commit_and_prune_step(step_id) {
             tracing::warn!("Failed to commit/prune journal step {}: {e}", step_id);
+
+            // Record pending cleanup so we can retry in-session.
+            if self.pending_stream_cleanup == Some(step_id) {
+                self.pending_stream_cleanup_failures =
+                    self.pending_stream_cleanup_failures.saturating_add(1);
+            } else {
+                self.pending_stream_cleanup = Some(step_id);
+                self.pending_stream_cleanup_failures = 1;
+                self.push_notification(format!(
+                    "Stream journal cleanup failed; will retry. If sending gets stuck, run /clear. ({e})"
+                ));
+            }
+
+            let after = Instant::now() + Duration::from_secs(1);
+            if self.next_journal_cleanup_attempt < after {
+                self.next_journal_cleanup_attempt = after;
+            }
         }
     }
 

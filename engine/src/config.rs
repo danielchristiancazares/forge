@@ -553,6 +553,7 @@ impl ForgeConfig {
             serialized.as_bytes(),
             forge_context::AtomicWriteOptions {
                 sync_all: true,
+                dir_sync: true,
                 unix_mode: None,
             },
         )?;

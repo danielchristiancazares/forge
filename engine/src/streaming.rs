@@ -89,7 +89,13 @@ impl super::App {
 
         // Calculate overhead from system prompt and tools to avoid context overflow
         let system_prompt = self.system_prompts.get(config.provider());
-        let tools = self.tool_definitions.clone();
+        let provider = config.provider();
+        let tools: Vec<_> = self
+            .tool_definitions
+            .iter()
+            .filter(|t| t.provider.is_none() || t.provider == Some(provider))
+            .cloned()
+            .collect();
 
         let counter = TokenCounter::new();
         let sys_tokens = counter.count_str(system_prompt);
@@ -144,7 +150,32 @@ impl super::App {
         let journal = match self.stream_journal.begin_session(config.model().as_str()) {
             Ok(session) => session,
             Err(e) => {
-                self.push_notification(format!("Cannot start stream: journal unavailable ({e})"));
+                let err = e.to_string();
+
+                // Safety net: if a recoverable step exists, attempt recovery without
+                // corrupting chronology. We must rollback the pending user message
+                // first, otherwise recovered assistant/tool output would be appended
+                // after this prompt.
+                if err.contains("recoverable step") {
+                    self.rollback_pending_user_message();
+                    let recovered = self.check_crash_recovery();
+                    if recovered.is_some() || matches!(self.state, OperationState::ToolRecovery(_))
+                    {
+                        self.push_notification(
+                            "Recovered unfinished work. Review it, then press Enter to retry.",
+                        );
+                        self.finish_turn(turn);
+                        return;
+                    }
+                    // Recovery didn't find anything actionable; fall back to normal error path.
+                    self.push_notification(format!(
+                        "Cannot start stream: journal unavailable ({err})"
+                    ));
+                    self.finish_turn(turn);
+                    return;
+                }
+
+                self.push_notification(format!("Cannot start stream: journal unavailable ({err})"));
                 // Rollback the pending user message so user can retry
                 self.rollback_pending_user_message();
                 self.finish_turn(turn);

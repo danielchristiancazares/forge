@@ -10,15 +10,15 @@ HTML-to-Markdown extraction, token-aware chunking, and LRU disk caching.
 | Lines | Section |
 |-------|---------|
 | 1-35 | Header, Intro, LLM-TOC, Table of Contents |
-| 36-50 | Architecture |
-| 51-155 | Key Types |
-| 156-176 | Public API |
-| 177-275 | How It Works |
-| 276-330 | Configuration |
-| 331-390 | Usage Examples |
-| 391-396 | Integration with Other Crates |
-| 397-410 | Testing |
-| 411-430 | Design Principles |
+| 36-51 | Architecture |
+| 52-157 | Key Types |
+| 158-179 | Public API |
+| 180-287 | How It Works |
+| 288-340 | Configuration |
+| 341-400 | Usage Examples |
+| 401-405 | Integration with Other Crates |
+| 406-418 | Testing |
+| 419-438 | Design Principles |
 
 ## Table of Contents
 
@@ -107,6 +107,7 @@ pub struct FetchChunk {
 
 | Note | Description |
 |------|-------------|
+| `HttpUpgradedToHttps` | HTTP URL was automatically upgraded to HTTPS |
 | `CacheHit` | Response served from cache |
 | `RobotsUnavailableFailOpen` | robots.txt unavailable, proceeded anyway |
 | `BrowserUnavailableUsedHttp` | Browser requested but unavailable |
@@ -167,15 +168,25 @@ pub async fn fetch(
 
 ### Fetch Pipeline
 
-1. **Cache Check**: Look up cached content (unless `no_cache`)
-2. **SSRF Validation**: Validate URL scheme, host, port, and resolve DNS
-3. **robots.txt Check**: Verify path is allowed for our user-agent
-4. **Content Fetch**: HTTP request with optional browser fallback
-5. **Extraction**: Convert HTML to Markdown with boilerplate removal
-6. **Chunking**: Split content by token budget with heading tracking
-7. **Cache Write**: Store result for future requests
+1. **HTTP-to-HTTPS Upgrade**: Upgrade `http://` URLs to `https://` (unless insecure overrides enabled)
+2. **Cache Check**: Look up cached content (unless `no_cache`)
+3. **SSRF Validation**: Validate URL scheme, host, port, and resolve DNS
+4. **robots.txt Check**: Verify path is allowed for our user-agent
+5. **Content Fetch**: HTTP request with SPA auto-detection and optional browser fallback
+6. **Extraction**: Convert HTML to Markdown with boilerplate removal and steganographic character stripping
+7. **Chunking**: Split content by token budget with heading tracking
+8. **Cache Write**: Store result for future requests
 
 ## How It Works
+
+### HTTP-to-HTTPS Auto-Upgrade
+
+The `fetch` function automatically upgrades `http://` URLs to `https://` before
+any network activity occurs. If the original URL used port 80 explicitly, the
+port is removed (since 443 is the default for HTTPS). This upgrade is skipped
+only when `allow_insecure_overrides` is enabled in the security configuration
+(intended for testing). When an upgrade occurs, the `HttpUpgradedToHttps` note
+is added to the output.
 
 ### SSRF Protection
 
@@ -220,6 +231,7 @@ Optional headless Chromium rendering via CDP (`browser.rs`):
 - **DOM size limit**: Truncates if rendered DOM exceeds limit (default: 5 MiB)
 - **Network idle detection**: Waits for 500ms of network quiet before extraction
 - **Redirect limit**: Enforced for main document navigation
+- **SPA auto-detection**: When HTTP response has fewer than 50 visible characters (heuristic for JavaScript-rendered SPAs), the browser is tried automatically as a fallback
 
 Chromium is discovered via:
 1. Explicit path in config (`chromium_path`)
@@ -231,9 +243,10 @@ Chromium is discovered via:
 Content extraction (`extract.rs`) with intelligent boilerplate removal:
 
 - **Root detection cascade**: `<main>`, `<article>`, `[role="main"]`, `#content`, `.content`, `<body>`
-- **Tag-level filtering**: Removes `<script>`, `<style>`, `<nav>`, `<footer>`, `<aside>`, etc.
+- **Tag-level filtering**: Removes `<script>`, `<style>`, `<noscript>`, `<nav>`, `<footer>`, `<header>`, `<aside>`, `<form>`, etc.
 - **Attribute filtering**: Removes `aria-hidden="true"`, `hidden`, `role="navigation"`
 - **Token-based class/ID filtering**: Removes elements with boilerplate tokens (nav, menu, sidebar, etc.)
+- **Steganographic stripping**: Removes invisible Unicode steganographic characters via `forge_types::strip_steganographic_chars` before LLM ingestion
 - **Minimum content check**: Requires 50+ non-whitespace characters
 
 Markdown conversion supports:
@@ -269,7 +282,7 @@ LRU cache (`cache.rs`) with dual-limit eviction:
 - **TTL expiration**: Configurable days; expired entries treated as miss
 - **Dual limits**: Evicts by entry count AND total bytes (whichever exceeded first)
 - **LRU tracking**: `last_accessed_at` updated on read (no TTL sliding)
-- **Atomic writes**: Temp file + rename for crash safety
+- **Atomic writes**: Temp file + rename via `forge_context::atomic_write_with_options` for crash safety
 - **Re-chunking**: Cached markdown re-chunked with request's token budget
 
 ## Configuration
@@ -291,7 +304,7 @@ max_dns_attempts = 3                # DNS resolution retries
 allow_auto_execution = false        # Allow auto-execution without approval
 
 # Cache settings
-cache_dir = "~/.cache/forge"           # Cache directory (default: OS cache dir + /forge)
+cache_dir = "~/.cache/forge/webfetch"  # Cache directory (default: OS cache dir + /forge/webfetch)
 cache_ttl_days = 7                     # Cache entry lifetime
 max_cache_entries = 1000               # Maximum cached URLs
 max_cache_bytes = 1073741824           # 1 GiB total cache size
@@ -387,8 +400,8 @@ match fetch(input, &config).await {
 
 ## Integration with Other Crates
 
-- **`forge-context`**: Uses `TokenCounter` for accurate token counting in chunking
-- **`forge-types`**: Shares core domain types across the workspace
+- **`forge-context`**: Uses `TokenCounter` for accurate token counting in chunking; uses `atomic_write_with_options` for crash-safe cache writes
+- **`forge-types`**: Shares core domain types across the workspace; uses `strip_steganographic_chars` to sanitize extracted web content before LLM consumption
 
 ## Testing
 

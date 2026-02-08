@@ -39,26 +39,26 @@ impl ApiUsage {
     pub const fn non_cached_input_tokens(&self) -> u32; @ types/src/lib.rs:1247
 }
 
-pub struct AssistantMessage { @ types/src/lib.rs:1431
+pub struct AssistantMessage { @ types/src/lib.rs:1440
 }
 
 impl AssistantMessage {
-    pub fn content(&self) -> &str; @ types/src/lib.rs:1449
-    pub fn model(&self) -> &ModelName; @ types/src/lib.rs:1459
-    pub fn new(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1440
-    pub fn provider(&self) -> Provider; @ types/src/lib.rs:1454
+    pub fn content(&self) -> &str; @ types/src/lib.rs:1458
+    pub fn model(&self) -> &ModelName; @ types/src/lib.rs:1468
+    pub fn new(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1449
+    pub fn provider(&self) -> Provider; @ types/src/lib.rs:1463
 }
 
 /// A message with an associated cache hint for API serialization.
-pub struct CacheableMessage { @ types/src/lib.rs:1612
+pub struct CacheableMessage { @ types/src/lib.rs:1621
     pub message: Message,
     pub cache_hint: CacheHint,
 }
 
 impl CacheableMessage {
-    pub fn cached(message: Message) -> Self; @ types/src/lib.rs:1632
-    pub fn new(message: Message, cache_hint: CacheHint) -> Self; @ types/src/lib.rs:1619
-    pub fn plain(message: Message) -> Self; @ types/src/lib.rs:1627
+    pub fn cached(message: Message) -> Self; @ types/src/lib.rs:1641
+    pub fn new(message: Message, cache_hint: CacheHint) -> Self; @ types/src/lib.rs:1628
+    pub fn plain(message: Message) -> Self; @ types/src/lib.rs:1636
 }
 
 pub struct EmptyStringError { @ types/src/lib.rs:68
@@ -221,12 +221,12 @@ impl Debug for SecretString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
 }
 
-pub struct SystemMessage { @ types/src/lib.rs:1389
+pub struct SystemMessage { @ types/src/lib.rs:1398
 }
 
 impl SystemMessage {
-    pub fn content(&self) -> &str; @ types/src/lib.rs:1404
-    pub fn new(content: NonEmptyString) -> Self; @ types/src/lib.rs:1396
+    pub fn content(&self) -> &str; @ types/src/lib.rs:1413
+    pub fn new(content: NonEmptyString) -> Self; @ types/src/lib.rs:1405
 }
 
 /// Validated thinking budget for extended reasoning.
@@ -239,17 +239,17 @@ impl ThinkingBudget {
 }
 
 /// Provider reasoning/thinking content (Claude extended thinking, Gemini thinking, etc.).
-pub struct ThinkingMessage { @ types/src/lib.rs:1470
+pub struct ThinkingMessage { @ types/src/lib.rs:1479
 }
 
 impl ThinkingMessage {
-    pub fn content(&self) -> &str; @ types/src/lib.rs:1502
-    pub const fn has_signature(&self) -> bool; @ types/src/lib.rs:1512
-    pub fn model(&self) -> &ModelName; @ types/src/lib.rs:1522
-    pub fn new(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1482
-    pub fn provider(&self) -> Provider; @ types/src/lib.rs:1517
-    pub const fn signature_state(&self) -> &ThoughtSignatureState; @ types/src/lib.rs:1507
-    pub fn with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self; @ types/src/lib.rs:1492
+    pub fn content(&self) -> &str; @ types/src/lib.rs:1511
+    pub const fn has_signature(&self) -> bool; @ types/src/lib.rs:1521
+    pub fn model(&self) -> &ModelName; @ types/src/lib.rs:1531
+    pub fn new(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1491
+    pub fn provider(&self) -> Provider; @ types/src/lib.rs:1526
+    pub const fn signature_state(&self) -> &ThoughtSignatureState; @ types/src/lib.rs:1516
+    pub fn with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self; @ types/src/lib.rs:1501
 }
 
 /// Opaque provider signature for thinking/tool-call replay.
@@ -270,7 +270,7 @@ impl From<&str> for ThoughtSignature {
     fn from(value: &str) -> Self;
 }
 
-pub struct ToolCall { @ types/src/lib.rs:1303
+pub struct ToolCall { @ types/src/lib.rs:1312
     /// Unique identifier for this tool call (used to match results).
     pub id: String,
     /// The name of the tool being called.
@@ -282,9 +282,9 @@ pub struct ToolCall { @ types/src/lib.rs:1303
 }
 
 impl ToolCall {
-    pub fn new<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(id: impl Into<String>, name: impl Into<String>, arguments: serde_json::Value) -> Self; @ types/src/lib.rs:1315
-    pub fn new_signed<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(id: impl Into<String>, name: impl Into<String>, arguments: serde_json::Value, thought_signature: ThoughtSignature) -> Self; @ types/src/lib.rs:1328
-    pub const fn signature_state(&self) -> &ThoughtSignatureState; @ types/src/lib.rs:1343
+    pub fn new<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(id: impl Into<String>, name: impl Into<String>, arguments: serde_json::Value) -> Self; @ types/src/lib.rs:1324
+    pub fn new_signed<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(id: impl Into<String>, name: impl Into<String>, arguments: serde_json::Value, thought_signature: ThoughtSignature) -> Self; @ types/src/lib.rs:1337
+    pub const fn signature_state(&self) -> &ThoughtSignatureState; @ types/src/lib.rs:1352
 }
 
 pub struct ToolDefinition { @ types/src/lib.rs:1279
@@ -294,13 +294,18 @@ pub struct ToolDefinition { @ types/src/lib.rs:1279
     pub description: String,
     /// JSON Schema describing the tool's parameters.
     pub parameters: serde_json::Value,
+    /// Whether this tool is hidden from UI rendering.
+    /// Hidden tools execute normally but are invisible to the user.
+    pub hidden: bool,
+    /// If set, this tool is only included in the tool manifest for the specified provider.
+    pub provider: Option<Provider>,
 }
 
 impl ToolDefinition {
-    pub fn new<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(name: impl Into<String>, description: impl Into<String>, parameters: serde_json::Value) -> Self; @ types/src/lib.rs:1289
+    pub fn new<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(name: impl Into<String>, description: impl Into<String>, parameters: serde_json::Value) -> Self; @ types/src/lib.rs:1296
 }
 
-pub struct ToolResult { @ types/src/lib.rs:1349
+pub struct ToolResult { @ types/src/lib.rs:1358
     /// The ID of the tool call this result is for.
     pub tool_call_id: String,
     /// The name of the tool that was called (needed for Gemini's functionResponse).
@@ -312,16 +317,16 @@ pub struct ToolResult { @ types/src/lib.rs:1349
 }
 
 impl ToolResult {
-    pub fn error<impl Into<String>: Into<String>, impl Into<String>: Into<String>, impl Into<String>: Into<String>>(tool_call_id: impl Into<String>, tool_name: impl Into<String>, error: impl Into<String>) -> Self; @ types/src/lib.rs:1374
-    pub fn success<impl Into<String>: Into<String>, impl Into<String>: Into<String>, impl Into<String>: Into<String>>(tool_call_id: impl Into<String>, tool_name: impl Into<String>, content: impl Into<String>) -> Self; @ types/src/lib.rs:1361
+    pub fn error<impl Into<String>: Into<String>, impl Into<String>: Into<String>, impl Into<String>: Into<String>>(tool_call_id: impl Into<String>, tool_name: impl Into<String>, error: impl Into<String>) -> Self; @ types/src/lib.rs:1383
+    pub fn success<impl Into<String>: Into<String>, impl Into<String>: Into<String>, impl Into<String>: Into<String>>(tool_call_id: impl Into<String>, tool_name: impl Into<String>, content: impl Into<String>) -> Self; @ types/src/lib.rs:1370
 }
 
-pub struct UserMessage { @ types/src/lib.rs:1410
+pub struct UserMessage { @ types/src/lib.rs:1419
 }
 
 impl UserMessage {
-    pub fn content(&self) -> &str; @ types/src/lib.rs:1425
-    pub fn new(content: NonEmptyString) -> Self; @ types/src/lib.rs:1417
+    pub fn content(&self) -> &str; @ types/src/lib.rs:1434
+    pub fn new(content: NonEmptyString) -> Self; @ types/src/lib.rs:1426
 }
 
 /// API key with provider tagging. Inner values are opaque [`SecretString`]s
@@ -374,7 +379,7 @@ impl Display for EnumKind {
 }
 
 /// A complete message.
-pub enum Message { @ types/src/lib.rs:1531
+pub enum Message { @ types/src/lib.rs:1540
     System(SystemMessage),
     User(UserMessage),
     Assistant(AssistantMessage),
@@ -387,16 +392,16 @@ pub enum Message { @ types/src/lib.rs:1531
 }
 
 impl Message {
-    pub fn assistant(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1559
-    pub fn content(&self) -> &str; @ types/src/lib.rs:1598
-    pub fn role_str(&self) -> &'static str; @ types/src/lib.rs:1588
-    pub fn system(content: NonEmptyString) -> Self; @ types/src/lib.rs:1545
-    pub fn thinking(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1564
-    pub fn thinking_with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self; @ types/src/lib.rs:1569
-    pub fn tool_result(result: ToolResult) -> Self; @ types/src/lib.rs:1583
-    pub fn tool_use(call: ToolCall) -> Self; @ types/src/lib.rs:1578
-    pub fn try_user<impl Into<String>: Into<String>>(content: impl Into<String>) -> Result<Self, EmptyStringError>; @ types/src/lib.rs:1554
-    pub fn user(content: NonEmptyString) -> Self; @ types/src/lib.rs:1550
+    pub fn assistant(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1568
+    pub fn content(&self) -> &str; @ types/src/lib.rs:1607
+    pub fn role_str(&self) -> &'static str; @ types/src/lib.rs:1597
+    pub fn system(content: NonEmptyString) -> Self; @ types/src/lib.rs:1554
+    pub fn thinking(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1573
+    pub fn thinking_with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self; @ types/src/lib.rs:1578
+    pub fn tool_result(result: ToolResult) -> Self; @ types/src/lib.rs:1592
+    pub fn tool_use(call: ToolCall) -> Self; @ types/src/lib.rs:1587
+    pub fn try_user<impl Into<String>: Into<String>>(content: impl Into<String>) -> Result<Self, EmptyStringError>; @ types/src/lib.rs:1563
+    pub fn user(content: NonEmptyString) -> Self; @ types/src/lib.rs:1559
 }
 
 pub enum ModelParseError { @ types/src/lib.rs:605
@@ -712,9 +717,11 @@ impl RetryOutcome {
 ## forge-context
 
 ```rust
-pub fn atomic_write<impl AsRef<Path>: AsRef<std::path::Path>>(path: impl AsRef<std::path::Path>, bytes: &[u8]) -> std::io::Result<()>; @ context/src/atomic_write.rs:29
+pub fn atomic_write<impl AsRef<Path>: AsRef<std::path::Path>>(path: impl AsRef<std::path::Path>, bytes: &[u8]) -> std::io::Result<()>; @ context/src/atomic_write.rs:39
 
-pub fn atomic_write_with_options<impl AsRef<Path>: AsRef<std::path::Path>>(path: impl AsRef<std::path::Path>, bytes: &[u8], options: AtomicWriteOptions) -> std::io::Result<()>; @ context/src/atomic_write.rs:33
+pub fn atomic_write_new_with_options<impl AsRef<Path>: AsRef<std::path::Path>>(path: impl AsRef<std::path::Path>, bytes: &[u8], options: AtomicWriteOptions) -> std::io::Result<()>; @ context/src/atomic_write.rs:43
+
+pub fn atomic_write_with_options<impl AsRef<Path>: AsRef<std::path::Path>>(path: impl AsRef<std::path::Path>, bytes: &[u8], options: AtomicWriteOptions) -> std::io::Result<()>; @ context/src/atomic_write.rs:118
 
 /// Get the distillation model name for a given provider.
 pub fn distillation_model(provider: forge_types::Provider) -> &'static str; @ context/src/distillation.rs:468
@@ -751,9 +758,12 @@ impl ActiveJournal {
     pub fn step_id(&self) -> StepId; @ context/src/stream_journal.rs:200
 }
 
-pub struct AtomicWriteOptions { @ context/src/atomic_write.rs:12
+pub struct AtomicWriteOptions { @ context/src/atomic_write.rs:13
     /// When true, `sync_all()` is called on the temp file before persisting.
     pub sync_all: bool,
+    /// When true, best-effort `sync_all()` is called on the parent directory after
+    /// the file has been persisted (renamed).
+    pub dir_sync: bool,
     /// When set (Unix only), apply this mode to the temp file before writing and to
     /// the final file after persist (e.g. `0o600`).
     pub unix_mode: Option<u32>,
@@ -775,7 +785,7 @@ impl ContextManager {
     pub fn has_step_id(&self, step_id: StepId) -> bool; @ context/src/manager.rs:217
     pub fn history(&self) -> &FullHistory; @ context/src/manager.rs:634
     /// Load history from a JSON file.
-    pub fn load<impl AsRef<Path>: AsRef<Path>>(path: impl AsRef<Path>, model: ModelName) -> Result<Self>; @ context/src/manager.rs:675
+    pub fn load<impl AsRef<Path>: AsRef<Path>>(path: impl AsRef<Path>, model: ModelName) -> Result<Self>; @ context/src/manager.rs:676
     pub fn new(initial_model: ModelName) -> Self; @ context/src/manager.rs:167
     pub fn prepare(&self) -> Result<PreparedContext<'_>, ContextBuildError>; @ context/src/manager.rs:573
     pub fn prepare_distillation(&mut self, message_ids: &[MessageId]) -> Option<PendingDistillation>; @ context/src/manager.rs:468
@@ -1407,188 +1417,190 @@ pub struct App { @ engine/src/lib.rs:407
 impl App {
     pub fn cancel_active_operation(&mut self) -> bool; @ engine/src/commands.rs:259
     /// Check for and recover from a crashed streaming session.
-    pub fn check_crash_recovery(&mut self) -> Option<RecoveredStream>; @ engine/src/persistence.rs:221
-    pub fn clear_files_panel_effect(&mut self); @ engine/src/lib.rs:579
-    pub fn clear_modal_effect(&mut self); @ engine/src/lib.rs:1192
+    pub fn check_crash_recovery(&mut self) -> Option<RecoveredStream>; @ engine/src/persistence.rs:222
+    pub fn clear_files_panel_effect(&mut self); @ engine/src/lib.rs:581
+    pub fn clear_modal_effect(&mut self); @ engine/src/lib.rs:1199
     /// Close the files panel (no-op if already hidden).
-    pub fn close_files_panel(&mut self); @ engine/src/lib.rs:553
-    pub fn command_cursor(&self) -> Option<usize>; @ engine/src/lib.rs:1548
-    pub fn command_cursor_byte_index(&self) -> Option<usize>; @ engine/src/lib.rs:1552
+    pub fn close_files_panel(&mut self); @ engine/src/lib.rs:555
+    pub fn command_cursor(&self) -> Option<usize>; @ engine/src/lib.rs:1555
+    pub fn command_cursor_byte_index(&self) -> Option<usize>; @ engine/src/lib.rs:1559
     /// Get command mode wrapper (requires proof token).
     pub fn command_mode(&mut self, _token: CommandToken) -> CommandMode<'_>; @ engine/src/input_modes.rs:261
-    pub fn command_text(&self) -> Option<&str>; @ engine/src/lib.rs:1544
+    pub fn command_text(&self) -> Option<&str>; @ engine/src/lib.rs:1551
     /// Get proof token if currently in Command mode.
     pub fn command_token(&self) -> Option<CommandToken>; @ engine/src/input_modes.rs:251
     /// Get context usage statistics for the UI.
     /// Uses cached value when available to avoid recomputing every frame.
-    pub fn context_usage_status(&mut self) -> ContextUsageStatus; @ engine/src/lib.rs:961
+    pub fn context_usage_status(&mut self) -> ContextUsageStatus; @ engine/src/lib.rs:968
     /// Get the current API key for the selected provider.
-    pub fn current_api_key(&self) -> Option<&String>; @ engine/src/lib.rs:936
-    pub fn display_items(&self) -> &[DisplayItem]; @ engine/src/lib.rs:922
+    pub fn current_api_key(&self) -> Option<&String>; @ engine/src/lib.rs:943
+    pub fn display_items(&self) -> &[DisplayItem]; @ engine/src/lib.rs:924
     /// Version counter for display changes - used for render caching.
-    pub fn display_version(&self) -> usize; @ engine/src/lib.rs:927
-    pub fn draft_cursor(&self) -> usize; @ engine/src/lib.rs:1536
-    pub fn draft_cursor_byte_index(&self) -> usize; @ engine/src/lib.rs:1540
-    pub fn draft_text(&self) -> &str; @ engine/src/lib.rs:1532
-    pub fn enter_command_mode(&mut self); @ engine/src/lib.rs:1219
+    pub fn display_version(&self) -> usize; @ engine/src/lib.rs:934
+    pub fn draft_cursor(&self) -> usize; @ engine/src/lib.rs:1543
+    pub fn draft_cursor_byte_index(&self) -> usize; @ engine/src/lib.rs:1547
+    pub fn draft_text(&self) -> &str; @ engine/src/lib.rs:1539
+    pub fn enter_command_mode(&mut self); @ engine/src/lib.rs:1226
     /// Enter file select mode, scanning files from the current directory.
-    pub fn enter_file_select_mode(&mut self); @ engine/src/lib.rs:1298
-    pub fn enter_insert_mode(&mut self); @ engine/src/lib.rs:1215
-    pub fn enter_insert_mode_at_end(&mut self); @ engine/src/lib.rs:1200
-    pub fn enter_insert_mode_with_clear(&mut self); @ engine/src/lib.rs:1205
-    pub fn enter_model_select_mode(&mut self); @ engine/src/lib.rs:1223
-    pub fn enter_normal_mode(&mut self); @ engine/src/lib.rs:1210
+    pub fn enter_file_select_mode(&mut self); @ engine/src/lib.rs:1305
+    pub fn enter_insert_mode(&mut self); @ engine/src/lib.rs:1222
+    pub fn enter_insert_mode_at_end(&mut self); @ engine/src/lib.rs:1207
+    pub fn enter_insert_mode_with_clear(&mut self); @ engine/src/lib.rs:1212
+    pub fn enter_model_select_mode(&mut self); @ engine/src/lib.rs:1230
+    pub fn enter_normal_mode(&mut self); @ engine/src/lib.rs:1217
     /// Get the file picker state for rendering.
-    pub fn file_picker(&self) -> &ui::FilePickerState; @ engine/src/lib.rs:1329
+    pub fn file_picker(&self) -> &ui::FilePickerState; @ engine/src/lib.rs:1336
     /// Delete a character from the file select filter (backspace).
-    pub fn file_select_backspace(&mut self); @ engine/src/lib.rs:1371
+    pub fn file_select_backspace(&mut self); @ engine/src/lib.rs:1378
     /// Cancel file selection and return to insert mode.
-    pub fn file_select_cancel(&mut self); @ engine/src/lib.rs:1395
+    pub fn file_select_cancel(&mut self); @ engine/src/lib.rs:1402
     /// Confirm file selection - insert the selected file path into the draft.
-    pub fn file_select_confirm(&mut self); @ engine/src/lib.rs:1379
+    pub fn file_select_confirm(&mut self); @ engine/src/lib.rs:1386
     /// Get filtered files for display.
-    pub fn file_select_files(&self) -> Vec<&ui::FileEntry>; @ engine/src/lib.rs:1324
+    pub fn file_select_files(&self) -> Vec<&ui::FileEntry>; @ engine/src/lib.rs:1331
     /// Get the current file select filter text.
-    pub fn file_select_filter(&self) -> Option<&str>; @ engine/src/lib.rs:1314
+    pub fn file_select_filter(&self) -> Option<&str>; @ engine/src/lib.rs:1321
     /// Get the current file select index.
-    pub fn file_select_index(&self) -> Option<usize>; @ engine/src/lib.rs:1319
+    pub fn file_select_index(&self) -> Option<usize>; @ engine/src/lib.rs:1326
     /// Move file selection down.
-    pub fn file_select_move_down(&mut self); @ engine/src/lib.rs:1343
+    pub fn file_select_move_down(&mut self); @ engine/src/lib.rs:1350
     /// Move file selection up.
-    pub fn file_select_move_up(&mut self); @ engine/src/lib.rs:1334
+    pub fn file_select_move_up(&mut self); @ engine/src/lib.rs:1341
     /// Push a character to the file select filter.
-    pub fn file_select_push_char(&mut self, c: char); @ engine/src/lib.rs:1363
+    pub fn file_select_push_char(&mut self, c: char); @ engine/src/lib.rs:1370
     /// Update the file select filter and refresh filtered results.
-    pub fn file_select_update_filter(&mut self); @ engine/src/lib.rs:1353
+    pub fn file_select_update_filter(&mut self); @ engine/src/lib.rs:1360
     /// Collapse the expanded diff.
-    pub fn files_panel_collapse(&mut self); @ engine/src/lib.rs:671
-    pub fn files_panel_diff(&self) -> Option<FileDiff>; @ engine/src/lib.rs:712
+    pub fn files_panel_collapse(&mut self); @ engine/src/lib.rs:673
+    pub fn files_panel_diff(&self) -> Option<FileDiff>; @ engine/src/lib.rs:714
     /// Get mutable reference to files panel effect for UI processing.
-    pub fn files_panel_effect_mut(&mut self) -> Option<&mut PanelEffect>; @ engine/src/lib.rs:575
-    pub fn files_panel_expanded(&self) -> bool; @ engine/src/lib.rs:662
+    pub fn files_panel_effect_mut(&mut self) -> Option<&mut PanelEffect>; @ engine/src/lib.rs:577
+    pub fn files_panel_expanded(&self) -> bool; @ engine/src/lib.rs:664
     /// Cycle to the next file in the panel (wrapping).
-    pub fn files_panel_next(&mut self); @ engine/src/lib.rs:623
+    pub fn files_panel_next(&mut self); @ engine/src/lib.rs:625
     /// Cycle to the previous file in the panel (wrapping).
-    pub fn files_panel_prev(&mut self); @ engine/src/lib.rs:641
+    pub fn files_panel_prev(&mut self); @ engine/src/lib.rs:643
     /// Scroll the diff view down.
-    pub fn files_panel_scroll_diff_down(&mut self); @ engine/src/lib.rs:704
-    pub fn files_panel_scroll_diff_up(&mut self); @ engine/src/lib.rs:708
-    pub fn files_panel_state(&self) -> &FilesPanelState; @ engine/src/lib.rs:666
-    pub fn files_panel_sync_selection(&mut self); @ engine/src/lib.rs:676
-    pub fn files_panel_visible(&self) -> bool; @ engine/src/lib.rs:570
-    pub fn finish_files_panel_effect(&mut self); @ engine/src/lib.rs:583
+    pub fn files_panel_scroll_diff_down(&mut self); @ engine/src/lib.rs:706
+    pub fn files_panel_scroll_diff_up(&mut self); @ engine/src/lib.rs:710
+    pub fn files_panel_state(&self) -> &FilesPanelState; @ engine/src/lib.rs:668
+    pub fn files_panel_sync_selection(&mut self); @ engine/src/lib.rs:678
+    pub fn files_panel_visible(&self) -> bool; @ engine/src/lib.rs:572
+    pub fn finish_files_panel_effect(&mut self); @ engine/src/lib.rs:585
     /// Get elapsed time since last frame and update timing.
-    pub fn frame_elapsed(&mut self) -> Duration; @ engine/src/lib.rs:1180
-    pub fn has_api_key(&self, provider: Provider) -> bool; @ engine/src/lib.rs:931
-    pub fn history(&self) -> &forge_context::FullHistory; @ engine/src/lib.rs:784
-    pub fn input_mode(&self) -> InputMode; @ engine/src/lib.rs:1196
+    pub fn frame_elapsed(&mut self) -> Duration; @ engine/src/lib.rs:1187
+    pub fn has_api_key(&self, provider: Provider) -> bool; @ engine/src/lib.rs:938
+    pub fn history(&self) -> &forge_context::FullHistory; @ engine/src/lib.rs:786
+    pub fn input_mode(&self) -> InputMode; @ engine/src/lib.rs:1203
     /// Get insert mode wrapper (requires proof token).
     pub fn insert_mode(&mut self, _token: InsertToken) -> InsertMode<'_>; @ engine/src/input_modes.rs:256
     /// Get proof token if currently in Insert mode.
     pub fn insert_token(&self) -> Option<InsertToken>; @ engine/src/input_modes.rs:246
-    pub fn is_empty(&self) -> bool; @ engine/src/lib.rs:907
+    pub fn is_empty(&self) -> bool; @ engine/src/lib.rs:909
     /// Whether we're currently streaming a response.
-    pub fn is_loading(&self) -> bool; @ engine/src/lib.rs:941
+    pub fn is_loading(&self) -> bool; @ engine/src/lib.rs:948
+    /// Whether the named tool should be hidden from UI rendering.
+    pub fn is_tool_hidden(&self, name: &str) -> bool; @ engine/src/lib.rs:929
     /// API usage from the last completed turn (for status bar display).
-    pub fn last_turn_usage(&self) -> Option<&TurnUsage>; @ engine/src/lib.rs:989
+    pub fn last_turn_usage(&self) -> Option<&TurnUsage>; @ engine/src/lib.rs:996
     /// Whether the LSP subsystem is active and has running servers.
     pub fn lsp_active(&self) -> bool; @ engine/src/lsp_integration.rs:153
     /// Get the current diagnostics snapshot for UI display.
     pub fn lsp_snapshot(&self) -> &forge_lsp::DiagnosticsSnapshot; @ engine/src/lsp_integration.rs:147
-    pub fn memory_enabled(&self) -> bool; @ engine/src/lib.rs:976
+    pub fn memory_enabled(&self) -> bool; @ engine/src/lib.rs:983
     /// Get mutable reference to modal effect for UI processing.
-    pub fn modal_effect_mut(&mut self) -> Option<&mut ModalEffect>; @ engine/src/lib.rs:1188
-    pub fn model(&self) -> &str; @ engine/src/lib.rs:752
+    pub fn modal_effect_mut(&mut self) -> Option<&mut ModalEffect>; @ engine/src/lib.rs:1195
+    pub fn model(&self) -> &str; @ engine/src/lib.rs:754
     /// Select the current model and return to normal mode.
-    pub fn model_select_confirm(&mut self); @ engine/src/lib.rs:1278
-    pub fn model_select_index(&self) -> Option<usize>; @ engine/src/lib.rs:1237
-    pub fn model_select_move_down(&mut self); @ engine/src/lib.rs:1261
-    pub fn model_select_move_up(&mut self); @ engine/src/lib.rs:1253
-    pub fn model_select_set_index(&mut self, index: usize); @ engine/src/lib.rs:1270
+    pub fn model_select_confirm(&mut self); @ engine/src/lib.rs:1285
+    pub fn model_select_index(&self) -> Option<usize>; @ engine/src/lib.rs:1244
+    pub fn model_select_move_down(&mut self); @ engine/src/lib.rs:1268
+    pub fn model_select_move_up(&mut self); @ engine/src/lib.rs:1260
+    pub fn model_select_set_index(&mut self, index: usize); @ engine/src/lib.rs:1277
     /// Navigate to next (newer) command in Command mode.
-    pub fn navigate_command_history_down(&mut self); @ engine/src/lib.rs:1589
+    pub fn navigate_command_history_down(&mut self); @ engine/src/lib.rs:1596
     /// Navigate to previous (older) command in Command mode.
-    pub fn navigate_command_history_up(&mut self); @ engine/src/lib.rs:1580
+    pub fn navigate_command_history_up(&mut self); @ engine/src/lib.rs:1587
     /// Navigate to next (newer) prompt in Insert mode.
-    pub fn navigate_history_down(&mut self); @ engine/src/lib.rs:1571
+    pub fn navigate_history_down(&mut self); @ engine/src/lib.rs:1578
     /// Navigate to previous (older) prompt in Insert mode.
-    pub fn navigate_history_up(&mut self); @ engine/src/lib.rs:1560
+    pub fn navigate_history_up(&mut self); @ engine/src/lib.rs:1567
     pub fn new(system_prompts: SystemPrompts) -> anyhow::Result<Self>; @ engine/src/init.rs:79
     /// Get ordered list of changed files: modified first (alphabetical), then created.
     /// Filters out files that no longer exist on disk.
-    pub fn ordered_files(&self) -> Vec<(std::path::PathBuf, ChangeKind)>; @ engine/src/lib.rs:602
+    pub fn ordered_files(&self) -> Vec<(std::path::PathBuf, ChangeKind)>; @ engine/src/lib.rs:604
     /// Poll for completed distillation task and apply the result.
     pub fn poll_distillation(&mut self); @ engine/src/distillation.rs:136
     pub fn process_command(&mut self, command: EnteredCommand); @ engine/src/commands.rs:316
     /// Process any pending stream events.
-    pub fn process_stream_events(&mut self); @ engine/src/streaming.rs:260
-    pub fn provider(&self) -> Provider; @ engine/src/lib.rs:748
+    pub fn process_stream_events(&mut self); @ engine/src/streaming.rs:266
+    pub fn provider(&self) -> Provider; @ engine/src/lib.rs:750
     /// Queue a system notification to be injected into the next API request.
-    pub fn queue_notification(&mut self, notification: notifications::SystemNotification); @ engine/src/lib.rs:984
-    pub fn request_quit(&mut self); @ engine/src/lib.rs:508
+    pub fn queue_notification(&mut self, notification: notifications::SystemNotification); @ engine/src/lib.rs:991
+    pub fn request_quit(&mut self); @ engine/src/lib.rs:510
     pub fn save_history(&self) -> anyhow::Result<()>; @ engine/src/persistence.rs:30
     /// Save session state (draft input + input history) to disk.
     pub fn save_session(&self) -> anyhow::Result<()>; @ engine/src/persistence.rs:123
-    pub fn scroll_down(&mut self); @ engine/src/lib.rs:1650
-    pub fn scroll_offset_from_top(&self) -> u16; @ engine/src/lib.rs:1619
+    pub fn scroll_down(&mut self); @ engine/src/lib.rs:1657
+    pub fn scroll_offset_from_top(&self) -> u16; @ engine/src/lib.rs:1626
     /// Scroll down by a page.
-    pub fn scroll_page_down(&mut self); @ engine/src/lib.rs:1666
+    pub fn scroll_page_down(&mut self); @ engine/src/lib.rs:1673
     /// Scroll up by a page.
-    pub fn scroll_page_up(&mut self); @ engine/src/lib.rs:1638
-    pub fn scroll_to_bottom(&mut self); @ engine/src/lib.rs:1686
-    pub fn scroll_to_top(&mut self); @ engine/src/lib.rs:1682
-    pub fn scroll_up(&mut self); @ engine/src/lib.rs:1626
+    pub fn scroll_page_up(&mut self); @ engine/src/lib.rs:1645
+    pub fn scroll_to_bottom(&mut self); @ engine/src/lib.rs:1693
+    pub fn scroll_to_top(&mut self); @ engine/src/lib.rs:1689
+    pub fn scroll_up(&mut self); @ engine/src/lib.rs:1633
     /// Scroll up by 20% of total scrollable content.
-    pub fn scroll_up_chunk(&mut self); @ engine/src/lib.rs:1691
-    pub fn session_changes(&self) -> &SessionChangeLog; @ engine/src/lib.rs:596
+    pub fn scroll_up_chunk(&mut self); @ engine/src/lib.rs:1698
+    pub fn session_changes(&self) -> &SessionChangeLog; @ engine/src/lib.rs:598
     /// Set a specific model (called from :model command).
-    pub fn set_model(&mut self, model: ModelName); @ engine/src/lib.rs:1092
-    pub fn should_quit(&self) -> bool; @ engine/src/lib.rs:504
+    pub fn set_model(&mut self, model: ModelName); @ engine/src/lib.rs:1099
+    pub fn should_quit(&self) -> bool; @ engine/src/lib.rs:506
     /// Gracefully shut down all LSP servers.
     pub async fn shutdown_lsp(&mut self); @ engine/src/lsp_integration.rs:166
     /// Trigger distillation of older messages when context is near capacity.
     pub fn start_distillation(&mut self); @ engine/src/distillation.rs:17
     pub fn start_streaming(&mut self, queued: QueuedUserMessage); @ engine/src/streaming.rs:82
-    pub fn streaming(&self) -> Option<&StreamingMessage>; @ engine/src/lib.rs:788
+    pub fn streaming(&self) -> Option<&StreamingMessage>; @ engine/src/lib.rs:790
     /// Check if a transcript clear was requested and clear the flag.
-    pub fn take_clear_transcript(&mut self) -> bool; @ engine/src/lib.rs:513
+    pub fn take_clear_transcript(&mut self) -> bool; @ engine/src/lib.rs:515
     /// Poll background tasks and update wall-clock based timers.
-    pub fn tick(&mut self); @ engine/src/lib.rs:1159
-    pub fn tick_count(&self) -> usize; @ engine/src/lib.rs:780
+    pub fn tick(&mut self); @ engine/src/lib.rs:1166
+    pub fn tick_count(&self) -> usize; @ engine/src/lib.rs:782
     /// Toggle visibility of the files panel.
-    pub fn toggle_files_panel(&mut self); @ engine/src/lib.rs:527
+    pub fn toggle_files_panel(&mut self); @ engine/src/lib.rs:529
     /// Toggle visibility of thinking/reasoning content in the UI.
-    pub fn toggle_thinking(&mut self); @ engine/src/lib.rs:522
+    pub fn toggle_thinking(&mut self); @ engine/src/lib.rs:524
     /// Handle Enter key on approval prompt - action depends on cursor position:
     /// - On tool item: toggle selection
     /// - On Submit button: confirm selected
     /// - On Deny All button: deny all
-    pub fn tool_approval_activate(&mut self); @ engine/src/lib.rs:1466
-    pub fn tool_approval_approve_all(&mut self); @ engine/src/lib.rs:1454
-    pub fn tool_approval_confirm_selected(&mut self); @ engine/src/lib.rs:1481
-    pub fn tool_approval_cursor(&self) -> Option<usize>; @ engine/src/lib.rs:880
-    pub fn tool_approval_deny_all(&mut self); @ engine/src/lib.rs:1458
-    pub fn tool_approval_deny_confirm(&self) -> bool; @ engine/src/lib.rs:888
-    pub fn tool_approval_expanded(&self) -> Option<usize>; @ engine/src/lib.rs:884
-    pub fn tool_approval_move_down(&mut self); @ engine/src/lib.rs:1412
-    pub fn tool_approval_move_up(&mut self); @ engine/src/lib.rs:1399
-    pub fn tool_approval_request_deny_all(&mut self); @ engine/src/lib.rs:1502
-    pub fn tool_approval_requests(&self) -> Option<&[tools::ConfirmationRequest]>; @ engine/src/lib.rs:872
-    pub fn tool_approval_selected(&self) -> Option<&[bool]>; @ engine/src/lib.rs:876
-    pub fn tool_approval_toggle(&mut self); @ engine/src/lib.rs:1426
-    pub fn tool_approval_toggle_details(&mut self); @ engine/src/lib.rs:1438
-    pub fn tool_loop_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:843
-    pub fn tool_loop_current_call_id(&self) -> Option<&str>; @ engine/src/lib.rs:855
-    pub fn tool_loop_execute_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:847
-    pub fn tool_loop_output_lines(&self) -> Option<&[String]>; @ engine/src/lib.rs:859
-    pub fn tool_loop_output_lines_for(&self, tool_call_id: &str) -> Option<&[String]>; @ engine/src/lib.rs:865
-    pub fn tool_loop_results(&self) -> Option<&[ToolResult]>; @ engine/src/lib.rs:851
-    pub fn tool_recovery_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:893
-    pub fn tool_recovery_discard(&mut self); @ engine/src/lib.rs:1528
-    pub fn tool_recovery_results(&self) -> Option<&[ToolResult]>; @ engine/src/lib.rs:900
-    pub fn tool_recovery_resume(&mut self); @ engine/src/lib.rs:1524
-    pub fn ui_options(&self) -> UiOptions; @ engine/src/lib.rs:517
-    pub fn update_scroll_max(&mut self, max: u16); @ engine/src/lib.rs:1609
+    pub fn tool_approval_activate(&mut self); @ engine/src/lib.rs:1473
+    pub fn tool_approval_approve_all(&mut self); @ engine/src/lib.rs:1461
+    pub fn tool_approval_confirm_selected(&mut self); @ engine/src/lib.rs:1488
+    pub fn tool_approval_cursor(&self) -> Option<usize>; @ engine/src/lib.rs:882
+    pub fn tool_approval_deny_all(&mut self); @ engine/src/lib.rs:1465
+    pub fn tool_approval_deny_confirm(&self) -> bool; @ engine/src/lib.rs:890
+    pub fn tool_approval_expanded(&self) -> Option<usize>; @ engine/src/lib.rs:886
+    pub fn tool_approval_move_down(&mut self); @ engine/src/lib.rs:1419
+    pub fn tool_approval_move_up(&mut self); @ engine/src/lib.rs:1406
+    pub fn tool_approval_request_deny_all(&mut self); @ engine/src/lib.rs:1509
+    pub fn tool_approval_requests(&self) -> Option<&[tools::ConfirmationRequest]>; @ engine/src/lib.rs:874
+    pub fn tool_approval_selected(&self) -> Option<&[bool]>; @ engine/src/lib.rs:878
+    pub fn tool_approval_toggle(&mut self); @ engine/src/lib.rs:1433
+    pub fn tool_approval_toggle_details(&mut self); @ engine/src/lib.rs:1445
+    pub fn tool_loop_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:845
+    pub fn tool_loop_current_call_id(&self) -> Option<&str>; @ engine/src/lib.rs:857
+    pub fn tool_loop_execute_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:849
+    pub fn tool_loop_output_lines(&self) -> Option<&[String]>; @ engine/src/lib.rs:861
+    pub fn tool_loop_output_lines_for(&self, tool_call_id: &str) -> Option<&[String]>; @ engine/src/lib.rs:867
+    pub fn tool_loop_results(&self) -> Option<&[ToolResult]>; @ engine/src/lib.rs:853
+    pub fn tool_recovery_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:895
+    pub fn tool_recovery_discard(&mut self); @ engine/src/lib.rs:1535
+    pub fn tool_recovery_results(&self) -> Option<&[ToolResult]>; @ engine/src/lib.rs:902
+    pub fn tool_recovery_resume(&mut self); @ engine/src/lib.rs:1531
+    pub fn ui_options(&self) -> UiOptions; @ engine/src/lib.rs:519
+    pub fn update_scroll_max(&mut self, max: u16); @ engine/src/lib.rs:1616
 }
 
 pub struct AppConfig { @ engine/src/config.rs:47
@@ -2004,7 +2016,7 @@ pub fn clear_render_cache(); @ tui/src/markdown.rs:108
 
 pub fn draw(frame: &mut ratatui::Frame<'_>, app: &mut forge_engine::App); @ tui/src/lib.rs:102
 
-pub fn draw_model_selector(frame: &mut ratatui::Frame<'_>, app: &mut forge_engine::App, palette: &Palette, glyphs: &Glyphs, elapsed: std::time::Duration); @ tui/src/lib.rs:1569
+pub fn draw_model_selector(frame: &mut ratatui::Frame<'_>, app: &mut forge_engine::App, palette: &Palette, glyphs: &Glyphs, elapsed: std::time::Duration); @ tui/src/lib.rs:1575
 
 pub fn glyphs(options: forge_engine::UiOptions) -> Glyphs; @ tui/src/theme.rs:176
 
@@ -2102,7 +2114,7 @@ impl Palette {
 pub async fn fetch(input: WebFetchInput, config: &WebFetchConfig) -> Result<WebFetchOutput, WebFetchError>; @ webfetch/src/lib.rs:25
 
 /// Browser-specific configuration.
-pub struct BrowserConfig { @ webfetch/src/types.rs:374
+pub struct BrowserConfig { @ webfetch/src/types.rs:377
     /// Whether browser fallback is enabled. Default: true.
     pub enabled: bool,
     /// Path to Chromium executable.
@@ -2118,7 +2130,7 @@ pub struct BrowserConfig { @ webfetch/src/types.rs:374
 }
 
 /// Error details as key-value pairs.
-pub struct ErrorDetails { @ webfetch/src/types.rs:580
+pub struct ErrorDetails { @ webfetch/src/types.rs:583
     Vec<(String, String)>,
 }
 
@@ -2133,7 +2145,7 @@ pub struct FetchChunk { @ webfetch/src/types.rs:177
 }
 
 /// HTTP-specific configuration.
-pub struct HttpConfig { @ webfetch/src/types.rs:415
+pub struct HttpConfig { @ webfetch/src/types.rs:418
     /// Additional request headers.
     pub headers: Option<Vec<(String, String)>>,
     /// Use system proxy settings (`HTTP_PROXY/HTTPS_PROXY`).
@@ -2145,7 +2157,7 @@ pub struct HttpConfig { @ webfetch/src/types.rs:415
 }
 
 /// robots.txt-specific configuration.
-pub struct RobotsConfig { @ webfetch/src/types.rs:432
+pub struct RobotsConfig { @ webfetch/src/types.rs:435
     /// User-agent token for robots.txt matching.
     pub user_agent_token: Option<String>,
     /// Fail-open if robots.txt unavailable. Default: false.
@@ -2153,7 +2165,7 @@ pub struct RobotsConfig { @ webfetch/src/types.rs:432
 }
 
 /// Security-specific configuration.
-pub struct SecurityConfig { @ webfetch/src/types.rs:397
+pub struct SecurityConfig { @ webfetch/src/types.rs:400
     /// Additional blocked CIDR ranges.
     pub blocked_cidrs: Option<Vec<String>>,
     /// Allowed ports (overrides default allowlist).
@@ -2165,7 +2177,7 @@ pub struct SecurityConfig { @ webfetch/src/types.rs:397
 }
 
 /// `WebFetch` tool configuration.
-pub struct WebFetchConfig { @ webfetch/src/types.rs:255
+pub struct WebFetchConfig { @ webfetch/src/types.rs:258
     /// Whether the tool is enabled. Default: true.
     pub enabled: bool,
     /// User-Agent string for HTTP requests.
@@ -2205,14 +2217,14 @@ pub struct WebFetchConfig { @ webfetch/src/types.rs:255
 }
 
 impl WebFetchConfig {
-    pub fn default_max_chunk_tokens(&self) -> u32; @ webfetch/src/types.rs:360
-    pub fn max_download_bytes(&self) -> u64; @ webfetch/src/types.rs:366
-    pub fn max_redirects(&self) -> u32; @ webfetch/src/types.rs:355
-    pub fn timeout_seconds(&self) -> u32; @ webfetch/src/types.rs:349
+    pub fn default_max_chunk_tokens(&self) -> u32; @ webfetch/src/types.rs:363
+    pub fn max_download_bytes(&self) -> u64; @ webfetch/src/types.rs:369
+    pub fn max_redirects(&self) -> u32; @ webfetch/src/types.rs:358
+    pub fn timeout_seconds(&self) -> u32; @ webfetch/src/types.rs:352
 }
 
 /// `WebFetch` error with structured details.
-pub struct WebFetchError { @ webfetch/src/types.rs:450
+pub struct WebFetchError { @ webfetch/src/types.rs:453
     /// Stable error code.
     pub code: ErrorCode,
     /// Human-readable description.
@@ -2224,11 +2236,11 @@ pub struct WebFetchError { @ webfetch/src/types.rs:450
 }
 
 impl WebFetchError {
-    pub fn new<impl Into<String>: Into<String>>(code: ErrorCode, message: impl Into<String>, retryable: bool) -> Self; @ webfetch/src/types.rs:465
+    pub fn new<impl Into<String>: Into<String>>(code: ErrorCode, message: impl Into<String>, retryable: bool) -> Self; @ webfetch/src/types.rs:468
     /// Serialize to JSON for tool output.
-    pub fn to_json(&self) -> serde_json::Value; @ webfetch/src/types.rs:482
+    pub fn to_json(&self) -> serde_json::Value; @ webfetch/src/types.rs:485
     /// Add a detail field.
-    pub fn with_detail<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(self, key: impl Into<String>, value: impl Into<String>) -> Self; @ webfetch/src/types.rs:475
+    pub fn with_detail<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(self, key: impl Into<String>, value: impl Into<String>) -> Self; @ webfetch/src/types.rs:478
 }
 
 impl Serialize for WebFetchError {
@@ -2283,7 +2295,7 @@ pub struct WebFetchOutput { @ webfetch/src/types.rs:135
 }
 
 /// Error codes per FR-WF-18 registry.
-pub enum ErrorCode { @ webfetch/src/types.rs:516
+pub enum ErrorCode { @ webfetch/src/types.rs:519
     /// Invalid request parameters.
     BadArgs,
     /// URL parsing failed.
@@ -2328,11 +2340,13 @@ pub enum ErrorCode { @ webfetch/src/types.rs:516
 
 impl ErrorCode {
     /// Check if this error code is retryable by default.
-    pub fn default_retryable(&self) -> bool; @ webfetch/src/types.rs:564
+    pub fn default_retryable(&self) -> bool; @ webfetch/src/types.rs:567
 }
 
 /// Condition tokens for the `notes` array.
 pub enum Note { @ webfetch/src/types.rs:215
+    /// HTTP URL was automatically upgraded to HTTPS.
+    HttpUpgradedToHttps,
     /// Response served from cache.
     CacheHit,
     /// robots.txt unavailable but `fail_open=true`.
@@ -2353,7 +2367,7 @@ pub enum Note { @ webfetch/src/types.rs:215
 
 impl Note {
     /// Canonical ordering per FR-WF-NOTES-ORDER-01.
-    pub fn order(&self) -> u8; @ webfetch/src/types.rs:237
+    pub fn order(&self) -> u8; @ webfetch/src/types.rs:239
 }
 
 /// Method used to render/fetch the page.
