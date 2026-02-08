@@ -339,34 +339,40 @@ fn build_message_lines(
                 {
                     render_message_static(
                         tool_use_msg,
-                        &mut lines,
-                        &mut msg_count,
-                        palette,
-                        glyphs,
-                        None,
-                        width,
-                        false,
+                        RenderMessageStaticCtx {
+                            lines: &mut lines,
+                            msg_count: &mut msg_count,
+                            palette,
+                            glyphs,
+                            tool_call_meta: None,
+                            max_width: width,
+                            follows_thinking: false,
+                        },
                     );
                     render_message_static(
                         msg,
-                        &mut lines,
-                        &mut msg_count,
-                        palette,
-                        glyphs,
-                        Some(&meta),
-                        width,
-                        false,
+                        RenderMessageStaticCtx {
+                            lines: &mut lines,
+                            msg_count: &mut msg_count,
+                            palette,
+                            glyphs,
+                            tool_call_meta: Some(&meta),
+                            max_width: width,
+                            follows_thinking: false,
+                        },
                     );
                 } else {
                     render_message_static(
                         msg,
-                        &mut lines,
-                        &mut msg_count,
-                        palette,
-                        glyphs,
-                        None,
-                        width,
-                        false,
+                        RenderMessageStaticCtx {
+                            lines: &mut lines,
+                            msg_count: &mut msg_count,
+                            palette,
+                            glyphs,
+                            tool_call_meta: None,
+                            max_width: width,
+                            follows_thinking: false,
+                        },
                     );
                 }
                 last_was_thinking = false;
@@ -375,13 +381,15 @@ fn build_message_lines(
                 if app.ui_options().show_thinking {
                     render_message_static(
                         msg,
-                        &mut lines,
-                        &mut msg_count,
-                        palette,
-                        glyphs,
-                        None,
-                        width,
-                        false,
+                        RenderMessageStaticCtx {
+                            lines: &mut lines,
+                            msg_count: &mut msg_count,
+                            palette,
+                            glyphs,
+                            tool_call_meta: None,
+                            max_width: width,
+                            follows_thinking: false,
+                        },
                     );
                     last_was_thinking = true;
                 }
@@ -390,13 +398,15 @@ fn build_message_lines(
                 let follows = last_was_thinking && matches!(msg, Message::Assistant(_));
                 render_message_static(
                     msg,
-                    &mut lines,
-                    &mut msg_count,
-                    palette,
-                    glyphs,
-                    None,
-                    width,
-                    follows,
+                    RenderMessageStaticCtx {
+                        lines: &mut lines,
+                        msg_count: &mut msg_count,
+                        palette,
+                        glyphs,
+                        tool_call_meta: None,
+                        max_width: width,
+                        follows_thinking: follows,
+                    },
                 );
                 last_was_thinking = false;
             }
@@ -406,13 +416,15 @@ fn build_message_lines(
     for (_, (msg, _)) in buffered_tool_uses {
         render_message_static(
             msg,
-            &mut lines,
-            &mut msg_count,
-            palette,
-            glyphs,
-            None,
-            width,
-            false,
+            RenderMessageStaticCtx {
+                lines: &mut lines,
+                msg_count: &mut msg_count,
+                palette,
+                glyphs,
+                tool_call_meta: None,
+                max_width: width,
+                follows_thinking: false,
+            },
         );
     }
 
@@ -748,16 +760,27 @@ fn build_dynamic_message_lines(
     (lines, total_rows)
 }
 
-fn render_message_static(
-    msg: &Message,
-    lines: &mut Vec<Line<'static>>,
-    msg_count: &mut usize,
-    palette: &Palette,
-    glyphs: &Glyphs,
-    tool_call_meta: Option<&ToolCallMeta>,
+struct RenderMessageStaticCtx<'a> {
+    lines: &'a mut Vec<Line<'static>>,
+    msg_count: &'a mut usize,
+    palette: &'a Palette,
+    glyphs: &'a Glyphs,
+    tool_call_meta: Option<&'a ToolCallMeta>,
     max_width: u16,
     follows_thinking: bool,
-) {
+}
+
+fn render_message_static(msg: &Message, ctx: RenderMessageStaticCtx<'_>) {
+    let RenderMessageStaticCtx {
+        lines,
+        msg_count,
+        palette,
+        glyphs,
+        tool_call_meta,
+        max_width,
+        follows_thinking,
+    } = ctx;
+
     let is_tool_result = matches!(msg, Message::ToolResult(_));
     if *msg_count > 0 && !is_tool_result {
         lines.push(Line::from(""));
