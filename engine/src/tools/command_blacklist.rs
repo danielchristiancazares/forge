@@ -5,6 +5,7 @@
 //! denylist (which blocks entire tools like `run_command`).
 
 use regex::RegexSet;
+use unicode_normalization::UnicodeNormalization;
 
 use super::{DenialReason, ToolError};
 
@@ -107,9 +108,13 @@ impl CommandBlacklist {
 
     /// Validate a command against the blacklist.
     ///
+    /// Applies NFKC normalization before matching to prevent fullwidth Unicode
+    /// bypass attacks (e.g., `\u{FF52}\u{FF4D}` normalizes to `rm`).
+    ///
     /// Returns `Ok(())` if allowed, or `Err(ToolError::SandboxViolation)` if blocked.
     pub fn validate(&self, command: &str) -> Result<(), ToolError> {
-        let matches: Vec<usize> = self.regex_set.matches(command).iter().collect();
+        let normalized: String = command.nfkc().collect();
+        let matches: Vec<usize> = self.regex_set.matches(&normalized).iter().collect();
         if let Some(&idx) = matches.first() {
             return Err(ToolError::SandboxViolation(
                 DenialReason::CommandBlacklisted {
@@ -340,5 +345,50 @@ mod tests {
     fn truncate_zero_limit() {
         let result = truncate_command("rm -rf /", 0);
         assert_eq!(result, "...");
+    }
+
+    // NFKC normalization bypass tests
+
+    #[test]
+    fn blocks_fullwidth_rm_rf_root() {
+        let bl = default_blacklist();
+        // Fullwidth 'ｒｍ' (U+FF52 U+FF4D) normalizes to 'rm' via NFKC
+        assert!(bl.validate("\u{FF52}\u{FF4D} -rf /").is_err());
+    }
+
+    #[test]
+    fn blocks_fullwidth_dd_device() {
+        let bl = default_blacklist();
+        // Fullwidth 'ｄｄ' normalizes to 'dd'
+        assert!(
+            bl.validate("\u{FF44}\u{FF44} if=/dev/zero of=/dev/sda")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn blocks_fullwidth_chmod() {
+        let bl = default_blacklist();
+        assert!(
+            bl.validate("\u{FF43}\u{FF48}\u{FF4D}\u{FF4F}\u{FF44} -R 777 /")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn allows_safe_fullwidth_commands() {
+        let bl = default_blacklist();
+        // Fullwidth 'ｌｓ' should still be allowed
+        assert!(bl.validate("\u{FF4C}\u{FF53} -la").is_ok());
+    }
+
+    #[test]
+    fn error_message_preserves_original_command() {
+        let bl = default_blacklist();
+        let original = "\u{FF52}\u{FF4D} -rf /";
+        let err = bl.validate(original).unwrap_err();
+        // Error should contain the original (non-normalized) command for forensics
+        let msg = err.to_string();
+        assert!(msg.contains(original) || msg.contains("\u{FF52}\u{FF4D}"));
     }
 }
