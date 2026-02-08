@@ -713,41 +713,7 @@ impl App {
             ToolLoopPhase::Executing(mut exec) => {
                 // Poll for events from the spawned tool
                 while let Some(event) = exec.spawned.try_recv_event() {
-                    match event {
-                        tools::ToolEvent::Started {
-                            tool_call_id,
-                            tool_name,
-                        } => {
-                            let lines = exec.output_lines.entry(tool_call_id.clone()).or_default();
-                            lines.push(format!(
-                                "▶ {} ({})",
-                                tools::sanitize_output(&tool_name),
-                                tool_call_id
-                            ));
-                        }
-                        tools::ToolEvent::StdoutChunk {
-                            tool_call_id,
-                            chunk,
-                        } => {
-                            let lines = exec.output_lines.entry(tool_call_id).or_default();
-                            append_tool_output_lines(lines, &tools::sanitize_output(&chunk), None);
-                        }
-                        tools::ToolEvent::StderrChunk {
-                            tool_call_id,
-                            chunk,
-                        } => {
-                            let lines = exec.output_lines.entry(tool_call_id).or_default();
-                            append_tool_output_lines(
-                                lines,
-                                &tools::sanitize_output(&chunk),
-                                Some("[stderr] "),
-                            );
-                        }
-                        tools::ToolEvent::Completed { tool_call_id } => {
-                            let lines = exec.output_lines.entry(tool_call_id.clone()).or_default();
-                            lines.push(format!("✓ Tool completed ({tool_call_id})"));
-                        }
-                    }
+                    apply_tool_event_to_output_lines(&mut exec.output_lines, event);
                 }
 
                 // Check if the spawned tool has completed
@@ -773,45 +739,7 @@ impl App {
 
                     // Process final events from the completed tool
                     for event in completed.final_events {
-                        match event {
-                            tools::ToolEvent::Started {
-                                tool_call_id,
-                                tool_name,
-                            } => {
-                                let lines = output_lines.entry(tool_call_id.clone()).or_default();
-                                lines.push(format!(
-                                    "▶ {} ({})",
-                                    tools::sanitize_output(&tool_name),
-                                    tool_call_id
-                                ));
-                            }
-                            tools::ToolEvent::StdoutChunk {
-                                tool_call_id,
-                                chunk,
-                            } => {
-                                let lines = output_lines.entry(tool_call_id).or_default();
-                                append_tool_output_lines(
-                                    lines,
-                                    &tools::sanitize_output(&chunk),
-                                    None,
-                                );
-                            }
-                            tools::ToolEvent::StderrChunk {
-                                tool_call_id,
-                                chunk,
-                            } => {
-                                let lines = output_lines.entry(tool_call_id).or_default();
-                                append_tool_output_lines(
-                                    lines,
-                                    &tools::sanitize_output(&chunk),
-                                    Some("[stderr] "),
-                                );
-                            }
-                            tools::ToolEvent::Completed { tool_call_id } => {
-                                let lines = output_lines.entry(tool_call_id.clone()).or_default();
-                                lines.push(format!("✓ Tool completed ({tool_call_id})"));
-                            }
-                        }
+                        apply_tool_event_to_output_lines(&mut output_lines, event);
                     }
 
                     // Convert completed result to ToolResult
@@ -1382,6 +1310,43 @@ pub(crate) fn append_tool_output_lines(lines: &mut Vec<String>, chunk: &str, pre
     if lines.len() > 50 {
         let overflow = lines.len() - 50;
         lines.drain(0..overflow);
+    }
+}
+
+fn apply_tool_event_to_output_lines(
+    output_lines: &mut HashMap<String, Vec<String>>,
+    event: tools::ToolEvent,
+) {
+    match event {
+        tools::ToolEvent::Started {
+            tool_call_id,
+            tool_name,
+        } => {
+            let lines = output_lines.entry(tool_call_id.clone()).or_default();
+            lines.push(format!(
+                "▶ {} ({})",
+                tools::sanitize_output(&tool_name),
+                tool_call_id
+            ));
+        }
+        tools::ToolEvent::StdoutChunk {
+            tool_call_id,
+            chunk,
+        } => {
+            let lines = output_lines.entry(tool_call_id).or_default();
+            append_tool_output_lines(lines, &tools::sanitize_output(&chunk), None);
+        }
+        tools::ToolEvent::StderrChunk {
+            tool_call_id,
+            chunk,
+        } => {
+            let lines = output_lines.entry(tool_call_id).or_default();
+            append_tool_output_lines(lines, &tools::sanitize_output(&chunk), Some("[stderr] "));
+        }
+        tools::ToolEvent::Completed { tool_call_id } => {
+            let lines = output_lines.entry(tool_call_id.clone()).or_default();
+            lines.push(format!("✓ Tool completed ({tool_call_id})"));
+        }
     }
 }
 
