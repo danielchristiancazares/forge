@@ -1,6 +1,5 @@
 //! Unit tests for the engine crate.
 
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -29,8 +28,9 @@ fn test_app() -> App {
     api_keys.insert(Provider::Claude, "test".to_string());
     let model = Provider::Claude.default_model();
     let stream_journal = StreamJournal::open_in_memory().expect("in-memory journal for tests");
+    let data_dir_path = tempdir().expect("temp data dir for tests").keep();
     let data_dir = DataDir {
-        path: PathBuf::from(".").join("forge-test"),
+        path: data_dir_path,
         source: DataDirSource::Fallback,
     };
     let output_limits = OutputLimits::new(4096);
