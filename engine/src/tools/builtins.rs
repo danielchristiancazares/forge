@@ -187,6 +187,9 @@ pub(crate) fn format_unified_diff_width(
     };
     let line_num_width = auto_width.max(min_line_num_width);
 
+    // Gap marker, right-aligned to the line-number column
+    let gap_marker = format!("{:>line_num_width$}\n", "...");
+
     // Group changes into hunks with 1 line of context, collapsing gaps >3 lines
     let mut i = 0;
     let mut last_output_idx: Option<usize> = None;
@@ -207,7 +210,7 @@ pub(crate) fn format_unified_diff_width(
                     if let Some(last_idx) = last_output_idx {
                         let gap = i - last_idx - 1;
                         if gap > 3 {
-                            out.push_str("...\n");
+                            out.push_str(&gap_marker);
                         }
                     }
                     let line_no = change.old_index().unwrap_or(0) + 1;
@@ -221,7 +224,7 @@ pub(crate) fn format_unified_diff_width(
                 if let Some(last_idx) = last_output_idx {
                     let gap = i - last_idx - 1;
                     if gap > 3 {
-                        out.push_str("...\n");
+                        out.push_str(&gap_marker);
                     }
                 }
                 let line_no = change.old_index().unwrap_or(0) + 1;
@@ -234,7 +237,7 @@ pub(crate) fn format_unified_diff_width(
                 if let Some(last_idx) = last_output_idx {
                     let gap = i - last_idx - 1;
                     if gap > 3 {
-                        out.push_str("...\n");
+                        out.push_str(&gap_marker);
                     }
                 }
                 let line_no = change.new_index().unwrap_or(0) + 1;
