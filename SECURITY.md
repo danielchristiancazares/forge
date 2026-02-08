@@ -412,7 +412,7 @@ let sanitized_error = sanitize_terminal_text(error);
 
 ### TUI Display Sanitization
 
-**Locations**: `tui/src/lib.rs`, `tui/src/ui_inline.rs`, `tui/src/shared.rs`
+**Locations**: `tui/src/lib.rs`, `tui/src/shared.rs`
 
 All message content, tool names, tool IDs, and tool output lines are sanitized before rendering:
 

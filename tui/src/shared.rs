@@ -89,24 +89,6 @@ pub(crate) fn collect_tool_statuses(
     Some(statuses)
 }
 
-pub(crate) fn tool_status_signature(statuses: Option<&[ToolCallStatus]>) -> Option<String> {
-    let statuses = statuses?;
-    let mut parts = Vec::with_capacity(statuses.len());
-    for status in statuses {
-        let status_label = match status.status {
-            ToolCallStatusKind::Denied => "denied",
-            ToolCallStatusKind::Error => "error",
-            ToolCallStatusKind::Ok => "ok",
-            ToolCallStatusKind::Running => "running",
-            ToolCallStatusKind::Approval => "approval",
-            ToolCallStatusKind::Pending => "pending",
-        };
-        parts.push(format!("{}:{status_label}", status.id));
-    }
-
-    Some(parts.join("|"))
-}
-
 fn first_result_line(result: &ToolResult, max_len: usize) -> Option<String> {
     let content = sanitize_display_text(&result.content);
     content
@@ -137,10 +119,6 @@ pub(crate) fn wrapped_line_count_exact(lines: &[Line], width: u16) -> usize {
     Paragraph::new(lines.to_vec())
         .wrap(Wrap { trim: false })
         .line_count(width.max(1))
-}
-
-pub(crate) fn wrapped_line_count(lines: &[Line], width: u16) -> u16 {
-    wrapped_line_count_exact(lines, width).min(u16::MAX as usize) as u16
 }
 
 pub(crate) fn message_header_parts(
@@ -215,7 +193,6 @@ pub(crate) struct ApprovalView {
     pub(crate) items: Vec<ApprovalItem>,
     pub(crate) selected: Vec<bool>,
     pub(crate) cursor: usize,
-    pub(crate) expanded: Option<usize>,
     pub(crate) any_selected: bool,
     pub(crate) deny_confirm: bool,
 }
@@ -232,12 +209,11 @@ pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<Appro
     let requests = app.tool_approval_requests()?;
     let selected = app.tool_approval_selected().unwrap_or(&[]);
     let cursor = app.tool_approval_cursor().unwrap_or(0);
-    let expanded = app.tool_approval_expanded();
     let deny_confirm = app.tool_approval_deny_confirm();
     let any_selected = selected.iter().any(|flag| *flag);
 
     let mut items = Vec::with_capacity(requests.len());
-    for (i, req) in requests.iter().enumerate() {
+    for req in requests {
         let tool_name = sanitize_display_text(&req.tool_name);
         let risk_label = format!("{:?}", req.risk_level).to_uppercase();
         let summary = if req.summary.trim().is_empty() {
@@ -249,19 +225,7 @@ pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<Appro
                 max_width.saturating_sub(6),
             ))
         };
-        let details = if expanded == Some(i) {
-            if let Ok(details) = serde_json::to_string_pretty(&req.arguments) {
-                let details = sanitize_display_text(&details);
-                details
-                    .lines()
-                    .map(|line| truncate_with_ellipsis(line, max_width.saturating_sub(6)))
-                    .collect()
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
+        let details = Vec::new();
 
         // Format homoglyph warnings for display
         let homoglyph_warnings: Vec<String> = req
@@ -289,7 +253,6 @@ pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<Appro
         items,
         selected: selected.to_vec(),
         cursor,
-        expanded,
         any_selected,
         deny_confirm,
     })

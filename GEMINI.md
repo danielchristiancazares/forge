@@ -78,7 +78,7 @@ Implements **Context Infinity™**.
 
 Pure presentation layer.
 
-- **Rendering:** Two implementations: `lib.rs` (Full) and `ui_inline.rs` (Inline).
+- **Rendering:** Full-screen alternate-screen rendering in `lib.rs`.
 - **Theming:** "Kanagawa Wave" inspired palette. Supports high contrast and ASCII-only modes.
 - **Markdown:** Custom markdown renderer with caching.
 - **Effects:** Modal animations (`PopScale`, `SlideUp`).

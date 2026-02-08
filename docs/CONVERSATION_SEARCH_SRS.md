@@ -69,7 +69,6 @@ Out of scope:
 | `engine/src/lib.rs` | InputMode enum, App state machine |
 | `tui/src/input.rs` | Input handling patterns |
 | `tui/src/lib.rs` | Full-screen rendering |
-| `tui/src/ui_inline.rs` | Inline mode rendering |
 
 ### 1.5 Requirement Keywords
 
@@ -116,7 +115,7 @@ Inline mode uses `terminal.insert_before()` to push content above the input area
 | Temporary alternate screen | Context switch, but full search UX |
 | Push results to history | Poor UX, results scroll away |
 
-**Decision:** v1 will display a status message in inline mode directing users to switch to full-screen mode (`/screen`) for search functionality.
+**Decision:** v1 will use the full-screen alternate-screen mode for the search UI.
 
 ---
 
@@ -394,10 +393,6 @@ pub const SEARCH_MATCH_FG: Color = Color::Rgb(255, 255, 200); // Light text on m
 * [ ] Add `handle_search_mode()` function
 * [ ] Handle `n`/`N` in Normal mode when search active
 * [ ] Handle `Esc` in Normal mode to clear search
-
-### 8.4 Inline Mode (`tui/src/ui_inline.rs`)
-
-- [ ] Detect `/` press and show status: "Search requires full-screen mode. Use /screen to switch."
 
 ---
 

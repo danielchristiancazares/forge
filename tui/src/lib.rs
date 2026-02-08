@@ -8,15 +8,10 @@ mod shared;
 mod theme;
 mod tool_display;
 mod tool_result_summary;
-mod ui_inline;
 
 pub use effects::apply_modal_effect;
 pub use input::{InputPump, handle_events};
 pub use theme::{Glyphs, Palette, glyphs, palette, spinner_frame, styles};
-pub use ui_inline::{
-    INLINE_INPUT_HEIGHT, INLINE_VIEWPORT_HEIGHT, InlineOutput, clear_inline_viewport,
-    draw as draw_inline, inline_viewport_height,
-};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -164,7 +159,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .split(main_area);
 
     draw_messages(frame, app, chunks[0], &palette, &glyphs);
-    draw_input(frame, app, chunks[1], &palette, &glyphs, false);
+    draw_input(frame, app, chunks[1], &palette, &glyphs);
 
     if let Some(panel_area) = files_panel_area {
         draw_files_panel(frame, app, panel_area, &palette, &glyphs);
@@ -927,22 +922,8 @@ fn render_message_static(msg: &Message, ctx: RenderMessageStaticCtx<'_>) {
     }
 }
 
-pub(crate) fn draw_input(
-    frame: &mut Frame,
-    app: &mut App,
-    area: Rect,
-    palette: &Palette,
-    glyphs: &Glyphs,
-    inline_mode: bool,
-) {
+fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, glyphs: &Glyphs) {
     let mode = app.input_mode();
-
-    // In inline mode, ModelSelect transforms the input area entirely
-    if inline_mode && mode == InputMode::ModelSelect {
-        draw_inline_model_selector(frame, app, area, palette, glyphs);
-        return;
-    }
-
     let options = app.ui_options();
     // Clone command text to avoid borrow conflict with mutable context_usage_status()
     let (command_line, command_cursor_byte_index) = if mode == InputMode::Command {
@@ -1375,156 +1356,6 @@ fn draw_command_palette(frame: &mut Frame, app: &App, palette: &Palette) {
     );
 
     frame.render_widget(palette, palette_area);
-}
-
-/// Draws the model selector inline, replacing the input area (inline mode only).
-fn draw_inline_model_selector(
-    frame: &mut Frame,
-    app: &mut App,
-    area: Rect,
-    palette: &Palette,
-    glyphs: &Glyphs,
-) {
-    let selected_index = app.model_select_index().unwrap_or(0);
-    let models = PredefinedModel::all();
-
-    let content_width = area.width.saturating_sub(2) as usize; // borders
-
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, model) in models.iter().enumerate() {
-        let is_selected = i == selected_index;
-        let marker = if is_selected { glyphs.selected } else { " " };
-        let num = i + 1;
-
-        let prefix = format!(" {marker} ");
-        let label = format!("{num}.  {}", model.model_name());
-        let right = model.firm_name();
-        let left_width = prefix.chars().count() + label.chars().count();
-        let right_width = right.chars().count();
-        let gap = 2usize;
-        let filler = content_width.saturating_sub(left_width + right_width + gap);
-
-        let bg = if is_selected {
-            Some(palette.bg_highlight)
-        } else {
-            None
-        };
-
-        let mut arrow_style = Style::default().fg(palette.peach);
-        if let Some(bg) = bg {
-            arrow_style = arrow_style.bg(bg);
-        }
-
-        let mut label_style = if is_selected {
-            Style::default()
-                .fg(palette.text_primary)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(palette.text_secondary)
-        };
-        if let Some(bg) = bg {
-            label_style = label_style.bg(bg);
-        }
-
-        let mut filler_style = Style::default();
-        if let Some(bg) = bg {
-            filler_style = filler_style.bg(bg);
-        }
-
-        let mut right_style = Style::default()
-            .fg(palette.text_disabled)
-            .add_modifier(Modifier::DIM);
-        if let Some(bg) = bg {
-            right_style = right_style.bg(bg);
-        }
-
-        lines.push(Line::from(vec![
-            Span::styled(prefix, arrow_style),
-            Span::styled(label, label_style),
-            Span::styled(" ".repeat(filler), filler_style),
-            Span::styled(" ".repeat(gap), filler_style),
-            Span::styled(right.to_string(), right_style),
-        ]));
-    }
-
-    let keybindings = Line::from(vec![
-        Span::styled("↑↓", styles::key_highlight(palette)),
-        Span::styled(" select  ", styles::key_hint(palette)),
-        Span::styled("1-9", styles::key_highlight(palette)),
-        Span::styled(" pick  ", styles::key_hint(palette)),
-        Span::styled("Enter", styles::key_highlight(palette)),
-        Span::styled(" confirm  ", styles::key_hint(palette)),
-        Span::styled("Esc", styles::key_highlight(palette)),
-        Span::styled(" cancel ", styles::key_hint(palette)),
-    ]);
-
-    let (model_text, model_style) = if app.is_loading() {
-        let spinner = spinner_frame(app.tick_count(), app.ui_options());
-        (
-            format!("{spinner} {}", app.model()),
-            Style::default().fg(palette.primary),
-        )
-    } else if app.current_api_key().is_some() {
-        (
-            format!("{} {}", glyphs.status_ready, app.model()),
-            Style::default().fg(palette.success),
-        )
-    } else {
-        (
-            format!("{} No API key", glyphs.status_missing),
-            Style::default().fg(palette.error),
-        )
-    };
-
-    let usage_status = app.context_usage_status();
-    let (usage, severity_override) = match &usage_status {
-        ContextUsageStatus::Ready(usage) => (usage, 0),
-        ContextUsageStatus::NeedsDistillation { usage, .. } => (usage, 1),
-        ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => (usage, 2),
-    };
-    let pct = usage.percentage();
-    let remaining = (100.0 - pct).clamp(0.0, 100.0);
-    let base_usage = format!("Context {remaining:.0}% left");
-    let context_str = match severity_override {
-        2 => format!("{base_usage} !!"),
-        1 => format!("{base_usage} !"),
-        _ => base_usage,
-    };
-    let usage_color = match severity_override {
-        1 | 2 => palette.red,
-        _ => match usage.severity() {
-            0 => palette.green,
-            1 => palette.yellow,
-            _ => palette.red,
-        },
-    };
-    let api_usage_str = format_api_usage(app.last_turn_usage());
-    let usage_str = if api_usage_str.is_empty() {
-        context_str
-    } else {
-        format!("{context_str}  {api_usage_str}")
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(palette.primary))
-        .title_top(Line::from(vec![Span::styled(
-            " MODEL ",
-            styles::mode_model(palette),
-        )]))
-        .title_top(keybindings.alignment(Alignment::Right))
-        .title_bottom(Line::from(vec![Span::styled(model_text, model_style)]))
-        .title_bottom(
-            Line::from(vec![Span::styled(
-                usage_str,
-                Style::default().fg(usage_color),
-            )])
-            .alignment(Alignment::Right),
-        );
-
-    let paragraph = Paragraph::new(lines).block(block);
-    frame.render_widget(paragraph, area);
 }
 
 fn draw_files_panel(frame: &mut Frame, app: &App, area: Rect, palette: &Palette, glyphs: &Glyphs) {

@@ -605,7 +605,6 @@ The engine provides a slash command system for user actions.
 | `/context` | `/ctx` | Show context usage stats |
 | `/journal` | `/jrnl` | Show journal statistics |
 | `/summarize` | `/distill` | Trigger summarization |
-| `/screen` | - | Toggle fullscreen/inline mode |
 | `/tools` | - | Show tool status |
 | `/rewind [id\|last] [scope]` | `/rw` | Rewind to an automatic checkpoint |
 | `/undo` | - | Rewind to the latest turn checkpoint (conversation only) |

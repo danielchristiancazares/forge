@@ -68,8 +68,7 @@ WebFetch Crate
 ├── webfetch/src/cache.rs                # LRU disk cache with TTL
 
 TUI Rendering & Input
-├── tui/src/lib.rs                       # Full-mode rendering
-├── tui/src/ui_inline.rs                 # Inline-mode rendering
+├── tui/src/lib.rs                       # TUI rendering
 ├── tui/src/input.rs                     # Input event handling
 ├── tui/src/markdown.rs                  # Markdown rendering
 ├── tui/src/theme.rs                     # Theme definitions

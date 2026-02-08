@@ -31,7 +31,6 @@ Config: `~/.forge/config.toml` (supports `${ENV_VAR}` expansion)
 ```toml
 [app]
 model = "claude-opus-4-6"  # Provider inferred from model prefix
-tui = "full"               # or "inline"
 show_thinking = false      # Render provider thinking/reasoning in UI
 ascii_only = false         # ASCII-only glyphs for icons/spinners
 high_contrast = false      # High-contrast color palette
@@ -55,7 +54,7 @@ thinking_enabled = true    # Uses thinkingLevel="high" for Gemini 3 Pro
 
 Models: `claude-*` → Claude, `gpt-*` → OpenAI, `gemini-*` → Gemini
 
-Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_TUI`, `FORGE_CONTEXT_INFINITY=0`
+Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_CONTEXT_INFINITY=0`
 
 ## Architecture
 
@@ -91,7 +90,6 @@ forge/
 | `engine` | `ui/input.rs` | `InputMode`, `InputState`, `DraftInput` |
 | `engine` | `ui/modal.rs` | `ModalEffectKind`, modal state |
 | `tui` | `lib.rs` | Full-screen rendering |
-| `tui` | `ui_inline.rs` | Inline terminal rendering |
 | `tui` | `input.rs` | Keyboard input handling |
 | `tui` | `theme.rs` | Colors and styles |
 | `tui` | `markdown.rs` | Markdown to ratatui conversion |
@@ -243,7 +241,7 @@ See `tui/README.md` Extension Guide for detailed patterns.
 
 All mode styles use `fg(bg_dark)` + `bg(<color>)` + `BOLD` modifier.
 
-**Inline vs Fullscreen**: Inline mode transforms the input area for overlays (Command palette, Model selector) rather than spawning floating popups. Fullscreen mode uses centered floating overlays with animations.
+**Overlays**: Command palette and Model selector use centered floating overlays with animations.
 
 ## Documentation
 

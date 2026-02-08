@@ -57,11 +57,6 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         description: "Distill older messages",
     },
     CommandSpec {
-        palette_label: "screen",
-        help_label: "screen",
-        description: "Toggle fullscreen/inline mode",
-    },
-    CommandSpec {
         palette_label: "rewind <id|last> [code|conversation|both]",
         help_label: "rewind",
         description: "Rewind to an automatic checkpoint",
@@ -101,7 +96,6 @@ pub(crate) enum CommandKind {
     Journal,
     Distill,
     Cancel,
-    Screen,
     Rewind,
     Undo,
     Retry,
@@ -162,10 +156,6 @@ const COMMAND_ALIASES: &[CommandAlias] = &[
         kind: CommandKind::Cancel,
     },
     CommandAlias {
-        name: "screen",
-        kind: CommandKind::Screen,
-    },
-    CommandAlias {
         name: "rw",
         kind: CommandKind::Rewind,
     },
@@ -215,7 +205,6 @@ pub(crate) enum Command<'a> {
     Journal,
     Distill,
     Cancel,
-    Screen,
     Rewind {
         target: Option<&'a str>,
         scope: Option<&'a str>,
@@ -255,7 +244,6 @@ impl<'a> Command<'a> {
             CommandKind::Journal => Command::Journal,
             CommandKind::Distill => Command::Distill,
             CommandKind::Cancel => Command::Cancel,
-            CommandKind::Screen => Command::Screen,
             CommandKind::Rewind => Command::Rewind {
                 target: parts.get(1).copied(),
                 scope: parts.get(2).copied(),
@@ -499,9 +487,6 @@ impl super::App {
             Command::Cancel => {
                 self.cancel_active_operation();
             }
-            Command::Screen => {
-                self.view.toggle_screen_mode = true;
-            }
             Command::Rewind { target, scope } => {
                 if let Some(reason) = self.busy_reason() {
                     self.push_notification(format!("Cannot rewind while {reason}."));
@@ -664,11 +649,6 @@ mod tests {
     #[test]
     fn parse_cancel_command() {
         assert_eq!(Command::parse("cancel"), Command::Cancel);
-    }
-
-    #[test]
-    fn parse_screen_command() {
-        assert_eq!(Command::parse("screen"), Command::Screen);
     }
 
     #[test]

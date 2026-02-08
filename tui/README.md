@@ -9,8 +9,8 @@ Terminal user interface rendering and input handling for Forge, built on [ratatu
 | 1-27 | Header, Intro, LLM-TOC, Table of Contents |
 | 28-39 | Purpose and Responsibility |
 | 40-55 | Module Overview |
-| 56-105 | Full-Screen vs Inline Rendering |
-| 106-616 | Key Modules: lib.rs, ui_inline.rs, input.rs, theme.rs, markdown.rs, effects.rs, shared.rs, tool_display.rs, tool_result_Distillate.rs, diff_render.rs |
+| 56-105 | Rendering |
+| 106-616 | Key Modules: lib.rs, input.rs, theme.rs, markdown.rs, effects.rs, shared.rs, tool_display.rs, tool_result_Distillate.rs, diff_render.rs |
 | 617-650 | Public API |
 | 651-692 | Developer Notes |
 
@@ -42,7 +42,6 @@ This crate is purely presentational. It renders state from `forge-engine` and fo
 ```
 tui/src/
 ├── lib.rs              # Full-screen rendering, message display, overlays
-├── ui_inline.rs        # Inline terminal rendering with scrollback integration
 ├── input.rs            # Keyboard event handling and mode dispatch
 ├── theme.rs            # Color palette, styles, and glyphs
 ├── markdown.rs         # Markdown to ratatui conversion with caching
@@ -53,9 +52,7 @@ tui/src/
 └── diff_render.rs      # Diff-aware coloring for tool output
 ```
 
-## Full-Screen vs Inline Rendering
-
-### Full-Screen Mode (`lib.rs`)
+## Rendering
 
 Uses crossterm's alternate screen for complete terminal control:
 
@@ -77,21 +74,6 @@ Features:
 - Model selector overlay with animation effects
 - Tool approval and recovery prompts
 - Welcome screen when conversation is empty
-
-### Inline Mode (`ui_inline.rs`)
-
-Runs within normal terminal flow, preserving scrollback history:
-
-```rust
-pub const INLINE_INPUT_HEIGHT: u16 = 5;
-pub const INLINE_VIEWPORT_HEIGHT: u16 = INLINE_INPUT_HEIGHT + 1;
-```
-
-Features:
-- Fixed-height viewport at terminal bottom
-- Completed messages written to terminal scrollback via `terminal.insert_before()`
-- Simplified rendering without markdown parsing
-- Same input handling as full-screen mode
 
 ### Mode Differences
 
@@ -133,26 +115,7 @@ Cache is invalidated when:
 **Scrollbar Rendering:**
 Only rendered when content exceeds viewport (`max_scroll > 0`). Uses `max_scroll` as content length for correct thumb positioning.
 
-### ui_inline.rs - Inline Rendering
-
 Entry point: `draw(frame: &mut Frame, app: &mut App)`
-
-**InlineOutput State:**
-Tracks what has been written to terminal scrollback to avoid duplicate output:
-
-```rust
-pub struct InlineOutput {
-    next_display_index: usize,          // Messages already printed
-    has_output: bool,                   // Any output written
-    last_tool_output_len: usize,        // Tool output line count
-    last_tool_status_signature: Option<String>,   // Detect changes
-    last_approval_signature: Option<String>,
-    last_recovery_active: bool,
-}
-```
-
-**Flush Method:**
-`flush()` writes new messages above the viewport using `terminal.insert_before()`, which scrolls existing content up. Signature fields prevent duplicate output when state hasn't changed.
 
 ### input.rs - Keyboard Input Handling
 
@@ -199,7 +162,6 @@ Tool approval and recovery modals take priority over mode-specific handling. Whe
 | `Left` | Scroll up by chunk |
 | `Tab` / `Shift+Tab` | Files panel: next/previous file |
 | `Enter` / `Esc` | Files panel: collapse expanded diff |
-| `s` | Toggle screen mode |
 
 **Key Bindings (Insert Mode):**
 
@@ -621,8 +583,7 @@ pub fn render_tool_result_lines(content: &str, base_style: Style, palette: &Pale
 ```rust
 // Rendering
 pub fn draw(frame: &mut Frame, app: &mut App)
-pub fn draw_inline(frame: &mut Frame, app: &mut App)
-pub fn clear_inline_viewport<B>(terminal: &mut Terminal<B>) -> Result<(), B::Error>
+
 
 // Theme
 pub fn palette(options: UiOptions) -> Palette
@@ -636,12 +597,6 @@ pub fn apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> R
 // Input
 pub struct InputPump
 pub fn handle_events(app: &mut App, input: &mut InputPump) -> Result<bool>
-
-// Inline mode
-pub const INLINE_INPUT_HEIGHT: u16
-pub const INLINE_VIEWPORT_HEIGHT: u16
-pub fn inline_viewport_height(mode: InputMode) -> u16
-pub struct InlineOutput
 
 // Markdown
 pub mod markdown

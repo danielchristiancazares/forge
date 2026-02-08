@@ -11,8 +11,8 @@ This document provides comprehensive documentation for the `forge` CLI crate - t
 | 83-125 | Architecture Diagram: main() flow, mode switching, terminal session lifecycle |
 | 126-177 | Module Structure: main.rs types and functions, assets.rs constants and statics |
 | 178-274 | Terminal Session Management: TerminalSession, init/cleanup sequences, error handling |
-| 275-367 | UI Mode System: UiMode enum, resolution logic, mode characteristics |
-| 368-561 | Main Event Loops: input pump, frame cadence, run_app_full, run_app_inline, transcript clear |
+| 275-367 | Terminal Mode |
+| 368-561 | Main Event Loop: input pump, frame cadence, run_app |
 | 562-639 | Asset Management: compile-time embedding, provider-specific prompts, OnceLock initialization |
 | 640-722 | Startup and Shutdown Sequence: initialization order, cleanup guarantees |
 | 723-757 | Configuration Resolution: UI mode config, file location, example |
@@ -46,9 +46,7 @@ The `forge` CLI crate is the application entry point that orchestrates terminal 
 | Responsibility | Description |
 |----------------|-------------|
 | **Terminal Session** | RAII-based setup/teardown of raw mode, alternate screen, bracketed paste |
-| **UI Mode Selection** | Resolution of full-screen vs inline mode from config and environment |
 | **Event Loop Execution** | Tick-based loop coordinating async tasks, streaming, rendering, and input |
-| **Mode Switching** | Runtime toggling between full-screen and inline modes |
 | **Asset Loading** | Compile-time embedding and runtime initialization of provider-specific system prompts |
 
 ### File Structure
@@ -71,7 +69,7 @@ cli/
 | Crate | Purpose |
 |-------|---------|
 | `forge-engine` | Application state machine (`App`, `ForgeConfig`, `SystemPrompts`) |
-| `forge-tui` | Rendering functions (`draw`, `draw_inline`, `handle_events`) |
+| `forge-tui` | Rendering functions (`draw`, `handle_events`) |
 | `forge-types` | Core domain types |
 | `ratatui` | Terminal UI framework |
 | `crossterm` | Cross-platform terminal manipulation |
@@ -88,30 +86,13 @@ cli/
 |  +--------------------------------------------------------------------+ |
 |  |  1. Initialize tracing                                              | |
 |  |  2. Load assets (provider-specific system prompts)                  | |
-|  |  3. Load ForgeConfig                                                | |
-|  |  4. Resolve UiMode (config -> env -> default)                       | |
-|  |  5. Create App with system prompts                                  | |
+|  |  3. Create App with system prompts                                  | |
 |  +--------------------------------------------------------------------+ |
 |                                |                                         |
 |                                v                                         |
 |  +--------------------------------------------------------------------+ |
-|  |                     Main Loop (mode switching)                      | |
-|  |  +--------------------------------------------------------------+  | |
-|  |  |  TerminalSession::new(ui_mode)  <- RAII terminal setup       |  | |
-|  |  +--------------------------------------------------------------+  | |
-|  |                                |                                    | |
-|  |          +---------------------+---------------------+              | |
-|  |          v                                           v              | |
-|  |  +------------------+                    +----------------------+   | |
-|  |  |  run_app_full()  |                    |  run_app_inline()    |   | |
-|  |  |  (alternate scr) |                    |  (inline viewport)   |   | |
-|  |  +------------------+                    +----------------------+   | |
-|  |          |                                           |              | |
-|  |          +---------------------+---------------------+              | |
-|  |                                v                                    | |
-|  |  +--------------------------------------------------------------+  | |
-|  |  |  RunResult::Quit | RunResult::SwitchMode                     |  | |
-|  |  +--------------------------------------------------------------+  | |
+|  |  TerminalSession::new()  <- RAII terminal setup (alternate screen) | |
+|  |  run_app(&mut terminal, &mut app)  <- Main event loop              | |
 |  +--------------------------------------------------------------------+ |
 |                                |                                         |
 |                                v                                         |
@@ -133,8 +114,6 @@ The primary module containing the application entry point and all core types.
 
 | Type | Description |
 |------|-------------|
-| `UiMode` | Enum representing display mode: `Full` (alternate screen) or `Inline` (embedded viewport) |
-| `RunResult` | Enum representing event loop exit reason: `Quit` or `SwitchMode` |
 | `TerminalSession` | RAII wrapper for terminal state with guaranteed cleanup on drop |
 
 #### Functions
@@ -142,9 +121,7 @@ The primary module containing the application entry point and all core types.
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `main` | `async fn main() -> Result<()>` | Application entry point |
-| `run_app_full` | `async fn run_app_full<B>(terminal, app) -> Result<RunResult>` | Full-screen event loop |
-| `run_app_inline` | `async fn run_app_inline<B>(terminal, app) -> Result<RunResult>` | Inline mode event loop |
-| `clear_inline_transcript` | `fn clear_inline_transcript<B>(terminal) -> Result<()>` | Clears terminal and resets cursor for inline mode transcript reset |
+| `run_app` | `async fn run_app<B>(terminal, app) -> Result<()>` | Main event loop |
 
 Note: The generic bound `B` requires `Backend + Write` with `B::Error: Send + Sync + 'static` for all event loop functions.
 
@@ -190,27 +167,22 @@ struct TerminalSession {
 
 ### Initialization Sequence
 
-When `TerminalSession::new(mode)` is called:
+When `TerminalSession::new()` is called:
 
 1. **Enable raw mode**: `enable_raw_mode()` - disables line buffering and echo
 2. **Enable bracketed paste**: `EnableBracketedPaste` - allows detecting pasted text vs typed input
-3. **Enter alternate screen** (full mode only): `EnterAlternateScreen` - switches to alternate buffer
-4. **Enable alternate scroll mode** (full mode only): `CSI ? 1007 h` - map scroll wheel to arrow keys without mouse capture
+3. **Enter alternate screen**: `EnterAlternateScreen` - switches to alternate buffer
+4. **Enable alternate scroll mode**: `CSI ? 1007 h` - map scroll wheel to arrow keys without mouse capture
 5. **Create terminal backend**: `CrosstermBackend::new(stdout())`
-6. **Configure viewport**:
-   - Full mode: Standard terminal with full screen
-   - Inline mode: `Viewport::Inline(INLINE_VIEWPORT_HEIGHT)` - fixed-height viewport at cursor
 
 ### Cleanup Sequence (Drop)
 
 When `TerminalSession` is dropped:
 
 1. **Disable raw mode**: `disable_raw_mode()` - restores normal terminal behavior
-2. **Disable alternate scroll mode** (full mode only): `CSI ? 1007 l`
-3. **Leave alternate screen** (if applicable): `LeaveAlternateScreen` + `DisableBracketedPaste`
-4. **Clear inline viewport** (inline mode): `clear_inline_viewport()` - erases the inline area
-5. **Disable bracketed paste** (inline mode): `DisableBracketedPaste` - restores normal paste behavior
-5. **Show cursor**: `terminal.show_cursor()` - ensures cursor visibility
+2. **Disable alternate scroll mode**: `CSI ? 1007 l`
+3. **Leave alternate screen**: `LeaveAlternateScreen` + `DisableBracketedPaste`
+4. **Show cursor**: `terminal.show_cursor()` - ensures cursor visibility
 
 ### Error Handling During Setup
 
@@ -251,188 +223,39 @@ let terminal = match Terminal::new(backend) {
 ### Usage Pattern
 
 ```rust
-loop {
-    let run_result = {
-        let mut session = TerminalSession::new(ui_mode)?;
-        // Session is active here
-        match ui_mode {
-            UiMode::Full => run_app_full(&mut session.terminal, &mut app).await,
-            UiMode::Inline => run_app_inline(&mut session.terminal, &mut app).await,
-        }
-        // Session drops here, terminal state restored
-    };
-
-    match run_result {
-        Ok(RunResult::SwitchMode) => ui_mode = ui_mode.toggle(),
-        Ok(RunResult::Quit) => break,
-        Err(err) => { eprintln!("Error: {err:?}"); break; }
-    }
+{
+    let mut session = TerminalSession::new()?;
+    run_app(&mut session.terminal, &mut app).await?;
+    // Session drops here, terminal state restored
 }
 ```
 
 ---
 
-## UI Mode System
+## Terminal Mode
 
-Forge supports two display modes that can be toggled at runtime.
-
-### UiMode Enum
-
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UiMode {
-    Full,    // Alternate screen, full terminal takeover
-    Inline,  // Inline viewport at current cursor position
-}
-```
-
-### Mode Characteristics
-
-| Aspect | Full Mode | Inline Mode |
-|--------|-----------|-------------|
-| **Screen** | Alternate screen buffer | Current terminal buffer |
-| **Size** | Full terminal dimensions | Fixed height viewport (`INLINE_VIEWPORT_HEIGHT`) |
-| **Mouse** | Scroll wheel mapped to arrows (no click capture) | Not captured |
-| **Scrollback** | Preserved (alternate buffer) | Visible above viewport |
-| **Output** | Rendered in viewport | Flushed above viewport via `InlineOutput` |
-
-### Mode Resolution Priority
-
-UI mode is determined at startup with the following precedence:
-
-1. **Configuration file** (`~/.forge/config.toml`):
-
-   ```toml
-   [app]
-   tui = "inline"  # or "full" / "fullscreen"
-   ```
-
-2. **Environment variable** (`FORGE_TUI`):
-
-   ```bash
-   FORGE_TUI=inline forge
-   ```
-
-3. **Default**: `UiMode::Full`
-
-### Resolution Implementation
-
-```rust
-impl UiMode {
-    fn from_config(config: Option<&ForgeConfig>) -> Option<Self> {
-        let raw = config
-            .and_then(|cfg| cfg.app.as_ref())
-            .and_then(|app| app.tui.as_ref())?;
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "inline" => Some(UiMode::Inline),
-            "full" | "fullscreen" => Some(UiMode::Full),
-            other => {
-                tracing::warn!("Unknown tui mode in config: {}", other);
-                None
-            }
-        }
-    }
-
-    fn from_env() -> Option<Self> {
-        match env::var("FORGE_TUI") {
-            Ok(value) => match value.to_ascii_lowercase().as_str() {
-                "inline" => Some(UiMode::Inline),
-                "full" | "fullscreen" => Some(UiMode::Full),
-                _ => None,
-            },
-            Err(_) => None,
-        }
-    }
-}
-```
-
-### Runtime Mode Switching
-
-Users can toggle between modes at runtime (typically via a command). The `App` sets a flag that the event loop checks:
-
-```rust
-if app.take_toggle_screen_mode() {
-    return Ok(RunResult::SwitchMode);
-}
-```
-
-The main loop then:
-
-1. Drops the current `TerminalSession` (restoring terminal)
-2. Toggles `ui_mode`
-3. Creates a new `TerminalSession` with the new mode
-4. Continues with the appropriate event loop
+Forge uses crossterm's alternate screen for full terminal control:
+- Alternate screen buffer preserves original terminal scrollback
+- Scroll wheel mapped to arrow keys via mode 1007 (no mouse capture)
+- RAII cleanup via `TerminalSession` drop
 
 ---
 
-## Main Event Loops
+## Main Event Loop
 
-Both event loops follow the same structure but differ in rendering and output handling.
-
-### Event Loop Structure
+The event loop runs at a fixed 8ms (~120 FPS) cadence:
 
 ```
-+-------------------------------------------------------------------+
-|                        Event Loop                                  |
-|                                                                    |
-|   +------------------------------------------------------------+  |
-|   |  1. frames.tick().await (fixed cadence)                     |  |
-|   +------------------------------------------------------------+  |
-|                              |                                     |
-|                              v                                     |
-|   +------------------------------------------------------------+  |
-|   |  2. handle_events(app, input)                               |  |
-|   |     - Drain InputPump queue (non-blocking)                  |  |
-|   |     - Dispatch to mode-specific handler                     |  |
-|   |     - Returns true if app should quit                       |  |
-|   +------------------------------------------------------------+  |
-|                              |                                     |
-|                              v                                     |
-|   +------------------------------------------------------------+  |
-|   |  3. app.tick()                                              |  |
-|   |     - Advance animations                                   |  |
-|   |     - Poll background tasks                                |  |
-|   +------------------------------------------------------------+  |
-|                              |                                     |
-|                              v                                     |
-|   +------------------------------------------------------------+  |
-|   |  4. app.process_stream_events()                             |  |
-|   |     - Drain streaming chunks from channel                   |  |
-|   |     - Apply text/tool deltas to UI state                    |  |
-|   +------------------------------------------------------------+  |
-|                              |                                     |
-|                              v                                     |
-|   +------------------------------------------------------------+  |
-|   |  5. Clear transcript if requested                           |  |
-|   |     - Full: terminal.clear()                                |  |
-|   |     - Inline: clear_inline_transcript() + output.reset()    |  |
-|   +------------------------------------------------------------+  |
-|                              |                                     |
-|                              v                                     |
-|   +------------------------------------------------------------+  |
-|   |  6. Inline: output.flush() + viewport resize (if needed)    |  |
-|   +------------------------------------------------------------+  |
-|                              |                                     |
-|                              v                                     |
-|   +------------------------------------------------------------+  |
-|   |  7. terminal.draw(...)                                      |  |
-|   +------------------------------------------------------------+  |
-|                              |                                     |
-|                              v                                     |
-|   +------------------------------------------------------------+  |
-|   |  8. Check mode switch flags                                 |  |
-|   |     - app.take_toggle_screen_mode()                         |  |
-|   +------------------------------------------------------------+  |
-|                              |                                     |
-|                              v                                     |
-|                        Loop continues                              |
-+-------------------------------------------------------------------+
+1. frames.tick().await (fixed cadence)
+2. handle_events(app, input) — drain input queue (non-blocking)
+3. app.tick() — advance animations, poll background tasks
+4. app.process_stream_events() — apply streaming chunks to UI
+5. Clear transcript if requested (terminal.clear())
+6. terminal.draw(...) — render frame
 ```
-
-### Full-Screen Event Loop
 
 ```rust
-async fn run_app_full<B>(terminal: &mut Terminal<B>, app: &mut App) -> Result<RunResult>
+async fn run_app<B>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
 where
     B: Backend + Write,
     B::Error: Send + Sync + 'static,
@@ -441,13 +264,12 @@ where
     let mut frames = tokio::time::interval(FRAME_DURATION);
     frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    let result: Result<RunResult> = loop {
+    let result: Result<()> = loop {
         frames.tick().await;
 
         let quit_now = handle_events(app, &mut input)?;
         if quit_now {
-            let _ = clear_inline_viewport(terminal);
-            break Ok(RunResult::Quit);
+            break Ok(());
         }
 
         app.tick();
@@ -458,95 +280,10 @@ where
         }
 
         terminal.draw(|frame| draw(frame, app))?;
-
-        if app.take_toggle_screen_mode() {
-            clear_inline_viewport(terminal)?;
-            break Ok(RunResult::SwitchMode);
-        }
     };
 
     input.shutdown().await;
     result
-}
-```
-
-### Inline Event Loop
-
-The inline loop has additional complexity for:
-
-- Flushing output above the viewport (`InlineOutput::flush`)
-- Dynamic viewport resizing for overlays (e.g., model selector)
-- Transcript clearing with `clear_inline_transcript()` and `InlineOutput::reset()`
-
-```rust
-async fn run_app_inline<B>(terminal: &mut Terminal<B>, app: &mut App) -> Result<RunResult>
-where
-    B: Backend + Write,
-    B::Error: Send + Sync + 'static,
-{
-    let mut output = InlineOutput::new();
-    let mut current_viewport_height = INLINE_VIEWPORT_HEIGHT;
-    let mut input = InputPump::new();
-    let mut frames = tokio::time::interval(FRAME_DURATION);
-    frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    let result: Result<RunResult> = loop {
-        frames.tick().await;
-
-        let quit_now = handle_events(app, &mut input)?;
-        if quit_now {
-            break Ok(RunResult::Quit);
-        }
-
-        app.tick();
-        app.process_stream_events();
-
-        if app.take_clear_transcript() {
-            clear_inline_transcript(terminal)?;
-            output.reset();
-        }
-
-        output.flush(terminal, app)?;
-
-        let needed_height = inline_viewport_height(app.input_mode());
-        if needed_height != current_viewport_height {
-            let (term_width, term_height) = terminal_size()?;
-            let height = needed_height.min(term_height);
-            let y = term_height.saturating_sub(height);
-            terminal.resize(Rect::new(0, y, term_width, height))?;
-            current_viewport_height = height;
-        }
-
-        terminal.draw(|frame| draw_inline(frame, app))?;
-
-        if app.take_toggle_screen_mode() {
-            break Ok(RunResult::SwitchMode);
-        }
-    };
-
-    input.shutdown().await;
-    result
-}
-```
-
-### Transcript Clear Implementation
-
-The `clear_inline_transcript` function performs a complete terminal reset for inline mode:
-
-```rust
-fn clear_inline_transcript<B>(terminal: &mut Terminal<B>) -> Result<()>
-where
-    B: Backend + Write,
-    B::Error: Send + Sync + 'static,
-{
-    execute!(
-        terminal.backend_mut(),
-        Clear(ClearType::Purge),   // Clear scrollback buffer
-        Clear(ClearType::All),     // Clear visible screen
-        MoveTo(0, 0)               // Reset cursor to top-left
-    )?;
-    terminal.clear()?;             // Clear ratatui's internal buffer
-    Ok(())
 }
 ```
 
@@ -649,20 +386,14 @@ pub fn system_prompts() -> SystemPrompts {
 2. Initialize assets
    - assets::init() - eagerly load all system prompts
 
-3. Load configuration
-   - ForgeConfig::load() - parse ~/.forge/config.toml
-
-4. Resolve UI mode
-   - UiMode::from_config() || UiMode::from_env() || UiMode::Full
-
-5. Create application
-   - App::new(Some(assets::system_prompts()))
+3. Create application
+   - App::new(assets::system_prompts())
    - Initializes state machine, providers, context manager
 
-6. Enter main loop
-   - Create TerminalSession
-   - Run appropriate event loop
-   - Handle mode switches
+4. Enter main loop
+   - Create TerminalSession (alternate screen)
+   - Run event loop
+```
 ```
 
 ### Shutdown Sequence
@@ -674,7 +405,7 @@ pub fn system_prompts() -> SystemPrompts {
 
 2. TerminalSession drops
    - Raw mode disabled
-   - Alternate screen exited (if applicable)
+   - Alternate screen exited
    - Cursor restored
 
 3. Save conversation history
@@ -700,19 +431,7 @@ Errors are handled at different levels:
 | History save | Log error, continue shutdown |
 
 ```rust
-match run_result {
-    Ok(RunResult::SwitchMode) => {
-        ui_mode = ui_mode.toggle();
-        // Continue loop
-    }
-    Ok(RunResult::Quit) => break,
-    Err(err) => {
-        eprintln!("Error: {err:?}");
-        break;
-    }
-}
-
-// After loop
+// After event loop
 if let Err(e) = app.save_history() {
     eprintln!("Failed to save history: {e}");
 }
@@ -723,14 +442,6 @@ if let Err(e) = app.save_history() {
 ## Configuration Resolution
 
 The CLI resolves configuration from multiple sources with clear precedence.
-
-### UI Mode Configuration
-
-| Source | Key | Values |
-|--------|-----|--------|
-| Config file | `[app] tui` | `"inline"`, `"full"`, `"fullscreen"` |
-| Environment | `FORGE_TUI` | `inline`, `full`, `fullscreen` |
-| Default | - | `Full` |
 
 ### Configuration File Location
 
@@ -745,7 +456,6 @@ The configuration file is located at `~/.forge/config.toml`. The `ForgeConfig::l
 ```toml
 [app]
 model = "claude-opus-4-6"
-tui = "full"
 
 [api_keys]
 anthropic = "${ANTHROPIC_API_KEY}"
@@ -788,28 +498,6 @@ async fn main() -> Result<()> {
 
 ## Extension Guide
 
-### Adding a New UI Mode
-
-1. Add variant to `UiMode` enum:
-
-   ```rust
-   enum UiMode {
-       Full,
-       Inline,
-       Compact,  // New mode
-   }
-   ```
-
-2. Update `UiMode::from_config()` and `from_env()` to recognize the new mode
-
-3. Update `UiMode::toggle()` if the new mode should be part of the toggle cycle
-
-4. Update `TerminalSession::new()` with mode-specific terminal setup
-
-5. Create a new event loop function (e.g., `run_app_compact`)
-
-6. Update the main loop's mode dispatch
-
 ### Adding New Assets
 
 1. Place the asset file in `cli/assets/`
@@ -845,22 +533,11 @@ To add command-line argument parsing:
    #[derive(Parser)]
    struct Args {
        #[arg(long)]
-       inline: bool,
+       verbose: bool,
    }
    ```
 
-3. Parse before config resolution:
-
-   ```rust
-   let args = Args::parse();
-   let ui_mode = if args.inline {
-       UiMode::Inline
-   } else {
-       UiMode::from_config(config.as_ref())
-           .or_else(UiMode::from_env)
-           .unwrap_or(UiMode::Full)
-   };
-   ```
+3. Parse before app creation and use as needed
 
 ### Modifying the Event Loop
 

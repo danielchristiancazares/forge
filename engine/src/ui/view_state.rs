@@ -51,8 +51,6 @@ pub struct ViewState {
     pub scroll: ScrollState,
     /// Maximum scroll offset (content length - viewport).
     pub scroll_max: u16,
-    /// Request to toggle between fullscreen and inline UI modes.
-    pub toggle_screen_mode: bool,
     /// Request to clear the visible transcript (handled by the UI).
     pub clear_transcript: bool,
     /// Active modal animation effect.
@@ -72,7 +70,6 @@ impl Default for ViewState {
         Self {
             scroll: ScrollState::default(),
             scroll_max: 0,
-            toggle_screen_mode: false,
             clear_transcript: false,
             modal_effect: None,
             files_panel_effect: None,

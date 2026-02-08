@@ -148,7 +148,6 @@ Create `~/.forge/config.toml` for persistent configuration. All settings are opt
 ```toml
 [app]
 model = "claude-opus-4-6"   # Model name (provider inferred from prefix)
-tui = "full"                           # "full" (alternate screen) or "inline"
 show_thinking = false                  # Render provider thinking/reasoning in UI
 
 # Accessibility options
@@ -261,7 +260,6 @@ description = "City name, e.g. 'Seattle, WA'"
 | `ANTHROPIC_API_KEY` | Claude API key (fallback if not in config) |
 | `OPENAI_API_KEY` | GPT API key (fallback if not in config) |
 | `GEMINI_API_KEY` | Gemini API key (fallback if not in config) |
-| `FORGE_TUI` | Override TUI mode: `full` or `inline` |
 | `FORGE_CONTEXT_INFINITY` | Override distillation: `1` or `0` |
 | `FORGE_STREAM_IDLE_TIMEOUT_SECS` | Override streaming idle timeout in seconds (default: 60) |
 | `FORGE_STREAM_JOURNAL_FLUSH_THRESHOLD` | Override stream journal flush threshold in deltas (default: 25) |
@@ -373,7 +371,6 @@ Enter Command mode by pressing `:` or `/` in Normal mode.
 | `/context` | `/ctx` | Show context usage statistics |
 | `/journal` | `/jrnl` | Show stream journal statistics |
 | `/distill` | - | Manually trigger distillation |
-| `/screen` | - | Toggle between full-screen and inline mode |
 | `/rewind [id\|last] [scope]` | `/rw` | Rewind to an automatic checkpoint (scope: `code`, `conversation`, or `both`) |
 | `/undo` | - | Undo the last user turn (rewind to last turn checkpoint) |
 | `/retry` | - | Undo the last user turn and restore its prompt into the input box |
