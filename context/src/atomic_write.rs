@@ -40,6 +40,7 @@ pub fn atomic_write(path: impl AsRef<Path>, bytes: &[u8]) -> std::io::Result<()>
     atomic_write_with_options(path, bytes, AtomicWriteOptions::default())
 }
 
+#[allow(dead_code)] // Used by engine crate via pub re-export in lib.rs
 pub fn atomic_write_new_with_options(
     path: impl AsRef<Path>,
     bytes: &[u8],

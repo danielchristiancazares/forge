@@ -223,14 +223,15 @@ fn distill_git_commit(content: &str, max_width: usize) -> Option<String> {
     let value: Value = serde_json::from_str(content).ok()?;
     let commit_msg = value.get("commit_message").and_then(Value::as_str)?;
 
-    let hash = value
-        .get("commit_hash")
-        .and_then(Value::as_str)
-        .unwrap_or("???????");
+    let hash = match value.get("commit_hash").and_then(Value::as_str) {
+        Some(h) => {
+            let short = if h.len() > 7 { &h[..7] } else { h };
+            format!("{short} {commit_msg}")
+        }
+        None => format!("failed: {commit_msg}"),
+    };
 
-    let short_hash = if hash.len() > 7 { &hash[..7] } else { hash };
-    let summary = format!("{short_hash} {commit_msg}");
-    Some(truncate_to(&summary, max_width))
+    Some(truncate_to(&hash, max_width))
 }
 
 fn distill_git_status(content: &str) -> Option<String> {
@@ -677,7 +678,7 @@ mod tests {
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"{"commit_hash":null,"commit_message":"fix: bug","exit_code":0,"stdout":"","stderr":"","isError":false}"#;
         let summary = format_tool_result_summary(Some(&meta), content, false, 80);
-        assert_eq!(summary, "??????? fix: bug");
+        assert_eq!(summary, "failed: fix: bug");
     }
 
     #[test]
