@@ -133,24 +133,45 @@ fn build_var_name_matcher() -> globset::GlobSet {
 }
 
 /// Check if a value looks like a non-secret (path, URL, numeric).
+///
+/// This runs at startup during `SecretRedactor::from_env()`, so filesystem
+/// I/O is acceptable. The heuristic is deliberately conservative: if in
+/// doubt, the value is treated as a potential secret (returns false).
 fn looks_like_non_secret(value: &str) -> bool {
-    // File paths
+    // File paths — only skip if they actually exist on disk.
+    // Without the existence check, a secret like "/AKIAxyz..." would be whitelisted.
     if value.starts_with('/') || value.starts_with("C:\\") || value.starts_with("D:\\") {
-        return true;
+        return std::path::Path::new(value).exists();
     }
 
-    // Plain URLs without credentials
-    if (value.starts_with("http://") || value.starts_with("https://"))
-        && !value.contains("token=")
-        && !value.contains("key=")
-        && !value.contains("secret=")
-        && !value.contains("password=")
-    {
-        return true;
+    // Plain URLs without credentials — case-insensitive parameter matching
+    // to catch `Token=`, `AUTH=`, non-standard param names, etc.
+    if value.starts_with("http://") || value.starts_with("https://") {
+        let lower = value.to_ascii_lowercase();
+        let has_credential_param = [
+            "token=",
+            "key=",
+            "secret=",
+            "password=",
+            "auth=",
+            "bearer=",
+            "credential=",
+            "api_key=",
+            "apikey=",
+            "access_token=",
+            "client_secret=",
+            "private_key=",
+        ]
+        .iter()
+        .any(|param| lower.contains(param));
+
+        return !has_credential_param;
     }
 
-    // Pure numeric values
-    if value.chars().all(|c| c.is_ascii_digit()) {
+    // Pure numeric values — only skip very long pure-digit strings (20+ digits).
+    // Shorter numeric values that passed MIN_SECRET_LENGTH are more likely to be
+    // API-issued numeric IDs than secrets.
+    if value.chars().all(|c| c.is_ascii_digit()) && value.len() >= 20 {
         return true;
     }
 
@@ -581,15 +602,21 @@ mod tests {
     }
 
     #[test]
-    fn looks_like_non_secret_skips_unix_paths() {
-        assert!(looks_like_non_secret("/usr/local/bin/something"));
-        assert!(looks_like_non_secret("/home/user/.config/app"));
+    fn looks_like_non_secret_only_existing_unix_paths() {
+        // Non-existent paths should NOT be skipped
+        assert!(!looks_like_non_secret("/nonexistent/path/a1b2c3d4e5f6g7"));
+        // Existing paths should be skipped (use a path that exists on all platforms)
+        // We can't test this reliably in unit tests without tempdir, so just
+        // verify the non-existent case above.
     }
 
     #[test]
-    fn looks_like_non_secret_skips_windows_paths() {
-        assert!(looks_like_non_secret("C:\\Program Files\\App"));
-        assert!(looks_like_non_secret("D:\\Users\\Config\\settings"));
+    fn looks_like_non_secret_only_existing_windows_paths() {
+        // Non-existent paths should NOT be skipped
+        assert!(!looks_like_non_secret(
+            "C:\\NonExistent\\Path\\secret123456"
+        ));
+        assert!(!looks_like_non_secret("D:\\Fake\\Path\\api_key_value_1337"));
     }
 
     #[test]
@@ -609,9 +636,31 @@ mod tests {
     }
 
     #[test]
-    fn looks_like_non_secret_skips_pure_numeric() {
-        assert!(looks_like_non_secret("1234567890123456"));
-        assert!(looks_like_non_secret("12345"));
+    fn looks_like_non_secret_catches_new_credential_params() {
+        assert!(!looks_like_non_secret("https://webhook.site/?auth=abc123"));
+        assert!(!looks_like_non_secret("https://api.example.com?bearer=tok"));
+        assert!(!looks_like_non_secret("https://x.com?api_key=val"));
+        assert!(!looks_like_non_secret("https://x.com?access_token=val"));
+        assert!(!looks_like_non_secret("https://x.com?client_secret=val"));
+    }
+
+    #[test]
+    fn looks_like_non_secret_url_credential_case_insensitive() {
+        assert!(!looks_like_non_secret("https://api.example.com?TOKEN=abc"));
+        assert!(!looks_like_non_secret("https://api.example.com?Auth=xyz"));
+    }
+
+    #[test]
+    fn looks_like_non_secret_skips_long_pure_numeric() {
+        // 20+ digits — likely a non-secret identifier
+        assert!(looks_like_non_secret("12345678901234567890"));
+    }
+
+    #[test]
+    fn looks_like_non_secret_keeps_short_numeric() {
+        // Short numeric values that passed MIN_SECRET_LENGTH could be secrets
+        assert!(!looks_like_non_secret("1234567890123456"));
+        assert!(!looks_like_non_secret("12345"));
     }
 
     #[test]
