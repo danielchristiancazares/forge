@@ -15,6 +15,8 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::Url;
 
+use forge_context::{AtomicWriteOptions, atomic_write_with_options};
+
 use crate::resolved::CacheSettings;
 use crate::types::{ErrorCode, WebFetchError};
 
@@ -268,10 +270,14 @@ impl Cache {
             fs::create_dir_all(parent)?;
         }
 
-        // Atomic write: temp file + rename
-        let temp_path = path.with_extension("tmp");
-        fs::write(&temp_path, &content)?;
-        fs::rename(&temp_path, &path)?;
+        atomic_write_with_options(
+            &path,
+            content.as_bytes(),
+            AtomicWriteOptions {
+                sync_all: false,
+                unix_mode: None,
+            },
+        )?;
 
         // Update LRU
         self.lru.insert(key, (SystemTime::now(), size));
