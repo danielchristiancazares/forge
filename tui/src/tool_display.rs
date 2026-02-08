@@ -252,8 +252,12 @@ fn format_patch_summary(obj: &serde_json::Map<String, Value>) -> Option<String> 
                         let mut chars = inner.chars().peekable();
                         while let Some(c) = chars.next() {
                             if c == '\\' {
-                                chars.next(); // skip escaped char
-                                end += 2;
+                                if let Some(escaped) = chars.next() {
+                                    end += 1 + escaped.len_utf8();
+                                } else {
+                                    end += 1; // trailing backslash
+                                    break;
+                                }
                             } else if c == '"' {
                                 break;
                             } else {
