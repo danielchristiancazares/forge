@@ -1477,134 +1477,51 @@ struct StagedFile {
     changed: bool,
     bytes: Vec<u8>,
     original_bytes: Vec<u8>,
+    /// Original file permissions, used to preserve mode on Unix after atomic write.
+    #[cfg_attr(not(unix), allow(dead_code))]
     permissions: Option<std::fs::Permissions>,
 }
 
-struct PreparedFile {
-    target: PathBuf,
-    temp: PathBuf,
-    backup: Option<PathBuf>,
-    existed: bool,
-}
-
-fn unique_backup_path(target: &Path) -> Result<PathBuf, ToolError> {
-    let stamp = SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    for attempt in 0..1000 {
-        let suffix = format!("forge_patch_bak_{stamp}_{attempt}");
-        let candidate = target.with_extension(suffix);
-        if !candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    Err(ToolError::PatchFailed {
-        file: target.to_path_buf(),
-        message: "Failed to allocate backup path".to_string(),
-    })
-}
-
 fn apply_staged_files(staged: &[StagedFile]) -> Result<(), ToolError> {
-    if staged.is_empty() {
-        return Ok(());
-    }
-
-    let mut prepared: Vec<PreparedFile> = Vec::new();
     for file in staged.iter().filter(|s| s.changed) {
         let parent = file.path.parent().ok_or_else(|| ToolError::PatchFailed {
             file: file.path.clone(),
             message: "Invalid path".to_string(),
         })?;
-        let temp = tempfile::Builder::new()
-            .prefix("forge_patch_")
-            .tempfile_in(parent)
-            .map_err(|e| ToolError::PatchFailed {
+
+        // Ensure parent directories exist for new files
+        if !file.existed && !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| ToolError::PatchFailed {
                 file: file.path.clone(),
-                message: e.to_string(),
+                message: format!("Failed to create parent directories: {e}"),
             })?;
-        std::fs::write(temp.path(), &file.bytes).map_err(|e| ToolError::PatchFailed {
+        }
+
+        // Extract unix mode from existing permissions to preserve across atomic write
+        #[cfg(unix)]
+        let unix_mode = file.permissions.as_ref().map(|p| {
+            use std::os::unix::fs::PermissionsExt;
+            p.mode()
+        });
+        #[cfg(not(unix))]
+        let unix_mode: Option<u32> = None;
+
+        let options = forge_context::AtomicWriteOptions {
+            sync_all: true,
+            dir_sync: true,
+            unix_mode,
+        };
+
+        let result = if file.existed {
+            forge_context::atomic_write_with_options(&file.path, &file.bytes, options)
+        } else {
+            forge_context::atomic_write_new_with_options(&file.path, &file.bytes, options)
+        };
+
+        result.map_err(|e| ToolError::PatchFailed {
             file: file.path.clone(),
             message: e.to_string(),
         })?;
-        if let Some(perms) = &file.permissions {
-            std::fs::set_permissions(temp.path(), perms.clone()).map_err(|e| {
-                ToolError::PatchFailed {
-                    file: file.path.clone(),
-                    message: e.to_string(),
-                }
-            })?;
-        }
-        let temp_path = temp
-            .into_temp_path()
-            .keep()
-            .map_err(|e| ToolError::PatchFailed {
-                file: file.path.clone(),
-                message: e.to_string(),
-            })?;
-        let backup_path = if file.existed {
-            Some(unique_backup_path(&file.path)?)
-        } else {
-            None
-        };
-        prepared.push(PreparedFile {
-            target: file.path.clone(),
-            temp: temp_path,
-            backup: backup_path,
-            existed: file.existed,
-        });
-    }
-
-    let mut backed_up: Vec<&PreparedFile> = Vec::new();
-    for entry in &prepared {
-        let Some(backup) = &entry.backup else {
-            continue;
-        };
-        if let Err(e) = std::fs::rename(&entry.target, backup) {
-            for restored in backed_up {
-                let Some(backup) = &restored.backup else {
-                    continue;
-                };
-                let _ = std::fs::remove_file(&restored.target);
-                let _ = std::fs::rename(backup, &restored.target);
-            }
-            for cleanup in &prepared {
-                let _ = std::fs::remove_file(&cleanup.temp);
-            }
-            return Err(ToolError::PatchFailed {
-                file: entry.target.clone(),
-                message: format!("Failed to backup original: {e}"),
-            });
-        }
-        backed_up.push(entry);
-    }
-
-    for entry in &prepared {
-        if let Err(e) = std::fs::rename(&entry.temp, &entry.target) {
-            for restore in &prepared {
-                if let Some(backup) = &restore.backup {
-                    if backup.exists() {
-                        let _ = std::fs::remove_file(&restore.target);
-                        let _ = std::fs::rename(backup, &restore.target);
-                    }
-                } else if !restore.existed {
-                    let _ = std::fs::remove_file(&restore.target);
-                }
-            }
-            for cleanup in &prepared {
-                let _ = std::fs::remove_file(&cleanup.temp);
-            }
-            return Err(ToolError::PatchFailed {
-                file: entry.target.clone(),
-                message: format!("Failed to apply patch: {e}"),
-            });
-        }
-    }
-
-    for entry in &prepared {
-        if let Some(backup) = &entry.backup {
-            let _ = std::fs::remove_file(backup);
-        }
     }
 
     Ok(())
