@@ -55,8 +55,16 @@ fn main() {
 
     let palette = Palette::standard();
     let lines = render_markdown(md, Style::default(), &palette, 200);
-    // Should have opening fence, code lines, closing fence
-    assert!(lines.len() >= 4);
+    // We intentionally do not render the code fences, only the code content.
+    assert!(lines.len() >= 3);
+
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(text.contains("fn main()"));
+    assert!(text.contains("println!"));
 }
 
 #[test]
