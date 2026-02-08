@@ -106,7 +106,6 @@ mod tests {
         );
         assert_eq!(store.snapshot().files().len(), 1);
 
-        // Server clears diagnostics
         store.update(path, vec![]);
         assert!(store.snapshot().is_empty());
     }
@@ -146,11 +145,10 @@ mod tests {
             vec![make_diag(DiagnosticSeverity::Warning, "warn only", 1)],
         );
 
-        // Only errors, only for requested files
         let result = store.errors_for_files(&[path_a.clone(), path_b.clone()]);
-        assert_eq!(result.len(), 1); // b.rs has no errors
+        assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, path_a);
-        assert_eq!(result[0].1.len(), 1); // only the error, not the warning
+        assert_eq!(result[0].1.len(), 1);
     }
 
     #[test]

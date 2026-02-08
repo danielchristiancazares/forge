@@ -105,7 +105,6 @@ impl RunningServer {
             tokio::sync::Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>,
         > = std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
-        // Writer task
         let (writer_tx, mut writer_rx) = mpsc::channel::<WriterCommand>(WRITER_CHANNEL_CAPACITY);
         let writer_handle = tokio::spawn(async move {
             let mut writer = FrameWriter::new(stdin);
@@ -122,7 +121,6 @@ impl RunningServer {
             }
         });
 
-        // Reader task
         let reader_pending = pending.clone();
         let reader_event_tx = event_tx.clone();
         let reader_writer_tx = writer_tx.clone();
@@ -178,7 +176,6 @@ impl RunningServer {
             writer_handle,
         };
 
-        // Perform initialize handshake
         handle.initialize(workspace_root).await?;
 
         Ok(handle)
@@ -265,7 +262,6 @@ impl RunningServer {
         let params = protocol::initialize_params(root_uri.as_str());
         let response = self.send_request("initialize", Some(params)).await?;
 
-        // Check for error in response
         if let Some(error) = response.get("error") {
             bail!(
                 "LSP initialize failed: {}",
@@ -273,7 +269,6 @@ impl RunningServer {
             );
         }
 
-        // Send initialized notification
         self.send_notification("initialized", Some(serde_json::json!({})))
             .await?;
 
@@ -344,14 +339,12 @@ impl RunningServer {
     /// Channel errors are returned as `Err` (honest I/O failure).
     pub async fn notify_file_changed(&mut self, uri: &str, text: &str) -> Result<()> {
         if self.opened_docs.contains(uri) {
-            // Already opened — send didChange with incremented version
             let version = self.doc_versions.entry(uri.to_string()).or_insert(0);
             *version += 1;
             let params = protocol::did_change_params(uri, *version, text);
             self.send_notification("textDocument/didChange", Some(params))
                 .await
         } else {
-            // First time — send didOpen
             let version = 1;
             self.doc_versions.insert(uri.to_string(), version);
             self.opened_docs.insert(uri.to_string());
@@ -363,17 +356,14 @@ impl RunningServer {
 
     /// Gracefully shut down the server. Consumes self.
     pub async fn shutdown(mut self) {
-        // Try graceful shutdown
         if let Ok(response) = self.send_request("shutdown", None).await
             && response.get("error").is_none()
         {
             let _ = self.send_notification("exit", None).await;
         }
 
-        // Send shutdown to writer task
         let _ = self.writer_tx.send(WriterCommand::Shutdown).await;
 
-        // Wait briefly for process to exit, then kill
         let kill_result = tokio::time::timeout(
             std::time::Duration::from_secs(SHUTDOWN_TIMEOUT_SECS),
             self.child.wait(),
@@ -394,7 +384,6 @@ mod tests {
     type PendingMap =
         std::sync::Arc<tokio::sync::Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>;
 
-    /// Helper: create channels for testing dispatch_frame.
     fn test_channels() -> (
         PendingMap,
         mpsc::Sender<LspEvent>,
@@ -412,7 +401,6 @@ mod tests {
     async fn test_dispatch_response_routes_to_pending() {
         let (pending, event_tx, _event_rx, writer_tx, _writer_rx) = test_channels();
 
-        // Register a pending request with id=1
         let (tx, rx) = oneshot::channel();
         pending.lock().await.insert(1, tx);
 
@@ -426,7 +414,6 @@ mod tests {
 
         let response = rx.await.unwrap();
         assert!(response["result"]["capabilities"].is_object());
-        // Pending map should be empty
         assert!(pending.lock().await.is_empty());
     }
 
@@ -476,7 +463,6 @@ mod tests {
     async fn test_dispatch_server_request_sends_method_not_found() {
         let (pending, event_tx, _event_rx, writer_tx, mut writer_rx) = test_channels();
 
-        // Server→client request (has both id and method)
         let frame = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 5,
@@ -486,7 +472,6 @@ mod tests {
 
         RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
 
-        // Should have sent a "method not found" error response
         let cmd = writer_rx.try_recv().unwrap();
         match cmd {
             WriterCommand::Send(response) => {
@@ -511,9 +496,7 @@ mod tests {
 
         RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
 
-        // No events should be emitted
         assert!(event_rx.try_recv().is_err());
-        // No writes should occur
         assert!(writer_rx.try_recv().is_err());
     }
 
@@ -540,14 +523,12 @@ mod tests {
     async fn test_dispatch_response_for_unknown_id_ignored() {
         let (pending, event_tx, _event_rx, writer_tx, _writer_rx) = test_channels();
 
-        // No pending request for id=999
         let frame = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 999,
             "result": {}
         });
 
-        // Should not panic
         RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
     }
 }

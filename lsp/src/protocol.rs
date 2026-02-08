@@ -245,7 +245,6 @@ mod tests {
         });
         let params: PublishDiagnosticsParams = serde_json::from_value(json).unwrap();
         let forge_diag = params.diagnostics[0].to_forge_diagnostic();
-        // Missing severity defaults to Warning
         assert_eq!(forge_diag.severity(), DiagnosticSeverity::Warning);
     }
 
@@ -262,7 +261,6 @@ mod tests {
 
     #[test]
     fn test_path_to_file_uri_and_back() {
-        // Use an absolute path appropriate for the platform
         #[cfg(windows)]
         let path = std::path::PathBuf::from(r"C:\Users\test\src\main.rs");
         #[cfg(not(windows))]

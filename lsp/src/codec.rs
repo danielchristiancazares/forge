@@ -51,7 +51,6 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
 
             if bytes_read == 0 {
                 // EOF — only valid if we haven't started reading headers at all.
-                //
                 // Note: `content_length == None` doesn't imply "no headers read"
                 // (e.g. EOF after reading only Content-Type should be an error).
                 if !saw_any_header_bytes {
@@ -63,7 +62,6 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
 
             let trimmed = line.trim();
             if trimmed.is_empty() {
-                // Empty line = end of headers
                 break;
             }
 
@@ -127,12 +125,10 @@ mod tests {
             "params": { "uri": "file:///test.rs" }
         });
 
-        // Write
         let mut buf = Vec::new();
         let mut writer = FrameWriter::new(&mut buf);
         writer.write_frame(&msg).await.unwrap();
 
-        // Read back
         let mut reader = FrameReader::new(buf.as_slice());
         let result = reader.read_frame().await.unwrap().unwrap();
         assert_eq!(result, msg);
@@ -208,7 +204,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_eof_mid_body() {
-        // Content-Length says 100, but only 5 bytes follow
         let buf: &[u8] = b"Content-Length: 100\r\n\r\nhello";
         let mut reader = FrameReader::new(buf);
         assert!(reader.read_frame().await.is_err());
@@ -230,7 +225,7 @@ mod tests {
         // Content-Length counts bytes, not characters.
         // "é" is 2 bytes in UTF-8, so {"k":"é"} is 10 bytes.
         let body = r#"{"k":"é"}"#;
-        assert_eq!(body.len(), 10); // 2-byte char
+        assert_eq!(body.len(), 10);
         let frame = format!("Content-Length: {}\r\n\r\n{body}", body.len());
 
         let mut reader = FrameReader::new(frame.as_bytes());
