@@ -8,33 +8,33 @@ Context Infinity is Forge's system for managing unlimited conversation context w
 <!-- toc:start -->
 | Lines | Section |
 | --- | --- |
-| 7-38 | LLM-TOC |
-| 40-55 | Overview |
-| 57-65 | Design Principles |
+| 7-39 | LLM-TOC |
+| 40-56 | Overview |
+| 57-66 | Design Principles |
 | 67-100 | Architecture |
-| 101-171 | Core Concepts |
-| 173-236 | Token Budget Calculation |
-| 238-327 | Context Building Algorithm |
-| 329-360 | When Distillation Triggers |
-| 362-420 | Distillation Process |
-| 422-450 | Model Switching (Context Adaptation) |
-| 452-582 | Stream Journal (Crash Recovery) |
-| 584-628 | Token Counting |
-| 630-656 | Usage Statistics |
-| 658-687 | Persistence |
-| 689-703 | Configuration |
-| 705-726 | Type-Driven Design |
-| 728-754 | Extension Points |
-| 756-772 | Limitations |
-| 774-870 | The Librarian |
-| 872-930 | Fact Store |
-| 932-974 | Atomic Write Helpers |
-| 976-1766 | Public API |
-| 1768-1867 | Complete Workflow Example |
-| 1869-1885 | Type Relationships |
-| 1887-1892 | Error Handling |
-| 1894-1905 | Dependencies |
-| 1907-1915 | Testing |
+| 101-172 | Core Concepts |
+| 173-237 | Token Budget Calculation |
+| 238-328 | Context Building Algorithm |
+| 329-361 | When Distillation Triggers |
+| 362-421 | Distillation Process |
+| 422-451 | Model Switching (Context Adaptation) |
+| 452-583 | Stream Journal (Crash Recovery) |
+| 584-629 | Token Counting |
+| 630-657 | Usage Statistics |
+| 658-688 | Persistence |
+| 689-704 | Configuration |
+| 705-727 | Type-Driven Design |
+| 728-755 | Extension Points |
+| 756-773 | Limitations |
+| 774-871 | The Librarian |
+| 872-931 | Fact Store |
+| 932-975 | Atomic Write Helpers |
+| 976-1767 | Public API |
+| 1768-1868 | Complete Workflow Example |
+| 1869-1886 | Type Relationships |
+| 1887-1893 | Error Handling |
+| 1894-1906 | Dependencies |
+| 1907-1914 | Testing |
 <!-- toc:end -->
 
 ## Overview

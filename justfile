@@ -47,12 +47,12 @@ context:
 
 # Create source zip for GPT analysis (pre-generates CONTEXT.md, excludes build artifacts)
 [windows]
-zip: context
+zip: context digest fix toc-all
     Compress-Archive -Path (Get-ChildItem -Path . -Exclude 'target','docs','scripts','*.zip','lcov.info','coverage','sha256.txt' | Where-Object { -not $_.Name.StartsWith('.') }) -DestinationPath forge-source.zip -Force
     Get-FileHash -Algorithm SHA256 forge-source.zip | ForEach-Object { "{0}  {1}" -f $_.Hash, $_.Path } | Set-Content -NoNewline sha256.txt
 
 [unix]
-zip: context
+zip: context digest fix toc-all
     zip -r forge-source.zip . -x 'target/*' -x 'docs/*' -x 'scripts/*' -x '.*' -x '.*/*' -x '*.zip' -x 'lcov.info' -x 'coverage/*' -x 'sha256.txt'
     sha256sum forge-source.zip > sha256.txt || shasum -a 256 forge-source.zip > sha256.txt
 
