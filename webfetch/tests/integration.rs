@@ -822,3 +822,38 @@ async fn test_url_fragment_removed_from_final_url() {
         "Fragment should be removed from final_url"
     );
 }
+
+#[tokio::test]
+async fn test_http_upgraded_to_https() {
+    // With secure config (allow_insecure_overrides = false), an http:// URL
+    // should be upgraded to https://. We verify via a localhost URL which gets
+    // SSRF-blocked — the scheme was rewritten before validation runs.
+    let input = WebFetchInput::new("http://127.0.0.1/").expect("valid URL");
+    let config = test_config_secure();
+
+    let result = forge_webfetch::fetch(input, &config).await;
+
+    // Should be SSRF blocked (upgrade happened, then SSRF check ran)
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code, ErrorCode::SsrfBlocked);
+}
+
+#[tokio::test]
+async fn test_http_not_upgraded_when_insecure_overrides() {
+    // With insecure overrides enabled, http:// URLs should NOT be upgraded.
+    let html = simple_html("Test", "Content");
+    let server = setup_mock_server_with_robots(&html).await;
+
+    let input = WebFetchInput::new(server.uri()).expect("valid URL");
+    let config = test_config(); // allow_insecure_overrides = true
+
+    let output = forge_webfetch::fetch(input, &config)
+        .await
+        .expect("fetch should succeed");
+
+    // No upgrade note should appear
+    assert!(
+        !output.notes.contains(&Note::HttpUpgradedToHttps),
+        "http should not be upgraded when insecure overrides are enabled"
+    );
+}

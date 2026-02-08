@@ -28,7 +28,16 @@ pub async fn fetch(
 ) -> Result<WebFetchOutput, WebFetchError> {
     let mut notes = Vec::new();
     let resolved = ResolvedConfig::from_config(config)?;
-    let request = ResolvedRequest::from_input(input, &resolved);
+    let mut request = ResolvedRequest::from_input(input, &resolved);
+
+    // Upgrade http → https unless insecure overrides are enabled (testing)
+    if request.url.scheme() == "http" && !resolved.security.allow_insecure_overrides {
+        if request.url.port() == Some(80) {
+            let _ = request.url.set_port(None);
+        }
+        let _ = request.url.set_scheme("https");
+        notes.push(Note::HttpUpgradedToHttps);
+    }
 
     let max_chunk_tokens = request.max_chunk_tokens;
 

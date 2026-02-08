@@ -213,6 +213,8 @@ pub enum TruncationReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Note {
+    /// HTTP URL was automatically upgraded to HTTPS.
+    HttpUpgradedToHttps,
     /// Response served from cache.
     CacheHit,
     /// robots.txt unavailable but `fail_open=true`.
@@ -236,14 +238,15 @@ impl Note {
     #[must_use]
     pub fn order(&self) -> u8 {
         match self {
-            Note::CacheHit => 1,
-            Note::RobotsUnavailableFailOpen => 2,
-            Note::BrowserUnavailableUsedHttp => 3,
-            Note::BrowserDomTruncated => 4,
-            Note::BrowserBlockedNonGet => 5,
-            Note::CharsetFallback => 6,
-            Note::CacheWriteFailed => 7,
-            Note::ToolOutputLimit => 8,
+            Note::HttpUpgradedToHttps => 1,
+            Note::CacheHit => 2,
+            Note::RobotsUnavailableFailOpen => 3,
+            Note::BrowserUnavailableUsedHttp => 4,
+            Note::BrowserDomTruncated => 5,
+            Note::BrowserBlockedNonGet => 6,
+            Note::CharsetFallback => 7,
+            Note::CacheWriteFailed => 8,
+            Note::ToolOutputLimit => 9,
         }
     }
 }
