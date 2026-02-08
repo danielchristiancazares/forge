@@ -375,10 +375,20 @@ impl InsertMode<'_> {
 
         // Track user message in context manager (also adds to display)
         let msg_id = self.app.push_history_message(Message::user(content));
-        self.app.autosave_history(); // Persist user message immediately for crash durability
 
-        // Store pending message for potential rollback if stream fails with no content
+        // Store pending message for potential rollback if autosave or stream fails
         self.app.pending_user_message = Some((msg_id, raw_content));
+
+        // Persist user message immediately for crash durability.
+        // If persistence fails, rollback — streaming without a durable user
+        // message violates the crash-recovery invariant (IFA §11.1).
+        if !self.app.autosave_history() {
+            self.app.rollback_pending_user_message();
+            self.app.push_notification(
+                "Cannot send: history save failed. Check disk space/permissions.",
+            );
+            return None;
+        }
 
         self.app.scroll_to_bottom();
         self.app.tool_iterations = 0;

@@ -86,6 +86,43 @@ impl FromSql for StepId {
     }
 }
 
+/// Typed error for `StreamJournal::begin_session`.
+///
+/// Each variant encodes a distinct precondition failure so callers can
+/// match on the cause instead of inspecting error strings (IFA §2.1, §9).
+#[derive(Debug)]
+pub enum BeginSessionError {
+    /// A previous stream is still active in this process.
+    AlreadyStreaming(StepId),
+    /// An unsealed or uncommitted step exists and must be recovered first.
+    RecoverableStepExists(StepId),
+    /// Database or I/O error during the begin operation.
+    Db(anyhow::Error),
+}
+
+impl std::fmt::Display for BeginSessionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyStreaming(id) => {
+                write!(f, "Cannot begin session: already streaming step {id}")
+            }
+            Self::RecoverableStepExists(id) => {
+                write!(f, "Cannot begin session: recoverable step {id} exists")
+            }
+            Self::Db(e) => write!(f, "Cannot begin session: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for BeginSessionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Db(e) => Some(e.as_ref()),
+            _ => None,
+        }
+    }
+}
+
 /// A single delta event in a streaming response.
 ///
 /// This makes invalid deltas unrepresentable (e.g., a "done" event with text content).
@@ -420,18 +457,23 @@ impl StreamJournal {
     ///
     /// # Errors
     ///
-    /// Returns an error if a session is already active, uncommitted entries exist,
-    /// or a new step ID cannot be allocated.
-    pub fn begin_session(&mut self, model_name: impl Into<String>) -> Result<ActiveJournal> {
+    /// Returns a typed `BeginSessionError` if a session is already active,
+    /// a recoverable step exists, or DB operations fail.
+    pub fn begin_session(
+        &mut self,
+        model_name: impl Into<String>,
+    ) -> std::result::Result<ActiveJournal, BeginSessionError> {
         if let Some(step_id) = self.active_step {
-            bail!("Cannot begin session: already streaming step {step_id}");
+            return Err(BeginSessionError::AlreadyStreaming(step_id));
         }
         // Check for any recoverable steps (unsealed OR uncommitted)
-        if let Some(step_id) = self.latest_recoverable_step_id()? {
-            bail!("Cannot begin session: recoverable step {step_id} exists");
+        match self.latest_recoverable_step_id() {
+            Ok(Some(step_id)) => return Err(BeginSessionError::RecoverableStepExists(step_id)),
+            Ok(None) => {}
+            Err(e) => return Err(BeginSessionError::Db(e)),
         }
 
-        let step_id = self.next_step_id()?;
+        let step_id = self.next_step_id().map_err(BeginSessionError::Db)?;
         let model_name = model_name.into();
 
         // Record step metadata for crash recovery
@@ -442,7 +484,8 @@ impl StreamJournal {
                  VALUES (?1, ?2, 0, ?3)",
                 params![step_id, &model_name, created_at],
             )
-            .context("Failed to insert step metadata")?;
+            .context("Failed to insert step metadata")
+            .map_err(BeginSessionError::Db)?;
 
         self.active_step = Some(step_id);
         Ok(ActiveJournal {
@@ -1137,7 +1180,7 @@ mod tests {
     }
 
     #[test]
-    fn test_begin_session_fails_when_unsealed_exists() {
+    fn test_begin_session_returns_recoverable_step_exists_when_unsealed() {
         let db_path = unique_db_path("begin_session_unsealed");
         let _ = fs::remove_file(&db_path);
 
@@ -1150,7 +1193,12 @@ mod tests {
 
         let mut journal = StreamJournal::open(&db_path).unwrap();
         let result = journal.begin_session("test-model");
-        assert!(result.is_err());
+        match result {
+            Err(BeginSessionError::RecoverableStepExists(step_id)) => {
+                assert_eq!(step_id, StepId::new(1));
+            }
+            other => panic!("Expected RecoverableStepExists, got {other:?}"),
+        }
 
         let _ = fs::remove_file(&db_path);
     }

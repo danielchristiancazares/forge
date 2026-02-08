@@ -189,11 +189,13 @@ impl App {
             return;
         }
 
-        // Determine journal status BEFORE constructing ToolBatch (IFA §12.3)
+        // Determine journal status BEFORE constructing ToolBatch (IFA §10.1).
+        // Persisted(id) is the capability proof that crash recovery is possible.
+        // Without it, tool execution is blocked — fail closed.
         let journal_status = if let Some(id) = tool_batch_id {
             // Try to update existing batch
             match self.tool_journal.update_assistant_text(id, &assistant_text) {
-                Ok(()) => JournalStatus::Persisted(id),
+                Ok(()) => JournalStatus::new(id),
                 Err(e) => {
                     tracing::warn!("Tool journal update failed: {e}");
                     self.push_notification(format!("Tool journal error: {e}"));
@@ -203,11 +205,14 @@ impl App {
                         &assistant_text,
                         &tool_calls,
                     ) {
-                        Ok(new_id) => JournalStatus::Persisted(new_id),
+                        Ok(new_id) => JournalStatus::new(new_id),
                         Err(e2) => {
-                            tracing::warn!("Tool journal begin failed: {e2}");
-                            self.push_notification(format!("Tool journal error: {e2}"));
-                            JournalStatus::Failed
+                            tracing::warn!("Tool journal begin failed after retry: {e2}");
+                            self.push_notification(
+                                "Tool execution blocked: cannot persist tool journal for crash recovery. Check disk space/permissions."
+                            );
+                            self.finish_turn(turn);
+                            return;
                         }
                     }
                 }
@@ -218,11 +223,14 @@ impl App {
                 .tool_journal
                 .begin_batch(model.as_str(), &assistant_text, &tool_calls)
             {
-                Ok(id) => JournalStatus::Persisted(id),
+                Ok(id) => JournalStatus::new(id),
                 Err(e) => {
                     tracing::warn!("Tool journal begin failed: {e}");
-                    self.push_notification(format!("Tool journal error: {e}"));
-                    JournalStatus::Failed
+                    self.push_notification(
+                        "Tool execution blocked: cannot persist tool journal for crash recovery. Check disk space/permissions."
+                    );
+                    self.finish_turn(turn);
+                    return;
                 }
             }
         };
@@ -261,7 +269,8 @@ impl App {
                     "Max tool iterations reached",
                 )
             }));
-            if let JournalStatus::Persisted(id) = journal_status {
+            {
+                let id = journal_status.batch_id();
                 for result in &results {
                     if let Err(e) = self.tool_journal.record_result(id, result) {
                         tracing::warn!(
@@ -287,7 +296,8 @@ impl App {
         self.tool_iterations = next_iteration;
 
         let plan = self.plan_tool_calls(&tool_calls, pre_resolved);
-        if let JournalStatus::Persisted(id) = journal_status {
+        {
+            let id = journal_status.batch_id();
             for result in &plan.pre_resolved {
                 if let Err(e) = self.tool_journal.record_result(id, result) {
                     tracing::warn!(
@@ -761,8 +771,9 @@ impl App {
 
                     // Record result to journal
                     let mut batch = batch;
-                    if let JournalStatus::Persisted(id) = &batch.journal_status
-                        && let Err(e) = self.tool_journal.record_result(*id, &result)
+                    if let Err(e) = self
+                        .tool_journal
+                        .record_result(batch.journal_status.batch_id(), &result)
                     {
                         tracing::warn!(
                             "Failed to journal tool result for {}: {e}",
@@ -830,8 +841,9 @@ impl App {
                 continue;
             }
             let result = ToolResult::error(call.id.clone(), call.name.clone(), "Cancelled by user");
-            if let JournalStatus::Persisted(id) = &journal_status
-                && let Err(e) = self.tool_journal.record_result(*id, &result)
+            if let Err(e) = self
+                .tool_journal
+                .record_result(journal_status.batch_id(), &result)
             {
                 tracing::warn!(
                     "Failed to journal cancelled result for {}: {e}",
@@ -929,9 +941,8 @@ impl App {
         let mut tool_cleanup_failed = false;
         if autosave_succeeded {
             self.finalize_journal_commit(step_id);
-            if let JournalStatus::Persisted(id) = journal_status
-                && let Err(e) = self.tool_journal.commit_batch(id)
-            {
+            let id = journal_status.batch_id();
+            if let Err(e) = self.tool_journal.commit_batch(id) {
                 tracing::warn!("Failed to commit tool batch {id}: {e}");
                 tool_cleanup_failed = true;
 
@@ -1080,9 +1091,10 @@ impl App {
             });
         }
 
-        if let JournalStatus::Persisted(id) = &batch.journal_status {
+        {
+            let id = batch.journal_status.batch_id();
             for result in &denied_results {
-                if let Err(e) = self.tool_journal.record_result(*id, result) {
+                if let Err(e) = self.tool_journal.record_result(id, result) {
                     tracing::warn!(
                         "Failed to journal denied result for {}: {e}",
                         result.tool_call_id
@@ -1195,7 +1207,7 @@ impl App {
             results,
             model,
             step_id,
-            JournalStatus::Persisted(batch.batch_id),
+            JournalStatus::new(batch.batch_id),
             auto_resume,
             TurnContext::new_for_recovery(),
             None,

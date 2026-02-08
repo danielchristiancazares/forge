@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 const STREAM_EVENT_CHANNEL_CAPACITY: usize = 1024;
 const REDACTED_THINKING_PLACEHOLDER: &str = "[Thinking hidden]";
 
-use forge_context::TokenCounter;
+use forge_context::{BeginSessionError, TokenCounter};
 use forge_types::{ModelName, Provider, ToolDefinition};
 
 use super::{
@@ -149,33 +149,28 @@ impl super::App {
 
         let journal = match self.stream_journal.begin_session(config.model().as_str()) {
             Ok(session) => session,
-            Err(e) => {
-                let err = e.to_string();
-
-                // Safety net: if a recoverable step exists, attempt recovery without
-                // corrupting chronology. We must rollback the pending user message
-                // first, otherwise recovered assistant/tool output would be appended
-                // after this prompt.
-                if err.contains("recoverable step") {
-                    self.rollback_pending_user_message();
-                    let recovered = self.check_crash_recovery();
-                    if recovered.is_some() || matches!(self.state, OperationState::ToolRecovery(_))
-                    {
-                        self.push_notification(
-                            "Recovered unfinished work. Review it, then press Enter to retry.",
-                        );
-                        self.finish_turn(turn);
-                        return;
-                    }
-                    // Recovery didn't find anything actionable; fall back to normal error path.
-                    self.push_notification(format!(
-                        "Cannot start stream: journal unavailable ({err})"
-                    ));
+            Err(BeginSessionError::RecoverableStepExists(_step_id)) => {
+                // A recoverable step exists — attempt recovery without corrupting
+                // chronology.  Rollback the pending user message first, otherwise
+                // recovered assistant/tool output would be appended after this prompt.
+                self.rollback_pending_user_message();
+                let recovered = self.check_crash_recovery();
+                if recovered.is_some() || matches!(self.state, OperationState::ToolRecovery(_)) {
+                    self.push_notification(
+                        "Recovered unfinished work. Review it, then press Enter to retry.",
+                    );
                     self.finish_turn(turn);
                     return;
                 }
-
-                self.push_notification(format!("Cannot start stream: journal unavailable ({err})"));
+                // Recovery didn't find anything actionable; fall back to normal error path.
+                self.push_notification(
+                    "Cannot start stream: recoverable step exists but recovery found nothing actionable",
+                );
+                self.finish_turn(turn);
+                return;
+            }
+            Err(e @ (BeginSessionError::AlreadyStreaming(_) | BeginSessionError::Db(_))) => {
+                self.push_notification(format!("Cannot start stream: journal unavailable ({e})"));
                 // Rollback the pending user message so user can retry
                 self.rollback_pending_user_message();
                 self.finish_turn(turn);

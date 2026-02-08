@@ -33,18 +33,22 @@ impl DataDir {
 
 use crate::ActiveJournal;
 
-/// Journal persistence status - determined BEFORE ToolBatch construction.
+/// Proof that the tool journal batch was persisted to disk.
 ///
-/// # IFA Conformance
-/// - Each distinct state has its own variant
-/// - No "pending" state - journaling is resolved before ToolBatch exists
-/// - Explicit matching required - no convenience Option accessor
+/// Constructed only when `ToolJournal::begin_batch` or `update_assistant_text`
+/// succeeds.  `handle_tool_calls` returns early (fail-closed) when persistence
+/// fails, so this type is unreachable without a durable journal entry (IFA §10.1).
 #[derive(Debug, Clone)]
-pub(crate) enum JournalStatus {
-    /// Successfully persisted with this batch ID.
-    Persisted(ToolBatchId),
-    /// Journaling failed (error already logged at construction time).
-    Failed,
+pub(crate) struct JournalStatus(ToolBatchId);
+
+impl JournalStatus {
+    pub(crate) fn new(id: ToolBatchId) -> Self {
+        Self(id)
+    }
+
+    pub(crate) fn batch_id(&self) -> ToolBatchId {
+        self.0
+    }
 }
 
 /// Active streaming state with typestate encoding for journal status.

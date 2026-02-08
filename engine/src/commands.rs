@@ -3,8 +3,8 @@
 use super::{
     ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, SessionChangeLog,
     state::{
-        ActiveStream, DistillationStart, JournalStatus, OperationState, ToolLoopPhase,
-        ToolLoopState, ToolRecoveryDecision,
+        ActiveStream, DistillationStart, OperationState, ToolLoopPhase, ToolLoopState,
+        ToolRecoveryDecision,
     },
 };
 
@@ -339,8 +339,9 @@ impl super::App {
                         if let ToolLoopPhase::Executing(exec) = &phase {
                             exec.spawned.abort();
                         }
-                        if let JournalStatus::Persisted(id) = batch.journal_status
-                            && let Err(e) = self.tool_journal.discard_batch(id)
+                        if let Err(e) = self
+                            .tool_journal
+                            .discard_batch(batch.journal_status.batch_id())
                         {
                             tracing::warn!("Failed to discard tool batch on clear: {e}");
                         }

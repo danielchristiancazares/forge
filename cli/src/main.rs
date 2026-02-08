@@ -189,11 +189,13 @@ async fn main() -> Result<()> {
 
     let mut app = App::new(assets::system_prompts())?;
 
-    {
+    let run_result = {
         let mut session = TerminalSession::new()?;
-        run_app(&mut session.terminal, &mut app).await?;
-    }
+        run_app(&mut session.terminal, &mut app).await
+        // TerminalSession drops here, restoring the terminal
+    };
 
+    // Cleanup is unconditional — run_app errors must not skip persistence.
     app.shutdown_lsp().await;
 
     if let Err(e) = app.save_history() {
@@ -204,7 +206,7 @@ async fn main() -> Result<()> {
         eprintln!("Failed to save session: {e}");
     }
 
-    Ok(())
+    run_result
 }
 
 const FRAME_DURATION: Duration = Duration::from_millis(8);

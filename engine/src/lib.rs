@@ -42,12 +42,12 @@ pub use ui::{
 };
 
 pub use forge_context::{
-    ActiveJournal, ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus,
-    DistillationNeeded, DistillationScope, ExtractionResult, Fact, FactType, FullHistory,
-    Librarian, MessageId, ModelLimits, ModelLimitsSource, ModelRegistry, PendingDistillation,
-    PreparedContext, RecoveredStream, RecoveredToolBatch, RetrievalResult, StreamJournal,
-    TokenCounter, ToolBatchId, ToolJournal, distillation_model, generate_distillation,
-    retrieve_relevant,
+    ActiveJournal, BeginSessionError, ContextAdaptation, ContextBuildError, ContextManager,
+    ContextUsageStatus, DistillationNeeded, DistillationScope, ExtractionResult, Fact, FactType,
+    FullHistory, Librarian, MessageId, ModelLimits, ModelLimitsSource, ModelRegistry,
+    PendingDistillation, PreparedContext, RecoveredStream, RecoveredToolBatch, RetrievalResult,
+    StreamJournal, TokenCounter, ToolBatchId, ToolJournal, distillation_model,
+    generate_distillation, retrieve_relevant,
 };
 pub use forge_providers::{self, ApiConfig, gemini::GeminiCache, gemini::GeminiCacheConfig};
 pub use forge_types::{

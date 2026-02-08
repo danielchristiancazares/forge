@@ -46,7 +46,9 @@ pub use manager::{
     DistillationScope, PendingDistillation, PreparedContext,
 };
 pub use model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry, ResolvedModelLimits};
-pub use stream_journal::{ActiveJournal, JournalStats, RecoveredStream, StepId, StreamJournal};
+pub use stream_journal::{
+    ActiveJournal, BeginSessionError, JournalStats, RecoveredStream, StepId, StreamJournal,
+};
 pub use token_counter::TokenCounter;
 pub use tool_journal::{CorruptedToolArgs, RecoveredToolBatch, ToolBatchId, ToolJournal};
 pub use working_context::{ContextSegment, ContextUsage, WorkingContext};
