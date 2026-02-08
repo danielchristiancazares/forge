@@ -19,7 +19,7 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     pub async fn read_frame(&mut self) -> Result<Option<serde_json::Value>> {
         let content_length = match self.read_headers().await? {
             Some(len) => len,
-            None => return Ok(None), // EOF
+            None => return Ok(None),
         };
 
         if content_length > MAX_FRAME_BYTES {
@@ -76,7 +76,6 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
                     content_length = Some(len);
                 }
             }
-            // Ignore other headers (e.g. Content-Type)
         }
 
         match content_length {

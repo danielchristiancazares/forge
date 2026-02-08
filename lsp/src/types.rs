@@ -315,8 +315,6 @@ mod tests {
         ForgeDiagnostic::new(severity, msg.to_string(), 10, 5, "rustc".to_string())
     }
 
-    // ── DiagnosticSeverity ─────────────────────────────────────────────
-
     #[test]
     fn test_from_lsp_known_values() {
         assert_eq!(
@@ -359,8 +357,6 @@ mod tests {
         assert_eq!(DiagnosticSeverity::Hint.label(), "hint");
     }
 
-    // ── ForgeDiagnostic ────────────────────────────────────────────────
-
     #[test]
     fn test_display_with_path() {
         let diag = ForgeDiagnostic::new(
@@ -393,8 +389,6 @@ mod tests {
             "lib.rs:1:1: warning: [unknown] unused variable"
         );
     }
-
-    // ── DiagnosticsSnapshot ────────────────────────────────────────────
 
     #[test]
     fn test_snapshot_default_is_empty() {
@@ -467,8 +461,6 @@ mod tests {
         assert_eq!(snap.status_string(), "E:0 W:0");
         assert!(!snap.is_empty());
     }
-
-    // ── LspConfig deserialization ──────────────────────────────────────
 
     #[test]
     fn test_lsp_config_defaults() {

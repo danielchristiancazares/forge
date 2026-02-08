@@ -31,7 +31,6 @@ impl DiagnosticsStore {
             .map(|(path, items)| (path.clone(), items.clone()))
             .collect();
 
-        // Sort: files with errors first, then alphabetically
         files.sort_by(|a, b| {
             let a_has_errors = a.1.iter().any(|d| d.severity().is_error());
             let b_has_errors = b.1.iter().any(|d| d.severity().is_error());

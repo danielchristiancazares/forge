@@ -12,8 +12,6 @@ pub(crate) struct PathToUriError {
     path: PathBuf,
 }
 
-// ── JSON-RPC framing ──────────────────────────────────────────────────
-
 #[derive(Debug, Serialize)]
 pub(crate) struct Request {
     pub jsonrpc: &'static str,
@@ -52,8 +50,6 @@ impl Notification {
     }
 }
 
-// ── Initialize ────────────────────────────────────────────────────────
-
 pub(crate) fn initialize_params(root_uri: &str) -> serde_json::Value {
     serde_json::json!({
         "processId": std::process::id(),
@@ -78,8 +74,6 @@ pub(crate) fn initialize_params(root_uri: &str) -> serde_json::Value {
     })
 }
 
-// ── textDocument/didOpen ──────────────────────────────────────────────
-
 pub(crate) fn did_open_params(
     uri: &str,
     language_id: &str,
@@ -96,8 +90,6 @@ pub(crate) fn did_open_params(
     })
 }
 
-// ── textDocument/didChange ───────────────────────────────────────────
-
 pub(crate) fn did_change_params(uri: &str, version: i32, text: &str) -> serde_json::Value {
     serde_json::json!({
         "textDocument": {
@@ -109,8 +101,6 @@ pub(crate) fn did_change_params(uri: &str, version: i32, text: &str) -> serde_js
         }]
     })
 }
-
-// ── textDocument/publishDiagnostics ──────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct PublishDiagnosticsParams {
@@ -152,8 +142,6 @@ impl LspDiagnostic {
         )
     }
 }
-
-// ── URI helpers ──────────────────────────────────────────────────────
 
 pub(crate) fn path_to_file_uri(path: &Path) -> Result<url::Url, PathToUriError> {
     url::Url::from_file_path(path).map_err(|()| PathToUriError {

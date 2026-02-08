@@ -74,10 +74,8 @@ pub(crate) struct RunningServer {
     opened_docs: HashSet<String>,
     /// Per-document version counter for didChange.
     doc_versions: HashMap<String, i32>,
-    /// Background reader task (kept alive for the server's lifetime).
     #[allow(dead_code)]
     reader_handle: tokio::task::JoinHandle<()>,
-    /// Background writer task (kept alive for the server's lifetime).
     #[allow(dead_code)]
     writer_handle: tokio::task::JoinHandle<()>,
 }
