@@ -95,7 +95,8 @@ fn test_app() -> App {
         turn_usage: None,
         last_turn_usage: None,
         notification_queue: crate::notifications::NotificationQueue::new(),
-        lsp: None,
+        lsp_config: None,
+        lsp: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         lsp_snapshot: forge_lsp::DiagnosticsSnapshot::default(),
         pending_diag_check: None,
     }

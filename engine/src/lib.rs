@@ -511,8 +511,11 @@ pub struct App {
     last_turn_usage: Option<TurnUsage>,
     /// Queue of pending system notifications to inject into next API request.
     notification_queue: notifications::NotificationQueue,
-    /// LSP client manager for language server diagnostics.
-    lsp: Option<std::sync::Arc<tokio::sync::Mutex<forge_lsp::LspManager>>>,
+    /// LSP config, consumed on first start. `None` once started or if LSP is disabled.
+    lsp_config: Option<forge_lsp::LspConfig>,
+    /// LSP client manager. Populated lazily on first tool batch via `LspManager::start()`.
+    /// `Arc<Mutex<Option<>>>` so the spawned startup task can populate it.
+    lsp: std::sync::Arc<tokio::sync::Mutex<Option<forge_lsp::LspManager>>>,
     /// Cached diagnostics snapshot for UI display and agent feedback.
     lsp_snapshot: forge_lsp::DiagnosticsSnapshot,
     /// Pending diagnostics check: edited files + deadline for deferred error injection.

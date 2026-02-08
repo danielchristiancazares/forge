@@ -15,11 +15,10 @@
 //! # Usage
 //!
 //! The engine:
-//! 1. Constructs `LspManager::new(config)` at init
-//! 2. Calls `ensure_started(workspace_root)` to spawn servers
-//! 3. Calls `on_file_changed(path, text)` after tool batches modify files
-//! 4. Calls `poll_events(budget)` each tick to drain diagnostics
-//! 5. Reads `snapshot()` for UI display and agent feedback
+//! 1. Calls `LspManager::start(config, workspace_root)` to spawn servers
+//! 2. Calls `on_file_changed(path, text)` after tool batches modify files
+//! 3. Calls `poll_events(budget)` each tick to drain diagnostics
+//! 4. Reads `snapshot()` for UI display and agent feedback
 
 // Pedantic lint configuration
 #![allow(clippy::missing_errors_doc)]
@@ -36,6 +35,6 @@ mod manager;
 
 pub use manager::LspManager;
 pub use types::{
-    DiagnosticSeverity, DiagnosticsSnapshot, ForgeDiagnostic, LspConfig, LspEvent, LspState,
-    ServerConfig,
+    DiagnosticSeverity, DiagnosticsSnapshot, ForgeDiagnostic, LspConfig, LspEvent, ServerConfig,
+    ServerStopReason,
 };

@@ -8,33 +8,114 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Configuration for the LSP client subsystem.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct LspConfig {
-    /// Whether the LSP client is enabled. Default: false.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Per-language server configurations, keyed by name (e.g. "rust").
-    #[serde(default)]
-    pub servers: HashMap<String, ServerConfig>,
+/// Error constructing a [`ServerConfig`] from raw deserialization data.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ServerConfigError {
+    #[error("server command must not be empty")]
+    EmptyCommand,
+    #[error("language_id must not be empty")]
+    EmptyLanguageId,
 }
 
-/// Configuration for a single language server.
+/// Raw deserialization target for [`ServerConfig`].
+/// Boundary wire format — validated via `TryFrom` before reaching core.
+#[derive(Deserialize)]
+struct RawServerConfig {
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    language_id: String,
+    #[serde(default)]
+    file_extensions: Vec<String>,
+    #[serde(default)]
+    root_markers: Vec<String>,
+}
+
+/// Configuration for the LSP client subsystem.
+///
+/// Private fields; accessors expose read-only views.
+/// `enabled` is a behavioural flag (passes §14.2 memory-layout test:
+/// changing it does not invalidate any field).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LspConfig {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    servers: HashMap<String, ServerConfig>,
+}
+
+impl LspConfig {
+    #[must_use]
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    #[must_use]
+    pub fn servers(&self) -> &HashMap<String, ServerConfig> {
+        &self.servers
+    }
+}
+
+/// Validated language server configuration.
+///
+/// Private fields; invariants enforced at deserialization boundary
+/// via `#[serde(try_from)]` (Authority Boundary).
+/// Empty `command` or `language_id` are structurally rejected.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "RawServerConfig")]
 pub struct ServerConfig {
-    /// Executable command (e.g. "rust-analyzer").
-    pub command: String,
-    /// Arguments to pass to the command.
-    #[serde(default)]
-    pub args: Vec<String>,
-    /// LSP language identifier (e.g. "rust", "python").
-    pub language_id: String,
-    /// File extensions this server handles (e.g. `["rs"]`).
-    #[serde(default)]
-    pub file_extensions: Vec<String>,
-    /// Files that indicate a workspace root (e.g. `["Cargo.toml"]`).
-    #[serde(default)]
-    pub root_markers: Vec<String>,
+    command: String,
+    args: Vec<String>,
+    language_id: String,
+    file_extensions: Vec<String>,
+    root_markers: Vec<String>,
+}
+
+impl TryFrom<RawServerConfig> for ServerConfig {
+    type Error = ServerConfigError;
+
+    fn try_from(raw: RawServerConfig) -> Result<Self, Self::Error> {
+        if raw.command.trim().is_empty() {
+            return Err(ServerConfigError::EmptyCommand);
+        }
+        if raw.language_id.trim().is_empty() {
+            return Err(ServerConfigError::EmptyLanguageId);
+        }
+        Ok(Self {
+            command: raw.command,
+            args: raw.args,
+            language_id: raw.language_id,
+            file_extensions: raw.file_extensions,
+            root_markers: raw.root_markers,
+        })
+    }
+}
+
+impl ServerConfig {
+    #[must_use]
+    pub fn command(&self) -> &str {
+        &self.command
+    }
+
+    #[must_use]
+    pub fn args(&self) -> &[String] {
+        &self.args
+    }
+
+    #[must_use]
+    pub fn language_id(&self) -> &str {
+        &self.language_id
+    }
+
+    #[must_use]
+    pub fn file_extensions(&self) -> &[String] {
+        &self.file_extensions
+    }
+
+    #[must_use]
+    pub fn root_markers(&self) -> &[String] {
+        &self.root_markers
+    }
 }
 
 /// Severity level for a diagnostic.
@@ -161,25 +242,32 @@ impl ForgeDiagnostic {
     }
 }
 
+/// Reason a language server stopped running.
+#[derive(Debug, Clone)]
+pub enum ServerStopReason {
+    /// Clean shutdown (EOF on stdout).
+    Exited,
+    /// Crashed or encountered an I/O error.
+    Failed(String),
+}
+
 /// An event emitted by the LSP subsystem.
+///
+/// Events are verbs (transitions that occurred), not storable nouns.
+/// The manager reacts by changing which servers are in its map
+/// (state-as-location, IFA §9).
 #[derive(Debug)]
 pub enum LspEvent {
-    /// Server status changed.
-    Status { server: String, state: LspState },
+    /// Server stopped running. Manager removes it from the active map.
+    ServerStopped {
+        server: String,
+        reason: ServerStopReason,
+    },
     /// Diagnostics updated for a file.
     Diagnostics {
         path: PathBuf,
         items: Vec<ForgeDiagnostic>,
     },
-}
-
-/// State of a language server.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LspState {
-    Starting,
-    Running,
-    Stopped,
-    Failed(String),
 }
 
 /// Immutable snapshot of all diagnostics, suitable for UI rendering.
@@ -425,8 +513,8 @@ mod tests {
     #[test]
     fn test_lsp_config_defaults() {
         let config: LspConfig = serde_json::from_str("{}").unwrap();
-        assert!(!config.enabled);
-        assert!(config.servers.is_empty());
+        assert!(!config.enabled());
+        assert!(config.servers().is_empty());
     }
 
     #[test]
@@ -443,13 +531,43 @@ mod tests {
             }
         });
         let config: LspConfig = serde_json::from_value(json).unwrap();
-        assert!(config.enabled);
-        assert_eq!(config.servers.len(), 1);
-        let rust = &config.servers["rust"];
-        assert_eq!(rust.command, "rust-analyzer");
-        assert_eq!(rust.language_id, "rust");
-        assert_eq!(rust.file_extensions, vec!["rs"]);
-        assert_eq!(rust.root_markers, vec!["Cargo.toml"]);
-        assert!(rust.args.is_empty());
+        assert!(config.enabled());
+        assert_eq!(config.servers().len(), 1);
+        let rust = &config.servers()["rust"];
+        assert_eq!(rust.command(), "rust-analyzer");
+        assert_eq!(rust.language_id(), "rust");
+        assert_eq!(rust.file_extensions(), ["rs"]);
+        assert_eq!(rust.root_markers(), ["Cargo.toml"]);
+        assert!(rust.args().is_empty());
+    }
+
+    #[test]
+    fn test_server_config_rejects_empty_command() {
+        let json = serde_json::json!({
+            "command": "",
+            "language_id": "rust"
+        });
+        let result: Result<ServerConfig, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_server_config_rejects_whitespace_command() {
+        let json = serde_json::json!({
+            "command": "   ",
+            "language_id": "rust"
+        });
+        let result: Result<ServerConfig, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_server_config_rejects_empty_language_id() {
+        let json = serde_json::json!({
+            "command": "rust-analyzer",
+            "language_id": ""
+        });
+        let result: Result<ServerConfig, _> = serde_json::from_value(json);
+        assert!(result.is_err());
     }
 }

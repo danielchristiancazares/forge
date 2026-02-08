@@ -1,8 +1,12 @@
 //! Server handle — owns a child process and manages the LSP lifecycle.
 //!
-//! Each [`ServerHandle`] manages one language server process (e.g. rust-analyzer).
-//! It spawns the process, performs the LSP initialize handshake, and runs a
-//! background reader task that routes responses and dispatches notifications.
+//! [`RunningServer`] is a proof object: its existence proves that a language
+//! server process was spawned and the LSP initialize handshake succeeded.
+//!
+//! - `start()` is the Authority Boundary — produces `RunningServer` or `Err`.
+//! - `shutdown()` consumes `self` — non-forking transition (IFA §3.3).
+//! - Async death is communicated via `LspEvent::ServerStopped` so the manager
+//!   can remove the server from its map (state-as-location, IFA §9).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -14,7 +18,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::codec::{FrameReader, FrameWriter};
 use crate::protocol::{self, Notification, PublishDiagnosticsParams, Request};
-use crate::types::{LspEvent, LspState};
+use crate::types::{LspEvent, ServerConfig, ServerStopReason};
 
 /// Timeout for the initialize handshake.
 const INIT_TIMEOUT_SECS: u64 = 30;
@@ -78,11 +82,14 @@ fn parse_incoming(frame: &serde_json::Value) -> Option<IncomingFrame> {
     }
 }
 
-/// Manages a single language server child process.
-pub(crate) struct ServerHandle {
-    pub name: String,
-    pub language_id: String,
-    pub state: LspState,
+/// A running language server process.
+///
+/// Existence is proof of successful initialization (Authority Boundary: `start()`).
+/// No `state` field — presence in the manager's `servers` map is the state
+/// (IFA §9: state-as-location).
+pub(crate) struct RunningServer {
+    name: String,
+    language_id: String,
     child: Child,
     writer_tx: mpsc::Sender<WriterCommand>,
     next_id: u64,
@@ -99,24 +106,25 @@ pub(crate) struct ServerHandle {
     writer_handle: tokio::task::JoinHandle<()>,
 }
 
-impl ServerHandle {
+impl RunningServer {
     /// Spawn a language server and perform the LSP initialize handshake.
+    ///
+    /// Returns a `RunningServer` (proof of successful init) or `Err`.
+    /// The `Starting` state is transient and internal to this function.
     pub async fn start(
         name: String,
-        command: &str,
-        args: &[String],
-        language_id: String,
+        config: &ServerConfig,
         workspace_root: &Path,
         event_tx: mpsc::Sender<LspEvent>,
     ) -> Result<Self> {
-        let mut child = Command::new(command)
-            .args(args)
+        let mut child = Command::new(config.command())
+            .args(config.args())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .with_context(|| format!("spawning {command}"))?;
+            .with_context(|| format!("spawning {}", config.command()))?;
 
         let stdout = child.stdout.take().context("no stdout from child")?;
         let stdin = child.stdin.take().context("no stdin from child")?;
@@ -142,7 +150,9 @@ impl ServerHandle {
             }
         });
 
-        // Reader task: routes responses by id, dispatches notifications
+        // Reader task: routes responses by id, dispatches notifications.
+        // On EOF/error, sends ServerStopped so the manager removes the server
+        // from its map (state-as-location).
         let reader_pending = pending.clone();
         let reader_event_tx = event_tx.clone();
         let reader_writer_tx = writer_tx.clone();
@@ -162,12 +172,11 @@ impl ServerHandle {
                         .await;
                     }
                     Ok(None) => {
-                        // EOF — server exited
                         tracing::info!("LSP server '{}' closed stdout", reader_name);
                         let _ = reader_event_tx
-                            .send(LspEvent::Status {
+                            .send(LspEvent::ServerStopped {
                                 server: reader_name.clone(),
-                                state: LspState::Stopped,
+                                reason: ServerStopReason::Exited,
                             })
                             .await;
                         break;
@@ -175,9 +184,9 @@ impl ServerHandle {
                     Err(e) => {
                         tracing::warn!("LSP reader error for '{}': {e}", reader_name);
                         let _ = reader_event_tx
-                            .send(LspEvent::Status {
+                            .send(LspEvent::ServerStopped {
                                 server: reader_name.clone(),
-                                state: LspState::Failed(e.to_string()),
+                                reason: ServerStopReason::Failed(e.to_string()),
                             })
                             .await;
                         break;
@@ -188,8 +197,7 @@ impl ServerHandle {
 
         let mut handle = Self {
             name,
-            language_id,
-            state: LspState::Starting,
+            language_id: config.language_id().to_string(),
             child,
             writer_tx,
             next_id: 1,
@@ -202,14 +210,6 @@ impl ServerHandle {
 
         // Perform initialize handshake
         handle.initialize(workspace_root).await?;
-        handle.state = LspState::Running;
-
-        let _ = event_tx
-            .send(LspEvent::Status {
-                server: handle.name.clone(),
-                state: LspState::Running,
-            })
-            .await;
 
         Ok(handle)
     }
@@ -384,6 +384,9 @@ impl ServerHandle {
     /// Automatically sends `didOpen` for the first notification of a URI,
     /// and `didChange` for subsequent notifications. Tracks per-document
     /// versions with monotonically increasing counters.
+    ///
+    /// No state guard — holding a `RunningServer` is proof of successful init.
+    /// Channel errors are returned as `Err` (honest I/O failure).
     pub async fn notify_file_changed(&mut self, uri: &str, text: &str) -> Result<()> {
         if self.opened_docs.contains(uri) {
             // Already opened — send didChange with incremented version
@@ -403,8 +406,8 @@ impl ServerHandle {
         }
     }
 
-    /// Gracefully shut down the server.
-    pub async fn shutdown(&mut self) {
+    /// Gracefully shut down the server. Consumes self (non-forking transition).
+    pub async fn shutdown(mut self) {
         // Try graceful shutdown
         if let Ok(response) = self.send_request("shutdown", None).await
             && response.get("error").is_none()
@@ -426,8 +429,6 @@ impl ServerHandle {
             tracing::debug!("LSP '{}' didn't exit in time, killing", self.name);
             let _ = self.child.kill().await;
         }
-
-        self.state = LspState::Stopped;
     }
 }
 
@@ -466,7 +467,7 @@ mod tests {
             "result": { "capabilities": {} }
         });
 
-        ServerHandle::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
+        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
 
         let response = rx.await.unwrap();
         assert!(response["result"]["capabilities"].is_object());
@@ -497,7 +498,7 @@ mod tests {
             }
         });
 
-        ServerHandle::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
+        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
 
         let event = event_rx.try_recv().unwrap();
         match event {
@@ -510,7 +511,7 @@ mod tests {
                 assert_eq!(items[0].message(), "expected `;`");
                 assert!(items[0].severity().is_error());
             }
-            other @ LspEvent::Status { .. } => {
+            other @ LspEvent::ServerStopped { .. } => {
                 panic!("expected Diagnostics event, got {other:?}")
             }
         }
@@ -528,7 +529,7 @@ mod tests {
             "params": {}
         });
 
-        ServerHandle::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
+        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
 
         // Should have sent a "method not found" error response
         let cmd = writer_rx.try_recv().unwrap();
@@ -553,7 +554,7 @@ mod tests {
             "params": { "type": 3, "message": "hello" }
         });
 
-        ServerHandle::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
+        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
 
         // No events should be emitted
         assert!(event_rx.try_recv().is_err());
@@ -574,7 +575,7 @@ mod tests {
             "error": { "code": -32600, "message": "invalid request" }
         });
 
-        ServerHandle::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
+        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
 
         let response = rx.await.unwrap();
         assert!(response["error"].is_object());
@@ -592,6 +593,6 @@ mod tests {
         });
 
         // Should not panic
-        ServerHandle::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
+        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
     }
 }

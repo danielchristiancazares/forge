@@ -26,16 +26,13 @@ impl App {
     ///
     /// Called from `tick()` each frame. Non-blocking.
     pub(crate) fn poll_lsp_events(&mut self) {
-        let Some(lsp) = self.lsp.as_ref() else { return };
-        let Ok(mut lsp) = lsp.try_lock() else {
-            // LSP manager is busy (e.g. starting servers) — avoid blocking the UI tick.
+        let Ok(mut guard) = self.lsp.try_lock() else {
             return;
         };
+        let Some(lsp) = guard.as_mut() else { return };
 
         let processed = lsp.poll_events(LSP_EVENT_BUDGET);
         if processed > 0 {
-            // `snapshot()` clones + sorts the full diagnostics store; avoid doing it
-            // every tick when no new events arrived.
             self.lsp_snapshot = lsp.snapshot();
         }
 
@@ -43,15 +40,9 @@ impl App {
         if let Some((paths, deadline)) = &mut self.pending_diag_check
             && Instant::now() >= *deadline
         {
-            // If servers aren't running yet, keep waiting. Startup can take a while.
             if !lsp.has_running_servers() {
-                // If startup already ran and we still have no running servers (e.g. all failed),
-                // don't keep retrying forever.
-                if lsp.has_started() {
-                    self.pending_diag_check = None;
-                    return;
-                }
-                *deadline = Instant::now() + Duration::from_millis(500);
+                // Manager exists but no servers survived — stop waiting.
+                self.pending_diag_check = None;
                 return;
             }
 
@@ -68,10 +59,11 @@ impl App {
         }
     }
 
-    /// Ensure LSP servers are started, then notify about file changes.
+    /// Notify LSP servers about file changes after a tool batch.
     ///
     /// Called from `finish_turn()` after tool execution completes.
-    /// Defers server startup to the first tool batch (lazy init).
+    /// On the first call, lazily constructs the `LspManager` via `start()`
+    /// which spawns all configured servers. Subsequent calls reuse the manager.
     /// Schedules a deferred diagnostics check after a delay.
     pub(crate) fn notify_lsp_file_changes(
         &mut self,
@@ -81,7 +73,6 @@ impl App {
         if created.is_empty() && modified.is_empty() {
             return;
         }
-        let Some(lsp) = self.lsp.clone() else { return };
 
         let mut paths = BTreeSet::new();
         paths.extend(created.iter().cloned());
@@ -91,21 +82,31 @@ impl App {
             return;
         }
 
-        // Lazy start: start servers + push file notifications asynchronously.
-        //
-        // Important: do not block the TUI loop waiting for server startup/initialize.
+        let lsp = self.lsp.clone();
+        // Consume config on first call — `take()` ensures single initialization.
+        let config = self.lsp_config.take();
+        let needs_start = config.is_some();
+
+        // If no config to start and no existing manager, LSP is disabled.
+        if !needs_start {
+            let has_mgr = self.lsp.try_lock().is_ok_and(|g| g.is_some());
+            if !has_mgr {
+                return;
+            }
+        }
+
         let workspace_root = self.tool_settings.sandbox.working_dir();
         let task_paths = notified_paths.clone();
+
         tokio::spawn(async move {
-            // Startup requires exclusive access; do it once, then release the lock so polling
-            // can continue while we read files.
-            {
-                let mut mgr = lsp.lock().await;
-                mgr.ensure_started(&workspace_root).await;
+            // Lazy start: construct manager on first call.
+            if let Some(config) = config {
+                let mgr = forge_lsp::LspManager::start(config, &workspace_root).await;
+                let mut guard = lsp.lock().await;
+                *guard = Some(mgr);
             }
 
             for path in task_paths {
-                // Skip very large files (> 1 MiB)
                 match tokio::fs::metadata(&path).await {
                     Ok(meta) if meta.len() > 1_048_576 => {
                         tracing::debug!(
@@ -129,12 +130,13 @@ impl App {
                     }
                 };
 
-                let mut mgr = lsp.lock().await;
-                mgr.on_file_changed(&path, &text).await;
+                let mut guard = lsp.lock().await;
+                if let Some(mgr) = guard.as_mut() {
+                    mgr.on_file_changed(&path, &text).await;
+                }
             }
         });
 
-        // Schedule deferred diagnostics check
         if !notified_paths.is_empty() {
             self.pending_diag_check = Some((notified_paths, Instant::now() + DIAG_CHECK_DELAY));
         }
@@ -150,15 +152,21 @@ impl App {
     #[must_use]
     pub fn lsp_active(&self) -> bool {
         self.lsp
-            .as_ref()
-            .and_then(|mgr| mgr.try_lock().ok())
-            .is_some_and(|mgr| mgr.has_running_servers())
+            .try_lock()
+            .ok()
+            .and_then(|guard| {
+                guard
+                    .as_ref()
+                    .map(forge_lsp::LspManager::has_running_servers)
+            })
+            .unwrap_or(false)
     }
 
     /// Gracefully shut down all LSP servers.
     pub async fn shutdown_lsp(&mut self) {
-        if let Some(lsp) = &self.lsp {
-            lsp.lock().await.shutdown().await;
+        let mut guard = self.lsp.lock().await;
+        if let Some(mgr) = guard.as_mut() {
+            mgr.shutdown().await;
         }
     }
 }
@@ -183,13 +191,13 @@ mod tests {
     use super::*;
 
     fn make_diag(msg: &str, line: u32) -> forge_lsp::ForgeDiagnostic {
-        forge_lsp::ForgeDiagnostic {
-            severity: forge_lsp::DiagnosticSeverity::Error,
-            message: msg.to_string(),
+        forge_lsp::ForgeDiagnostic::new(
+            forge_lsp::DiagnosticSeverity::Error,
+            msg.to_string(),
             line,
-            col: 0,
-            source: Some("rustc".to_string()),
-        }
+            0,
+            "rustc".to_string(),
+        )
     }
 
     #[test]

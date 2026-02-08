@@ -315,13 +315,11 @@ impl App {
         let tool_file_cache =
             std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
-        // Initialize LSP client if configured
-        let lsp = config
+        // Store LSP config for lazy start on first tool batch
+        let lsp_config = config
             .as_ref()
             .and_then(|cfg| cfg.lsp.clone())
-            .filter(|lsp_cfg| lsp_cfg.enabled)
-            .map(forge_lsp::LspManager::new)
-            .map(|mgr| std::sync::Arc::new(tokio::sync::Mutex::new(mgr)));
+            .filter(forge_lsp::LspConfig::enabled);
 
         let ui_options = Self::ui_options_from_config(config.as_ref());
         let view = ViewState {
@@ -372,7 +370,8 @@ impl App {
             turn_usage: None,
             last_turn_usage: None,
             notification_queue: crate::notifications::NotificationQueue::new(),
-            lsp,
+            lsp_config,
+            lsp: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             lsp_snapshot: forge_lsp::DiagnosticsSnapshot::default(),
             pending_diag_check: None,
         };

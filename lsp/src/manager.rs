@@ -3,6 +3,9 @@
 //! The engine interacts with language servers through this single type.
 //! It handles server lifecycle, file routing by extension, and diagnostics
 //! aggregation.
+//!
+//! Construction IS initialization — `start()` spawns all configured servers.
+//! No two-phase init, no `started` flag (IFA §13.4).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -11,100 +14,86 @@ use tokio::sync::mpsc;
 
 use crate::diagnostics::DiagnosticsStore;
 use crate::protocol;
-use crate::server::ServerHandle;
-use crate::types::{DiagnosticsSnapshot, ForgeDiagnostic, LspConfig, LspEvent, LspState};
+use crate::server::RunningServer;
+use crate::types::{DiagnosticsSnapshot, ForgeDiagnostic, LspConfig, LspEvent, ServerStopReason};
 
 /// Channel capacity for the event channel between server tasks and the manager.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
+/// Build extension → server name map from config.
+fn build_extension_map(config: &LspConfig) -> HashMap<String, String> {
+    let mut extension_map = HashMap::new();
+    let mut server_names: Vec<&String> = config.servers().keys().collect();
+    server_names.sort();
+    for name in server_names {
+        let server_config = &config.servers()[name];
+        for ext in server_config.file_extensions() {
+            if let Some(existing) = extension_map.get(ext) {
+                tracing::warn!(
+                    "Multiple LSP servers configured for extension '{ext}': '{existing}' and '{name}'. Using '{existing}'."
+                );
+                continue;
+            }
+            extension_map.insert(ext.clone(), name.clone());
+        }
+    }
+    extension_map
+}
+
 /// Public facade for the LSP client subsystem.
+///
+/// Constructed via `start()` which spawns all configured servers.
+/// Running servers live in the `servers` map; removal is the state
+/// transition for death (IFA §9: state-as-location).
 pub struct LspManager {
-    config: LspConfig,
-    servers: HashMap<String, ServerHandle>,
+    servers: HashMap<String, RunningServer>,
     diagnostics: DiagnosticsStore,
     event_rx: mpsc::Receiver<LspEvent>,
+    #[cfg_attr(not(test), allow(dead_code))]
     event_tx: mpsc::Sender<LspEvent>,
     /// Maps file extension (e.g. "rs") → server name (e.g. "rust").
     extension_map: HashMap<String, String>,
-    /// Whether servers have been started.
-    started: bool,
 }
 
 impl LspManager {
-    /// Create a new manager from config. Does not start any servers yet.
-    #[must_use]
-    pub fn new(config: LspConfig) -> Self {
-        let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-
-        // Build extension → server name map
-        let mut extension_map = HashMap::new();
-        let mut server_names: Vec<&String> = config.servers.keys().collect();
-        server_names.sort();
-        for name in server_names {
-            let server_config = &config.servers[name];
-            for ext in &server_config.file_extensions {
-                if let Some(existing) = extension_map.get(ext) {
-                    tracing::warn!(
-                        "Multiple LSP servers configured for extension '{ext}': '{existing}' and '{name}'. Using '{existing}'."
-                    );
-                    continue;
-                }
-                extension_map.insert(ext.clone(), name.clone());
-            }
-        }
-
-        Self {
-            config,
-            servers: HashMap::new(),
-            diagnostics: DiagnosticsStore::new(),
-            event_rx,
-            event_tx,
-            extension_map,
-            started: false,
-        }
-    }
-
-    /// Spawn all configured servers for the given workspace root.
+    /// Construct and start the LSP manager, spawning all configured servers.
     ///
     /// Servers that fail to start are logged and skipped — a bad server
     /// config should not prevent the rest from working.
-    pub async fn ensure_started(&mut self, workspace_root: &Path) {
-        if self.started {
-            return;
-        }
-        self.started = true;
+    pub async fn start(config: LspConfig, workspace_root: &Path) -> Self {
+        let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+        let extension_map = build_extension_map(&config);
+        let mut servers = HashMap::new();
 
-        for (name, server_config) in &self.config.servers {
+        for (name, server_config) in config.servers() {
             tracing::info!(
                 "Starting LSP server '{name}' ({})...",
-                server_config.command
+                server_config.command()
             );
-            match ServerHandle::start(
+            match RunningServer::start(
                 name.clone(),
-                &server_config.command,
-                &server_config.args,
-                server_config.language_id.clone(),
+                server_config,
                 workspace_root,
-                self.event_tx.clone(),
+                event_tx.clone(),
             )
             .await
             {
                 Ok(handle) => {
                     tracing::info!("LSP server '{name}' started successfully");
-                    self.servers.insert(name.clone(), handle);
+                    servers.insert(name.clone(), handle);
                 }
                 Err(e) => {
                     tracing::warn!("Failed to start LSP server '{name}': {e:#}");
-                    // Send a failed status event so the UI can show a hint
-                    let _ = self
-                        .event_tx
-                        .send(LspEvent::Status {
-                            server: name.clone(),
-                            state: LspState::Failed(format!("{e:#}")),
-                        })
-                        .await;
                 }
             }
+        }
+
+        Self {
+            servers,
+            diagnostics: DiagnosticsStore::new(),
+            event_rx,
+            event_tx,
+            extension_map,
         }
     }
 
@@ -112,6 +101,8 @@ impl LspManager {
     ///
     /// Routes to the appropriate server based on file extension.
     /// Skips files that don't match any configured server.
+    /// If the server is in the map it was alive at last poll — channel
+    /// errors are honest I/O failures, not structural lies.
     pub async fn on_file_changed(&mut self, path: &Path, text: &str) {
         let ext = match path.extension().and_then(|e| e.to_str()) {
             Some(e) => e.to_string(),
@@ -127,11 +118,6 @@ impl LspManager {
             Some(s) => s,
             None => return,
         };
-
-        // Skip if server isn't running
-        if server.state != LspState::Running {
-            return;
-        }
 
         let uri = match protocol::path_to_file_uri(path) {
             Ok(u) => u.to_string(),
@@ -152,7 +138,8 @@ impl LspManager {
     /// Drain pending events from server tasks, up to `budget`.
     ///
     /// This is non-blocking — returns immediately if no events are available.
-    /// Diagnostics are accumulated in the store; status changes update server state.
+    /// Diagnostics are accumulated in the store; dead servers are removed
+    /// from the map (state-as-location).
     pub fn poll_events(&mut self, budget: usize) -> usize {
         let mut count = 0;
         while count < budget {
@@ -172,11 +159,18 @@ impl LspManager {
     /// Handle a single LSP event.
     fn handle_event(&mut self, event: LspEvent) {
         match event {
-            LspEvent::Status { server, state } => {
-                tracing::info!(server = %server, state = ?state, "LSP server status changed");
-                if let Some(handle) = self.servers.get_mut(&server) {
-                    handle.state = state;
+            LspEvent::ServerStopped { server, reason } => {
+                // State-as-location: removal IS the state transition.
+                // Drop closes channels; child has kill_on_drop(true).
+                match &reason {
+                    ServerStopReason::Exited => {
+                        tracing::info!(server = %server, "LSP server exited");
+                    }
+                    ServerStopReason::Failed(msg) => {
+                        tracing::warn!(server = %server, error = %msg, "LSP server failed");
+                    }
                 }
+                self.servers.remove(&server);
             }
             LspEvent::Diagnostics { path, items } => {
                 tracing::debug!(
@@ -201,25 +195,20 @@ impl LspManager {
         self.diagnostics.errors_for_files(paths)
     }
 
-    /// Whether the LSP subsystem is enabled and has at least one running server.
+    /// Whether the LSP subsystem has at least one running server.
+    /// State-as-location: running servers are in the map.
     #[must_use]
     pub fn has_running_servers(&self) -> bool {
-        self.servers.values().any(|s| s.state == LspState::Running)
-    }
-
-    /// Whether server startup has been attempted (via `ensure_started`).
-    #[must_use]
-    pub fn has_started(&self) -> bool {
-        self.started
+        !self.servers.is_empty()
     }
 
     /// Gracefully shut down all servers.
     pub async fn shutdown(&mut self) {
-        for (name, server) in &mut self.servers {
+        let servers = std::mem::take(&mut self.servers);
+        for (name, server) in servers {
             tracing::info!("Shutting down LSP server '{name}'...");
             server.shutdown().await;
         }
-        self.servers.clear();
     }
 
     /// Get a reference to the event sender (for testing).
@@ -232,33 +221,41 @@ impl LspManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{DiagnosticSeverity, ServerConfig};
+    use crate::types::DiagnosticSeverity;
 
+    /// Deserialize a test config through the validated boundary.
     fn test_config() -> LspConfig {
-        let mut servers = HashMap::new();
-        servers.insert(
-            "rust".to_string(),
-            ServerConfig {
-                command: "rust-analyzer".to_string(),
-                args: vec![],
-                language_id: "rust".to_string(),
-                file_extensions: vec!["rs".to_string()],
-                root_markers: vec!["Cargo.toml".to_string()],
-            },
-        );
-        servers.insert(
-            "python".to_string(),
-            ServerConfig {
-                command: "pyright".to_string(),
-                args: vec![],
-                language_id: "python".to_string(),
-                file_extensions: vec!["py".to_string(), "pyi".to_string()],
-                root_markers: vec!["pyproject.toml".to_string()],
-            },
-        );
-        LspConfig {
-            enabled: true,
-            servers,
+        serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "servers": {
+                "rust": {
+                    "command": "rust-analyzer",
+                    "language_id": "rust",
+                    "file_extensions": ["rs"],
+                    "root_markers": ["Cargo.toml"]
+                },
+                "python": {
+                    "command": "pyright",
+                    "language_id": "python",
+                    "file_extensions": ["py", "pyi"],
+                    "root_markers": ["pyproject.toml"]
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    /// Create an `LspManager` without spawning real servers.
+    /// Uses the event channel for testing event-driven behaviour.
+    fn test_manager(config: LspConfig) -> LspManager {
+        let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+        let extension_map = build_extension_map(&config);
+        LspManager {
+            servers: HashMap::new(),
+            diagnostics: DiagnosticsStore::new(),
+            event_rx,
+            event_tx,
+            extension_map,
         }
     }
 
@@ -268,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_extension_map_built_correctly() {
-        let manager = LspManager::new(test_config());
+        let manager = test_manager(test_config());
         assert_eq!(manager.extension_map.get("rs"), Some(&"rust".to_string()));
         assert_eq!(manager.extension_map.get("py"), Some(&"python".to_string()));
         assert_eq!(
@@ -280,56 +277,35 @@ mod tests {
 
     #[test]
     fn test_extension_overlap_is_deterministic() {
-        let mut servers = HashMap::new();
-        servers.insert(
-            "b".to_string(),
-            ServerConfig {
-                command: "b-ls".to_string(),
-                args: vec![],
-                language_id: "b".to_string(),
-                file_extensions: vec!["rs".to_string()],
-                root_markers: vec![],
-            },
-        );
-        servers.insert(
-            "a".to_string(),
-            ServerConfig {
-                command: "a-ls".to_string(),
-                args: vec![],
-                language_id: "a".to_string(),
-                file_extensions: vec!["rs".to_string()],
-                root_markers: vec![],
-            },
-        );
-
-        let manager = LspManager::new(LspConfig {
-            enabled: true,
-            servers,
-        });
+        let config: LspConfig = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "servers": {
+                "b": { "command": "b-ls", "language_id": "b", "file_extensions": ["rs"] },
+                "a": { "command": "a-ls", "language_id": "a", "file_extensions": ["rs"] }
+            }
+        }))
+        .unwrap();
+        let manager = test_manager(config);
         assert_eq!(manager.extension_map.get("rs"), Some(&"a".to_string()));
     }
 
     #[test]
     fn test_has_running_servers_initially_false() {
-        let manager = LspManager::new(test_config());
+        let manager = test_manager(test_config());
         assert!(!manager.has_running_servers());
     }
 
     #[test]
     fn test_snapshot_initially_empty() {
-        let manager = LspManager::new(test_config());
+        let manager = test_manager(test_config());
         assert!(manager.snapshot().is_empty());
     }
 
     #[tokio::test]
     async fn test_poll_events_drains_diagnostics() {
-        let manager = LspManager::new(test_config());
+        let mut manager = test_manager(test_config());
         let event_tx = manager.event_tx().clone();
 
-        // Reinitialize so we can control the channel
-        let mut manager = manager;
-
-        // Send diagnostic events through the channel
         event_tx
             .send(LspEvent::Diagnostics {
                 path: PathBuf::from("src/main.rs"),
@@ -357,11 +333,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_poll_events_respects_budget() {
-        let manager = LspManager::new(test_config());
+        let mut manager = test_manager(test_config());
         let event_tx = manager.event_tx().clone();
-        let mut manager = manager;
 
-        // Send 5 events
         for i in 0..5 {
             event_tx
                 .send(LspEvent::Diagnostics {
@@ -372,27 +346,24 @@ mod tests {
                 .unwrap();
         }
 
-        // Poll with budget of 3 — should only process 3
         let count = manager.poll_events(3);
         assert_eq!(count, 3);
 
-        // Remaining 2 still in channel
         let count = manager.poll_events(10);
         assert_eq!(count, 2);
     }
 
     #[tokio::test]
     async fn test_poll_events_empty_channel() {
-        let mut manager = LspManager::new(test_config());
+        let mut manager = test_manager(test_config());
         let count = manager.poll_events(10);
         assert_eq!(count, 0);
     }
 
     #[tokio::test]
     async fn test_errors_for_files_via_events() {
-        let manager = LspManager::new(test_config());
+        let mut manager = test_manager(test_config());
         let event_tx = manager.event_tx().clone();
-        let mut manager = manager;
 
         event_tx
             .send(LspEvent::Diagnostics {
@@ -409,35 +380,30 @@ mod tests {
 
         let errors = manager.errors_for_files(&[PathBuf::from("a.rs")]);
         assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].1.len(), 1); // only the error
+        assert_eq!(errors[0].1.len(), 1);
     }
 
     #[tokio::test]
     async fn test_on_file_changed_skips_unknown_extension() {
-        let mut manager = LspManager::new(test_config());
-        // .js is not in any server config — should be a no-op
+        let mut manager = test_manager(test_config());
         manager
             .on_file_changed(Path::new("/test/file.js"), "code")
             .await;
-        // No panic, no events
     }
 
     #[tokio::test]
     async fn test_on_file_changed_skips_no_extension() {
-        let mut manager = LspManager::new(test_config());
+        let mut manager = test_manager(test_config());
         manager
             .on_file_changed(Path::new("/test/Makefile"), "all:")
             .await;
-        // No panic
     }
 
     #[tokio::test]
     async fn test_diagnostics_cleared_when_server_publishes_empty() {
-        let manager = LspManager::new(test_config());
+        let mut manager = test_manager(test_config());
         let event_tx = manager.event_tx().clone();
-        let mut manager = manager;
 
-        // Publish errors
         event_tx
             .send(LspEvent::Diagnostics {
                 path: PathBuf::from("a.rs"),
@@ -448,7 +414,6 @@ mod tests {
         manager.poll_events(10);
         assert_eq!(manager.snapshot().error_count(), 1);
 
-        // Server clears diagnostics (empty array)
         event_tx
             .send(LspEvent::Diagnostics {
                 path: PathBuf::from("a.rs"),
@@ -458,5 +423,22 @@ mod tests {
             .unwrap();
         manager.poll_events(10);
         assert!(manager.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_server_stopped_removes_from_map() {
+        let mut manager = test_manager(test_config());
+        let event_tx = manager.event_tx().clone();
+
+        // Simulate a server dying
+        event_tx
+            .send(LspEvent::ServerStopped {
+                server: "rust".to_string(),
+                reason: ServerStopReason::Failed("crash".to_string()),
+            })
+            .await
+            .unwrap();
+        manager.poll_events(10);
+        assert!(!manager.has_running_servers());
     }
 }
