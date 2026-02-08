@@ -96,7 +96,8 @@ When using the `Edit` tool, emit patches in LP1 format. LP1 is a line-oriented p
 - A block ends only at a line that is exactly `.`; `END` only ends the patch and is ordinary text inside blocks.
 - If `occ` is omitted, the find-block must match exactly once; otherwise provide `occ` or make the find-block more specific.
 - `occ` is 1-based in increasing start-position order (leftmost-first).
-- `I` inserts immediately after the matched lines; `P` inserts immediately before them.
+- `I` inserts the new block immediately after the matched line-sequence. `P` inserts immediately before the matched line-sequence.
+ - `I` does not insert after any structural unit (function, block, struct) that line belongs to. If the find-block matches a function signature ending in {, insertion happens inside the function body, not after it. `P` is treated simiarly for prepends.
 - Operations apply sequentially within a file section (later ops see earlier edits).
 - Outside blocks, only `F`, operation headers, comments/blank lines, and the final `END` are valid; never emit raw file content at top level.
 - Dot-stuffing: inside blocks, any content line whose first character is `.` must be written with an extra leading dot (`..`); decoding removes exactly one dot.
