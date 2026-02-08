@@ -7,11 +7,8 @@
 //! - Journal commit/discard operations
 //! - Message rollback after errors
 
-use std::io::Write;
-
 use forge_context::{RecoveredStream, StepId};
 use forge_types::{Message, NonEmptyStaticStr, NonEmptyString, sanitize_terminal_text};
-use tempfile::NamedTempFile;
 
 use crate::session_state::SessionState;
 use crate::state::{OperationState, ToolRecoveryState};
@@ -138,30 +135,14 @@ impl App {
         );
         let json = serde_json::to_string_pretty(&state)?;
 
-        // Atomic write: temp file + fsync + rename
-        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let mut tmp = NamedTempFile::new_in(parent)?;
-
-        tmp.write_all(json.as_bytes())?;
-        tmp.as_file().sync_all()?;
-
-        // Persist with fallback for Windows
-        if let Err(err) = tmp.persist(&path) {
-            if path.exists() {
-                // Windows: backup-restore pattern
-                let backup_path = path.with_extension("bak");
-                let _ = std::fs::remove_file(&backup_path);
-                std::fs::rename(&path, &backup_path)?;
-
-                if let Err(rename_err) = err.file.persist(&path) {
-                    let _ = std::fs::rename(&backup_path, &path);
-                    return Err(rename_err.error.into());
-                }
-                let _ = std::fs::remove_file(&backup_path);
-            } else {
-                return Err(err.error.into());
-            }
-        }
+        forge_context::atomic_write_with_options(
+            &path,
+            json.as_bytes(),
+            forge_context::AtomicWriteOptions {
+                sync_all: true,
+                unix_mode: None,
+            },
+        )?;
 
         Ok(())
     }

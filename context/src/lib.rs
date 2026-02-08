@@ -20,6 +20,7 @@
 //! └── working_context: WorkingContext (derived view for API)
 //! ```
 
+mod atomic_write;
 mod distillation;
 mod fact_store;
 mod history;
@@ -31,6 +32,7 @@ mod token_counter;
 mod tool_journal;
 mod working_context;
 
+pub use atomic_write::{AtomicWriteOptions, atomic_write, atomic_write_with_options};
 pub use distillation::{distillation_model, generate_distillation};
 pub use fact_store::{FactId, FactStore, FactWithStaleness, StoredFact};
 pub use history::{Distillate, DistillateId, FullHistory, HistoryEntry, MessageId};
