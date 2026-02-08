@@ -479,25 +479,12 @@ impl MarkdownRenderer {
     fn render_code_block(&mut self) {
         let code_style = Style::default().fg(self.palette.text_muted);
 
-        // Opening fence
-        self.lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::styled("```", Style::default().fg(self.palette.text_muted)),
-        ]));
-
-        // Code content
         for line in &self.code_block_content {
             self.lines.push(Line::from(vec![
                 Span::raw("    "),
                 Span::styled(line.clone(), code_style),
             ]));
         }
-
-        // Closing fence
-        self.lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::styled("```", Style::default().fg(self.palette.text_muted)),
-        ]));
 
         self.code_block_content.clear();
     }
