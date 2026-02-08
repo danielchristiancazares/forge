@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use std::io::Write;
 use std::{env, fs, path::PathBuf};
 
 // Default value function for serde (bool::default() is false, so only true needs a fn)
@@ -548,29 +547,15 @@ impl ForgeConfig {
         doc["app"]["model"] = toml_edit::value(model);
 
         // Write back atomically
-        let mut tmp = tempfile::NamedTempFile::new_in(
-            path.parent().unwrap_or_else(|| std::path::Path::new(".")),
+        let serialized = doc.to_string();
+        forge_context::atomic_write_with_options(
+            &path,
+            serialized.as_bytes(),
+            forge_context::AtomicWriteOptions {
+                sync_all: true,
+                unix_mode: None,
+            },
         )?;
-        tmp.write_all(doc.to_string().as_bytes())?;
-        tmp.as_file().sync_all()?;
-
-        // Persist (rename) - handle Windows where rename fails if target exists
-        if let Err(err) = tmp.persist(&path) {
-            if path.exists() {
-                // Windows fallback: backup and restore
-                let backup_path = path.with_extension("bak");
-                let _ = fs::remove_file(&backup_path);
-                fs::rename(&path, &backup_path)?;
-
-                if let Err(rename_err) = err.file.persist(&path) {
-                    let _ = fs::rename(&backup_path, &path);
-                    return Err(rename_err.error);
-                }
-                let _ = fs::remove_file(&backup_path);
-            } else {
-                return Err(err.error);
-            }
-        }
 
         // Ensure config file has secure permissions (user-only read/write)
         #[cfg(unix)]
@@ -583,6 +568,27 @@ impl ForgeConfig {
                 if mode & 0o077 != 0 {
                     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
                 }
+            }
+        }
+
+        // Windows: no equivalent to Unix file modes. Warn if the config file
+        // likely contains raw API keys (as opposed to ${ENV_VAR} references).
+        #[cfg(windows)]
+        {
+            let content_lower = serialized.to_ascii_lowercase();
+            let has_literal_key = ["anthropic_api_key", "openai_api_key", "gemini_api_key"]
+                .iter()
+                .any(|field| {
+                    content_lower.contains(field)
+                        && !content_lower.contains(&format!("{field} = \"${{"))
+                });
+            if has_literal_key {
+                tracing::warn!(
+                    path = %path.display(),
+                    "Config file may contain literal API keys. \
+                     Windows does not enforce file permissions like Unix. \
+                     Consider using ${{ENV_VAR}} syntax for API keys instead."
+                );
             }
         }
 
