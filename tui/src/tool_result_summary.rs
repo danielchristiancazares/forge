@@ -34,6 +34,7 @@ pub(crate) enum ToolKind {
     Edit,
     Write,
     GitStatus,
+    GitCommit,
     Other,
 }
 
@@ -73,6 +74,7 @@ impl ToolKind {
             "Edit" => ToolKind::Edit,
             "Write" => ToolKind::Write,
             "GitStatus" => ToolKind::GitStatus,
+            "GitCommit" => ToolKind::GitCommit,
             _ => ToolKind::Other,
         }
     }
@@ -151,6 +153,8 @@ pub(crate) fn format_tool_result_summary(
         Some(ToolKind::GitStatus) => {
             distill_git_status(content).unwrap_or_else(|| distill_generic(content, max_width))
         }
+        Some(ToolKind::GitCommit) => distill_git_commit(content, max_width)
+            .unwrap_or_else(|| distill_generic(content, max_width)),
         _ => distill_generic(content, max_width),
     }
 }
@@ -213,6 +217,20 @@ fn distill_shell(content: &str, is_error: bool, max_width: usize) -> String {
     };
 
     truncate_to(&summary, max_width)
+}
+
+fn distill_git_commit(content: &str, max_width: usize) -> Option<String> {
+    let value: Value = serde_json::from_str(content).ok()?;
+    let commit_msg = value.get("commit_message").and_then(Value::as_str)?;
+
+    let hash = value
+        .get("commit_hash")
+        .and_then(Value::as_str)
+        .unwrap_or("???????");
+
+    let short_hash = if hash.len() > 7 { &hash[..7] } else { hash };
+    let summary = format!("{short_hash} {commit_msg}");
+    Some(truncate_to(&summary, max_width))
 }
 
 fn distill_git_status(content: &str) -> Option<String> {
@@ -621,5 +639,57 @@ mod tests {
             result,
             ToolResultRender::Full { diff_aware: true }
         ));
+    }
+
+    #[test]
+    fn summary_git_commit_shows_hash_and_message() {
+        let call = ToolCall::new(
+            "call_6",
+            "GitCommit",
+            json!({"type": "feat", "message": "add feature"}),
+        );
+        let meta = ToolCallMeta::from_call(&call);
+        let content = r#"{"commit_hash":"abc1234","commit_message":"feat: add feature","exit_code":0,"stdout":"[main abc1234] feat: add feature\n 1 file changed","stderr":"","isError":false}"#;
+        let summary = format_tool_result_summary(Some(&meta), content, false, 80);
+        assert_eq!(summary, "abc1234 feat: add feature");
+    }
+
+    #[test]
+    fn summary_git_commit_truncates_long_hash() {
+        let call = ToolCall::new(
+            "call_7",
+            "GitCommit",
+            json!({"type": "fix", "message": "bug"}),
+        );
+        let meta = ToolCallMeta::from_call(&call);
+        let content = r#"{"commit_hash":"abc1234def5678","commit_message":"fix: bug","exit_code":0,"stdout":"","stderr":"","isError":false}"#;
+        let summary = format_tool_result_summary(Some(&meta), content, false, 80);
+        assert_eq!(summary, "abc1234 fix: bug");
+    }
+
+    #[test]
+    fn summary_git_commit_missing_hash_shows_placeholder() {
+        let call = ToolCall::new(
+            "call_8",
+            "GitCommit",
+            json!({"type": "fix", "message": "bug"}),
+        );
+        let meta = ToolCallMeta::from_call(&call);
+        let content = r#"{"commit_hash":null,"commit_message":"fix: bug","exit_code":0,"stdout":"","stderr":"","isError":false}"#;
+        let summary = format_tool_result_summary(Some(&meta), content, false, 80);
+        assert_eq!(summary, "??????? fix: bug");
+    }
+
+    #[test]
+    fn summary_git_commit_error_falls_through() {
+        let call = ToolCall::new(
+            "call_9",
+            "GitCommit",
+            json!({"type": "feat", "message": "x"}),
+        );
+        let meta = ToolCallMeta::from_call(&call);
+        let content = "nothing to commit, working tree clean";
+        let summary = format_tool_result_summary(Some(&meta), content, true, 80);
+        assert_eq!(summary, "nothing to commit, working tree clean");
     }
 }
