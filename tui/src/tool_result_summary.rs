@@ -222,16 +222,17 @@ fn distill_shell(content: &str, is_error: bool, max_width: usize) -> String {
 fn distill_git_commit(content: &str, max_width: usize) -> Option<String> {
     let value: Value = serde_json::from_str(content).ok()?;
     let commit_msg = value.get("commit_message").and_then(Value::as_str)?;
+    let subject = commit_msg.lines().next().unwrap_or(commit_msg);
 
-    let hash = match value.get("commit_hash").and_then(Value::as_str) {
+    let summary = match value.get("commit_hash").and_then(Value::as_str) {
         Some(h) => {
             let short = if h.len() > 7 { &h[..7] } else { h };
-            format!("{short} {commit_msg}")
+            format!("{short} {subject}")
         }
-        None => format!("failed: {commit_msg}"),
+        None => format!("failed: {subject}"),
     };
 
-    Some(truncate_to(&hash, max_width))
+    Some(truncate_to(&summary, max_width))
 }
 
 fn distill_git_status(content: &str) -> Option<String> {
@@ -692,5 +693,18 @@ mod tests {
         let content = "nothing to commit, working tree clean";
         let summary = format_tool_result_summary(Some(&meta), content, true, 80);
         assert_eq!(summary, "nothing to commit, working tree clean");
+    }
+
+    #[test]
+    fn summary_git_commit_multiline_uses_subject_only() {
+        let call = ToolCall::new(
+            "call_10",
+            "GitCommit",
+            json!({"type": "refactor", "scope": "docs", "message": "update documentation"}),
+        );
+        let meta = ToolCallMeta::from_call(&call);
+        let content = r#"{"commit_hash":"9562496","commit_message":"refactor(docs): update documentation\n\nThis commit contains:\n- Comprehensive rewrite","exit_code":0,"stdout":"","stderr":"","isError":false}"#;
+        let summary = format_tool_result_summary(Some(&meta), content, false, 80);
+        assert_eq!(summary, "9562496 refactor(docs): update documentation");
     }
 }
