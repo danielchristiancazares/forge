@@ -1029,7 +1029,7 @@ impl ToolExecutor for WriteFileTool {
             ctx.turn_changes.record_created(resolved.clone());
 
             // Record stats: all lines are additions for a new file
-            // FIXME: use bytecount crate if this becomes a hot path
+            // PERF: use bytecount crate if this becomes a hot path.
             #[allow(clippy::naive_bytecount)]
             let line_count = bytes.iter().filter(|&&b| b == b'\n').count() as u32
                 + u32::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));

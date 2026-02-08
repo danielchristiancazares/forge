@@ -1,7 +1,6 @@
 //! UI-facing types for the engine.
 //!
-//! This module contains types used by the TUI layer for rendering and input handling.
-//! These types are intentionally separate from orchestration concerns.
+//! Used by the TUI for rendering/input, intentionally separate from orchestration.
 
 mod display;
 mod file_picker;

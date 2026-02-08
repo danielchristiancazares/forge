@@ -1,56 +1,4 @@
 //! Safe URL fetching with browser fallback for LLM consumption.
-//!
-//! This crate provides a complete pipeline for fetching web content and converting
-//! it into LLM-friendly Markdown chunks. It implements comprehensive security
-//! measures (SSRF protection, robots.txt compliance) and intelligent content
-//! extraction with boilerplate removal.
-//!
-//! # Pipeline
-//!
-//! The fetch pipeline processes URLs through these stages:
-//!
-//! 1. **Cache check** - Returns cached content if valid (respects TTL, re-chunks on hit)
-//! 2. **SSRF validation** - Validates scheme, host, port; resolves DNS with rebinding protection
-//! 3. **robots.txt** - RFC 9309 compliant checking with origin-scoped caching
-//! 4. **Content fetch** - HTTP request with optional headless browser fallback for SPAs
-//! 5. **Extraction** - Boilerplate removal, HTML-to-Markdown conversion
-//! 6. **Chunking** - Token-aware splitting with heading context tracking
-//! 7. **Cache write** - Stores extracted markdown for future requests
-//!
-//! # Modules
-//!
-//! | Module | Purpose |
-//! |--------|---------|
-//! | [`types`] | Input/output types, configuration, structured errors |
-//! | [`http`] | HTTP client with SSRF protection and DNS pinning |
-//! | [`browser`] | CDP-based Chromium rendering with request interception |
-//! | [`robots`] | RFC 9309 parser with wildcard/anchor pattern support |
-//! | [`extract`] | HTML-to-Markdown with intelligent boilerplate detection |
-//! | [`chunk`] | Token-bounded chunking with code/list block handling |
-//! | [`cache`] | LRU disk cache with dual-limit eviction |
-//! | [`resolved`] | Internal: config resolution eliminating Option handling |
-//!
-//! # Usage
-//!
-//! ```ignore
-//! use forge_webfetch::{fetch, WebFetchInput, WebFetchConfig};
-//!
-//! let input = WebFetchInput::new("https://example.com")?
-//!     .with_max_chunk_tokens(800)?
-//!     .with_no_cache(false);
-//! let config = WebFetchConfig::default();
-//! let output = fetch(input, &config).await?;
-//!
-//! for chunk in &output.chunks {
-//!     println!("[{}] {} tokens", chunk.heading, chunk.token_count);
-//! }
-//! ```
-//!
-//! # Error Handling
-//!
-//! All errors are [`WebFetchError`] with stable [`ErrorCode`] variants, human-readable
-//! messages, and `retryable` hints. Non-fatal conditions (cache write failures,
-//! charset fallbacks) are reported via [`Note`] tokens in the output.
 
 // Allow dead code during scaffold phase for user's modules (http, browser)
 #![allow(dead_code)]
@@ -74,25 +22,6 @@ pub use types::{
     WebFetchOutput,
 };
 
-/// Fetch a URL and return structured, chunked content.
-///
-/// This is the main entry point for the `WebFetch` tool. It:
-///
-/// 1. Validates the URL for SSRF protection
-/// 2. Checks robots.txt compliance
-/// 3. Fetches via HTTP (with optional browser fallback)
-/// 4. Extracts readable content as Markdown
-/// 5. Chunks content by token budget
-/// 6. Caches results for future requests
-///
-/// # Errors
-///
-/// Returns `WebFetchError` for:
-/// - Invalid URLs or schemes
-/// - SSRF-blocked hosts/IPs
-/// - robots.txt disallowed paths
-/// - Network/timeout errors
-/// - Unsupported content types
 pub async fn fetch(
     input: WebFetchInput,
     config: &WebFetchConfig,
@@ -321,11 +250,6 @@ fn decode_body(body: &[u8], charset: Option<&str>) -> Result<String, WebFetchErr
     }
 }
 
-/// Check if HTML looks like an SPA that needs JS rendering.
-///
-/// Heuristics:
-/// - Very little text content (< 50 visible chars after stripping tags)
-/// - This catches SPA shells with just `<div id="root"></div>`
 fn is_spa_heuristic(html: &str) -> bool {
     // We take first 1000 chars to sample, then strip tags
     let text_content: String = html.chars().take(1000).collect();
@@ -363,7 +287,6 @@ fn write_to_cache(
     cache.put(url, method, entry)
 }
 
-/// Canonicalize URL by removing fragment.
 fn canonicalize_url(url: &url::Url) -> String {
     let mut url = url.clone();
     url.set_fragment(None);

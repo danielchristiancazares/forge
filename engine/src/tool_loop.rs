@@ -1,10 +1,4 @@
 //! Tool execution loop for the App.
-//!
-//! This module contains all tool loop logic including:
-//! - Planning and validation of tool calls
-//! - Spawning and polling tool execution
-//! - Approval workflow handling
-//! - Tool batch commit and recovery
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
@@ -46,16 +40,6 @@ fn run_escalation_reason(tool_name: &str, arguments: &serde_json::Value) -> Opti
 // SpawnedTool: Proof object for spawned tool execution (IFA §8.1)
 // ============================================================================
 
-/// Proof object representing a spawned tool execution.
-///
-/// # Invariant
-/// Existence proves: execution has been spawned and result not yet collected.
-/// This does NOT mean the task is still running - it may have finished.
-///
-/// # Authority Boundary
-/// The crate is the enforcement boundary. Construction is through `spawn()`
-/// which creates channel/abort internally, ensuring all handles correspond
-/// to the same spawned task.
 #[derive(Debug)]
 pub(crate) struct SpawnedTool {
     call: ToolCall,
@@ -64,27 +48,14 @@ pub(crate) struct SpawnedTool {
     abort_handle: AbortHandle,
 }
 
-/// Result of completing a spawned tool execution.
-/// Contains all data from the execution, ensuring nothing is lost.
 #[derive(Debug)]
 pub(crate) struct CompletedTool {
     pub(crate) call: ToolCall,
     pub(crate) result: Result<ToolResult, tokio::task::JoinError>,
-    /// Events that arrived (drained after task completion).
     pub(crate) final_events: Vec<tools::ToolEvent>,
 }
 
 impl SpawnedTool {
-    /// Spawn a tool execution, returning the proof object.
-    ///
-    /// # Atomic Construction
-    /// Creates channel and abort registration internally, guaranteeing
-    /// all handles correspond to the spawned task.
-    ///
-    /// # Arguments
-    /// - `call`: The tool call being executed (moved into struct)
-    /// - `task_fn`: Closure that receives (event sender, abort handle) and returns the task future.
-    ///   The abort handle is provided so tools can check cancellation via `abort_handle.is_aborted()`.
     pub(crate) fn spawn<F, Fut>(call: ToolCall, task_fn: F) -> Self
     where
         F: FnOnce(mpsc::Sender<tools::ToolEvent>, AbortHandle) -> Fut,
@@ -119,38 +90,22 @@ impl SpawnedTool {
         }
     }
 
-    /// Access the tool call being executed.
     pub(crate) fn call(&self) -> &ToolCall {
         &self.call
     }
 
-    /// Poll for progress events (non-blocking).
     pub(crate) fn try_recv_event(&mut self) -> Option<tools::ToolEvent> {
         self.event_rx.try_recv().ok()
     }
 
-    /// Check if the spawned task has completed (result ready to collect).
     pub(crate) fn is_finished(&self) -> bool {
         self.join_handle.is_finished()
     }
 
-    /// Request abort of the running task.
     pub(crate) fn abort(&self) {
         self.abort_handle.abort();
     }
 
-    /// Consume the SpawnedTool, collecting all results.
-    ///
-    /// # Non-Forking Transition
-    /// Consumes `self`, preventing any further use of handles.
-    /// Returns ALL data: call, result, and final events.
-    ///
-    /// # Event Draining
-    /// Events are drained AFTER join completes to capture any events
-    /// produced while awaiting.
-    ///
-    /// # No expect()/panic
-    /// Join errors are returned in the result, not panicked.
     pub(crate) async fn complete(self) -> CompletedTool {
         // Destructure self to take ownership of all fields
         let Self {
@@ -181,8 +136,6 @@ impl SpawnedTool {
 // ToolQueue: Queue state without active execution
 // ============================================================================
 
-/// Tool execution queue without an active execution.
-/// Used after approvals but before first tool starts, or between tools.
 #[derive(Debug)]
 pub(crate) struct ToolQueue {
     pub(crate) queue: VecDeque<ToolCall>,
@@ -192,7 +145,6 @@ pub(crate) struct ToolQueue {
 }
 
 impl ToolQueue {
-    /// Create a new tool queue from a list of calls to execute.
     pub(crate) fn new(
         calls: Vec<ToolCall>,
         remaining_capacity_bytes: usize,
@@ -206,7 +158,6 @@ impl ToolQueue {
         }
     }
 
-    /// Check if the queue is empty.
     pub(crate) fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
@@ -216,8 +167,6 @@ impl ToolQueue {
 // ActiveExecution: State with a spawned tool (requires SpawnedTool)
 // ============================================================================
 
-/// Active tool execution state - a tool IS spawned.
-/// Existence of this type proves a task has been spawned and not yet collected.
 #[derive(Debug)]
 pub(crate) struct ActiveExecution {
     pub(crate) spawned: SpawnedTool, // NOT Optional - existence proves execution

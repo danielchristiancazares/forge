@@ -1,14 +1,10 @@
 //! Diagnostics store — accumulates per-file diagnostics from language servers.
-//!
-//! LSP publishes the full diagnostic set for a file on each notification,
-//! so we replace (not merge) diagnostics per path.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::types::{DiagnosticsSnapshot, ForgeDiagnostic};
 
-/// Accumulates per-file diagnostics from language servers.
 pub(crate) struct DiagnosticsStore {
     data: HashMap<PathBuf, Vec<ForgeDiagnostic>>,
 }
@@ -20,7 +16,6 @@ impl DiagnosticsStore {
         }
     }
 
-    /// Replace diagnostics for a file (LSP publishes full set per file).
     pub fn update(&mut self, path: PathBuf, items: Vec<ForgeDiagnostic>) {
         if items.is_empty() {
             self.data.remove(&path);
@@ -29,10 +24,6 @@ impl DiagnosticsStore {
         }
     }
 
-    /// Build an immutable snapshot for UI rendering and agent feedback.
-    ///
-    /// Counts are derived from the canonical `files` data by `DiagnosticsSnapshot`
-    /// accessors (IFA §7.6 — no cached derived values).
     pub fn snapshot(&self) -> DiagnosticsSnapshot {
         let mut files: Vec<(PathBuf, Vec<ForgeDiagnostic>)> = self
             .data
@@ -50,7 +41,6 @@ impl DiagnosticsStore {
         DiagnosticsSnapshot::new(files)
     }
 
-    /// Get only errors for specific files (for agent feedback after tool batch).
     pub fn errors_for_files(&self, paths: &[PathBuf]) -> Vec<(PathBuf, Vec<ForgeDiagnostic>)> {
         let mut result = Vec::new();
         for path in paths {

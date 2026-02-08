@@ -1,19 +1,10 @@
 //! JSON-RPC framing codec for LSP communication.
-//!
-//! LSP uses `Content-Length: N\r\n\r\n{json}` framing over stdin/stdout.
-//! This module provides [`FrameReader`] and [`FrameWriter`] for async
-//! reading and writing of framed JSON-RPC messages.
 
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
-/// Maximum frame size (4 MiB) to prevent unbounded memory allocation.
 const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 
-/// Reads JSON-RPC frames from an async reader.
-///
-/// Parses `Content-Length` headers and reads exactly that many bytes,
-/// then deserializes the body as JSON.
 pub struct FrameReader<R> {
     reader: BufReader<R>,
 }
@@ -25,10 +16,6 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
         }
     }
 
-    /// Read the next JSON-RPC frame.
-    ///
-    /// Returns `Ok(None)` on EOF (clean shutdown).
-    /// Returns `Err` on malformed headers or oversized frames.
     pub async fn read_frame(&mut self) -> Result<Option<serde_json::Value>> {
         let content_length = match self.read_headers().await? {
             Some(len) => len,
@@ -49,9 +36,6 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
         Ok(Some(value))
     }
 
-    /// Parse headers until the empty line separator.
-    ///
-    /// Returns the `Content-Length` value, or `None` on EOF.
     async fn read_headers(&mut self) -> Result<Option<usize>> {
         let mut content_length: Option<usize> = None;
         let mut line = String::new();
@@ -104,9 +88,6 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     }
 }
 
-/// Writes JSON-RPC frames to an async writer.
-///
-/// Serializes JSON and prepends the `Content-Length` header.
 pub struct FrameWriter<W> {
     writer: W,
 }
@@ -116,7 +97,6 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
         Self { writer }
     }
 
-    /// Write a JSON-RPC frame with `Content-Length` header.
     pub async fn write_frame(&mut self, msg: &serde_json::Value) -> Result<()> {
         let body = serde_json::to_string(msg).context("serializing JSON-RPC frame")?;
         let header = format!("Content-Length: {}\r\n\r\n", body.len());

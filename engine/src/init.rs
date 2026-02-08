@@ -1,10 +1,4 @@
 //! Application initialization for the App.
-//!
-//! This module contains:
-//! - `App::new` constructor
-//! - Configuration loading and parsing
-//! - Default constants for tool settings
-//! - Data directory and path helpers
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

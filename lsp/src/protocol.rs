@@ -1,7 +1,4 @@
 //! Internal LSP message serde types for JSON-RPC communication.
-//!
-//! These are minimal types covering only the LSP subset we need:
-//! initialization, text sync, and diagnostics.
 
 use std::path::{Path, PathBuf};
 
@@ -9,7 +6,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{DiagnosticSeverity, ForgeDiagnostic};
 
-/// Error converting a filesystem path to a `file://` URI.
 #[derive(Debug, thiserror::Error)]
 #[error("cannot convert path to file URI: {}", path.display())]
 pub(crate) struct PathToUriError {
@@ -18,7 +14,6 @@ pub(crate) struct PathToUriError {
 
 // ── JSON-RPC framing ──────────────────────────────────────────────────
 
-/// A JSON-RPC request (client → server).
 #[derive(Debug, Serialize)]
 pub(crate) struct Request {
     pub jsonrpc: &'static str,
@@ -39,7 +34,6 @@ impl Request {
     }
 }
 
-/// A JSON-RPC notification (client → server, no id).
 #[derive(Debug, Serialize)]
 pub(crate) struct Notification {
     pub jsonrpc: &'static str,
@@ -60,7 +54,6 @@ impl Notification {
 
 // ── Initialize ────────────────────────────────────────────────────────
 
-/// Build the `initialize` request params.
 pub(crate) fn initialize_params(root_uri: &str) -> serde_json::Value {
     serde_json::json!({
         "processId": std::process::id(),
@@ -87,7 +80,6 @@ pub(crate) fn initialize_params(root_uri: &str) -> serde_json::Value {
 
 // ── textDocument/didOpen ──────────────────────────────────────────────
 
-/// Build `textDocument/didOpen` notification params.
 pub(crate) fn did_open_params(
     uri: &str,
     language_id: &str,
@@ -106,7 +98,6 @@ pub(crate) fn did_open_params(
 
 // ── textDocument/didChange ───────────────────────────────────────────
 
-/// Build `textDocument/didChange` notification params (full sync).
 pub(crate) fn did_change_params(uri: &str, version: i32, text: &str) -> serde_json::Value {
     serde_json::json!({
         "textDocument": {
@@ -121,14 +112,12 @@ pub(crate) fn did_change_params(uri: &str, version: i32, text: &str) -> serde_js
 
 // ── textDocument/publishDiagnostics ──────────────────────────────────
 
-/// Deserialized `textDocument/publishDiagnostics` params.
 #[derive(Debug, Deserialize)]
 pub(crate) struct PublishDiagnosticsParams {
     pub uri: String,
     pub diagnostics: Vec<LspDiagnostic>,
 }
 
-/// A single LSP diagnostic from the wire format.
 #[derive(Debug, Deserialize)]
 pub(crate) struct LspDiagnostic {
     pub range: LspRange,
@@ -149,11 +138,6 @@ pub(crate) struct LspPosition {
 }
 
 impl LspDiagnostic {
-    /// Convert to our public diagnostic type.
-    ///
-    /// This is the boundary: wire-format optionality is resolved here.
-    /// - Missing/unknown severity → `Warning` (boundary policy).
-    /// - Missing source → `"unknown"` (IFA §11.2: no `Option` in core).
     pub fn to_forge_diagnostic(&self) -> ForgeDiagnostic {
         ForgeDiagnostic::new(
             self.severity
@@ -171,17 +155,12 @@ impl LspDiagnostic {
 
 // ── URI helpers ──────────────────────────────────────────────────────
 
-/// Convert a filesystem path to a `file://` URI.
-///
-/// Uses the `url` crate for correct Windows path handling
-/// (e.g. `C:\foo\bar.rs` → `file:///C:/foo/bar.rs`).
 pub(crate) fn path_to_file_uri(path: &Path) -> Result<url::Url, PathToUriError> {
     url::Url::from_file_path(path).map_err(|()| PathToUriError {
         path: path.to_path_buf(),
     })
 }
 
-/// Convert a `file://` URI string back to a filesystem path.
 pub(crate) fn file_uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
     url::Url::parse(uri)
         .ok()

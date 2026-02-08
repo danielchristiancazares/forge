@@ -1,11 +1,4 @@
 //! Context Manager - orchestrates all context management components.
-//!
-//! The `ContextManager` is the main entry point for:
-//! - Adding messages to history
-//! - Switching models (triggers adaptation)
-//! - Building working context for API calls
-//! - Managing distillation (compacting older messages)
-//! - Persistence
 
 use anyhow::Result;
 use std::io::Write;
@@ -57,18 +50,10 @@ pub enum ContextBuildError {
     },
 }
 
-/// Details about what needs to be distilled to fit within the token budget.
-///
-/// Returned as part of [`ContextBuildError::DistillationNeeded`] when
-/// the context exceeds the model's budget but can be resolved by
-/// distilling older messages.
 #[derive(Debug, Clone)]
 pub struct DistillationNeeded {
-    /// How many tokens over budget the undistilled content is.
     pub excess_tokens: u32,
-    /// Message IDs that should be distilled.
     pub messages_to_distill: Vec<MessageId>,
-    /// Human-readable suggestion for the caller.
     pub suggestion: String,
 }
 
@@ -129,13 +114,11 @@ pub struct PreparedContext<'a> {
 }
 
 impl PreparedContext<'_> {
-    /// Materialize messages for an API call.
     #[must_use]
     pub fn api_messages(&self) -> Vec<Message> {
         self.working_context.materialize(&self.manager.history)
     }
 
-    /// Usage stats for UI.
     #[must_use]
     pub fn usage(&self) -> ContextUsage {
         ContextUsage::from_context(&self.working_context)
@@ -201,10 +184,6 @@ impl ContextManager {
         }
     }
 
-    /// Set the configured output limit.
-    ///
-    /// When set, the effective input budget will reserve only this amount
-    /// for output instead of the model's full `max_output` capability.
     /// This allows more input context when users configure smaller output limits.
     pub fn set_output_limit(&mut self, limit: u32) {
         self.configured_output_limit = Some(limit);
@@ -220,16 +199,11 @@ impl ContextManager {
         }
     }
 
-    /// Add a message to history and invalidate working context.
     pub fn push_message(&mut self, message: Message) -> MessageId {
         let token_count = self.counter.count_message(&message);
         self.history.push(message, token_count)
     }
 
-    /// Add a message to history with an associated stream step ID.
-    ///
-    /// Used for assistant messages from streaming responses to enable
-    /// idempotent crash recovery.
     pub fn push_message_with_step_id(
         &mut self,
         message: Message,
@@ -240,24 +214,17 @@ impl ContextManager {
             .push_with_step_id(message, token_count, stream_step_id)
     }
 
-    /// Check if a stream step ID already exists in history.
-    ///
-    /// Used for idempotent crash recovery - if history already contains
-    /// an entry with this `step_id`, we should not recover it again.
+    /// if history already contains an entry with this `step_id`, we should not recover it again.
     #[must_use]
     pub fn has_step_id(&self, step_id: StepId) -> bool {
         self.history.has_step_id(step_id)
     }
 
-    /// Rollback (remove) the last message if it matches the given ID.
-    ///
-    /// This is used for transactional rollback when a stream fails before
-    /// producing any content. Returns the removed message if successful.
+    /// This is used for transactional rollback when a stream fails...
     pub fn rollback_last_message(&mut self, id: MessageId) -> Option<Message> {
         self.history.pop_if_last(id)
     }
 
-    /// Switch to a different model - triggers context adaptation.
     pub fn switch_model(&mut self, new_model: ModelName) -> ContextAdaptation {
         let old_budget = self.effective_budget();
         let resolved = self.registry.get(&new_model);
@@ -293,10 +260,6 @@ impl ContextManager {
         self.current_limits_source = resolved.source();
     }
 
-    /// Build the working context for current model.
-    ///
-    /// Returns an error if distillation is needed to fit within budget, or if
-    /// the most recent messages alone exceed the budget (unrecoverable).
     fn build_working_context(&self) -> Result<WorkingContext, ContextBuildError> {
         #[derive(Debug)]
         enum Block {
@@ -504,7 +467,6 @@ impl ContextManager {
         Ok(ctx)
     }
 
-    /// Prepare a distillation request for the given messages.
     pub fn prepare_distillation(
         &mut self,
         message_ids: &[MessageId],
@@ -561,7 +523,6 @@ impl ContextManager {
         })
     }
 
-    /// Complete a distillation by adding the generated distillate.
     pub fn complete_distillation(
         &mut self,
         scope: DistillationScope,
@@ -592,10 +553,7 @@ impl ContextManager {
         Ok(distillate_id)
     }
 
-    /// Try to restore Distilled messages when budget allows.
-    ///
-    /// This does not mutate history. If the current model's budget can fit original messages for
-    /// previously-Distilled segments, `build_working_context()` will choose originals.
+    /// This does not mutate history. If the current model's budget can fit original messages...
     #[must_use]
     pub fn try_restore_messages(&self) -> usize {
         let Ok(ctx) = self.build_working_context() else {
@@ -614,7 +572,6 @@ impl ContextManager {
             .count()
     }
 
-    /// Build a working context proof for the current model.
     pub fn prepare(&self) -> Result<PreparedContext<'_>, ContextBuildError> {
         let working_context = self.build_working_context()?;
         Ok(PreparedContext {

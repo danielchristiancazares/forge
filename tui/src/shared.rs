@@ -235,7 +235,6 @@ pub(crate) struct ApprovalItem {
     pub(crate) risk_label: String,
     pub(crate) summary: Option<String>,
     pub(crate) details: Vec<String>,
-    /// Homoglyph warnings formatted for display.
     pub(crate) homoglyph_warnings: Vec<String>,
 }
 

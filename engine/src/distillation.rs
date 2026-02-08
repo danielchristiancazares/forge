@@ -1,10 +1,6 @@
 //! Distillation handling for the App.
 //!
-//! This module contains the context distillation logic:
-//! - `start_distillation` - Initiates distillation request
-//! - `poll_distillation` - Polls for distillation completion
-//!
-//! Note: Engine-level retries were removed in favor of transport-layer retries.
+//! Engine-level retries were removed in favor of transport-layer retries.
 //! See `providers/src/retry.rs` for HTTP retry policy.
 
 use super::{

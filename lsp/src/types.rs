@@ -1,14 +1,9 @@
 //! Public types consumed by the engine.
-//!
-//! These types define the interface between `forge-lsp` and `forge-engine`.
-//! The engine constructs [`LspConfig`], receives [`LspEvent`]s, and reads
-//! [`DiagnosticsSnapshot`]s for UI display and agent feedback.
 
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Error constructing a [`ServerConfig`] from raw deserialization data.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ServerConfigError {
     #[error("server command must not be empty")]
@@ -17,8 +12,6 @@ pub enum ServerConfigError {
     EmptyLanguageId,
 }
 
-/// Raw deserialization target for [`ServerConfig`].
-/// Boundary wire format — validated via `TryFrom` before reaching core.
 #[derive(Deserialize)]
 struct RawServerConfig {
     command: String,
@@ -31,11 +24,6 @@ struct RawServerConfig {
     root_markers: Vec<String>,
 }
 
-/// Configuration for the LSP client subsystem.
-///
-/// Private fields; accessors expose read-only views.
-/// `enabled` is a behavioural flag (passes §14.2 memory-layout test:
-/// changing it does not invalidate any field).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct LspConfig {
     #[serde(default)]
@@ -56,11 +44,6 @@ impl LspConfig {
     }
 }
 
-/// Validated language server configuration.
-///
-/// Private fields; invariants enforced at deserialization boundary
-/// via `#[serde(try_from)]` (Authority Boundary).
-/// Empty `command` or `language_id` are structurally rejected.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "RawServerConfig")]
 pub struct ServerConfig {
@@ -128,10 +111,6 @@ pub enum DiagnosticSeverity {
 }
 
 impl DiagnosticSeverity {
-    /// Convert from LSP numeric severity (1=Error, 2=Warning, 3=Info, 4=Hint).
-    ///
-    /// Returns `None` for values outside the LSP-defined range.
-    /// Callers (boundary code) decide the fallback policy.
     #[must_use]
     pub fn from_lsp(value: u64) -> Option<Self> {
         match value {
@@ -159,10 +138,6 @@ impl DiagnosticSeverity {
     }
 }
 
-/// A single diagnostic from a language server.
-///
-/// Fields are private; construction is restricted to `pub(crate)` (Authority
-/// Boundary). External consumers read via accessors.
 #[derive(Debug, Clone)]
 pub struct ForgeDiagnostic {
     severity: DiagnosticSeverity,
@@ -177,11 +152,6 @@ pub struct ForgeDiagnostic {
 }
 
 impl ForgeDiagnostic {
-    /// Construct a diagnostic with all required fields.
-    ///
-    /// This is the single construction path (Authority Boundary).
-    /// External callers may construct diagnostics for testing; the private
-    /// fields prevent mutation after construction.
     #[must_use]
     pub fn new(
         severity: DiagnosticSeverity,
@@ -251,11 +221,6 @@ pub enum ServerStopReason {
     Failed(String),
 }
 
-/// An event emitted by the LSP subsystem.
-///
-/// Events are verbs (transitions that occurred), not storable nouns.
-/// The manager reacts by changing which servers are in its map
-/// (state-as-location, IFA §9).
 #[derive(Debug)]
 pub enum LspEvent {
     /// Server stopped running. Manager removes it from the active map.
@@ -270,11 +235,6 @@ pub enum LspEvent {
     },
 }
 
-/// Immutable snapshot of all diagnostics, suitable for UI rendering.
-///
-/// Fields are private; counts are computed from the canonical source (`files`).
-/// This eliminates the synchronization obligation between cached counts and
-/// the actual diagnostics (IFA §7.6).
 #[derive(Debug, Clone, Default)]
 pub struct DiagnosticsSnapshot {
     /// Per-file diagnostics, sorted with error-containing files first.

@@ -1,11 +1,4 @@
 //! LspManager facade — public API consumed by the engine.
-//!
-//! The engine interacts with language servers through this single type.
-//! It handles server lifecycle, file routing by extension, and diagnostics
-//! aggregation.
-//!
-//! Construction IS initialization — `start()` spawns all configured servers.
-//! No two-phase init, no `started` flag (IFA §13.4).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,10 +10,8 @@ use crate::protocol;
 use crate::server::RunningServer;
 use crate::types::{DiagnosticsSnapshot, ForgeDiagnostic, LspConfig, LspEvent, ServerStopReason};
 
-/// Channel capacity for the event channel between server tasks and the manager.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
-/// Build extension → server name map from config.
 fn build_extension_map(config: &LspConfig) -> HashMap<String, String> {
     let mut extension_map = HashMap::new();
     let mut server_names: Vec<&String> = config.servers().keys().collect();
@@ -40,26 +31,16 @@ fn build_extension_map(config: &LspConfig) -> HashMap<String, String> {
     extension_map
 }
 
-/// Public facade for the LSP client subsystem.
-///
-/// Constructed via `start()` which spawns all configured servers.
-/// Running servers live in the `servers` map; removal is the state
-/// transition for death (IFA §9: state-as-location).
 pub struct LspManager {
     servers: HashMap<String, RunningServer>,
     diagnostics: DiagnosticsStore,
     event_rx: mpsc::Receiver<LspEvent>,
     #[cfg_attr(not(test), allow(dead_code))]
     event_tx: mpsc::Sender<LspEvent>,
-    /// Maps file extension (e.g. "rs") → server name (e.g. "rust").
     extension_map: HashMap<String, String>,
 }
 
 impl LspManager {
-    /// Construct and start the LSP manager, spawning all configured servers.
-    ///
-    /// Servers that fail to start are logged and skipped — a bad server
-    /// config should not prevent the rest from working.
     pub async fn start(config: LspConfig, workspace_root: &Path) -> Self {
         let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         let extension_map = build_extension_map(&config);
@@ -97,12 +78,6 @@ impl LspManager {
         }
     }
 
-    /// Notify that a file was created or modified.
-    ///
-    /// Routes to the appropriate server based on file extension.
-    /// Skips files that don't match any configured server.
-    /// If the server is in the map it was alive at last poll — channel
-    /// errors are honest I/O failures, not structural lies.
     pub async fn on_file_changed(&mut self, path: &Path, text: &str) {
         let ext = match path.extension().and_then(|e| e.to_str()) {
             Some(e) => e.to_string(),
@@ -135,11 +110,6 @@ impl LspManager {
         }
     }
 
-    /// Drain pending events from server tasks, up to `budget`.
-    ///
-    /// This is non-blocking — returns immediately if no events are available.
-    /// Diagnostics are accumulated in the store; dead servers are removed
-    /// from the map (state-as-location).
     pub fn poll_events(&mut self, budget: usize) -> usize {
         let mut count = 0;
         while count < budget {
@@ -156,13 +126,10 @@ impl LspManager {
         count
     }
 
-    /// Handle a single LSP event.
     fn handle_event(&mut self, event: LspEvent) {
         match event {
             LspEvent::ServerStopped { server, reason } => {
-                // State-as-location: removal IS the state transition.
-                // Drop closes channels; child has kill_on_drop(true).
-                match &reason {
+                match reason {
                     ServerStopReason::Exited => {
                         tracing::info!(server = %server, "LSP server exited");
                     }
@@ -183,26 +150,22 @@ impl LspManager {
         }
     }
 
-    /// Get an immutable snapshot of all diagnostics.
     #[must_use]
     pub fn snapshot(&self) -> DiagnosticsSnapshot {
         self.diagnostics.snapshot()
     }
 
-    /// Get only errors for specific files (for agent feedback).
+    /// Get only errors for specific files.
     #[must_use]
     pub fn errors_for_files(&self, paths: &[PathBuf]) -> Vec<(PathBuf, Vec<ForgeDiagnostic>)> {
         self.diagnostics.errors_for_files(paths)
     }
 
-    /// Whether the LSP subsystem has at least one running server.
-    /// State-as-location: running servers are in the map.
     #[must_use]
     pub fn has_running_servers(&self) -> bool {
         !self.servers.is_empty()
     }
 
-    /// Gracefully shut down all servers.
     pub async fn shutdown(&mut self) {
         let servers = std::mem::take(&mut self.servers);
         for (name, server) in servers {

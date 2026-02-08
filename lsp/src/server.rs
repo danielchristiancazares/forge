@@ -1,12 +1,4 @@
 //! Server handle — owns a child process and manages the LSP lifecycle.
-//!
-//! [`RunningServer`] is a proof object: its existence proves that a language
-//! server process was spawned and the LSP initialize handshake succeeded.
-//!
-//! - `start()` is the Authority Boundary — produces `RunningServer` or `Err`.
-//! - `shutdown()` consumes `self` — non-forking transition (IFA §3.3).
-//! - Async death is communicated via `LspEvent::ServerStopped` so the manager
-//!   can remove the server from its map (state-as-location, IFA §9).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -20,43 +12,32 @@ use crate::codec::{FrameReader, FrameWriter};
 use crate::protocol::{self, Notification, PublishDiagnosticsParams, Request};
 use crate::types::{LspEvent, ServerConfig, ServerStopReason};
 
-/// Timeout for the initialize handshake.
 const INIT_TIMEOUT_SECS: u64 = 30;
 
-/// Timeout for shutdown request before killing the process.
 const SHUTDOWN_TIMEOUT_SECS: u64 = 2;
 
-/// Channel capacity for the writer command channel.
 const WRITER_CHANNEL_CAPACITY: usize = 64;
 
-/// Internal command sent to the writer task.
 enum WriterCommand {
-    /// Send a frame to the server.
     Send(serde_json::Value),
-    /// Shut down the writer task.
     Shutdown,
 }
 
-/// Parsed JSON-RPC incoming frame — discriminated union over the three
-/// wire-level message shapes (IFA §9.2: tag fields → typed variants).
 enum IncomingFrame {
-    /// Response to a client-initiated request (has `id` + `result`/`error`).
-    Response { id: u64, body: serde_json::Value },
-    /// Server→client request (has `id` + `method`); must be answered.
+    Response {
+        id: u64,
+        body: serde_json::Value,
+    },
     ServerRequest {
         id: serde_json::Value,
         method: String,
     },
-    /// Server→client notification (has `method`, no `id`).
     Notification {
         method: String,
         params: Option<serde_json::Value>,
     },
 }
 
-/// Parse a raw JSON-RPC frame into a typed `IncomingFrame`.
-///
-/// Returns `None` for malformed frames that don't match any JSON-RPC shape.
 fn parse_incoming(frame: &serde_json::Value) -> Option<IncomingFrame> {
     let id = frame.get("id");
     let method = frame
@@ -82,11 +63,6 @@ fn parse_incoming(frame: &serde_json::Value) -> Option<IncomingFrame> {
     }
 }
 
-/// A running language server process.
-///
-/// Existence is proof of successful initialization (Authority Boundary: `start()`).
-/// No `state` field — presence in the manager's `servers` map is the state
-/// (IFA §9: state-as-location).
 pub(crate) struct RunningServer {
     name: String,
     language_id: String,
@@ -107,10 +83,6 @@ pub(crate) struct RunningServer {
 }
 
 impl RunningServer {
-    /// Spawn a language server and perform the LSP initialize handshake.
-    ///
-    /// Returns a `RunningServer` (proof of successful init) or `Err`.
-    /// The `Starting` state is transient and internal to this function.
     pub async fn start(
         name: String,
         config: &ServerConfig,
@@ -133,7 +105,7 @@ impl RunningServer {
             tokio::sync::Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>,
         > = std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
-        // Writer task: serializes frames to the server's stdin
+        // Writer task
         let (writer_tx, mut writer_rx) = mpsc::channel::<WriterCommand>(WRITER_CHANNEL_CAPACITY);
         let writer_handle = tokio::spawn(async move {
             let mut writer = FrameWriter::new(stdin);
@@ -150,9 +122,7 @@ impl RunningServer {
             }
         });
 
-        // Reader task: routes responses by id, dispatches notifications.
-        // On EOF/error, sends ServerStopped so the manager removes the server
-        // from its map (state-as-location).
+        // Reader task
         let reader_pending = pending.clone();
         let reader_event_tx = event_tx.clone();
         let reader_writer_tx = writer_tx.clone();
@@ -214,13 +184,6 @@ impl RunningServer {
         Ok(handle)
     }
 
-    /// Dispatch a single frame from the server.
-    ///
-    /// Parses the raw JSON into a typed `IncomingFrame` (IFA §9.2), then
-    /// matches on the discriminated union:
-    /// - **Response**: route to pending request
-    /// - **ServerRequest**: auto-reply with "method not found"
-    /// - **Notification**: dispatch to event handler
     async fn dispatch_frame(
         frame: &serde_json::Value,
         pending: &tokio::sync::Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>,
@@ -262,7 +225,6 @@ impl RunningServer {
         }
     }
 
-    /// Handle a server notification by method name.
     async fn handle_notification(
         server_name: &str,
         method: &str,
@@ -296,7 +258,6 @@ impl RunningServer {
         }
     }
 
-    /// Perform the LSP initialize handshake.
     async fn initialize(&mut self, workspace_root: &Path) -> Result<()> {
         let root_uri = protocol::path_to_file_uri(workspace_root)
             .context("converting workspace root to URI")?;
@@ -319,7 +280,6 @@ impl RunningServer {
         Ok(())
     }
 
-    /// Send a JSON-RPC request and wait for the response.
     async fn send_request(
         &mut self,
         method: &'static str,
@@ -364,7 +324,6 @@ impl RunningServer {
         Ok(response)
     }
 
-    /// Send a JSON-RPC notification (no response expected).
     async fn send_notification(
         &self,
         method: &'static str,
@@ -379,11 +338,7 @@ impl RunningServer {
         Ok(())
     }
 
-    /// Notify the server that a file was opened or changed.
-    ///
-    /// Automatically sends `didOpen` for the first notification of a URI,
-    /// and `didChange` for subsequent notifications. Tracks per-document
-    /// versions with monotonically increasing counters.
+    /// Tracks per-document versions with monotonically increasing counters.
     ///
     /// No state guard — holding a `RunningServer` is proof of successful init.
     /// Channel errors are returned as `Err` (honest I/O failure).
@@ -406,7 +361,7 @@ impl RunningServer {
         }
     }
 
-    /// Gracefully shut down the server. Consumes self (non-forking transition).
+    /// Gracefully shut down the server. Consumes self.
     pub async fn shutdown(mut self) {
         // Try graceful shutdown
         if let Ok(response) = self.send_request("shutdown", None).await

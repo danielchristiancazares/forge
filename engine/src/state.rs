@@ -1,7 +1,4 @@
 //! Operation state machine types.
-//!
-//! This module contains the core state machine for tracking what the App is currently doing.
-//! These types are internal to the engine crate.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -209,11 +206,6 @@ impl ActiveStream {
     }
 }
 
-/// A background distillation task.
-///
-/// Holds the state for an in-progress distillation operation:
-/// - The message IDs being distilled
-/// - The `JoinHandle` for the async task
 #[derive(Debug)]
 pub struct DistillationTask {
     pub(crate) scope: DistillationScope,
@@ -272,7 +264,6 @@ pub(crate) struct ToolBatch {
     pub(crate) turn: TurnContext,
 }
 
-/// Shared data for all approval phases.
 #[derive(Debug)]
 pub(crate) struct ApprovalData {
     pub(crate) requests: Vec<ConfirmationRequest>,

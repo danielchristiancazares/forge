@@ -1,14 +1,7 @@
 //! Compact tool call display formatting.
-//!
-//! Converts tool calls from verbose JSON to function-call style:
-//! `Search("pattern value")` instead of multi-line JSON.
 
 use serde_json::Value;
 
-/// Format a tool call in compact function-call style.
-///
-/// Returns format like `Read(src/main.rs)` or just `GitStatus` for tools without
-/// a displayable primary argument.
 pub fn format_tool_call_compact(name: &str, args: &Value) -> String {
     let display_name = canonical_tool_name(name);
 
@@ -78,7 +71,6 @@ pub(crate) fn canonical_tool_name(name: &str) -> std::borrow::Cow<'static, str> 
     }
 }
 
-/// Extract the primary displayable argument based on tool name.
 fn extract_primary_arg(name: &str, args: &Value) -> Option<String> {
     let obj = args.as_object()?;
 
@@ -105,7 +97,6 @@ fn extract_primary_arg(name: &str, args: &Value) -> Option<String> {
     obj.get(key).and_then(|v| v.as_str()).map(String::from)
 }
 
-/// Format git commit: `type(scope): message` or `type: message`.
 fn format_git_commit(obj: &serde_json::Map<String, Value>) -> Option<String> {
     let commit_type = obj.get("type")?.as_str()?;
     let message = obj.get("message")?.as_str()?;
@@ -118,7 +109,6 @@ fn format_git_commit(obj: &serde_json::Map<String, Value>) -> Option<String> {
     Some(result)
 }
 
-/// Format git diff: `from..to` or flags/paths.
 fn format_git_diff(obj: &serde_json::Map<String, Value>) -> Option<String> {
     // Check for ref-to-ref comparison
     if let (Some(from), Some(to)) = (
@@ -155,7 +145,6 @@ fn format_git_diff(obj: &serde_json::Map<String, Value>) -> Option<String> {
     None
 }
 
-/// Format git add: `-A`, `-u`, or file count.
 fn format_git_add(obj: &serde_json::Map<String, Value>) -> Option<String> {
     if obj.get("all").and_then(serde_json::Value::as_bool) == Some(true) {
         return Some("-A".to_string());
@@ -171,12 +160,10 @@ fn format_git_add(obj: &serde_json::Map<String, Value>) -> Option<String> {
     None
 }
 
-/// Format git stash: action name.
 fn format_git_stash(obj: &serde_json::Map<String, Value>) -> Option<String> {
     obj.get("action").and_then(|v| v.as_str()).map(String::from)
 }
 
-/// Format git restore: file count.
 fn format_git_restore(obj: &serde_json::Map<String, Value>) -> Option<String> {
     if let Some(paths) = obj.get("paths").and_then(|v| v.as_array())
         && !paths.is_empty()
@@ -186,7 +173,6 @@ fn format_git_restore(obj: &serde_json::Map<String, Value>) -> Option<String> {
     None
 }
 
-/// Format git branch: create/delete/rename info.
 fn format_git_branch(obj: &serde_json::Map<String, Value>) -> Option<String> {
     if let Some(name) = obj.get("create").and_then(|v| v.as_str()) {
         return Some(format!("create {name}"));
@@ -212,7 +198,6 @@ fn format_git_branch(obj: &serde_json::Map<String, Value>) -> Option<String> {
     None
 }
 
-/// Format git checkout: branch/commit/paths.
 fn format_git_checkout(obj: &serde_json::Map<String, Value>) -> Option<String> {
     if let Some(branch) = obj.get("create_branch").and_then(|v| v.as_str()) {
         return Some(format!("-b {branch}"));
@@ -231,12 +216,10 @@ fn format_git_checkout(obj: &serde_json::Map<String, Value>) -> Option<String> {
     None
 }
 
-/// Format git show: commit ref.
 fn format_git_show(obj: &serde_json::Map<String, Value>) -> Option<String> {
     obj.get("commit").and_then(|v| v.as_str()).map(String::from)
 }
 
-/// Format git log: path or filters.
 fn format_git_log(obj: &serde_json::Map<String, Value>) -> Option<String> {
     if let Some(path) = obj.get("path").and_then(|v| v.as_str()) {
         return Some(path.to_string());
@@ -253,7 +236,6 @@ fn format_git_log(obj: &serde_json::Map<String, Value>) -> Option<String> {
     None
 }
 
-/// Format `apply_patch`: extract file path(s) from LP1 patch content.
 fn format_patch_summary(obj: &serde_json::Map<String, Value>) -> Option<String> {
     if let Some(patch) = obj.get("patch").and_then(|v| v.as_str()) {
         // Extract file paths from LP1 format (lines starting with "F ")
@@ -300,7 +282,6 @@ fn format_patch_summary(obj: &serde_json::Map<String, Value>) -> Option<String> 
     }
 }
 
-/// Format build/test: working dir or build system.
 fn format_build_test(obj: &serde_json::Map<String, Value>) -> Option<String> {
     if let Some(system) = obj.get("build_system").and_then(|v| v.as_str()) {
         return Some(system.to_string());
@@ -311,7 +292,6 @@ fn format_build_test(obj: &serde_json::Map<String, Value>) -> Option<String> {
     None
 }
 
-/// Fallback: try common argument names.
 fn try_common_keys(obj: &serde_json::Map<String, Value>) -> Option<String> {
     const COMMON_KEYS: &[&str] = &["pattern", "path", "query", "command", "url", "file", "name"];
 
@@ -323,7 +303,6 @@ fn try_common_keys(obj: &serde_json::Map<String, Value>) -> Option<String> {
     None
 }
 
-/// Truncate a string to max character count, adding ellipsis if needed.
 fn truncate(s: &str, max_chars: usize) -> String {
     let char_count = s.chars().count();
     if char_count <= max_chars {

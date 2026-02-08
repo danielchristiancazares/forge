@@ -1,13 +1,9 @@
 //! Model token limits and registry.
-//!
-//! This module provides [`ModelLimits`] for storing token constraints per model,
-//! and [`ModelRegistry`] for looking up limits by validated model name.
 
 use std::collections::HashMap;
 
 use forge_types::{ModelName, PredefinedModel};
 
-/// Each model has a maximum context window (input tokens) and maximum output tokens.
 /// The effective input budget accounts for output reservation and a safety margin.
 ///
 /// # Example
@@ -52,11 +48,7 @@ impl ModelLimits {
         self.effective_input_budget_with_reserved(self.max_output)
     }
 
-    /// Effective input budget with custom reserved output tokens.
-    ///
-    /// Use this when you have a configured output limit that's lower than
-    /// the model's maximum output capability. The reserved amount is clamped
-    /// to the model's `max_output`.
+    /// The reserved amount is clamped to the model's `max_output`.
     #[must_use]
     pub fn effective_input_budget_with_reserved(&self, reserved_output: u32) -> u32 {
         let reserved = reserved_output.min(self.max_output);
@@ -77,18 +69,12 @@ impl ModelLimits {
     }
 }
 
-/// Where model limits came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelLimitsSource {
-    /// Exact match from an override.
     Override,
-    /// Matched a known model from the catalog.
     Catalog(PredefinedModel),
 }
 
-/// Result of looking up model limits.
-///
-/// Contains both the limits and the source (override vs prefix match).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedModelLimits {
     limits: ModelLimits,
@@ -123,9 +109,6 @@ fn default_limits_for(model: PredefinedModel) -> ModelLimits {
     }
 }
 
-/// Registry of known model limits with support for custom overrides.
-///
-/// The registry provides model limits through a two-tier lookup:
 /// 1. First, check custom overrides set via [`ModelRegistry::set_override`]
 /// 2. If no override exists, use the canonical model catalog
 ///
@@ -158,12 +141,6 @@ impl ModelRegistry {
         }
     }
 
-    /// Look up model limits for a validated model.
-    ///
-    /// Lookup order:
-    /// 1. Exact match in overrides
-    /// 2. Exact match in the model catalog
-    ///
     #[must_use]
     pub fn get(&self, model: &ModelName) -> ResolvedModelLimits {
         let predefined = model.predefined();
@@ -175,21 +152,11 @@ impl ModelRegistry {
         ResolvedModelLimits::new(limits, ModelLimitsSource::Catalog(predefined))
     }
 
-    /// Sets a custom override for a specific model.
-    ///
-    /// Overrides take precedence over catalog defaults for exact matches.
-    ///
     #[cfg(test)]
     pub fn set_override(&mut self, model: PredefinedModel, limits: ModelLimits) {
         self.overrides.insert(model, limits);
     }
 
-    /// Removes a custom override for a model.
-    ///
-    /// After removal, the model will use catalog defaults.
-    ///
-    /// # Returns
-    ///
     /// The removed limits if an override existed, or `None` otherwise.
     #[cfg(test)]
     pub fn remove_override(&mut self, model: PredefinedModel) -> Option<ModelLimits> {

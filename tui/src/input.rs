@@ -79,7 +79,6 @@ impl PasteDetector {
     }
 }
 
-/// Dedicated blocking input reader. Rendering consumes events via `try_recv` only.
 pub struct InputPump {
     rx: mpsc::Receiver<InputMsg>,
     stop: Arc<AtomicBool>,
@@ -104,7 +103,6 @@ impl InputPump {
         }
     }
 
-    /// Deterministic shutdown (use before tearing down terminal session / switching modes).
     pub async fn shutdown(&mut self) {
         // Close the receiver first to ensure the input thread unblocks if it is currently
         // backpressured on a send (e.g., during a large paste).
@@ -160,8 +158,6 @@ fn input_loop(stop: Arc<AtomicBool>, tx: mpsc::Sender<InputMsg>) {
     }
 }
 
-/// Drain queued input events without blocking rendering.
-/// Returns true if the app should quit (same semantics as before).
 pub fn handle_events(app: &mut App, input: &mut InputPump) -> Result<bool> {
     for _ in 0..MAX_EVENTS_PER_FRAME {
         match input.rx.try_recv() {
@@ -197,9 +193,6 @@ pub fn handle_events(app: &mut App, input: &mut InputPump) -> Result<bool> {
     Ok(app.should_quit())
 }
 
-/// Apply a single input event to the app.
-/// `paste_active` indicates the input stream looks like a paste burst (fallback when the
-/// terminal doesn't emit `Event::Paste`).
 fn apply_event(app: &mut App, event: Event, paste_active: bool) -> bool {
     match event {
         Event::Key(key) => {
@@ -391,9 +384,6 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Handle insert mode input.
-/// `paste_active` indicates the input stream looks like a paste burst. In this case, bare Enter
-/// inserts a newline instead of submitting.
 fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
     // Tool approval modal takes priority over insert mode
     if app.tool_approval_requests().is_some() {

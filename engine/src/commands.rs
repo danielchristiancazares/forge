@@ -1,6 +1,4 @@
 //! Command processing for the App.
-//!
-//! This module handles slash commands like /quit, /clear, /model, etc.
 
 use super::{
     ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, SessionChangeLog,
@@ -208,7 +206,6 @@ pub(crate) fn normalize_command_name(raw: &str) -> Option<CommandKind> {
         .map(|alias| alias.kind)
 }
 
-/// Parsed command with typed arguments.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command<'a> {
     Quit,
@@ -231,8 +228,6 @@ pub(crate) enum Command<'a> {
 }
 
 impl<'a> Command<'a> {
-    /// Parse a raw command string into a typed Command.
-    ///
     /// Accepts optional leading `/` and is case-insensitive (e.g., `/Clear`, `MODEL`).
     pub(crate) fn parse(raw: &'a str) -> Self {
         let parts: Vec<&str> = raw.split_whitespace().collect();
@@ -273,8 +268,6 @@ impl<'a> Command<'a> {
 }
 
 impl super::App {
-    /// Cancel the current active operation (streaming/tools), if any.
-    /// Returns true if a cancellation happened.
     pub fn cancel_active_operation(&mut self) -> bool {
         match self.replace_with_idle() {
             OperationState::Streaming(active) => {
@@ -332,7 +325,6 @@ impl super::App {
         }
     }
 
-    /// Process a slash command entered by the user.
     pub fn process_command(&mut self, command: EnteredCommand) {
         // Record command to history for Up/Down navigation
         if !command.raw.is_empty() {

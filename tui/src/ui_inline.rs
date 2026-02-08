@@ -43,7 +43,6 @@ fn inline_input_height(mode: InputMode) -> u16 {
     }
 }
 
-/// Returns the viewport height needed for inline mode.
 #[must_use]
 pub fn inline_viewport_height(mode: InputMode) -> u16 {
     // +1 line above the input for a minimal output/status line.

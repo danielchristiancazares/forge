@@ -1,16 +1,12 @@
 //! LLM provider clients with unified streaming support.
 //!
-//! This crate handles HTTP communication with Claude, OpenAI, and Gemini APIs,
-//! providing a unified streaming interface that abstracts provider differences
-//! while preserving provider-specific features.
-//!
 //! # Architecture
 //!
 //! The crate is organized around a provider dispatch pattern:
 //!
 //! - [`send_message`] - Unified entry point that dispatches to provider-specific implementations
 //! - [`claude`] - Anthropic Claude API client (Messages API)
-//! - [`openai`] - OpenAI API client (Responses API for GPT-5.x)
+//! - [`openai`] - OpenAI API client (Responses API; GPT-5 options when applicable)
 //! - [`gemini`] - Google Gemini API client (GenerateContent API)
 //!
 //! All providers emit events through a [`tokio::sync::mpsc::Sender<StreamEvent>`]
@@ -30,6 +26,7 @@
 //! |-------|-------------|
 //! | `TextDelta` | Incremental text content from the model |
 //! | `ThinkingDelta` | Extended thinking/reasoning content |
+//! | `ThinkingSignature` | Provider thinking signature for replay/verification (provider-specific) |
 //! | `ToolCallStart` | Beginning of a tool/function call |
 //! | `ToolCallDelta` | Incremental tool call arguments (JSON) |
 //! | `Usage` | Token consumption metrics |
@@ -38,9 +35,10 @@
 //!
 //! # Error Handling
 //!
-//! Errors during streaming are delivered as `StreamEvent::Error` events rather than
-//! `Result::Err` returns. This allows partial responses to be captured before an error
-//! occurs. Only unrecoverable failures like network errors return `Err`.
+//! Most provider/API errors during streaming are delivered as `StreamEvent::Error` events
+//! rather than `Result::Err` returns, allowing partial output to be captured before the
+//! error occurs. Low-level failures that prevent reading the HTTP response stream (e.g.
+//! mid-stream I/O errors) may still return `Err`.
 
 // Pedantic lint configuration - these are intentional design choices
 #![allow(clippy::missing_errors_doc)] // Result-returning functions are self-explanatory
@@ -79,19 +77,6 @@ const MAX_SSE_PARSE_ERROR_PREVIEW: usize = 160;
 
 const MAX_ERROR_BODY_BYTES: usize = 32 * 1024;
 
-/// Shared HTTP client for all provider requests.
-///
-/// This client is configured with:
-/// - Connection timeout: 30 seconds
-/// - No read/total timeout (SSE streams can run for extended periods)
-/// - Redirects disabled (API endpoints should never redirect)
-/// - HTTPS only
-/// - TCP keepalive (REQ-1): idle 60s, interval 60s, count 5
-/// - Connection pool (REQ-2): 100 per-host, 90s idle timeout
-/// - Platform headers (REQ-6): X-Stainless-Lang, OS, Arch
-///
-/// For synchronous requests needing a timeout (like distillation),
-/// use [`http_client_with_timeout`] instead.
 pub fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -104,12 +89,7 @@ pub fn http_client() -> &'static reqwest::Client {
     })
 }
 
-/// Base client builder with shared configuration.
-///
-/// Applies:
-/// - REQ-1: TCP keepalive settings
-/// - REQ-2: Connection pool limits
-/// - REQ-6: Platform headers (X-Stainless-*)
+/// REQ-6: Platform headers (X-Stainless-*)
 fn base_client_builder() -> reqwest::ClientBuilder {
     use reqwest::header::{HeaderMap, HeaderValue};
 
@@ -139,14 +119,6 @@ fn base_client_builder() -> reqwest::ClientBuilder {
         .default_headers(default_headers)
 }
 
-/// HTTP client with a total request timeout for synchronous operations.
-///
-/// Use this for non-streaming requests like distillation where you want
-/// to bound the total request time.
-///
-/// Inherits all base client settings (TCP keepalive, pool limits, platform headers).
-///
-/// Returns `Err` if the client cannot be built (e.g., TLS backend unavailable).
 pub fn http_client_with_timeout(timeout_secs: u64) -> Result<reqwest::Client, reqwest::Error> {
     base_client_builder()
         .timeout(Duration::from_secs(timeout_secs))
@@ -202,21 +174,11 @@ enum SseParseAction {
     Emit(Vec<StreamEvent>),
     /// Stream is done (message_stop, response.completed, finishReason=STOP)
     Done,
-    /// Fatal error, stop processing
     Error(String),
 }
 
-/// Provider-specific SSE event parser.
-///
-/// Each provider implements this trait to parse their JSON event payloads
-/// into unified [`StreamEvent`]s. The shared [`process_sse_stream`] function
-/// handles common SSE logic (buffering, timeouts, error tracking) while
-/// delegating JSON interpretation to the provider-specific parser.
 trait SseParser {
-    /// Parse a JSON payload and return the action to take.
     fn parse(&mut self, json: &serde_json::Value) -> SseParseAction;
-
-    /// Provider name for error logging.
     fn provider_name(&self) -> &'static str;
 }
 
@@ -357,8 +319,6 @@ async fn process_sse_stream<P: SseParser>(
     Ok(())
 }
 
-/// Read an HTTP error response body with size limits.
-/// Prevents memory exhaustion from large error payloads.
 pub async fn read_capped_error_body(response: reqwest::Response) -> String {
     use futures_util::StreamExt;
     let mut body = Vec::new();
@@ -375,20 +335,19 @@ pub async fn read_capped_error_body(response: reqwest::Response) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
-/// Configuration for API requests, bundling credentials and model selection.
+/// Provider + model configuration with provider-specific tuning knobs.
 ///
-/// This type enforces provider consistency at construction time: you cannot
-/// create an `ApiConfig` with a Claude API key and an OpenAI model. This makes
-/// provider mismatch errors impossible at runtime.
+/// The constructor enforces that the API key and model belong to the same provider.
 ///
-/// # Builder Pattern
+/// ```rust
+/// use forge_providers::ApiConfig;
+/// use forge_types::{ApiKey, OpenAIRequestOptions, Provider};
 ///
-/// Use the `with_*` methods to configure provider-specific options:
-///
-/// ```ignore
-/// let config = ApiConfig::new(api_key, model)?
+/// let config = ApiConfig::new(ApiKey::OpenAI("test".to_string()), Provider::OpenAI.default_model())
+///     .unwrap()
 ///     .with_openai_options(OpenAIRequestOptions::default())
 ///     .with_gemini_thinking_enabled(true);
+/// # let _ = config;
 /// ```
 #[derive(Debug, Clone)]
 pub struct ApiConfig {
@@ -487,16 +446,6 @@ impl ApiConfig {
     }
 }
 
-/// Send a chat request and stream the response.
-///
-/// # Arguments
-/// * `config` - API configuration (key, model, options)
-/// * `messages` - Conversation history
-/// * `limits` - Output token limits (with optional thinking budget)
-/// * `system_prompt` - Optional system prompt to inject
-/// * `tools` - Optional list of tool definitions for function calling
-/// * `gemini_cache` - Optional Gemini cache reference (ignored for other providers)
-/// * `tx` - Channel sender for streaming events
 pub async fn send_message(
     config: &ApiConfig,
     messages: &[CacheableMessage],
@@ -528,15 +477,7 @@ pub async fn send_message(
     }
 }
 
-/// Anthropic Claude API implementation.
-///
-/// Communicates with `https://api.anthropic.com/v1/messages` using SSE streaming.
-///
-/// # Features
-///
-/// - Extended thinking mode via `OutputLimits::with_thinking()`
-/// - Ephemeral caching via `CacheHint::Ephemeral` on message content
-/// - Tool calling with `tool_use` content blocks
+/// tool calling with `tool_use` content blocks.
 ///
 /// # Thinking Mode Constraints
 ///
@@ -578,7 +519,6 @@ pub mod claude {
         }
     }
 
-    /// Build a content block with optional `cache_control`.
     fn content_block(text: &str, cache_hint: CacheHint) -> serde_json::Value {
         match cache_hint {
             CacheHint::Default => json!({

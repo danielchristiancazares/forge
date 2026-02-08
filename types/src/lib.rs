@@ -44,8 +44,6 @@ use std::borrow::Cow;
 use std::time::SystemTime;
 use thiserror::Error;
 
-/// A string guaranteed to be non-empty after trimming whitespace.
-///
 /// This type enforces the invariant that the contained string is never empty
 /// (or whitespace-only) after trimming. Validation occurs at construction time,
 /// so all operations on an existing `NonEmptyString` can assume the content is valid.
@@ -77,10 +75,7 @@ impl NonEmptyString {
         }
     }
 
-    /// Build a non-empty string by prefixing a known non-empty string.
-    ///
-    /// The `content` argument already satisfies the trim invariant, so the
-    /// concatenated result cannot be empty after trimming.
+    /// The `content` argument already satisfies the trim invariant...
     #[must_use]
     pub fn prefixed(prefix: NonEmptyStaticStr, separator: &str, content: &NonEmptyString) -> Self {
         let mut value =
@@ -144,14 +139,7 @@ impl AsRef<str> for NonEmptyString {
     }
 }
 
-/// A compile-time checked non-empty static string.
-///
-/// Unlike [`NonEmptyString`], this type can be constructed in `const` contexts
-/// for static strings. The assertion happens at compile time via `const fn`.
-///
-/// **Note**: This only validates non-emptiness, not whitespace. A whitespace-only
-/// `NonEmptyStaticStr` will fail when converted to `NonEmptyString` (which enforces
-/// the trim invariant).
+/// **Note**: This only validates non-emptiness, not whitespace...
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NonEmptyStaticStr(&'static str);
 
@@ -176,8 +164,6 @@ impl TryFrom<NonEmptyStaticStr> for NonEmptyString {
     }
 }
 
-/// Content guaranteed safe for persistence (no standalone carriage returns).
-///
 /// This type enforces the invariant that standalone `\r` characters are
 /// normalized to `\n`. The normalization occurs at construction time
 /// (single Authority Boundary per IFA-7).
@@ -224,7 +210,6 @@ impl PersistableContent {
         }
     }
 
-    /// Fast path check: does input contain standalone CR?
     fn needs_normalization(input: &str) -> bool {
         let bytes = input.as_bytes();
         for (i, &b) in bytes.iter().enumerate() {
@@ -235,7 +220,6 @@ impl PersistableContent {
         false
     }
 
-    /// Normalize standalone `\r` to `\n`, preserve `\r\n`.
     fn normalize(input: &str) -> String {
         let mut result = String::with_capacity(input.len());
         let mut chars = input.chars().peekable();
@@ -254,25 +238,21 @@ impl PersistableContent {
         result
     }
 
-    /// Get the content as a string slice.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    /// Consume and return the inner string.
     #[must_use]
     pub fn into_inner(self) -> String {
         self.0
     }
 
-    /// Check if the content is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    /// Get the length in bytes.
     #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
@@ -305,20 +285,6 @@ impl std::fmt::Display for PersistableContent {
     }
 }
 
-/// LLM provider identifier.
-///
-/// | Variant | API | Default Model |
-/// |---------|-----|---------------|
-/// | `Claude` | Anthropic Messages API | `claude-opus-4-6` |
-/// | `OpenAI` | OpenAI Responses API | `gpt-5.2` |
-/// | `Gemini` | Google GenerateContent API | `gemini-3-pro-preview` |
-///
-/// # Parsing
-///
-/// The [`Provider::parse`] method accepts various aliases:
-/// - Claude: `"claude"`, `"anthropic"`
-/// - OpenAI: `"openai"`, `"gpt"`, `"chatgpt"`
-/// - Gemini: `"gemini"`, `"google"`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum Provider {
     #[default]
@@ -487,7 +453,6 @@ impl Provider {
     }
 }
 
-/// Predefined model options for the model selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PredefinedModel {
     ClaudeOpus,
@@ -546,7 +511,6 @@ impl PredefinedModel {
         }
     }
 
-    /// Short model name without provider prefix (e.g., "Opus 4.5").
     #[must_use]
     pub const fn model_name(self) -> &'static str {
         match self {
@@ -559,7 +523,6 @@ impl PredefinedModel {
         }
     }
 
-    /// Provider company name (e.g., "Anthropic", "OpenAI", "Google").
     #[must_use]
     pub const fn firm_name(self) -> &'static str {
         match self {
@@ -569,7 +532,6 @@ impl PredefinedModel {
         }
     }
 
-    /// Canonical model identifier used for API calls and config.
     #[must_use]
     pub const fn model_id(self) -> &'static str {
         match self {
@@ -651,22 +613,6 @@ pub enum ModelParseError {
     UnknownModel(String),
 }
 
-/// Provider-scoped model name.
-///
-/// This type prevents mixing model names across providers and ensures only
-/// known models can be constructed.
-///
-/// # Memory Optimization
-///
-/// Known models use `Cow::Borrowed` with static strings, avoiding allocation.
-/// User-supplied models use `Cow::Owned` to store the string.
-///
-/// # Validation
-///
-/// Each provider enforces prefix rules:
-/// - Claude: must start with `claude-`
-/// - OpenAI: must start with `gpt-5` (GPT-5.x series minimum)
-/// - Gemini: must start with `gemini-`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ModelName {
     provider: Provider,
@@ -749,11 +695,6 @@ impl<'de> Deserialize<'de> for ModelName {
     }
 }
 
-/// Provider-scoped API key.
-///
-/// This prevents the invalid state "`OpenAI` key used with Claude" from being representable.
-///
-/// Note: `Debug` is manually implemented to redact the key value, preventing accidental
 /// credential disclosure in logs or error messages.
 #[derive(Clone)]
 pub enum ApiKey {

@@ -1,26 +1,4 @@
 //! Terminal user interface rendering for Forge.
-//!
-//! This crate provides the visual layer for Forge, handling:
-//!
-//! - **Full-screen rendering** via ratatui's alternate screen with scrollable
-//!   message history, overlays (command palette, model selector), and modal animations
-//! - **Inline rendering** that preserves terminal scrollback with a fixed-height viewport
-//! - **Input handling** with vim-style modal editing (Normal, Insert, Command modes)
-//! - **Theming** with Kanagawa Wave palette and accessibility options
-//! - **Markdown rendering** with caching for efficient re-renders
-//!
-//! # Architecture
-//!
-//! The crate is purely presentational: it renders state from `forge_engine` and
-//! forwards user input back to it. No business logic, API calls, or persistence.
-//!
-//! # Message Caching
-//!
-//! Static message content is cached in a thread-local `MessageLinesCache` to avoid
-//! rebuilding every frame. Cache invalidation occurs when:
-//! - Display version changes (new messages)
-//! - Terminal width changes
-//! - UI options change (ascii_only, high_contrast, reduced_motion)
 
 mod diff_render;
 mod effects;
@@ -73,10 +51,8 @@ use self::shared::{
 };
 use self::tool_result_summary::{ToolCallMeta, ToolResultRender, tool_result_render_decision};
 
-/// Cache for rendered message lines to avoid rebuilding every frame.
-/// Stores static (history/local) content keyed by display + UI options.
 #[derive(Default)]
-struct MessageLinesCache {
+pub struct MessageLinesCache {
     key: MessageCacheKey,
     lines: Vec<Line<'static>>,
     total_rows: usize,
@@ -333,8 +309,6 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
     }
 }
 
-/// Build message lines for static content only (no streaming, no tool status).
-/// Used for caching across frames; dynamic sections are appended separately.
 fn build_message_lines(
     app: &App,
     palette: &Palette,
@@ -458,8 +432,6 @@ fn tool_output_window(output_lines: Option<&[String]>, max_lines: usize) -> Vec<
     lines
 }
 
-/// Build message lines for dynamic content (streaming, tool status).
-/// Static history/local content is appended separately from cache.
 fn build_dynamic_message_lines(
     app: &App,
     palette: &Palette,
@@ -712,7 +684,6 @@ fn build_dynamic_message_lines(
                     )));
                 }
 
-                // Show output lines for this specific tool
                 if let Some(output_lines) = app.tool_loop_output_lines_for(&status.id)
                     && !output_lines.is_empty()
                 {
@@ -721,7 +692,6 @@ fn build_dynamic_message_lines(
                     let connector = glyphs.tree_connector;
 
                     if is_running {
-                        // For running tool, show windowed output
                         let window =
                             tool_output_window(Some(output_lines), TOOL_OUTPUT_WINDOW_LINES);
                         for (i, line) in window.iter().enumerate() {
@@ -745,7 +715,6 @@ fn build_dynamic_message_lines(
                             }
                         }
                     } else {
-                        // For completed tools, show last meaningful line as Summary
                         let last_line = output_lines.iter().rev().find(|l| {
                             !l.starts_with("▶ ") && !l.starts_with("✓ ") && !l.trim().is_empty()
                         });
@@ -770,7 +739,6 @@ fn build_dynamic_message_lines(
     (lines, total_rows)
 }
 
-/// Render a single message to lines (static helper for both cached and uncached paths).
 fn render_message_static(
     msg: &Message,
     lines: &mut Vec<Line<'static>>,

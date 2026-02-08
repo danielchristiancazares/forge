@@ -1,18 +1,9 @@
 //! Streaming response handling for the App.
-//!
-//! This module contains the core streaming logic:
-//! - `start_streaming` - Initiates an API streaming request
-//! - `process_stream_events` - Processes incoming stream events
-//! - `finish_streaming` - Finalizes a streaming session
 
 use futures_util::future::{AbortHandle, Abortable};
 use tokio::sync::mpsc;
 
-/// Capacity for the bounded stream event channel.
-/// This prevents OOM if the provider sends events faster than we can process them.
-/// 1024 events provides ~10 seconds of buffer at 100 events/sec typical streaming rate.
 const STREAM_EVENT_CHANNEL_CAPACITY: usize = 1024;
-/// Placeholder content when we need to persist a thinking signature without UI capture.
 const REDACTED_THINKING_PLACEHOLDER: &str = "[Thinking hidden]";
 
 use forge_context::TokenCounter;
@@ -88,7 +79,6 @@ fn cache_breakpoint_positions(eligible: usize) -> Vec<usize> {
 }
 
 impl super::App {
-    /// Start streaming response from the API.
     pub fn start_streaming(&mut self, queued: QueuedUserMessage) {
         if self.busy_reason().is_some() {
             return;

@@ -490,7 +490,7 @@ impl App {
     /// 2. Persist history to disk
     /// 3. Mark journal step as committed and prune (only if history persisted)
     ///
-    /// Returns true if the full commit succeeded, false if history save failed
+    /// Returns true if the full commit succeeded, false if history save failed.
     /// (in which case the journal step remains recoverable for next session).
     pub(crate) fn commit_history_message(&mut self, message: Message, step_id: StepId) -> bool {
         self.push_history_message_with_step_id(message, step_id);

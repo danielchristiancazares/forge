@@ -48,7 +48,6 @@ impl DistillateId {
     }
 }
 
-/// A message with its computed token count (cached).
 #[derive(Debug, Clone)]
 pub enum HistoryEntry {
     Original {
@@ -179,8 +178,6 @@ impl HistoryEntry {
         }
     }
 
-    /// Create a new entry with an associated stream journal step ID.
-    ///
     /// Used for assistant messages from streaming responses to enable
     /// idempotent crash recovery.
     #[must_use]
@@ -231,7 +228,6 @@ impl HistoryEntry {
         }
     }
 
-    /// Get the stream journal step ID if this entry was created from a stream.
     #[must_use]
     pub fn stream_step_id(&self) -> Option<StepId> {
         match self {
@@ -278,17 +274,11 @@ impl HistoryEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Distillate {
     id: DistillateId,
-    /// The range of message IDs this Distillate covers [start, end).
     covers: Range<MessageId>,
-    /// The Distilled content.
     content: NonEmptyString,
-    /// Token count of the Distillate.
     token_count: u32,
-    /// Total tokens of original messages (for compression ratio tracking).
     original_tokens: u32,
-    /// When this Distillate was created.
     created_at: SystemTime,
-    /// Which model generated this Distillate.
     generated_by: String,
 }
 
@@ -330,7 +320,6 @@ impl Distillate {
 
     #[cfg(test)]
     #[must_use]
-    /// Compression ratio (Distillate tokens / original tokens).
     /// Lower is better compression.
     pub fn compression_ratio(&self) -> f32 {
         if self.original_tokens == 0 {
@@ -342,13 +331,11 @@ impl Distillate {
 
     #[cfg(test)]
     #[must_use]
-    /// Tokens saved by using this Distillate instead of originals.
     pub fn tokens_saved(&self) -> u32 {
         self.original_tokens.saturating_sub(self.token_count)
     }
 }
 
-/// Complete conversation history - append-only, never discards messages.
 #[derive(Debug, Default)]
 pub struct FullHistory {
     entries: Vec<HistoryEntry>,
@@ -497,7 +484,6 @@ impl FullHistory {
         Self::default()
     }
 
-    /// Add a message to history, returns its ID.
     pub fn push(&mut self, message: Message, token_count: u32) -> MessageId {
         let id = MessageId::new(self.next_message_id);
         self.next_message_id += 1;
@@ -506,10 +492,6 @@ impl FullHistory {
         id
     }
 
-    /// Add a message to history with an associated stream step ID.
-    ///
-    /// Used for assistant messages from streaming responses to enable
-    /// idempotent crash recovery.
     pub fn push_with_step_id(
         &mut self,
         message: Message,
@@ -527,10 +509,6 @@ impl FullHistory {
         id
     }
 
-    /// Check if a stream step ID already exists in history.
-    ///
-    /// Used for idempotent crash recovery - if history already contains
-    /// an entry with this `step_id`, we should not recover it again.
     #[must_use]
     pub fn has_step_id(&self, step_id: StepId) -> bool {
         self.entries
@@ -538,12 +516,7 @@ impl FullHistory {
             .any(|e| e.stream_step_id() == Some(step_id))
     }
 
-    /// Add a Distillate for a range of messages.
-    ///
-    /// Under normal operation, distillates should only cover previously-undistilled
-    /// messages. If a message is already Distilled by another Distillate, the old
-    /// Distillate becomes orphaned (no messages reference it). This is detected and
-    /// logged but allowed to proceed.
+    /// Under normal operation, distillates should only cover previously-undistilled...
     pub fn add_distillate(&mut self, distillate: Distillate) -> Result<DistillateId> {
         let expected_id = DistillateId::new(self.distillates.len() as u64);
         if distillate.id != expected_id {
@@ -650,13 +623,7 @@ impl FullHistory {
         self.entries.is_empty()
     }
 
-    /// Remove the last message if it matches the given ID.
-    ///
-    /// This is used for transactional rollback when a stream fails before
-    /// producing any content. The user message that was added before streaming
-    /// is removed so it doesn't create orphan user messages in history.
-    ///
-    /// Returns the removed message if successful, None if ID doesn't match last entry.
+    /// This is used for transactional rollback when a stream fails...
     pub fn pop_if_last(&mut self, id: MessageId) -> Option<Message> {
         let last = self.entries.last()?;
         if last.id() != id {

@@ -95,7 +95,6 @@ pub(crate) use init::{
     DEFAULT_TOOL_CAPACITY_BYTES, TOOL_EVENT_CHANNEL_CAPACITY, TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
 };
 
-/// Maximum number of stream events to process per UI tick.
 pub const DEFAULT_STREAM_EVENT_BUDGET: usize = 512;
 
 /// Result of diff generation for panel display.
@@ -125,7 +124,6 @@ pub struct TurnUsage {
 }
 
 impl TurnUsage {
-    /// Record usage from an API call.
     pub fn record_call(&mut self, usage: ApiUsage) {
         self.api_calls = self.api_calls.saturating_add(1);
         self.total.merge(&usage);
@@ -140,10 +138,6 @@ use state::{
     ToolRecoveryDecision,
 };
 
-/// Accumulator for a single tool call during streaming.
-///
-/// As tool call events arrive, we accumulate the JSON arguments string
-/// until the stream completes, then parse into a complete `ToolCall`.
 #[derive(Debug, Clone)]
 struct ToolCallAccumulator {
     id: String,
@@ -221,13 +215,11 @@ impl StreamingMessage {
         &self.content
     }
 
-    /// Provider thinking/reasoning content received during streaming (if captured).
     #[must_use]
     pub fn thinking(&self) -> &str {
         &self.thinking
     }
 
-    /// Returns the thinking signature for API replay, if captured.
     #[must_use]
     pub const fn thinking_signature_state(&self) -> &ThoughtSignatureState {
         &self.thinking_signature
@@ -304,15 +296,11 @@ impl StreamingMessage {
         }
     }
 
-    /// Returns true if any tool calls were received during streaming.
     #[must_use]
     pub fn has_tool_calls(&self) -> bool {
         !self.tool_calls.is_empty()
     }
 
-    /// Take accumulated tool calls, parsing JSON arguments.
-    ///
-    /// Returns parsed tool calls plus pre-resolved errors for invalid JSON.
     pub(crate) fn take_tool_calls(&mut self) -> ParsedToolCalls {
         let mut calls = Vec::new();
         let mut pre_resolved = Vec::new();
@@ -389,17 +377,12 @@ impl StreamingMessage {
         }
     }
 
-    /// Consume streaming message and produce a complete message.
     pub fn into_message(self) -> Result<Message, forge_types::EmptyStringError> {
         let content = NonEmptyString::new(self.content)?;
         Ok(Message::assistant(self.model, content))
     }
 }
 
-/// Provider-specific system prompts.
-///
-/// Allows different prompts to be used for different LLM providers.
-/// The prompt is selected at streaming time based on the active provider.
 #[derive(Debug, Clone, Copy)]
 pub struct SystemPrompts {
     /// Claude-specific prompt.
@@ -411,7 +394,6 @@ pub struct SystemPrompts {
 }
 
 impl SystemPrompts {
-    /// Get the system prompt for the given provider.
     #[must_use]
     pub fn get(&self, provider: Provider) -> &'static str {
         match provider {
@@ -435,11 +417,8 @@ pub struct App {
     model: ModelName,
     tick: usize,
     data_dir: DataDir,
-    /// Context manager for adaptive context window management.
     context_manager: ContextManager,
-    /// Stream journal for crash recovery.
     stream_journal: StreamJournal,
-    /// Current operation state.
     state: OperationState,
     /// Whether memory (automatic distillation) is enabled.
     /// This is determined at init from config/env and does not change during runtime.
@@ -485,7 +464,6 @@ pub struct App {
     gemini_cache: std::sync::Arc<tokio::sync::Mutex<Option<GeminiCache>>>,
     /// Whether Gemini thinking mode is enabled via config.
     gemini_thinking_enabled: bool,
-    /// Anthropic thinking mode for Opus 4.6+ ("adaptive", "enabled", "disabled").
     anthropic_thinking_mode: config::AnthropicThinkingMode,
     /// Anthropic effort level for Opus 4.6+ ("low", "medium", "high", "max").
     anthropic_thinking_effort: config::AnthropicEffort,
@@ -964,7 +942,7 @@ impl App {
         self.api_keys.contains_key(&provider)
     }
 
-    /// Get the current API key for the selected provider
+    /// Get the current API key for the selected provider.
     pub fn current_api_key(&self) -> Option<&String> {
         self.api_keys.get(&self.model.provider())
     }
