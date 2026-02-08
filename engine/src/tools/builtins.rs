@@ -535,7 +535,7 @@ impl ToolExecutor for ReadFileTool {
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         // Optimization threshold: skip hashing for range reads on files larger than this
-        const HASH_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024; // 10MB
+        const HASH_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
 
         Box::pin(async move {
             let typed: ReadFileArgs = parse_args(&args)?;

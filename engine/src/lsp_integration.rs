@@ -227,14 +227,12 @@ mod tests {
 
     #[test]
     fn test_format_error_summary_truncates_at_limit() {
-        // Create more than MAX_DIAG_FEEDBACK_LINES diagnostics
         let diags: Vec<forge_lsp::ForgeDiagnostic> =
             (0..25).map(|i| make_diag(&format!("err{i}"), i)).collect();
         let errors = vec![(PathBuf::from("big.rs"), diags)];
         let summary = format_error_summary(&errors);
         assert!(summary.ends_with("... (truncated)"));
         let line_count = summary.lines().count();
-        // MAX_DIAG_FEEDBACK_LINES (20) + 1 for truncation message
         assert_eq!(line_count, MAX_DIAG_FEEDBACK_LINES + 1);
     }
 

@@ -231,9 +231,10 @@ mod tests {
     #[test]
     fn allows_windows_safe_commands() {
         let bl = default_blacklist();
-        assert!(bl.validate("Remove-Item ./temp -Recurse").is_ok()); // no -Force
-        assert!(bl.validate("Remove-Item C:\\temp -Force").is_ok()); // no -Recurse
-        assert!(bl.validate("Get-ChildItem C:\\").is_ok()); // read-only
+        // Safe cases: missing one of the dangerous flags, or a read-only command.
+        assert!(bl.validate("Remove-Item ./temp -Recurse").is_ok());
+        assert!(bl.validate("Remove-Item C:\\temp -Force").is_ok());
+        assert!(bl.validate("Get-ChildItem C:\\").is_ok());
     }
 
     #[test]

@@ -349,7 +349,6 @@ impl CheckpointStore {
             workspace,
         });
 
-        // Cap memory usage.
         if self.checkpoints.len() > Self::MAX_CHECKPOINTS {
             let overflow = self.checkpoints.len().saturating_sub(Self::MAX_CHECKPOINTS);
             self.checkpoints.drain(0..overflow);
@@ -525,7 +524,6 @@ fn restore_file(
     bytes: &[u8],
     permissions: Option<&std::fs::Permissions>,
 ) -> std::io::Result<()> {
-    // Refuse to overwrite directories.
     if let Ok(meta) = std::fs::metadata(path)
         && meta.is_dir()
     {

@@ -187,7 +187,7 @@ impl super::App {
                 }
                 self.invalidate_usage_cache();
                 self.push_notification("Distillation complete");
-                self.autosave_history(); // Persist distilled history immediately
+                self.autosave_history();
 
                 if let Some(queued) = queued_request {
                     self.start_streaming(queued);

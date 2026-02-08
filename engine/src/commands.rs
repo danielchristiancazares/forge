@@ -83,8 +83,6 @@ pub fn command_specs() -> &'static [CommandSpec] {
     COMMAND_SPECS
 }
 
-// Command name normalization / aliasing (used by parsing + tab completion)
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandKind {
     Quit,
@@ -362,13 +360,13 @@ impl super::App {
 
                 self.display.clear();
                 self.display_version = self.display_version.wrapping_add(1);
-                self.pending_user_message = None; // Clear pending message tracking
+                self.pending_user_message = None;
                 self.session_changes = SessionChangeLog::default();
                 self.context_manager = ContextManager::new(self.model.clone());
                 self.context_manager
                     .set_output_limit(self.output_limits.max_output_tokens());
                 self.invalidate_usage_cache();
-                self.autosave_history(); // Persist cleared state immediately
+                self.autosave_history();
                 self.push_notification("Conversation cleared");
                 self.view.clear_transcript = true;
             }
@@ -476,7 +474,6 @@ impl super::App {
                 if matches!(result, DistillationStart::NotNeeded) {
                     self.push_notification("No messages need distillation");
                 }
-                // If Failed, try_start_distillation already set status
             }
             Command::Cancel => {
                 self.cancel_active_operation();

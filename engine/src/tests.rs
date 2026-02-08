@@ -634,7 +634,7 @@ fn streaming_message_apply_text_delta() {
     assert!(stream.content().is_empty());
 
     let result = stream.apply_event(StreamEvent::TextDelta("Hello".to_string()));
-    assert!(result.is_none()); // Not finished yet
+    assert!(result.is_none());
 
     assert_eq!(stream.content(), "Hello");
 

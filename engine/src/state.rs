@@ -324,7 +324,6 @@ impl ApprovalState {
     /// Mutable access to data with automatic cancel of deny confirmation.
     /// Any mutation cancels the ConfirmingDeny state.
     pub(crate) fn data_mut(&mut self) -> &mut ApprovalData {
-        // If we're in ConfirmingDeny, transition back to Selecting
         *self = match std::mem::replace(self, Self::Selecting(ApprovalData::new(vec![]))) {
             Self::Selecting(d) | Self::ConfirmingDeny(d) => Self::Selecting(d),
         };

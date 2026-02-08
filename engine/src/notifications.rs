@@ -141,9 +141,9 @@ mod tests {
         let mut queue = NotificationQueue::new();
 
         queue.push(SystemNotification::ToolsApproved { count: 1 });
-        queue.push(SystemNotification::ToolsApproved { count: 1 }); // duplicate
+        queue.push(SystemNotification::ToolsApproved { count: 1 });
         queue.push(SystemNotification::ToolsDenied { count: 1 });
-        queue.push(SystemNotification::ToolsApproved { count: 1 }); // duplicate
+        queue.push(SystemNotification::ToolsApproved { count: 1 });
 
         assert_eq!(queue.len(), 2);
 

@@ -115,7 +115,7 @@ impl SpawnedTool {
             call,
             join_handle: _,
             mut event_rx,
-            abort_handle: _, // No longer needed
+            abort_handle: _,
         } = self;
 
         // Drain events AFTER completion - events may have been produced while finishing
@@ -165,7 +165,7 @@ impl ToolQueue {
 
 #[derive(Debug)]
 pub(crate) struct ActiveExecution {
-    pub(crate) spawned: SpawnedTool, // NOT Optional - existence proves execution
+    pub(crate) spawned: SpawnedTool, // Invariant: always present; existence proves execution.
     pub(crate) queue: VecDeque<ToolCall>,
     pub(crate) output_lines: HashMap<String, Vec<String>>,
     pub(crate) turn_recorder: ChangeRecorder,

@@ -546,7 +546,6 @@ impl App {
             self.view.files_panel_effect = None;
             panel.visible = !panel.visible;
             if !panel.visible {
-                // Reset state when hiding
                 panel.expanded = None;
                 panel.diff_scroll = 0;
             }
@@ -602,7 +601,6 @@ impl App {
         {
             let panel = &mut self.view.files_panel;
             panel.visible = false;
-            // Reset state when hiding
             panel.expanded = None;
             panel.diff_scroll = 0;
         }
@@ -701,17 +699,14 @@ impl App {
             .collect::<Vec<_>>();
 
         if let Some(expanded_path) = &panel.expanded {
-            // Find the new index for the expanded path
             if let Some(new_idx) = files.iter().position(|p| p == expanded_path) {
                 panel.selected = new_idx;
             } else {
-                // Expanded file no longer in list - collapse and reset
                 panel.expanded = None;
                 panel.diff_scroll = 0;
                 panel.selected = panel.selected.min(files.len().saturating_sub(1));
             }
         } else {
-            // No expansion - just clamp selected to valid range
             panel.selected = panel.selected.min(files.len().saturating_sub(1));
         }
     }
@@ -774,7 +769,7 @@ impl App {
             return self.openai_options;
         }
 
-        // gpt-5.2-pro always uses xhigh reasoning - that's the point of the model
+        // Enforce XHigh reasoning effort for gpt-5.2-pro, regardless of user config.
         if model
             .as_str()
             .trim()
@@ -1117,7 +1112,6 @@ impl App {
 
         self.clamp_output_limits_to_model();
 
-        // Persist the model selection to config
         if let Err(e) = config::ForgeConfig::persist_model(model.as_str()) {
             tracing::warn!("Failed to persist model to config: {e}");
         }
@@ -1137,9 +1131,7 @@ impl App {
             | ContextAdaptation::Shrinking {
                 needs_distillation: false,
                 ..
-            } => {
-                // No action needed
-            }
+            } => {}
             ContextAdaptation::Shrinking {
                 old_budget,
                 new_budget,

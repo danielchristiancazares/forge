@@ -10,8 +10,6 @@ use std::sync::{Arc, Mutex};
 use super::ui::{DraftInput, InputState};
 use super::{ApiConfig, App, Message, NonEmptyString, OperationState};
 
-// Turn change tracking
-
 /// Proof that a user turn is active.
 #[derive(Debug)]
 pub(crate) struct TurnContext {
@@ -247,8 +245,6 @@ pub struct CommandMode<'a> {
     pub(crate) app: &'a mut App,
 }
 
-// Token factory methods (called from App)
-
 impl App {
     /// Get proof token if currently in Insert mode.
     pub fn insert_token(&self) -> Option<InsertToken> {
@@ -270,8 +266,6 @@ impl App {
         CommandMode { app: self }
     }
 }
-
-// InsertMode operations
 
 impl InsertMode<'_> {
     fn draft_mut(&mut self) -> &mut DraftInput {
@@ -328,12 +322,10 @@ impl InsertMode<'_> {
     /// begin a new stream.
     #[must_use]
     pub fn queue_message(self) -> Option<QueuedUserMessage> {
-        // Can't send while busy with another operation
         if !matches!(self.app.state, OperationState::Idle) {
             return None;
         }
 
-        // Ignore empty input
         if self.app.draft_text().trim().is_empty() {
             return None;
         }
@@ -741,9 +733,7 @@ mod tests {
 
     #[test]
     fn complete_command_name_ambiguous_extends_to_lcp() {
-        // "con" matches "context" and "cancel" - no common prefix beyond "c"
-        // Actually "con" only matches "context", let me check...
-        // "c" matches "clear", "cancel", "context", "ctx" - lcp is "c", no extension
+        // Ambiguous: "c" matches multiple commands, so no completion is applied.
         assert_eq!(complete_command_name("c", true), None);
     }
 
