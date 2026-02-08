@@ -50,9 +50,9 @@ impl HomoglyphWarning {
 ///
 /// # Detection Logic
 ///
-/// Only flags Latin mixed with Cyrillic or Greek (highest attack surface for
-/// English-language tools). Pure non-Latin scripts (legitimate non-English content)
-/// are not flagged.
+/// Only flags Latin mixed with Cyrillic, Greek, Armenian, or Cherokee (highest
+/// attack surface for English-language tools). Pure non-Latin scripts (legitimate
+/// non-English content) are not flagged.
 ///
 /// # Fast Path
 ///
@@ -83,19 +83,23 @@ pub fn detect_mixed_script(input: &str, field_name: &str) -> Option<HomoglyphWar
     let mut has_latin = false;
     let mut has_cyrillic = false;
     let mut has_greek = false;
+    let mut has_armenian = false;
+    let mut has_cherokee = false;
 
     for c in input.chars() {
         match c.script() {
             Script::Latin => has_latin = true,
             Script::Cyrillic => has_cyrillic = true,
             Script::Greek => has_greek = true,
+            Script::Armenian => has_armenian = true,
+            Script::Cherokee => has_cherokee = true,
             _ => {}
         }
     }
 
-    // Only warn on Latin mixed with Cyrillic or Greek (highest attack surface)
-    // Pure Cyrillic or pure Greek are legitimate (non-English content)
-    let suspicious = has_latin && (has_cyrillic || has_greek);
+    // Only warn on Latin mixed with high-confusability scripts.
+    // Pure non-Latin scripts are legitimate (non-English content).
+    let suspicious = has_latin && (has_cyrillic || has_greek || has_armenian || has_cherokee);
     if !suspicious {
         return None;
     }
@@ -106,6 +110,12 @@ pub fn detect_mixed_script(input: &str, field_name: &str) -> Option<HomoglyphWar
     }
     if has_greek {
         scripts.push(Script::Greek);
+    }
+    if has_armenian {
+        scripts.push(Script::Armenian);
+    }
+    if has_cherokee {
+        scripts.push(Script::Cherokee);
     }
 
     Some(HomoglyphWarning {
@@ -222,7 +232,39 @@ mod tests {
 
     #[test]
     fn preserves_field_name() {
-        let warning = detect_mixed_script("tеst", "my_custom_field").unwrap();
+        let warning = detect_mixed_script("t\u{0435}st", "my_custom_field").unwrap();
         assert_eq!(warning.field_name, "my_custom_field");
+    }
+
+    #[test]
+    fn detects_latin_armenian_mix() {
+        // Armenian 'Ա' (U+0531) mixed with Latin
+        let warning = detect_mixed_script("p\u{0561}ypal.com", "url");
+        assert!(warning.is_some());
+        let w = warning.unwrap();
+        assert!(w.scripts.contains(&Script::Armenian));
+        assert!(w.scripts.contains(&Script::Latin));
+    }
+
+    #[test]
+    fn detects_latin_cherokee_mix() {
+        // Cherokee 'Ꮪ' (U+13DA) mixed with Latin
+        let warning = detect_mixed_script("te\u{13DA}t.com", "url");
+        assert!(warning.is_some());
+        let w = warning.unwrap();
+        assert!(w.scripts.contains(&Script::Cherokee));
+        assert!(w.scripts.contains(&Script::Latin));
+    }
+
+    #[test]
+    fn ignores_pure_armenian() {
+        let warning = detect_mixed_script("\u{0562}\u{0561}\u{0580}\u{0565}\u{0582}", "text");
+        assert!(warning.is_none());
+    }
+
+    #[test]
+    fn ignores_pure_cherokee() {
+        let warning = detect_mixed_script("\u{13A0}\u{13A1}\u{13A2}", "text");
+        assert!(warning.is_none());
     }
 }
