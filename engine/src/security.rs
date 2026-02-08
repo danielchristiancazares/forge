@@ -15,7 +15,7 @@
 
 use std::sync::OnceLock;
 
-use aho_corasick::AhoCorasick;
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use forge_types::{sanitize_terminal_text, strip_steganographic_chars};
 use globset::{GlobBuilder, GlobSetBuilder};
 use regex::Regex;
@@ -30,12 +30,17 @@ const SENSITIVE_VAR_PATTERNS: &[&str] = &[
     "*_TOKEN",
     "*_SECRET",
     "*_PASSWORD",
+    "*_CREDENTIAL*",
+    "*_API_*",
     "AWS_*",
     "ANTHROPIC_*",
     "OPENAI_*",
     "GEMINI_*",
-    "GITHUB_TOKEN",
-    "GH_TOKEN",
+    "GOOGLE_*",
+    "AZURE_*",
+    "GH_*",
+    "GITHUB_*",
+    "NPM_*",
 ];
 
 /// Runtime secret redactor built from environment variables.
@@ -43,14 +48,14 @@ const SENSITIVE_VAR_PATTERNS: &[&str] = &[
 /// Constructed via single Authority Boundary ([`from_env`](Self::from_env)),
 /// cached in `OnceLock`. Secrets are never logged or exposed via Debug.
 pub struct SecretRedactor {
+    secrets: Vec<String>,
     automaton: Option<AhoCorasick>,
-    secret_count: usize,
 }
 
 impl std::fmt::Debug for SecretRedactor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SecretRedactor")
-            .field("secret_count", &self.secret_count)
+            .field("secret_count", &self.secrets.len())
             .finish_non_exhaustive() // Omit automaton contents
     }
 }
@@ -70,21 +75,32 @@ impl SecretRedactor {
             .filter(|v| !looks_like_non_secret(v))
             .collect();
 
-        secrets.sort();
+        // Ensure deterministic order, and ensure fallback redaction prefers longer matches.
+        secrets.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         secrets.dedup();
 
         let secret_count = secrets.len();
         let automaton = if secrets.is_empty() {
             None
         } else {
-            AhoCorasick::new(&secrets).ok()
+            let patterns: Vec<&str> = secrets.iter().map(String::as_str).collect();
+            match AhoCorasickBuilder::new()
+                .match_kind(MatchKind::LeftmostLongest)
+                .build(&patterns)
+            {
+                Ok(ac) => Some(ac),
+                Err(e) => {
+                    tracing::warn!(
+                        secret_count,
+                        "SecretRedactor automaton build failed; using fallback redaction ({e})"
+                    );
+                    None
+                }
+            }
         };
 
         tracing::debug!(secret_count, "SecretRedactor initialized");
-        Self {
-            automaton,
-            secret_count,
-        }
+        Self { secrets, automaton }
     }
 
     /// Redact all known secret values from input.
@@ -92,31 +108,47 @@ impl SecretRedactor {
     /// Returns the input with all detected secrets replaced by `[REDACTED]`.
     #[must_use]
     pub fn redact<'a>(&self, input: &'a str) -> std::borrow::Cow<'a, str> {
-        match &self.automaton {
-            Some(ac) => {
-                let mut result = String::with_capacity(input.len());
-                ac.replace_all_with(input, &mut result, |_, _, dst| {
-                    dst.push_str("[REDACTED]");
-                    true
-                });
-                std::borrow::Cow::Owned(result)
-            }
-            None => std::borrow::Cow::Borrowed(input),
+        if self.secrets.is_empty() {
+            return std::borrow::Cow::Borrowed(input);
         }
+
+        if let Some(ac) = &self.automaton {
+            let mut result = String::with_capacity(input.len());
+            ac.replace_all_with(input, &mut result, |_, _, dst| {
+                dst.push_str("[REDACTED]");
+                true
+            });
+            return std::borrow::Cow::Owned(result);
+        }
+
+        // Fail-closed fallback: sequential replacement (longest-first order already ensured).
+        let mut output: Option<String> = None;
+        for secret in &self.secrets {
+            let haystack = output.as_deref().unwrap_or(input);
+            if !haystack.contains(secret) {
+                continue;
+            }
+            output = Some(haystack.replace(secret, "[REDACTED]"));
+        }
+
+        output.map_or_else(
+            || std::borrow::Cow::Borrowed(input),
+            std::borrow::Cow::Owned,
+        )
     }
 
     /// Returns true if any secrets were detected in the environment.
     #[must_use]
     #[allow(dead_code)]
     pub fn has_secrets(&self) -> bool {
-        self.secret_count > 0
+        !self.secrets.is_empty()
     }
 
     /// Returns the number of unique secrets detected.
     #[must_use]
     #[allow(dead_code)]
     pub fn secret_count(&self) -> usize {
-        self.secret_count
+        self.secrets.len()
     }
 }
 
@@ -140,14 +172,32 @@ fn build_var_name_matcher() -> globset::GlobSet {
 fn looks_like_non_secret(value: &str) -> bool {
     // File paths — only skip if they actually exist on disk.
     // Without the existence check, a secret like "/AKIAxyz..." would be whitelisted.
-    if value.starts_with('/') || value.starts_with("C:\\") || value.starts_with("D:\\") {
+    let bytes = value.as_bytes();
+    let is_windows_drive_path =
+        bytes.len() >= 3 && bytes[1] == b':' && bytes[2] == b'\\' && bytes[0].is_ascii_alphabetic();
+
+    if value.starts_with('/') || is_windows_drive_path {
         return std::path::Path::new(value).exists();
     }
 
     // Plain URLs without credentials — case-insensitive parameter matching
     // to catch `Token=`, `AUTH=`, non-standard param names, etc.
-    if value.starts_with("http://") || value.starts_with("https://") {
-        let lower = value.to_ascii_lowercase();
+    let lower = value.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        // URLs with userinfo (user:pass@host) are almost certainly secrets.
+        let scheme_end = if lower.starts_with("http://") {
+            "http://".len()
+        } else {
+            "https://".len()
+        };
+        let after_scheme = &value[scheme_end..];
+        let authority = after_scheme
+            .split_once('/')
+            .map_or(after_scheme, |(authority, _)| authority);
+        if authority.contains('@') {
+            return false;
+        }
+
         let has_credential_param = [
             "token=",
             "key=",
@@ -178,21 +228,37 @@ fn looks_like_non_secret(value: &str) -> bool {
     false
 }
 
+fn normalize_untrusted(input: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+
+    let terminal_safe = sanitize_terminal_text(input);
+    match terminal_safe {
+        Cow::Borrowed(b) => strip_steganographic_chars(b),
+        Cow::Owned(s) => match strip_steganographic_chars(&s) {
+            Cow::Borrowed(_) => Cow::Owned(s),
+            Cow::Owned(stripped) => Cow::Owned(stripped),
+        },
+    }
+}
+
 /// Single global instance (IFA-7 compliant).
 ///
-/// Sanitize text for display by redacting secrets and stripping terminal controls.
+/// Sanitize untrusted external text for terminal display.
 ///
-/// Applies three sanitization passes:
-/// 1. Redact pattern-based API keys (OpenAI `sk-*`, Anthropic `sk-ant-*`, Gemini `AIza*`)
-/// 2. Redact value-based secrets from environment variables
-/// 3. Strip terminal escape sequences and steganographic characters
+/// Applies four sanitization passes, in order:
+/// 1. Strip terminal escape sequences and control chars (`sanitize_terminal_text`)
+/// 2. Strip steganographic Unicode (`strip_steganographic_chars`)
+/// 3. Redact pattern-based API keys (OpenAI `sk-*`, Anthropic `sk-ant-*`, Gemini `AIza*`)
+/// 4. Redact value-based secrets from environment variables
+///
+/// Important: normalization (1–2) MUST run before redaction. If redaction runs first,
+/// an attacker can split a secret with invisible characters so it won't match, then
+/// have normalization "snap" it back into a visible token.
 #[allow(dead_code)] // Public API, currently unused by dependents in this workspace.
 #[must_use]
 pub fn sanitize_display_text(input: &str) -> String {
-    // Normalize away terminal controls before redacting. This prevents escape-based
-    // token splitting from bypassing literal pattern matching.
-    let terminal_safe = sanitize_terminal_text(input);
-    let pattern_redacted = redact_api_keys(terminal_safe.as_ref());
+    let normalized = normalize_untrusted(input);
+    let pattern_redacted = redact_api_keys(normalized.as_ref());
     let value_redacted = secret_redactor().redact(&pattern_redacted);
     match value_redacted {
         std::borrow::Cow::Borrowed(_) => pattern_redacted,
@@ -211,17 +277,20 @@ pub fn secret_redactor() -> &'static SecretRedactor {
 
 /// Sanitize a stream error message by redacting secrets and stripping controls.
 ///
-/// Applies four sanitization passes:
-/// 1. Redact pattern-based API keys (OpenAI `sk-*`, Anthropic `sk-ant-*`, Gemini `AIza*`)
-/// 2. Redact value-based secrets from environment variables
-/// 3. Strip terminal escape sequences
-/// 4. Strip steganographic characters
+/// Applies four sanitization passes, in order:
+/// 1. Trim whitespace
+/// 2. Normalize untrusted text (terminal escape stripping + stego stripping)
+/// 3. Redact pattern-based API keys (OpenAI `sk-*`, Anthropic `sk-ant-*`, Gemini `AIza*`)
+/// 4. Redact value-based secrets from environment variables
 pub fn sanitize_stream_error(raw: &str) -> String {
     let trimmed = raw.trim();
-    let terminal_safe = sanitize_terminal_text(trimmed);
-    let pattern_redacted = redact_api_keys(terminal_safe.as_ref());
+    let normalized = normalize_untrusted(trimmed);
+    let pattern_redacted = redact_api_keys(normalized.as_ref());
     let value_redacted = secret_redactor().redact(&pattern_redacted);
-    strip_steganographic_chars(&value_redacted).into_owned()
+    match value_redacted {
+        std::borrow::Cow::Borrowed(_) => pattern_redacted,
+        std::borrow::Cow::Owned(v) => v,
+    }
 }
 
 /// Redact sensitive tokens from a string.
@@ -546,15 +615,27 @@ mod tests {
         assert!(!output.contains("AIzaSyC-secretkey123"));
     }
 
+    #[test]
+    fn sanitize_stream_error_redacts_openai_key_split_by_zwsp() {
+        let input = "Error: sk-ab\u{200B}c123xyz key invalid";
+        let output = sanitize_stream_error(input);
+        assert!(output.contains("sk-***"));
+        assert!(!output.contains("sk-abc123xyz"));
+    }
+
     // SecretRedactor tests
 
     #[test]
     fn secret_redactor_redacts_known_value() {
         let secrets = vec!["super_secret_value_12345".to_string()];
-        let ac = AhoCorasick::new(&secrets).unwrap();
+        let patterns: Vec<&str> = secrets.iter().map(String::as_str).collect();
+        let ac = AhoCorasickBuilder::new()
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(&patterns)
+            .unwrap();
         let redactor = SecretRedactor {
+            secrets,
             automaton: Some(ac),
-            secret_count: 1,
         };
 
         let input = "Error: auth failed with super_secret_value_12345";
@@ -564,10 +645,14 @@ mod tests {
     #[test]
     fn secret_redactor_handles_multiple_occurrences() {
         let secrets = vec!["secret_token_abcd1234".to_string()];
-        let ac = AhoCorasick::new(&secrets).unwrap();
+        let patterns: Vec<&str> = secrets.iter().map(String::as_str).collect();
+        let ac = AhoCorasickBuilder::new()
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(&patterns)
+            .unwrap();
         let redactor = SecretRedactor {
+            secrets,
             automaton: Some(ac),
-            secret_count: 1,
         };
 
         let input = "key1=secret_token_abcd1234, key2=secret_token_abcd1234";
@@ -577,8 +662,8 @@ mod tests {
     #[test]
     fn secret_redactor_handles_empty() {
         let redactor = SecretRedactor {
+            secrets: Vec::new(),
             automaton: None,
-            secret_count: 0,
         };
 
         let input = "No secrets here";
@@ -591,14 +676,70 @@ mod tests {
             "first_secret_value_1234".to_string(),
             "second_secret_val_5678".to_string(),
         ];
-        let ac = AhoCorasick::new(&secrets).unwrap();
+        let patterns: Vec<&str> = secrets.iter().map(String::as_str).collect();
+        let ac = AhoCorasickBuilder::new()
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(&patterns)
+            .unwrap();
         let redactor = SecretRedactor {
+            secrets,
             automaton: Some(ac),
-            secret_count: 2,
         };
 
         let input = "Found first_secret_value_1234 and second_secret_val_5678";
         assert_eq!(redactor.redact(input), "Found [REDACTED] and [REDACTED]");
+    }
+
+    #[test]
+    fn secret_redactor_prefers_longest_match() {
+        let secrets = vec!["abc".to_string(), "abcde".to_string()];
+        let patterns: Vec<&str> = secrets.iter().map(String::as_str).collect();
+        let ac = AhoCorasickBuilder::new()
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(&patterns)
+            .unwrap();
+        let redactor = SecretRedactor {
+            secrets,
+            automaton: Some(ac),
+        };
+
+        let input = "xx abcde yy";
+        assert_eq!(redactor.redact(input), "xx [REDACTED] yy");
+    }
+
+    #[test]
+    fn secret_redactor_fallback_redacts_when_automaton_missing() {
+        let secret = "secret_value_12345".to_string();
+        let redactor = SecretRedactor {
+            secrets: vec![secret.clone()],
+            automaton: None,
+        };
+
+        let input = format!("prefix {secret} suffix");
+        assert_eq!(redactor.redact(&input), "prefix [REDACTED] suffix");
+    }
+
+    #[test]
+    fn secret_redactor_redacts_env_secret_split_by_unicode_tags_after_normalization() {
+        let secret = "super_secret_value_12345";
+        let attacked = "Error: super_secret_value_\u{E0001}12345";
+        assert!(!attacked.contains(secret));
+
+        let normalized = normalize_untrusted(attacked);
+        let secrets = vec![secret.to_string()];
+        let patterns: Vec<&str> = secrets.iter().map(String::as_str).collect();
+        let ac = AhoCorasickBuilder::new()
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(&patterns)
+            .unwrap();
+        let redactor = SecretRedactor {
+            secrets,
+            automaton: Some(ac),
+        };
+
+        let redacted = redactor.redact(normalized.as_ref());
+        assert!(redacted.contains("[REDACTED]"));
+        assert!(!redacted.contains(secret));
     }
 
     #[test]
@@ -617,6 +758,7 @@ mod tests {
             "C:\\NonExistent\\Path\\secret123456"
         ));
         assert!(!looks_like_non_secret("D:\\Fake\\Path\\api_key_value_1337"));
+        assert!(!looks_like_non_secret("E:\\Fake\\Path\\api_key_value_1337"));
     }
 
     #[test]
@@ -633,6 +775,12 @@ mod tests {
         assert!(!looks_like_non_secret(
             "https://api.example.com?password=pw"
         ));
+    }
+
+    #[test]
+    fn looks_like_non_secret_rejects_urls_with_userinfo() {
+        assert!(!looks_like_non_secret("https://user:pass@example.com/path"));
+        assert!(!looks_like_non_secret("HTTPS://user@example.com/path"));
     }
 
     #[test]
@@ -672,10 +820,14 @@ mod tests {
     #[test]
     fn secret_redactor_debug_hides_secrets() {
         let secrets = vec!["super_secret_12345678".to_string()];
-        let ac = AhoCorasick::new(&secrets).unwrap();
+        let patterns: Vec<&str> = secrets.iter().map(String::as_str).collect();
+        let ac = AhoCorasickBuilder::new()
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(&patterns)
+            .unwrap();
         let redactor = SecretRedactor {
+            secrets,
             automaton: Some(ac),
-            secret_count: 1,
         };
 
         let debug_output = format!("{redactor:?}");
@@ -686,15 +838,18 @@ mod tests {
     #[test]
     fn secret_redactor_has_secrets_reports_correctly() {
         let empty_redactor = SecretRedactor {
+            secrets: Vec::new(),
             automaton: None,
-            secret_count: 0,
         };
         assert!(!empty_redactor.has_secrets());
 
+        let secret = "secret123456789ab".to_string();
         let populated_redactor = SecretRedactor {
-            automaton: Some(AhoCorasick::new(["secret123456789ab"]).unwrap()),
-            secret_count: 1,
+            secrets: vec![secret.clone()],
+            automaton: None,
         };
         assert!(populated_redactor.has_secrets());
+        assert_eq!(populated_redactor.secret_count(), 1);
+        assert_eq!(populated_redactor.redact(&secret), "[REDACTED]");
     }
 }

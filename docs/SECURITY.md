@@ -110,12 +110,12 @@ pub fn redact_api_keys(raw: &str) -> String
 
 **Location:** `engine/src/tools/mod.rs:sanitize_output()`
 
-All tool execution results pass through this function before entering the LLM context:
+All tool execution results pass through this function before entering the LLM context
+(terminal + stego normalization + secret redaction):
 
 ```rust
 pub fn sanitize_output(output: &str) -> String {
-    let terminal_safe = sanitize_terminal_text(output);
-    strip_steganographic_chars(&terminal_safe).into_owned()
+    crate::security::sanitize_display_text(output)
 }
 ```
 
@@ -128,13 +128,20 @@ pub fn sanitize_output(output: &str) -> String {
 
 **Location:** `engine/src/security.rs:sanitize_stream_error()`
 
-Error messages from API streams are sanitized before display:
+Error messages from API streams are sanitized before display. Normalization (terminal + stego)
+MUST run before any redaction to prevent split-then-rejoin bypasses.
 
 ```rust
 pub fn sanitize_stream_error(raw: &str) -> String {
-    let redacted = redact_api_keys(raw.trim());
-    let terminal_safe = sanitize_terminal_text(&redacted);
-    strip_steganographic_chars(&terminal_safe).into_owned()
+    let trimmed = raw.trim();
+
+    // Normalize untrusted text first
+    let terminal_safe = sanitize_terminal_text(trimmed);
+    let normalized = strip_steganographic_chars(terminal_safe.as_ref());
+
+    // Then redact secrets (pattern + env-derived)
+    let pattern_redacted = redact_api_keys(normalized.as_ref());
+    secret_redactor().redact(&pattern_redacted).into_owned()
 }
 ```
 
@@ -179,20 +186,24 @@ Sanitization functions process untrusted input character-by-character. To preven
 
 ### Composition at Boundaries
 
-Rather than a single "god" sanitizer, individual sanitizers are composed based on the specific risks of each boundary:
+Forge keeps primitive, single-purpose sanitizers and composes them in a canonical
+helper for untrusted external text. This avoids call-site drift (IFA §7) and
+ensures ordering is consistent (normalization before redaction).
 
 | Function | Threat Class | Scope |
 |----------|--------------|-------|
 | `sanitize_terminal_text` | Display safety | Terminal emulator manipulation |
 | `strip_steganographic_chars` | Context safety | LLM prompt injection |
+| `sanitize_display_text` | Untrusted external text | Terminal + stego + secret redaction |
 
-Composition at call sites provides flexibility:
+Composition at boundaries stays explicit, but most call sites should use the
+canonical helper:
 ```rust
-// For terminal-displayed tool output:
-let safe = strip_steganographic_chars(&sanitize_terminal_text(raw));
+// Untrusted external content (LLM output, tool output, provider errors):
+let safe = sanitize_display_text(raw_untrusted);
 
-// For content never displayed (e.g., internal processing):
-let safe = strip_steganographic_chars(raw);
+// User-authored text (preserve emoji ZWJ composition):
+let safe_user = sanitize_terminal_text(raw_user);
 ```
 
 ### Defense in Depth
@@ -217,19 +228,20 @@ Direct user input bypasses steganographic stripping because:
 2. Users have agency over their own prompts
 3. The threat model focuses on untrusted third-party content
 
-Only content that enters the LLM context from untrusted sources is sanitized.
+User-authored text is still terminal-sanitized for display safety, but untrusted
+external content additionally uses stego stripping and secret redaction.
 
 ## IFA Conformance
 
 This architecture follows Invariant-First Architecture principles:
 
-1. **Single Point of Encoding (§7):** One canonical function for each invariant (`strip_steganographic_chars` for context safety, `sanitize_terminal_text` for display safety).
+1. **Single Point of Encoding (§7):** `sanitize_display_text` is the canonical sanitizer for untrusted external text, and boundary helpers (`sanitize_output`, `sanitize_stream_error`) delegate to it or match its ordering.
 
 2. **Boundary and Core Separation (§11):** Sanitization functions live in `types` (boundary module), applied at ingestion points. Core receives already-sanitized strings.
 
 3. **Mechanism vs Policy (§8):** Pure mechanism that strips characters. No embedded policy decisions. Callers decide when to apply.
 
-4. **Composability (§7.5):** Separate functions because different invariants. Composed at call sites where both are needed.
+4. **Composability (§7.5):** Primitive sanitizers remain reusable for specialized boundaries; `sanitize_display_text` composes them for the common untrusted-external-text case.
 
 ## Testing
 

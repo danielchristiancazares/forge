@@ -21,11 +21,11 @@ Forge processes untrusted content from multiple sources:
 
 | Source | Risk | Sanitization Required |
 |--------|------|----------------------|
-| LLM output | Terminal injection | `sanitize_terminal_text` |
+| LLM output | Terminal injection, invisible prompt injection, credential leaks | `sanitize_display_text` |
 | Web content | Invisible prompt injection | `strip_steganographic_chars` |
-| Tool output | Both terminal + prompt injection | `sanitize_output` |
-| Error messages | Credential leaks | `sanitize_stream_error` |
-| Recovered history | Stored injection attacks | `sanitize_terminal_text` |
+| Tool output | Terminal injection, invisible prompt injection, credential leaks | `sanitize_output` |
+| Error messages | Credential leaks, terminal injection | `sanitize_stream_error` |
+| Recovered history | Stored injection attacks, credential leaks | `sanitize_display_text` / `sanitize_stream_error` |
 | Persisted content | Log spoofing via CR | `PersistableContent` |
 | Tool arguments | Homoglyph attacks | `detect_mixed_script` |
 
@@ -216,17 +216,21 @@ In addition to pattern-based API key redaction, Forge provides dynamic secret re
 | `*_TOKEN` | `GITHUB_TOKEN`, `AUTH_TOKEN` |
 | `*_SECRET` | `CLIENT_SECRET`, `JWT_SECRET` |
 | `*_PASSWORD` | `DB_PASSWORD`, `ADMIN_PASSWORD` |
+| `*_CREDENTIAL*` | `AWS_CREDENTIALS`, `MY_CREDENTIAL` |
+| `*_API_*` | `MY_API_KEY`, `SOME_API_TOKEN` |
 | `AWS_*` | `AWS_SECRET_ACCESS_KEY` |
 | `ANTHROPIC_*`, `OPENAI_*`, `GEMINI_*` | Provider API keys |
-| `GITHUB_TOKEN`, `GH_TOKEN` | GitHub tokens |
+| `GOOGLE_*`, `AZURE_*` | Cloud provider credentials |
+| `GITHUB_*`, `GH_*` | GitHub tokens |
+| `NPM_*` | npm registry tokens |
 
 ### Filtering
 
 Values are only considered secrets if:
 - Length ≥ 16 characters (avoids short values like "true", "1")
-- Not a file path (doesn't start with `/` or `C:\`)
-- Not a plain URL (without credential query parameters)
-- Not purely numeric
+- Not an existing file path (starts with `/` or `<drive>:\` and exists on disk)
+- Not a plain URL without credentials (no userinfo and no credential-like query params)
+- Not a long pure-numeric identifier (20+ digits)
 
 ### IFA Conformance
 
@@ -341,12 +345,12 @@ Warnings are displayed in the tool approval UI with yellow styling:
 
 **Location**: `engine/src/tools/mod.rs`
 
-Composes both sanitizers for tool results entering the LLM context:
+Tool output is untrusted external content that enters the LLM context
+window, so we apply terminal + stego normalization and secret redaction:
 
 ```rust
 pub fn sanitize_output(output: &str) -> String {
-    let terminal_safe = sanitize_terminal_text(output);
-    strip_steganographic_chars(&terminal_safe).into_owned()
+    crate::security::sanitize_display_text(output)
 }
 ```
 
@@ -362,15 +366,20 @@ pub fn sanitize_output(output: &str) -> String {
 
 **Location**: `engine/src/security.rs`
 
-Four-pass sanitization for error messages:
+Normalization-first sanitization for error messages. Normalization (terminal + stego)
+MUST run before any redaction to prevent a split-then-rejoin bypass.
 
 ```rust
 pub fn sanitize_stream_error(raw: &str) -> String {
     let trimmed = raw.trim();
-    let pattern_redacted = redact_api_keys(trimmed);       // 1. Pattern-based
-    let value_redacted = secret_redactor().redact(&pattern_redacted);  // 2. Value-based
-    let terminal_safe = sanitize_terminal_text(&value_redacted);       // 3. Terminal
-    strip_steganographic_chars(&terminal_safe).into_owned()            // 4. Stego
+
+    // 1–2. Normalize untrusted text first
+    let terminal_safe = sanitize_terminal_text(trimmed);
+    let normalized = strip_steganographic_chars(terminal_safe.as_ref());
+
+    // 3–4. Redact secrets
+    let pattern_redacted = redact_api_keys(normalized.as_ref());
+    secret_redactor().redact(&pattern_redacted).into_owned()
 }
 ```
 
@@ -392,7 +401,9 @@ strip_steganographic_chars(&normalized).into_owned()
 
 **Location**: `engine/src/streaming.rs`
 
-Applied to streaming text and thinking deltas:
+Applied to streaming text/thinking deltas (terminal-only for safe live rendering).
+Persisted assistant/thinking content is sanitized again before it can reach
+history/context storage.
 
 ```rust
 StreamEvent::TextDelta(sanitize_terminal_text(&text).into_owned())
@@ -406,20 +417,21 @@ StreamEvent::ThinkingDelta(sanitize_terminal_text(&thinking).into_owned())
 Applied when recovering partial responses after crashes:
 
 ```rust
-let sanitized = sanitize_terminal_text(partial_text);
-let sanitized_error = sanitize_terminal_text(error);
+let sanitized = crate::security::sanitize_display_text(partial_text);
+let sanitized_error = crate::security::sanitize_stream_error(error);
 ```
 
 ### TUI Display Sanitization
 
 **Locations**: `tui/src/lib.rs`, `tui/src/shared.rs`
 
-All message content, tool names, tool IDs, and tool output lines are sanitized before rendering:
+All message content, tool names, tool IDs, and tool output lines are sanitized before rendering.
+User-authored messages preserve emoji ZWJ composition by using terminal-only sanitization.
 
 ```rust
-let content = sanitize_terminal_text(msg.content());
-let name = sanitize_terminal_text(&status.name);
-let safe_line = sanitize_terminal_text(line);
+let user_content = sanitize_terminal_text(msg.content());
+let assistant_content = sanitize_display_text(msg.content());
+let safe_line = sanitize_display_text(line);
 ```
 
 ## Threat Model

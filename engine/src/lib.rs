@@ -378,7 +378,11 @@ impl StreamingMessage {
     }
 
     pub fn into_message(self) -> Result<Message, forge_types::EmptyStringError> {
-        let content = NonEmptyString::new(self.content)?;
+        // Persisted assistant content is untrusted external text; sanitize before it can
+        // reach history/context storage to prevent terminal injection, invisible prompt
+        // injection, and secret leaks.
+        let sanitized = crate::security::sanitize_display_text(&self.content);
+        let content = NonEmptyString::new(sanitized)?;
         Ok(Message::assistant(self.model, content))
     }
 }

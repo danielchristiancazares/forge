@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use forge_context::{ContextUsageStatus, StepId, ToolBatchId};
-use forge_types::{ModelName, ToolCall, ToolResult, sanitize_terminal_text};
+use forge_types::{ModelName, ToolCall, ToolResult};
 
 use crate::input_modes::{ChangeRecorder, TurnChangeReport, TurnContext};
 use crate::state::{
@@ -33,7 +33,7 @@ fn run_escalation_reason(tool_name: &str, arguments: &serde_json::Value) -> Opti
         return None;
     }
 
-    let sanitized = sanitize_terminal_text(reason).into_owned();
+    let sanitized = crate::security::sanitize_display_text(reason);
     Some(util::truncate_with_ellipsis(&sanitized, 200))
 }
 
@@ -188,6 +188,10 @@ impl App {
             self.finish_turn(turn);
             return;
         }
+
+        // Tool-call assistant text is untrusted external content (LLM output).
+        // Sanitize ONCE before journaling and before it can reach persistence/display paths.
+        let assistant_text = crate::security::sanitize_display_text(&assistant_text);
 
         // Determine journal status BEFORE constructing ToolBatch (IFA §10.1).
         // Persisted(id) is the capability proof that crash recovery is possible.
@@ -488,7 +492,7 @@ impl App {
                         continue;
                     }
                 };
-                let summary = sanitize_terminal_text(&summary).into_owned();
+                let summary = crate::security::sanitize_display_text(&summary);
                 let summary = util::truncate_with_ellipsis(&summary, 200);
                 let warnings = analyze_tool_arguments(&call.name, &call.arguments);
                 approval_requests.push(ConfirmationRequest {
@@ -880,6 +884,10 @@ impl App {
         thinking_message: Option<Message>,
     ) {
         self.state = self.idle_state();
+
+        // Defensive: recovered batches and alternate entry points might bypass handle_tool_calls.
+        // This is idempotent and ensures we never persist/display raw untrusted assistant text.
+        let assistant_text = crate::security::sanitize_display_text(&assistant_text);
 
         let mut step_id_recorded = false;
         if let Some(thinking_message) = thinking_message {

@@ -23,7 +23,10 @@ fn build_thinking_message(
     content: String,
     signature: ThoughtSignatureState,
 ) -> Option<Message> {
-    if let Ok(thinking) = NonEmptyString::new(content) {
+    // Thinking content is untrusted external text (provider output). Sanitize before it can
+    // reach history/local display paths.
+    let sanitized = security::sanitize_display_text(&content);
+    if let Ok(thinking) = NonEmptyString::new(sanitized) {
         return Some(match signature {
             ThoughtSignatureState::Signed(sig) => {
                 Message::thinking_with_signature(model, thinking, sig.as_str().to_string())
@@ -388,11 +391,6 @@ impl super::App {
 
             let mut journal_error: Option<String> = None;
             let mut finish_reason: Option<StreamFinishReason> = None;
-            // Capture text delta for tool journal append (before event is consumed)
-            let text_delta_for_tool_journal = match &event {
-                StreamEvent::TextDelta(text) => Some(text.clone()),
-                _ => None,
-            };
 
             let mut active = match std::mem::replace(&mut self.state, OperationState::Idle) {
                 OperationState::Streaming(active) => active,
@@ -493,15 +491,6 @@ impl super::App {
 
             if journal_error.is_none() {
                 finish_reason = active.message_mut().apply_event(event);
-                // Append text delta to tool journal (if journaled and we have a delta)
-                if let Some(ref delta) = text_delta_for_tool_journal
-                    && let ActiveStream::Journaled { tool_batch_id, .. } = &active
-                    && let Err(e) = self
-                        .tool_journal
-                        .append_assistant_delta(*tool_batch_id, delta)
-                {
-                    journal_error = Some(e.to_string());
-                }
             }
 
             self.state = OperationState::Streaming(active);

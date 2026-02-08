@@ -33,7 +33,7 @@ use unicode_width::UnicodeWidthStr;
 use forge_engine::{
     App, ChangeKind, ContextUsageStatus, DisplayItem, FileDiff, InputMode, Message,
     PredefinedModel, Provider, TurnUsage, UiOptions, command_specs, find_match_positions,
-    sanitize_display_text,
+    sanitize_display_text, sanitize_terminal_text,
 };
 use forge_types::ToolResult;
 
@@ -792,7 +792,8 @@ fn render_message_static(msg: &Message, ctx: RenderMessageStaticCtx<'_>) {
     match msg {
         Message::User(_) => {
             let content_style = Style::default().fg(palette.text_primary);
-            let content = sanitize_display_text(msg.content());
+            // User-authored text: strip terminal controls, but preserve emoji ZWJ composition.
+            let content = sanitize_terminal_text(msg.content()).into_owned();
             let mut rendered = render_markdown(&content, content_style, palette, max_width);
 
             if rendered.is_empty() {
@@ -1968,7 +1969,11 @@ fn draw_tool_recovery_prompt(frame: &mut Frame, app: &App, palette: &Palette, gl
         lines.push(Line::from(vec![
             Span::styled(format!("  {icon} "), style),
             Span::styled(
-                format!("{} ({})", call.name, call.id),
+                {
+                    let safe_name = sanitize_display_text(&call.name);
+                    let safe_id = sanitize_display_text(&call.id);
+                    format!("{safe_name} ({safe_id})")
+                },
                 Style::default().fg(palette.text_muted),
             ),
         ]));

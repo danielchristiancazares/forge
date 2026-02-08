@@ -10,7 +10,7 @@
 use std::time::{Duration, Instant};
 
 use forge_context::{RecoveredStream, StepId};
-use forge_types::{Message, NonEmptyStaticStr, NonEmptyString, sanitize_terminal_text};
+use forge_types::{Message, NonEmptyStaticStr, NonEmptyString};
 
 use crate::session_state::SessionState;
 use crate::state::{OperationState, ToolRecoveryState};
@@ -457,15 +457,16 @@ impl App {
         let mut recovered_content =
             NonEmptyString::try_from(recovery_badge).expect("recovery badge must be non-empty");
         if !partial_text.is_empty() {
-            // Sanitize recovered text to prevent stored terminal injection
-            let sanitized = sanitize_terminal_text(partial_text);
+            // Sanitize recovered untrusted assistant text to prevent stored terminal injection,
+            // invisible prompt injection, and secret leaks from older journals.
+            let sanitized = crate::security::sanitize_display_text(partial_text);
             recovered_content = recovered_content.append("\n\n").append(&sanitized);
         }
         if let Some(error) = error_text
             && !error.is_empty()
         {
-            // Sanitize error text as well
-            let sanitized_error = sanitize_terminal_text(error);
+            // Sanitize error text as well (older journals may contain raw API errors).
+            let sanitized_error = crate::security::sanitize_stream_error(error);
             let error_line = format!("Error: {sanitized_error}");
             recovered_content = recovered_content.append("\n\n").append(error_line.as_str());
         }

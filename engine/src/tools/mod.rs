@@ -25,10 +25,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use forge_context::Librarian;
-use forge_types::{
-    HomoglyphWarning, Provider, ToolDefinition, ToolResult, detect_mixed_script,
-    sanitize_terminal_text, strip_steganographic_chars,
-};
+use forge_types::{HomoglyphWarning, Provider, ToolDefinition, ToolResult, detect_mixed_script};
 use jsonschema::JSONSchema;
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
@@ -478,14 +475,15 @@ pub fn truncate_output(output: String, effective_max: usize) -> String {
     truncated
 }
 
-/// Sanitize tool output for terminal display and steganographic injection.
+/// Sanitize tool output for terminal display and context inclusion.
 ///
-/// Applies both terminal escape stripping and steganographic character
-/// removal. Tool output is untrusted content that enters the LLM context
-/// window, so both sanitization passes are required.
+/// Tool output is untrusted external content that enters the LLM context
+/// window, so we apply:
+/// - terminal escape stripping
+/// - steganographic character stripping
+/// - secret redaction (pattern + env-derived)
 pub fn sanitize_output(output: &str) -> String {
-    let terminal_safe = sanitize_terminal_text(output);
-    strip_steganographic_chars(&terminal_safe).into_owned()
+    crate::security::sanitize_display_text(output)
 }
 
 /// Redact obvious secrets in output distillates (best-effort).
@@ -578,5 +576,19 @@ mod tests {
         let args = json!({"url": 123});
         let warnings = analyze_tool_arguments("WebFetch", &args);
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn sanitize_output_strips_steganographic_chars() {
+        let input = "Hello\u{200B}World";
+        assert_eq!(sanitize_output(input), "HelloWorld");
+    }
+
+    #[test]
+    fn sanitize_output_redacts_openai_keys() {
+        let input = "key=sk-abc123xyz";
+        let output = sanitize_output(input);
+        assert!(output.contains("sk-***"));
+        assert!(!output.contains("sk-abc123xyz"));
     }
 }
