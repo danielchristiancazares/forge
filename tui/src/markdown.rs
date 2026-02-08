@@ -21,10 +21,17 @@ struct CacheKey {
     style_hash: u64,
     palette_hash: u64,
     soft_breaks_as_newlines: bool,
+    max_width: u16,
 }
 
 impl CacheKey {
-    fn new(content: &str, style: Style, palette: &Palette, soft_breaks_as_newlines: bool) -> Self {
+    fn new(
+        content: &str,
+        style: Style,
+        palette: &Palette,
+        soft_breaks_as_newlines: bool,
+        max_width: u16,
+    ) -> Self {
         use std::collections::hash_map::DefaultHasher;
 
         let mut content_hasher = DefaultHasher::new();
@@ -53,6 +60,7 @@ impl CacheKey {
             style_hash: style_hasher.finish(),
             palette_hash: palette_hasher.finish(),
             soft_breaks_as_newlines,
+            max_width,
         }
     }
 }
@@ -103,10 +111,18 @@ pub fn clear_render_cache() {
 
 /// Render markdown content to ratatui Lines.
 ///
+/// `max_width` constrains table rendering so that tables wrap cell content
+/// instead of exceeding the viewport width.
+///
 /// Uses an internal cache to avoid re-parsing unchanged content.
 #[must_use]
-pub fn render_markdown(content: &str, base_style: Style, palette: &Palette) -> Vec<Line<'static>> {
-    render_markdown_with_soft_breaks(content, base_style, palette, false)
+pub fn render_markdown(
+    content: &str,
+    base_style: Style,
+    palette: &Palette,
+    max_width: u16,
+) -> Vec<Line<'static>> {
+    render_markdown_with_soft_breaks(content, base_style, palette, false, max_width)
 }
 
 /// Render markdown content while preserving single newlines as hard line breaks.
@@ -115,8 +131,9 @@ pub(crate) fn render_markdown_preserve_newlines(
     content: &str,
     base_style: Style,
     palette: &Palette,
+    max_width: u16,
 ) -> Vec<Line<'static>> {
-    render_markdown_with_soft_breaks(content, base_style, palette, true)
+    render_markdown_with_soft_breaks(content, base_style, palette, true, max_width)
 }
 
 fn render_markdown_with_soft_breaks(
@@ -124,8 +141,15 @@ fn render_markdown_with_soft_breaks(
     base_style: Style,
     palette: &Palette,
     soft_breaks_as_newlines: bool,
+    max_width: u16,
 ) -> Vec<Line<'static>> {
-    let key = CacheKey::new(content, base_style, palette, soft_breaks_as_newlines);
+    let key = CacheKey::new(
+        content,
+        base_style,
+        palette,
+        soft_breaks_as_newlines,
+        max_width,
+    );
 
     // Check cache first
     let cached = RENDER_CACHE.with(|cache| cache.borrow().get(&key).cloned());
@@ -135,7 +159,7 @@ fn render_markdown_with_soft_breaks(
     }
 
     // Cache miss - render and store
-    let renderer = MarkdownRenderer::new(base_style, *palette, soft_breaks_as_newlines);
+    let renderer = MarkdownRenderer::new(base_style, *palette, soft_breaks_as_newlines, max_width);
     let lines = renderer.render(content);
 
     RENDER_CACHE.with(|cache| {
@@ -186,6 +210,9 @@ struct MarkdownRenderer {
 
     // Render options
     soft_breaks_as_newlines: bool,
+    /// Maximum width (in columns) available for rendering.
+    /// Used to constrain table column widths and wrap cell content.
+    max_width: u16,
 }
 
 impl MarkdownRenderer {
@@ -195,7 +222,12 @@ impl MarkdownRenderer {
         matches!(s, "<br>" | "<br/>" | "<br />" | "<BR>" | "<BR/>" | "<BR />")
     }
 
-    fn new(base_style: Style, palette: Palette, soft_breaks_as_newlines: bool) -> Self {
+    fn new(
+        base_style: Style,
+        palette: Palette,
+        soft_breaks_as_newlines: bool,
+        max_width: u16,
+    ) -> Self {
         Self {
             base_style,
             palette,
@@ -213,6 +245,7 @@ impl MarkdownRenderer {
             table_alignments: Vec::new(),
             list_stack: Vec::new(),
             soft_breaks_as_newlines,
+            max_width,
         }
     }
 
@@ -474,7 +507,7 @@ impl MarkdownRenderer {
             return;
         }
 
-        // Calculate column widths
+        // Calculate natural column widths from content
         let num_cols = self
             .table_rows
             .iter()
@@ -486,15 +519,43 @@ impl MarkdownRenderer {
         for row in &self.table_rows {
             for (i, cell) in row.iter().enumerate() {
                 if i < col_widths.len() {
-                    // Use unicode width for proper emoji/CJK handling
                     col_widths[i] = col_widths[i].max(cell.trim().width());
                 }
             }
         }
 
         // Ensure minimum width
+        let min_col_width: usize = 3;
         for w in &mut col_widths {
-            *w = (*w).max(3);
+            *w = (*w).max(min_col_width);
+        }
+
+        // Constrain column widths to fit within max_width.
+        // Table overhead: 4 (indent) + num_cols+1 (borders) + num_cols*2 (padding)
+        // = 4 + 1 + num_cols*3
+        if self.max_width > 0 && num_cols > 0 {
+            let overhead = 5 + num_cols * 3;
+            let available = (self.max_width as usize).saturating_sub(overhead);
+            let total_natural: usize = col_widths.iter().sum();
+
+            if total_natural > available && available >= num_cols * min_col_width {
+                // Shrink columns proportionally, respecting minimum widths.
+                // First give every column its minimum, then distribute the
+                // remaining budget proportionally to natural widths.
+                let budget = available - num_cols * min_col_width;
+                let excess: usize = col_widths
+                    .iter()
+                    .map(|w| w.saturating_sub(min_col_width))
+                    .sum();
+
+                if excess > 0 {
+                    for w in &mut col_widths {
+                        let above_min = w.saturating_sub(min_col_width);
+                        *w = min_col_width + (above_min * budget) / excess;
+                        *w = (*w).max(min_col_width);
+                    }
+                }
+            }
         }
 
         let table_style = Style::default().fg(self.palette.text_muted);
@@ -504,13 +565,13 @@ impl MarkdownRenderer {
         let cell_style = self.base_style;
 
         // Render top border
-        let top_border = self.make_table_border(&col_widths, '┌', '┬', '┐', '─');
+        let top_border = Self::make_table_border(&col_widths, '┌', '┬', '┐', '─');
         self.lines.push(Line::from(vec![
             Span::raw("    "),
             Span::styled(top_border, table_style),
         ]));
 
-        // Render rows
+        // Render rows (with multi-line cell wrapping)
         for (row_idx, row) in self.table_rows.iter().enumerate() {
             let style = if row_idx == 0 {
                 header_style
@@ -518,12 +579,32 @@ impl MarkdownRenderer {
                 cell_style
             };
 
-            let row_line = self.make_table_row(row, &col_widths, style, table_style);
-            self.lines.push(Line::from(row_line));
+            // Word-wrap each cell to its column width → Vec<Vec<String>>
+            let wrapped_cells: Vec<Vec<String>> = (0..num_cols)
+                .map(|i| {
+                    let text = row.get(i).map_or("", |s| s.trim());
+                    wrap_text(text, col_widths[i])
+                })
+                .collect();
+
+            // Find the tallest cell in this row
+            let row_height = wrapped_cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
+
+            // Emit one terminal line per sub-row
+            for sub_row in 0..row_height {
+                let row_line = Self::make_table_row_line(
+                    &wrapped_cells,
+                    sub_row,
+                    &col_widths,
+                    style,
+                    table_style,
+                );
+                self.lines.push(Line::from(row_line));
+            }
 
             // After header, add separator
             if row_idx == 0 {
-                let sep = self.make_table_border(&col_widths, '├', '┼', '┤', '─');
+                let sep = Self::make_table_border(&col_widths, '├', '┼', '┤', '─');
                 self.lines.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled(sep, table_style),
@@ -532,7 +613,7 @@ impl MarkdownRenderer {
         }
 
         // Bottom border
-        let bottom_border = self.make_table_border(&col_widths, '└', '┴', '┘', '─');
+        let bottom_border = Self::make_table_border(&col_widths, '└', '┴', '┘', '─');
         self.lines.push(Line::from(vec![
             Span::raw("    "),
             Span::styled(bottom_border, table_style),
@@ -541,9 +622,7 @@ impl MarkdownRenderer {
         self.table_rows.clear();
     }
 
-    #[allow(clippy::unused_self)] // Kept as method for API consistency
     fn make_table_border(
-        &self,
         widths: &[usize],
         left: char,
         mid: char,
@@ -564,10 +643,10 @@ impl MarkdownRenderer {
         s
     }
 
-    #[allow(clippy::unused_self)] // Kept as method for API consistency
-    fn make_table_row(
-        &self,
-        row: &[String],
+    /// Render one sub-row of a (potentially multi-line) table row.
+    fn make_table_row_line(
+        wrapped_cells: &[Vec<String>],
+        sub_row: usize,
         widths: &[usize],
         cell_style: Style,
         border_style: Style,
@@ -576,17 +655,93 @@ impl MarkdownRenderer {
         spans.push(Span::styled("│", border_style));
 
         for (i, width) in widths.iter().enumerate() {
-            let cell = row.get(i).map_or("", |s| s.trim());
-            // Use unicode width for padding calculation (handles emojis)
-            let cell_width = cell.width();
+            let cell_text = wrapped_cells
+                .get(i)
+                .and_then(|lines| lines.get(sub_row))
+                .map_or("", String::as_str);
+            let cell_width = cell_text.width();
             let padding = width.saturating_sub(cell_width);
-            let padded = format!(" {}{} ", cell, " ".repeat(padding));
+            let padded = format!(" {cell_text}{} ", " ".repeat(padding));
             spans.push(Span::styled(padded, cell_style));
             spans.push(Span::styled("│", border_style));
         }
 
         spans
     }
+}
+
+/// Word-wrap `text` to fit within `max_width` display columns.
+/// Breaks on word boundaries when possible, hard-breaks on character
+/// boundaries when a single word exceeds the width.
+fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![text.to_string()];
+    }
+    if text.width() <= max_width {
+        return vec![text.to_string()];
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_width: usize = 0;
+
+    for word in text.split_whitespace() {
+        let word_width = word.width();
+
+        if current.is_empty() {
+            // First word on this line
+            if word_width <= max_width {
+                current.push_str(word);
+                current_width = word_width;
+            } else {
+                // Word itself is wider than max_width: hard-break by character
+                for ch in word.chars() {
+                    let ch_width = UnicodeWidthStr::width(ch.encode_utf8(&mut [0; 4]) as &str);
+                    if current_width + ch_width > max_width && !current.is_empty() {
+                        lines.push(std::mem::take(&mut current));
+                        current_width = 0;
+                    }
+                    current.push(ch);
+                    current_width += ch_width;
+                }
+            }
+        } else if current_width + 1 + word_width <= max_width {
+            // Fits on the current line with a space
+            current.push(' ');
+            current.push_str(word);
+            current_width += 1 + word_width;
+        } else {
+            // Doesn't fit — start a new line
+            lines.push(std::mem::take(&mut current));
+            current_width = 0;
+
+            if word_width <= max_width {
+                current.push_str(word);
+                current_width = word_width;
+            } else {
+                // Hard-break oversized word
+                for ch in word.chars() {
+                    let ch_width = UnicodeWidthStr::width(ch.encode_utf8(&mut [0; 4]) as &str);
+                    if current_width + ch_width > max_width && !current.is_empty() {
+                        lines.push(std::mem::take(&mut current));
+                        current_width = 0;
+                    }
+                    current.push(ch);
+                    current_width += ch_width;
+                }
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines
 }
 
 #[cfg(test)]
@@ -597,7 +752,7 @@ mod tests {
     #[test]
     fn test_simple_text() {
         let palette = Palette::standard();
-        let lines = render_markdown("Hello world", Style::default(), &palette);
+        let lines = render_markdown("Hello world", Style::default(), &palette, 200);
         assert!(!lines.is_empty());
     }
 
@@ -605,7 +760,7 @@ mod tests {
     fn test_table() {
         let md = "| A | B |\n|---|---|\n| 1 | 2 |";
         let palette = Palette::standard();
-        let lines = render_markdown(md, Style::default(), &palette);
+        let lines = render_markdown(md, Style::default(), &palette, 200);
         // Should have borders and content
         assert!(lines.len() >= 4);
     }
@@ -619,10 +774,10 @@ mod tests {
         let palette = Palette::standard();
 
         // First render (cache miss)
-        let lines1 = render_markdown(content, style, &palette);
+        let lines1 = render_markdown(content, style, &palette, 200);
 
         // Second render (cache hit) should return identical result
-        let lines2 = render_markdown(content, style, &palette);
+        let lines2 = render_markdown(content, style, &palette, 200);
 
         assert_eq!(lines1.len(), lines2.len());
         for (l1, l2) in lines1.iter().zip(lines2.iter()) {
@@ -639,8 +794,8 @@ mod tests {
         let style2 = Style::default().add_modifier(Modifier::BOLD);
         let palette = Palette::standard();
 
-        let lines1 = render_markdown(content, style1, &palette);
-        let lines2 = render_markdown(content, style2, &palette);
+        let lines1 = render_markdown(content, style1, &palette, 200);
+        let lines2 = render_markdown(content, style2, &palette, 200);
 
         // Different styles may produce different results (style is baked into spans)
         // Just verify both render without panicking
@@ -653,7 +808,7 @@ mod tests {
         // Just verify clear doesn't panic
         clear_render_cache();
         let palette = Palette::standard();
-        let _ = render_markdown("test", Style::default(), &palette);
+        let _ = render_markdown("test", Style::default(), &palette, 200);
         clear_render_cache();
     }
 
@@ -665,7 +820,7 @@ mod tests {
         // The word "point" should still be bold (from heading) after **key** ends.
         let content = "# Intro **key** point";
         let palette = Palette::standard();
-        let lines = render_markdown(content, Style::default(), &palette);
+        let lines = render_markdown(content, Style::default(), &palette, 200);
 
         // Find the heading line (contains "Intro", "key", "point")
         let heading_line = lines.iter().find(|l| {
@@ -701,7 +856,7 @@ mod tests {
         // The second "outer" should still be bold after _inner_ ends.
         let content = "**outer _inner_ still bold**";
         let palette = Palette::standard();
-        let lines = render_markdown(content, Style::default(), &palette);
+        let lines = render_markdown(content, Style::default(), &palette, 200);
 
         // Find the line containing this text
         let content_line = lines.iter().find(|l| {
@@ -731,7 +886,7 @@ mod tests {
         // XML-like tags (common in LLM output) should be rendered, not silently dropped
         let content = "<thinking>This is important</thinking>";
         let palette = Palette::standard();
-        let lines = render_markdown(content, Style::default(), &palette);
+        let lines = render_markdown(content, Style::default(), &palette, 200);
 
         // Should have content, not be empty
         assert!(
@@ -758,7 +913,7 @@ mod tests {
         // <br> tags (common in LLM output) should become line breaks
         let content = "Line one<br>Line two";
         let palette = Palette::standard();
-        let lines = render_markdown(content, Style::default(), &palette);
+        let lines = render_markdown(content, Style::default(), &palette, 200);
 
         // Should have two separate lines, not "<br>" as literal text
         let all_text: String = lines
@@ -782,7 +937,7 @@ mod tests {
 
         let content = "Line one\nLine two";
         let palette = Palette::standard();
-        let lines = render_markdown_preserve_newlines(content, Style::default(), &palette);
+        let lines = render_markdown_preserve_newlines(content, Style::default(), &palette, 200);
 
         let rendered_lines: Vec<String> = lines
             .iter()
@@ -808,7 +963,7 @@ mod tests {
         // <br> inside table cells should create multi-line cells
         let content = "| Header |\n|--------|\n| Line1<br>Line2 |";
         let palette = Palette::standard();
-        let lines = render_markdown(content, Style::default(), &palette);
+        let lines = render_markdown(content, Style::default(), &palette, 200);
 
         let all_text: String = lines
             .iter()
@@ -833,7 +988,7 @@ mod tests {
         // Simulate streaming: code block started but not closed
         let content = "Here is some code:\n\n```rust\nfn main() {\n    println!(\"hello\");\n}";
         let palette = Palette::standard();
-        let lines = render_markdown(content, Style::default(), &palette);
+        let lines = render_markdown(content, Style::default(), &palette, 200);
 
         // Should render the incomplete code block content
         let all_text: String = lines
@@ -849,5 +1004,86 @@ mod tests {
             all_text.contains("println"),
             "Code block content should appear: {all_text}"
         );
+    }
+
+    #[test]
+    fn test_table_cell_wraps_when_narrow() {
+        clear_render_cache();
+
+        // A table with a wide cell that should wrap when max_width is small
+        let md = "| # | Description |\n|---|---|\n| 1 | This is a long description that should wrap within the cell |";
+        let palette = Palette::standard();
+        // Use a narrow width that forces wrapping
+        let lines = render_markdown(md, Style::default(), &palette, 50);
+
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+
+        // All content should still be present (wrapped, not truncated)
+        assert!(
+            all_text.contains("long description"),
+            "Wrapped cell should contain full text: {all_text}"
+        );
+        assert!(
+            all_text.contains("wrap within"),
+            "Wrapped cell should contain continuation: {all_text}"
+        );
+
+        // The data row should span multiple terminal lines (cell wrapping)
+        // Count lines that have "│" border characters in the data area
+        // (after header separator)
+        let border_lines: Vec<_> = lines
+            .iter()
+            .filter(|l| {
+                let text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                text.contains('│') && !text.contains('─')
+            })
+            .collect();
+
+        // Header = 1 line, data row should be > 1 line due to wrapping
+        assert!(
+            border_lines.len() > 2,
+            "Data row should wrap into multiple lines, got {} border lines",
+            border_lines.len()
+        );
+    }
+
+    #[test]
+    fn test_table_no_wrap_when_wide_enough() {
+        clear_render_cache();
+
+        let md = "| A | B |\n|---|---|\n| 1 | 2 |";
+        let palette = Palette::standard();
+        // Plenty of width — no wrapping should happen
+        let lines_wide = render_markdown(md, Style::default(), &palette, 200);
+        // Same at a smaller but still sufficient width
+        let lines_narrow = render_markdown(md, Style::default(), &palette, 40);
+
+        // Both should produce the same number of lines (no wrapping needed)
+        assert_eq!(
+            lines_wide.len(),
+            lines_narrow.len(),
+            "Small table should not wrap when viewport is wide enough"
+        );
+    }
+
+    #[test]
+    fn test_wrap_text_basic() {
+        let result = wrap_text("hello world foo bar", 11);
+        assert_eq!(result, vec!["hello world", "foo bar"]);
+    }
+
+    #[test]
+    fn test_wrap_text_single_long_word() {
+        let result = wrap_text("abcdefghij", 5);
+        assert_eq!(result, vec!["abcde", "fghij"]);
+    }
+
+    #[test]
+    fn test_wrap_text_fits() {
+        let result = wrap_text("short", 10);
+        assert_eq!(result, vec!["short"]);
     }
 }

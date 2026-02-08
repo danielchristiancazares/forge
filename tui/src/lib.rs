@@ -370,6 +370,7 @@ fn build_message_lines(
                         palette,
                         glyphs,
                         None,
+                        width,
                     );
                     render_message_static(
                         msg,
@@ -378,25 +379,58 @@ fn build_message_lines(
                         palette,
                         glyphs,
                         Some(&meta),
+                        width,
                     );
                 } else {
                     // Orphan result (ToolUse rendered in previous pass or missing)
-                    render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs, None);
+                    render_message_static(
+                        msg,
+                        &mut lines,
+                        &mut msg_count,
+                        palette,
+                        glyphs,
+                        None,
+                        width,
+                    );
                 }
             }
             Message::Thinking(_) => {
                 // Only render thinking if show_thinking is enabled
                 if app.ui_options().show_thinking {
-                    render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs, None);
+                    render_message_static(
+                        msg,
+                        &mut lines,
+                        &mut msg_count,
+                        palette,
+                        glyphs,
+                        None,
+                        width,
+                    );
                 }
             }
-            _ => render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs, None),
+            _ => render_message_static(
+                msg,
+                &mut lines,
+                &mut msg_count,
+                palette,
+                glyphs,
+                None,
+                width,
+            ),
         }
     }
 
     // Render any orphaned ToolUse messages (in-flight, no result yet)
     for (_, (msg, _)) in buffered_tool_uses {
-        render_message_static(msg, &mut lines, &mut msg_count, palette, glyphs, None);
+        render_message_static(
+            msg,
+            &mut lines,
+            &mut msg_count,
+            palette,
+            glyphs,
+            None,
+            width,
+        );
     }
 
     let total_rows = wrapped_line_count_exact(&lines, width);
@@ -482,7 +516,7 @@ fn build_dynamic_message_lines(
                 .add_modifier(Modifier::ITALIC);
             let thinking = sanitize_display_text(streaming.thinking());
             let mut rendered_thinking =
-                render_markdown_preserve_newlines(&thinking, thinking_style, palette);
+                render_markdown_preserve_newlines(&thinking, thinking_style, palette, width);
 
             if !rendered_thinking.is_empty() {
                 let first_line = &mut rendered_thinking[0];
@@ -512,7 +546,7 @@ fn build_dynamic_message_lines(
         } else {
             let content_style = Style::default().fg(palette.text_secondary);
             let content = sanitize_display_text(streaming.content());
-            let mut rendered = render_markdown(&content, content_style, palette);
+            let mut rendered = render_markdown(&content, content_style, palette, width);
 
             if rendered.is_empty() {
                 if has_thinking {
@@ -744,6 +778,7 @@ fn render_message_static(
     palette: &Palette,
     glyphs: &Glyphs,
     tool_call_meta: Option<&ToolCallMeta>,
+    max_width: u16,
 ) {
     let is_tool_result = matches!(msg, Message::ToolResult(_));
     if *msg_count > 0 && !is_tool_result {
@@ -756,7 +791,7 @@ fn render_message_static(
         Message::User(_) => {
             let content_style = Style::default().fg(palette.text_primary);
             let content = sanitize_display_text(msg.content());
-            let mut rendered = render_markdown(&content, content_style, palette);
+            let mut rendered = render_markdown(&content, content_style, palette, max_width);
 
             if rendered.is_empty() {
                 lines.push(Line::from(vec![Span::styled(
@@ -827,7 +862,7 @@ fn render_message_static(
                 _ => Style::default().fg(palette.text_muted),
             };
             let content = sanitize_display_text(msg.content());
-            let mut rendered = render_markdown(&content, content_style, palette);
+            let mut rendered = render_markdown(&content, content_style, palette, max_width);
 
             if rendered.is_empty() {
                 lines.push(Line::from(vec![Span::styled(
@@ -851,7 +886,8 @@ fn render_message_static(
                 .fg(palette.text_muted)
                 .add_modifier(Modifier::ITALIC);
             let content = sanitize_display_text(msg.content());
-            let mut rendered = render_markdown_preserve_newlines(&content, content_style, palette);
+            let mut rendered =
+                render_markdown_preserve_newlines(&content, content_style, palette, max_width);
 
             if rendered.is_empty() {
                 lines.push(Line::from(vec![Span::styled(
