@@ -1007,9 +1007,9 @@ pub(crate) fn draw_input(
     // Format LSP diagnostics indicator
     let lsp_snap = app.lsp_snapshot();
     let diag_str = lsp_snap.status_string();
-    let diag_color = if lsp_snap.error_count > 0 {
+    let diag_color = if lsp_snap.error_count() > 0 {
         Some(palette.red)
-    } else if lsp_snap.warning_count > 0 {
+    } else if lsp_snap.warning_count() > 0 {
         Some(palette.yellow)
     } else {
         None

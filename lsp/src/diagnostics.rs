@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::types::{DiagnosticSeverity, DiagnosticsSnapshot, ForgeDiagnostic};
+use crate::types::{DiagnosticsSnapshot, ForgeDiagnostic};
 
 /// Accumulates per-file diagnostics from language servers.
 pub(crate) struct DiagnosticsStore {
@@ -30,42 +30,24 @@ impl DiagnosticsStore {
     }
 
     /// Build an immutable snapshot for UI rendering and agent feedback.
+    ///
+    /// Counts are derived from the canonical `files` data by `DiagnosticsSnapshot`
+    /// accessors (IFA §7.6 — no cached derived values).
     pub fn snapshot(&self) -> DiagnosticsSnapshot {
-        let mut error_count = 0usize;
-        let mut warning_count = 0usize;
-        let mut info_count = 0usize;
-        let mut hint_count = 0usize;
-
         let mut files: Vec<(PathBuf, Vec<ForgeDiagnostic>)> = self
             .data
             .iter()
-            .map(|(path, items)| {
-                for item in items {
-                    match item.severity {
-                        DiagnosticSeverity::Error => error_count += 1,
-                        DiagnosticSeverity::Warning => warning_count += 1,
-                        DiagnosticSeverity::Information => info_count += 1,
-                        DiagnosticSeverity::Hint => hint_count += 1,
-                    }
-                }
-                (path.clone(), items.clone())
-            })
+            .map(|(path, items)| (path.clone(), items.clone()))
             .collect();
 
         // Sort: files with errors first, then alphabetically
         files.sort_by(|a, b| {
-            let a_has_errors = a.1.iter().any(|d| d.severity.is_error());
-            let b_has_errors = b.1.iter().any(|d| d.severity.is_error());
+            let a_has_errors = a.1.iter().any(|d| d.severity().is_error());
+            let b_has_errors = b.1.iter().any(|d| d.severity().is_error());
             b_has_errors.cmp(&a_has_errors).then_with(|| a.0.cmp(&b.0))
         });
 
-        DiagnosticsSnapshot {
-            error_count,
-            warning_count,
-            info_count,
-            hint_count,
-            files,
-        }
+        DiagnosticsSnapshot::new(files)
     }
 
     /// Get only errors for specific files (for agent feedback after tool batch).
@@ -75,7 +57,7 @@ impl DiagnosticsStore {
             if let Some(items) = self.data.get(path) {
                 let errors: Vec<ForgeDiagnostic> = items
                     .iter()
-                    .filter(|d| d.severity.is_error())
+                    .filter(|d| d.severity().is_error())
                     .cloned()
                     .collect();
                 if !errors.is_empty() {
@@ -93,13 +75,7 @@ mod tests {
     use crate::types::DiagnosticSeverity;
 
     fn make_diag(severity: DiagnosticSeverity, msg: &str, line: u32) -> ForgeDiagnostic {
-        ForgeDiagnostic {
-            severity,
-            message: msg.to_string(),
-            line,
-            col: 0,
-            source: None,
-        }
+        ForgeDiagnostic::new(severity, msg.to_string(), line, 0, "test".to_string())
     }
 
     #[test]
@@ -107,8 +83,8 @@ mod tests {
         let store = DiagnosticsStore::new();
         let snap = store.snapshot();
         assert!(snap.is_empty());
-        assert_eq!(snap.error_count, 0);
-        assert_eq!(snap.warning_count, 0);
+        assert_eq!(snap.error_count(), 0);
+        assert_eq!(snap.warning_count(), 0);
     }
 
     #[test]
@@ -124,10 +100,10 @@ mod tests {
         );
 
         let snap = store.snapshot();
-        assert_eq!(snap.error_count, 1);
-        assert_eq!(snap.warning_count, 1);
-        assert_eq!(snap.files.len(), 1);
-        assert_eq!(snap.files[0].0, path);
+        assert_eq!(snap.error_count(), 1);
+        assert_eq!(snap.warning_count(), 1);
+        assert_eq!(snap.files().len(), 1);
+        assert_eq!(snap.files()[0].0, path);
     }
 
     #[test]
@@ -138,7 +114,7 @@ mod tests {
             path.clone(),
             vec![make_diag(DiagnosticSeverity::Error, "err", 1)],
         );
-        assert_eq!(store.snapshot().files.len(), 1);
+        assert_eq!(store.snapshot().files().len(), 1);
 
         // Server clears diagnostics
         store.update(path, vec![]);
@@ -159,8 +135,8 @@ mod tests {
 
         let snap = store.snapshot();
         // a.rs has error → should come first despite alphabetical
-        assert_eq!(snap.files[0].0, PathBuf::from("a.rs"));
-        assert_eq!(snap.files[1].0, PathBuf::from("b.rs"));
+        assert_eq!(snap.files()[0].0, PathBuf::from("a.rs"));
+        assert_eq!(snap.files()[1].0, PathBuf::from("b.rs"));
     }
 
     #[test]
@@ -198,11 +174,11 @@ mod tests {
                 make_diag(DiagnosticSeverity::Error, "err2", 2),
             ],
         );
-        assert_eq!(store.snapshot().error_count, 2);
+        assert_eq!(store.snapshot().error_count(), 2);
 
         // Server re-publishes with only one error
         store.update(path, vec![make_diag(DiagnosticSeverity::Error, "err1", 1)]);
-        assert_eq!(store.snapshot().error_count, 1);
+        assert_eq!(store.snapshot().error_count(), 1);
     }
 
     #[test]

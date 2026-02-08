@@ -133,11 +133,12 @@ impl LspManager {
             return;
         }
 
-        let uri = if let Some(u) = protocol::path_to_file_uri(path) {
-            u.to_string()
-        } else {
-            tracing::warn!("Failed to convert path to file URI: {}", path.display());
-            return;
+        let uri = match protocol::path_to_file_uri(path) {
+            Ok(u) => u.to_string(),
+            Err(e) => {
+                tracing::warn!("Skipping LSP notification: {e}");
+                return;
+            }
         };
 
         if let Err(e) = server.notify_file_changed(&uri, text).await {
@@ -262,13 +263,7 @@ mod tests {
     }
 
     fn make_diag(severity: DiagnosticSeverity, msg: &str) -> ForgeDiagnostic {
-        ForgeDiagnostic {
-            severity,
-            message: msg.to_string(),
-            line: 0,
-            col: 0,
-            source: None,
-        }
+        ForgeDiagnostic::new(severity, msg.to_string(), 0, 0, "test".to_string())
     }
 
     #[test]
@@ -355,9 +350,9 @@ mod tests {
         assert_eq!(count, 2);
 
         let snap = manager.snapshot();
-        assert_eq!(snap.error_count, 1);
-        assert_eq!(snap.warning_count, 1);
-        assert_eq!(snap.files.len(), 2);
+        assert_eq!(snap.error_count(), 1);
+        assert_eq!(snap.warning_count(), 1);
+        assert_eq!(snap.files().len(), 2);
     }
 
     #[tokio::test]
@@ -451,7 +446,7 @@ mod tests {
             .await
             .unwrap();
         manager.poll_events(10);
-        assert_eq!(manager.snapshot().error_count, 1);
+        assert_eq!(manager.snapshot().error_count(), 1);
 
         // Server clears diagnostics (empty array)
         event_tx

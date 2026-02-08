@@ -3,11 +3,18 @@
 //! These are minimal types covering only the LSP subset we need:
 //! initialization, text sync, and diagnostics.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::types::{DiagnosticSeverity, ForgeDiagnostic};
+
+/// Error converting a filesystem path to a `file://` URI.
+#[derive(Debug, thiserror::Error)]
+#[error("cannot convert path to file URI: {}", path.display())]
+pub(crate) struct PathToUriError {
+    path: PathBuf,
+}
 
 // ── JSON-RPC framing ──────────────────────────────────────────────────
 
@@ -17,11 +24,12 @@ pub(crate) struct Request {
     pub jsonrpc: &'static str,
     pub id: u64,
     pub method: &'static str,
-    pub params: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
 }
 
 impl Request {
-    pub fn new(id: u64, method: &'static str, params: serde_json::Value) -> Self {
+    pub fn new(id: u64, method: &'static str, params: Option<serde_json::Value>) -> Self {
         Self {
             jsonrpc: "2.0",
             id,
@@ -36,11 +44,12 @@ impl Request {
 pub(crate) struct Notification {
     pub jsonrpc: &'static str,
     pub method: &'static str,
-    pub params: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
 }
 
 impl Notification {
-    pub fn new(method: &'static str, params: serde_json::Value) -> Self {
+    pub fn new(method: &'static str, params: Option<serde_json::Value>) -> Self {
         Self {
             jsonrpc: "2.0",
             method,
@@ -141,17 +150,22 @@ pub(crate) struct LspPosition {
 
 impl LspDiagnostic {
     /// Convert to our public diagnostic type.
+    ///
+    /// This is the boundary: wire-format optionality is resolved here.
+    /// - Missing/unknown severity → `Warning` (boundary policy).
+    /// - Missing source → `"unknown"` (IFA §11.2: no `Option` in core).
     pub fn to_forge_diagnostic(&self) -> ForgeDiagnostic {
-        ForgeDiagnostic {
-            severity: self
-                .severity
-                .map(DiagnosticSeverity::from_lsp)
+        ForgeDiagnostic::new(
+            self.severity
+                .and_then(DiagnosticSeverity::from_lsp)
                 .unwrap_or(DiagnosticSeverity::Warning),
-            message: self.message.clone(),
-            line: self.range.start.line,
-            col: self.range.start.character,
-            source: self.source.clone(),
-        }
+            self.message.clone(),
+            self.range.start.line,
+            self.range.start.character,
+            self.source
+                .clone()
+                .unwrap_or_else(|| String::from("unknown")),
+        )
     }
 }
 
@@ -161,8 +175,10 @@ impl LspDiagnostic {
 ///
 /// Uses the `url` crate for correct Windows path handling
 /// (e.g. `C:\foo\bar.rs` → `file:///C:/foo/bar.rs`).
-pub(crate) fn path_to_file_uri(path: &Path) -> Option<url::Url> {
-    url::Url::from_file_path(path).ok()
+pub(crate) fn path_to_file_uri(path: &Path) -> Result<url::Url, PathToUriError> {
+    url::Url::from_file_path(path).map_err(|()| PathToUriError {
+        path: path.to_path_buf(),
+    })
 }
 
 /// Convert a `file://` URI string back to a filesystem path.
@@ -214,10 +230,10 @@ mod tests {
         };
 
         let forge_diag = lsp_diag.to_forge_diagnostic();
-        assert_eq!(forge_diag.severity, DiagnosticSeverity::Error);
-        assert_eq!(forge_diag.line, 10);
-        assert_eq!(forge_diag.col, 5);
-        assert_eq!(forge_diag.source.as_deref(), Some("rustc"));
+        assert_eq!(forge_diag.severity(), DiagnosticSeverity::Error);
+        assert_eq!(forge_diag.line(), 10);
+        assert_eq!(forge_diag.col(), 5);
+        assert_eq!(forge_diag.source(), "rustc");
     }
 
     #[test]
@@ -251,7 +267,7 @@ mod tests {
         let params: PublishDiagnosticsParams = serde_json::from_value(json).unwrap();
         let forge_diag = params.diagnostics[0].to_forge_diagnostic();
         // Missing severity defaults to Warning
-        assert_eq!(forge_diag.severity, DiagnosticSeverity::Warning);
+        assert_eq!(forge_diag.severity(), DiagnosticSeverity::Warning);
     }
 
     #[test]
@@ -289,8 +305,12 @@ mod tests {
     }
 
     #[test]
-    fn test_request_serialization() {
-        let req = Request::new(42, "initialize", serde_json::json!({"rootUri": "file:///"}));
+    fn test_request_serialization_with_params() {
+        let req = Request::new(
+            42,
+            "initialize",
+            Some(serde_json::json!({"rootUri": "file:///"})),
+        );
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["jsonrpc"], "2.0");
         assert_eq!(json["id"], 42);
@@ -299,11 +319,37 @@ mod tests {
     }
 
     #[test]
-    fn test_notification_serialization() {
-        let notif = Notification::new("initialized", serde_json::json!({}));
+    fn test_request_serialization_without_params() {
+        let req = Request::new(1, "shutdown", None);
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["jsonrpc"], "2.0");
+        assert_eq!(json["id"], 1);
+        assert_eq!(json["method"], "shutdown");
+        assert!(
+            json.get("params").is_none(),
+            "params must be omitted, not null"
+        );
+    }
+
+    #[test]
+    fn test_notification_serialization_with_params() {
+        let notif = Notification::new("initialized", Some(serde_json::json!({})));
         let json = serde_json::to_value(&notif).unwrap();
         assert_eq!(json["jsonrpc"], "2.0");
         assert_eq!(json["method"], "initialized");
         assert!(json.get("id").is_none());
+        assert!(json.get("params").is_some());
+    }
+
+    #[test]
+    fn test_notification_serialization_without_params() {
+        let notif = Notification::new("exit", None);
+        let json = serde_json::to_value(&notif).unwrap();
+        assert_eq!(json["jsonrpc"], "2.0");
+        assert_eq!(json["method"], "exit");
+        assert!(
+            json.get("params").is_none(),
+            "params must be omitted, not null"
+        );
     }
 }

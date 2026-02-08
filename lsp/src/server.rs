@@ -33,6 +33,51 @@ enum WriterCommand {
     Shutdown,
 }
 
+/// Parsed JSON-RPC incoming frame — discriminated union over the three
+/// wire-level message shapes (IFA §9.2: tag fields → typed variants).
+enum IncomingFrame {
+    /// Response to a client-initiated request (has `id` + `result`/`error`).
+    Response { id: u64, body: serde_json::Value },
+    /// Server→client request (has `id` + `method`); must be answered.
+    ServerRequest {
+        id: serde_json::Value,
+        method: String,
+    },
+    /// Server→client notification (has `method`, no `id`).
+    Notification {
+        method: String,
+        params: Option<serde_json::Value>,
+    },
+}
+
+/// Parse a raw JSON-RPC frame into a typed `IncomingFrame`.
+///
+/// Returns `None` for malformed frames that don't match any JSON-RPC shape.
+fn parse_incoming(frame: &serde_json::Value) -> Option<IncomingFrame> {
+    let id = frame.get("id");
+    let method = frame
+        .get("method")
+        .and_then(|m| m.as_str())
+        .map(String::from);
+    let has_result_or_error = frame.get("result").is_some() || frame.get("error").is_some();
+
+    match (id, method, has_result_or_error) {
+        (Some(id_val), None, true) => Some(IncomingFrame::Response {
+            id: id_val.as_u64()?,
+            body: frame.clone(),
+        }),
+        (Some(id_val), Some(method), _) => Some(IncomingFrame::ServerRequest {
+            id: id_val.clone(),
+            method,
+        }),
+        (None, Some(method), _) => Some(IncomingFrame::Notification {
+            method,
+            params: frame.get("params").cloned(),
+        }),
+        _ => None,
+    }
+}
+
 /// Manages a single language server child process.
 pub(crate) struct ServerHandle {
     pub name: String,
@@ -171,10 +216,11 @@ impl ServerHandle {
 
     /// Dispatch a single frame from the server.
     ///
-    /// Handles three cases:
-    /// 1. **Response** (has `id` + `result`/`error`): route to pending request
-    /// 2. **Notification** (has `method`, no `id`): dispatch to event handler
-    /// 3. **Server→client request** (has `id` + `method`): auto-reply with "method not found"
+    /// Parses the raw JSON into a typed `IncomingFrame` (IFA §9.2), then
+    /// matches on the discriminated union:
+    /// - **Response**: route to pending request
+    /// - **ServerRequest**: auto-reply with "method not found"
+    /// - **Notification**: dispatch to event handler
     async fn dispatch_frame(
         frame: &serde_json::Value,
         pending: &tokio::sync::Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>,
@@ -182,66 +228,70 @@ impl ServerHandle {
         writer_tx: &mpsc::Sender<WriterCommand>,
         server_name: &str,
     ) {
-        let has_id = frame.get("id").is_some();
-        let has_method = frame.get("method").is_some();
-        let has_result_or_error = frame.get("result").is_some() || frame.get("error").is_some();
+        let Some(incoming) = parse_incoming(frame) else {
+            tracing::trace!("Ignoring malformed JSON-RPC frame from '{server_name}'");
+            return;
+        };
 
-        if has_id && has_result_or_error {
-            // Case 1: Response to our request
-            if let Some(id) = frame["id"].as_u64() {
+        match incoming {
+            IncomingFrame::Response { id, body } => {
                 let sender = pending.lock().await.remove(&id);
                 if let Some(tx) = sender {
-                    let _ = tx.send(frame.clone());
+                    let _ = tx.send(body);
                 }
             }
-        } else if has_id && has_method {
-            // Case 3: Server→client request — reply with "method not found"
-            // Many servers send client/registerCapability, workspace/configuration, etc.
-            // We must respond or the server may block.
-            let method = frame["method"].as_str().unwrap_or("<unknown>");
-            tracing::debug!(
-                "LSP '{server_name}' sent request: {method} — replying method not found"
-            );
+            IncomingFrame::ServerRequest { id, method } => {
+                // Many servers send client/registerCapability, workspace/configuration, etc.
+                // We must respond or the server may block.
+                tracing::debug!(
+                    "LSP '{server_name}' sent request: {method} — replying method not found"
+                );
+                let response = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {
+                        "code": -32601,
+                        "message": format!("Method not found: {method}")
+                    }
+                });
+                let _ = writer_tx.send(WriterCommand::Send(response)).await;
+            }
+            IncomingFrame::Notification { method, params } => {
+                Self::handle_notification(server_name, &method, params, event_tx).await;
+            }
+        }
+    }
 
-            let response = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": frame["id"],
-                "error": {
-                    "code": -32601,
-                    "message": format!("Method not found: {method}")
-                }
-            });
-            let _ = writer_tx.send(WriterCommand::Send(response)).await;
-        } else if has_method {
-            // Case 2: Notification from server
-            let method = frame["method"].as_str().unwrap_or("");
-            match method {
-                "textDocument/publishDiagnostics" => {
-                    if let Some(params) = frame.get("params") {
-                        match serde_json::from_value::<PublishDiagnosticsParams>(params.clone()) {
-                            Ok(diag_params) => {
-                                let path = protocol::file_uri_to_path(&diag_params.uri);
-                                if let Some(path) = path {
-                                    let items = diag_params
-                                        .diagnostics
-                                        .iter()
-                                        .map(protocol::LspDiagnostic::to_forge_diagnostic)
-                                        .collect();
-                                    let _ =
-                                        event_tx.send(LspEvent::Diagnostics { path, items }).await;
-                                }
-                            }
-                            Err(e) => {
-                                tracing::debug!(
-                                    "Failed to parse publishDiagnostics from '{server_name}': {e}"
-                                );
-                            }
+    /// Handle a server notification by method name.
+    async fn handle_notification(
+        server_name: &str,
+        method: &str,
+        params: Option<serde_json::Value>,
+        event_tx: &mpsc::Sender<LspEvent>,
+    ) {
+        match method {
+            "textDocument/publishDiagnostics" => {
+                let Some(params) = params else { return };
+                match serde_json::from_value::<PublishDiagnosticsParams>(params) {
+                    Ok(diag_params) => {
+                        if let Some(path) = protocol::file_uri_to_path(&diag_params.uri) {
+                            let items = diag_params
+                                .diagnostics
+                                .iter()
+                                .map(protocol::LspDiagnostic::to_forge_diagnostic)
+                                .collect();
+                            let _ = event_tx.send(LspEvent::Diagnostics { path, items }).await;
                         }
                     }
+                    Err(e) => {
+                        tracing::debug!(
+                            "Failed to parse publishDiagnostics from '{server_name}': {e}"
+                        );
+                    }
                 }
-                _ => {
-                    tracing::trace!("Ignoring notification from '{server_name}': {method}");
-                }
+            }
+            _ => {
+                tracing::trace!("Ignoring notification from '{server_name}': {method}");
             }
         }
     }
@@ -252,7 +302,7 @@ impl ServerHandle {
             .context("converting workspace root to URI")?;
 
         let params = protocol::initialize_params(root_uri.as_str());
-        let response = self.send_request("initialize", params).await?;
+        let response = self.send_request("initialize", Some(params)).await?;
 
         // Check for error in response
         if let Some(error) = response.get("error") {
@@ -263,7 +313,7 @@ impl ServerHandle {
         }
 
         // Send initialized notification
-        self.send_notification("initialized", serde_json::json!({}))
+        self.send_notification("initialized", Some(serde_json::json!({})))
             .await?;
 
         Ok(())
@@ -273,7 +323,7 @@ impl ServerHandle {
     async fn send_request(
         &mut self,
         method: &'static str,
-        params: serde_json::Value,
+        params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let id = self.next_id;
         self.next_id += 1;
@@ -318,7 +368,7 @@ impl ServerHandle {
     async fn send_notification(
         &self,
         method: &'static str,
-        params: serde_json::Value,
+        params: Option<serde_json::Value>,
     ) -> Result<()> {
         let notification = Notification::new(method, params);
         let frame = serde_json::to_value(&notification).context("serializing notification")?;
@@ -340,7 +390,7 @@ impl ServerHandle {
             let version = self.doc_versions.entry(uri.to_string()).or_insert(0);
             *version += 1;
             let params = protocol::did_change_params(uri, *version, text);
-            self.send_notification("textDocument/didChange", params)
+            self.send_notification("textDocument/didChange", Some(params))
                 .await
         } else {
             // First time — send didOpen
@@ -348,19 +398,18 @@ impl ServerHandle {
             self.doc_versions.insert(uri.to_string(), version);
             self.opened_docs.insert(uri.to_string());
             let params = protocol::did_open_params(uri, &self.language_id, version, text);
-            self.send_notification("textDocument/didOpen", params).await
+            self.send_notification("textDocument/didOpen", Some(params))
+                .await
         }
     }
 
     /// Gracefully shut down the server.
     pub async fn shutdown(&mut self) {
         // Try graceful shutdown
-        if let Ok(response) = self.send_request("shutdown", serde_json::json!(null)).await
+        if let Ok(response) = self.send_request("shutdown", None).await
             && response.get("error").is_none()
         {
-            let _ = self
-                .send_notification("exit", serde_json::json!(null))
-                .await;
+            let _ = self.send_notification("exit", None).await;
         }
 
         // Send shutdown to writer task
@@ -458,8 +507,8 @@ mod tests {
                 #[cfg(not(windows))]
                 assert_eq!(path, std::path::PathBuf::from("/test/main.rs"));
                 assert_eq!(items.len(), 1);
-                assert_eq!(items[0].message, "expected `;`");
-                assert!(items[0].severity.is_error());
+                assert_eq!(items[0].message(), "expected `;`");
+                assert!(items[0].severity().is_error());
             }
             other @ LspEvent::Status { .. } => {
                 panic!("expected Diagnostics event, got {other:?}")

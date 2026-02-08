@@ -600,9 +600,10 @@ impl super::App {
                 } else {
                     let mut lines = vec![format!(
                         "Diagnostics: {} error(s), {} warning(s)",
-                        snapshot.error_count, snapshot.warning_count
+                        snapshot.error_count(),
+                        snapshot.warning_count()
                     )];
-                    for (path, diags) in &snapshot.files {
+                    for (path, diags) in snapshot.files() {
                         for diag in diags {
                             lines.push(format!("  {}", diag.display_with_path(path)));
                         }
