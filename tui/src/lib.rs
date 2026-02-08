@@ -322,6 +322,8 @@ fn build_message_lines(
     // but we want to render each ToolUse immediately before its result.
     let mut buffered_tool_uses: HashMap<&str, (&Message, ToolCallMeta)> = HashMap::new();
 
+    let mut last_was_thinking = false;
+
     for item in app.display_items() {
         let msg = match item {
             DisplayItem::History(id) => app.history().get_entry(*id).message(),
@@ -329,11 +331,9 @@ fn build_message_lines(
         };
         match msg {
             Message::ToolUse(call) => {
-                // Buffer instead of rendering immediately
                 buffered_tool_uses.insert(call.id.as_str(), (msg, ToolCallMeta::from_call(call)));
             }
             Message::ToolResult(result) => {
-                // Render paired ToolUse first (if buffered), then the result
                 if let Some((tool_use_msg, meta)) =
                     buffered_tool_uses.remove(result.tool_call_id.as_str())
                 {
@@ -345,6 +345,7 @@ fn build_message_lines(
                         glyphs,
                         None,
                         width,
+                        false,
                     );
                     render_message_static(
                         msg,
@@ -354,9 +355,9 @@ fn build_message_lines(
                         glyphs,
                         Some(&meta),
                         width,
+                        false,
                     );
                 } else {
-                    // Orphan result (ToolUse rendered in previous pass or missing)
                     render_message_static(
                         msg,
                         &mut lines,
@@ -365,11 +366,12 @@ fn build_message_lines(
                         glyphs,
                         None,
                         width,
+                        false,
                     );
                 }
+                last_was_thinking = false;
             }
             Message::Thinking(_) => {
-                // Only render thinking if show_thinking is enabled
                 if app.ui_options().show_thinking {
                     render_message_static(
                         msg,
@@ -379,22 +381,28 @@ fn build_message_lines(
                         glyphs,
                         None,
                         width,
+                        false,
                     );
+                    last_was_thinking = true;
                 }
             }
-            _ => render_message_static(
-                msg,
-                &mut lines,
-                &mut msg_count,
-                palette,
-                glyphs,
-                None,
-                width,
-            ),
+            _ => {
+                let follows = last_was_thinking && matches!(msg, Message::Assistant(_));
+                render_message_static(
+                    msg,
+                    &mut lines,
+                    &mut msg_count,
+                    palette,
+                    glyphs,
+                    None,
+                    width,
+                    follows,
+                );
+                last_was_thinking = false;
+            }
         }
     }
 
-    // Render any orphaned ToolUse messages (in-flight, no result yet)
     for (_, (msg, _)) in buffered_tool_uses {
         render_message_static(
             msg,
@@ -404,6 +412,7 @@ fn build_message_lines(
             glyphs,
             None,
             width,
+            false,
         );
     }
 
@@ -747,6 +756,7 @@ fn render_message_static(
     glyphs: &Glyphs,
     tool_call_meta: Option<&ToolCallMeta>,
     max_width: u16,
+    follows_thinking: bool,
 ) {
     let is_tool_result = matches!(msg, Message::ToolResult(_));
     if *msg_count > 0 && !is_tool_result {
@@ -833,10 +843,24 @@ fn render_message_static(
             let mut rendered = render_markdown(&content, content_style, palette, max_width);
 
             if rendered.is_empty() {
-                lines.push(Line::from(vec![Span::styled(
-                    format!(" {icon} "),
-                    name_style,
-                )]));
+                if follows_thinking && matches!(msg, Message::Assistant(_)) {
+                    lines.push(Line::from(Span::raw("   ")));
+                } else {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!(" {icon} "),
+                        name_style,
+                    )]));
+                }
+            } else if follows_thinking && matches!(msg, Message::Assistant(_)) {
+                // Match streaming layout: indent under thinking, no icon
+                let first_line = &mut rendered[0];
+                if !first_line.spans.is_empty() && first_line.spans[0].content == "    " {
+                    first_line.spans.remove(0);
+                }
+                for line in &mut rendered {
+                    line.spans.insert(0, Span::raw("   "));
+                }
+                lines.extend(rendered);
             } else {
                 let first_line = &mut rendered[0];
                 if !first_line.spans.is_empty() && first_line.spans[0].content == "    " {
@@ -849,7 +873,6 @@ fn render_message_static(
             }
         }
         Message::Thinking(_) => {
-            // Provider thinking/reasoning - styled italic and muted
             let content_style = Style::default()
                 .fg(palette.text_muted)
                 .add_modifier(Modifier::ITALIC);
@@ -863,12 +886,15 @@ fn render_message_static(
                     name_style,
                 )]));
             } else {
-                // Add header line for thinking
                 lines.push(Line::from(vec![Span::styled(
                     format!(" {icon} {name}"),
                     name_style,
                 )]));
-                // Indent thinking content
+                // Match streaming: remove markdown indent from first line
+                let first_line = &mut rendered[0];
+                if !first_line.spans.is_empty() && first_line.spans[0].content == "    " {
+                    first_line.spans.remove(0);
+                }
                 for line in &mut rendered {
                     line.spans.insert(0, Span::raw("   "));
                 }
