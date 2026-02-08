@@ -7,6 +7,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 
 use forge_engine::{App, Message, Provider, ToolResult, sanitize_display_text};
+use forge_types::truncate_with_ellipsis;
 
 use crate::theme::{Glyphs, Palette, styles};
 use crate::tool_display;
@@ -140,17 +141,6 @@ pub(crate) fn wrapped_line_count_exact(lines: &[Line], width: u16) -> usize {
 
 pub(crate) fn wrapped_line_count(lines: &[Line], width: u16) -> u16 {
     wrapped_line_count_exact(lines, width).min(u16::MAX as usize) as u16
-}
-
-pub(crate) fn truncate_with_ellipsis(raw: &str, max: usize) -> String {
-    let max = max.max(3);
-    let trimmed = raw.trim();
-    if trimmed.chars().count() <= max {
-        trimmed.to_string()
-    } else {
-        let head: String = trimmed.chars().take(max - 3).collect();
-        format!("{head}...")
-    }
 }
 
 pub(crate) fn message_header_parts(

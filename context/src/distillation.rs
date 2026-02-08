@@ -580,7 +580,7 @@ mod tests {
         let model = Provider::Claude
             .parse_model("claude-opus-4-6")
             .expect("parse model");
-        let config = ApiConfig::new(ApiKey::Claude("fake-key".to_string()), model).expect("config");
+        let config = ApiConfig::new(ApiKey::claude("fake-key"), model).expect("config");
         let counter = TokenCounter::new();
 
         let messages: Vec<(MessageId, Message)> = vec![];

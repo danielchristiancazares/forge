@@ -84,9 +84,9 @@ fn model_name_known_constructor() {
 
 #[test]
 fn api_key_provider_association() {
-    let claude_key = ApiKey::Claude("sk-ant-test".to_string());
-    let openai_key = ApiKey::OpenAI("sk-test".to_string());
-    let gemini_key = ApiKey::Gemini("AIza-test".to_string());
+    let claude_key = ApiKey::claude("sk-ant-test");
+    let openai_key = ApiKey::openai("sk-test");
+    let gemini_key = ApiKey::gemini("AIza-test");
 
     assert_eq!(claude_key.provider(), Provider::Claude);
     assert_eq!(openai_key.provider(), Provider::OpenAI);
@@ -95,7 +95,7 @@ fn api_key_provider_association() {
 
 #[test]
 fn api_config_validates_provider_match() {
-    let key = ApiKey::Claude("test".to_string());
+    let key = ApiKey::claude("test");
     let model = Provider::Claude.default_model();
 
     let config = ApiConfig::new(key, model);
@@ -104,7 +104,7 @@ fn api_config_validates_provider_match() {
 
 #[test]
 fn api_config_rejects_provider_mismatch() {
-    let key = ApiKey::Claude("test".to_string());
+    let key = ApiKey::claude("test");
     let model = Provider::OpenAI.default_model();
 
     let config = ApiConfig::new(key, model);
@@ -113,7 +113,7 @@ fn api_config_rejects_provider_mismatch() {
 
 #[test]
 fn api_config_accessors() {
-    let key = ApiKey::OpenAI("sk-secret".to_string());
+    let key = ApiKey::openai("sk-secret");
     let model = ModelName::from_predefined(PredefinedModel::Gpt52);
 
     let config = ApiConfig::new(key, model).unwrap();

@@ -36,8 +36,10 @@
 
 mod confusables;
 mod sanitize;
+mod text;
 pub use confusables::{HomoglyphWarning, detect_mixed_script};
 pub use sanitize::{sanitize_terminal_text, strip_steganographic_chars};
+pub use text::truncate_with_ellipsis;
 
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -695,12 +697,45 @@ impl<'de> Deserialize<'de> for ModelName {
     }
 }
 
-/// credential disclosure in logs or error messages.
+/// Opaque wrapper for secret strings that prevents accidental disclosure.
+///
+/// - No `Display` impl (compile error on `format!("{}", secret)`)
+/// - `Debug` is redacted
+/// - The only way to access the value is via `expose_secret()`
+///
+/// This makes every access point explicitly visible and greppable.
+#[derive(Clone)]
+pub struct SecretString(String);
+
+impl SecretString {
+    #[must_use]
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    /// Deliberately named accessor that makes secret exposure auditable.
+    #[must_use]
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SecretString(<redacted>)")
+    }
+}
+
+/// API key with provider tagging. Inner values are opaque [`SecretString`]s
+/// to prevent credential disclosure in logs or error messages.
+///
+/// Construct with the associated functions: `ApiKey::claude()`, `ApiKey::openai()`,
+/// `ApiKey::gemini()`.
 #[derive(Clone)]
 pub enum ApiKey {
-    Claude(String),
-    OpenAI(String),
-    Gemini(String),
+    Claude(SecretString),
+    OpenAI(SecretString),
+    Gemini(SecretString),
 }
 
 impl std::fmt::Debug for ApiKey {
@@ -714,6 +749,24 @@ impl std::fmt::Debug for ApiKey {
 }
 
 impl ApiKey {
+    /// Construct a Claude API key.
+    #[must_use]
+    pub fn claude(key: impl Into<String>) -> Self {
+        Self::Claude(SecretString::new(key.into()))
+    }
+
+    /// Construct an OpenAI API key.
+    #[must_use]
+    pub fn openai(key: impl Into<String>) -> Self {
+        Self::OpenAI(SecretString::new(key.into()))
+    }
+
+    /// Construct a Gemini API key.
+    #[must_use]
+    pub fn gemini(key: impl Into<String>) -> Self {
+        Self::Gemini(SecretString::new(key.into()))
+    }
+
     #[must_use]
     pub fn provider(&self) -> Provider {
         match self {
@@ -723,10 +776,11 @@ impl ApiKey {
         }
     }
 
+    /// Access the raw key value. Named to make exposure auditable.
     #[must_use]
-    pub fn as_str(&self) -> &str {
+    pub fn expose_secret(&self) -> &str {
         match self {
-            ApiKey::Claude(key) | ApiKey::OpenAI(key) | ApiKey::Gemini(key) => key,
+            ApiKey::Claude(key) | ApiKey::OpenAI(key) | ApiKey::Gemini(key) => key.expose_secret(),
         }
     }
 }
@@ -1723,23 +1777,23 @@ mod tests {
 
     #[test]
     fn api_key_provider_claude() {
-        let key = ApiKey::Claude("sk-ant-test".to_string());
+        let key = ApiKey::claude("sk-ant-test");
         assert_eq!(key.provider(), Provider::Claude);
-        assert_eq!(key.as_str(), "sk-ant-test");
+        assert_eq!(key.expose_secret(), "sk-ant-test");
     }
 
     #[test]
     fn api_key_provider_openai() {
-        let key = ApiKey::OpenAI("sk-test-xyz".to_string());
+        let key = ApiKey::openai("sk-test-xyz");
         assert_eq!(key.provider(), Provider::OpenAI);
-        assert_eq!(key.as_str(), "sk-test-xyz");
+        assert_eq!(key.expose_secret(), "sk-test-xyz");
     }
 
     #[test]
     fn api_key_provider_gemini() {
-        let key = ApiKey::Gemini("AIza-test-key".to_string());
+        let key = ApiKey::gemini("AIza-test-key");
         assert_eq!(key.provider(), Provider::Gemini);
-        assert_eq!(key.as_str(), "AIza-test-key");
+        assert_eq!(key.expose_secret(), "AIza-test-key");
     }
 
     #[test]

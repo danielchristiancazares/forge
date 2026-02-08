@@ -2,25 +2,15 @@
 
 use forge_types::{ApiKey, ModelName, PredefinedModel, Provider};
 
+pub use forge_types::truncate_with_ellipsis;
+
 /// Wrap a raw API key string in the provider-specific `ApiKey` enum variant.
 #[inline]
 pub fn wrap_api_key(provider: Provider, raw: String) -> ApiKey {
     match provider {
-        Provider::Claude => ApiKey::Claude(raw),
-        Provider::OpenAI => ApiKey::OpenAI(raw),
-        Provider::Gemini => ApiKey::Gemini(raw),
-    }
-}
-
-/// Truncate a string to a maximum length, adding ellipsis if needed.
-pub fn truncate_with_ellipsis(raw: &str, max: usize) -> String {
-    let max = max.max(3);
-    let trimmed = raw.trim();
-    if trimmed.chars().count() <= max {
-        trimmed.to_string()
-    } else {
-        let head: String = trimmed.chars().take(max - 3).collect();
-        format!("{head}...")
+        Provider::Claude => ApiKey::claude(raw),
+        Provider::OpenAI => ApiKey::openai(raw),
+        Provider::Gemini => ApiKey::gemini(raw),
     }
 }
 
@@ -37,32 +27,6 @@ pub fn parse_model_name_from_string(name: &str) -> Option<ModelName> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn truncate_short_string_unchanged() {
-        assert_eq!(truncate_with_ellipsis("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_exact_length_unchanged() {
-        assert_eq!(truncate_with_ellipsis("hello", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_adds_ellipsis() {
-        assert_eq!(truncate_with_ellipsis("hello world", 8), "hello...");
-    }
-
-    #[test]
-    fn truncate_trims_whitespace() {
-        assert_eq!(truncate_with_ellipsis("  hello  ", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_min_length_is_three() {
-        // Even with max=1, we should get at least "..."
-        assert_eq!(truncate_with_ellipsis("hello", 1), "...");
-    }
 
     #[test]
     fn parse_model_name_claude() {

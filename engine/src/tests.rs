@@ -1014,8 +1014,7 @@ async fn distillation_failure_goes_to_idle_no_retry() {
         .prepare_distillation(&[msg_id])
         .expect("pending distillation");
 
-    let config =
-        ApiConfig::new(ApiKey::Claude("test".to_string()), app.model.clone()).expect("api config");
+    let config = ApiConfig::new(ApiKey::claude("test"), app.model.clone()).expect("api config");
     let handle = tokio::spawn(async { Err(anyhow!("boom")) });
 
     let task = DistillationTask {

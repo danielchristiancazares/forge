@@ -335,6 +335,48 @@ pub async fn read_capped_error_body(response: reqwest::Response) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
+#[derive(Debug)]
+pub(crate) enum ApiResponse {
+    Success(reqwest::Response),
+    StreamTerminated,
+}
+
+pub(crate) async fn handle_response(
+    outcome: retry::RetryOutcome,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> Result<ApiResponse> {
+    let response = match outcome {
+        retry::RetryOutcome::Success(resp) | retry::RetryOutcome::HttpError(resp) => resp,
+        retry::RetryOutcome::ConnectionError { attempts, source } => {
+            let _ = send_event(
+                tx,
+                StreamEvent::Error(format!(
+                    "Request failed after {attempts} attempts: {source}"
+                )),
+            )
+            .await;
+            return Ok(ApiResponse::StreamTerminated);
+        }
+        retry::RetryOutcome::NonRetryable(e) => {
+            let _ = send_event(tx, StreamEvent::Error(format!("Request failed: {e}"))).await;
+            return Ok(ApiResponse::StreamTerminated);
+        }
+    };
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = read_capped_error_body(response).await;
+        let _ = send_event(
+            tx,
+            StreamEvent::Error(format!("API error {status}: {error_text}")),
+        )
+        .await;
+        return Ok(ApiResponse::StreamTerminated);
+    }
+
+    Ok(ApiResponse::Success(response))
+}
+
 /// Provider + model configuration with provider-specific tuning knobs.
 ///
 /// The constructor enforces that the API key and model belong to the same provider.
@@ -343,7 +385,7 @@ pub async fn read_capped_error_body(response: reqwest::Response) -> String {
 /// use forge_providers::ApiConfig;
 /// use forge_types::{ApiKey, OpenAIRequestOptions, Provider};
 ///
-/// let config = ApiConfig::new(ApiKey::OpenAI("test".to_string()), Provider::OpenAI.default_model())
+/// let config = ApiConfig::new(ApiKey::openai("test"), Provider::OpenAI.default_model())
 ///     .unwrap()
 ///     .with_openai_options(OpenAIRequestOptions::default())
 ///     .with_gemini_thinking_enabled(true);
@@ -412,7 +454,7 @@ impl ApiConfig {
 
     #[must_use]
     pub fn api_key(&self) -> &str {
-        self.api_key.as_str()
+        self.api_key.expose_secret()
     }
 
     #[must_use]
@@ -487,11 +529,10 @@ pub async fn send_message(
 /// when thinking is enabled, but Forge doesn't store thinking content in history.
 pub mod claude {
     use super::{
-        ApiConfig, ApiUsage, CacheHint, CacheableMessage, Message, OutputLimits, Result,
-        SseParseAction, SseParser, StreamEvent, ThoughtSignatureState, ToolDefinition, http_client,
-        mpsc, process_sse_stream, read_capped_error_body,
-        retry::{RetryConfig, RetryOutcome, send_with_retry},
-        send_event,
+        ApiConfig, ApiResponse, ApiUsage, CacheHint, CacheableMessage, Message, OutputLimits,
+        Result, SseParseAction, SseParser, StreamEvent, ThoughtSignatureState, ToolDefinition,
+        handle_response, http_client, mpsc, process_sse_stream,
+        retry::{RetryConfig, send_with_retry},
     };
     use forge_types::ThinkingState;
     use serde_json::json;
@@ -924,34 +965,10 @@ pub mod claude {
         )
         .await;
 
-        let response = match outcome {
-            RetryOutcome::Success(resp) | RetryOutcome::HttpError(resp) => resp,
-            RetryOutcome::ConnectionError { attempts, source } => {
-                let _ = send_event(
-                    &tx,
-                    StreamEvent::Error(format!(
-                        "Request failed after {attempts} attempts: {source}"
-                    )),
-                )
-                .await;
-                return Ok(());
-            }
-            RetryOutcome::NonRetryable(e) => {
-                let _ = send_event(&tx, StreamEvent::Error(format!("Request failed: {e}"))).await;
-                return Ok(());
-            }
+        let response = match handle_response(outcome, &tx).await? {
+            ApiResponse::Success(resp) => resp,
+            ApiResponse::StreamTerminated => return Ok(()),
         };
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = read_capped_error_body(response).await;
-            let _ = send_event(
-                &tx,
-                StreamEvent::Error(format!("API error {status}: {error_text}")),
-            )
-            .await;
-            return Ok(());
-        }
 
         let mut parser = ClaudeParser::default();
         process_sse_stream(response, &mut parser, &tx).await
@@ -1507,11 +1524,10 @@ pub mod claude {
 /// the `"developer"` role (not `"system"`, which is reserved for OpenAI runtime).
 pub mod openai {
     use super::{
-        ApiConfig, ApiUsage, CacheableMessage, Message, OutputLimits, Result, SseParseAction,
-        SseParser, StreamEvent, ThoughtSignatureState, ToolDefinition, http_client, mpsc,
-        process_sse_stream, read_capped_error_body,
-        retry::{RetryConfig, RetryOutcome, send_with_retry},
-        send_event,
+        ApiConfig, ApiResponse, ApiUsage, CacheableMessage, Message, OutputLimits, Result,
+        SseParseAction, SseParser, StreamEvent, ThoughtSignatureState, ToolDefinition,
+        handle_response, http_client, mpsc, process_sse_stream,
+        retry::{RetryConfig, send_with_retry},
     };
     use forge_types::OpenAIReasoningSummary;
     use serde_json::{Value, json};
@@ -1928,34 +1944,10 @@ pub mod openai {
         )
         .await;
 
-        let response = match outcome {
-            RetryOutcome::Success(resp) | RetryOutcome::HttpError(resp) => resp,
-            RetryOutcome::ConnectionError { attempts, source } => {
-                let _ = send_event(
-                    &tx,
-                    StreamEvent::Error(format!(
-                        "Request failed after {attempts} attempts: {source}"
-                    )),
-                )
-                .await;
-                return Ok(());
-            }
-            RetryOutcome::NonRetryable(e) => {
-                let _ = send_event(&tx, StreamEvent::Error(format!("Request failed: {e}"))).await;
-                return Ok(());
-            }
+        let response = match handle_response(outcome, &tx).await? {
+            ApiResponse::Success(resp) => resp,
+            ApiResponse::StreamTerminated => return Ok(()),
         };
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = read_capped_error_body(response).await;
-            let _ = send_event(
-                &tx,
-                StreamEvent::Error(format!("API error {status}: {error_text}")),
-            )
-            .await;
-            return Ok(());
-        }
 
         let mut parser = OpenAIParser::default();
         process_sse_stream(response, &mut parser, &tx).await
@@ -1981,7 +1973,7 @@ pub mod openai {
 
         #[test]
         fn maps_system_message_to_developer_role() {
-            let key = ApiKey::OpenAI("test".to_string());
+            let key = ApiKey::openai("test");
             let model = Provider::OpenAI.default_model();
             let config = ApiConfig::new(key, model).unwrap();
 
@@ -2004,7 +1996,7 @@ pub mod openai {
 
         #[test]
         fn preserves_explicit_system_prompt() {
-            let key = ApiKey::OpenAI("test".to_string());
+            let key = ApiKey::openai("test");
             let model = Provider::OpenAI.default_model();
             let config = ApiConfig::new(key, model).unwrap();
 
@@ -2025,7 +2017,7 @@ pub mod openai {
 
         #[test]
         fn includes_reasoning_summary_when_configured() {
-            let key = ApiKey::OpenAI("test".to_string());
+            let key = ApiKey::openai("test");
             let model = Provider::OpenAI.default_model();
             let options = OpenAIRequestOptions::new(
                 OpenAIReasoningEffort::Low,
@@ -2047,7 +2039,7 @@ pub mod openai {
 
         #[test]
         fn omits_reasoning_summary_by_default() {
-            let key = ApiKey::OpenAI("test".to_string());
+            let key = ApiKey::openai("test");
             let model = Provider::OpenAI.default_model();
             let config = ApiConfig::new(key, model).unwrap();
 
@@ -2321,11 +2313,10 @@ pub mod openai {
 /// schemas, as Gemini doesn't support it.
 pub mod gemini {
     use super::{
-        ApiConfig, CacheableMessage, Message, OutputLimits, Result, SseParseAction, SseParser,
-        StreamEvent, ThoughtSignature, ThoughtSignatureState, ToolDefinition, http_client, mpsc,
-        process_sse_stream, read_capped_error_body,
-        retry::{RetryConfig, RetryOutcome, send_with_retry},
-        send_event,
+        ApiConfig, ApiResponse, CacheableMessage, Message, OutputLimits, Result, SseParseAction,
+        SseParser, StreamEvent, ThoughtSignature, ThoughtSignatureState, ToolDefinition,
+        handle_response, http_client, mpsc, process_sse_stream, read_capped_error_body,
+        retry::{RetryConfig, send_with_retry},
     };
     use chrono::{DateTime, Utc};
     use serde_json::{Value, json};
@@ -2870,34 +2861,10 @@ pub mod gemini {
         )
         .await;
 
-        let response = match outcome {
-            RetryOutcome::Success(resp) | RetryOutcome::HttpError(resp) => resp,
-            RetryOutcome::ConnectionError { attempts, source } => {
-                let _ = send_event(
-                    &tx,
-                    StreamEvent::Error(format!(
-                        "Request failed after {attempts} attempts: {source}"
-                    )),
-                )
-                .await;
-                return Ok(());
-            }
-            RetryOutcome::NonRetryable(e) => {
-                let _ = send_event(&tx, StreamEvent::Error(format!("Request failed: {e}"))).await;
-                return Ok(());
-            }
+        let response = match handle_response(outcome, &tx).await? {
+            ApiResponse::Success(resp) => resp,
+            ApiResponse::StreamTerminated => return Ok(()),
         };
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = read_capped_error_body(response).await;
-            let _ = send_event(
-                &tx,
-                StreamEvent::Error(format!("API error {status}: {error_text}")),
-            )
-            .await;
-            return Ok(());
-        }
 
         let mut parser = GeminiParser;
         process_sse_stream(response, &mut parser, &tx).await
@@ -2968,11 +2935,8 @@ pub mod gemini {
             let messages = vec![CacheableMessage::plain(Message::try_user("hello").unwrap())];
             let limits = OutputLimits::with_thinking(8192, 2048).unwrap();
 
-            let config = ApiConfig::new(
-                ApiKey::Gemini("test".to_string()),
-                Provider::Gemini.default_model(),
-            )
-            .unwrap();
+            let config =
+                ApiConfig::new(ApiKey::gemini("test"), Provider::Gemini.default_model()).unwrap();
 
             let body = build_request_body(
                 &messages,
@@ -3386,7 +3350,7 @@ mod tests {
 
     #[test]
     fn api_config_rejects_mismatched_provider() {
-        let key = ApiKey::Claude("test".to_string());
+        let key = ApiKey::claude("test");
         let model = Provider::OpenAI.default_model();
         let result = ApiConfig::new(key, model);
         assert!(result.is_err());
@@ -3394,7 +3358,7 @@ mod tests {
 
     #[test]
     fn api_config_accepts_matching_provider() {
-        let key = ApiKey::Claude("test".to_string());
+        let key = ApiKey::claude("test");
         let model = Provider::Claude.default_model();
         let result = ApiConfig::new(key, model);
         assert!(result.is_ok());
