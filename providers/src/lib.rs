@@ -20,7 +20,7 @@
 //!
 //! # Streaming Events
 //!
-//! All providers normalize their responses to [`StreamEvent`][forge_types::StreamEvent]:
+//! All providers normalize their responses to [`StreamEvent`]:
 //!
 //! | Event | Description |
 //! |-------|-------------|

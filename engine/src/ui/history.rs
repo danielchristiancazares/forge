@@ -15,7 +15,7 @@ const MAX_COMMAND_HISTORY: usize = 50;
 ///
 /// Stores previously submitted user prompts and executed slash commands,
 /// enabling navigation with Up/Down keys. The history is persisted across
-/// sessions via [`crate::session_state::SessionState`].
+/// sessions via `SessionState`.
 ///
 /// # Navigation Behavior
 ///

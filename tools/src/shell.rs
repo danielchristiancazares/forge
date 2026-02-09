@@ -26,6 +26,7 @@ impl std::fmt::Display for DetectedShell {
 /// Priority:
 /// - Config override (if set)
 /// - Platform-specific detection
+#[must_use]
 pub fn detect_shell(config: Option<&ShellConfig>) -> DetectedShell {
     // 1. Check config override
     if let Some(cfg) = config

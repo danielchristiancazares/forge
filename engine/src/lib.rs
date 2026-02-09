@@ -13,8 +13,8 @@
 //!
 //! The engine uses dual state machines:
 //!
-//! 1. **Input state** ([`InputState`]): Controls which input mode is active
-//! 2. **Operation state** ([`OperationState`]): Tracks async operations (streaming, distillation)
+//! 1. **Input state** (`InputState`): Controls which input mode is active
+//! 2. **Operation state** (`OperationState`): Tracks async operations (streaming, distillation)
 //!
 //! The TUI layer (`forge_tui`) reads state from `App` and forwards input back to it.
 //! No rendering logic lives in this crate.
@@ -62,7 +62,8 @@ mod config;
 pub use config::{AppConfig, ForgeConfig};
 
 mod checkpoints;
-mod tools;
+
+pub use forge_tools as tools;
 
 mod commands;
 mod errors;
@@ -162,7 +163,7 @@ struct ParsedToolCalls {
 /// # Tool Call Accumulation
 ///
 /// As `ToolCallStart` and `ToolCallDelta` events arrive, tool calls are accumulated
-/// in [`ToolCallAccumulator`] structs. Arguments are streamed as JSON strings and
+/// in `ToolCallAccumulator` structs. Arguments are streamed as JSON strings and
 /// parsed only when the stream completes.
 ///
 /// Thinking/reasoning deltas are always captured for retroactive UI visibility toggle.
@@ -485,7 +486,7 @@ pub struct App {
     /// Whether we've already warned about autosave failures.
     autosave_warning_shown: bool,
     /// Active Gemini cache (if caching enabled and cache created).
-    /// Uses Arc<Mutex> because cache is created/updated inside async streaming tasks.
+    /// Uses `Arc<Mutex>` because cache is created/updated inside async streaming tasks.
     gemini_cache: std::sync::Arc<tokio::sync::Mutex<Option<GeminiCache>>>,
     /// Whether Gemini thinking mode is enabled via config.
     gemini_thinking_enabled: bool,
@@ -495,7 +496,7 @@ pub struct App {
     /// Gemini cache configuration.
     gemini_cache_config: GeminiCacheConfig,
     /// The Librarian for fact extraction and retrieval (Context Infinity).
-    /// Uses Arc<Mutex> because it's accessed from async tasks for extraction.
+    /// Uses `Arc<Mutex>` because it's accessed from async tasks for extraction.
     /// None if context_infinity is disabled or no Gemini API key.
     librarian: Option<std::sync::Arc<tokio::sync::Mutex<Librarian>>>,
     /// Input history for prompt and command recall.

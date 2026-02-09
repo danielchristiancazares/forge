@@ -45,6 +45,7 @@ pub struct WebFetchTool {
 }
 
 impl WebFetchTool {
+    #[must_use]
     pub fn new(config: WebFetchToolConfig) -> Self {
         Self { config }
     }

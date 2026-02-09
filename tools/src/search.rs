@@ -53,10 +53,12 @@ pub struct SearchTool {
 }
 
 impl SearchTool {
+    #[must_use]
     pub fn with_name(name: &'static str, config: SearchToolConfig) -> Self {
         Self { name, config }
     }
 
+    #[must_use]
     pub fn aliases() -> &'static [&'static str] {
         SEARCH_TOOL_ALIASES
     }

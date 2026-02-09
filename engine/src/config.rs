@@ -1,10 +1,7 @@
 use serde::Deserialize;
 use std::{env, fs, path::PathBuf};
 
-// Default value function for serde (bool::default() is false, so only true needs a fn)
-pub(crate) const fn default_true() -> bool {
-    true
-}
+pub(crate) use forge_tools::config::default_true;
 
 #[derive(Debug, Default, Deserialize)]
 #[allow(clippy::unsafe_derive_deserialize)] // unsafe is for Unix permission checks, unrelated to serde
@@ -385,17 +382,7 @@ impl Default for WindowsRunConfig {
 /// Shell configuration for `run_command` tool.
 ///
 /// ```toml
-/// [tools.shell]
-/// binary = "pwsh"
-/// args = ["-NoProfile", "-Command"]
-/// ```
-#[derive(Debug, Default, Deserialize)]
-pub struct ShellConfig {
-    /// Override shell binary (e.g., "pwsh", "Run", "/usr/local/bin/fish").
-    pub binary: Option<String>,
-    /// Override shell args (e.g., `["-c"]` or `["/C"]`).
-    pub args: Option<Vec<String>>,
-}
+pub use forge_tools::config::ShellConfig;
 
 impl ToolDefinitionConfig {
     /// Convert this config to a `ToolDefinition`.

@@ -109,7 +109,7 @@ fn default_limits_for(model: PredefinedModel) -> ModelLimits {
     }
 }
 
-/// 1. First, check custom overrides set via [`ModelRegistry::set_override`]
+/// 1. First, check custom overrides set via `set_override` (test-only)
 /// 2. If no override exists, use the canonical model catalog
 ///
 /// Unknown models must be rejected at the boundary; the core only operates on

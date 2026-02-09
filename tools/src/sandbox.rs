@@ -69,15 +69,18 @@ impl Sandbox {
     }
 
     #[allow(dead_code)]
+    #[must_use]
     pub fn allowed_roots(&self) -> &[PathBuf] {
         &self.allowed_roots
     }
 
     #[allow(dead_code)]
+    #[must_use]
     pub fn allow_absolute(&self) -> bool {
         self.allow_absolute
     }
 
+    #[must_use]
     pub fn working_dir(&self) -> PathBuf {
         self.allowed_roots
             .first()

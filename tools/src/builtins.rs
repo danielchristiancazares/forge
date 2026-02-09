@@ -20,7 +20,7 @@ use super::{
     ToolCtx, ToolError, ToolExecutor, ToolFut, ToolRegistry, WebFetchToolConfig, parse_args,
     redact_distillate, sanitize_output,
 };
-use crate::tools::git;
+use crate::git;
 
 /// Display a path without the Windows extended-length prefix (`\\?\`).
 fn display_path(path: &Path) -> String {
@@ -44,12 +44,12 @@ fn path_string_without_verbatim_prefix(path: &Path) -> String {
     }
     s.to_string()
 }
-use crate::tools::lp1::{self, FileContent};
-use crate::tools::memory::MemoryTool;
-use crate::tools::phase_gate::PhaseGateTool;
-use crate::tools::recall::RecallTool;
-use crate::tools::search::SearchTool;
-use crate::tools::webfetch::WebFetchTool;
+use crate::lp1::{self, FileContent};
+use crate::memory::MemoryTool;
+use crate::phase_gate::PhaseGateTool;
+use crate::recall::RecallTool;
+use crate::search::SearchTool;
+use crate::webfetch::WebFetchTool;
 
 #[derive(Debug)]
 pub struct ReadFileTool {
@@ -71,6 +71,7 @@ pub struct RunCommandTool {
 }
 
 impl RunCommandTool {
+    #[must_use]
     pub fn new(shell: super::DetectedShell, run_policy: RunSandboxPolicy) -> Self {
         Self { shell, run_policy }
     }
@@ -80,12 +81,14 @@ impl RunCommandTool {
 pub struct GlobTool;
 
 impl ReadFileTool {
+    #[must_use]
     pub fn new(limits: ReadFileLimits) -> Self {
         Self { limits }
     }
 }
 
 impl ApplyPatchTool {
+    #[must_use]
     pub fn new(limits: PatchLimits) -> Self {
         Self { limits }
     }
@@ -145,7 +148,8 @@ const MAX_GLOB_LIMIT: usize = 10_000;
 /// - 1 line of context around each change
 /// - `...` between changes separated by >3 unchanged lines
 /// - Red (`-`) for deletions, green (`+`) for additions
-pub(crate) fn format_unified_diff(
+#[must_use]
+pub fn format_unified_diff(
     path: &str,
     old_bytes: &[u8],
     new_bytes: &[u8],
@@ -159,7 +163,8 @@ pub(crate) fn format_unified_diff(
 /// When multiple files are displayed together, callers should pre-compute the
 /// max line count across all files and pass the resulting digit width so that
 /// every section aligns consistently.  Pass `0` to auto-detect from the file.
-pub(crate) fn format_unified_diff_width(
+#[must_use]
+pub fn format_unified_diff_width(
     _path: &str,
     old_bytes: &[u8],
     new_bytes: &[u8],
@@ -256,7 +261,8 @@ pub(crate) fn format_unified_diff_width(
 }
 
 /// Compute diff stats (additions and deletions) between old and new content.
-pub(crate) fn compute_diff_stats(old_bytes: &[u8], new_bytes: &[u8]) -> (u32, u32) {
+#[must_use]
+pub fn compute_diff_stats(old_bytes: &[u8], new_bytes: &[u8]) -> (u32, u32) {
     use similar::ChangeTag;
 
     let old_text = std::str::from_utf8(old_bytes).unwrap_or("");
@@ -1580,7 +1586,7 @@ use super::process::ChildGuard;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::{DetectedShell, RunSandboxPolicy};
+    use crate::{DetectedShell, RunSandboxPolicy};
 
     fn run_tool() -> RunCommandTool {
         RunCommandTool::new(

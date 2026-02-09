@@ -5,20 +5,21 @@
 /// Wrap a spawned `tokio::process::Child` immediately after `spawn()` to ensure
 /// cleanup if the owning future is cancelled. Call `disarm()` after the process
 /// exits normally to prevent the kill.
-pub(crate) struct ChildGuard {
+pub struct ChildGuard {
     child: Option<tokio::process::Child>,
 }
 
 impl ChildGuard {
-    pub(crate) fn new(child: tokio::process::Child) -> Self {
+    #[must_use]
+    pub fn new(child: tokio::process::Child) -> Self {
         Self { child: Some(child) }
     }
 
-    pub(crate) fn child_mut(&mut self) -> &mut tokio::process::Child {
+    pub fn child_mut(&mut self) -> &mut tokio::process::Child {
         self.child.as_mut().expect("child present")
     }
 
-    pub(crate) fn disarm(&mut self) {
+    pub fn disarm(&mut self) {
         self.child = None;
     }
 }
@@ -48,7 +49,7 @@ impl Drop for ChildGuard {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum KillOutcome {
+pub enum KillOutcome {
     NotRunning,
     Killed,
 }
@@ -58,7 +59,8 @@ pub(crate) enum KillOutcome {
 /// Used to reduce PID reuse risk when attempting to terminate orphaned subprocess tools
 /// after a crash. Returns `None` on unsupported platforms or when the process cannot be
 /// inspected (permissions, process already exited, etc.).
-pub(crate) fn process_started_at_unix_ms(pid: u32) -> Option<i64> {
+#[must_use]
+pub fn process_started_at_unix_ms(pid: u32) -> Option<i64> {
     #[cfg(windows)]
     {
         windows_process_started_at_unix_ms(pid)
@@ -83,7 +85,7 @@ pub(crate) fn process_started_at_unix_ms(pid: u32) -> Option<i64> {
 ///
 /// On Unix this targets the process group id matching `pid` (Forge creates a new session
 /// for `Run`, making pid == process group id).
-pub(crate) fn try_kill_process_group(pid: u32) -> std::io::Result<KillOutcome> {
+pub fn try_kill_process_group(pid: u32) -> std::io::Result<KillOutcome> {
     #[cfg(unix)]
     unsafe {
         if libc::killpg(pid as i32, libc::SIGKILL) == -1 {
@@ -232,7 +234,7 @@ fn filetime_to_unix_ms(filetime: windows_sys::Win32::Foundation::FILETIME) -> Op
 /// Put the child process in its own session (Unix only) so the entire process
 /// group can be killed via `killpg` in `ChildGuard::drop`.
 #[cfg(unix)]
-pub(crate) fn set_new_session(cmd: &mut tokio::process::Command) {
+pub fn set_new_session(cmd: &mut tokio::process::Command) {
     use std::os::unix::process::CommandExt;
     unsafe {
         cmd.as_std_mut().pre_exec(|| {

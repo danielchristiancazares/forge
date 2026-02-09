@@ -339,6 +339,7 @@ pub fn parse_file(bytes: &[u8]) -> Result<FileContent, PatchError> {
     })
 }
 
+#[must_use]
 pub fn emit_file(content: &FileContent) -> Vec<u8> {
     let mut out = Vec::new();
     let eol = match content.eol_kind.unwrap_or(EolKind::Lf) {

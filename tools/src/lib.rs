@@ -1,16 +1,19 @@
-//! Tool Executor Framework - core types and helpers.
+//! Tool Executor Framework - core types, helpers, and built-in tool implementations.
 
 pub mod builtins;
+pub mod change_recording;
 pub mod command_blacklist;
+pub mod config;
 pub mod git;
 pub mod lp1;
 pub mod memory;
 pub mod phase_gate;
 pub mod powershell_ast;
-pub(crate) mod process;
+pub mod process;
 pub mod recall;
 pub mod sandbox;
 pub mod search;
+pub mod security;
 pub mod shell;
 pub mod webfetch;
 pub mod windows_run;
@@ -25,13 +28,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use change_recording::ChangeRecorder;
 use forge_context::Librarian;
 use forge_types::{HomoglyphWarning, Provider, ToolDefinition, ToolResult, detect_mixed_script};
 use jsonschema::JSONSchema;
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 
-use crate::input_modes::ChangeRecorder;
 use sandbox::Sandbox;
 pub use search::SearchToolConfig;
 pub use shell::DetectedShell;
@@ -77,10 +80,12 @@ pub struct Policy {
 }
 
 impl Policy {
+    #[must_use]
     pub fn is_allowlisted(&self, tool: &str) -> bool {
         self.allowlist.contains(tool)
     }
 
+    #[must_use]
     pub fn is_denylisted(&self, tool: &str) -> bool {
         self.denylist.contains(tool)
     }
@@ -303,6 +308,7 @@ impl ToolRegistry {
             })
     }
 
+    #[must_use]
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         let mut defs: Vec<ToolDefinition> = self
             .executors
@@ -319,6 +325,7 @@ impl ToolRegistry {
     }
 
     #[allow(dead_code)]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.executors.is_empty()
     }
@@ -442,6 +449,7 @@ impl EnvSanitizer {
         Ok(Self { denylist: set })
     }
 
+    #[must_use]
     pub fn sanitize_env(&self, env: &[(String, String)]) -> Vec<(String, String)> {
         env.iter()
             .filter(|(k, _)| !self.denylist.is_match(k))
@@ -466,6 +474,7 @@ pub fn validate_args(schema: &Value, args: &Value) -> Result<(), ToolError> {
 }
 
 /// Truncate tool output to the effective maximum length.
+#[must_use]
 pub fn truncate_output(output: String, effective_max: usize) -> String {
     if output.len() <= effective_max {
         return output;
@@ -492,11 +501,13 @@ pub fn truncate_output(output: String, effective_max: usize) -> String {
 /// - terminal escape stripping
 /// - steganographic character stripping
 /// - secret redaction (pattern + env-derived)
+#[must_use]
 pub fn sanitize_output(output: &str) -> String {
     crate::security::sanitize_display_text(output)
 }
 
 /// Redact obvious secrets in output distillates (best-effort).
+#[must_use]
 pub fn redact_distillate(raw: &str) -> String {
     let mut output = String::with_capacity(raw.len());
     let mut chars = raw.chars().peekable();
@@ -506,7 +517,7 @@ pub fn redact_distillate(raw: &str) -> String {
             if lookahead.next() == Some('k') && lookahead.next() == Some('-') {
                 chars.next();
                 chars.next();
-                output.push_str("sk-***");
+                output.push_str("sk-*******");
                 while let Some(&next_ch) = chars.peek() {
                     if next_ch.is_whitespace() {
                         break;
@@ -596,9 +607,9 @@ mod tests {
 
     #[test]
     fn sanitize_output_redacts_openai_keys() {
-        let input = "key=sk-abc123xyz";
+        let input = "key=sk-proj-abc123xyz";
         let output = sanitize_output(input);
         assert!(output.contains("sk-***"));
-        assert!(!output.contains("sk-abc123xyz"));
+        assert!(!output.contains("abc123xyz"));
     }
 }

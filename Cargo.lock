@@ -980,34 +980,26 @@ version = "0.0.0"
 dependencies = [
  "aho-corasick",
  "anyhow",
- "base64 0.22.1",
  "chrono",
  "dirs",
  "forge-context",
  "forge-lsp",
  "forge-providers",
+ "forge-tools",
  "forge-types",
- "forge-webfetch",
  "futures-util",
  "globset",
  "ignore",
- "jsonschema",
- "libc",
  "regex",
  "serde",
  "serde_json",
- "sha2",
- "similar",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml",
  "toml_edit",
  "tracing",
- "unicode-normalization",
  "unicode-segmentation",
- "which 7.0.3",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1041,6 +1033,40 @@ dependencies = [
  "tracing",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "forge-tools"
+version = "0.0.0"
+dependencies = [
+ "aho-corasick",
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "dirs",
+ "forge-context",
+ "forge-types",
+ "forge-webfetch",
+ "futures-util",
+ "globset",
+ "ignore",
+ "jsonschema",
+ "libc",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "similar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "toml_edit",
+ "tracing",
+ "unicode-normalization",
+ "unicode-segmentation",
+ "which 7.0.3",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
