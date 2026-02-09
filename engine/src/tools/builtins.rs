@@ -1100,9 +1100,6 @@ impl ToolExecutor for RunCommandTool {
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
-            #[cfg(unix)]
-            use std::os::unix::process::CommandExt;
-
             let typed: RunCommandArgs = parse_args(&args)?;
             if typed.command.trim().is_empty() {
                 return Err(ToolError::BadArgs {
@@ -1177,6 +1174,15 @@ impl ToolExecutor for RunCommandTool {
             })?;
 
             let mut guard = ChildGuard::new(child);
+
+            if let Some(pid) = guard.child_mut().id() {
+                let process_started_at_unix_ms = super::process::process_started_at_unix_ms(pid);
+                let _ = ctx.output_tx.try_send(super::ToolEvent::ProcessSpawned {
+                    tool_call_id: ctx.tool_call_id.clone(),
+                    pid,
+                    process_started_at_unix_ms,
+                });
+            }
 
             #[cfg(windows)]
             let _windows_host_sandbox_guard = if requires_host_sandbox {

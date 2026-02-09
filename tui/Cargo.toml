@@ -22,6 +22,7 @@ serde_json.workspace = true
 serde.workspace = true
 
 tokio = { workspace = true, features = ["sync", "rt"] }
+arboard.workspace = true
 
 anyhow.workspace = true
 tracing.workspace = true

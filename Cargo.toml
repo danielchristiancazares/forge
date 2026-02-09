@@ -75,6 +75,9 @@ tiktoken-rs = "0.6"
 # SQLite
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+# Clipboard
+arboard = "3"
+
 # Data directory
 dirs = "5.0"
 

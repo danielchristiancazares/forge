@@ -118,13 +118,25 @@ Entry point: `handle_events(app: &mut App, input: &mut InputPump) -> Result<bool
 5. Dispatch to mode-specific handler
 
 **Paste Detection:**
-On Windows, crossterm delivers paste as a burst of rapid key events rather than `Event::Paste`. The `PasteDetector` uses heuristics to identify these bursts and treats bare `Enter` as a newline insertion (instead of message submission) during a detected paste:
+On Windows, crossterm delivers paste as a burst of rapid key events rather than `Event::Paste`. The `PasteDetector` uses timing heuristics to identify these bursts:
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | `PASTE_INTER_KEY_THRESHOLD` | 20ms | Max gap between keys to consider rapid |
 | `PASTE_IDLE_TIMEOUT` | 75ms | How long paste mode stays active after last rapid key |
 | `PASTE_QUEUE_THRESHOLD` | 32 | Backlog size that immediately triggers paste mode |
+| `CLIPBOARD_CHECK_THRESHOLD` | 16 | Chars accumulated before verifying against clipboard |
+
+Once a burst is detected, `PastePhase` tracks the lifecycle:
+
+| Phase | Behavior |
+|-------|----------|
+| `Idle` | No paste in progress |
+| `Accumulating` | Chars inserted normally while a prefix is collected for clipboard verification |
+| `HeuristicOnly` | Clipboard didn't match; bare Enter treated as newline (original behavior) |
+| `Draining` | Clipboard matched and remainder bulk-inserted via `enter_text`; remaining burst events discarded |
+
+After 16 chars are accumulated, the system reads the clipboard (via `arboard`) and checks if it starts with the accumulated prefix. On match, the remaining clipboard content is bulk-inserted in one shot and the rest of the key-event burst is drained. On mismatch or clipboard failure, behavior falls back to the original heuristic-only mode. `PasteDetector` (timing mechanism) and `PastePhase` (lifecycle policy) are kept separate — the detector reports facts, `handle_events` drives all phase transitions.
 
 **Mode Handlers:**
 
@@ -655,7 +667,7 @@ pub fn clear_render_cache()
 ### Platform Considerations
 
 - **Windows**: Filter to `KeyEventKind::Press` only; release events are sent separately
-- **Windows paste**: Paste arrives as rapid key bursts (not `Event::Paste`); the `PasteDetector` heuristic handles this
+- **Windows paste**: Paste arrives as rapid key bursts (not `Event::Paste`); `PasteDetector` detects timing, then `PastePhase` short-circuits large pastes via clipboard verification (arboard)
 - **Terminal compatibility**: Use `ascii_only` option for terminals without Unicode support
 - **Accessibility**: `reduced_motion` disables spinner animation; `high_contrast` switches to basic colors
 

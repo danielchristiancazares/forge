@@ -27,10 +27,43 @@ const PASTE_INTER_KEY_THRESHOLD: Duration = Duration::from_millis(20);
 const PASTE_IDLE_TIMEOUT: Duration = Duration::from_millis(75);
 const PASTE_QUEUE_THRESHOLD: usize = 32;
 
+/// Chars accumulated before checking the system clipboard to short-circuit a
+/// detected paste burst. 16 is conservative: the main false-positive vector is
+/// key-repeat (N identical chars matching a clipboard prefix). 16 identical
+/// chars in a clipboard prefix is essentially impossible.
+const CLIPBOARD_CHECK_THRESHOLD: usize = 16;
+
+fn normalize_line_endings(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 enum InputMsg {
     Event(Event),
     Error(String),
 }
+
+/// Lifecycle state of a paste operation detected via timing heuristics.
+///
+/// Owned by `InputPump` (policy), not by `PasteDetector` (mechanism).
+/// All transitions are driven by `handle_events`.
+enum PastePhase {
+    /// No paste in progress.
+    Idle,
+    /// Paste heuristics triggered; chars are inserted normally while a prefix
+    /// is accumulated for clipboard verification.
+    Accumulating { received: String },
+    /// Clipboard check failed or was skipped; heuristic-only behavior
+    /// (Enter -> newline) continues until the burst ends.
+    HeuristicOnly,
+    /// Clipboard confirmed; remainder bulk-inserted. Remaining burst events
+    /// are discarded until the burst ends.
+    Draining,
+}
+
+/// Pure timing mechanism for detecting paste bursts.
+///
+/// Reports whether a burst is active (`bool`). Owns no phase state — mechanism
+/// reports facts, policy (`handle_events`) makes decisions.
 #[derive(Debug)]
 struct PasteDetector {
     last_key_time: Instant,
@@ -84,6 +117,7 @@ pub struct InputPump {
     stop: Arc<AtomicBool>,
     join: Option<tokio::task::JoinHandle<()>>,
     paste: PasteDetector,
+    phase: PastePhase,
 }
 
 impl InputPump {
@@ -100,6 +134,7 @@ impl InputPump {
             stop,
             join: Some(join),
             paste: PasteDetector::new(now),
+            phase: PastePhase::Idle,
         }
     }
 
@@ -158,37 +193,137 @@ fn input_loop(stop: Arc<AtomicBool>, tx: mpsc::Sender<InputMsg>) {
     }
 }
 
+/// Extract the character that `handle_insert_mode` would insert for this key
+/// event during a paste burst. Returns `None` for non-content keys (editing
+/// actions, modifiers, etc.) and signals whether to abort accumulation.
+enum AccumulateAction {
+    /// A content char was received; track it and continue.
+    Track(char),
+    /// An editing key was received; abort accumulation.
+    Abort,
+    /// A non-content, non-editing event (Resize, modifier-only, etc.); skip.
+    Skip,
+}
+
+fn classify_for_accumulation(ev: &Event) -> AccumulateAction {
+    match ev {
+        Event::Key(KeyEvent {
+            code: KeyCode::Char(c),
+            kind: KeyEventKind::Press | KeyEventKind::Repeat,
+            ..
+        }) if *c != '\r' => AccumulateAction::Track(*c),
+        Event::Key(KeyEvent {
+            code: KeyCode::Enter,
+            modifiers,
+            kind: KeyEventKind::Press | KeyEventKind::Repeat,
+            ..
+        }) if modifiers.is_empty() => AccumulateAction::Track('\n'),
+        Event::Key(KeyEvent {
+            code:
+                KeyCode::Backspace
+                | KeyCode::Delete
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Home
+                | KeyCode::End
+                | KeyCode::Esc,
+            kind: KeyEventKind::Press | KeyEventKind::Repeat,
+            ..
+        }) => AccumulateAction::Abort,
+        _ => AccumulateAction::Skip,
+    }
+}
+
 pub fn handle_events(app: &mut App, input: &mut InputPump) -> Result<bool> {
-    for _ in 0..MAX_EVENTS_PER_FRAME {
-        match input.rx.try_recv() {
-            Ok(InputMsg::Event(ev)) => {
-                let now = Instant::now();
-                let backlog = input.rx.len();
-
-                let paste_active = if app.input_mode() == InputMode::Insert {
-                    input.paste.update(now, backlog, &ev)
-                } else {
-                    input.paste.reset(now);
-                    false
-                };
-
-                if paste_active {
-                    debug!(
-                        backlog,
-                        "Input paste detection active (fallback heuristics)"
-                    );
-                }
-
-                if apply_event(app, ev, paste_active) {
-                    return Ok(true);
-                }
-            }
+    let mut processed = 0;
+    while processed < MAX_EVENTS_PER_FRAME {
+        let ev = match input.rx.try_recv() {
+            Ok(InputMsg::Event(ev)) => ev,
             Ok(InputMsg::Error(msg)) => return Err(anyhow!("input error: {msg}")),
             Err(mpsc::error::TryRecvError::Empty) => break,
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 return Err(anyhow!("input pump disconnected"));
             }
+        };
+
+        let now = Instant::now();
+        let backlog = input.rx.len();
+
+        let timing_active = if app.input_mode() == InputMode::Insert {
+            input.paste.update(now, backlog, &ev)
+        } else {
+            input.paste.reset(now);
+            input.phase = PastePhase::Idle;
+            false
+        };
+
+        // Drive phase transitions based on timing.
+        if !timing_active && !matches!(input.phase, PastePhase::Idle) {
+            input.phase = PastePhase::Idle;
         }
+        if timing_active && matches!(input.phase, PastePhase::Idle) {
+            input.phase = PastePhase::Accumulating {
+                received: String::new(),
+            };
+        }
+
+        // Draining: discard remaining burst events without counting against
+        // the per-frame budget (discarding is free — no rendering cost).
+        if matches!(input.phase, PastePhase::Draining) {
+            continue;
+        }
+
+        // Accumulating: track chars that will be inserted by apply_event.
+        if let PastePhase::Accumulating { ref mut received } = input.phase {
+            match classify_for_accumulation(&ev) {
+                AccumulateAction::Track(c) => received.push(c),
+                AccumulateAction::Abort => input.phase = PastePhase::HeuristicOnly,
+                AccumulateAction::Skip => {}
+            }
+        }
+
+        let paste_active = matches!(
+            input.phase,
+            PastePhase::Accumulating { .. } | PastePhase::HeuristicOnly
+        );
+
+        if paste_active {
+            debug!(
+                backlog,
+                "Input paste detection active (fallback heuristics)"
+            );
+        }
+
+        if apply_event(app, ev, paste_active) {
+            return Ok(true);
+        }
+
+        // Post-apply clipboard check: the current char is now inserted, so
+        // `received` exactly reflects what the input buffer contains since the
+        // burst started.
+        if let PastePhase::Accumulating { ref received } = input.phase {
+            if received.len() >= CLIPBOARD_CHECK_THRESHOLD {
+                let matched = arboard::Clipboard::new()
+                    .and_then(|mut cb| cb.get_text())
+                    .ok()
+                    .map(|text| normalize_line_endings(&text))
+                    .filter(|clip| clip.starts_with(received.as_str()));
+
+                if let Some(clipboard_text) = matched {
+                    let remainder = &clipboard_text[received.len()..];
+                    if !remainder.is_empty() {
+                        if let Some(token) = app.insert_token() {
+                            app.insert_mode(token).enter_text(remainder);
+                        }
+                    }
+                    input.phase = PastePhase::Draining;
+                } else {
+                    input.phase = PastePhase::HeuristicOnly;
+                }
+            }
+        }
+
+        processed += 1;
     }
     Ok(app.should_quit())
 }
@@ -243,8 +378,7 @@ fn apply_event(app: &mut App, event: Event, paste_active: bool) -> bool {
                 let Some(token) = app.insert_token() else {
                     return app.should_quit();
                 };
-                // Normalize line endings: convert \r\n to \n and remove stray \r
-                let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+                let normalized = normalize_line_endings(&text);
                 app.insert_mode(token).enter_text(&normalized);
             }
         }
@@ -368,7 +502,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
                 app.files_panel_collapse();
             }
         }
-        // Files panel: Backspace progressively dismisses (expanded → compact → closed)
+        // Files panel: Backspace progressively dismisses (expanded -> compact -> closed)
         KeyCode::Backspace => {
             if app.files_panel_expanded() {
                 app.files_panel_collapse();
