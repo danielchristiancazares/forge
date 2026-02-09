@@ -6,21 +6,22 @@ This document provides a reference for the Anthropic Messages API as used by For
 <!-- Auto-generated section map for LLM context -->
 | Lines | Section |
 |-------|---------|
-| 1-21 | Header & TOC |
-| 22-29 | Overview |
-| 31-146 | Request Structure |
-| 147-262 | Tool Schema |
-| 263-301 | Response Structure |
-| 302-434 | SSE Streaming |
-| 435-535 | Prompt Caching |
-| 536-681 | Extended Thinking & Adaptive Thinking |
-| 682-801 | Compaction |
-| 802-852 | Effort Parameter |
-| 853-891 | Error Handling |
-| 892-995 | Complete Request Examples |
-| 996-1043 | Opus 4.6 Migration Guide |
-| 1044-1088 | Forge-Specific Notes |
-| 1089-1100 | References |
+| 1-23 | Header & TOC |
+| 25-32 | Overview |
+| 34-151 | Request Structure |
+| 152-267 | Tool Schema |
+| 268-309 | Response Structure |
+| 310-446 | SSE Streaming |
+| 447-554 | Prompt Caching |
+| 555-714 | Extended Thinking & Adaptive Thinking |
+| 715-835 | Compaction |
+| 836-871 | Effort Parameter |
+| 872-905 | Fast Mode (Research Preview) |
+| 906-944 | Error Handling |
+| 945-1024 | Complete Request Examples |
+| 1025-1076 | Opus 4.6 Migration Guide |
+| 1077-1126 | Forge-Specific Notes |
+| 1127-1142 | References |
 
 ## Overview
 
@@ -37,7 +38,7 @@ This document provides a reference for the Anthropic Messages API as used by For
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `model` | string | Model ID (e.g., `claude-opus-4-6`, `claude-sonnet-4-5-20250514`) |
+| `model` | string | Model ID (e.g., `claude-opus-4-6`, `claude-sonnet-4-5-20250929`) |
 | `max_tokens` | number | Maximum tokens to generate (up to 128K on Opus 4.6, 64K on Sonnet/Haiku 4.5) |
 | `messages` | array | Conversation messages with alternating `user`/`assistant` roles |
 
@@ -57,6 +58,8 @@ This document provides a reference for the Anthropic Messages API as used by For
 | `output_config` | object | - | Output configuration including `format` and `effort` (see below) |
 | `context_management` | object | - | Context management strategies including compaction (see [Compaction](#compaction)) |
 | `inference_geo` | string | `"global"` | Data residency: `"global"` or `"us"`. US-only priced at 1.1x on Opus 4.6+ |
+| `service_tier` | string | `"auto"` | Service tier routing: `"auto"` (use Priority Tier if available) or `"standard_only"` |
+| `speed` | string | - | Output speed: `"fast"` for 2.5x OTPS at premium pricing (Opus 4.6 only, beta `fast-mode-2026-02-01`) |
 
 #### Deprecated Fields (functional, removal planned)
 
@@ -299,6 +302,9 @@ Opus 4.6 may produce slightly different JSON string escaping in tool call argume
 | `stop_sequence` | Hit custom stop sequence | - |
 | `tool_use` | Model wants to use a tool | - |
 | `compaction` | Context was compacted; conversation can continue from summary | Opus 4.6 (beta) |
+| `pause_turn` | Server tool (e.g., web search) paused a long-running turn; append response and continue | Opus 4.6 |
+| `refusal` | Streaming classifiers intervened for safety policy violation | Opus 4.6 |
+| `model_context_window_exceeded` | Hit context window limit before `max_tokens` | Sonnet 4.5+ (default); older models require beta `model-context-window-exceeded-2025-08-26` |
 
 > **Note on `max_tokens` with adaptive thinking (Opus 4.6):** At `high` and `max` effort levels, the model may use more tokens for thinking, making it more likely to hit the `max_tokens` ceiling. If you see unexpected `max_tokens` stops, either increase `max_tokens` or lower the effort level.
 
@@ -430,10 +436,14 @@ Events are mapped to `StreamEvent`:
 
 - `content_block_delta` with `text_delta` → `StreamEvent::TextDelta`
 - `content_block_delta` with `thinking_delta` → `StreamEvent::ThinkingDelta`
+- `content_block_delta` with `signature_delta` → `StreamEvent::ThinkingSignature`
+- `content_block_start` with `tool_use` → `StreamEvent::ToolCallStart`
+- `content_block_delta` with `input_json_delta` → `StreamEvent::ToolCallDelta`
+- `message_delta` with usage → `StreamEvent::Usage`
 - `message_stop` → `StreamEvent::Done`
 - Errors → `StreamEvent::Error`
 
-> **TODO:** Handle `stop_reason: "compaction"` when server-side compaction is enabled. This requires continuing the conversation from the compaction summary rather than treating it as a terminal event.
+Compaction is handled transparently: when `stop_reason: "compaction"` is detected, the Claude provider sets an internal `compacting` flag and suppresses the `Done` event, allowing the stream to continue from the compaction summary. See `providers/src/claude.rs`.
 
 ## Prompt Caching
 
@@ -484,8 +494,8 @@ Cache reads cost 0.1x base input price.
 
 | Model | Minimum Tokens |
 |-------|----------------|
-| Claude Opus 4.6 | TBD (assume 1024 until confirmed) |
-| Claude Sonnet 4.5 | 4096 |
+| Claude Opus 4.6 | 4096 |
+| Claude Sonnet 4.5 | 1024 |
 | Claude Haiku 4.5 | 4096 |
 
 ### Cache Hierarchy
@@ -493,6 +503,8 @@ Cache reads cost 0.1x base input price.
 Cache prefixes follow this order: `tools` → `system` → `messages`
 
 Changes at any level invalidate that level and all subsequent levels.
+
+> **Note (Feb 5, 2026):** Prompt caching now uses **workspace-level isolation** (previously org-level) on the Claude API and Azure. Amazon Bedrock and Google Vertex AI maintain organization-level isolation.
 
 ### Cache Interaction with Adaptive Thinking (Opus 4.6)
 
@@ -508,12 +520,19 @@ Consecutive requests using adaptive thinking (`thinking: {type: "adaptive"}`) **
     "input_tokens": 50,
     "cache_creation_input_tokens": 1000,
     "cache_read_input_tokens": 5000,
-    "output_tokens": 100
+    "output_tokens": 100,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 1000
+    },
+    "service_tier": "standard"
   }
 }
 ```
 
 Total input = `cache_read_input_tokens` + `cache_creation_input_tokens` + `input_tokens`
+
+Additional usage fields (may be present depending on features used): `server_tool_use.web_search_requests`, `inference_geo`, `speed`.
 
 ### Forge Implementation
 
@@ -656,27 +675,41 @@ Implications:
 - No intelligence impact from preservation
 - Combined with compaction, thinking blocks being preserved can trigger compaction earlier than expected
 
+### Redacted Thinking
+
+If the safety classifier flags thinking content, the API returns a `redacted_thinking` block instead:
+
+```json
+{
+  "type": "redacted_thinking",
+  "data": "EqQBCgIYAhIM..."
+}
+```
+
+The `data` field contains an opaque encrypted payload. Forge preserves these as `redacted_thinking` blocks in assistant messages sent back to the API (see `claude.rs:113-116`).
+
 ### Summarized Thinking
 
 Claude 4 models return a **summary** of the full thinking process, not the raw thinking. The full thinking is encrypted in the `signature` field. You are billed for the full thinking tokens, not the summary. The billed output token count will not match the visible token count.
 
 ### Forge Implementation
 
-In `providers/src/lib.rs`:
+In `providers/src/claude.rs`, thinking mode is determined by model:
 
 ```rust
-use forge_types::ThinkingState;
-
-// Legacy manual mode (works on all models, deprecated on Opus 4.6)
-if let ThinkingState::Enabled(budget) = limits.thinking() {
-    body.insert("thinking".into(), json!({
-        "type": "enabled",
-        "budget_tokens": budget.as_u32()
-    }));
+// Opus 4.6: adaptive thinking with effort-based control
+if is_opus_4_6_model(model) {
+    let mut thinking_obj = json!({"type": thinking_mode}); // "adaptive"
+    if thinking_mode == "enabled"
+        && let ThinkingState::Enabled(budget) = limits.thinking()
+    {
+        thinking_obj["budget_tokens"] = json!(budget.as_u32());
+    }
+    body.insert("thinking".into(), thinking_obj);
 }
 ```
 
-> **TODO (Opus 4.6):** Add `ThinkingState::Adaptive` variant. When model is `claude-opus-4-6`, emit `{"type": "adaptive"}` and control depth via the effort parameter rather than `budget_tokens`. The `ThinkingState::Enabled` path should still be used for older models.
+The `ThinkingState` enum in `types/src/lib.rs` still only has `Disabled` and `Enabled` variants. Adaptive thinking is handled via a hardcoded `"adaptive"` string in `ApiConfig` rather than a dedicated enum variant. The effort level is hardcoded to `"max"` in `providers/src/lib.rs`.
 
 Thinking deltas are mapped to `StreamEvent::ThinkingDelta`. The streaming event format is identical for adaptive and manual modes; no changes needed in SSE parsing.
 
@@ -710,6 +743,8 @@ Add `compact_20260112` to `context_management.edits`:
 ```
 
 ### Configure Trigger Threshold
+
+Default trigger: **150,000 tokens**. Minimum configurable: **50,000 tokens**.
 
 ```json
 {
@@ -775,13 +810,15 @@ The default summary prompt produces a structured summary including:
 
 The summary is wrapped in `<summary></summary>` tags.
 
+When streaming, the summary arrives as a single `compaction_delta` event (not incremental chunks).
+
+The `usage.iterations` array provides per-iteration token breakdown (compaction iterations vs. message iterations). Top-level `input_tokens` and `output_tokens` fields **exclude** compaction iteration costs.
+
 ### Forge Integration
 
-Forge does not currently implement client-side context summarization. Server-side compaction is the natural fit for long-running conversations. To adopt:
+Server-side compaction (`compact-2026-01-12` header) is **intentionally disabled** in Forge. Forge maintains its own client-side conversation history via Context Infinity distillation, and does not reconcile after server compaction. Enabling both causes an infinite loop: full history → compaction → tool calls → full history → compaction. See `providers/src/claude.rs:16-22`.
 
-1. Send `anthropic-beta: compact-2026-01-12` header
-2. Add `{"type": "compact_20260112"}` to `context_management.edits`
-3. Handle `stop_reason: "compaction"` if using `pause_after_compaction: true`
+However, `stop_reason: "compaction"` **is** handled in the Claude SSE parser (`claude.rs:299-370`). When detected, the parser sets an internal `compacting` flag and suppresses the terminal `Done` event, allowing the stream to continue transparently.
 
 ### SDK Compaction (Alternative)
 
@@ -805,16 +842,17 @@ The effort parameter controls how eagerly Claude spends tokens when responding. 
 
 | Model | Status | Header Required |
 |-------|--------|-----------------|
-| Opus 4.6 | **GA** | None |
+| Opus 4.6 | **GA** (4 levels: low/medium/high/max) | None |
+| Opus 4.5 | **GA** (3 levels: low/medium/high) | None |
 
 ### Effort Levels
 
-| Level | Description | Use When |
-|-------|-------------|----------|
-| `low` | Most token-efficient. Fewer tool calls, shorter responses. | Speed-sensitive or simple tasks |
-| `medium` | Balanced. Solid performance without full token expenditure. | Most production use cases |
-| `high` (default) | Maximum thoroughness. | Complex reasoning, nuanced analysis, hard coding problems |
-| `max` | Absolute highest capability. **New in Opus 4.6.** | Problems requiring deepest possible reasoning |
+| Level | Description | Use When | Models |
+|-------|-------------|----------|--------|
+| `low` | Most token-efficient. Fewer tool calls, shorter responses. | Speed-sensitive or simple tasks | All |
+| `medium` | Balanced. Solid performance without full token expenditure. | Most production use cases | All |
+| `high` (default) | Maximum thoroughness. | Complex reasoning, nuanced analysis, hard coding problems | All |
+| `max` | Absolute highest capability. | Problems requiring deepest possible reasoning | **Opus 4.6 only** |
 
 ### Usage
 
@@ -831,6 +869,40 @@ On Opus 4.6 (GA, no beta header):
 ```
 
 > **Note:** Effort interacts with `max_tokens`. At `high` and `max`, Claude may consume a large portion of `max_tokens` for thinking, potentially triggering `stop_reason: "max_tokens"` before the visible response completes. If this happens, increase `max_tokens` or lower effort.
+
+## Fast Mode (Research Preview)
+
+Fast mode delivers significantly faster output token generation (up to 2.5x OTPS) using the same model weights — no change to intelligence or capabilities.
+
+### Beta Status
+
+Requires header: `anthropic-beta: fast-mode-2026-02-01`
+
+Supported models: Claude Opus 4.6 only.
+
+### Usage
+
+```json
+{
+  "model": "claude-opus-4-6",
+  "max_tokens": 4096,
+  "speed": "fast",
+  "messages": [{"role": "user", "content": "Refactor this module..."}]
+}
+```
+
+### Pricing
+
+| Token Type | Standard | Fast Mode |
+|------------|----------|-----------|
+| Input (≤200K) | $5/M | $30/M |
+| Output (≤200K) | $25/M | $150/M |
+
+### Limitations
+
+- **Prompt cache**: Switching between fast and standard speed **invalidates** the prompt cache. Different speeds do not share cached prefixes.
+- Not available with the Batch API or Priority Tier.
+- Benefits are focused on output tokens per second (OTPS), not time to first token (TTFT).
 
 ## Error Handling
 
@@ -979,22 +1051,26 @@ Requires beta header `context-1m-2025-08-07`. Available to organizations in usag
 
 ### Beta Headers Summary
 
-| Header | Purpose | Required On |
-|--------|---------|-------------|
-| `compact-2026-01-12` | Server-side compaction | Opus 4.6 (if using compaction) |
-| `context-1m-2025-08-07` | 1M token context window | Opus 4.6, Sonnet 4.5 (if using >200K input) |
-| ~~`effort-2025-11-24`~~ | ~~Effort parameter~~ | ~~Opus 4.5 only~~ (not needed, Opus 4.6 has GA effort) |
-| ~~`interleaved-thinking-2025-05-14`~~ | ~~Interleaved thinking~~ | ~~Deprecated on Opus 4.6~~ (safely ignored) |
+| Header | Purpose | Status |
+|--------|---------|--------|
+| `compact-2026-01-12` | Server-side compaction | Active (Opus 4.6) |
+| `context-1m-2025-08-07` | 1M token context window | Active (Opus 4.6, Sonnet 4.5, Sonnet 4) |
+| `fast-mode-2026-02-01` | Fast mode (2.5x OTPS) | Active (Opus 4.6, research preview) |
+| `code-execution-2025-08-25` | Sandboxed code execution tool | Active |
+| `computer-use-2025-01-24` | Computer use / desktop automation | Active |
+| `skills-2025-10-02` | Agent Skills | Active |
+| `model-context-window-exceeded-2025-08-26` | `model_context_window_exceeded` stop reason | Active (pre-Sonnet 4.5 models only; default on Sonnet 4.5+) |
 
 ### Model Capability Matrix
 
 | Capability | Opus 4.6 | Sonnet 4.5 |
 |------------|----------|------------|
-| Max context | 1M (beta) | 200K (1M beta) |
+| Max context | 200K (1M beta) | 200K (1M beta) |
 | Max output | 128K | 64K |
 | Adaptive thinking | ✅ | ❌ |
 | Manual thinking (`budget_tokens`) | ⚠️ Deprecated | ✅ |
-| Effort parameter | ✅ GA (4 levels) | ❌ |
+| Effort parameter | ✅ GA (4 levels incl. `max`) | ✅ GA (3 levels, no `max`) |
+| Fast mode (`speed: "fast"`) | ✅ Beta | ❌ |
 | Compaction (server-side) | ✅ Beta | ❌ |
 | Prefill | ❌ **Removed** | ✅ |
 | Data residency (`inference_geo`) | ✅ | ❌ |
@@ -1007,18 +1083,20 @@ Forge hoists `Message::System` variants from conversation history into the `syst
 
 ### Assistant Message Format
 
-Assistant messages are sent as plain strings, not content block arrays:
+Assistant messages are sent as content block arrays containing text, tool_use, and redacted_thinking blocks:
 
 ```rust
-Message::Assistant(_) => {
-    api_messages.push(json!({
-        "role": "assistant",
-        "content": msg.content()  // String, not array
-    }));
-}
+// In providers/src/claude.rs — builds pending_assistant_content as Vec<Value>
+messages.push(json!({
+    "role": "assistant",
+    "content": std::mem::take(content)  // Vec<serde_json::Value>
+}));
 ```
 
-This means cache control cannot be applied to assistant messages, which is acceptable since caching is most valuable for system prompts and early user messages.
+Content blocks include:
+- `{"type": "text", "text": "..."}` — text responses
+- `{"type": "tool_use", "id": "...", "name": "...", "input": {...}}` — tool calls
+- `{"type": "redacted_thinking", "data": "..."}` — safety-redacted thinking
 
 > **Opus 4.6 note:** Since prefill is removed, Forge must not append a partial assistant message as the last message in the `messages` array when targeting Opus 4.6. Any existing prefill logic must be gated by model string.
 
@@ -1029,20 +1107,23 @@ Forge sends these headers:
 - `x-api-key`: API key (not `Authorization: Bearer`)
 - `anthropic-version`: `2023-06-01`
 - `content-type`: `application/json`
-- `anthropic-beta`: Comma-separated list of beta features as needed (e.g., `compact-2026-01-12,context-1m-2025-08-07`)
+- `anthropic-beta`: Comma-separated list of beta features as needed (e.g., `context-1m-2025-08-07`). Note: `compact-2026-01-12` is intentionally **not** sent (see [Forge Integration](#forge-integration) in Compaction section)
 
 ### Forge TODO Summary (Opus 4.6)
 
 1. ~~**[BREAKING]** Gate prefill logic by model string; return error or skip for `claude-opus-4-6`~~ **Done**
 2. ~~**[BREAKING]** Ensure streaming is used for large `max_tokens` on Opus 4.6~~ **Done** (always streams)
-3. ~~Add `ThinkingState::Adaptive` variant; emit `{type: "adaptive"}` for Opus 4.6~~ **Done** (inline in provider)
+3. ~~Add `ThinkingState::Adaptive` variant; emit `{type: "adaptive"}` for Opus 4.6~~ **Done** (workaround: hardcoded string in `ApiConfig`, not enum variant)
 4. ~~Add effort parameter support (`output_config.effort`); model-gate beta header~~ **Done** (hardcoded to `max`)
 5. Migrate `output_format` → `output_config.format` (backward compat for older models)
-6. Add `context_management` support for server-side compaction
-7. Handle `stop_reason: "compaction"` in stream event handling
+6. ~~Add `context_management` support for server-side compaction~~ **Won't do** (intentionally disabled; conflicts with client-side distillation — see `claude.rs:16-22`)
+7. ~~Handle `stop_reason: "compaction"` in stream event handling~~ **Done** (`claude.rs:299-370`)
 8. Add `inference_geo` support if data residency is needed
 9. ~~Add `context-1m-2025-08-07` beta header support for 1M context~~ **Done**
 10. Audit tool call argument parsing for raw string matching (JSON escaping change)
+11. Add `ThinkingState::Adaptive` enum variant (currently worked around with string in `ApiConfig`)
+12. Make effort level configurable (currently hardcoded to `"max"`)
+13. Evaluate fast mode (`speed: "fast"`) for latency-sensitive workflows
 
 ## References
 
@@ -1052,7 +1133,11 @@ Forge sends these headers:
 - [Compaction](https://platform.claude.com/docs/en/build-with-claude/compaction)
 - [Effort Parameter](https://platform.claude.com/docs/en/build-with-claude/effort)
 - [Extended Thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)
+- [Fast Mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode)
+- [Handling Stop Reasons](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons)
 - [Streaming Messages](https://platform.claude.com/docs/en/build-with-claude/streaming)
 - [Prompt Caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+- [Service Tiers](https://platform.claude.com/docs/en/api/service-tiers)
+- [Beta Headers](https://platform.claude.com/docs/en/api/beta-headers)
 - [Migration Guide](https://platform.claude.com/docs/en/about-claude/models/migration-guide)
 - [Introducing Claude Opus 4.6](https://www.anthropic.com/news/claude-opus-4-6)

@@ -372,7 +372,7 @@ This state machine design provides several guarantees:
 | **No concurrent tool execution** | Only one `ToolLoop` state can exist |
 | **No concurrent distillation** | `Distilling` state is mutually exclusive |
 | **Request queueing** | `CompletedWithQueued` holds a pending request during distillation |
-| **Tool batch atomicity** | All tools in a batch are approved/denied together |
+| **Tool batch gating & commit** | Tool execution is gated behind an approval decision; per-call selection is supported (`ApproveSelected`), and calls+results are committed as a contiguous block (`commit_tool_batch()`) |
 | **Clean transitions** | `replace_with_idle()` ensures proper state cleanup |
 | **Journal typestate** | `ActiveStream::Transient` vs `Journaled` enforced at type level |
 | **Deny confirmation** | `ApprovalState` requires double-press for deny (prevents accidental denial) |
@@ -669,25 +669,30 @@ Terminal control sequences in model output are sanitized via `sanitize_terminal_
 
 ### Journal-Based Crash Recovery
 
-The engine uses a write-ahead log for crash recovery:
+Forge keeps two independent journals so a crash can be recovered without duplicating history:
 
-```rust
-// On startup, check for incomplete streams
-pub fn check_crash_recovery(&mut self) -> Option<RecoveredStream> {
-    let recovered = self.stream_journal.recover()?;
+- **Stream journal** (`forge_context::StreamJournal`): records streaming deltas keyed by `StepId`.
+- **Tool journal** (`forge_context::ToolJournal`): records in-flight tool batches keyed by `ToolBatchId`.
 
-    // Add recovered content with warning badge
-    let badge = match &recovered {
-        RecoveredStream::Complete { .. } => RECOVERY_COMPLETE_BADGE,
-        RecoveredStream::Incomplete { .. } => RECOVERY_INCOMPLETE_BADGE,
-        RecoveredStream::Errored { .. } => RECOVERY_ERROR_BADGE,
-    };
+The entrypoint is `App::check_crash_recovery()` (`engine/src/persistence.rs`). Recovery is step-id aware (idempotent) and only prunes journals after recovered history is persisted.
 
-    self.push_history_message(Message::assistant(model, content));
-    self.stream_journal.seal_unsealed(step_id)?;
-    Some(recovered)
-}
-```
+**Tool batch recovery takes priority:**
+
+1. `tool_journal.recover()` is attempted first.
+2. If a batch is found, the engine also attempts `stream_journal.recover()` to retrieve a `StepId` and any partial assistant text.
+3. If the tool batch assistant text is empty but the stream journal has partial text, the engine backfills the batch text for the recovery UI.
+4. If `ContextManager::has_step_id(step_id)` is already true, the tool batch is discarded; stream cleanup is only finalized if `autosave_history()` succeeds (otherwise the journals remain recoverable).
+5. Otherwise the engine enters `OperationState::ToolRecovery` and prompts the user to resume (`tool_recovery_resume`) or discard (`tool_recovery_discard`).
+
+**Stream-only recovery:**
+
+1. If no tool batch is pending, `stream_journal.recover()` reconstructs a partial assistant response.
+2. The engine prepends a recovery badge and sanitizes recovered text (`sanitize_terminal_text`) before pushing it into history with the recovered `StepId`.
+3. Sealing (`seal_unsealed`) and pruning (`finalize_journal_commit`) only occur after `autosave_history()` succeeds.
+
+**Deferred cleanup:**
+
+Cleanup failures are retried via `poll_journal_cleanup()` while `OperationState::Idle` using `pending_stream_cleanup` and `pending_tool_cleanup`.
 
 ### Cache Breakpoint Strategy
 
@@ -958,6 +963,8 @@ google = "${GEMINI_API_KEY}"
 memory = true  # Enable memory (librarian fact extraction/retrieval)
 ```
 
+Note: `FORGE_CONTEXT_INFINITY` is only consulted when the `[context]` table is absent. If you include `[context]` but omit `memory`, serde defaults it to `false`, which disables memory even if the env var would otherwise enable it. When the env var is used, it defaults to enabled when unset and disables only for `0|false|off|no` (`engine/src/init.rs`).
+
 #### [anthropic]
 
 ```toml
@@ -990,10 +997,10 @@ thinking_budget_tokens = 10000   # Only used when thinking_mode = "enabled"
 
 ```toml
 [openai]
-reasoning_effort = "high"  # low | medium | high | xhigh
+reasoning_effort = "high"  # disabled | low | medium | high | xhigh
 reasoning_summary = "auto" # none | auto | concise | detailed (shown when show_thinking=true)
 verbosity = "high"         # low | medium | high
-truncation = "auto"        # auto | none | preserve
+truncation = "auto"        # auto | disabled
 ```
 
 #### [google]
@@ -1039,8 +1046,8 @@ max_scan_bytes = 2097152
 max_patch_bytes = 524288
 
 [tools.search]
-binary = "rg"
-fallback_binary = "grep"
+binary = "ugrep"
+fallback_binary = "rg"
 default_timeout_ms = 5000
 default_max_results = 100
 max_matches_per_file = 50
@@ -1085,7 +1092,7 @@ type = "object"
 | API Keys | Config file -> Environment variables |
 | Provider | Config file -> Auto-detect from available keys -> Default (Claude) |
 | Model | Config file -> Provider default |
-| Memory | Config file -> `FORGE_CONTEXT_INFINITY` env var -> Default (false) |
+| Memory | Config file (`[context].memory`, if `[context]` table exists) -> `FORGE_CONTEXT_INFINITY` env var (only if `[context]` absent) -> Default (true) |
 
 ---
 
@@ -1180,9 +1187,9 @@ The approval system provides three modes:
 
 ```rust
 pub enum ApprovalMode {
-    Permissive,  // Auto-approve most tools, only prompt for high-risk
-    Default,     // Prompt for side-effecting tools unless allowlisted
-    Strict,      // Deny all tools unless explicitly allowlisted
+    Permissive,  // Prompt only for tools with requires_approval() == true (others auto-execute, even if side-effecting)
+    Default,     // Prompt for side-effecting tools unless allowlisted; denylisted tools are always rejected
+    Strict,      // Reject non-allowlisted tools; allowlisted tools still require explicit approval
 }
 ```
 
@@ -1197,20 +1204,31 @@ The `ApprovalState` enforces a double-press pattern for deny actions:
 The sandbox restricts tool access to authorized paths:
 
 ```rust
-pub struct SandboxConfig {
-    pub allowed_roots: Vec<PathBuf>,    // Permitted directories
+pub struct ToolSandboxConfig {
+    pub allowed_roots: Vec<String>,     // Directories (strings; expanded + canonicalized at init)
     pub denied_patterns: Vec<String>,   // Glob patterns to block
-    pub allow_absolute: bool,           // Allow absolute paths
-    pub include_default_denies: bool,   // Include .git, node_modules, etc.
+    pub allow_absolute: bool,           // Allow absolute paths in tool args
+    pub include_default_denies: bool,   // Append built-in credential-deny patterns
 }
 ```
 
-Default denied patterns:
+Note: if `allowed_roots` is empty, init defaults it to the current working directory (`AppConfig.working_dir`).
 
+Default denied patterns (`DEFAULT_SANDBOX_DENIES` in `engine/src/init.rs`):
+
+- `**/.ssh/**` - SSH keys and config
+- `**/.gnupg/**` - GPG keys
+- `**/.aws/**` - AWS credentials
+- `**/.azure/**` - Azure credentials
+- `**/.config/gcloud/**` - GCloud credentials
 - `**/.git/**` - Git internals
-- `**/node_modules/**` - Node dependencies
-- `**/.env*` - Environment files
-- `**/secrets/**` - Secret directories
+- `**/.git-credentials` - Git credentials
+- `**/.npmrc` - npm auth tokens
+- `**/.pypirc` - PyPI auth tokens
+- `**/.netrc` - Network credentials
+- `**/.env`, `**/.env.*`, `**/*.env` - Environment files
+- `**/id_rsa*`, `**/id_ed25519*`, `**/id_ecdsa*` - SSH private keys
+- `**/*.pem`, `**/*.key`, `**/*.p12`, `**/*.pfx`, `**/*.der` - Certificate/key files
 
 ### Command Blacklist
 
@@ -1597,6 +1615,7 @@ Available predefined models for the model selector:
 ```rust
 pub enum PredefinedModel {
     ClaudeOpus,
+    ClaudeHaiku,
     Gpt52Pro,
     Gpt52,
     GeminiPro,
@@ -1811,7 +1830,7 @@ Command::MyCommand(arg) => {
     if let Some(value) = arg {
         self.push_notification(format!("MyCommand executed with: {value}"));
     } else {
-        self.push_notification("Usage: :mycommand <arg>");
+        self.push_notification("Usage: /mycommand <arg>");
     }
 }
 ```
@@ -1909,7 +1928,7 @@ impl<'a> MyMode<'a> {
 5. **Handle in TUI input handler** (`tui/src/input.rs`):
 
 ```rust
-pub async fn handle_events(app: &mut App) -> Result<bool> {
+pub fn handle_events(app: &mut App, input: &mut InputPump) -> Result<bool> {
     match app.input_mode() {
         InputMode::Normal => handle_normal_mode(app),
         InputMode::Insert => handle_insert_mode(app),
@@ -1934,13 +1953,14 @@ pub enum Provider {
 }
 
 impl Provider {
-    pub fn parse(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Result<Self, EnumParseError<Self>> {
+        // Accepts aliases: "gpt", "chatgpt" -> OpenAI; "google" -> Gemini; etc.
         match s.to_lowercase().as_str() {
-            "claude" | "anthropic" => Some(Self::Claude),
-            "openai" | "gpt" => Some(Self::OpenAI),
-            "gemini" | "google" => Some(Self::Gemini),
-            "myprovider" | "mp" => Some(Self::MyProvider),
-            _ => None,
+            "claude" | "anthropic" => Ok(Self::Claude),
+            "openai" | "gpt" | "chatgpt" => Ok(Self::OpenAI),
+            "gemini" | "google" => Ok(Self::Gemini),
+            "myprovider" | "mp" => Ok(Self::MyProvider),
+            _ => Err(EnumParseError::new(/* ... */)),
         }
     }
 }
