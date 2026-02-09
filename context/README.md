@@ -29,12 +29,12 @@ Context Infinity is Forge's system for managing unlimited conversation context w
 | 774-871 | The Librarian |
 | 872-931 | Fact Store |
 | 932-975 | Atomic Write Helpers |
-| 976-1767 | Public API |
-| 1768-1868 | Complete Workflow Example |
-| 1869-1886 | Type Relationships |
-| 1887-1893 | Error Handling |
-| 1894-1906 | Dependencies |
-| 1907-1914 | Testing |
+| 976-1787 | Public API |
+| 1788-1888 | Complete Workflow Example |
+| 1889-1906 | Type Relationships |
+| 1907-1913 | Error Handling |
+| 1914-1926 | Dependencies |
+| 1927-1934 | Testing |
 <!-- toc:end -->
 
 ## Overview
@@ -1446,7 +1446,7 @@ journal.record_result(batch_id, &result)?;
 journal.commit_batch(batch_id)?;
 ```
 
-**Key invariant:** Only one uncommitted batch can exist at a time. Tool calls and results are persisted immediately, enabling recovery of partial batches after crashes.
+**Key invariant:** Only one uncommitted batch can exist at a time. Tool calls and results are persisted durably (streamed argument deltas may be buffered by the engine and flushed periodically), enabling recovery of partial batches after crashes.
 
 #### `ToolBatchId`
 
@@ -1470,6 +1470,23 @@ pub struct RecoveredToolBatch {
     pub results: Vec<ToolResult>,
     /// Tool calls whose arguments failed to parse (substituted with {})
     pub corrupted_args: Vec<CorruptedToolArgs>,
+    /// Best-effort execution metadata keyed by tool_call_id.
+    pub call_execution: HashMap<String, RecoveredToolCallExecution>,
+}
+```
+
+#### `RecoveredToolCallExecution`
+
+Best-effort execution metadata captured for crash recovery:
+
+```rust
+pub struct RecoveredToolCallExecution {
+    /// When Forge began executing the tool call (Unix epoch milliseconds).
+    pub started_at_unix_ms: Option<i64>,
+    /// OS process id for subprocess-backed tools (e.g., `Run`) when available.
+    pub process_id: Option<i64>,
+    /// Process creation timestamp (Unix epoch milliseconds) when available.
+    pub process_started_at_unix_ms: Option<i64>,
 }
 ```
 

@@ -144,6 +144,15 @@ pub enum ToolEvent {
         tool_call_id: String,
         tool_name: String,
     },
+    /// A subprocess-backed tool spawned an OS process (best-effort metadata).
+    ///
+    /// This is currently emitted by the `Run` tool to reduce orphaned-process risk
+    /// after crashes. The engine records this in the tool journal for recovery.
+    ProcessSpawned {
+        tool_call_id: String,
+        pid: u32,
+        process_started_at_unix_ms: Option<i64>,
+    },
     StdoutChunk {
         tool_call_id: String,
         chunk: String,

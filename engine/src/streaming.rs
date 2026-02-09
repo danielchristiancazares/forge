@@ -1,10 +1,41 @@
 //! Streaming response handling for the App.
 
+use std::sync::OnceLock;
+use std::time::Duration;
+
 use futures_util::future::{AbortHandle, Abortable};
 use tokio::sync::mpsc;
 
 const STREAM_EVENT_CHANNEL_CAPACITY: usize = 1024;
 const REDACTED_THINKING_PLACEHOLDER: &str = "[Thinking hidden]";
+
+const DEFAULT_TOOL_ARGS_JOURNAL_FLUSH_BYTES: usize = 8_192;
+const DEFAULT_TOOL_ARGS_JOURNAL_FLUSH_INTERVAL_MS: u64 = 250;
+
+fn tool_args_journal_flush_bytes() -> usize {
+    static THRESHOLD: OnceLock<usize> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("FORGE_TOOL_JOURNAL_FLUSH_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_TOOL_ARGS_JOURNAL_FLUSH_BYTES)
+    })
+}
+
+fn tool_args_journal_flush_interval() -> Duration {
+    static INTERVAL: OnceLock<Duration> = OnceLock::new();
+    *INTERVAL.get_or_init(|| {
+        std::env::var("FORGE_TOOL_JOURNAL_FLUSH_INTERVAL_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::from_millis(
+                DEFAULT_TOOL_ARGS_JOURNAL_FLUSH_INTERVAL_MS,
+            ))
+    })
+}
 
 use forge_context::{BeginSessionError, TokenCounter};
 use forge_types::{ModelName, Provider, ToolDefinition};
@@ -476,15 +507,33 @@ impl super::App {
                             let new_total = current_bytes.saturating_add(arguments.len());
 
                             if new_total <= max_bytes {
-                                // Under limit: append to journal and update tracker
-                                if let Err(e) =
-                                    self.tool_journal.append_call_args(batch_id, id, arguments)
+                                // Under limit: buffer deltas and flush periodically to avoid
+                                // per-delta SQLite UPDATEs (perf + UI responsiveness).
+                                active
+                                    .tool_args_journal_bytes_mut()
+                                    .insert(id.clone(), new_total);
+
+                                let pending_flush =
+                                    if let Some(buffer) = active.tool_args_buffer_mut() {
+                                        buffer.push_delta(id, arguments);
+                                        if buffer.should_flush(
+                                            tool_args_journal_flush_bytes(),
+                                            tool_args_journal_flush_interval(),
+                                        ) {
+                                            buffer.take_pending()
+                                        } else {
+                                            Vec::new()
+                                        }
+                                    } else {
+                                        Vec::new()
+                                    };
+
+                                if !pending_flush.is_empty()
+                                    && let Err(e) = self
+                                        .tool_journal
+                                        .append_call_args_batch(batch_id, pending_flush)
                                 {
                                     journal_error = Some(e.to_string());
-                                } else {
-                                    active
-                                        .tool_args_journal_bytes_mut()
-                                        .insert(id.clone(), new_total);
                                 }
                             }
                             // Over limit: silently skip appending to journal
@@ -576,13 +625,34 @@ impl super::App {
     /// will find the uncommitted step. If history already has that `step_id`,
     /// recovery will skip it (idempotent).
     pub(crate) fn finish_streaming(&mut self, finish_reason: StreamFinishReason) {
-        let active = match self.replace_with_idle() {
+        let mut active = match self.replace_with_idle() {
             OperationState::Streaming(active) => active,
             other => {
                 self.state = other;
                 return;
             }
         };
+
+        // Flush any buffered tool-argument deltas before we can execute tools.
+        // This preserves the "journal-before-execute" invariant for crash recovery
+        // even when the engine buffers tool-call deltas for performance.
+        if matches!(finish_reason, StreamFinishReason::Done)
+            && let ActiveStream::Journaled {
+                tool_batch_id,
+                tool_args_buffer,
+                ..
+            } = &mut active
+        {
+            let pending = tool_args_buffer.take_pending();
+            if !pending.is_empty()
+                && let Err(e) = self
+                    .tool_journal
+                    .append_call_args_batch(*tool_batch_id, pending)
+            {
+                // Fail closed: if we can't persist tool arguments, refuse tool execution.
+                self.disable_tools_due_to_tool_journal_error("flush tool args", e);
+            }
+        }
 
         let (mut message, journal, abort_handle, tool_batch_id, turn) = active.into_parts();
 

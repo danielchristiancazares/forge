@@ -39,6 +39,22 @@ use forge_types::{ThoughtSignature, ThoughtSignatureState, ToolCall, ToolResult}
 /// Unique identifier for a tool batch.
 pub type ToolBatchId = i64;
 
+/// Per-tool-call execution metadata captured for crash recovery.
+///
+/// This data is best-effort and may be partially populated depending on the
+/// tool type and platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoveredToolCallExecution {
+    /// When Forge began executing the tool call (Unix epoch milliseconds).
+    pub started_at_unix_ms: Option<i64>,
+    /// OS process id for subprocess-backed tools (e.g., `Run`) when available.
+    pub process_id: Option<i64>,
+    /// Process creation timestamp (Unix epoch milliseconds) when available.
+    ///
+    /// Used to reduce PID reuse risk when attempting recovery cleanup.
+    pub process_started_at_unix_ms: Option<i64>,
+}
+
 /// Information about corrupted tool call arguments during recovery.
 #[derive(Debug, Clone)]
 pub struct CorruptedToolArgs {
@@ -58,6 +74,8 @@ pub struct RecoveredToolBatch {
     pub results: Vec<ToolResult>,
     /// Tool calls whose arguments failed to parse (substituted with {})
     pub corrupted_args: Vec<CorruptedToolArgs>,
+    /// Best-effort execution metadata keyed by tool_call_id.
+    pub call_execution: std::collections::HashMap<String, RecoveredToolCallExecution>,
 }
 
 /// Tool journal for durable tool batch tracking.
@@ -86,6 +104,9 @@ impl ToolJournal {
             tool_name TEXT NOT NULL,
             arguments_json TEXT NOT NULL,
             thought_signature TEXT,
+            started_at_unix_ms INTEGER,
+            process_id INTEGER,
+            process_started_at_unix_ms INTEGER,
             PRIMARY KEY (batch_id, seq)
         );
 
@@ -141,6 +162,7 @@ impl ToolJournal {
             .context("Failed to create tool journal schema")?;
         ensure_tool_batches_step_id(&db)?;
         ensure_tool_calls_signature(&db)?;
+        ensure_tool_calls_execution_metadata(&db)?;
         ensure_tool_results_name(&db)?;
         Ok(Self { db })
     }
@@ -275,6 +297,129 @@ impl ToolJournal {
                 params![delta, batch_id, tool_call_id],
             )
             .with_context(|| format!("Failed to append tool args {tool_call_id}"))?;
+        if updated == 0 {
+            bail!("No tool call found for id {tool_call_id}");
+        }
+        Ok(())
+    }
+
+    /// Append streamed JSON argument deltas for multiple tool calls in a single transaction.
+    ///
+    /// This is a performance optimization for streaming providers that emit many tiny
+    /// argument chunks: buffering in the engine and flushing here reduces SQLite write
+    /// frequency and improves UI responsiveness.
+    pub fn append_call_args_batch(
+        &mut self,
+        batch_id: ToolBatchId,
+        deltas: Vec<(String, String)>,
+    ) -> Result<()> {
+        if deltas.is_empty() {
+            return Ok(());
+        }
+
+        let tx = self
+            .db
+            .transaction()
+            .context("Failed to start tool args append transaction")?;
+
+        for (tool_call_id, delta) in deltas {
+            let updated = tx
+                .execute(
+                    "UPDATE tool_calls
+                     SET arguments_json = arguments_json || ?1
+                     WHERE batch_id = ?2 AND tool_call_id = ?3",
+                    params![delta, batch_id, tool_call_id],
+                )
+                .with_context(|| format!("Failed to append tool args {tool_call_id}"))?;
+            if updated == 0 {
+                bail!("No tool call found for id {tool_call_id}");
+            }
+        }
+
+        tx.commit()
+            .context("Failed to commit tool args append transaction")?;
+        Ok(())
+    }
+
+    /// Mark a tool call as started (durable "journal-before-execute" metadata).
+    ///
+    /// This update is idempotent: if the call was already marked started, the existing
+    /// timestamp is preserved.
+    pub fn mark_call_started(
+        &mut self,
+        batch_id: ToolBatchId,
+        tool_call_id: &str,
+        started_at_unix_ms: i64,
+    ) -> Result<()> {
+        let updated = self
+            .db
+            .execute(
+                "UPDATE tool_calls
+                 SET started_at_unix_ms = COALESCE(started_at_unix_ms, ?1)
+                 WHERE batch_id = ?2 AND tool_call_id = ?3",
+                params![started_at_unix_ms, batch_id, tool_call_id],
+            )
+            .with_context(|| format!("Failed to mark tool call started {tool_call_id}"))?;
+        if updated == 0 {
+            bail!("No tool call found for id {tool_call_id}");
+        }
+        Ok(())
+    }
+
+    /// Record subprocess metadata for a tool call (e.g., `Run` PID and creation time).
+    ///
+    /// This is idempotent: if the metadata was already recorded with identical values,
+    /// this is a no-op. If conflicting metadata exists, this returns an error.
+    pub fn record_call_process(
+        &mut self,
+        batch_id: ToolBatchId,
+        tool_call_id: &str,
+        process_id: i64,
+        process_started_at_unix_ms: Option<i64>,
+    ) -> Result<()> {
+        let (existing_pid, existing_started_at): (Option<i64>, Option<i64>) = self
+            .db
+            .query_row(
+                "SELECT process_id, process_started_at_unix_ms
+                 FROM tool_calls
+                 WHERE batch_id = ?1 AND tool_call_id = ?2",
+                params![batch_id, tool_call_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .with_context(|| format!("Failed to load tool call {tool_call_id} for PID update"))?;
+
+        let start_time_matches = match process_started_at_unix_ms {
+            None => true,
+            Some(value) => existing_started_at == Some(value),
+        };
+        if existing_pid == Some(process_id) && start_time_matches {
+            return Ok(());
+        }
+        if existing_pid.is_some() && existing_pid != Some(process_id) {
+            bail!("Tool call {tool_call_id} already has a different recorded PID");
+        }
+        if existing_started_at.is_some()
+            && process_started_at_unix_ms.is_some()
+            && existing_started_at != process_started_at_unix_ms
+        {
+            bail!("Tool call {tool_call_id} already has a different recorded process start time");
+        }
+
+        let updated = self
+            .db
+            .execute(
+                "UPDATE tool_calls
+                 SET process_id = COALESCE(process_id, ?1),
+                     process_started_at_unix_ms = COALESCE(process_started_at_unix_ms, ?2)
+                 WHERE batch_id = ?3 AND tool_call_id = ?4",
+                params![
+                    process_id,
+                    process_started_at_unix_ms,
+                    batch_id,
+                    tool_call_id
+                ],
+            )
+            .with_context(|| format!("Failed to record tool call PID metadata {tool_call_id}"))?;
         if updated == 0 {
             bail!("No tool call found for id {tool_call_id}");
         }
@@ -470,11 +615,14 @@ impl ToolJournal {
             .context("Failed to load tool batch metadata")?;
 
         let mut calls: Vec<ToolCall> = Vec::new();
+        let mut call_execution: std::collections::HashMap<String, RecoveredToolCallExecution> =
+            std::collections::HashMap::new();
         let mut corrupted_args: Vec<CorruptedToolArgs> = Vec::new();
         let mut stmt = self
             .db
             .prepare(
-                "SELECT tool_call_id, tool_name, arguments_json, thought_signature
+                "SELECT tool_call_id, tool_name, arguments_json, thought_signature,
+                        started_at_unix_ms, process_id, process_started_at_unix_ms
                  FROM tool_calls WHERE batch_id = ?1 ORDER BY seq ASC",
             )
             .context("Failed to prepare tool calls query")?;
@@ -484,12 +632,31 @@ impl ToolJournal {
                 let name: String = row.get(1)?;
                 let args_json: String = row.get(2)?;
                 let thought_signature: Option<String> = row.get(3)?;
-                Ok((id, name, args_json, thought_signature))
+                let started_at_unix_ms: Option<i64> = row.get(4)?;
+                let process_id: Option<i64> = row.get(5)?;
+                let process_started_at_unix_ms: Option<i64> = row.get(6)?;
+                Ok((
+                    id,
+                    name,
+                    args_json,
+                    thought_signature,
+                    started_at_unix_ms,
+                    process_id,
+                    process_started_at_unix_ms,
+                ))
             })
             .context("Failed to query tool calls")?;
 
         for row in rows {
-            let (id, name, args_json, thought_signature) = row?;
+            let (
+                id,
+                name,
+                args_json,
+                thought_signature,
+                started_at_unix_ms,
+                process_id,
+                process_started_at_unix_ms,
+            ) = row?;
             let args = if args_json.trim().is_empty() {
                 serde_json::Value::Object(serde_json::Map::new())
             } else if args_json.len() > RECOVERY_MAX_ARGS_BYTES {
@@ -534,6 +701,16 @@ impl ToolJournal {
                 }
                 ThoughtSignatureState::Unsigned => ToolCall::new(id, name, args),
             });
+
+            let tool_call_id = calls.last().expect("pushed call above").id.clone();
+            call_execution.insert(
+                tool_call_id,
+                RecoveredToolCallExecution {
+                    started_at_unix_ms,
+                    process_id,
+                    process_started_at_unix_ms,
+                },
+            );
         }
 
         let mut results: Vec<ToolResult> = Vec::new();
@@ -572,6 +749,7 @@ impl ToolJournal {
             calls,
             results,
             corrupted_args,
+            call_execution,
         }))
     }
 
@@ -598,6 +776,46 @@ fn ensure_tool_calls_signature(db: &Connection) -> Result<()> {
         [],
     )
     .context("Failed to add thought_signature column to tool_calls")?;
+    Ok(())
+}
+
+fn ensure_tool_calls_execution_metadata(db: &Connection) -> Result<()> {
+    ensure_tool_calls_started_at(db)?;
+    ensure_tool_calls_process_id(db)?;
+    ensure_tool_calls_process_started_at(db)?;
+    Ok(())
+}
+
+fn ensure_tool_calls_started_at(db: &Connection) -> Result<()> {
+    if tool_calls_has_started_at(db)? {
+        return Ok(());
+    }
+    db.execute(
+        "ALTER TABLE tool_calls ADD COLUMN started_at_unix_ms INTEGER",
+        [],
+    )
+    .context("Failed to add started_at_unix_ms column to tool_calls")?;
+    Ok(())
+}
+
+fn ensure_tool_calls_process_id(db: &Connection) -> Result<()> {
+    if tool_calls_has_process_id(db)? {
+        return Ok(());
+    }
+    db.execute("ALTER TABLE tool_calls ADD COLUMN process_id INTEGER", [])
+        .context("Failed to add process_id column to tool_calls")?;
+    Ok(())
+}
+
+fn ensure_tool_calls_process_started_at(db: &Connection) -> Result<()> {
+    if tool_calls_has_process_started_at(db)? {
+        return Ok(());
+    }
+    db.execute(
+        "ALTER TABLE tool_calls ADD COLUMN process_started_at_unix_ms INTEGER",
+        [],
+    )
+    .context("Failed to add process_started_at_unix_ms column to tool_calls")?;
     Ok(())
 }
 
@@ -637,6 +855,33 @@ fn tool_calls_has_signature(db: &Connection) -> Result<bool> {
         .context("Failed to query tool_calls columns")?;
     for name in rows {
         if name? == "thought_signature" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn tool_calls_has_started_at(db: &Connection) -> Result<bool> {
+    tool_calls_has_column(db, "started_at_unix_ms")
+}
+
+fn tool_calls_has_process_id(db: &Connection) -> Result<bool> {
+    tool_calls_has_column(db, "process_id")
+}
+
+fn tool_calls_has_process_started_at(db: &Connection) -> Result<bool> {
+    tool_calls_has_column(db, "process_started_at_unix_ms")
+}
+
+fn tool_calls_has_column(db: &Connection, column: &str) -> Result<bool> {
+    let mut stmt = db
+        .prepare("PRAGMA table_info(tool_calls)")
+        .context("Failed to inspect tool_calls schema")?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .context("Failed to query tool_calls columns")?;
+    for name in rows {
+        if name? == column {
             return Ok(true);
         }
     }
@@ -813,6 +1058,18 @@ mod tests {
         assert_eq!(recovered.batch_id, batch_id);
         assert_eq!(recovered.calls.len(), 1);
         assert_eq!(recovered.calls[0].name, "Read");
+        let exec = recovered
+            .call_execution
+            .get("1")
+            .expect("execution metadata keyed by tool_call_id");
+        assert_eq!(
+            *exec,
+            RecoveredToolCallExecution {
+                started_at_unix_ms: None,
+                process_id: None,
+                process_started_at_unix_ms: None,
+            }
+        );
     }
 
     #[test]
@@ -935,6 +1192,82 @@ mod tests {
         assert_eq!(recovered.calls.len(), 1);
         assert_eq!(recovered.calls[0].name, "Read");
         assert_eq!(recovered.calls[0].arguments["path"], "foo.txt");
+    }
+
+    #[test]
+    fn tool_call_start_metadata_round_trips() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+        let calls = vec![ToolCall::new(
+            "1",
+            "Run",
+            serde_json::json!({ "command": "echo hi" }),
+        )];
+        let batch_id = journal
+            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
+            .unwrap();
+
+        journal
+            .mark_call_started(batch_id, "1", 1_700_000_000_000)
+            .unwrap();
+        journal
+            .record_call_process(batch_id, "1", 4242, Some(1_700_000_000_123))
+            .unwrap();
+
+        let recovered = journal.recover().unwrap().expect("should recover");
+        let exec = recovered
+            .call_execution
+            .get("1")
+            .expect("execution metadata keyed by tool_call_id");
+        assert_eq!(
+            *exec,
+            RecoveredToolCallExecution {
+                started_at_unix_ms: Some(1_700_000_000_000),
+                process_id: Some(4242),
+                process_started_at_unix_ms: Some(1_700_000_000_123),
+            }
+        );
+    }
+
+    #[test]
+    fn append_call_args_batch_appends_multiple_calls_in_one_txn() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+
+        let batch_id = journal
+            .begin_streaming_batch(StepId::new(1), "test-model")
+            .unwrap();
+        journal
+            .record_call_start(
+                batch_id,
+                0,
+                "call_1",
+                "Read",
+                &ThoughtSignatureState::Unsigned,
+            )
+            .unwrap();
+        journal
+            .record_call_start(
+                batch_id,
+                1,
+                "call_2",
+                "Read",
+                &ThoughtSignatureState::Unsigned,
+            )
+            .unwrap();
+
+        journal
+            .append_call_args_batch(
+                batch_id,
+                vec![
+                    ("call_1".to_string(), r#"{"path":"a.txt"}"#.to_string()),
+                    ("call_2".to_string(), r#"{"path":"b.txt"}"#.to_string()),
+                ],
+            )
+            .unwrap();
+
+        let recovered = journal.recover().unwrap().expect("should recover");
+        assert_eq!(recovered.calls.len(), 2);
+        assert_eq!(recovered.calls[0].arguments["path"], "a.txt");
+        assert_eq!(recovered.calls[1].arguments["path"], "b.txt");
     }
 
     #[test]

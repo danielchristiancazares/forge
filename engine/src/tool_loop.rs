@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::future::{AbortHandle, Abortable, FutureExt};
 use tokio::sync::mpsc;
@@ -35,6 +35,13 @@ fn run_escalation_reason(tool_name: &str, arguments: &serde_json::Value) -> Opti
 
     let sanitized = crate::security::sanitize_display_text(reason);
     Some(util::truncate_with_ellipsis(&sanitized, 200))
+}
+
+fn now_unix_ms() -> i64 {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    i64::try_from(duration.as_millis()).unwrap_or(0)
 }
 
 // SpawnedTool: Proof object for spawned tool execution (IFA §8.1)
@@ -172,7 +179,7 @@ pub(crate) struct ActiveExecution {
 }
 
 impl App {
-    fn disable_tools_due_to_tool_journal_error(
+    pub(crate) fn disable_tools_due_to_tool_journal_error(
         &mut self,
         context: &'static str,
         error: impl std::fmt::Display,
@@ -521,11 +528,44 @@ impl App {
             return;
         }
 
-        let phase = self.start_tool_execution(
+        let phase = match self.start_tool_execution(
+            batch.journal_status.batch_id(),
             calls_to_execute,
             remaining_capacity_bytes,
             batch.turn.recorder(),
-        );
+        ) {
+            Ok(phase) => phase,
+            Err(e) => {
+                self.disable_tools_due_to_tool_journal_error("mark tool call started", e);
+
+                let mut results = batch.results;
+                let existing: HashSet<String> =
+                    results.iter().map(|r| r.tool_call_id.clone()).collect();
+                for call in &batch.calls {
+                    if existing.contains(&call.id) {
+                        continue;
+                    }
+                    results.push(ToolResult::error(
+                        call.id.clone(),
+                        call.name.clone(),
+                        "Tool execution stopped: tool journal error",
+                    ));
+                }
+
+                self.commit_tool_batch(
+                    batch.assistant_text,
+                    batch.calls,
+                    results,
+                    batch.model,
+                    batch.step_id,
+                    batch.journal_status,
+                    true,
+                    batch.turn,
+                    batch.thinking_message,
+                );
+                return;
+            }
+        };
         self.state = OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
     }
 
@@ -715,13 +755,14 @@ impl App {
     /// Create a tool queue and immediately try to spawn the first tool.
     /// Returns the appropriate phase (Processing if queue empty, Executing otherwise).
     fn start_tool_execution(
-        &self,
+        &mut self,
+        batch_id: ToolBatchId,
         calls: Vec<ToolCall>,
         initial_capacity_bytes: usize,
         turn_recorder: ChangeRecorder,
-    ) -> ToolLoopPhase {
+    ) -> anyhow::Result<ToolLoopPhase> {
         let queue = ToolQueue::new(calls, initial_capacity_bytes, turn_recorder);
-        self.spawn_next_from_queue(queue)
+        self.spawn_next_from_queue(batch_id, queue)
     }
 
     /// Spawn the next tool from the queue, transitioning to Executing if possible.
@@ -730,10 +771,17 @@ impl App {
     /// - Call comes FROM the queue, preventing mismatch
     /// - Consumes queue, returns new phase
     /// - Returns Processing if queue empty
-    fn spawn_next_from_queue(&self, mut queue: ToolQueue) -> ToolLoopPhase {
+    fn spawn_next_from_queue(
+        &mut self,
+        batch_id: ToolBatchId,
+        mut queue: ToolQueue,
+    ) -> anyhow::Result<ToolLoopPhase> {
         let Some(call) = queue.queue.pop_front() else {
-            return ToolLoopPhase::Processing(queue);
+            return Ok(ToolLoopPhase::Processing(queue));
         };
+
+        self.tool_journal
+            .mark_call_started(batch_id, &call.id, now_unix_ms())?;
 
         let remaining_capacity = queue.remaining_capacity_bytes;
         let turn_recorder = queue.turn_recorder.clone();
@@ -833,12 +881,12 @@ impl App {
             }
         });
 
-        ToolLoopPhase::Executing(ActiveExecution {
+        Ok(ToolLoopPhase::Executing(ActiveExecution {
             spawned,
             queue: queue.queue,
             output_lines: queue.output_lines,
             turn_recorder: queue.turn_recorder,
-        })
+        }))
     }
 
     pub(crate) fn poll_tool_loop(&mut self) {
@@ -862,6 +910,37 @@ impl App {
             }
 
             ToolLoopPhase::Processing(queue) => {
+                // If tool journaling was disabled mid-loop, fail closed and do not execute
+                // any additional tools in this turn.
+                if self.tool_journal_disabled_reason.is_some() {
+                    let mut results = batch.results;
+                    let existing: HashSet<String> =
+                        results.iter().map(|r| r.tool_call_id.clone()).collect();
+                    for call in &batch.calls {
+                        if existing.contains(&call.id) {
+                            continue;
+                        }
+                        results.push(ToolResult::error(
+                            call.id.clone(),
+                            call.name.clone(),
+                            "Tool execution stopped: tool journal error",
+                        ));
+                    }
+
+                    self.commit_tool_batch(
+                        batch.assistant_text,
+                        batch.calls,
+                        results,
+                        batch.model,
+                        batch.step_id,
+                        batch.journal_status,
+                        true,
+                        batch.turn,
+                        batch.thinking_message,
+                    );
+                    return;
+                }
+
                 // Try to spawn the next tool from queue
                 if queue.is_empty() {
                     // Queue empty - commit batch
@@ -878,7 +957,43 @@ impl App {
                     );
                 } else {
                     // Spawn next tool
-                    let phase = self.spawn_next_from_queue(queue);
+                    let phase =
+                        match self.spawn_next_from_queue(batch.journal_status.batch_id(), queue) {
+                            Ok(phase) => phase,
+                            Err(e) => {
+                                self.disable_tools_due_to_tool_journal_error(
+                                    "mark tool call started",
+                                    e,
+                                );
+
+                                let mut results = batch.results;
+                                let existing: HashSet<String> =
+                                    results.iter().map(|r| r.tool_call_id.clone()).collect();
+                                for call in &batch.calls {
+                                    if existing.contains(&call.id) {
+                                        continue;
+                                    }
+                                    results.push(ToolResult::error(
+                                        call.id.clone(),
+                                        call.name.clone(),
+                                        "Tool execution stopped: tool journal error",
+                                    ));
+                                }
+
+                                self.commit_tool_batch(
+                                    batch.assistant_text,
+                                    batch.calls,
+                                    results,
+                                    batch.model,
+                                    batch.step_id,
+                                    batch.journal_status,
+                                    true,
+                                    batch.turn,
+                                    batch.thinking_message,
+                                );
+                                return;
+                            }
+                        };
                     self.state = OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
                 }
             }
@@ -886,6 +1001,26 @@ impl App {
             ToolLoopPhase::Executing(mut exec) => {
                 // Poll for events from the spawned tool
                 while let Some(event) = exec.spawned.try_recv_event() {
+                    if let tools::ToolEvent::ProcessSpawned {
+                        tool_call_id,
+                        pid,
+                        process_started_at_unix_ms,
+                        ..
+                    } = &event
+                        && let Err(e) = self.tool_journal.record_call_process(
+                            batch.journal_status.batch_id(),
+                            tool_call_id,
+                            i64::from(*pid),
+                            *process_started_at_unix_ms,
+                        )
+                    {
+                        self.disable_tools_due_to_tool_journal_error(
+                            "record tool process metadata",
+                            e,
+                        );
+                        // Fail closed: abort the tool so side effects stop as soon as possible.
+                        exec.spawned.abort();
+                    }
                     apply_tool_event_to_output_lines(&mut exec.output_lines, event);
                 }
 
@@ -918,6 +1053,24 @@ impl App {
 
                     // Process final events from the completed tool
                     for event in completed.final_events {
+                        if let tools::ToolEvent::ProcessSpawned {
+                            tool_call_id,
+                            pid,
+                            process_started_at_unix_ms,
+                            ..
+                        } = &event
+                            && let Err(e) = self.tool_journal.record_call_process(
+                                batch.journal_status.batch_id(),
+                                tool_call_id,
+                                i64::from(*pid),
+                                *process_started_at_unix_ms,
+                            )
+                        {
+                            self.disable_tools_due_to_tool_journal_error(
+                                "record tool process metadata",
+                                e,
+                            );
+                        }
                         apply_tool_event_to_output_lines(&mut output_lines, event);
                     }
 
@@ -1001,8 +1154,76 @@ impl App {
                             batch.thinking_message,
                         );
                     } else {
+                        // If tool journaling was disabled mid-loop, fail closed and do not execute
+                        // any additional tools in this turn.
+                        if self.tool_journal_disabled_reason.is_some() {
+                            let mut results = batch.results;
+                            let existing: HashSet<String> =
+                                results.iter().map(|r| r.tool_call_id.clone()).collect();
+                            for call in &batch.calls {
+                                if existing.contains(&call.id) {
+                                    continue;
+                                }
+                                results.push(ToolResult::error(
+                                    call.id.clone(),
+                                    call.name.clone(),
+                                    "Tool execution stopped: tool journal error",
+                                ));
+                            }
+
+                            self.commit_tool_batch(
+                                batch.assistant_text,
+                                batch.calls,
+                                results,
+                                batch.model,
+                                batch.step_id,
+                                batch.journal_status,
+                                true,
+                                batch.turn,
+                                batch.thinking_message,
+                            );
+                            return;
+                        }
+
                         // Spawn next tool
-                        let phase = self.spawn_next_from_queue(new_queue);
+                        let phase = match self
+                            .spawn_next_from_queue(batch.journal_status.batch_id(), new_queue)
+                        {
+                            Ok(phase) => phase,
+                            Err(e) => {
+                                self.disable_tools_due_to_tool_journal_error(
+                                    "mark tool call started",
+                                    e,
+                                );
+
+                                let mut results = batch.results;
+                                let existing: HashSet<String> =
+                                    results.iter().map(|r| r.tool_call_id.clone()).collect();
+                                for call in &batch.calls {
+                                    if existing.contains(&call.id) {
+                                        continue;
+                                    }
+                                    results.push(ToolResult::error(
+                                        call.id.clone(),
+                                        call.name.clone(),
+                                        "Tool execution stopped: tool journal error",
+                                    ));
+                                }
+
+                                self.commit_tool_batch(
+                                    batch.assistant_text,
+                                    batch.calls,
+                                    results,
+                                    batch.model,
+                                    batch.step_id,
+                                    batch.journal_status,
+                                    true,
+                                    batch.turn,
+                                    batch.thinking_message,
+                                );
+                                return;
+                            }
+                        };
                         self.state =
                             OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
                     }
@@ -1458,7 +1679,44 @@ impl App {
         }
 
         let remaining_capacity = self.remaining_tool_capacity(&batch);
-        let phase = self.start_tool_execution(queue, remaining_capacity, batch.turn.recorder());
+        let phase = match self.start_tool_execution(
+            batch.journal_status.batch_id(),
+            queue,
+            remaining_capacity,
+            batch.turn.recorder(),
+        ) {
+            Ok(phase) => phase,
+            Err(e) => {
+                self.disable_tools_due_to_tool_journal_error("mark tool call started", e);
+
+                let mut results = batch.results;
+                let existing: HashSet<String> =
+                    results.iter().map(|r| r.tool_call_id.clone()).collect();
+                for call in &batch.calls {
+                    if existing.contains(&call.id) {
+                        continue;
+                    }
+                    results.push(ToolResult::error(
+                        call.id.clone(),
+                        call.name.clone(),
+                        "Tool execution stopped: tool journal error",
+                    ));
+                }
+
+                self.commit_tool_batch(
+                    batch.assistant_text,
+                    batch.calls,
+                    results,
+                    batch.model,
+                    batch.step_id,
+                    batch.journal_status,
+                    true,
+                    batch.turn,
+                    batch.thinking_message,
+                );
+                return;
+            }
+        };
         self.state = OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
     }
 
@@ -1688,6 +1946,12 @@ fn apply_tool_event_to_output_lines(
                 tools::sanitize_output(&tool_name),
                 tool_call_id
             ));
+        }
+        tools::ToolEvent::ProcessSpawned {
+            tool_call_id, pid, ..
+        } => {
+            let lines = output_lines.entry(tool_call_id.clone()).or_default();
+            lines.push(format!("  -> pid {pid}"));
         }
         tools::ToolEvent::StdoutChunk {
             tool_call_id,

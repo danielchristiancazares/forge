@@ -1,7 +1,8 @@
 //! Operation state machine types.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use futures_util::future::AbortHandle;
 
@@ -51,6 +52,66 @@ impl JournalStatus {
     }
 }
 
+/// Buffered tool-argument deltas for the tool journal during streaming.
+///
+/// Providers may emit many tiny `ToolCallDelta` chunks; writing each chunk to
+/// SQLite individually can cause UI stalls. This buffer accumulates deltas in
+/// memory and flushes them in larger batches (see `engine/src/streaming.rs`).
+#[derive(Debug)]
+pub(crate) struct ToolArgsJournalBuffer {
+    pending_by_call: HashMap<String, String>,
+    flushed_calls: HashSet<String>,
+    pending_bytes: usize,
+    last_flush: Instant,
+}
+
+impl ToolArgsJournalBuffer {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending_by_call: HashMap::new(),
+            flushed_calls: HashSet::new(),
+            pending_bytes: 0,
+            last_flush: Instant::now(),
+        }
+    }
+
+    pub(crate) fn push_delta(&mut self, tool_call_id: &str, delta: &str) {
+        self.pending_bytes = self.pending_bytes.saturating_add(delta.len());
+        self.pending_by_call
+            .entry(tool_call_id.to_string())
+            .or_default()
+            .push_str(delta);
+    }
+
+    pub(crate) fn should_flush(&self, byte_threshold: usize, interval: Duration) -> bool {
+        // Flush immediately for the first delta of any call to preserve crash recovery
+        // semantics while still buffering subsequent deltas for performance.
+        let has_unflushed_call = self
+            .pending_by_call
+            .keys()
+            .any(|id| !self.flushed_calls.contains(id));
+        has_unflushed_call
+            || self.pending_bytes >= byte_threshold
+            || self.last_flush.elapsed() >= interval
+    }
+
+    pub(crate) fn take_pending(&mut self) -> Vec<(String, String)> {
+        if self.pending_by_call.is_empty() {
+            return Vec::new();
+        }
+        let pending = std::mem::take(&mut self.pending_by_call);
+        self.pending_bytes = 0;
+        self.last_flush = Instant::now();
+
+        let mut out = Vec::with_capacity(pending.len());
+        for (id, delta) in pending {
+            self.flushed_calls.insert(id.clone());
+            out.push((id, delta));
+        }
+        out
+    }
+}
+
 /// Active streaming state with typestate encoding for journal status.
 ///
 /// Transitions: Transient -> Journaled (when first tool call detected)
@@ -73,6 +134,7 @@ pub(crate) enum ActiveStream {
         abort_handle: AbortHandle,
         tool_call_seq: usize,
         tool_args_journal_bytes: HashMap<String, usize>,
+        tool_args_buffer: ToolArgsJournalBuffer,
         turn: TurnContext,
     },
 }
@@ -95,6 +157,7 @@ impl ActiveStream {
                 abort_handle,
                 tool_call_seq,
                 tool_args_journal_bytes,
+                tool_args_buffer: ToolArgsJournalBuffer::new(),
                 turn,
             },
             // Already journaled - this shouldn't happen, but return unchanged
@@ -176,6 +239,15 @@ impl ActiveStream {
                 tool_args_journal_bytes,
                 ..
             } => tool_args_journal_bytes,
+        }
+    }
+
+    pub(crate) fn tool_args_buffer_mut(&mut self) -> Option<&mut ToolArgsJournalBuffer> {
+        match self {
+            ActiveStream::Journaled {
+                tool_args_buffer, ..
+            } => Some(tool_args_buffer),
+            ActiveStream::Transient { .. } => None,
         }
     }
 

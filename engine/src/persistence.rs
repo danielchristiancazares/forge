@@ -29,6 +29,7 @@ pub(crate) const RECOVERY_ERROR_BADGE: NonEmptyStaticStr =
 pub(crate) const ABORTED_JOURNAL_BADGE: NonEmptyStaticStr = NonEmptyStaticStr::new("[Aborted]");
 pub(crate) const EMPTY_RESPONSE_BADGE: NonEmptyStaticStr =
     NonEmptyStaticStr::new("[Empty response]");
+const RECOVERY_PROCESS_START_TIME_TOLERANCE_MS: u64 = 5_000;
 
 impl App {
     pub fn save_history(&self) -> anyhow::Result<()> {
@@ -472,21 +473,71 @@ impl App {
                     ));
                 }
 
-                // Pragmatic safety warning: if a prior `Run` call has no result, it may still be running
-                // (crash prevents Drop-based cleanup). This is driven by recovered journal data.
+                // Recovery safety: if a prior `Run` call has no result, it may still be running
+                // (crash prevents Drop-based cleanup). When we have durable PID metadata, attempt
+                // best-effort termination with PID reuse guards.
                 let existing_results: std::collections::HashSet<&str> = recovered_batch
                     .results
                     .iter()
                     .map(|r| r.tool_call_id.as_str())
                     .collect();
-                if recovered_batch
-                    .calls
-                    .iter()
-                    .any(|call| call.name == "Run" && !existing_results.contains(call.id.as_str()))
-                {
-                    self.push_notification(
-                        "Warning: a `Run` command may still be running from before the crash.",
-                    );
+                for call in &recovered_batch.calls {
+                    if call.name != "Run" || existing_results.contains(call.id.as_str()) {
+                        continue;
+                    }
+
+                    let meta = recovered_batch.call_execution.get(call.id.as_str());
+                    let Some(meta) = meta else {
+                        self.push_notification(
+                            "Warning: a `Run` command may still be running from before the crash.",
+                        );
+                        continue;
+                    };
+
+                    let Some(pid) = meta.process_id.and_then(|pid| u32::try_from(pid).ok()) else {
+                        self.push_notification(
+                            "Warning: a `Run` command may still be running from before the crash.",
+                        );
+                        continue;
+                    };
+                    let Some(expected_start) = meta.process_started_at_unix_ms else {
+                        self.push_notification(format!(
+                            "Warning: recovered `Run` call had pid {pid} but no start time; not terminating automatically."
+                        ));
+                        continue;
+                    };
+
+                    let Some(observed_start) =
+                        crate::tools::process::process_started_at_unix_ms(pid)
+                    else {
+                        self.push_notification(format!(
+                            "Warning: unable to verify `Run` pid {pid}; not terminating automatically."
+                        ));
+                        continue;
+                    };
+
+                    if observed_start.abs_diff(expected_start)
+                        > RECOVERY_PROCESS_START_TIME_TOLERANCE_MS
+                    {
+                        self.push_notification(format!(
+                            "Warning: `Run` pid {pid} start time mismatch; skipping termination."
+                        ));
+                        continue;
+                    }
+
+                    match crate::tools::process::try_kill_process_group(pid) {
+                        Ok(crate::tools::process::KillOutcome::NotRunning) => {}
+                        Ok(crate::tools::process::KillOutcome::Killed) => {
+                            self.push_notification(format!(
+                                "Terminated orphaned `Run` process (pid {pid}) from before the crash."
+                            ));
+                        }
+                        Err(e) => {
+                            self.push_notification(format!(
+                                "Warning: failed to terminate orphaned `Run` process (pid {pid}): {e}"
+                            ));
+                        }
+                    }
                 }
 
                 self.state = OperationState::ToolRecovery(ToolRecoveryState {
