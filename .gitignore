@@ -17,6 +17,10 @@
 Thumbs.db
 Desktop.ini
 
+# LLMs
+.claude/
+.codex/
+
 # Logs
 *.log
 
@@ -25,7 +29,6 @@ Desktop.ini
 .env.*
 
 # Tooling local config
-.claude/settings.local.json
 
 # Bug analysis artifacts
 forge-source.zip
