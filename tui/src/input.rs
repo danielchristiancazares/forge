@@ -301,25 +301,25 @@ pub fn handle_events(app: &mut App, input: &mut InputPump) -> Result<bool> {
         // Post-apply clipboard check: the current char is now inserted, so
         // `received` exactly reflects what the input buffer contains since the
         // burst started.
-        if let PastePhase::Accumulating { ref received } = input.phase {
-            if received.len() >= CLIPBOARD_CHECK_THRESHOLD {
-                let matched = arboard::Clipboard::new()
-                    .and_then(|mut cb| cb.get_text())
-                    .ok()
-                    .map(|text| normalize_line_endings(&text))
-                    .filter(|clip| clip.starts_with(received.as_str()));
+        if let PastePhase::Accumulating { ref received } = input.phase
+            && received.len() >= CLIPBOARD_CHECK_THRESHOLD
+        {
+            let matched = arboard::Clipboard::new()
+                .and_then(|mut cb| cb.get_text())
+                .ok()
+                .map(|text| normalize_line_endings(&text))
+                .filter(|clip| clip.starts_with(received.as_str()));
 
-                if let Some(clipboard_text) = matched {
-                    let remainder = &clipboard_text[received.len()..];
-                    if !remainder.is_empty() {
-                        if let Some(token) = app.insert_token() {
-                            app.insert_mode(token).enter_text(remainder);
-                        }
-                    }
-                    input.phase = PastePhase::Draining;
-                } else {
-                    input.phase = PastePhase::HeuristicOnly;
+            if let Some(clipboard_text) = matched {
+                let remainder = &clipboard_text[received.len()..];
+                if !remainder.is_empty()
+                    && let Some(token) = app.insert_token()
+                {
+                    app.insert_mode(token).enter_text(remainder);
                 }
+                input.phase = PastePhase::Draining;
+            } else {
+                input.phase = PastePhase::HeuristicOnly;
             }
         }
 
