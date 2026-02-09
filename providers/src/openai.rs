@@ -3,18 +3,94 @@ use crate::{
     SseParseAction, SseParser, StreamEvent, ThoughtSignatureState, ToolDefinition, handle_response,
     http_client, mpsc, process_sse_stream,
     retry::{RetryConfig, send_with_retry},
+    send_event,
 };
-use forge_types::OpenAIReasoningSummary;
+use forge_types::{OpenAIReasoningEffort, OpenAIReasoningSummary};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 const API_URL: &str = "https://api.openai.com/v1/responses";
+
+fn is_pro_model(model: &forge_types::ModelName) -> bool {
+    model
+        .as_str()
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("gpt-5.2-pro")
+}
 
 // ========================================================================
 // OpenAI SSE Parser
 // ========================================================================
 
 use crate::sse_types::openai as typed;
+
+const PRO_IDLE_TIMEOUT_SECS: u64 = 300;
+
+#[derive(Debug, Default)]
+struct BackgroundStreamState {
+    response_id: Option<String>,
+    terminal: bool,
+}
+
+struct BackgroundCancelGuard {
+    client: reqwest::Client,
+    auth_header: String,
+    state: Arc<Mutex<BackgroundStreamState>>,
+    disarmed: bool,
+}
+
+impl BackgroundCancelGuard {
+    fn new(
+        client: reqwest::Client,
+        auth_header: String,
+        state: Arc<Mutex<BackgroundStreamState>>,
+    ) -> Self {
+        Self {
+            client,
+            auth_header,
+            state,
+            disarmed: false,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for BackgroundCancelGuard {
+    fn drop(&mut self) {
+        if self.disarmed {
+            return;
+        }
+        let (id, terminal) = {
+            let st = self.state.lock().expect("background state lock");
+            (st.response_id.clone(), st.terminal)
+        };
+        if terminal {
+            return;
+        }
+        let Some(id) = id else { return };
+        let client = self.client.clone();
+        let auth = self.auth_header.clone();
+        tokio::spawn(async move {
+            let url = format!("{API_URL}/{id}/cancel");
+            let _ = client
+                .post(&url)
+                .header("Authorization", &auth)
+                .header("content-type", "application/json")
+                .send()
+                .await;
+        });
+    }
+}
+
+// ========================================================================
+// OpenAI SSE Parser
+// ========================================================================
 
 #[derive(Default)]
 struct OpenAIParser {
@@ -28,9 +104,37 @@ struct OpenAIParser {
     item_to_call: HashMap<String, String>,
     /// Track which call_ids have received argument deltas
     call_has_delta: HashSet<String>,
+    /// Shared state for background-mode cancel guard (Pro only)
+    background_state: Option<Arc<Mutex<BackgroundStreamState>>>,
 }
 
 impl OpenAIParser {
+    fn with_background_state(state: Arc<Mutex<BackgroundStreamState>>) -> Self {
+        Self {
+            background_state: Some(state),
+            ..Self::default()
+        }
+    }
+
+    fn capture_response_id(&self, response: Option<&typed::ResponseInfo>) {
+        if let Some(st) = &self.background_state
+            && let Some(resp) = response
+            && let Some(id) = &resp.id
+        {
+            let mut lock = st.lock().expect("background state lock");
+            if lock.response_id.is_none() {
+                lock.response_id = Some(id.clone());
+            }
+        }
+    }
+
+    fn mark_terminal(&self) {
+        if let Some(st) = &self.background_state {
+            let mut lock = st.lock().expect("background state lock");
+            lock.terminal = true;
+        }
+    }
+
     /// Resolve call_id from item_id or direct call_id.
     fn resolve_call_id(&self, item_id: Option<&str>, call_id: Option<&str>) -> Option<String> {
         if let Some(call_id) = call_id {
@@ -52,7 +156,7 @@ impl SseParser for OpenAIParser {
         let event: typed::Event = match serde_json::from_value(json.clone()) {
             Ok(e) => e,
             Err(e) => {
-                tracing::debug!("Failed to parse OpenAI SSE event: {e}");
+                tracing::warn!("Failed to parse OpenAI SSE event: {e} — raw: {json}");
                 return SseParseAction::Continue;
             }
         };
@@ -60,6 +164,10 @@ impl SseParser for OpenAIParser {
         let mut events = Vec::new();
 
         match event {
+            typed::Event::Created { response, .. } | typed::Event::InProgress { response, .. } => {
+                self.capture_response_id(response.as_ref());
+            }
+
             typed::Event::OutputItemAdded { item_id, item } => {
                 if let Some(typed::OutputItem::FunctionCall {
                     id,
@@ -211,6 +319,7 @@ impl SseParser for OpenAIParser {
             }
 
             typed::Event::Completed { response } => {
+                self.mark_terminal();
                 if let Some(response) = response
                     && let Some(usage) = response.usage
                 {
@@ -227,6 +336,7 @@ impl SseParser for OpenAIParser {
             }
 
             typed::Event::Incomplete { response } => {
+                self.mark_terminal();
                 let reason = response
                     .and_then(|r| r.incomplete_details)
                     .and_then(|d| d.reason)
@@ -235,6 +345,7 @@ impl SseParser for OpenAIParser {
             }
 
             typed::Event::Failed { response, error } => {
+                self.mark_terminal();
                 let message = error
                     .and_then(|e| e.message)
                     .or_else(|| response.and_then(|r| r.error).and_then(|e| e.message))
@@ -243,6 +354,7 @@ impl SseParser for OpenAIParser {
             }
 
             typed::Event::Error { error } => {
+                self.mark_terminal();
                 let message = error
                     .and_then(|e| e.message)
                     .unwrap_or_else(|| "Unknown error".to_string());
@@ -329,6 +441,11 @@ fn build_request_body(
     );
     body.insert("stream".to_string(), json!(true));
 
+    if is_pro_model(config.model()) {
+        body.insert("background".to_string(), json!(true));
+        body.insert("store".to_string(), json!(true));
+    }
+
     if let Some(prompt) = system_prompt
         && !prompt.trim().is_empty()
     {
@@ -391,14 +508,41 @@ pub async fn send_message(
 ) -> Result<()> {
     let client = http_client();
     let retry_config = RetryConfig::default();
+    let is_pro = is_pro_model(config.model());
+
+    if is_pro {
+        match config.openai_options().reasoning_effort() {
+            OpenAIReasoningEffort::Medium
+            | OpenAIReasoningEffort::High
+            | OpenAIReasoningEffort::XHigh => {}
+            other => {
+                let _ = send_event(
+                    &tx,
+                    StreamEvent::Error(format!(
+                        "gpt-5.2-pro requires reasoning_effort {{medium, high, xhigh}}; got {}",
+                        other.as_str()
+                    )),
+                )
+                .await;
+                return Ok(());
+            }
+        }
+    }
 
     let body = build_request_body(config, messages, limits, system_prompt, tools);
 
     let auth_header = format!("Bearer {}", config.api_key());
     let body_json = body.clone();
 
-    // Wrap request with retry logic (REQ-4)
-    // Streaming requests omit X-Stainless-Timeout (no total timeout)
+    let background_state = if is_pro {
+        Some(Arc::new(Mutex::new(BackgroundStreamState::default())))
+    } else {
+        None
+    };
+    let mut cancel_guard = background_state
+        .as_ref()
+        .map(|st| BackgroundCancelGuard::new(client.clone(), auth_header.clone(), st.clone()));
+
     let outcome = send_with_retry(
         || {
             client
@@ -407,18 +551,40 @@ pub async fn send_message(
                 .header("content-type", "application/json")
                 .json(&body_json)
         },
-        None, // No timeout header for streaming
+        None,
         &retry_config,
     )
     .await;
 
     let response = match handle_response(outcome, &tx).await? {
         ApiResponse::Success(resp) => resp,
-        ApiResponse::StreamTerminated => return Ok(()),
+        ApiResponse::StreamTerminated => {
+            if let Some(g) = cancel_guard.as_mut() {
+                g.disarm();
+            }
+            return Ok(());
+        }
     };
 
-    let mut parser = OpenAIParser::default();
-    process_sse_stream(response, &mut parser, &tx).await
+    let idle_timeout = if is_pro {
+        std::cmp::max(
+            crate::stream_idle_timeout(),
+            Duration::from_secs(PRO_IDLE_TIMEOUT_SECS),
+        )
+    } else {
+        crate::stream_idle_timeout()
+    };
+
+    let mut parser = if let Some(st) = background_state.as_ref() {
+        OpenAIParser::with_background_state(st.clone())
+    } else {
+        OpenAIParser::default()
+    };
+    let result = process_sse_stream(response, &mut parser, &tx, idle_timeout).await;
+    if let Some(g) = cancel_guard.as_mut() {
+        g.disarm();
+    }
+    result
 }
 
 #[cfg(test)]
@@ -745,7 +911,6 @@ mod tests {
             "type": "response.completed",
             "response": {}
         }));
-        // Now emits Done as an event (not SseParseAction::Done) for consistency
         match action {
             super::SseParseAction::Emit(events) => {
                 assert_eq!(events.len(), 1);
@@ -753,5 +918,65 @@ mod tests {
             }
             _ => panic!("Expected Emit action with Done event"),
         }
+    }
+
+    #[test]
+    fn gpt_52_pro_sets_background_and_store() {
+        use forge_types::{ModelName, PredefinedModel};
+
+        let key = ApiKey::openai("test");
+        let model = ModelName::from_predefined(PredefinedModel::Gpt52Pro);
+        let config = ApiConfig::new(key, model).unwrap();
+
+        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
+
+        assert_eq!(body.get("background").and_then(Value::as_bool), Some(true));
+        assert_eq!(body.get("store").and_then(Value::as_bool), Some(true));
+        assert_eq!(body.get("stream").and_then(Value::as_bool), Some(true));
+    }
+
+    #[test]
+    fn non_pro_model_omits_background() {
+        let key = ApiKey::openai("test");
+        let model = Provider::OpenAI.default_model();
+        let config = ApiConfig::new(key, model).unwrap();
+
+        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
+
+        assert!(body.get("background").is_none());
+        assert!(body.get("store").is_none());
+    }
+
+    #[test]
+    fn response_created_captures_id_in_background_state() {
+        let state = Arc::new(Mutex::new(BackgroundStreamState::default()));
+        let mut parser = OpenAIParser::with_background_state(state.clone());
+
+        let action = parser.parse(&json!({
+            "type": "response.created",
+            "response": { "id": "resp_abc123" },
+            "sequence_number": 0
+        }));
+        assert!(matches!(action, super::SseParseAction::Continue));
+
+        let lock = state.lock().unwrap();
+        assert_eq!(lock.response_id.as_deref(), Some("resp_abc123"));
+        assert!(!lock.terminal);
+    }
+
+    #[test]
+    fn completed_marks_terminal() {
+        let state = Arc::new(Mutex::new(BackgroundStreamState::default()));
+        let mut parser = OpenAIParser::with_background_state(state.clone());
+
+        let _ = parser.parse(&json!({
+            "type": "response.completed",
+            "response": {}
+        }));
+
+        let lock = state.lock().unwrap();
+        assert!(lock.terminal);
     }
 }

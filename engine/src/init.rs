@@ -241,9 +241,11 @@ impl App {
             }
         };
 
-        let openai_options = Self::openai_request_options_from_config(
-            config.as_ref().and_then(|cfg| cfg.openai.as_ref()),
-        );
+        let openai_cfg = config.as_ref().and_then(|cfg| cfg.openai.as_ref());
+        let openai_reasoning_effort_explicit = openai_cfg
+            .and_then(|cfg| cfg.reasoning_effort.as_deref())
+            .is_some();
+        let openai_options = Self::openai_request_options_from_config(openai_cfg);
 
         // Load Gemini cache config
         let gemini_config = config.as_ref().and_then(|cfg| cfg.google.as_ref());
@@ -343,6 +345,7 @@ impl App {
             output_limits,
             cache_enabled,
             openai_options,
+            openai_reasoning_effort_explicit,
             system_prompts,
             cached_usage_status: None,
             pending_user_message: None,

@@ -276,7 +276,7 @@ impl SseParser for ClaudeParser {
         let event: typed::Event = match serde_json::from_value(json.clone()) {
             Ok(e) => e,
             Err(e) => {
-                tracing::debug!("Failed to parse Claude SSE event: {e}");
+                tracing::warn!("Failed to parse Claude SSE event: {e} — raw: {json}");
                 return SseParseAction::Continue;
             }
         };
@@ -369,6 +369,15 @@ impl SseParser for ClaudeParser {
                 }
             }
 
+            typed::Event::Error { error } => {
+                let msg = if error.message.is_empty() {
+                    format!("Claude stream error: {}", error.error_type)
+                } else {
+                    error.message
+                };
+                return SseParseAction::Error(msg);
+            }
+
             typed::Event::Ping | typed::Event::Unknown => {}
         }
 
@@ -436,7 +445,7 @@ pub async fn send_message(
     };
 
     let mut parser = ClaudeParser::default();
-    process_sse_stream(response, &mut parser, &tx).await
+    process_sse_stream(response, &mut parser, &tx, crate::stream_idle_timeout()).await
 }
 
 #[cfg(test)]

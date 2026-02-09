@@ -191,7 +191,7 @@ pub(crate) trait SseParser {
 /// - Event boundary detection
 /// - `[DONE]` marker handling
 /// - Parse error tracking with threshold
-fn stream_idle_timeout() -> Duration {
+pub(crate) fn stream_idle_timeout() -> Duration {
     static TIMEOUT: OnceLock<Duration> = OnceLock::new();
     *TIMEOUT.get_or_init(|| {
         let timeout = std::env::var("FORGE_STREAM_IDLE_TIMEOUT_SECS")
@@ -211,6 +211,7 @@ pub(crate) async fn process_sse_stream<P: SseParser>(
     response: reqwest::Response,
     parser: &mut P,
     tx: &mpsc::Sender<StreamEvent>,
+    idle_timeout: Duration,
 ) -> Result<()> {
     use futures_util::StreamExt;
 
@@ -219,7 +220,7 @@ pub(crate) async fn process_sse_stream<P: SseParser>(
     let mut parse_errors = 0usize;
 
     loop {
-        let Ok(next) = tokio::time::timeout(stream_idle_timeout(), stream.next()).await else {
+        let Ok(next) = tokio::time::timeout(idle_timeout, stream.next()).await else {
             let _ = send_event(tx, StreamEvent::Error("Stream idle timeout".to_string())).await;
             return Ok(());
         };

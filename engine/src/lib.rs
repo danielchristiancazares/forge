@@ -434,6 +434,7 @@ pub struct App {
     cache_enabled: bool,
     /// `OpenAI` request defaults (reasoning/summary/verbosity/truncation).
     openai_options: OpenAIRequestOptions,
+    openai_reasoning_effort_explicit: bool,
     /// Provider-specific system prompts.
     /// The correct prompt is selected at streaming time based on the active provider.
     system_prompts: SystemPrompts,
@@ -779,12 +780,12 @@ impl App {
             return self.openai_options;
         }
 
-        // Enforce XHigh reasoning effort for gpt-5.2-pro, regardless of user config.
         if model
             .as_str()
             .trim()
             .to_ascii_lowercase()
             .starts_with("gpt-5.2-pro")
+            && !self.openai_reasoning_effort_explicit
             && self.openai_options.reasoning_effort() != OpenAIReasoningEffort::XHigh
         {
             return OpenAIRequestOptions::new(

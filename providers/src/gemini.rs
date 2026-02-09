@@ -391,7 +391,7 @@ impl SseParser for GeminiParser {
         let response: typed::Response = match serde_json::from_value(json.clone()) {
             Ok(r) => r,
             Err(e) => {
-                tracing::debug!("Failed to parse Gemini SSE response: {e}");
+                tracing::warn!("Failed to parse Gemini SSE response: {e} — raw: {json}");
                 return SseParseAction::Continue;
             }
         };
@@ -544,7 +544,7 @@ pub async fn send_message(
     };
 
     let mut parser = GeminiParser;
-    process_sse_stream(response, &mut parser, &tx).await
+    process_sse_stream(response, &mut parser, &tx, crate::stream_idle_timeout()).await
 }
 
 #[cfg(test)]

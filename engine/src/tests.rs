@@ -74,6 +74,7 @@ fn test_app() -> App {
         output_limits,
         cache_enabled: false,
         openai_options: OpenAIRequestOptions::default(),
+        openai_reasoning_effort_explicit: false,
         system_prompts: TEST_SYSTEM_PROMPTS,
         cached_usage_status: None,
         pending_user_message: None,
@@ -137,6 +138,24 @@ fn openai_options_default_upgrade_for_gpt_52_pro() {
 
     assert_eq!(pro_options.reasoning_effort(), OpenAIReasoningEffort::XHigh);
     assert_eq!(base_options.reasoning_effort(), OpenAIReasoningEffort::High);
+}
+
+#[test]
+fn openai_options_respects_explicit_effort_for_gpt_52_pro() {
+    let mut app = test_app();
+    app.openai_reasoning_effort_explicit = true;
+    app.openai_options = OpenAIRequestOptions::new(
+        OpenAIReasoningEffort::Medium,
+        app.openai_options.reasoning_summary(),
+        app.openai_options.verbosity(),
+        app.openai_options.truncation(),
+    );
+    let pro_model = ModelName::from_predefined(PredefinedModel::Gpt52Pro);
+    let pro_options = app.openai_options_for_model(&pro_model);
+    assert_eq!(
+        pro_options.reasoning_effort(),
+        OpenAIReasoningEffort::Medium
+    );
 }
 
 #[derive(Debug)]

@@ -47,9 +47,20 @@ pub mod claude {
         MessageStop,
         /// Ping events (keepalive)
         Ping,
+        Error {
+            error: ErrorInfo,
+        },
         /// Unknown event type - allows forward compatibility
         #[serde(other)]
         Unknown,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct ErrorInfo {
+        #[serde(default, rename = "type")]
+        pub error_type: String,
+        #[serde(default)]
+        pub message: String,
     }
 
     #[derive(Debug, Deserialize)]
@@ -350,6 +361,32 @@ pub mod claude {
                 _ => panic!("wrong event type"),
             }
         }
+
+        #[test]
+        fn deserialize_error_event() {
+            let json = r#"{
+                "type": "error",
+                "error": {"type": "overloaded_error", "message": "Overloaded"}
+            }"#;
+            let event: Event = serde_json::from_str(json).unwrap();
+            match event {
+                Event::Error { error } => {
+                    assert_eq!(error.error_type, "overloaded_error");
+                    assert_eq!(error.message, "Overloaded");
+                }
+                _ => panic!("wrong event type"),
+            }
+        }
+
+        #[test]
+        fn error_event_does_not_become_unknown() {
+            let json = r#"{
+                "type": "error",
+                "error": {"type": "api_error", "message": "Internal server error"}
+            }"#;
+            let event: Event = serde_json::from_str(json).unwrap();
+            assert!(!matches!(event, Event::Unknown));
+        }
     }
 }
 
@@ -364,6 +401,16 @@ pub mod openai {
     #[derive(Debug, Deserialize)]
     #[serde(tag = "type")]
     pub enum Event {
+        #[serde(rename = "response.created")]
+        Created {
+            response: Option<ResponseInfo>,
+            sequence_number: Option<u64>,
+        },
+        #[serde(rename = "response.in_progress")]
+        InProgress {
+            response: Option<ResponseInfo>,
+            sequence_number: Option<u64>,
+        },
         #[serde(rename = "response.output_item.added")]
         OutputItemAdded {
             item_id: Option<String>,
@@ -458,6 +505,7 @@ pub mod openai {
 
     #[derive(Debug, Deserialize)]
     pub struct ResponseInfo {
+        pub id: Option<String>,
         pub usage: Option<Usage>,
         pub error: Option<ErrorInfo>,
         pub incomplete_details: Option<IncompleteDetails>,
@@ -578,6 +626,29 @@ pub mod openai {
             match event {
                 Event::Error { error } => {
                     assert_eq!(error.unwrap().message.unwrap(), "Something went wrong");
+                }
+                _ => panic!("wrong event type"),
+            }
+        }
+
+        #[test]
+        fn deserialize_response_created() {
+            let json = r#"{
+                "type": "response.created",
+                "response": {
+                    "id": "resp_abc123",
+                    "usage": null
+                },
+                "sequence_number": 0
+            }"#;
+            let event: Event = serde_json::from_str(json).unwrap();
+            match event {
+                Event::Created {
+                    response,
+                    sequence_number,
+                } => {
+                    assert_eq!(response.unwrap().id.unwrap(), "resp_abc123");
+                    assert_eq!(sequence_number.unwrap(), 0);
                 }
                 _ => panic!("wrong event type"),
             }
