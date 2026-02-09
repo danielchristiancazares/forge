@@ -16,6 +16,12 @@ This ensures code quality before committing. The `just verify` command runs:
 - `cargo clippy --workspace --all-targets -- -D warnings` - Lint with zero warnings
 - `cargo test` - Run all tests
 
+After editing files, normalize line endings:
+
+```bash
+just fix                 # Normalize CRLF → LF in *.rs and *.md files
+```
+
 Individual commands (for debugging):
 ```bash
 cargo check              # Fast type-check
@@ -71,6 +77,7 @@ forge/
 ├── context/        # Context window management + SQLite persistence
 ├── engine/         # App state machine, commands, orchestration
 ├── tui/            # TUI rendering (ratatui) + input handling
+├── lsp/            # LSP client for language server diagnostics
 ├── webfetch/       # URL fetching, HTML-to-Markdown, chunking for LLM
 ├── tests/          # Integration tests
 └── docs/           # Architecture documentation
@@ -107,6 +114,13 @@ forge/
 | `context` | `librarian.rs` | Context retrieval orchestration |
 | `providers` | `lib.rs` | Provider dispatch, SSE parsing, inline `claude`/`openai`/`gemini` modules |
 | `types` | `lib.rs` | Message types, `NonEmptyString`, `ModelName` |
+| `lsp` | `lib.rs` | LSP client re-exports (`LspManager`, config, diagnostics) |
+| `lsp` | `manager.rs` | `LspManager` facade: server lifecycle, event polling, diagnostics |
+| `lsp` | `server.rs` | Server handle: child process, JSON-RPC request/response routing |
+| `lsp` | `codec.rs` | `FrameReader`/`FrameWriter` for LSP Content-Length framing |
+| `lsp` | `protocol.rs` | LSP message serde types, initialize/didOpen/didChange params |
+| `lsp` | `diagnostics.rs` | Per-file diagnostics accumulator, `DiagnosticsSnapshot` |
+| `lsp` | `types.rs` | `LspConfig`, `ServerConfig`, `ForgeDiagnostic`, `DiagnosticSeverity` |
 | `webfetch` | `lib.rs` | URL fetch orchestration, chunking for LLM context |
 
 ### Main Event Loop (`cli/src/main.rs`)
@@ -249,13 +263,20 @@ Never add trivial comments; do not restate the obvious. Comments should only eve
 
 | Document | Description |
 |----------|-------------|
+| `cli/README.md` | Binary entry point, terminal session, event loop |
 | `engine/README.md` | Engine state machine and orchestration |
 | `tui/README.md` | TUI system, rendering, input handling |
 | `context/README.md` | Context management, distillation, journaling |
 | `providers/README.md` | LLM API clients, SSE streaming |
 | `types/README.md` | Core domain types, newtypes |
+| `lsp/README.md` | LSP client, diagnostics, server lifecycle |
 | `webfetch/README.md` | URL fetching, HTML-to-Markdown |
+| `tests/README.md` | Integration test suite |
 | `DESIGN.md` | Type-driven design patterns |
+| `INVARIANT_FIRST_ARCHITECTURE.md` | Invariant-First Architecture (IFA) design principles |
+| `SECURITY.md` | Security sanitization infrastructure |
+| `CONTEXT.md` | Auto-generated pre-flight context for LLM consumption |
+| `DIGEST.md` | Auto-generated rustdoc JSON API digest |
 | `docs/ANTHROPIC_MESSAGES_API.md` | Claude API reference |
 | `docs/OPENAI_RESPONSES_GPT52.md` | OpenAI Responses API integration |
 | `docs/RUST_2024_REFERENCE.md` | Rust 2024 edition features used |
