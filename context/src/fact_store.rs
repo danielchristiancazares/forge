@@ -134,7 +134,7 @@ impl FactStore {
 
     fn initialize(db: Connection) -> Result<Self> {
         db.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;",
         )
         .context("Failed to set fact store pragmas")?;
         db.execute_batch(Self::SCHEMA)
@@ -316,6 +316,20 @@ impl FactStore {
         self.db
             .query_row("SELECT COUNT(*) FROM facts", [], |row| row.get::<_, i64>(0))
             .unwrap_or(0) as usize
+    }
+
+    /// Query the highest turn number stored in the facts table.
+    /// Returns 0 if no facts exist.
+    pub fn max_turn_number(&self) -> Result<u64> {
+        let max: i64 = self
+            .db
+            .query_row(
+                "SELECT COALESCE(MAX(turn_number), 0) FROM facts",
+                [],
+                |row| row.get(0),
+            )
+            .context("Failed to query max turn number")?;
+        Ok(max as u64)
     }
 
     /// Delete all facts (for testing/reset).
@@ -721,5 +735,29 @@ mod tests {
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].fact.fact_type, FactType::Pinned);
         assert_eq!(facts[0].turn_number, 5);
+    }
+
+    #[test]
+    fn max_turn_number_empty_db() {
+        let store = FactStore::open_in_memory().expect("open store");
+        assert_eq!(store.max_turn_number().unwrap(), 0);
+    }
+
+    #[test]
+    fn max_turn_number_tracks_highest() {
+        let mut store = FactStore::open_in_memory().expect("open store");
+        let facts = vec![Fact {
+            fact_type: FactType::Entity,
+            content: "test".to_string(),
+            entities: vec![],
+        }];
+        store.store_facts(&facts, 5).expect("store at turn 5");
+        assert_eq!(store.max_turn_number().unwrap(), 5);
+
+        store.store_facts(&facts, 3).expect("store at turn 3");
+        assert_eq!(store.max_turn_number().unwrap(), 5);
+
+        store.store_facts(&facts, 8).expect("store at turn 8");
+        assert_eq!(store.max_turn_number().unwrap(), 8);
     }
 }

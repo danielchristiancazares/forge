@@ -239,7 +239,7 @@ impl ContextManager {
             std::cmp::Ordering::Less => ContextAdaptation::Shrinking {
                 old_budget,
                 new_budget,
-                needs_distillation: self.build_working_context().is_err(),
+                needs_distillation: self.build_working_context(0).is_err(),
             },
             std::cmp::Ordering::Greater => ContextAdaptation::Expanding {
                 old_budget,
@@ -258,7 +258,7 @@ impl ContextManager {
         self.current_limits_source = resolved.source();
     }
 
-    fn build_working_context(&self) -> Result<WorkingContext, ContextBuildError> {
+    fn build_working_context(&self, overhead: u32) -> Result<WorkingContext, ContextBuildError> {
         #[derive(Debug)]
         enum Block {
             Undistilled(Vec<(MessageId, u32)>),
@@ -269,7 +269,7 @@ impl ContextManager {
             },
         }
 
-        let budget = self.effective_budget();
+        let budget = self.effective_budget().saturating_sub(overhead);
         let mut ctx = WorkingContext::new(budget);
 
         let entries = self.history.entries();
@@ -554,7 +554,7 @@ impl ContextManager {
     /// This does not mutate history. If the current model's budget can fit original messages...
     #[must_use]
     pub fn try_restore_messages(&self) -> usize {
-        let Ok(ctx) = self.build_working_context() else {
+        let Ok(ctx) = self.build_working_context(0) else {
             return 0;
         };
 
@@ -570,8 +570,8 @@ impl ContextManager {
             .count()
     }
 
-    pub fn prepare(&self) -> Result<PreparedContext<'_>, ContextBuildError> {
-        let working_context = self.build_working_context()?;
+    pub fn prepare(&self, overhead: u32) -> Result<PreparedContext<'_>, ContextBuildError> {
+        let working_context = self.build_working_context(overhead)?;
         Ok(PreparedContext {
             manager: self,
             working_context,
@@ -610,7 +610,7 @@ impl ContextManager {
             distilled_segments: 0,
         };
 
-        match self.prepare() {
+        match self.prepare(0) {
             Ok(prepared) => ContextUsageStatus::Ready(prepared.usage()),
             Err(ContextBuildError::DistillationNeeded(needed)) => {
                 ContextUsageStatus::NeedsDistillation {
@@ -769,7 +769,7 @@ mod tests {
         manager.push_message(Message::try_user("Hello").expect("non-empty test message"));
         manager.push_message(Message::try_user("World").expect("non-empty test message"));
 
-        let result = manager.build_working_context();
+        let result = manager.build_working_context(0);
         assert!(result.is_ok());
 
         let ctx = result.unwrap();
@@ -815,7 +815,7 @@ mod tests {
             .expect("add Distillate");
 
         // Now try to build context - should need hierarchical distillation
-        let result = manager.build_working_context();
+        let result = manager.build_working_context(0);
 
         // If distillation is needed, verify Distilled messages are included
         if let Err(ContextBuildError::DistillationNeeded(needed)) = result {

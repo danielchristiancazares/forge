@@ -19,6 +19,8 @@
 //!
 //! - `FORGE_STREAM_JOURNAL_FLUSH_INTERVAL_MS`
 //!
+//! - `FORGE_STREAM_JOURNAL_FLUSH_BYTES`
+//!
 //! # Performance Consideration
 //!
 //! SQLite writes are synchronous in the async UI loop. Buffering reduces write
@@ -202,6 +204,21 @@ fn journal_flush_interval_ms() -> u128 {
     })
 }
 
+/// Default byte threshold for flushing buffered deltas.
+/// Prevents unbounded memory growth when individual deltas are large.
+const DEFAULT_BUFFER_FLUSH_BYTES: usize = 65_536;
+
+fn journal_flush_byte_threshold() -> usize {
+    static THRESHOLD: OnceLock<usize> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("FORGE_STREAM_JOURNAL_FLUSH_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_BUFFER_FLUSH_BYTES)
+    })
+}
+
 /// Active streaming journal.
 ///
 /// Possessing this type is the proof that a stream is in-flight.
@@ -226,6 +243,8 @@ pub struct ActiveJournal {
     model_name: String,
     /// Buffered deltas waiting to be flushed to the database.
     pending_deltas: Vec<StreamDelta>,
+    /// Accumulated byte size of buffered text deltas for byte-based flush threshold.
+    pending_bytes: usize,
     /// Whether we've flushed at least once (ensures first content is persisted).
     has_flushed: bool,
     /// Timestamp of last flush for time-based persistence.
@@ -258,21 +277,25 @@ impl ActiveJournal {
     ) -> Result<()> {
         let seq = self.next_seq;
         self.next_seq += 1;
-        let delta = StreamDelta::new(
-            self.step_id,
-            seq,
-            StreamDeltaEvent::TextDelta(content.into()),
-        );
+        let content = content.into();
+        self.pending_bytes += content.len();
+        let delta = StreamDelta::new(self.step_id, seq, StreamDeltaEvent::TextDelta(content));
         self.pending_deltas.push(delta);
 
         // Flush conditions:
         // 1. First write (ensure crash recovery has content)
-        // 2. Buffer full (prevent unbounded memory growth)
-        // 3. Time elapsed (bound the data loss window)
+        // 2. Buffer full by count (prevent unbounded delta accumulation)
+        // 3. Buffer full by bytes (prevent unbounded memory from large deltas)
+        // 4. Time elapsed (bound the data loss window)
         let flush_threshold = journal_flush_threshold();
+        let flush_byte_threshold = journal_flush_byte_threshold();
         let flush_interval_ms = journal_flush_interval_ms();
         let time_elapsed = self.last_flush.elapsed().as_millis() >= flush_interval_ms;
-        if !self.has_flushed || self.pending_deltas.len() >= flush_threshold || time_elapsed {
+        if !self.has_flushed
+            || self.pending_deltas.len() >= flush_threshold
+            || self.pending_bytes >= flush_byte_threshold
+            || time_elapsed
+        {
             self.flush(journal)?;
         }
         Ok(())
@@ -287,6 +310,7 @@ impl ActiveJournal {
         }
         journal.flush_deltas(&self.pending_deltas)?;
         self.pending_deltas.clear();
+        self.pending_bytes = 0;
         self.has_flushed = true;
         self.last_flush = std::time::Instant::now();
         Ok(())
@@ -494,6 +518,7 @@ impl StreamJournal {
             next_seq: 1,
             model_name,
             pending_deltas: Vec::new(),
+            pending_bytes: 0,
             has_flushed: false,
             last_flush: std::time::Instant::now(),
         })

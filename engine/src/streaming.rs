@@ -116,7 +116,7 @@ impl super::App {
         // When memory enabled, use distillation-based context management.
         // Otherwise, use basic mode.
         let api_messages = if memory_enabled {
-            match self.context_manager.prepare() {
+            match self.context_manager.prepare(overhead) {
                 Ok(prepared) => prepared.api_messages(),
                 Err(ContextBuildError::DistillationNeeded(needed)) => {
                     self.push_notification(format!(

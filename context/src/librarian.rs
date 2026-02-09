@@ -293,24 +293,22 @@ pub struct Librarian {
 impl Librarian {
     pub fn open(path: impl AsRef<Path>, api_key: String) -> Result<Self> {
         let store = FactStore::open(path)?;
+        let turn_counter = store.max_turn_number()?;
         Ok(Self {
             store,
             api_key,
-            turn_counter: 0,
+            turn_counter,
         })
     }
 
     pub fn open_in_memory(api_key: String) -> Result<Self> {
         let store = FactStore::open_in_memory()?;
+        let turn_counter = store.max_turn_number()?;
         Ok(Self {
             store,
             api_key,
-            turn_counter: 0,
+            turn_counter,
         })
-    }
-
-    pub fn set_turn_counter(&mut self, turn: u64) {
-        self.turn_counter = turn;
     }
 
     #[must_use]

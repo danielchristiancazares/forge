@@ -44,7 +44,19 @@ impl App {
     pub(crate) fn load_history_if_exists(&mut self) {
         let path = self.history_path();
         if !path.exists() {
-            return;
+            let bak_path = path.with_extension("bak");
+            if bak_path.exists() {
+                tracing::warn!(
+                    "History file missing but .bak exists at {}; recovering",
+                    bak_path.display()
+                );
+                if let Err(e) = std::fs::rename(&bak_path, &path) {
+                    tracing::warn!("Failed to recover .bak file: {e}");
+                    return;
+                }
+            } else {
+                return;
+            }
         }
 
         match ContextManager::load(&path, self.model.clone()) {

@@ -123,12 +123,30 @@ impl TokenCounter {
     /// ```
     #[must_use]
     pub fn count_message(&self, msg: &Message) -> u32 {
-        // Role overhead: ~4 tokens for role markers and message structure
-        // This is an approximation based on OpenAI's token counting guidelines
         const MESSAGE_OVERHEAD: u32 = 4;
 
-        let content_tokens = self.count_str(msg.content());
         let role_tokens = self.count_str(msg.role_str());
+
+        let content_tokens = match msg {
+            Message::System(_)
+            | Message::User(_)
+            | Message::Assistant(_)
+            | Message::Thinking(_) => self.count_str(msg.content()),
+            Message::ToolUse(call) => {
+                let name_tokens = self.count_str(&call.name);
+                let id_tokens = self.count_str(&call.id);
+                let args_tokens = match serde_json::to_string(&call.arguments) {
+                    Ok(s) => self.count_str(&s),
+                    Err(_) => 0,
+                };
+                name_tokens + id_tokens + args_tokens
+            }
+            Message::ToolResult(result) => {
+                self.count_str(&result.content)
+                    + self.count_str(&result.tool_call_id)
+                    + self.count_str(&result.tool_name)
+            }
+        };
 
         content_tokens + role_tokens + MESSAGE_OVERHEAD
     }
@@ -321,5 +339,38 @@ mod tests {
 
         assert_eq!(count1, count2);
         assert_eq!(count2, count3);
+    }
+
+    #[test]
+    fn count_message_tool_use_includes_arguments() {
+        let counter = TokenCounter::new();
+        let call = forge_types::ToolCall::new(
+            "call_123",
+            "read_file",
+            serde_json::json!({"path": "/some/very/long/path/to/a/file.rs"}),
+        );
+        let msg = Message::tool_use(call);
+
+        let tokens = counter.count_message(&msg);
+        let name_only = counter.count_str("read_file") + counter.count_str("assistant") + 4;
+        assert!(
+            tokens > name_only,
+            "ToolUse count ({tokens}) should exceed name-only ({name_only})"
+        );
+    }
+
+    #[test]
+    fn count_message_tool_result_includes_metadata() {
+        let counter = TokenCounter::new();
+        let result =
+            forge_types::ToolResult::success("call_123", "read_file", "file contents here");
+        let msg = Message::tool_result(result);
+
+        let tokens = counter.count_message(&msg);
+        let content_only = counter.count_str("file contents here") + counter.count_str("user") + 4;
+        assert!(
+            tokens > content_only,
+            "ToolResult count ({tokens}) should exceed content-only ({content_only})"
+        );
     }
 }

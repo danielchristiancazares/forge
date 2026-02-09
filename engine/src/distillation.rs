@@ -41,7 +41,7 @@ impl super::App {
             return fail_with_rollback(self, queued_request);
         }
 
-        let message_ids = match self.context_manager.prepare() {
+        let message_ids = match self.context_manager.prepare(0) {
             Ok(_) => {
                 if let Some(queued) = queued_request {
                     self.start_streaming(queued);

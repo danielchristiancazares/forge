@@ -153,7 +153,12 @@ pub fn atomic_write_with_options(
                 let _ = std::fs::rename(&backup_path, path);
                 return Err(rename_err.error);
             }
-            let _ = std::fs::remove_file(&backup_path);
+            if let Err(e) = std::fs::remove_file(&backup_path) {
+                tracing::warn!(
+                    path = %backup_path.display(),
+                    "Failed to remove .bak after atomic write: {e}"
+                );
+            }
         } else {
             return Err(err.error);
         }
