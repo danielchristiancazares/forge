@@ -56,6 +56,14 @@ pub(crate) fn set_new_session(cmd: &mut tokio::process::Command) {
             if libc::setsid() == -1 {
                 return Err(std::io::Error::last_os_error());
             }
+            // Linux-only: ensure the child dies if Forge dies (kill -9 / crash / power loss).
+            // This reduces the "orphaned runaway process" failure mode for long-lived tools.
+            #[cfg(target_os = "linux")]
+            unsafe {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
             Ok(())
         });
     }

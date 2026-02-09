@@ -70,6 +70,33 @@ pub(crate) fn attach_process_to_sandbox(child: &Child) -> Result<WindowsHostSand
     Ok(WindowsHostSandboxGuard::new(job))
 }
 
+/// Attach a child process to a kill-on-close Job Object without UI restrictions.
+///
+/// This is best-effort host cleanup: if Forge crashes, the job handle is closed and the child
+/// is terminated. Unlike [`attach_process_to_sandbox`], this does not impose UI limits and is
+/// suitable for the common `Run` tool case where host sandboxing is not required by policy.
+#[cfg(windows)]
+pub(crate) fn attach_process_to_kill_on_close(
+    child: &Child,
+) -> Result<WindowsHostSandboxGuard, String> {
+    let process_handle = child
+        .raw_handle()
+        .ok_or_else(|| "child process handle unavailable".to_string())?
+        as HANDLE;
+    if process_handle.is_null() {
+        return Err("child process handle was null".to_string());
+    }
+
+    let job = create_kill_on_close_job()?;
+    // SAFETY: `job.handle` and `process_handle` are valid handles.
+    let attached = unsafe { AssignProcessToJobObject(job.handle, process_handle) };
+    if attached == 0 {
+        return Err(last_os_error("AssignProcessToJobObject"));
+    }
+
+    Ok(WindowsHostSandboxGuard::new(job))
+}
+
 #[cfg(windows)]
 const fn job_limit_flags() -> u32 {
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -125,6 +152,20 @@ fn create_sandbox_job() -> Result<WinHandle, String> {
     let job = WinHandle { handle };
     configure_job_limits(job.handle)?;
     configure_job_ui_limits(job.handle)?;
+    Ok(job)
+}
+
+#[cfg(windows)]
+fn create_kill_on_close_job() -> Result<WinHandle, String> {
+    // SAFETY: Passing null security attributes/name requests an unnamed job
+    // with default security descriptor.
+    let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+    if handle.is_null() {
+        return Err(last_os_error("CreateJobObjectW"));
+    }
+
+    let job = WinHandle { handle };
+    configure_job_limits(job.handle)?;
     Ok(job)
 }
 

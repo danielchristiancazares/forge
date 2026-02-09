@@ -1191,7 +1191,17 @@ impl ToolExecutor for RunCommandTool {
                     )?,
                 )
             } else {
-                None
+                // Best-effort orphan prevention: attach to a kill-on-close job so that if Forge
+                // crashes, Windows tears down the child process.
+                match super::windows_run_host::attach_process_to_kill_on_close(guard.child_mut()) {
+                    Ok(guard) => Some(guard),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to attach `Run` child to kill-on-close job; crash cleanup may be incomplete: {e}"
+                        );
+                        None
+                    }
+                }
             };
 
             let stdout =
