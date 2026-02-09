@@ -7,6 +7,7 @@ pub mod lp1;
 pub mod memory;
 pub mod phase_gate;
 pub mod powershell_ast;
+pub(crate) mod process;
 pub mod recall;
 pub mod sandbox;
 pub mod search;

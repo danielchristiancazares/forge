@@ -110,7 +110,7 @@ impl InputPump {
 
         self.stop.store(true, Ordering::Release);
         if let Some(join) = self.join.take() {
-            let _ = join.await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), join).await;
         }
     }
 }

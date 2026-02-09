@@ -365,6 +365,16 @@ impl super::App {
                 self.context_manager = ContextManager::new(self.model.clone());
                 self.context_manager
                     .set_output_limit(self.output_limits.max_output_tokens());
+                if let Some(step_id) = self.pending_stream_cleanup.take() {
+                    self.discard_journal_step(step_id);
+                }
+                self.pending_stream_cleanup_failures = 0;
+                if let Some(batch_id) = self.pending_tool_cleanup.take()
+                    && let Err(e) = self.tool_journal.discard_batch(batch_id)
+                {
+                    tracing::warn!("Failed to discard pending tool batch on clear: {e}");
+                }
+                self.pending_tool_cleanup_failures = 0;
                 self.invalidate_usage_cache();
                 self.autosave_history();
                 self.push_notification("Conversation cleared");

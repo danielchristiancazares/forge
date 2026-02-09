@@ -1168,14 +1168,7 @@ impl ToolExecutor for RunCommandTool {
             #[cfg(unix)]
             {
                 let _ = requires_host_sandbox;
-                unsafe {
-                    command.as_std_mut().pre_exec(|| {
-                        if libc::setsid() == -1 {
-                            return Err(std::io::Error::last_os_error());
-                        }
-                        Ok(())
-                    });
-                }
+                super::process::set_new_session(&mut command);
             }
 
             let child = command.spawn().map_err(|e| ToolError::ExecutionFailed {
@@ -1566,51 +1559,7 @@ async fn read_stream<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     collected
 }
 
-struct ChildGuard {
-    child: Option<tokio::process::Child>,
-}
-
-impl ChildGuard {
-    fn new(child: tokio::process::Child) -> Self {
-        Self { child: Some(child) }
-    }
-
-    fn child_mut(&mut self) -> &mut tokio::process::Child {
-        self.child.as_mut().expect("child present")
-    }
-
-    fn disarm(&mut self) {
-        self.child = None;
-    }
-}
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let Some(child) = self.child.as_mut() else {
-            return;
-        };
-        #[cfg(unix)]
-        {
-            if let Some(pid) = child.id() {
-                unsafe {
-                    if libc::killpg(pid as i32, libc::SIGKILL) == -1 {
-                        let _ = child.start_kill();
-                    }
-                }
-            }
-            // Reap the zombie process synchronously to prevent zombie accumulation.
-            // This is best-effort - if it fails, the process table entry will be
-            // cleaned up when the parent exits.
-            let _ = child.try_wait();
-        }
-        #[cfg(windows)]
-        {
-            let _ = child.start_kill();
-            // Windows doesn't have the same zombie issue, but try_wait is good practice
-            let _ = child.try_wait();
-        }
-    }
-}
+use super::process::ChildGuard;
 
 #[cfg(test)]
 mod tests {

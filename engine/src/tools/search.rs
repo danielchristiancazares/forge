@@ -1241,23 +1241,28 @@ async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
             cmd.arg(&file.rel_path);
         }
 
-        let mut child = cmd
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| ToolError::ExecutionFailed {
-                tool: SEARCH_TOOL_NAME.to_string(),
-                message: e.to_string(),
-            })?;
+        cmd.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
 
-        let stdout = child
+        #[cfg(unix)]
+        super::process::set_new_session(&mut cmd);
+
+        let child = cmd.spawn().map_err(|e| ToolError::ExecutionFailed {
+            tool: SEARCH_TOOL_NAME.to_string(),
+            message: e.to_string(),
+        })?;
+        let mut guard = super::process::ChildGuard::new(child);
+
+        let stdout = guard
+            .child_mut()
             .stdout
             .take()
             .ok_or_else(|| ToolError::ExecutionFailed {
                 tool: SEARCH_TOOL_NAME.to_string(),
                 message: "failed to capture stdout".to_string(),
             })?;
-        let stderr = child
+        let stderr = guard
+            .child_mut()
             .stderr
             .take()
             .ok_or_else(|| ToolError::ExecutionFailed {
@@ -1278,7 +1283,7 @@ async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 timed_out = true;
-                let _ = child.kill().await;
+                let _ = guard.child_mut().kill().await;
                 break;
             }
             let line = match tokio::time::timeout(remaining, stdout_reader.next_line()).await {
@@ -1291,7 +1296,7 @@ async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
                 }
                 Err(_) => {
                     timed_out = true;
-                    let _ = child.kill().await;
+                    let _ = guard.child_mut().kill().await;
                     break;
                 }
             };
@@ -1341,10 +1346,15 @@ async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
             }
         }
 
-        let status = child.wait().await.map_err(|e| ToolError::ExecutionFailed {
-            tool: SEARCH_TOOL_NAME.to_string(),
-            message: e.to_string(),
-        })?;
+        let status = guard
+            .child_mut()
+            .wait()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: SEARCH_TOOL_NAME.to_string(),
+                message: e.to_string(),
+            })?;
+        guard.disarm();
         exit_code = status.code();
         let stderr = stderr_task.await.unwrap_or_default();
         if !stderr.trim().is_empty() {
@@ -1429,23 +1439,28 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
             cmd.arg(&file.rel_path);
         }
 
-        let mut child = cmd
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| ToolError::ExecutionFailed {
-                tool: SEARCH_TOOL_NAME.to_string(),
-                message: e.to_string(),
-            })?;
+        cmd.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
 
-        let stdout = child
+        #[cfg(unix)]
+        super::process::set_new_session(&mut cmd);
+
+        let child = cmd.spawn().map_err(|e| ToolError::ExecutionFailed {
+            tool: SEARCH_TOOL_NAME.to_string(),
+            message: e.to_string(),
+        })?;
+        let mut guard = super::process::ChildGuard::new(child);
+
+        let stdout = guard
+            .child_mut()
             .stdout
             .take()
             .ok_or_else(|| ToolError::ExecutionFailed {
                 tool: SEARCH_TOOL_NAME.to_string(),
                 message: "failed to capture stdout".to_string(),
             })?;
-        let stderr = child
+        let stderr = guard
+            .child_mut()
             .stderr
             .take()
             .ok_or_else(|| ToolError::ExecutionFailed {
@@ -1465,7 +1480,7 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 timed_out = true;
-                let _ = child.kill().await;
+                let _ = guard.child_mut().kill().await;
                 break;
             }
             let line = match tokio::time::timeout(remaining, stdout_reader.next_line()).await {
@@ -1478,7 +1493,7 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
                 }
                 Err(_) => {
                     timed_out = true;
-                    let _ = child.kill().await;
+                    let _ = guard.child_mut().kill().await;
                     break;
                 }
             };
@@ -1505,10 +1520,15 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
             }
         }
 
-        let status = child.wait().await.map_err(|e| ToolError::ExecutionFailed {
-            tool: SEARCH_TOOL_NAME.to_string(),
-            message: e.to_string(),
-        })?;
+        let status = guard
+            .child_mut()
+            .wait()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: SEARCH_TOOL_NAME.to_string(),
+                message: e.to_string(),
+            })?;
+        guard.disarm();
         exit_code = status.code();
         let stderr = stderr_task.await.unwrap_or_default();
         if !stderr.trim().is_empty() {

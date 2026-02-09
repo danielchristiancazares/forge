@@ -185,6 +185,20 @@ impl Drop for TerminalSession {
 async fn main() -> Result<()> {
     init_tracing();
 
+    // Install a panic hook that restores the terminal before printing the
+    // backtrace. Without this, a panic leaves the terminal in raw mode with
+    // the alternate screen active, making the error invisible.
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let mut out = stdout();
+        // Disable alternate scroll mode
+        let _ = out.write_all(b"\x1b[?1007l");
+        let _ = out.flush();
+        let _ = execute!(out, LeaveAlternateScreen, DisableBracketedPaste);
+        original_hook(info);
+    }));
+
     assets::init();
 
     let mut app = App::new(assets::system_prompts())?;
@@ -220,8 +234,19 @@ where
     let mut frames = tokio::time::interval(FRAME_DURATION);
     frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    let signal_quit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sq = signal_quit.clone();
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        sq.store(true, std::sync::atomic::Ordering::Release);
+    });
+
     let result: Result<()> = loop {
         frames.tick().await;
+
+        if signal_quit.load(std::sync::atomic::Ordering::Acquire) {
+            break Ok(());
+        }
 
         // Non-blocking input (drain queue only)
         let quit_now = match handle_events(app, &mut input) {
@@ -248,4 +273,21 @@ where
 
     input.shutdown().await;
     result
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
+        let mut hup = signal(SignalKind::hangup()).expect("SIGHUP handler");
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = hup.recv() => {}
+        }
+    }
+    #[cfg(windows)]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }

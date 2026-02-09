@@ -172,7 +172,7 @@ The codebase enforces correctness through types (see `DESIGN.md`):
 
 Adding a provider: extend `Provider` enum, implement all match arms, add module in `providers/src/`.
 
-### Context Infinity™ (`context/`)
+### Context Management (`context/`)
 
 Adaptive context management with automatic distillation:
 
@@ -244,6 +244,8 @@ All mode styles use `fg(bg_dark)` + `bg(<color>)` + `BOLD` modifier.
 **Overlays**: Command palette and Model selector use centered floating overlays with animations.
 
 ## Documentation
+
+Never add trivial comments; do not restate the obvious. Comments should only ever be added when they provide value. 
 
 | Document | Description |
 |----------|-------------|

@@ -547,19 +547,25 @@ async fn run_git(
     cmd.env_clear();
     cmd.envs(sanitized);
 
-    let mut child = cmd.spawn().map_err(|e| ToolError::ExecutionFailed {
+    #[cfg(unix)]
+    super::process::set_new_session(&mut cmd);
+
+    let child = cmd.spawn().map_err(|e| ToolError::ExecutionFailed {
         tool: "git".to_string(),
         message: format!("failed to spawn git: {e}"),
     })?;
+    let mut guard = super::process::ChildGuard::new(child);
 
-    let stdout = child
+    let stdout = guard
+        .child_mut()
         .stdout
         .take()
         .ok_or_else(|| ToolError::ExecutionFailed {
             tool: "git".to_string(),
             message: "failed to capture git stdout".to_string(),
         })?;
-    let stderr = child
+    let stderr = guard
+        .child_mut()
         .stderr
         .take()
         .ok_or_else(|| ToolError::ExecutionFailed {
@@ -571,31 +577,33 @@ async fn run_git(
     let stderr_task = tokio::spawn(read_to_end_limited(stderr, max_stderr_bytes));
 
     let mut timed_out = false;
-    let status =
-        if let Ok(res) = time::timeout(Duration::from_millis(timeout_ms), child.wait()).await {
-            res.map_err(|e| ToolError::ExecutionFailed {
+    let status = if let Ok(res) =
+        time::timeout(Duration::from_millis(timeout_ms), guard.child_mut().wait()).await
+    {
+        res.map_err(|e| ToolError::ExecutionFailed {
+            tool: "git".to_string(),
+            message: e.to_string(),
+        })?
+    } else {
+        timed_out = true;
+        let _ = guard.child_mut().kill().await;
+        match time::timeout(Duration::from_millis(2_000), guard.child_mut().wait()).await {
+            Ok(res) => res.map_err(|e| ToolError::ExecutionFailed {
                 tool: "git".to_string(),
                 message: e.to_string(),
-            })?
-        } else {
-            timed_out = true;
-            let _ = child.kill().await;
-            match time::timeout(Duration::from_millis(2_000), child.wait()).await {
-                Ok(res) => res.map_err(|e| ToolError::ExecutionFailed {
+            })?,
+            Err(_) => {
+                return Err(ToolError::ExecutionFailed {
                     tool: "git".to_string(),
-                    message: e.to_string(),
-                })?,
-                Err(_) => {
-                    return Err(ToolError::ExecutionFailed {
-                        tool: "git".to_string(),
-                        message: format!(
-                            "git command timed out after {timeout_ms} ms and did not terminate"
-                        ),
-                    });
-                }
+                    message: format!(
+                        "git command timed out after {timeout_ms} ms and did not terminate"
+                    ),
+                });
             }
-        };
+        }
+    };
 
+    guard.disarm();
     let exit_code = status.code();
 
     let (stdout_bytes, truncated_stdout) =
