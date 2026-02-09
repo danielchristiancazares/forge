@@ -502,7 +502,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
                 app.files_panel_collapse();
             }
         }
-        // Files panel: Backspace progressively dismisses (expanded -> compact -> closed)
+        // Files panel: Backspace progressively dismisses (expanded → compact → closed)
         KeyCode::Backspace => {
             if app.files_panel_expanded() {
                 app.files_panel_collapse();
