@@ -82,6 +82,7 @@ fn test_app() -> App {
         tool_registry,
         tool_settings,
         tool_journal,
+        tool_journal_disabled_reason: None,
         pending_stream_cleanup: None,
         pending_stream_cleanup_failures: 0,
         pending_tool_cleanup: None,

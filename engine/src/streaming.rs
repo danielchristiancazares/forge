@@ -158,7 +158,12 @@ impl super::App {
                 // recovered assistant/tool output would be appended after this prompt.
                 self.rollback_pending_user_message();
                 let recovered = self.check_crash_recovery();
-                if recovered.is_some() || matches!(self.state, OperationState::ToolRecovery(_)) {
+                if recovered.is_some()
+                    || matches!(
+                        self.state,
+                        OperationState::ToolRecovery(_) | OperationState::RecoveryBlocked(_)
+                    )
+                {
                     self.push_notification(
                         "Recovered unfinished work. Review it, then press Enter to retry.",
                     );
@@ -392,7 +397,8 @@ impl super::App {
             let mut journal_error: Option<String> = None;
             let mut finish_reason: Option<StreamFinishReason> = None;
 
-            let mut active = match std::mem::replace(&mut self.state, OperationState::Idle) {
+            let idle = self.idle_state();
+            let mut active = match std::mem::replace(&mut self.state, idle) {
                 OperationState::Streaming(active) => active,
                 other => {
                     self.state = other;
@@ -431,10 +437,10 @@ impl super::App {
                     } => {
                         // Ensure we're in Journaled state (transition if Transient)
                         if matches!(&active, ActiveStream::Transient { .. }) {
-                            match self
-                                .tool_journal
-                                .begin_streaming_batch(active.journal().model_name())
-                            {
+                            match self.tool_journal.begin_streaming_batch(
+                                active.journal().step_id(),
+                                active.journal().model_name(),
+                            ) {
                                 Ok(batch_id) => {
                                     active = active.transition_to_journaled(batch_id);
                                 }

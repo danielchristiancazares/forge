@@ -1063,6 +1063,7 @@ impl PreparedContext<'a> {
 /// Recovered tool batch data after a crash.
 pub struct RecoveredToolBatch { @ context/src/tool_journal.rs:51
     pub batch_id: ToolBatchId,
+    pub stream_step_id: Option<StepId>,
     pub model_name: String,
     pub assistant_text: String,
     pub calls: Vec<forge_types::ToolCall>,
@@ -1183,9 +1184,9 @@ impl ToolJournal {
     /// Append streamed JSON arguments for a tool call.
     pub fn append_call_args(&mut self, batch_id: ToolBatchId, tool_call_id: &str, delta: &str) -> Result<()>; @ context/src/tool_journal.rs:254
     /// Begin a new tool batch and persist its tool calls.
-    pub fn begin_batch(&mut self, model_name: &str, assistant_text: &str, calls: &[ToolCall]) -> Result<ToolBatchId>; @ context/src/tool_journal.rs:147
+    pub fn begin_batch(&mut self, stream_step_id: StepId, model_name: &str, assistant_text: &str, calls: &[ToolCall]) -> Result<ToolBatchId>; @ context/src/tool_journal.rs:151
     /// Begin a new tool batch during streaming (before tool arguments are complete).
-    pub fn begin_streaming_batch(&mut self, model_name: &str) -> Result<ToolBatchId>; @ context/src/tool_journal.rs:205
+    pub fn begin_streaming_batch(&mut self, stream_step_id: StepId, model_name: &str) -> Result<ToolBatchId>; @ context/src/tool_journal.rs:210
     /// Commit and prune a completed batch.
     pub fn commit_batch(&mut self, batch_id: ToolBatchId) -> Result<()>; @ context/src/tool_journal.rs:335
     /// Discard an incomplete batch (used on cancel or user discard).
@@ -2546,4 +2547,3 @@ pub fn init(); @ cli/src/assets.rs:40
 /// Returns provider-specific system prompts for LLM initialization.
 pub fn system_prompts() -> forge_engine::SystemPrompts; @ cli/src/assets.rs:50
 ```
-

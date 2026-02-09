@@ -142,8 +142,8 @@ impl super::App {
             return;
         }
 
-        let (task, queued_request) = match std::mem::replace(&mut self.state, OperationState::Idle)
-        {
+        let idle = self.idle_state();
+        let (task, queued_request) = match std::mem::replace(&mut self.state, idle) {
             OperationState::Distilling(state) => match state {
                 DistillationState::Running(task) => (task, None),
                 DistillationState::CompletedWithQueued { task, message } => (task, Some(message)),
@@ -225,7 +225,7 @@ impl super::App {
         error: String,
         queued_request: Option<QueuedUserMessage>,
     ) {
-        self.state = OperationState::Idle;
+        self.state = self.idle_state();
         let had_pending = queued_request.is_some();
 
         if let Some(queued) = queued_request {

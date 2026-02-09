@@ -33,6 +33,7 @@ use std::fs::OpenOptions;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::StepId;
 use forge_types::{ThoughtSignature, ThoughtSignatureState, ToolCall, ToolResult};
 
 /// Unique identifier for a tool batch.
@@ -50,6 +51,7 @@ pub struct CorruptedToolArgs {
 #[derive(Debug, Clone)]
 pub struct RecoveredToolBatch {
     pub batch_id: ToolBatchId,
+    pub stream_step_id: Option<StepId>,
     pub model_name: String,
     pub assistant_text: String,
     pub calls: Vec<ToolCall>,
@@ -70,6 +72,7 @@ impl ToolJournal {
     const SCHEMA: &'static str = r"
         CREATE TABLE IF NOT EXISTS tool_batches (
             batch_id INTEGER PRIMARY KEY,
+            stream_step_id INTEGER,
             model_name TEXT NOT NULL,
             assistant_text TEXT NOT NULL,
             committed INTEGER DEFAULT 0,
@@ -136,6 +139,7 @@ impl ToolJournal {
             .context("Failed to set tool journal pragmas")?;
         db.execute_batch(Self::SCHEMA)
             .context("Failed to create tool journal schema")?;
+        ensure_tool_batches_step_id(&db)?;
         ensure_tool_calls_signature(&db)?;
         ensure_tool_results_name(&db)?;
         Ok(Self { db })
@@ -146,6 +150,7 @@ impl ToolJournal {
     /// Returns the new batch ID.
     pub fn begin_batch(
         &mut self,
+        stream_step_id: StepId,
         model_name: &str,
         assistant_text: &str,
         calls: &[ToolCall],
@@ -161,9 +166,9 @@ impl ToolJournal {
             .context("Failed to start tool batch transaction")?;
 
         tx.execute(
-            "INSERT INTO tool_batches (model_name, assistant_text, committed, created_at)
-             VALUES (?1, ?2, 0, ?3)",
-            params![model_name, assistant_text, created_at],
+            "INSERT INTO tool_batches (stream_step_id, model_name, assistant_text, committed, created_at)
+             VALUES (?1, ?2, ?3, 0, ?4)",
+            params![stream_step_id, model_name, assistant_text, created_at],
         )
         .context("Failed to insert tool batch")?;
 
@@ -202,7 +207,11 @@ impl ToolJournal {
     /// Tool calls will be recorded incrementally via `record_call_start` and
     /// `append_call_args`, and assistant text can be updated via
     /// `update_assistant_text`.
-    pub fn begin_streaming_batch(&mut self, model_name: &str) -> Result<ToolBatchId> {
+    pub fn begin_streaming_batch(
+        &mut self,
+        stream_step_id: StepId,
+        model_name: &str,
+    ) -> Result<ToolBatchId> {
         if let Some(existing) = self.pending_batch_id()? {
             bail!("Cannot begin tool batch: pending batch {existing} exists");
         }
@@ -214,9 +223,9 @@ impl ToolJournal {
             .context("Failed to start streaming tool batch transaction")?;
 
         tx.execute(
-            "INSERT INTO tool_batches (model_name, assistant_text, committed, created_at)
-             VALUES (?1, ?2, 0, ?3)",
-            params![model_name, "", created_at],
+            "INSERT INTO tool_batches (stream_step_id, model_name, assistant_text, committed, created_at)
+             VALUES (?1, ?2, ?3, 0, ?4)",
+            params![stream_step_id, model_name, "", created_at],
         )
         .context("Failed to insert streaming tool batch")?;
 
@@ -314,9 +323,10 @@ impl ToolJournal {
     /// Record a tool result for a batch.
     pub fn record_result(&mut self, batch_id: ToolBatchId, result: &ToolResult) -> Result<()> {
         let created_at = system_time_to_iso8601(SystemTime::now());
-        self.db
+        let inserted = self
+            .db
             .execute(
-                "INSERT INTO tool_results (batch_id, tool_call_id, tool_name, content, is_error, created_at)
+                "INSERT OR IGNORE INTO tool_results (batch_id, tool_call_id, tool_name, content, is_error, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     batch_id,
@@ -328,7 +338,43 @@ impl ToolJournal {
                 ],
             )
             .with_context(|| format!("Failed to record tool result {}", result.tool_call_id))?;
-        Ok(())
+
+        if inserted == 1 {
+            return Ok(());
+        }
+        if inserted != 0 {
+            bail!("Unexpected insert count when recording tool result");
+        }
+
+        let (existing_tool_name, existing_content, existing_is_error): (String, String, i32) = self
+            .db
+            .query_row(
+                "SELECT tool_name, content, is_error
+                     FROM tool_results
+                     WHERE batch_id = ?1 AND tool_call_id = ?2",
+                params![batch_id, &result.tool_call_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to load existing tool result {} for idempotency check",
+                    result.tool_call_id
+                )
+            })?;
+
+        let tool_name_matches =
+            existing_tool_name.is_empty() || existing_tool_name == result.tool_name;
+        let content_matches = existing_content == result.content;
+        let is_error_matches = existing_is_error == i32::from(result.is_error);
+
+        if tool_name_matches && content_matches && is_error_matches {
+            return Ok(());
+        }
+
+        bail!(
+            "Tool result {} already recorded with different content",
+            result.tool_call_id
+        )
     }
 
     /// Commit and prune a completed batch.
@@ -414,12 +460,12 @@ impl ToolJournal {
             return Ok(None);
         };
 
-        let (model_name, assistant_text): (String, String) = self
+        let (stream_step_id, model_name, assistant_text): (Option<StepId>, String, String) = self
             .db
             .query_row(
-                "SELECT model_name, assistant_text FROM tool_batches WHERE batch_id = ?1",
+                "SELECT stream_step_id, model_name, assistant_text FROM tool_batches WHERE batch_id = ?1",
                 params![batch_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .context("Failed to load tool batch metadata")?;
 
@@ -520,6 +566,7 @@ impl ToolJournal {
 
         Ok(Some(RecoveredToolBatch {
             batch_id,
+            stream_step_id,
             model_name,
             assistant_text,
             calls,
@@ -552,6 +599,33 @@ fn ensure_tool_calls_signature(db: &Connection) -> Result<()> {
     )
     .context("Failed to add thought_signature column to tool_calls")?;
     Ok(())
+}
+
+fn ensure_tool_batches_step_id(db: &Connection) -> Result<()> {
+    if tool_batches_has_step_id(db)? {
+        return Ok(());
+    }
+    db.execute(
+        "ALTER TABLE tool_batches ADD COLUMN stream_step_id INTEGER",
+        [],
+    )
+    .context("Failed to add stream_step_id column to tool_batches")?;
+    Ok(())
+}
+
+fn tool_batches_has_step_id(db: &Connection) -> Result<bool> {
+    let mut stmt = db
+        .prepare("PRAGMA table_info(tool_batches)")
+        .context("Failed to inspect tool_batches schema")?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .context("Failed to query tool_batches columns")?;
+    for name in rows {
+        if name? == "stream_step_id" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn tool_calls_has_signature(db: &Connection) -> Result<bool> {
@@ -732,7 +806,7 @@ mod tests {
             serde_json::json!({"path": "foo"}),
         )];
         let batch_id = journal
-            .begin_batch("test-model", "assistant", &calls)
+            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
             .unwrap();
 
         let recovered = journal.recover().unwrap().expect("should recover");
@@ -750,7 +824,7 @@ mod tests {
             serde_json::json!({"path": "foo"}),
         )];
         let batch_id = journal
-            .begin_batch("test-model", "assistant", &calls)
+            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
             .unwrap();
 
         let result = ToolResult::success("1", "Read", "ok");
@@ -765,17 +839,57 @@ mod tests {
     }
 
     #[test]
+    fn record_result_is_idempotent() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+        let calls = vec![ToolCall::new(
+            "1",
+            "Read",
+            serde_json::json!({ "path": "foo" }),
+        )];
+        let batch_id = journal
+            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
+            .unwrap();
+
+        let result = ToolResult::success("1", "Read", "ok");
+        journal.record_result(batch_id, &result).unwrap();
+        journal.record_result(batch_id, &result).unwrap();
+    }
+
+    #[test]
+    fn record_result_errors_on_mismatch() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+        let calls = vec![ToolCall::new(
+            "1",
+            "Read",
+            serde_json::json!({ "path": "foo" }),
+        )];
+        let batch_id = journal
+            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
+            .unwrap();
+
+        journal
+            .record_result(batch_id, &ToolResult::success("1", "Read", "ok"))
+            .unwrap();
+
+        let err = journal.record_result(
+            batch_id,
+            &ToolResult::success("1", "Read", "different content"),
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
     fn begin_batch_fails_when_pending_exists() {
         let mut journal = ToolJournal::open_in_memory().unwrap();
         let calls = vec![ToolCall::new("1", "test", serde_json::json!({}))];
 
         // First batch succeeds
         let _batch_id = journal
-            .begin_batch("test-model", "assistant", &calls)
+            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
             .unwrap();
 
         // Second batch should fail
-        let result = journal.begin_batch("test-model", "another", &calls);
+        let result = journal.begin_batch(StepId::new(2), "test-model", "another", &calls);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("pending batch"));
     }
@@ -785,7 +899,9 @@ mod tests {
         let mut journal = ToolJournal::open_in_memory().unwrap();
 
         // Begin streaming batch
-        let batch_id = journal.begin_streaming_batch("test-model").unwrap();
+        let batch_id = journal
+            .begin_streaming_batch(StepId::new(1), "test-model")
+            .unwrap();
 
         // Record tool call start
         journal
@@ -827,7 +943,7 @@ mod tests {
         let calls = vec![ToolCall::new("1", "test", serde_json::json!({}))];
 
         let batch_id = journal
-            .begin_batch("test-model", "assistant", &calls)
+            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
             .unwrap();
 
         // Add a result
@@ -847,7 +963,7 @@ mod tests {
         let calls = vec![ToolCall::new("1", "test", serde_json::json!({}))];
 
         let batch_id = journal
-            .begin_batch("test-model", "assistant", &calls)
+            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
             .unwrap();
 
         // Record an error result
@@ -865,7 +981,9 @@ mod tests {
     fn append_call_args_fails_for_unknown_call() {
         let mut journal = ToolJournal::open_in_memory().unwrap();
 
-        let batch_id = journal.begin_streaming_batch("test-model").unwrap();
+        let batch_id = journal
+            .begin_streaming_batch(StepId::new(1), "test-model")
+            .unwrap();
 
         // Try to append to non-existent call
         let result = journal.append_call_args(batch_id, "nonexistent", "data");
@@ -885,7 +1003,9 @@ mod tests {
     fn recover_handles_empty_arguments_json() {
         let mut journal = ToolJournal::open_in_memory().unwrap();
 
-        let batch_id = journal.begin_streaming_batch("test-model").unwrap();
+        let batch_id = journal
+            .begin_streaming_batch(StepId::new(1), "test-model")
+            .unwrap();
         journal
             .record_call_start(
                 batch_id,
@@ -907,7 +1027,9 @@ mod tests {
     fn recover_handles_invalid_arguments_json() {
         let mut journal = ToolJournal::open_in_memory().unwrap();
 
-        let batch_id = journal.begin_streaming_batch("test-model").unwrap();
+        let batch_id = journal
+            .begin_streaming_batch(StepId::new(1), "test-model")
+            .unwrap();
         journal
             .record_call_start(
                 batch_id,
@@ -931,7 +1053,9 @@ mod tests {
     fn recover_deserializes_escaped_arguments_json() {
         let mut journal = ToolJournal::open_in_memory().unwrap();
 
-        let batch_id = journal.begin_streaming_batch("test-model").unwrap();
+        let batch_id = journal
+            .begin_streaming_batch(StepId::new(1), "test-model")
+            .unwrap();
         journal
             .record_call_start(
                 batch_id,

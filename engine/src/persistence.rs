@@ -13,7 +13,9 @@ use forge_context::{RecoveredStream, StepId};
 use forge_types::{Message, NonEmptyStaticStr, NonEmptyString};
 
 use crate::session_state::SessionState;
-use crate::state::{OperationState, ToolRecoveryState};
+use crate::state::{
+    OperationState, RecoveryBlockedReason, RecoveryBlockedState, ToolRecoveryState,
+};
 use crate::ui::DisplayItem;
 use crate::util;
 use crate::{App, ContextManager, MessageId};
@@ -210,7 +212,10 @@ impl App {
     ///
     /// This runs only while the app is idle to avoid interfering with streaming/tool execution.
     pub(crate) fn poll_journal_cleanup(&mut self) {
-        if !matches!(self.state, OperationState::Idle) {
+        if !matches!(
+            self.state,
+            OperationState::Idle | OperationState::ToolsDisabled(_)
+        ) {
             return;
         }
 
@@ -296,16 +301,84 @@ impl App {
     /// adding the message (it was already recovered or committed) and just finalize
     /// the journal cleanup.
     pub fn check_crash_recovery(&mut self) -> Option<RecoveredStream> {
-        if let Ok(Some(mut recovered_batch)) = self.tool_journal.recover() {
-            let stream_recovered = match self.stream_journal.recover() {
-                Ok(recovered) => recovered,
-                Err(e) => {
-                    self.push_notification(format!("Recovery failed: {e}"));
-                    return None;
-                }
-            };
+        fn merge_assistant_text(stream: &str, tool: &str) -> String {
+            let stream_trimmed = stream.trim();
+            let tool_trimmed = tool.trim();
+            if stream_trimmed.is_empty() {
+                return tool.to_string();
+            }
+            if tool_trimmed.is_empty() {
+                return stream.to_string();
+            }
 
-            let (step_id, partial_text, stream_model_name) = match &stream_recovered {
+            // Prefer the string that already contains the other (common when one is a prefix/suffix).
+            if stream.contains(tool) {
+                return stream.to_string();
+            }
+            if tool.contains(stream) {
+                return tool.to_string();
+            }
+
+            // Attempt a suffix/prefix overlap merge: stream(prefix) + tool(suffix).
+            let mut best_overlap = 0usize;
+            for (i, _) in tool.char_indices() {
+                let prefix = &tool[..i];
+                if stream.ends_with(prefix) {
+                    best_overlap = i;
+                }
+            }
+            if stream.ends_with(tool) {
+                best_overlap = tool.len();
+            }
+
+            if best_overlap > 0 {
+                let mut merged = String::with_capacity(stream.len() + tool.len() - best_overlap);
+                merged.push_str(stream);
+                merged.push_str(&tool[best_overlap..]);
+                return merged;
+            }
+
+            // Fallback: choose the longer string as a best-effort proxy for "more complete".
+            if stream.len() >= tool.len() {
+                stream.to_string()
+            } else {
+                tool.to_string()
+            }
+        }
+
+        let tool_recovered = match self.tool_journal.recover() {
+            Ok(batch) => batch,
+            Err(e) => {
+                tracing::warn!("Tool journal recovery failed: {e}");
+                self.tool_journal_disabled_reason = Some(e.to_string());
+                self.push_notification(format!(
+                    "Tool journal recovery failed; tool execution disabled for safety. ({e})"
+                ));
+                if matches!(self.state, OperationState::Idle) {
+                    self.state = self.idle_state();
+                }
+                None
+            }
+        };
+
+        let stream_recovered = match self.stream_journal.recover() {
+            Ok(recovered) => recovered,
+            Err(e) => {
+                tracing::warn!("Stream journal recovery failed: {e}");
+                self.state = OperationState::RecoveryBlocked(RecoveryBlockedState {
+                    reason: RecoveryBlockedReason::StreamJournalRecoverFailed {
+                        error: e.to_string(),
+                    },
+                });
+                self.push_notification(format!(
+                    "Recovery blocked: failed to read stream journal. Run /clear to reset. ({e})"
+                ));
+                return None;
+            }
+        };
+
+        if let Some(mut recovered_batch) = tool_recovered {
+            let (stream_step_id, partial_text, stream_model_name) = match &stream_recovered {
                 Some(
                     RecoveredStream::Complete {
                         step_id,
@@ -333,11 +406,30 @@ impl App {
                 None => (None, None, None),
             };
 
-            if recovered_batch.assistant_text.trim().is_empty()
-                && let Some(text) = partial_text
+            // Validate the new invariant: tool batches are bound to a stream step id.
+            // If both journals exist but disagree, fail closed into an explicit safety state.
+            if let (Some(tool_step_id), Some(stream_step_id)) =
+                (recovered_batch.stream_step_id, stream_step_id)
+                && tool_step_id != stream_step_id
+            {
+                self.state = OperationState::RecoveryBlocked(RecoveryBlockedState {
+                    reason: RecoveryBlockedReason::ToolBatchStepMismatch {
+                        batch_id: recovered_batch.batch_id,
+                        tool_batch_step_id: tool_step_id,
+                        stream_step_id,
+                    },
+                });
+                self.push_notification(
+                    "Recovery blocked: tool journal and stream journal refer to different turns. Run /clear to reset.",
+                );
+                return None;
+            }
+
+            if let Some(text) = partial_text
                 && !text.trim().is_empty()
             {
-                recovered_batch.assistant_text = text.to_string();
+                recovered_batch.assistant_text =
+                    merge_assistant_text(text, &recovered_batch.assistant_text);
             }
 
             let model = util::parse_model_name_from_string(&recovered_batch.model_name)
@@ -348,15 +440,17 @@ impl App {
                 })
                 .unwrap_or_else(|| self.model.clone());
 
+            let step_id = stream_step_id.or(recovered_batch.stream_step_id);
             if let Some(step_id) = step_id {
                 // Idempotency guard: if history already contains this step_id,
-                // the response was already committed - just clean up stale journals
+                // the response was already committed - just clean up stale journals.
                 if self.context_manager.has_step_id(step_id) {
                     if let Err(e) = self.tool_journal.discard_batch(recovered_batch.batch_id) {
                         tracing::warn!(
                             "Failed to discard idempotent tool batch {}: {e}",
                             recovered_batch.batch_id
                         );
+                        self.tool_journal_disabled_reason = Some(e.to_string());
                     }
                     if self.autosave_history() {
                         self.finalize_journal_commit(step_id);
@@ -377,31 +471,50 @@ impl App {
                         recovered_batch.corrupted_args.len()
                     ));
                 }
+
+                // Pragmatic safety warning: if a prior `Run` call has no result, it may still be running
+                // (crash prevents Drop-based cleanup). This is driven by recovered journal data.
+                let existing_results: std::collections::HashSet<&str> = recovered_batch
+                    .results
+                    .iter()
+                    .map(|r| r.tool_call_id.as_str())
+                    .collect();
+                if recovered_batch
+                    .calls
+                    .iter()
+                    .any(|call| call.name == "Run" && !existing_results.contains(call.id.as_str()))
+                {
+                    self.push_notification(
+                        "Warning: a `Run` command may still be running from before the crash.",
+                    );
+                }
+
                 self.state = OperationState::ToolRecovery(ToolRecoveryState {
                     batch: recovered_batch,
                     step_id,
                     model,
                 });
-                self.push_notification("Recovered tool batch. Press R to resume or D to discard.");
+                self.push_notification(
+                    "Recovered tool batch. Press R to finalize or D to discard.",
+                );
                 return stream_recovered;
             }
 
-            tracing::warn!("Tool batch recovery found but no stream journal step.");
-            self.push_notification("Recovered tool batch but stream journal missing; discarding");
+            tracing::warn!("Recovered tool batch but no associated stream step was found.");
+            self.push_notification(
+                "Recovered tool batch but stream journal missing; discarding tool recovery data.",
+            );
             if let Err(e) = self.tool_journal.discard_batch(recovered_batch.batch_id) {
                 tracing::warn!("Failed to discard orphaned tool batch: {e}");
+                self.tool_journal_disabled_reason = Some(e.to_string());
+                self.push_notification(format!(
+                    "Tool journal error: failed to discard orphaned batch; tools disabled. ({e})"
+                ));
             }
             return None;
         }
 
-        let recovered = match self.stream_journal.recover() {
-            Ok(Some(recovered)) => recovered,
-            Ok(None) => return None,
-            Err(e) => {
-                self.push_notification(format!("Recovery failed: {e}"));
-                return None;
-            }
-        };
+        let recovered = stream_recovered?;
 
         let (recovery_badge, step_id, last_seq, partial_text, error_text, model_name) =
             match &recovered {

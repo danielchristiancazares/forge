@@ -393,6 +393,52 @@ pub(crate) struct ToolRecoveryState {
     pub(crate) model: ModelName,
 }
 
+/// Tool execution is disabled due to tool journal errors.
+///
+/// This is an *idle* state: streaming may continue, but any tool calls are
+/// pre-resolved to errors rather than executed (fail closed for safety).
+#[derive(Debug)]
+pub(crate) struct ToolsDisabledState;
+
+/// Crash recovery could not proceed due to journal errors.
+///
+/// This is a safety state: we refuse to start new streams until the user clears
+/// or repairs the journals, preventing chronology corruption (IFA: invalid
+/// recovery states are explicit and unforgeable for the core).
+#[derive(Debug)]
+pub(crate) struct RecoveryBlockedState {
+    pub(crate) reason: RecoveryBlockedReason,
+}
+
+#[derive(Debug)]
+pub(crate) enum RecoveryBlockedReason {
+    StreamJournalRecoverFailed {
+        error: String,
+    },
+    ToolBatchStepMismatch {
+        batch_id: ToolBatchId,
+        tool_batch_step_id: StepId,
+        stream_step_id: StepId,
+    },
+}
+
+impl RecoveryBlockedReason {
+    pub(crate) fn message(&self) -> String {
+        match self {
+            Self::StreamJournalRecoverFailed { error } => {
+                format!("Stream journal recovery failed: {error}")
+            }
+            Self::ToolBatchStepMismatch {
+                batch_id,
+                tool_batch_step_id,
+                stream_step_id,
+            } => format!(
+                "Tool batch {batch_id} is bound to step {tool_batch_step_id}, but stream journal recovered step {stream_step_id}"
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ToolRecoveryDecision {
     Resume,
@@ -411,8 +457,10 @@ pub(crate) struct ToolPlan {
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum OperationState {
     Idle,
+    ToolsDisabled(ToolsDisabledState),
     Streaming(ActiveStream),
     ToolLoop(Box<ToolLoopState>),
     ToolRecovery(ToolRecoveryState),
+    RecoveryBlocked(RecoveryBlockedState),
     Distilling(DistillationState),
 }

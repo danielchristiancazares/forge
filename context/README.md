@@ -1415,7 +1415,7 @@ The `ToolJournal` provides durable tracking for tool batches, enabling crash rec
 SQLite-backed journal for tool batch durability:
 
 ```rust
-use forge_context::{ToolJournal, RecoveredToolBatch, ToolBatchId};
+use forge_context::{RecoveredToolBatch, StepId, ToolBatchId, ToolJournal};
 use forge_types::{ToolCall, ToolResult};
 
 // Open or create tool journal
@@ -1434,8 +1434,9 @@ if let Some(recovered) = journal.recover()? {
 }
 
 // Begin a new tool batch
+let step_id = StepId::new(1);
 let calls = vec![ToolCall::new("call_1", "read_file", json!({"path": "foo.rs"}))];
-let batch_id: ToolBatchId = journal.begin_batch("claude-opus-4-6", "assistant text", &calls)?;
+let batch_id: ToolBatchId = journal.begin_batch(step_id, "claude-opus-4-6", "assistant text", &calls)?;
 
 // Record results as tools execute
 let result = ToolResult::success("call_1", "read_file", "file contents...");
@@ -1462,6 +1463,7 @@ Data recovered from an incomplete tool batch:
 ```rust
 pub struct RecoveredToolBatch {
     pub batch_id: ToolBatchId,
+    pub stream_step_id: Option<StepId>,
     pub model_name: String,
     pub assistant_text: String,
     pub calls: Vec<ToolCall>,
@@ -1491,7 +1493,8 @@ For tool batches created during streaming (before arguments are complete):
 
 ```rust
 // Begin streaming batch with empty calls
-let batch_id = journal.begin_streaming_batch("claude-opus-4-6")?;
+let step_id = StepId::new(1);
+let batch_id = journal.begin_streaming_batch(step_id, "claude-opus-4-6")?;
 
 // Record call start as stream events arrive
 journal.record_call_start(batch_id, 0, "call_1", "read_file", &thought_signature_state)?;

@@ -295,6 +295,14 @@ impl super::App {
                 self.commit_recovered_tool_batch(state, ToolRecoveryDecision::Discard);
                 true
             }
+            OperationState::RecoveryBlocked(state) => {
+                // Safety state: don't allow "cancel" to silently clear recovery blocks.
+                self.state = OperationState::RecoveryBlocked(state);
+                self.push_notification(
+                    "Recovery is blocked due to journal errors. Run /clear to reset.",
+                );
+                false
+            }
             OperationState::Distilling(state) => {
                 state.task().handle.abort();
                 if state.has_queued_message() {
@@ -302,6 +310,11 @@ impl super::App {
                 }
                 self.push_notification("Distillation cancelled");
                 true
+            }
+            OperationState::ToolsDisabled(state) => {
+                // Not an in-flight operation.
+                self.state = OperationState::ToolsDisabled(state);
+                false
             }
             OperationState::Idle => false,
         }
@@ -352,10 +365,14 @@ impl super::App {
                         }
                         self.discard_journal_step(state.step_id);
                     }
+                    OperationState::RecoveryBlocked(_)
+                    | OperationState::ToolsDisabled(_)
+                    | OperationState::Idle => {
+                        // No in-flight async work; /clear below resets history/display state.
+                    }
                     OperationState::Distilling(state) => {
                         state.task().handle.abort();
                     }
-                    OperationState::Idle => {}
                 }
 
                 self.display.clear();
@@ -375,10 +392,12 @@ impl super::App {
                     tracing::warn!("Failed to discard pending tool batch on clear: {e}");
                 }
                 self.pending_tool_cleanup_failures = 0;
+                self.tool_journal_disabled_reason = None;
                 self.invalidate_usage_cache();
                 self.autosave_history();
                 self.push_notification("Conversation cleared");
                 self.view.clear_transcript = true;
+                self.state = self.idle_state();
             }
             Command::Model(model_arg) => {
                 if let Some(reason) = self.busy_reason() {

@@ -455,6 +455,12 @@ pub struct App {
     tool_settings: tools::ToolSettings,
     /// Tool journal for crash recovery.
     tool_journal: ToolJournal,
+    /// When set, tool execution is disabled for safety due to tool journal errors.
+    ///
+    /// This is a session-scoped safety latch: once tools are disabled, we pre-resolve
+    /// tool calls to errors rather than executing them. This avoids running tools when
+    /// crash-consistency guarantees cannot be upheld.
+    tool_journal_disabled_reason: Option<String>,
     /// Pending stream journal step ID that needs commit+prune cleanup.
     ///
     /// Best-effort retries run during `tick()` when idle. If this remains uncleared,
@@ -927,6 +933,7 @@ impl App {
                 OperationState::Streaming(_)
                     | OperationState::ToolLoop(_)
                     | OperationState::ToolRecovery(_)
+                    | OperationState::RecoveryBlocked(_)
             )
     }
 
@@ -958,16 +965,30 @@ impl App {
         self.busy_reason().is_some()
     }
 
+    /// If present, tools are disabled for safety due to a tool journal error.
+    pub fn tool_journal_disabled_reason(&self) -> Option<&str> {
+        self.tool_journal_disabled_reason.as_deref()
+    }
+
+    /// Human-readable reason for a recovery block (if recovery is blocked).
+    pub fn recovery_blocked_reason(&self) -> Option<String> {
+        match &self.state {
+            OperationState::RecoveryBlocked(state) => Some(state.reason.message()),
+            _ => None,
+        }
+    }
+
     /// Returns a description of why the app is busy, or None if idle.
     ///
     /// This centralizes busy-state checks to ensure consistency across
     /// `start_streaming`, `start_distillation`, and UI queries.
     fn busy_reason(&self) -> Option<&'static str> {
         match &self.state {
-            OperationState::Idle => None,
+            OperationState::Idle | OperationState::ToolsDisabled(_) => None,
             OperationState::Streaming(_) => Some("streaming a response"),
             OperationState::ToolLoop(_) => Some("tool execution in progress"),
             OperationState::ToolRecovery(_) => Some("tool recovery pending"),
+            OperationState::RecoveryBlocked(_) => Some("recovery blocked"),
             OperationState::Distilling(_) => Some("distillation in progress"),
         }
     }
@@ -1008,11 +1029,16 @@ impl App {
 
     #[allow(clippy::unused_self)] // Kept as method for API consistency
     fn idle_state(&self) -> OperationState {
-        OperationState::Idle
+        if self.tool_journal_disabled_reason.is_some() {
+            OperationState::ToolsDisabled(state::ToolsDisabledState)
+        } else {
+            OperationState::Idle
+        }
     }
 
     fn replace_with_idle(&mut self) -> OperationState {
-        std::mem::replace(&mut self.state, OperationState::Idle)
+        let idle = self.idle_state();
+        std::mem::replace(&mut self.state, idle)
     }
 
     fn build_basic_api_messages(&mut self, reserved_overhead: u32) -> Vec<Message> {
