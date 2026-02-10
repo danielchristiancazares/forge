@@ -115,10 +115,10 @@ digest:
     cargo +nightly rustdoc -p forge-context -- -Z unstable-options --output-format json
     cargo +nightly rustdoc -p forge-engine -- -Z unstable-options --output-format json
     cargo +nightly rustdoc -p forge-tui -- -Z unstable-options --output-format json
-    cargo +nightly rustdoc -p forge-webfetch -- -Z unstable-options --output-format json
+    cargo +nightly rustdoc -p forge-tools -- -Z unstable-options --output-format json
     cargo +nightly rustdoc -p forge-lsp -- -Z unstable-options --output-format json
     cargo +nightly rustdoc -p forge -- -Z unstable-options --output-format json
-    python scripts/rustdoc_digest.py target/doc/forge_types.json target/doc/forge_providers.json target/doc/forge_context.json target/doc/forge_engine.json target/doc/forge_tui.json target/doc/forge_webfetch.json target/doc/forge_lsp.json target/doc/forge.json > DIGEST.md
+    python scripts/rustdoc_digest.py target/doc/forge_types.json target/doc/forge_providers.json target/doc/forge_context.json target/doc/forge_engine.json target/doc/forge_tui.json target/doc/forge_tools.json target/doc/forge_lsp.json target/doc/forge.json > DIGEST.md
 
 [unix]
 digest:
@@ -127,10 +127,10 @@ digest:
     cargo +nightly rustdoc -p forge-context -- -Z unstable-options --output-format json
     cargo +nightly rustdoc -p forge-engine -- -Z unstable-options --output-format json
     cargo +nightly rustdoc -p forge-tui -- -Z unstable-options --output-format json
-    cargo +nightly rustdoc -p forge-webfetch -- -Z unstable-options --output-format json
+    cargo +nightly rustdoc -p forge-tools -- -Z unstable-options --output-format json
     cargo +nightly rustdoc -p forge-lsp -- -Z unstable-options --output-format json
     cargo +nightly rustdoc -p forge -- -Z unstable-options --output-format json
-    py=$(command -v python3 >/dev/null 2>&1 && echo python3 || echo python); $py scripts/rustdoc_digest.py target/doc/forge_types.json target/doc/forge_providers.json target/doc/forge_context.json target/doc/forge_engine.json target/doc/forge_tui.json target/doc/forge_webfetch.json target/doc/forge_lsp.json target/doc/forge.json > DIGEST.md
+    py=$(command -v python3 >/dev/null 2>&1 && echo python3 || echo python); $py scripts/rustdoc_digest.py target/doc/forge_types.json target/doc/forge_providers.json target/doc/forge_context.json target/doc/forge_engine.json target/doc/forge_tui.json target/doc/forge_tools.json target/doc/forge_lsp.json target/doc/forge.json > DIGEST.md
 
 # Update all known TOC files
 toc-all:
