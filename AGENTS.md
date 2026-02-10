@@ -1,121 +1,191 @@
-# Agent Rules
+# CLAUDE.md
 
-You're great at this. Let's work together.
+Forge is a vim-modal TUI for LLMs built with ratatui/crossterm.
+Environment: Windows, PowerShell 7. Use `Pwsh` tool, not Bash.
 
-## User Communication
+## Rules
 
-- Expect tonal whiplash from user: dry humor, sarcasm, absurdist bits, and technical rigor all coexist.
-- User pivots between registers are normal. Don't flag the shift, just roll with it.
-- Match energy when appropriate. A quip deserves a quip, not a corporate disclaimer.
-- User's melodramatic expressions ("that shit is massive") aren't frustration-just colorful commentary. Don't treat them as distress signals.
+- Run `just verify` after every code change (runs fmt + clippy -D warnings + test)
+- Run `just fix` after editing files (normalizes CRLF → LF in *.rs and *.md)
+- Never add trivial comments. Do not restate the obvious.
+- Never decrease test coverage. Check with `cargo cov`.
+- Update `docs/` when changing any public API.
+- Use `dirs::home_dir()` for config paths, not hardcoded `~/.forge/`. Display actual path via `config::config_path()`.
+- Use `tracing::warn!` for diagnostics, never `eprintln!` (corrupts TUI output).
 
-## Build, Test, and Development Commands
+## Rust Style
 
-- Take your time to think through implementations and plans thoroughly; your careful analysis is appreciated.
-- Always test your changes when you alter code to ensure correctness.
-  - If you encounter errors unrelated to your work, ask me if I'd like you to investigate and fix them.
+- `String::new()` not `"".to_string()`
+- `.map(ToString::to_string)` not `.map(|m| m.to_string())`
+- Method references over closures (`clippy::redundant_closure_for_method_calls`)
+- Collapse `if` statements (`clippy::collapsible_if`)
+- Inline `format!` args (`clippy::uninlined_format_args`)
+- Test assertions: compare whole objects, not field-by-field
 
-## Commit Expectations
+## Branching and Worktrees
 
-- Commit messages: short, imperative summaries preceded by type and scope (e.g., `feat(vulkan): implement VMA for Vulkan`)
-- Add detail lines for additional clarity when needed.
-- Group related changes per commit. Keep these cohesive.
+When working on a feature or fix, create a git worktree to isolate from other agents:
 
-## Agent Tooling
+```
+git worktree add ../forge-<branch> -b <branch>
+# All file operations use absolute paths under ../forge-<branch>/
+# Run cargo/just commands from the worktree root
+# When done: commit, push, open PR, then clean up
+git worktree remove ../forge-<branch>
+```
 
-When tools are available, prefer these:
+This prevents uncommitted changes from one session bleeding into another's builds and commits. The main checkout stays clean.
 
-### Read-Only Commands (always safe, no permission needed)
+## Shell Pitfalls (Windows)
 
-- `Read` over `cat`/`head`/`tail`/`Get-Content`
-  - Note: Attempting to read more than 697 lines at a time will truncate in the middle. To ensure full context when reading files, try to stay below 697 lines being read at a time.
-- `Search` over `grep`/`rg`/`ripgrep` for content search
-- `Glob` for filename search
-- `WebFetch` for URLs (uses Chromium, parses cleanly)
-- `GitStatus` for current git state
+- No `2>&1` redirection — just run the command directly
+- No `cd dir && command` chaining — commands run from repo root; use `--manifest-path` for cargo
+- No `Push-Location`/`Set-Location` with semicolons — run commands directly
 
-### Write Commands (use judgment based on sandbox/escalation policy)
+## Commands
 
-- `apply_patch` for file edits; fall back to `Edit` if needed
-- `Write` for new files (fails if file exists)
-- `GitAdd` for staging files
-- `Pwsh` for PowerShell
-- `Build` and `Test` when `build.ps1` / `test.ps1` exist
+```
+just verify                             # fmt + clippy + test (always run before commit)
+just fix                                # CRLF → LF normalization
+cargo check                             # Fast type-check
+cargo test test_name                    # Single test
+cargo test -- --nocapture               # With stdout
+cargo test --test integration_test      # Integration tests only
+cargo cov                               # Coverage report
+```
 
-## Agent Workflow
+## Commit Workflow
 
-- "check/review/read/verify" -> read-only investigation unless explicitly told to patch
-- Avoid destructive git commands (`git restore`, `git reset`, `git checkout`) unless asked; prefer surgical, minimal edits. If you need to run one, ask and wait.
-- After completing a task: verify it compiles, confirm with me, then stage/commit/push.
+```
+just verify && just fix
+git add -A
+git commit -m "type(scope): description"
+git push
+```
 
-## Skills
+Conventional commits: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
 
-- A skill is a set of local instructions stored in a `SKILL.md` file (typically under `$CODEX_HOME/skills/`).
-- If the user names a skill explicitly (e.g., `$skill-name`) or the task clearly matches a skill's description, open that `SKILL.md` and follow it.
-- Keep context small: read only the sections/files needed; prefer reusing skill scripts/assets over retyping.
+## Configuration
 
----
+Config: `~/.forge/config.toml` (supports `${ENV_VAR}` expansion)
 
-# Repository Guidelines
+```toml
+[app]
+model = "claude-opus-4-6"    # claude-* → Claude, gpt-* → OpenAI, gemini-* → Gemini
 
-## Project Structure & Module Organization
-Forge is a Rust Cargo workspace split into focused crates. Key paths:
-- `cli/` entry point and terminal session
-- `engine/` state machines, commands, tool executor
-- `tui/` rendering and input handling
-- `context/` distillation, token budgeting, SQLite journals
-- `providers/` LLM clients (Claude/OpenAI/Gemini)
-- `types/` shared domain types (no IO)
-- `webfetch/` URL fetching and parsing
-- `tests/` integration and snapshot tests (`tests/snapshots/`)
-- `docs/` architecture notes; `scripts/` helper tools; `cli/assets/` embedded prompts
+[api_keys]
+anthropic = "${ANTHROPIC_API_KEY}"
+openai = "${OPENAI_API_KEY}"
+google = "${GEMINI_API_KEY}"
 
-## Build, Test, and Development Commands
-- `just --list` show available recipes; `just check|build|release|test` map to cargo.
-- `cargo run --release` run the TUI locally.
-- `just fmt` / `cargo fmt` format; `just lint` / `cargo clippy --workspace --all-targets -- -D warnings` lint.
-- `just cov` or `cargo cov` for coverage (requires cargo-llvm-cov).
+[context]
+memory = true                # Librarian fact extraction/retrieval
 
-## Coding Style & Naming Conventions
-- Rust 2024 edition; follow rustfmt defaults and clippy settings in `clippy.toml`.
-- Prefer type-driven invariants (see `DESIGN.md` and `INVARIANT_FIRST_ARCHITECTURE.md`); make invalid states unrepresentable.
-- Naming: crates use `forge-*`, modules are snake_case, types are PascalCase, tests mirror module names.
+[anthropic]
+cache_enabled = true
+thinking_enabled = false
 
-## Additional Coding Guidelines
-- Use `String::new()` over `"".to_string()`.
-- Use `.map(ToString::to_string)` over `.map(|m| m.to_string())`.
-- Always collapse `if` statements per clippy.
-- Always inline `format!` args when possible per clippy.
-- Use method references over closures when possible per clippy.
-- When writing tests, prefer comparing the equality of entire objects over fields one by one.
-- When making a change that adds or changes an API, ensure `docs/` is updated if applicable.
+[google]
+thinking_enabled = true      # thinkingLevel="high" for Gemini 3 Pro
+```
 
-## Type-Driven Design Patterns
-- Proof tokens: zero-sized types that prove preconditions (e.g., `insert_token()`/`command_token()` required before `insert_mode()`/`command_mode()`).
-- Validated newtypes: `NonEmptyString`, `NonEmptyStaticStr`, `ModelName`, `QueuedUserMessage`, `EnteredCommand`, `PreparedContext`, `ActiveJournal`.
-- Mode wrapper types: `InsertMode<'a>` / `CommandMode<'a>` gate mode-specific operations behind the appropriate token.
+Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_CONTEXT_INFINITY=0`
 
-## Testing Guidelines
-- Run the full suite: `cargo test`.
-- Integration aggregator: `cargo test --test all`.
-- UI snapshots: `cargo test --test ui_snapshots` (uses `insta` snapshots in `tests/snapshots/`).
-- Keep coverage stable or improving; use `cargo cov` when touching core logic.
+## Crates (9)
 
-## Testing Tools
-- HTTP mocking: `wiremock`.
-- Snapshots: `insta`.
-- Temp files: `tempfile`.
+| Crate | Purpose |
+|-------|---------|
+| `cli` | Binary entry point, terminal session, event loop |
+| `types` | Core domain types (no IO, no async) |
+| `providers` | LLM API clients: Claude, OpenAI, Gemini |
+| `context` | Context window management, SQLite persistence, journaling |
+| `engine` | App state machine, commands, tool execution |
+| `tools` | Tool executor framework, built-in tools, URL fetch/extraction |
+| `tui` | TUI rendering (ratatui), input handling, themes |
+| `lsp` | LSP client for language server diagnostics |
+| `tests` | Integration tests |
 
-## Commit & Pull Request Guidelines
-- Commit format follows Conventional Commits: `type(scope): description` (scope optional). Examples: `feat(engine): add rewind`, `fix: resolve clippy lints`.
-- Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
-- Keep commits cohesive; run `just verify` before pushing.
-- After Rust changes, run `just verify` before you stage or commit any files.
-- PRs should include a short summary, test results, and screenshots for TUI-visible changes; link related issues when applicable.
+## Key Files
 
-## Configuration & Secrets
-- Local config lives in `~/.forge/config.toml`; API keys come from env vars like `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`.
-- Never commit real tokens or local config files.
+| Crate | File | Purpose |
+|-------|------|---------|
+| `cli` | `main.rs` | Entry point, terminal session, event loop |
+| `engine` | `lib.rs` | App state machine, orchestration |
+| `engine` | `commands.rs` | Slash command parsing and dispatch |
+| `engine` | `config.rs` | Config parsing (`ForgeConfig`) |
+| `engine` | `tool_loop.rs` | Tool executor orchestration, approval flow |
+| `engine` | `state.rs` | `ToolBatch`, `ApprovalState`, operation states |
+| `engine` | `streaming.rs` | Stream event handling, `StreamingMessage` |
+| `engine` | `persistence.rs` | Crash recovery, session restore |
+| `engine` | `ui/input.rs` | `InputMode`, `InputState`, `DraftInput` |
+| `engine` | `ui/modal.rs` | `ModalEffectKind`, modal state |
+| `tui` | `lib.rs` | Full-screen rendering |
+| `tui` | `input.rs` | Keyboard input handling |
+| `tui` | `theme.rs` | Colors and styles |
+| `tui` | `markdown.rs` | Markdown to ratatui conversion |
+| `tui` | `effects.rs` | Modal animations (PopScale, SlideUp) |
+| `tui` | `tool_display.rs` | Tool result rendering |
+| `context` | `manager.rs` | Context orchestration, distillation triggers |
+| `context` | `history.rs` | Persistent storage (`MessageId`, `DistillateId`) |
+| `context` | `stream_journal.rs` | SQLite WAL for crash recovery |
+| `context` | `tool_journal.rs` | Tool execution journaling |
+| `context` | `working_context.rs` | Token budget allocation |
+| `context` | `distillation.rs` | Distillate generation |
+| `context` | `model_limits.rs` | Per-model token limits |
+| `context` | `token_counter.rs` | Token counting |
+| `context` | `fact_store.rs` | Fact extraction and storage |
+| `context` | `librarian.rs` | Context retrieval orchestration |
+| `providers` | `lib.rs` | Provider dispatch, SSE parsing |
+| `types` | `lib.rs` | Message types, `NonEmptyString`, `ModelName` |
+| `lsp` | `lib.rs` | LSP client re-exports |
+| `lsp` | `manager.rs` | Server lifecycle, event polling, diagnostics |
+| `lsp` | `server.rs` | Child process, JSON-RPC routing |
+| `lsp` | `codec.rs` | LSP Content-Length framing |
+| `lsp` | `protocol.rs` | LSP message serde types |
+| `lsp` | `diagnostics.rs` | Per-file diagnostics, `DiagnosticsSnapshot` |
+| `lsp` | `types.rs` | `LspConfig`, `ServerConfig`, `ForgeDiagnostic` |
+| `tools` | `webfetch/mod.rs` | URL fetch pipeline and tool executor |
 
-## Agent Notes
-- Other agent and architecture guidance lives in submodule `README.md` files.
+## Extension Points
+
+| Task | Where |
+|------|-------|
+| Add command | `engine/src/commands.rs` — `Command` enum + `App::process_command()` |
+| Add input mode | `engine/src/ui/input.rs` + `tui/src/input.rs` + `tui/src/lib.rs` |
+| Add provider | `types/src/lib.rs` `Provider` enum + new module in `providers/src/` |
+| Change colors | `tui/src/theme.rs` |
+| Add UI overlay | `tui/src/lib.rs` — `draw_*` function |
+| Add modal animation | `engine/src/ui/modal.rs` + `tui/src/effects.rs` |
+
+## Providers
+
+| Provider | Default Model | Context | Output |
+|----------|---------------|---------|--------|
+| Claude | `claude-opus-4-6` | 1M | 128K |
+| OpenAI | `gpt-5.2` | 400K | 128K |
+| Gemini | `gemini-3-pro-preview` | 1M | 65K |
+
+## Pitfalls
+
+- **Claude cache_control limit**: Max 4 blocks. `CacheBudget` type enforces this structurally. `plan_cache_allocation()` in `engine/src/streaming.rs` distributes slots across system prompt, tools, and messages based on token thresholds (≥4096).
+- **Scrollbar rendering**: Only render when `max_scroll > 0`. Use `max_scroll` as content_length, not `total_lines`.
+- **Cache expensive computations**: `context_usage_status()` should be cached, not recomputed per frame.
+- **Journal atomicity**: commit+prune must be one transaction. Only commit journal if history save succeeds. Always discard or commit steps in error paths (prevents session brick).
+- **Platform paths**: Use `dirs::home_dir()`, not hardcoded `~/.forge/`.
+
+## Testing
+
+Uses wiremock for HTTP mocking, insta for snapshots, tempfile for isolation.
+
+## Reference Docs
+
+| Document | Description |
+|----------|-------------|
+| `INVARIANT_FIRST_ARCHITECTURE.md` | IFA design principles |
+| `SECURITY.md` | Security sanitization infrastructure |
+| `docs/ANTHROPIC_MESSAGES_API.md` | Claude API reference |
+| `docs/OPENAI_RESPONSES_GPT52.md` | OpenAI Responses API integration |
+| `docs/RUST_2024_REFERENCE.md` | Rust 2024 edition features used |
+| `docs/SECURITY.md` | Security sanitization (detailed) |
+
+Each crate has its own `README.md` with detailed architecture. Read those on demand.
