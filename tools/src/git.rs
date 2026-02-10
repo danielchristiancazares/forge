@@ -43,183 +43,36 @@ enum GitToolKind {
 }
 
 impl GitToolKind {
-    fn name(self) -> &'static str {
-        match self {
-            GitToolKind::Status => "GitStatus",
-            GitToolKind::Diff => "GitDiff",
-            GitToolKind::Restore => "GitRestore",
-            GitToolKind::Add => "GitAdd",
-            GitToolKind::Commit => "GitCommit",
-            GitToolKind::Log => "GitLog",
-            GitToolKind::Branch => "GitBranch",
-            GitToolKind::Checkout => "GitCheckout",
-            GitToolKind::Stash => "GitStash",
-            GitToolKind::Show => "GitShow",
-            GitToolKind::Blame => "GitBlame",
+    fn from_command_str(s: &str) -> Option<Self> {
+        match s {
+            "status" => Some(Self::Status),
+            "diff" => Some(Self::Diff),
+            "restore" => Some(Self::Restore),
+            "add" => Some(Self::Add),
+            "commit" => Some(Self::Commit),
+            "log" => Some(Self::Log),
+            "branch" => Some(Self::Branch),
+            "checkout" => Some(Self::Checkout),
+            "stash" => Some(Self::Stash),
+            "show" => Some(Self::Show),
+            "blame" => Some(Self::Blame),
+            _ => None,
         }
     }
 
-    fn description(self) -> &'static str {
+    fn command_str(self) -> &'static str {
         match self {
-            GitToolKind::Status => {
-                "Show working tree status: staged, modified, and untracked files."
-            }
-            GitToolKind::Diff => {
-                "Show file changes. Omit from_ref for working-tree diff. \
-                 Set from_ref (e.g. \"HEAD\", \"main\") to diff that ref against the working tree. \
-                 Set both from_ref and to_ref for ref-to-ref comparison. \
-                 Add output_dir to write per-file patches to disk instead of inline output."
-            }
-            GitToolKind::Restore => {
-                "Discard uncommitted changes to specific files. WARNING: destructive."
-            }
-            GitToolKind::Add => "Stage files for commit.",
-            GitToolKind::Commit => "Create a conventional commit (type(scope): message).",
-            GitToolKind::Log => "Show commit history with configurable format and filters.",
-            GitToolKind::Branch => "List, create, rename, or delete branches.",
-            GitToolKind::Checkout => "Switch branches or restore working tree files.",
-            GitToolKind::Stash => "Stash changes in a dirty working directory.",
-            GitToolKind::Show => "Show commit details and diff.",
-            GitToolKind::Blame => {
-                "Show what revision and author last modified each line of a file."
-            }
-        }
-    }
-
-    fn schema(self) -> Value {
-        match self {
-            GitToolKind::Status => json!({
-                "type": "object",
-                "properties": {
-                    "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds before the command is aborted"},
-                    "porcelain": {"type": "boolean", "default": true, "description": "Use porcelain output (`--porcelain=1`) when true"},
-                    "branch": {"type": "boolean", "default": true, "description": "Include branch info (`-b`) in porcelain mode"},
-                    "untracked": {"type": "boolean", "default": true, "description": "Include untracked files in porcelain mode (when false, uses `-uno`)"}
-                },
-                "required": []
-            }),
-            GitToolKind::Diff => json!({
-                "type": "object",
-                "properties": {
-                    "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds before the command is aborted"},
-                    "cached": {"type": "boolean", "default": false, "description": "Diff staged changes (`--cached`)"},
-                    "stat": {"type": "boolean", "default": false, "description": "Show diffstat only (`--stat`)"},
-                    "name_only": {"type": "boolean", "default": false, "description": "Show only changed file names (`--name-only`)"},
-                    "unified": {"type": "integer", "minimum": 0, "description": "Number of context lines (`-U<N>`)"},
-                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional path list to diff (passed after `--`)"},
-                    "max_bytes": {"type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "Maximum bytes captured from stdout before truncation"},
-                    "from_ref": {"type": "string", "description": "Git ref to diff from (branch, tag, or SHA). Examples: \"HEAD\", \"HEAD~3\", \"main\". Omit for index-vs-working-tree diff. Use alone to diff ref vs working tree. Use with to_ref for ref-to-ref comparison."},
-                    "to_ref": {"type": "string", "description": "Git ref to diff to (branch, tag, or SHA). Only used with from_ref for ref-to-ref comparison (e.g. from_ref=\"main\", to_ref=\"HEAD\")."},
-                    "output_dir": {"type": "string", "description": "Directory to write per-file patch files instead of inline output (created if missing). Works alone for working-tree diff, or with from_ref/to_ref for ref-based diffs."}
-                },
-                "required": []
-            }),
-            GitToolKind::Restore => json!({
-                "type": "object",
-                "properties": {
-                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Paths to restore (passed after `--`)"},
-                    "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds before the command is aborted"},
-                    "staged": {"type": "boolean", "default": false, "description": "Restore the index/staging area (`--staged`)"},
-                    "worktree": {"type": "boolean", "default": true, "description": "Restore the working tree (`--worktree`) (default true)"}
-                },
-                "required": ["paths"]
-            }),
-            GitToolKind::Add => json!({
-                "type": "object",
-                "properties": {
-                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Files to stage"},
-                    "all": {"type": "boolean", "default": false, "description": "Stage all changes (`-A`)"},
-                    "update": {"type": "boolean", "default": false, "description": "Stage modified/deleted only (`-u`)"},
-                    "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"}
-                },
-                "required": []
-            }),
-            GitToolKind::Commit => json!({
-                "type": "object",
-                "properties": {
-                    "type": {"type": "string", "description": "Commit type: feat, fix, docs, style, refactor, test, chore, etc."},
-                    "scope": {"type": "string", "description": "Optional scope/area of change"},
-                    "message": {"type": "string", "description": "Commit description"},
-                    "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"}
-                },
-                "required": ["type", "message"]
-            }),
-            GitToolKind::Log => json!({
-                "type": "object",
-                "properties": {
-                    "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"},
-                    "max_count": {"type": "integer", "minimum": 1, "description": "Limit number of commits to show"},
-                    "oneline": {"type": "boolean", "default": false, "description": "Show each commit on a single line"},
-                    "format": {"type": "string", "description": "Pretty-print format (e.g., '%H %s' for hash and subject)"},
-                    "author": {"type": "string", "description": "Filter commits by author"},
-                    "since": {"type": "string", "description": "Show commits after date (e.g., '2024-01-01', '2 weeks ago')"},
-                    "until": {"type": "string", "description": "Show commits before date"},
-                    "grep": {"type": "string", "description": "Filter commits by message pattern"},
-                    "path": {"type": "string", "description": "Show commits affecting this path"},
-                    "max_bytes": {"type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "Maximum output bytes"}
-                },
-                "required": []
-            }),
-            GitToolKind::Branch => json!({
-                "type": "object",
-                "properties": {
-                    "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"},
-                    "list_all": {"type": "boolean", "default": false, "description": "List both local and remote branches (`-a`)"},
-                    "list_remote": {"type": "boolean", "default": false, "description": "List only remote branches (`-r`)"},
-                    "create": {"type": "string", "description": "Create a new branch with this name"},
-                    "delete": {"type": "string", "description": "Delete this branch (`-d`, must be merged)"},
-                    "force_delete": {"type": "string", "description": "Force delete this branch (`-D`)"},
-                    "rename": {"type": "string", "description": "Rename this branch (requires new_name)"},
-                    "new_name": {"type": "string", "description": "New name when renaming a branch"}
-                },
-                "required": []
-            }),
-            GitToolKind::Checkout => json!({
-                "type": "object",
-                "properties": {
-                    "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"},
-                    "branch": {"type": "string", "description": "Branch to switch to"},
-                    "create_branch": {"type": "string", "description": "Create and switch to a new branch (`-b`)"},
-                    "commit": {"type": "string", "description": "Checkout a specific commit (detached HEAD)"},
-                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Restore these paths from index, or from `commit` when provided"}
-                },
-                "required": []
-            }),
-            GitToolKind::Stash => json!({
-                "type": "object",
-                "properties": {
-                    "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"},
-                    "action": {"type": "string", "enum": ["push", "pop", "apply", "drop", "list", "show", "clear"], "default": "push", "description": "Stash action to perform"},
-                    "message": {"type": "string", "description": "Message for the stash (with push)"},
-                    "index": {"type": "integer", "minimum": 0, "description": "Stash index for pop/apply/drop/show"},
-                    "include_untracked": {"type": "boolean", "default": false, "description": "Include untracked files (with push)"}
-                },
-                "required": []
-            }),
-            GitToolKind::Show => json!({
-                "type": "object",
-                "properties": {
-                    "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"},
-                    "commit": {"type": "string", "description": "Commit to show (default: HEAD)"},
-                    "stat": {"type": "boolean", "default": false, "description": "Show diffstat only"},
-                    "name_only": {"type": "boolean", "default": false, "description": "Show only names of changed files"},
-                    "format": {"type": "string", "description": "Pretty-print format for commit info"},
-                    "max_bytes": {"type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "Maximum output bytes"}
-                },
-                "required": []
-            }),
-            GitToolKind::Blame => json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "File path to blame"},
-                    "timeout_ms": {"type": "integer", "minimum": 100, "default": 30000, "description": "Timeout in milliseconds"},
-                    "start_line": {"type": "integer", "minimum": 1, "description": "Start line number for range"},
-                    "end_line": {"type": "integer", "minimum": 1, "description": "End line number for range"},
-                    "commit": {"type": "string", "description": "Blame at specific commit instead of HEAD"},
-                    "max_bytes": {"type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "Maximum output bytes"}
-                },
-                "required": ["path"]
-            }),
+            Self::Status => "status",
+            Self::Diff => "diff",
+            Self::Restore => "restore",
+            Self::Add => "add",
+            Self::Commit => "commit",
+            Self::Log => "log",
+            Self::Branch => "branch",
+            Self::Checkout => "checkout",
+            Self::Stash => "stash",
+            Self::Show => "show",
+            Self::Blame => "blame",
         }
     }
 
@@ -252,43 +105,222 @@ impl GitToolKind {
     }
 }
 
-struct GitTool {
-    kind: GitToolKind,
-}
+struct GitTool;
 
 impl GitTool {
-    fn new(kind: GitToolKind) -> Self {
-        Self { kind }
+    fn parse_kind(args: &Value) -> Result<GitToolKind, ToolError> {
+        let cmd = args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::BadArgs {
+                message: "missing required field: command".to_string(),
+            })?;
+        GitToolKind::from_command_str(cmd).ok_or_else(|| ToolError::BadArgs {
+            message: format!("unknown git command: {cmd}"),
+        })
     }
+}
+
+fn git_tool_schema() -> Value {
+    let mut variants = Vec::with_capacity(11);
+
+    variants.push(json!({
+        "title": "status",
+        "description": "Show working tree status: staged, modified, and untracked files.",
+        "properties": {
+            "command": { "type": "string", "const": "status" },
+            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
+            "porcelain": { "type": "boolean", "default": true, "description": "Use porcelain output (--porcelain=1)" },
+            "branch": { "type": "boolean", "default": true, "description": "Include branch info (-b) in porcelain mode" },
+            "untracked": { "type": "boolean", "default": true, "description": "Include untracked files (false uses -uno)" }
+        },
+        "required": ["command"]
+    }));
+
+    variants.push(json!({
+        "title": "diff",
+        "description": "Show file changes in working tree, staging area, or between refs. When from_ref+to_ref+output_dir are set, writes per-file patches.",
+        "properties": {
+            "command": { "type": "string", "const": "diff" },
+            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
+            "cached": { "type": "boolean", "default": false, "description": "Diff staged changes (--cached)" },
+            "stat": { "type": "boolean", "default": false, "description": "Show diffstat only (--stat)" },
+            "name_only": { "type": "boolean", "default": false, "description": "Show only changed file names" },
+            "unified": { "type": "integer", "minimum": 0, "description": "Context lines (-U<N>)" },
+            "paths": { "type": "array", "items": { "type": "string" }, "description": "Paths to diff (after --)" },
+            "max_bytes": { "type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "Max stdout bytes" },
+            "from_ref": { "type": "string", "description": "Starting ref for ref-to-ref comparison" },
+            "to_ref": { "type": "string", "description": "Ending ref for ref-to-ref comparison" },
+            "output_dir": { "type": "string", "description": "Directory to write per-file patches (requires from_ref+to_ref)" }
+        },
+        "required": ["command"]
+    }));
+
+    variants.push(json!({
+        "title": "restore",
+        "description": "Discard uncommitted changes to specific files. WARNING: destructive.",
+        "properties": {
+            "command": { "type": "string", "const": "restore" },
+            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
+            "paths": { "type": "array", "items": { "type": "string" }, "description": "Paths to restore (after --)" },
+            "staged": { "type": "boolean", "default": false, "description": "Restore the index/staging area (--staged)" },
+            "worktree": { "type": "boolean", "default": true, "description": "Restore the working tree (--worktree)" }
+        },
+        "required": ["command", "paths"]
+    }));
+
+    variants.push(json!({
+        "title": "add",
+        "description": "Stage files for commit.",
+        "properties": {
+            "command": { "type": "string", "const": "add" },
+            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
+            "paths": { "type": "array", "items": { "type": "string" }, "description": "Files to stage" },
+            "all": { "type": "boolean", "default": false, "description": "Stage all changes (-A)" },
+            "update": { "type": "boolean", "default": false, "description": "Stage modified/deleted only (-u)" }
+        },
+        "required": ["command"]
+    }));
+
+    variants.push(json!({
+        "title": "commit",
+        "description": "Create a conventional commit (type(scope): message).",
+        "properties": {
+            "command": { "type": "string", "const": "commit" },
+            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
+            "type": { "type": "string", "description": "Commit type: feat, fix, docs, style, refactor, test, chore" },
+            "scope": { "type": "string", "description": "Optional scope/area of change" },
+            "message": { "type": "string", "description": "Commit description" }
+        },
+        "required": ["command", "type", "message"]
+    }));
+
+    variants.push(json!({
+        "title": "log",
+        "description": "Show commit history with configurable format and filters.",
+        "properties": {
+            "command": { "type": "string", "const": "log" },
+            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
+            "max_count": { "type": "integer", "minimum": 1, "description": "Limit number of commits" },
+            "oneline": { "type": "boolean", "default": false, "description": "One line per commit" },
+            "format": { "type": "string", "description": "Pretty-print format (e.g. '%H %s')" },
+            "author": { "type": "string", "description": "Filter by author" },
+            "since": { "type": "string", "description": "After date (e.g. '2024-01-01')" },
+            "until": { "type": "string", "description": "Before date" },
+            "grep": { "type": "string", "description": "Filter by message pattern" },
+            "path": { "type": "string", "description": "Show commits affecting this path" },
+            "max_bytes": { "type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "Max output bytes" }
+        },
+        "required": ["command"]
+    }));
+
+    variants.push(json!({
+        "title": "branch",
+        "description": "List, create, rename, or delete branches.",
+        "properties": {
+            "command": { "type": "string", "const": "branch" },
+            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
+            "list_all": { "type": "boolean", "default": false, "description": "List local and remote branches (-a)" },
+            "list_remote": { "type": "boolean", "default": false, "description": "List only remote branches (-r)" },
+            "create": { "type": "string", "description": "Create a new branch with this name" },
+            "delete": { "type": "string", "description": "Delete this branch (-d, must be merged)" },
+            "force_delete": { "type": "string", "description": "Force delete this branch (-D)" },
+            "rename": { "type": "string", "description": "Rename this branch (requires new_name)" },
+            "new_name": { "type": "string", "description": "New name when renaming" }
+        },
+        "required": ["command"]
+    }));
+
+    variants.push(json!({
+        "title": "checkout",
+        "description": "Switch branches or restore working tree files.",
+        "properties": {
+            "command": { "type": "string", "const": "checkout" },
+            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
+            "branch": { "type": "string", "description": "Branch to switch to" },
+            "create_branch": { "type": "string", "description": "Create and switch to new branch (-b)" },
+            "commit": { "type": "string", "description": "Checkout a specific commit (detached HEAD)" },
+            "paths": { "type": "array", "items": { "type": "string" }, "description": "Restore these paths from HEAD" }
+        },
+        "required": ["command"]
+    }));
+
+    variants.push(json!({
+        "title": "stash",
+        "description": "Stash changes in a dirty working directory.",
+        "properties": {
+            "command": { "type": "string", "const": "stash" },
+            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
+            "action": { "type": "string", "enum": ["push", "pop", "apply", "drop", "list", "show", "clear"], "default": "push", "description": "Stash action" },
+            "message": { "type": "string", "description": "Message for stash (with push)" },
+            "index": { "type": "integer", "minimum": 0, "description": "Stash index for pop/apply/drop/show" },
+            "include_untracked": { "type": "boolean", "default": false, "description": "Include untracked files (with push)" }
+        },
+        "required": ["command"]
+    }));
+
+    variants.push(json!({
+        "title": "show",
+        "description": "Show commit details and diff.",
+        "properties": {
+            "command": { "type": "string", "const": "show" },
+            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
+            "commit": { "type": "string", "description": "Commit to show (default: HEAD)" },
+            "stat": { "type": "boolean", "default": false, "description": "Show diffstat only" },
+            "name_only": { "type": "boolean", "default": false, "description": "Show only changed file names" },
+            "format": { "type": "string", "description": "Pretty-print format" },
+            "max_bytes": { "type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "Max output bytes" }
+        },
+        "required": ["command"]
+    }));
+
+    variants.push(json!({
+        "title": "blame",
+        "description": "Show what revision and author last modified each line of a file.",
+        "properties": {
+            "command": { "type": "string", "const": "blame" },
+            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
+            "path": { "type": "string", "description": "File path to blame" },
+            "start_line": { "type": "integer", "minimum": 1, "description": "Start line for range" },
+            "end_line": { "type": "integer", "minimum": 1, "description": "End line for range" },
+            "commit": { "type": "string", "description": "Blame at specific commit instead of HEAD" },
+            "max_bytes": { "type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "Max output bytes" }
+        },
+        "required": ["command", "path"]
+    }));
+
+    json!({
+        "type": "object",
+        "required": ["command"],
+        "oneOf": variants
+    })
 }
 
 impl ToolExecutor for GitTool {
     fn name(&self) -> &'static str {
-        self.kind.name()
+        "Git"
     }
 
     fn description(&self) -> &'static str {
-        self.kind.description()
+        "Git version control. Use `command` to select: status, diff, restore, add, commit, \
+         log, branch, checkout, stash, show, blame."
     }
 
     fn schema(&self) -> Value {
-        self.kind.schema()
+        git_tool_schema()
     }
 
-    fn is_side_effecting(&self) -> bool {
-        self.kind.is_side_effecting()
+    fn is_side_effecting(&self, args: &Value) -> bool {
+        Self::parse_kind(args).map_or(true, GitToolKind::is_side_effecting)
     }
 
-    fn requires_approval(&self) -> bool {
-        self.kind.is_side_effecting()
-    }
-
-    fn risk_level(&self) -> RiskLevel {
-        self.kind.risk_level()
+    fn risk_level(&self, args: &Value) -> RiskLevel {
+        Self::parse_kind(args).map_or(RiskLevel::High, GitToolKind::risk_level)
     }
 
     fn approval_summary(&self, args: &Value) -> Result<String, ToolError> {
-        let distillate = match self.kind {
+        let kind = Self::parse_kind(args)?;
+        let distillate = match kind {
             GitToolKind::Status => "Git status".to_string(),
             GitToolKind::Diff => {
                 let typed: GitDiffArgs = parse_args(args)?;
@@ -342,10 +374,12 @@ impl ToolExecutor for GitTool {
 
     fn execute<'a>(&'a self, args: Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
+            let kind = Self::parse_kind(&args)?;
+
             // Disable generic truncation - we handle it ourselves to preserve JSON validity
             ctx.allow_truncation = false;
 
-            let mut payload = match self.kind {
+            let mut payload = match kind {
                 GitToolKind::Status => handle_git_status(ctx, args).await?,
                 GitToolKind::Diff => handle_git_diff(ctx, args).await?,
                 GitToolKind::Restore => handle_git_restore(ctx, args).await?,
@@ -364,7 +398,7 @@ impl ToolExecutor for GitTool {
             truncate_json_payload(&mut payload, max_bytes);
 
             let json = serde_json::to_string(&payload).map_err(|e| ToolError::ExecutionFailed {
-                tool: self.kind.name().to_string(),
+                tool: format!("Git:{}", kind.command_str()),
                 message: e.to_string(),
             })?;
 
@@ -449,18 +483,8 @@ fn truncate_json_payload(payload: &mut Value, max_bytes: usize) {
     }
 }
 
-pub fn register_git_tools(registry: &mut super::ToolRegistry) -> Result<(), ToolError> {
-    registry.register(Box::new(GitTool::new(GitToolKind::Status)))?;
-    registry.register(Box::new(GitTool::new(GitToolKind::Diff)))?;
-    registry.register(Box::new(GitTool::new(GitToolKind::Restore)))?;
-    registry.register(Box::new(GitTool::new(GitToolKind::Add)))?;
-    registry.register(Box::new(GitTool::new(GitToolKind::Commit)))?;
-    registry.register(Box::new(GitTool::new(GitToolKind::Log)))?;
-    registry.register(Box::new(GitTool::new(GitToolKind::Branch)))?;
-    registry.register(Box::new(GitTool::new(GitToolKind::Checkout)))?;
-    registry.register(Box::new(GitTool::new(GitToolKind::Stash)))?;
-    registry.register(Box::new(GitTool::new(GitToolKind::Show)))?;
-    registry.register(Box::new(GitTool::new(GitToolKind::Blame)))?;
+pub fn register_git_tool(registry: &mut super::ToolRegistry) -> Result<(), ToolError> {
+    registry.register(Box::new(GitTool))?;
     Ok(())
 }
 
@@ -724,7 +748,7 @@ async fn write_patches_to_dir(
     tokio::fs::create_dir_all(output_dir)
         .await
         .map_err(|e| ToolError::ExecutionFailed {
-            tool: "GitDiff".to_string(),
+            tool: "Git:diff".to_string(),
             message: format!("Failed to create output directory: {e}"),
         })?;
 
@@ -753,7 +777,7 @@ async fn write_patches_to_dir(
 
     if !numstat_exec.success {
         return Err(ToolError::ExecutionFailed {
-            tool: "GitDiff".to_string(),
+            tool: "Git:diff".to_string(),
             message: format!("git diff --numstat failed: {}", numstat_exec.stderr.trim()),
         });
     }
@@ -803,7 +827,7 @@ async fn write_patches_to_dir(
         tokio::fs::write(&patch_path, &patch_content)
             .await
             .map_err(|e| ToolError::ExecutionFailed {
-                tool: "GitDiff".to_string(),
+                tool: "Git:diff".to_string(),
                 message: format!("Failed to write {}: {e}", patch_path.display()),
             })?;
 
@@ -852,14 +876,14 @@ async fn write_patches_to_dir(
 
     let summary_json =
         serde_json::to_string_pretty(&summary).map_err(|e| ToolError::ExecutionFailed {
-            tool: "GitDiff".to_string(),
+            tool: "Git:diff".to_string(),
             message: format!("Failed to serialize diff summary: {e}"),
         })?;
     let summary_path = output_dir.join("_summary.json");
     tokio::fs::write(&summary_path, &summary_json)
         .await
         .map_err(|e| ToolError::ExecutionFailed {
-            tool: "GitDiff".to_string(),
+            tool: "Git:diff".to_string(),
             message: format!("Failed to write diff summary: {e}"),
         })?;
 

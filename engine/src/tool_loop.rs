@@ -684,7 +684,8 @@ impl App {
                 tools::ApprovalMode::Permissive => exec.requires_approval(),
                 tools::ApprovalMode::Strict => true, // All tools require approval
                 tools::ApprovalMode::Default => {
-                    exec.requires_approval() || (exec.is_side_effecting() && !allowlisted)
+                    exec.requires_approval()
+                        || (exec.is_side_effecting(&call.arguments) && !allowlisted)
                 }
             };
 
@@ -704,7 +705,7 @@ impl App {
                     tool_name: call.name.clone(),
                     summary,
                     reason: run_escalation_reason(&call.name, &call.arguments),
-                    risk_level: exec.risk_level(),
+                    risk_level: exec.risk_level(&call.arguments),
                     arguments: call.arguments.clone(),
                     warnings,
                 });

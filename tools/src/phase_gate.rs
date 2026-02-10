@@ -36,7 +36,7 @@ impl ToolExecutor for PhaseGateTool {
         })
     }
 
-    fn is_side_effecting(&self) -> bool {
+    fn is_side_effecting(&self, _args: &Value) -> bool {
         false
     }
 
@@ -44,7 +44,7 @@ impl ToolExecutor for PhaseGateTool {
         false
     }
 
-    fn risk_level(&self) -> RiskLevel {
+    fn risk_level(&self, _args: &Value) -> RiskLevel {
         RiskLevel::Low
     }
 
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn phase_gate_is_not_side_effecting() {
         let tool = PhaseGateTool;
-        assert!(!tool.is_side_effecting());
+        assert!(!tool.is_side_effecting(&serde_json::json!({})));
     }
 
     #[test]
@@ -105,6 +105,6 @@ mod tests {
     #[test]
     fn phase_gate_risk_level_is_low() {
         let tool = PhaseGateTool;
-        assert_eq!(tool.risk_level(), RiskLevel::Low);
+        assert_eq!(tool.risk_level(&serde_json::json!({})), RiskLevel::Low);
     }
 }

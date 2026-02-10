@@ -657,16 +657,7 @@ impl App {
             allowlist: {
                 let list = policy_cfg
                     .map(|cfg| cfg.allowlist.clone())
-                    .unwrap_or_else(|| {
-                        vec![
-                            "Read".to_string(),
-                            "GitStatus".to_string(),
-                            "GitDiff".to_string(),
-                            "GitLog".to_string(),
-                            "GitShow".to_string(),
-                            "GitBlame".to_string(),
-                        ]
-                    });
+                    .unwrap_or_else(|| vec!["Read".to_string()]);
                 list.into_iter().collect()
             },
             denylist: {
