@@ -52,10 +52,11 @@ pub use forge_context::{
 pub use forge_providers::{self, ApiConfig, gemini::GeminiCache, gemini::GeminiCacheConfig};
 pub use forge_types::{
     ApiKey, ApiUsage, CacheHint, CacheableMessage, EmptyStringError, Message, ModelName,
-    NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort, OpenAIReasoningSummary,
-    OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation, OutputLimits, Provider,
-    StreamEvent, StreamFinishReason, ThinkingState, ThoughtSignature, ThoughtSignatureState,
-    ToolCall, ToolDefinition, ToolResult, sanitize_terminal_text,
+    NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort, OpenAIReasoningItem,
+    OpenAIReasoningSummary, OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation,
+    OutputLimits, Provider, StreamEvent, StreamFinishReason, ThinkingReplayState, ThinkingState,
+    ThoughtSignature, ThoughtSignatureState, ToolCall, ToolDefinition, ToolResult,
+    sanitize_terminal_text,
 };
 
 mod config;
@@ -173,8 +174,8 @@ pub struct StreamingMessage {
     content: String,
     /// Provider thinking/reasoning deltas.
     thinking: String,
-    /// Encrypted signature for replaying thinking blocks (Claude extended thinking).
-    thinking_signature: ThoughtSignatureState,
+    /// Provider-specific replay state for thinking blocks.
+    thinking_replay: ThinkingReplayState,
     receiver: mpsc::Receiver<StreamEvent>,
     tool_calls: Vec<ToolCallAccumulator>,
     max_tool_args_bytes: usize,
@@ -193,7 +194,7 @@ impl StreamingMessage {
             model,
             content: String::new(),
             thinking: String::new(),
-            thinking_signature: ThoughtSignatureState::Unsigned,
+            thinking_replay: ThinkingReplayState::Unsigned,
             receiver,
             tool_calls: Vec::new(),
             max_tool_args_bytes,
@@ -222,8 +223,8 @@ impl StreamingMessage {
     }
 
     #[must_use]
-    pub const fn thinking_signature_state(&self) -> &ThoughtSignatureState {
-        &self.thinking_signature
+    pub fn thinking_replay_state(&self) -> &ThinkingReplayState {
+        &self.thinking_replay
     }
 
     /// API-reported token usage accumulated during streaming.
@@ -243,20 +244,37 @@ impl StreamingMessage {
                 None
             }
             StreamEvent::ThinkingDelta(thinking) => {
-                // Always capture thinking content for retroactive visibility toggle.
-                // show_thinking controls UI visibility, not capture.
                 self.thinking.push_str(&thinking);
                 None
             }
             StreamEvent::ThinkingSignature(signature_delta) => {
-                // Always capture signature for API replay, regardless of thinking display preference.
-                // Signatures arrive as deltas that must be concatenated.
-                match &mut self.thinking_signature {
-                    ThoughtSignatureState::Unsigned => {
-                        self.thinking_signature =
-                            ThoughtSignatureState::Signed(ThoughtSignature::new(signature_delta));
+                match &mut self.thinking_replay {
+                    ThinkingReplayState::Unsigned => {
+                        self.thinking_replay = ThinkingReplayState::ClaudeSigned {
+                            signature: ThoughtSignature::new(signature_delta),
+                        };
                     }
-                    ThoughtSignatureState::Signed(existing) => existing.push_str(&signature_delta),
+                    ThinkingReplayState::ClaudeSigned { signature } => {
+                        signature.push_str(&signature_delta);
+                    }
+                    ThinkingReplayState::OpenAIReasoning { .. } => {}
+                }
+                None
+            }
+            StreamEvent::OpenAIReasoningDone {
+                id,
+                encrypted_content,
+            } => {
+                let item = OpenAIReasoningItem {
+                    id,
+                    encrypted_content,
+                };
+                match &mut self.thinking_replay {
+                    ThinkingReplayState::OpenAIReasoning { items } => items.push(item),
+                    _ => {
+                        self.thinking_replay =
+                            ThinkingReplayState::OpenAIReasoning { items: vec![item] };
+                    }
                 }
                 None
             }

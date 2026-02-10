@@ -417,6 +417,11 @@ pub mod openai {
             #[serde(alias = "output_item")]
             item: Option<OutputItem>,
         },
+        #[serde(rename = "response.output_item.done")]
+        OutputItemDone {
+            #[serde(alias = "output_item")]
+            item: Option<OutputItem>,
+        },
         #[serde(rename = "response.output_text.delta")]
         OutputTextDelta {
             item_id: Option<String>,
@@ -487,6 +492,11 @@ pub mod openai {
         },
         #[serde(rename = "message")]
         Message { content: Option<Vec<ContentPart>> },
+        #[serde(rename = "reasoning")]
+        Reasoning {
+            id: Option<String>,
+            encrypted_content: Option<String>,
+        },
         #[serde(other)]
         Unknown,
     }
@@ -659,6 +669,32 @@ pub mod openai {
             let json = r#"{"type": "response.future_event", "data": 123}"#;
             let event: Event = serde_json::from_str(json).unwrap();
             assert!(matches!(event, Event::Unknown));
+        }
+
+        #[test]
+        fn deserialize_output_item_done_reasoning() {
+            let json = r#"{
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "reasoning",
+                    "id": "rs_abc",
+                    "encrypted_content": "encrypted_data_here"
+                }
+            }"#;
+            let event: Event = serde_json::from_str(json).unwrap();
+            match event {
+                Event::OutputItemDone { item } => match item.unwrap() {
+                    OutputItem::Reasoning {
+                        id,
+                        encrypted_content,
+                    } => {
+                        assert_eq!(id.unwrap(), "rs_abc");
+                        assert_eq!(encrypted_content.unwrap(), "encrypted_data_here");
+                    }
+                    _ => panic!("wrong item type"),
+                },
+                _ => panic!("wrong event type"),
+            }
         }
     }
 }

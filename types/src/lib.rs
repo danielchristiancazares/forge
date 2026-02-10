@@ -1191,6 +1191,94 @@ impl ThoughtSignatureState {
     }
 }
 
+/// An OpenAI reasoning output item captured for stateless replay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenAIReasoningItem {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted_content: Option<String>,
+}
+
+/// Provider-specific replay state for thinking blocks.
+///
+/// Replaces the old `ThoughtSignatureState` on `ThinkingMessage` to support
+/// both Claude signed thinking replay and OpenAI encrypted reasoning replay.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ThinkingReplayState {
+    #[default]
+    Unsigned,
+    ClaudeSigned {
+        signature: ThoughtSignature,
+    },
+    #[serde(rename = "openai_reasoning")]
+    OpenAIReasoning {
+        items: Vec<OpenAIReasoningItem>,
+    },
+}
+
+impl ThinkingReplayState {
+    #[must_use]
+    pub fn requires_persistence(&self) -> bool {
+        match self {
+            Self::Unsigned => false,
+            Self::ClaudeSigned { .. } => true,
+            Self::OpenAIReasoning { items } => !items.is_empty(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ThinkingReplayState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = serde_json::Value::deserialize(deserializer)?;
+
+        let Some(obj) = v.as_object() else {
+            return Ok(Self::Unsigned);
+        };
+
+        // New format: discriminated by "kind"
+        if obj.contains_key("kind") {
+            #[derive(Deserialize)]
+            #[serde(tag = "kind", rename_all = "snake_case")]
+            enum New {
+                Unsigned,
+                ClaudeSigned {
+                    signature: ThoughtSignature,
+                },
+                #[serde(rename = "openai_reasoning")]
+                OpenAIReasoning {
+                    items: Vec<OpenAIReasoningItem>,
+                },
+            }
+
+            if let Ok(parsed) = serde_json::from_value::<New>(v) {
+                return Ok(match parsed {
+                    New::Unsigned => Self::Unsigned,
+                    New::ClaudeSigned { signature } => Self::ClaudeSigned { signature },
+                    New::OpenAIReasoning { items } => Self::OpenAIReasoning { items },
+                });
+            }
+            return Ok(Self::Unsigned);
+        }
+
+        // Old format: discriminated by "state"
+        if obj.contains_key("state") {
+            if let Ok(old) = serde_json::from_value::<ThoughtSignatureState>(v) {
+                return Ok(match old {
+                    ThoughtSignatureState::Unsigned => Self::Unsigned,
+                    ThoughtSignatureState::Signed(sig) => Self::ClaudeSigned { signature: sig },
+                });
+            }
+            return Ok(Self::Unsigned);
+        }
+
+        Ok(Self::Unsigned)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     /// Text content delta.
@@ -1199,6 +1287,11 @@ pub enum StreamEvent {
     ThinkingDelta(String),
     /// Encrypted thinking signature for API replay (Claude extended thinking).
     ThinkingSignature(String),
+    /// Completed OpenAI reasoning output item for stateless replay.
+    OpenAIReasoningDone {
+        id: String,
+        encrypted_content: Option<String>,
+    },
     /// Tool call started - emitted when a `tool_use` content block begins.
     ToolCallStart {
         id: String,
@@ -1478,9 +1571,9 @@ impl AssistantMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkingMessage {
     content: NonEmptyString,
-    /// Encrypted signature for replaying thinking blocks to the API.
-    /// Required by Claude API when continuing conversations with thinking enabled.
-    signature: ThoughtSignatureState,
+    /// Provider-specific replay state for thinking blocks.
+    #[serde(default, alias = "signature")]
+    replay: ThinkingReplayState,
     timestamp: SystemTime,
     #[serde(flatten)]
     model: ModelName,
@@ -1491,7 +1584,7 @@ impl ThinkingMessage {
     pub fn new(model: ModelName, content: NonEmptyString) -> Self {
         Self {
             content,
-            signature: ThoughtSignatureState::Unsigned,
+            replay: ThinkingReplayState::Unsigned,
             timestamp: SystemTime::now(),
             model,
         }
@@ -1501,7 +1594,23 @@ impl ThinkingMessage {
     pub fn with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self {
         Self {
             content,
-            signature: ThoughtSignatureState::Signed(ThoughtSignature::new(signature)),
+            replay: ThinkingReplayState::ClaudeSigned {
+                signature: ThoughtSignature::new(signature),
+            },
+            timestamp: SystemTime::now(),
+            model,
+        }
+    }
+
+    #[must_use]
+    pub fn with_openai_reasoning(
+        model: ModelName,
+        content: NonEmptyString,
+        items: Vec<OpenAIReasoningItem>,
+    ) -> Self {
+        Self {
+            content,
+            replay: ThinkingReplayState::OpenAIReasoning { items },
             timestamp: SystemTime::now(),
             model,
         }
@@ -1513,13 +1622,21 @@ impl ThinkingMessage {
     }
 
     #[must_use]
-    pub const fn signature_state(&self) -> &ThoughtSignatureState {
-        &self.signature
+    pub fn replay_state(&self) -> &ThinkingReplayState {
+        &self.replay
     }
 
     #[must_use]
-    pub const fn has_signature(&self) -> bool {
-        self.signature.is_signed()
+    pub fn requires_persistence(&self) -> bool {
+        self.replay.requires_persistence()
+    }
+
+    #[must_use]
+    pub fn claude_signature(&self) -> Option<&ThoughtSignature> {
+        match &self.replay {
+            ThinkingReplayState::ClaudeSigned { signature } => Some(signature),
+            _ => None,
+        }
     }
 
     #[must_use]
@@ -1581,6 +1698,17 @@ impl Message {
         signature: String,
     ) -> Self {
         Self::Thinking(ThinkingMessage::with_signature(model, content, signature))
+    }
+
+    #[must_use]
+    pub fn thinking_with_openai_reasoning(
+        model: ModelName,
+        content: NonEmptyString,
+        items: Vec<OpenAIReasoningItem>,
+    ) -> Self {
+        Self::Thinking(ThinkingMessage::with_openai_reasoning(
+            model, content, items,
+        ))
     }
 
     #[must_use]
@@ -2117,5 +2245,109 @@ mod tests {
         // Zero input tokens should return 0%
         let empty = ApiUsage::default();
         assert!((empty.cache_hit_percentage() - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn thinking_replay_state_deserializes_new_format() {
+        let json = r#"{"kind":"claude_signed","signature":"abc"}"#;
+        let state: ThinkingReplayState = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            state,
+            ThinkingReplayState::ClaudeSigned { signature } if signature.as_str() == "abc"
+        ));
+
+        let json =
+            r#"{"kind":"openai_reasoning","items":[{"id":"r_1","encrypted_content":"enc"}]}"#;
+        let state: ThinkingReplayState = serde_json::from_str(json).unwrap();
+        match state {
+            ThinkingReplayState::OpenAIReasoning { items } => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].id, "r_1");
+                assert_eq!(items[0].encrypted_content.as_deref(), Some("enc"));
+            }
+            _ => panic!("expected OpenAIReasoning"),
+        }
+
+        let json = r#"{"kind":"unsigned"}"#;
+        let state: ThinkingReplayState = serde_json::from_str(json).unwrap();
+        assert!(matches!(state, ThinkingReplayState::Unsigned));
+    }
+
+    #[test]
+    fn thinking_replay_state_deserializes_old_format() {
+        let json = r#"{"state":"signed","signature":"abc"}"#;
+        let state: ThinkingReplayState = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            state,
+            ThinkingReplayState::ClaudeSigned { signature } if signature.as_str() == "abc"
+        ));
+
+        let json = r#"{"state":"unsigned"}"#;
+        let state: ThinkingReplayState = serde_json::from_str(json).unwrap();
+        assert!(matches!(state, ThinkingReplayState::Unsigned));
+    }
+
+    #[test]
+    fn thinking_replay_state_missing_defaults_to_unsigned() {
+        let json = r"{}";
+        let state: ThinkingReplayState = serde_json::from_str(json).unwrap();
+        assert!(matches!(state, ThinkingReplayState::Unsigned));
+    }
+
+    #[test]
+    fn thinking_replay_state_requires_persistence() {
+        assert!(!ThinkingReplayState::Unsigned.requires_persistence());
+        assert!(
+            ThinkingReplayState::ClaudeSigned {
+                signature: ThoughtSignature::new("sig")
+            }
+            .requires_persistence()
+        );
+        assert!(
+            ThinkingReplayState::OpenAIReasoning {
+                items: vec![OpenAIReasoningItem {
+                    id: "r_1".to_string(),
+                    encrypted_content: None,
+                }]
+            }
+            .requires_persistence()
+        );
+        assert!(!ThinkingReplayState::OpenAIReasoning { items: vec![] }.requires_persistence());
+    }
+
+    #[test]
+    fn thinking_replay_state_serde_roundtrip() {
+        let state = ThinkingReplayState::ClaudeSigned {
+            signature: ThoughtSignature::new("sig123"),
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let back: ThinkingReplayState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, back);
+
+        let state = ThinkingReplayState::OpenAIReasoning {
+            items: vec![OpenAIReasoningItem {
+                id: "r_1".to_string(),
+                encrypted_content: Some("enc".to_string()),
+            }],
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let back: ThinkingReplayState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, back);
+    }
+
+    #[test]
+    fn thinking_message_alias_migration() {
+        let json = r#"{
+            "content": "thinking text",
+            "signature": {"state":"signed","signature":"abc"},
+            "timestamp": {"secs_since_epoch":1700000000,"nanos_since_epoch":0},
+            "provider": "Claude",
+            "model": "claude-opus-4-6"
+        }"#;
+        let msg: ThinkingMessage = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            msg.replay_state(),
+            ThinkingReplayState::ClaudeSigned { signature } if signature.as_str() == "abc"
+        ));
     }
 }

@@ -44,7 +44,7 @@ use super::{
     ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError,
     DEFAULT_STREAM_EVENT_BUDGET, DistillationStart, EMPTY_RESPONSE_BADGE, GeminiCache,
     GeminiCacheConfig, Message, NonEmptyString, OperationState, QueuedUserMessage, StreamEvent,
-    StreamFinishReason, StreamingMessage, ThoughtSignatureState, notifications,
+    StreamFinishReason, StreamingMessage, ThinkingReplayState, notifications,
     sanitize_terminal_text, security,
 };
 use crate::errors::format_stream_error;
@@ -52,32 +52,36 @@ use crate::errors::format_stream_error;
 fn build_thinking_message(
     model: ModelName,
     content: String,
-    signature: ThoughtSignatureState,
+    replay: ThinkingReplayState,
 ) -> Option<Message> {
-    // Thinking content is untrusted external text (provider output). Sanitize before it can
-    // reach history/local display paths.
     let sanitized = security::sanitize_display_text(&content);
     if let Ok(thinking) = NonEmptyString::new(sanitized) {
-        return Some(match signature {
-            ThoughtSignatureState::Signed(sig) => {
-                Message::thinking_with_signature(model, thinking, sig.as_str().to_string())
+        return Some(match replay {
+            ThinkingReplayState::ClaudeSigned { signature } => {
+                Message::thinking_with_signature(model, thinking, signature.as_str().to_string())
             }
-            ThoughtSignatureState::Unsigned => Message::thinking(model, thinking),
+            ThinkingReplayState::OpenAIReasoning { items } => {
+                Message::thinking_with_openai_reasoning(model, thinking, items)
+            }
+            ThinkingReplayState::Unsigned => Message::thinking(model, thinking),
         });
     }
 
-    match signature {
-        ThoughtSignatureState::Signed(sig) => {
-            let placeholder = NonEmptyString::try_from(REDACTED_THINKING_PLACEHOLDER)
-                .expect("REDACTED_THINKING_PLACEHOLDER must be non-empty");
-            Some(Message::thinking_with_signature(
-                model,
-                placeholder,
-                sig.as_str().to_string(),
-            ))
-        }
-        ThoughtSignatureState::Unsigned => None,
+    if replay.requires_persistence() {
+        let placeholder = NonEmptyString::try_from(REDACTED_THINKING_PLACEHOLDER)
+            .expect("REDACTED_THINKING_PLACEHOLDER must be non-empty");
+        return Some(match replay {
+            ThinkingReplayState::ClaudeSigned { signature } => {
+                Message::thinking_with_signature(model, placeholder, signature.as_str().to_string())
+            }
+            ThinkingReplayState::OpenAIReasoning { items } => {
+                Message::thinking_with_openai_reasoning(model, placeholder, items)
+            }
+            ThinkingReplayState::Unsigned => unreachable!(),
+        });
     }
+
+    None
 }
 
 /// Geometric grid of cache breakpoint positions (0-indexed message indices).
@@ -443,11 +447,10 @@ impl super::App {
                     .append_text(&mut self.stream_journal, text.clone()),
                 StreamEvent::ThinkingDelta(_)
                 | StreamEvent::ThinkingSignature(_)
-                | StreamEvent::Usage(_) => {
-                    // Don't persist thinking or usage to journal - silently consume
-                    Ok(())
-                }
-                StreamEvent::ToolCallStart { .. } | StreamEvent::ToolCallDelta { .. } => Ok(()),
+                | StreamEvent::OpenAIReasoningDone { .. }
+                | StreamEvent::Usage(_)
+                | StreamEvent::ToolCallStart { .. }
+                | StreamEvent::ToolCallDelta { .. } => Ok(()),
                 StreamEvent::Done => active.journal_mut().append_done(&mut self.stream_journal),
                 StreamEvent::Error(msg) => active
                     .journal_mut()
@@ -710,11 +713,10 @@ impl super::App {
 
         // Only process tool calls when stream completed successfully (Done)
         if message.has_tool_calls() {
-            // Capture thinking before returning so signatures survive tool-call turns.
             let thinking_content = message.thinking().to_owned();
-            let thinking_signature = message.thinking_signature_state().clone();
+            let thinking_replay = message.thinking_replay_state().clone();
             let thinking_message =
-                build_thinking_message(model.clone(), thinking_content, thinking_signature);
+                build_thinking_message(model.clone(), thinking_content, thinking_replay);
             let parsed = message.take_tool_calls();
             let assistant_text = message.content().to_string();
             // NOTE: We do NOT clear pending_user_message here because:
@@ -734,44 +736,42 @@ impl super::App {
             return;
         }
 
-        // Capture thinking content and signature before consuming the streaming message.
-        // Thinking is stored separately for UI toggles and signature replay.
         let thinking_content = message.thinking().to_owned();
-        let thinking_signature = message.thinking_signature_state().clone();
+        let thinking_replay = message.thinking_replay_state().clone();
 
-        // Convert streaming message to completed message (empty content is invalid).
         let Some(assistant_message) = message.into_message().ok() else {
-            // Stream completed successfully but with empty content - unusual but not an error
             self.pending_user_message = None;
             let empty_badge = NonEmptyString::try_from(EMPTY_RESPONSE_BADGE)
                 .expect("EMPTY_RESPONSE_BADGE must be non-empty");
             let empty_msg = Message::assistant(model.clone(), empty_badge);
-            // Still push thinking if we captured any before the empty response
             if let Ok(thinking) = NonEmptyString::new(thinking_content) {
-                let thinking_msg = match &thinking_signature {
-                    ThoughtSignatureState::Signed(sig) => {
-                        Message::thinking_with_signature(model, thinking, sig.as_str().to_string())
+                let thinking_msg = match &thinking_replay {
+                    ThinkingReplayState::ClaudeSigned { signature } => {
+                        Message::thinking_with_signature(
+                            model,
+                            thinking,
+                            signature.as_str().to_string(),
+                        )
                     }
-                    ThoughtSignatureState::Unsigned => Message::thinking(model, thinking),
+                    ThinkingReplayState::OpenAIReasoning { items } => {
+                        Message::thinking_with_openai_reasoning(model, thinking, items.clone())
+                    }
+                    ThinkingReplayState::Unsigned => Message::thinking(model, thinking),
                 };
                 self.push_local_message(thinking_msg);
             }
             self.push_local_message(empty_msg);
-            // Empty response - discard the step (nothing to recover)
             self.discard_journal_step(step_id);
             self.finish_turn(turn);
             return;
         };
 
-        // Stream completed successfully with content
         self.pending_user_message = None;
 
-        // Push thinking message first (if any), then assistant message
-        let has_thinking_signature = thinking_signature.is_signed();
-        if let Some(thinking_msg) =
-            build_thinking_message(model, thinking_content, thinking_signature)
+        let requires_persistence = thinking_replay.requires_persistence();
+        if let Some(thinking_msg) = build_thinking_message(model, thinking_content, thinking_replay)
         {
-            if has_thinking_signature {
+            if requires_persistence {
                 self.push_history_message(thinking_msg);
             } else {
                 self.push_local_message(thinking_msg);

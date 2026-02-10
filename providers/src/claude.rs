@@ -1,7 +1,7 @@
 use crate::{
     ApiConfig, ApiResponse, ApiUsage, CacheHint, CacheableMessage, Message, OutputLimits, Result,
-    SseParseAction, SseParser, StreamEvent, ThoughtSignatureState, ToolDefinition, handle_response,
-    http_client, mpsc, process_sse_stream,
+    SseParseAction, SseParser, StreamEvent, ThinkingReplayState, ThoughtSignatureState,
+    ToolDefinition, handle_response, http_client, mpsc, process_sse_stream,
     retry::{RetryConfig, send_with_retry},
 };
 use forge_types::ThinkingState;
@@ -149,14 +149,12 @@ fn build_request_body(
                 }));
             }
             Message::Thinking(thinking) => {
-                // Send thinking as redacted_thinking if we have the signature
-                if let ThoughtSignatureState::Signed(signature) = thinking.signature_state() {
+                if let ThinkingReplayState::ClaudeSigned { signature } = thinking.replay_state() {
                     pending_assistant_content.push(json!({
                         "type": "redacted_thinking",
                         "data": signature.as_str()
                     }));
                 }
-                // If no signature, skip (legacy thinking without signature)
             }
         }
     }

@@ -1293,11 +1293,11 @@ impl App {
 
         let mut step_id_recorded = false;
         if let Some(thinking_message) = thinking_message {
-            let has_signature = matches!(
+            let requires_persistence = matches!(
                 &thinking_message,
-                Message::Thinking(thinking) if thinking.has_signature()
+                Message::Thinking(thinking) if thinking.requires_persistence()
             );
-            if has_signature {
+            if requires_persistence {
                 self.push_history_message(thinking_message);
             } else {
                 self.push_local_message(thinking_message);

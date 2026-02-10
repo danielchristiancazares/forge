@@ -15,7 +15,7 @@
 use std::sync::OnceLock;
 use tiktoken_rs::{CoreBPE, o200k_base};
 
-use forge_types::Message;
+use forge_types::{Message, ThinkingReplayState};
 
 ///
 /// The tiktoken encoder is expensive to initialize (loads vocabulary data),
@@ -128,10 +128,29 @@ impl TokenCounter {
         let role_tokens = self.count_str(msg.role_str());
 
         let content_tokens = match msg {
-            Message::System(_)
-            | Message::User(_)
-            | Message::Assistant(_)
-            | Message::Thinking(_) => self.count_str(msg.content()),
+            Message::System(_) | Message::User(_) | Message::Assistant(_) => {
+                self.count_str(msg.content())
+            }
+            Message::Thinking(thinking) => {
+                let content_tokens = self.count_str(thinking.content());
+                let replay_tokens = match thinking.replay_state() {
+                    ThinkingReplayState::ClaudeSigned { signature } => {
+                        self.count_str(signature.as_str())
+                    }
+                    ThinkingReplayState::OpenAIReasoning { items } => items
+                        .iter()
+                        .map(|item| {
+                            self.count_str(&item.id)
+                                + item
+                                    .encrypted_content
+                                    .as_deref()
+                                    .map_or(0, |e| self.count_str(e))
+                        })
+                        .sum(),
+                    ThinkingReplayState::Unsigned => 0,
+                };
+                content_tokens + replay_tokens
+            }
             Message::ToolUse(call) => {
                 let name_tokens = self.count_str(&call.name);
                 let id_tokens = self.count_str(&call.id);

@@ -1,7 +1,7 @@
 use crate::{
     ApiConfig, ApiResponse, ApiUsage, CacheableMessage, Message, OutputLimits, Result,
-    SseParseAction, SseParser, StreamEvent, ThoughtSignatureState, ToolDefinition, handle_response,
-    http_client, mpsc, process_sse_stream,
+    SseParseAction, SseParser, StreamEvent, ThinkingReplayState, ThoughtSignatureState,
+    ToolDefinition, handle_response, http_client, mpsc, process_sse_stream,
     retry::{RetryConfig, send_with_retry},
     send_event,
 };
@@ -206,6 +206,25 @@ impl SseParser for OpenAIParser {
                             arguments: args,
                         });
                         self.call_has_delta.insert(call_id);
+                    }
+                }
+            }
+
+            typed::Event::OutputItemDone { item } => {
+                if let Some(typed::OutputItem::Reasoning {
+                    id,
+                    encrypted_content,
+                }) = item
+                {
+                    if let Some(id) = id.filter(|s| !s.trim().is_empty()) {
+                        events.push(StreamEvent::OpenAIReasoningDone {
+                            id,
+                            encrypted_content,
+                        });
+                    } else {
+                        tracing::warn!(
+                            "OpenAI reasoning item missing id — skipping replay capture"
+                        );
                     }
                 }
             }
@@ -420,8 +439,26 @@ fn build_request_body(
                     "output": result.content,
                 }));
             }
-            Message::Thinking(_) => {
-                // Thinking is not sent back to the API - stored for UI only.
+            Message::Thinking(thinking) => {
+                if let ThinkingReplayState::OpenAIReasoning { items } = thinking.replay_state() {
+                    for item in items {
+                        let id = item.id.trim();
+                        if id.is_empty() {
+                            tracing::warn!("Skipping OpenAI reasoning replay item with empty id");
+                            continue;
+                        }
+                        let mut val = json!({ "type": "reasoning", "id": id });
+                        if let Some(enc) = item
+                            .encrypted_content
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                        {
+                            val["encrypted_content"] = json!(enc);
+                        }
+                        input_items.push(val);
+                    }
+                }
             }
             _ => {
                 input_items.push(json!({
@@ -444,6 +481,16 @@ fn build_request_body(
     if is_pro_model(config.model()) {
         body.insert("background".to_string(), json!(true));
         body.insert("store".to_string(), json!(true));
+    } else {
+        body.insert("store".to_string(), json!(false));
+    }
+
+    let model = config.model().as_str();
+    if model.starts_with("gpt-5") && !is_pro_model(config.model()) {
+        body.insert(
+            "include".to_string(),
+            json!(["reasoning.encrypted_content"]),
+        );
     }
 
     if let Some(prompt) = system_prompt
@@ -937,7 +984,7 @@ mod tests {
     }
 
     #[test]
-    fn non_pro_model_omits_background() {
+    fn non_pro_model_omits_background_sets_store_false() {
         let key = ApiKey::openai("test");
         let model = Provider::OpenAI.default_model();
         let config = ApiConfig::new(key, model).unwrap();
@@ -946,7 +993,7 @@ mod tests {
         let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
 
         assert!(body.get("background").is_none());
-        assert!(body.get("store").is_none());
+        assert_eq!(body.get("store").and_then(Value::as_bool), Some(false));
     }
 
     #[test]
@@ -978,5 +1025,118 @@ mod tests {
 
         let lock = state.lock().unwrap();
         assert!(lock.terminal);
+    }
+
+    #[test]
+    fn output_item_done_reasoning_emits_event() {
+        let mut state = OpenAIParser::default();
+        let events = collect_events(
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "reasoning",
+                    "id": "rs_abc",
+                    "encrypted_content": "enc_data"
+                }
+            }),
+            &mut state,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            StreamEvent::OpenAIReasoningDone { id, encrypted_content }
+                if id == "rs_abc" && encrypted_content.as_deref() == Some("enc_data")
+        ));
+    }
+
+    #[test]
+    fn output_item_done_reasoning_skips_empty_id() {
+        let mut state = OpenAIParser::default();
+        let events = collect_events(
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "reasoning",
+                    "id": "  ",
+                    "encrypted_content": "enc_data"
+                }
+            }),
+            &mut state,
+        );
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn request_body_replays_openai_reasoning_items() {
+        use forge_types::OpenAIReasoningItem;
+
+        let key = ApiKey::openai("test");
+        let model = Provider::OpenAI.default_model();
+        let config = ApiConfig::new(key, model).unwrap();
+
+        let thinking = Message::thinking_with_openai_reasoning(
+            Provider::OpenAI.default_model(),
+            NonEmptyString::new("reasoning summary").unwrap(),
+            vec![
+                OpenAIReasoningItem {
+                    id: "r_1".to_string(),
+                    encrypted_content: Some("enc1".to_string()),
+                },
+                OpenAIReasoningItem {
+                    id: "r_2".to_string(),
+                    encrypted_content: None,
+                },
+            ],
+        );
+
+        let messages = vec![
+            CacheableMessage::plain(Message::try_user("hi").unwrap()),
+            CacheableMessage::plain(thinking),
+            CacheableMessage::plain(Message::assistant(
+                Provider::OpenAI.default_model(),
+                NonEmptyString::new("reply").unwrap(),
+            )),
+        ];
+
+        let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
+        let input = body.get("input").unwrap().as_array().unwrap();
+
+        // user message + 2 reasoning items + assistant message = 4
+        assert_eq!(input.len(), 4);
+        assert_eq!(input[1]["type"], "reasoning");
+        assert_eq!(input[1]["id"], "r_1");
+        assert_eq!(input[1]["encrypted_content"], "enc1");
+        assert_eq!(input[2]["type"], "reasoning");
+        assert_eq!(input[2]["id"], "r_2");
+        assert!(input[2].get("encrypted_content").is_none());
+    }
+
+    #[test]
+    fn non_pro_gpt5_includes_reasoning_encrypted_content() {
+        let key = ApiKey::openai("test");
+        let model = Provider::OpenAI.default_model();
+        let config = ApiConfig::new(key, model).unwrap();
+
+        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
+
+        let include = body.get("include").unwrap().as_array().unwrap();
+        assert_eq!(include.len(), 1);
+        assert_eq!(include[0], "reasoning.encrypted_content");
+    }
+
+    #[test]
+    fn pro_model_omits_include() {
+        use forge_types::{ModelName, PredefinedModel};
+
+        let key = ApiKey::openai("test");
+        let model = ModelName::from_predefined(PredefinedModel::Gpt52Pro);
+        let config = ApiConfig::new(key, model).unwrap();
+
+        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
+
+        assert!(body.get("include").is_none());
     }
 }

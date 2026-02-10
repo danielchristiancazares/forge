@@ -442,8 +442,8 @@ fn process_stream_events_persists_thinking_signature_when_hidden() {
     };
     assert_eq!(thinking.content(), "[Thinking hidden]");
     assert!(matches!(
-        thinking.signature_state(),
-        ThoughtSignatureState::Signed(signature) if signature.as_str() == "sig"
+        thinking.replay_state(),
+        ThinkingReplayState::ClaudeSigned { signature } if signature.as_str() == "sig"
     ));
 
     assert!(matches!(assistant_entry.message(), Message::Assistant(_)));
@@ -879,8 +879,8 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
         panic!("expected thinking message first");
     };
     assert!(matches!(
-        thinking.signature_state(),
-        ThoughtSignatureState::Signed(signature) if signature.as_str() == "sig"
+        thinking.replay_state(),
+        ThinkingReplayState::ClaudeSigned { signature } if signature.as_str() == "sig"
     ));
     let last = app.history().entries().last().expect("tool result");
     assert!(matches!(last.message(), Message::ToolResult(_)));

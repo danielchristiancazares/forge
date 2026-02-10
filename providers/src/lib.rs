@@ -50,7 +50,8 @@ pub mod sse_types;
 pub(crate) use anyhow::Result;
 pub(crate) use forge_types::{
     ApiKey, ApiUsage, CacheHint, CacheableMessage, Message, ModelName, OpenAIRequestOptions,
-    OutputLimits, Provider, StreamEvent, ThoughtSignature, ThoughtSignatureState, ToolDefinition,
+    OutputLimits, Provider, StreamEvent, ThinkingReplayState, ThoughtSignature,
+    ThoughtSignatureState, ToolDefinition,
 };
 use std::sync::OnceLock;
 use std::time::Duration;
