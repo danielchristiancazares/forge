@@ -1436,7 +1436,7 @@ if let Some(recovered) = journal.recover()? {
 // Begin a new tool batch
 let step_id = StepId::new(1);
 let calls = vec![ToolCall::new("call_1", "read_file", json!({"path": "foo.rs"}))];
-let batch_id: ToolBatchId = journal.begin_batch(step_id, "claude-opus-4-6", "assistant text", &calls)?;
+let batch_id: ToolBatchId = journal.begin_batch(step_id, "claude-opus-4-6", "assistant text", &calls, &ThinkingReplayState::default())?;
 
 // Record results as tools execute
 let result = ToolResult::success("call_1", "read_file", "file contents...");

@@ -34,7 +34,9 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::StepId;
-use forge_types::{ThoughtSignature, ThoughtSignatureState, ToolCall, ToolResult};
+use forge_types::{
+    ThinkingReplayState, ThoughtSignature, ThoughtSignatureState, ToolCall, ToolResult,
+};
 
 /// Unique identifier for a tool batch.
 pub type ToolBatchId = i64;
@@ -76,6 +78,9 @@ pub struct RecoveredToolBatch {
     pub corrupted_args: Vec<CorruptedToolArgs>,
     /// Best-effort execution metadata keyed by tool_call_id.
     pub call_execution: std::collections::HashMap<String, RecoveredToolCallExecution>,
+    /// Thinking replay state recovered from the journal.
+    /// `Unsigned` when the column was NULL or unparseable (IFA §11.2: no optionality in core).
+    pub thinking_replay: ThinkingReplayState,
 }
 
 /// Tool journal for durable tool batch tracking.
@@ -164,6 +169,7 @@ impl ToolJournal {
         ensure_tool_calls_signature(&db)?;
         ensure_tool_calls_execution_metadata(&db)?;
         ensure_tool_results_name(&db)?;
+        ensure_tool_batches_thinking_replay(&db)?;
         Ok(Self { db })
     }
 
@@ -176,21 +182,23 @@ impl ToolJournal {
         model_name: &str,
         assistant_text: &str,
         calls: &[ToolCall],
+        thinking_replay: &ThinkingReplayState,
     ) -> Result<ToolBatchId> {
         if let Some(existing) = self.pending_batch_id()? {
             bail!("Cannot begin tool batch: pending batch {existing} exists");
         }
 
         let created_at = system_time_to_iso8601(SystemTime::now());
+        let thinking_replay_json = serialize_replay_if_persistent(thinking_replay);
         let tx = self
             .db
             .transaction()
             .context("Failed to start tool batch transaction")?;
 
         tx.execute(
-            "INSERT INTO tool_batches (stream_step_id, model_name, assistant_text, committed, created_at)
-             VALUES (?1, ?2, ?3, 0, ?4)",
-            params![stream_step_id, model_name, assistant_text, created_at],
+            "INSERT INTO tool_batches (stream_step_id, model_name, assistant_text, committed, created_at, thinking_replay_json)
+             VALUES (?1, ?2, ?3, 0, ?4, ?5)",
+            params![stream_step_id, model_name, assistant_text, created_at, thinking_replay_json],
         )
         .context("Failed to insert tool batch")?;
 
@@ -465,6 +473,31 @@ impl ToolJournal {
         Ok(())
     }
 
+    /// Store thinking replay state for a batch (typically after streaming completes).
+    ///
+    /// No-op if the replay state does not require persistence (i.e. `Unsigned`).
+    pub fn update_thinking_replay(
+        &mut self,
+        batch_id: ToolBatchId,
+        replay: &ThinkingReplayState,
+    ) -> Result<()> {
+        let json = serialize_replay_if_persistent(replay);
+        if json.is_none() {
+            return Ok(());
+        }
+        let updated = self
+            .db
+            .execute(
+                "UPDATE tool_batches SET thinking_replay_json = ?1 WHERE batch_id = ?2",
+                params![json, batch_id],
+            )
+            .with_context(|| format!("Failed to update thinking replay for batch {batch_id}"))?;
+        if updated == 0 {
+            bail!("No tool batch found for id {batch_id}");
+        }
+        Ok(())
+    }
+
     /// Record a tool result for a batch.
     pub fn record_result(&mut self, batch_id: ToolBatchId, result: &ToolResult) -> Result<()> {
         let created_at = system_time_to_iso8601(SystemTime::now());
@@ -605,14 +638,21 @@ impl ToolJournal {
             return Ok(None);
         };
 
-        let (stream_step_id, model_name, assistant_text): (Option<StepId>, String, String) = self
+        let (stream_step_id, model_name, assistant_text, thinking_replay_json): (
+            Option<StepId>,
+            String,
+            String,
+            Option<String>,
+        ) = self
             .db
             .query_row(
-                "SELECT stream_step_id, model_name, assistant_text FROM tool_batches WHERE batch_id = ?1",
+                "SELECT stream_step_id, model_name, assistant_text, thinking_replay_json FROM tool_batches WHERE batch_id = ?1",
                 params![batch_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .context("Failed to load tool batch metadata")?;
+
+        let thinking_replay = deserialize_replay(thinking_replay_json.as_deref());
 
         let mut calls: Vec<ToolCall> = Vec::new();
         let mut call_execution: std::collections::HashMap<String, RecoveredToolCallExecution> =
@@ -750,6 +790,7 @@ impl ToolJournal {
             results,
             corrupted_args,
             call_execution,
+            thinking_replay,
         }))
     }
 
@@ -917,6 +958,64 @@ fn tool_results_has_name(db: &Connection) -> Result<bool> {
     Ok(false)
 }
 
+fn ensure_tool_batches_thinking_replay(db: &Connection) -> Result<()> {
+    if tool_batches_has_thinking_replay(db)? {
+        return Ok(());
+    }
+    db.execute(
+        "ALTER TABLE tool_batches ADD COLUMN thinking_replay_json TEXT",
+        [],
+    )
+    .context("Failed to add thinking_replay_json column to tool_batches")?;
+    Ok(())
+}
+
+fn tool_batches_has_thinking_replay(db: &Connection) -> Result<bool> {
+    let mut stmt = db
+        .prepare("PRAGMA table_info(tool_batches)")
+        .context("Failed to inspect tool_batches schema")?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .context("Failed to query tool_batches columns")?;
+    for name in rows {
+        if name? == "thinking_replay_json" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Serialize replay state to JSON if it requires persistence, otherwise `None` (→ SQL NULL).
+fn serialize_replay_if_persistent(replay: &ThinkingReplayState) -> Option<String> {
+    if !replay.requires_persistence() {
+        return None;
+    }
+    match serde_json::to_string(replay) {
+        Ok(json) => Some(json),
+        Err(e) => {
+            tracing::warn!("Failed to serialize thinking replay state: {e}");
+            None
+        }
+    }
+}
+
+/// Deserialize replay state from nullable JSON. NULL or invalid → `Unsigned` (IFA §11.1).
+fn deserialize_replay(json: Option<&str>) -> ThinkingReplayState {
+    let Some(json) = json else {
+        return ThinkingReplayState::default();
+    };
+    if json.trim().is_empty() {
+        return ThinkingReplayState::default();
+    }
+    match serde_json::from_str(json) {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::warn!("Failed to deserialize thinking replay state: {e}");
+            ThinkingReplayState::default()
+        }
+    }
+}
+
 fn system_time_to_iso8601(time: SystemTime) -> String {
     let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
     let secs = duration.as_secs();
@@ -1051,7 +1150,13 @@ mod tests {
             serde_json::json!({"path": "foo"}),
         )];
         let batch_id = journal
-            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
+            .begin_batch(
+                StepId::new(1),
+                "test-model",
+                "assistant",
+                &calls,
+                &ThinkingReplayState::default(),
+            )
             .unwrap();
 
         let recovered = journal.recover().unwrap().expect("should recover");
@@ -1081,7 +1186,13 @@ mod tests {
             serde_json::json!({"path": "foo"}),
         )];
         let batch_id = journal
-            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
+            .begin_batch(
+                StepId::new(1),
+                "test-model",
+                "assistant",
+                &calls,
+                &ThinkingReplayState::default(),
+            )
             .unwrap();
 
         let result = ToolResult::success("1", "Read", "ok");
@@ -1104,7 +1215,13 @@ mod tests {
             serde_json::json!({ "path": "foo" }),
         )];
         let batch_id = journal
-            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
+            .begin_batch(
+                StepId::new(1),
+                "test-model",
+                "assistant",
+                &calls,
+                &ThinkingReplayState::default(),
+            )
             .unwrap();
 
         let result = ToolResult::success("1", "Read", "ok");
@@ -1121,7 +1238,13 @@ mod tests {
             serde_json::json!({ "path": "foo" }),
         )];
         let batch_id = journal
-            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
+            .begin_batch(
+                StepId::new(1),
+                "test-model",
+                "assistant",
+                &calls,
+                &ThinkingReplayState::default(),
+            )
             .unwrap();
 
         journal
@@ -1142,11 +1265,23 @@ mod tests {
 
         // First batch succeeds
         let _batch_id = journal
-            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
+            .begin_batch(
+                StepId::new(1),
+                "test-model",
+                "assistant",
+                &calls,
+                &ThinkingReplayState::default(),
+            )
             .unwrap();
 
         // Second batch should fail
-        let result = journal.begin_batch(StepId::new(2), "test-model", "another", &calls);
+        let result = journal.begin_batch(
+            StepId::new(2),
+            "test-model",
+            "another",
+            &calls,
+            &ThinkingReplayState::default(),
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("pending batch"));
     }
@@ -1203,7 +1338,13 @@ mod tests {
             serde_json::json!({ "command": "echo hi" }),
         )];
         let batch_id = journal
-            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
+            .begin_batch(
+                StepId::new(1),
+                "test-model",
+                "assistant",
+                &calls,
+                &ThinkingReplayState::default(),
+            )
             .unwrap();
 
         journal
@@ -1276,7 +1417,13 @@ mod tests {
         let calls = vec![ToolCall::new("1", "test", serde_json::json!({}))];
 
         let batch_id = journal
-            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
+            .begin_batch(
+                StepId::new(1),
+                "test-model",
+                "assistant",
+                &calls,
+                &ThinkingReplayState::default(),
+            )
             .unwrap();
 
         // Add a result
@@ -1296,7 +1443,13 @@ mod tests {
         let calls = vec![ToolCall::new("1", "test", serde_json::json!({}))];
 
         let batch_id = journal
-            .begin_batch(StepId::new(1), "test-model", "assistant", &calls)
+            .begin_batch(
+                StepId::new(1),
+                "test-model",
+                "assistant",
+                &calls,
+                &ThinkingReplayState::default(),
+            )
             .unwrap();
 
         // Record an error result
@@ -1417,5 +1570,110 @@ mod tests {
             "https://example.com/x"
         );
         assert_eq!(recovered.calls[0].arguments["msg"], "slash/ok");
+    }
+
+    #[test]
+    fn begin_batch_stores_thinking_replay() {
+        use forge_types::ThoughtSignature;
+
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+        let calls = vec![ToolCall::new(
+            "1",
+            "Read",
+            serde_json::json!({"path": "foo"}),
+        )];
+        let replay = ThinkingReplayState::ClaudeSigned {
+            signature: ThoughtSignature::new("sig_abc"),
+        };
+        let batch_id = journal
+            .begin_batch(StepId::new(1), "test-model", "assistant", &calls, &replay)
+            .unwrap();
+
+        let recovered = journal.recover().unwrap().expect("should recover");
+        assert_eq!(recovered.batch_id, batch_id);
+        assert_eq!(recovered.thinking_replay, replay);
+    }
+
+    #[test]
+    fn streaming_batch_update_thinking_replay() {
+        use forge_types::OpenAIReasoningItem;
+
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+        let batch_id = journal
+            .begin_streaming_batch(StepId::new(1), "test-model")
+            .unwrap();
+
+        let replay = ThinkingReplayState::OpenAIReasoning {
+            items: vec![OpenAIReasoningItem {
+                id: "r_1".to_string(),
+                encrypted_content: Some("enc_data".to_string()),
+            }],
+        };
+        journal.update_thinking_replay(batch_id, &replay).unwrap();
+
+        // Also record a tool call so recovery has something to return
+        journal
+            .record_call_start(
+                batch_id,
+                0,
+                "call_1",
+                "Read",
+                &ThoughtSignatureState::Unsigned,
+            )
+            .unwrap();
+
+        let recovered = journal.recover().unwrap().expect("should recover");
+        assert_eq!(recovered.thinking_replay, replay);
+    }
+
+    #[test]
+    fn recover_returns_unsigned_for_null_replay() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+        let calls = vec![ToolCall::new("1", "Read", serde_json::json!({}))];
+        let batch_id = journal
+            .begin_batch(
+                StepId::new(1),
+                "test-model",
+                "assistant",
+                &calls,
+                &ThinkingReplayState::default(),
+            )
+            .unwrap();
+
+        let recovered = journal.recover().unwrap().expect("should recover");
+        assert_eq!(recovered.batch_id, batch_id);
+        assert_eq!(recovered.thinking_replay, ThinkingReplayState::Unsigned);
+    }
+
+    #[test]
+    fn recover_handles_corrupt_replay_json() {
+        let journal = ToolJournal::open_in_memory().unwrap();
+
+        // Manually insert a batch with garbage thinking_replay_json
+        let created_at = system_time_to_iso8601(SystemTime::now());
+        journal
+            .db
+            .execute(
+                "INSERT INTO tool_batches (stream_step_id, model_name, assistant_text, committed, created_at, thinking_replay_json)
+                 VALUES (?1, ?2, ?3, 0, ?4, ?5)",
+                params![1i64, "test-model", "text", created_at, "not valid json {{{"],
+            )
+            .unwrap();
+
+        let batch_id = journal.db.last_insert_rowid();
+
+        // Insert a tool call so recovery has something
+        journal
+            .db
+            .execute(
+                "INSERT INTO tool_calls (batch_id, seq, tool_call_id, tool_name, arguments_json)
+                 VALUES (?1, 0, 'call_1', 'Read', '{}')",
+                params![batch_id],
+            )
+            .unwrap();
+
+        let recovered = journal.recover().unwrap().expect("should recover");
+        // Corrupt JSON should gracefully degrade to Unsigned (IFA §11.1: boundary converts)
+        assert_eq!(recovered.thinking_replay, ThinkingReplayState::Unsigned);
     }
 }

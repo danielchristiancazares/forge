@@ -231,6 +231,15 @@ impl App {
         // Sanitize ONCE before journaling and before it can reach persistence/display paths.
         let assistant_text = crate::security::sanitize_display_text(&assistant_text);
 
+        // Extract replay state for journal persistence (crash recovery needs it).
+        let replay_state = thinking_message
+            .as_ref()
+            .and_then(|m| match m {
+                Message::Thinking(t) => Some(t.replay_state().clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+
         // If tools are disabled due to journal health, fail closed: pre-resolve tool calls to errors.
         if let Some(reason) = self.tool_journal_disabled_reason.clone() {
             if let Some(batch_id) = tool_batch_id
@@ -282,7 +291,13 @@ impl App {
         let journal_status = if let Some(id) = tool_batch_id {
             // Try to update existing batch
             match self.tool_journal.update_assistant_text(id, &assistant_text) {
-                Ok(()) => JournalStatus::new(id),
+                Ok(()) => {
+                    // Also persist thinking replay state for crash recovery.
+                    if let Err(e) = self.tool_journal.update_thinking_replay(id, &replay_state) {
+                        tracing::warn!("Tool journal thinking replay update failed: {e}");
+                    }
+                    JournalStatus::new(id)
+                }
                 Err(e) => {
                     tracing::warn!("Tool journal update failed: {e}");
                     self.push_notification(format!("Tool journal error: {e}"));
@@ -292,6 +307,7 @@ impl App {
                         model.as_str(),
                         &assistant_text,
                         &tool_calls,
+                        &replay_state,
                     ) {
                         Ok(new_id) => JournalStatus::new(new_id),
                         Err(e2) => {
@@ -347,6 +363,7 @@ impl App {
                 model.as_str(),
                 &assistant_text,
                 &tool_calls,
+                &replay_state,
             ) {
                 Ok(id) => JournalStatus::new(id),
                 Err(e) => {
@@ -1782,6 +1799,13 @@ impl App {
                 self.record_tool_result_or_disable(batch.batch_id, result, "recovery tool result");
         }
 
+        // Reconstruct thinking message from persisted replay state (IFA §7: reuse build_thinking_message).
+        let thinking_message = crate::streaming::build_thinking_message(
+            model.clone(),
+            String::new(),
+            batch.thinking_replay.clone(),
+        );
+
         let auto_resume = true;
         self.commit_tool_batch(
             assistant_text,
@@ -1792,7 +1816,7 @@ impl App {
             JournalStatus::new(batch.batch_id),
             auto_resume,
             TurnContext::new_for_recovery(),
-            None,
+            thinking_message,
         );
 
         match decision {

@@ -49,7 +49,7 @@ use super::{
 };
 use crate::errors::format_stream_error;
 
-fn build_thinking_message(
+pub(crate) fn build_thinking_message(
     model: ModelName,
     content: String,
     replay: ThinkingReplayState,
