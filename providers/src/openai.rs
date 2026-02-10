@@ -447,7 +447,7 @@ fn build_request_body(
                             tracing::warn!("Skipping OpenAI reasoning replay item with empty id");
                             continue;
                         }
-                        let mut val = json!({ "type": "reasoning", "id": id });
+                        let mut val = json!({ "type": "reasoning", "id": id, "summary": [] });
                         if let Some(enc) = item
                             .encrypted_content
                             .as_deref()
@@ -1107,9 +1107,11 @@ mod tests {
         assert_eq!(input[1]["type"], "reasoning");
         assert_eq!(input[1]["id"], "r_1");
         assert_eq!(input[1]["encrypted_content"], "enc1");
+        assert_eq!(input[1]["summary"], json!([]));
         assert_eq!(input[2]["type"], "reasoning");
         assert_eq!(input[2]["id"], "r_2");
         assert!(input[2].get("encrypted_content").is_none());
+        assert_eq!(input[2]["summary"], json!([]));
     }
 
     #[test]
