@@ -91,7 +91,7 @@ thinking_enabled = true      # thinkingLevel="high" for Gemini 3 Pro
 
 Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_CONTEXT_INFINITY=0`
 
-## Crates (8)
+## Crates (9)
 
 | Crate | Purpose |
 |-------|---------|
@@ -103,6 +103,7 @@ Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_C
 | `tools` | Tool executor framework, built-in tools, URL fetch/extraction |
 | `tui` | TUI rendering (ratatui), input handling, themes |
 | `lsp` | LSP client for language server diagnostics |
+| `tests` | Integration tests |
 
 ## Key Files
 
