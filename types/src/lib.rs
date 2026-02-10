@@ -45,7 +45,7 @@ pub use text::truncate_with_ellipsis;
 ///
 /// Used by both the tool executor (`EnvSanitizer`) and LSP server child process
 /// sanitization. Single source of truth — do not duplicate.
-pub const ENV_SECRET_DENYLIST: [&str; 15] = [
+pub const ENV_SECRET_DENYLIST: [&str; 18] = [
     "*_KEY",
     "*_TOKEN",
     "*_SECRET",
@@ -61,6 +61,9 @@ pub const ENV_SECRET_DENYLIST: [&str; 15] = [
     "GH_*",
     "GITHUB_*",
     "NPM_*",
+    "DYLD_*",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
 ];
 
 use serde::{Deserialize, Serialize};

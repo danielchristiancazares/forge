@@ -4,7 +4,8 @@
 //! - Mechanism: classify shell and command content
 //! - Policy: decide allow/deny/fallback behavior
 
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 use super::{DenialReason, DetectedShell, ToolError};
 
@@ -66,32 +67,75 @@ impl Default for WindowsRunSandboxPolicy {
     }
 }
 
+/// macOS-specific run sandbox policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MacOsRunSandboxPolicy {
+    pub enabled: bool,
+    pub fallback_mode: RunSandboxFallbackMode,
+}
+
+impl Default for MacOsRunSandboxPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            fallback_mode: RunSandboxFallbackMode::Prompt,
+        }
+    }
+}
+
 /// Aggregate run sandbox policy (platform-specific sub-policies).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RunSandboxPolicy {
     pub windows: WindowsRunSandboxPolicy,
+    pub macos: MacOsRunSandboxPolicy,
 }
 
 /// Prepared command after sandbox policy evaluation.
+///
+/// Encapsulates the program binary, argument list, and metadata needed to spawn
+/// the process. On macOS the program may be `sandbox-exec` rather than the shell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedRunCommand {
-    command: String,
+    program: PathBuf,
+    args: Vec<OsString>,
     warning: Option<String>,
-    requires_windows_host_sandbox: bool,
+    requires_host_sandbox: bool,
 }
 
 impl PreparedRunCommand {
-    fn new(command: String, warning: Option<String>, requires_windows_host_sandbox: bool) -> Self {
+    pub(crate) fn new(
+        program: PathBuf,
+        args: Vec<OsString>,
+        warning: Option<String>,
+        requires_host_sandbox: bool,
+    ) -> Self {
         Self {
-            command,
+            program,
+            args,
             warning,
-            requires_windows_host_sandbox,
+            requires_host_sandbox,
+        }
+    }
+
+    pub(crate) fn passthrough(shell: &DetectedShell, command: &str) -> Self {
+        let mut args: Vec<OsString> = shell.args.iter().map(OsString::from).collect();
+        args.push(OsString::from(command));
+        Self {
+            program: shell.binary.clone(),
+            args,
+            warning: None,
+            requires_host_sandbox: false,
         }
     }
 
     #[must_use]
-    pub fn command(&self) -> &str {
-        &self.command
+    pub fn program(&self) -> &Path {
+        &self.program
+    }
+
+    #[must_use]
+    pub fn args(&self) -> &[OsString] {
+        &self.args
     }
 
     #[must_use]
@@ -100,8 +144,8 @@ impl PreparedRunCommand {
     }
 
     #[must_use]
-    pub fn requires_windows_host_sandbox(&self) -> bool {
-        self.requires_windows_host_sandbox
+    pub fn requires_host_sandbox(&self) -> bool {
+        self.requires_host_sandbox
     }
 }
 
@@ -139,8 +183,10 @@ pub(crate) fn prepare_run_command(
     shell: &DetectedShell,
     policy: RunSandboxPolicy,
     unsafe_allow_unsandboxed: bool,
+    working_dir: &Path,
 ) -> Result<PreparedRunCommand, ToolError> {
     if cfg!(windows) {
+        let _ = working_dir;
         return prepare_windows_run_command(
             command,
             shell,
@@ -148,12 +194,21 @@ pub(crate) fn prepare_run_command(
             unsafe_allow_unsandboxed,
         );
     }
-    let _ = (shell, policy, unsafe_allow_unsandboxed);
-    Ok(PreparedRunCommand::new(
-        command.raw().to_string(),
-        None,
-        false,
-    ))
+    #[cfg(target_os = "macos")]
+    {
+        prepare_macos_run_command(
+            command.raw(),
+            shell,
+            policy.macos,
+            unsafe_allow_unsandboxed,
+            working_dir,
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (policy, unsafe_allow_unsandboxed, working_dir);
+        Ok(PreparedRunCommand::passthrough(shell, command.raw()))
+    }
 }
 
 pub(crate) fn prepare_windows_run_command(
@@ -184,17 +239,13 @@ where
     F: FnOnce() -> Result<(), String>,
 {
     if !policy.enabled {
-        return Ok(PreparedRunCommand::new(
-            command.raw().to_string(),
-            None,
-            false,
-        ));
+        return Ok(PreparedRunCommand::passthrough(shell, command.raw()));
     }
 
     let shell_is_powershell = is_powershell_shell(shell);
     if policy.enforce_powershell_only && !shell_is_powershell {
         return handle_unsandboxed_fallback(
-            command.raw().to_string(),
+            PreparedRunCommand::passthrough(shell, command.raw()),
             policy.fallback_mode,
             unsafe_allow_unsandboxed,
             format!(
@@ -226,10 +277,12 @@ where
         command.raw().to_string()
     };
 
-    let requires_windows_host_sandbox = if check_windows_host {
+    let requires_host_sandbox = if check_windows_host {
         if let Err(reason) = host_probe() {
+            let mut fallback_args: Vec<OsString> = shell.args.iter().map(OsString::from).collect();
+            fallback_args.push(OsString::from(command_for_execution));
             return handle_unsandboxed_fallback(
-                command_for_execution,
+                PreparedRunCommand::new(shell.binary.clone(), fallback_args, None, false),
                 policy.fallback_mode,
                 unsafe_allow_unsandboxed,
                 format!("host isolation unavailable ({reason})"),
@@ -240,10 +293,13 @@ where
         false
     };
 
+    let mut args: Vec<OsString> = shell.args.iter().map(OsString::from).collect();
+    args.push(OsString::from(command_for_execution));
     Ok(PreparedRunCommand::new(
-        command_for_execution,
+        shell.binary.clone(),
+        args,
         None,
-        requires_windows_host_sandbox,
+        requires_host_sandbox,
     ))
 }
 
@@ -277,7 +333,7 @@ fn default_windows_host_probe() -> Result<(), String> {
 }
 
 fn handle_unsandboxed_fallback(
-    command: String,
+    passthrough: PreparedRunCommand,
     mode: RunSandboxFallbackMode,
     unsafe_allow_unsandboxed: bool,
     reason: String,
@@ -285,34 +341,114 @@ fn handle_unsandboxed_fallback(
     match mode {
         RunSandboxFallbackMode::Deny => Err(ToolError::ExecutionFailed {
             tool: "Run".to_string(),
-            message: format!("Windows sandbox unavailable: {reason}. Fallback mode is deny."),
+            message: format!("Sandbox unavailable: {reason}. Fallback mode is deny."),
         }),
         RunSandboxFallbackMode::Prompt => {
             if !unsafe_allow_unsandboxed {
                 return Err(ToolError::ExecutionFailed {
                     tool: "Run".to_string(),
                     message: format!(
-                        "Windows sandbox unavailable: {reason}. \
+                        "Sandbox unavailable: {reason}. \
 To run unsandboxed once, set unsafe_allow_unsandboxed=true."
                     ),
                 });
             }
-            Ok(PreparedRunCommand::new(
-                command,
-                Some(format!(
-                    "WARNING: Windows sandbox unavailable ({reason}); running unsandboxed due to explicit override."
+            Ok(PreparedRunCommand {
+                warning: Some(format!(
+                    "WARNING: sandbox unavailable ({reason}); running unsandboxed due to explicit override."
                 )),
-                false,
-            ))
+                requires_host_sandbox: false,
+                ..passthrough
+            })
         }
-        RunSandboxFallbackMode::AllowWithWarning => Ok(PreparedRunCommand::new(
-            command,
-            Some(format!(
-                "WARNING: Windows sandbox unavailable ({reason}); running unsandboxed."
+        RunSandboxFallbackMode::AllowWithWarning => Ok(PreparedRunCommand {
+            warning: Some(format!(
+                "WARNING: sandbox unavailable ({reason}); running unsandboxed."
             )),
-            false,
-        )),
+            requires_host_sandbox: false,
+            ..passthrough
+        }),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_macos_run_command(
+    command: &str,
+    shell: &DetectedShell,
+    policy: MacOsRunSandboxPolicy,
+    unsafe_allow_unsandboxed: bool,
+    working_dir: &Path,
+) -> Result<PreparedRunCommand, ToolError> {
+    use std::sync::OnceLock;
+
+    static SANDBOX_EXEC: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+    fn probe() -> Option<PathBuf> {
+        let p = PathBuf::from("/usr/bin/sandbox-exec");
+        p.is_file().then_some(p)
+    }
+
+    if !policy.enabled {
+        return Ok(PreparedRunCommand::passthrough(shell, command));
+    }
+
+    let sandbox_exec = SANDBOX_EXEC.get_or_init(probe);
+    let Some(sandbox_exec) = sandbox_exec.as_ref() else {
+        return handle_unsandboxed_fallback(
+            PreparedRunCommand::passthrough(shell, command),
+            policy.fallback_mode,
+            unsafe_allow_unsandboxed,
+            "sandbox-exec not found at /usr/bin/sandbox-exec".to_string(),
+        );
+    };
+
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    let tmp = std::env::temp_dir();
+    let cwd = working_dir
+        .canonicalize()
+        .unwrap_or_else(|_| working_dir.to_path_buf());
+    let profile = generate_seatbelt_profile(&cwd, &tmp, &home);
+
+    let mut args: Vec<OsString> = vec![
+        OsString::from("-p"),
+        OsString::from(&profile),
+        OsString::from(&shell.binary),
+    ];
+    args.extend(shell.args.iter().map(OsString::from));
+    args.push(OsString::from(command));
+
+    Ok(PreparedRunCommand::new(
+        sandbox_exec.clone(),
+        args,
+        None,
+        false,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn generate_seatbelt_profile(cwd: &Path, tmp: &Path, home: &Path) -> String {
+    let cwd = cwd.to_string_lossy();
+    let tmp = tmp.to_string_lossy();
+    let home = home.to_string_lossy();
+    format!(
+        r#"(version 1)
+(deny default)
+(allow process-exec)
+(allow process-fork)
+(allow file-read*)
+(deny file-read* (subpath "{home}/.ssh"))
+(deny file-read* (subpath "{home}/.gnupg"))
+(deny file-read* (subpath "{home}/.aws"))
+(deny file-read* (subpath "{home}/.azure"))
+(deny file-read* (subpath "{home}/.config/gcloud"))
+(deny file-read* (subpath "{home}/Library/Keychains"))
+(allow file-write* (subpath "{cwd}"))
+(allow file-write* (subpath "{tmp}"))
+(deny network*)
+(allow mach-lookup)
+(allow sysctl-read)
+(allow signal)"#
+    )
 }
 
 #[cfg(test)]
@@ -420,7 +556,7 @@ mod tests {
         )
         .expect("fallback allowed");
         assert!(prepared.warning().is_some());
-        assert_eq!(prepared.command(), "Get-ChildItem");
+        assert_eq!(prepared.args().last().unwrap(), "Get-ChildItem");
     }
 
     #[test]
@@ -432,8 +568,9 @@ mod tests {
             false,
         )
         .expect("wrapped command");
-        assert!(prepared.command().contains("ConstrainedLanguage"));
-        assert!(prepared.command().contains("Set-StrictMode"));
+        let last_arg = prepared.args().last().unwrap().to_string_lossy();
+        assert!(last_arg.contains("ConstrainedLanguage"));
+        assert!(last_arg.contains("Set-StrictMode"));
     }
 
     #[test]
@@ -468,8 +605,9 @@ mod tests {
         )
         .expect("fallback allowed");
         assert!(prepared.warning().is_some());
-        assert!(prepared.command().contains("ConstrainedLanguage"));
-        assert!(!prepared.requires_windows_host_sandbox());
+        let last_arg = prepared.args().last().unwrap().to_string_lossy();
+        assert!(last_arg.contains("ConstrainedLanguage"));
+        assert!(!prepared.requires_host_sandbox());
     }
 
     #[test]
@@ -483,6 +621,21 @@ mod tests {
             || Ok(()),
         )
         .expect("host sandbox required");
-        assert!(prepared.requires_windows_host_sandbox());
+        assert!(prepared.requires_host_sandbox());
+    }
+
+    #[test]
+    fn passthrough_uses_shell_binary_as_program() {
+        let shell = shell("pwsh");
+        let prepared = PreparedRunCommand::passthrough(&shell, "Get-ChildItem");
+        assert_eq!(prepared.program(), Path::new("pwsh"));
+        assert_eq!(prepared.args().last().unwrap(), "Get-ChildItem");
+    }
+
+    #[test]
+    fn macos_policy_defaults_are_hardened() {
+        let policy = MacOsRunSandboxPolicy::default();
+        assert!(policy.enabled);
+        assert_eq!(policy.fallback_mode, RunSandboxFallbackMode::Prompt);
     }
 }

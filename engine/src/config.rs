@@ -346,6 +346,7 @@ pub struct WebFetchConfig {
 #[derive(Debug, Default, Deserialize)]
 pub struct RunConfig {
     pub windows: Option<WindowsRunConfig>,
+    pub macos: Option<MacOsRunConfig>,
 }
 
 /// Fallback behavior when Windows sandbox prerequisites are unavailable.
@@ -371,6 +372,24 @@ pub struct WindowsRunConfig {
 }
 
 impl Default for WindowsRunConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            fallback_mode: RunFallbackMode::Prompt,
+        }
+    }
+}
+
+/// macOS-specific Run hardening configuration.
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+pub struct MacOsRunConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub fallback_mode: RunFallbackMode,
+}
+
+impl Default for MacOsRunConfig {
     fn default() -> Self {
         Self {
             enabled: true,

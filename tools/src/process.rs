@@ -69,7 +69,11 @@ pub fn process_started_at_unix_ms(pid: u32) -> Option<i64> {
     {
         linux_process_started_at_unix_ms(pid)
     }
-    #[cfg(all(unix, not(target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        macos_process_started_at_unix_ms(pid)
+    }
+    #[cfg(all(unix, not(target_os = "linux"), not(target_os = "macos")))]
     {
         let _ = pid;
         None
@@ -146,6 +150,68 @@ fn parse_linux_proc_stat_starttime_ticks(proc_stat: &str) -> Option<u64> {
     let fields: Vec<&str> = after.split_whitespace().collect();
     // starttime is field #22 overall => index 19 in the remainder (0-based).
     fields.get(19)?.parse::<u64>().ok()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_process_started_at_unix_ms(pid: u32) -> Option<i64> {
+    use std::mem::{MaybeUninit, size_of};
+
+    unsafe extern "C" {
+        unsafe fn proc_pidinfo(
+            pid: libc::c_int,
+            flavor: libc::c_int,
+            arg: u64,
+            buffer: *mut libc::c_void,
+            buffersize: libc::c_int,
+        ) -> libc::c_int;
+    }
+
+    const PROC_PIDTBSDINFO: libc::c_int = 3;
+
+    #[repr(C)]
+    struct ProcBsdInfo {
+        pbi_flags: u32,
+        pbi_status: u32,
+        pbi_xstatus: u32,
+        pbi_pid: u32,
+        pbi_ppid: u32,
+        pbi_uid: u32,
+        pbi_gid: u32,
+        pbi_ruid: u32,
+        pbi_rgid: u32,
+        pbi_svuid: u32,
+        pbi_svgid: u32,
+        _rfu_1: u32,
+        pbi_comm: [u8; 16],
+        pbi_name: [u8; 32],
+        pbi_nfiles: u32,
+        pbi_pgid: u32,
+        pbi_pjobc: u32,
+        e_tdev: u32,
+        e_tpgid: u32,
+        pbi_nice: i32,
+        pbi_start_tvsec: u64,
+        pbi_start_tvusec: u64,
+    }
+
+    let mut info = MaybeUninit::<ProcBsdInfo>::uninit();
+    let ret = unsafe {
+        proc_pidinfo(
+            pid as libc::c_int,
+            PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size_of::<ProcBsdInfo>() as libc::c_int,
+        )
+    };
+    if ret <= 0 {
+        return None;
+    }
+
+    let info = unsafe { info.assume_init() };
+    let secs = info.pbi_start_tvsec as i64;
+    let usecs = info.pbi_start_tvusec as i64;
+    Some(secs.saturating_mul(1000).saturating_add(usecs / 1000))
 }
 
 #[cfg(windows)]
@@ -249,5 +315,24 @@ pub fn set_new_session(cmd: &mut tokio::process::Command) {
             }
             Ok(())
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_process_start_time_returns_some() {
+        let pid = std::process::id();
+        let ms = process_started_at_unix_ms(pid);
+        assert!(ms.is_some(), "should return start time for own process");
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let diff = (now_ms - ms.unwrap()).abs();
+        assert!(diff < 60_000, "start time should be within 60s of now");
     }
 }

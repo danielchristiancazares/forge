@@ -38,7 +38,9 @@ use sandbox::Sandbox;
 pub use search::SearchToolConfig;
 pub use shell::DetectedShell;
 pub use webfetch::WebFetchToolConfig;
-pub use windows_run::{RunSandboxFallbackMode, RunSandboxPolicy, WindowsRunSandboxPolicy};
+pub use windows_run::{
+    MacOsRunSandboxPolicy, RunSandboxFallbackMode, RunSandboxPolicy, WindowsRunSandboxPolicy,
+};
 
 /// Tool execution future type alias.
 pub type ToolFut<'a> = Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'a>>;
@@ -615,5 +617,37 @@ mod tests {
         let output = sanitize_output(input);
         assert!(output.contains("sk-***"));
         assert!(!output.contains("abc123xyz"));
+    }
+
+    #[test]
+    fn env_sanitizer_strips_dyld_and_ld_vars() {
+        use forge_types::ENV_SECRET_DENYLIST;
+
+        let sanitizer = EnvSanitizer::new(
+            &ENV_SECRET_DENYLIST
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let env = vec![
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            (
+                "DYLD_INSERT_LIBRARIES".to_string(),
+                "/evil.dylib".to_string(),
+            ),
+            ("DYLD_LIBRARY_PATH".to_string(), "/evil".to_string()),
+            ("LD_PRELOAD".to_string(), "/evil.so".to_string()),
+            ("LD_LIBRARY_PATH".to_string(), "/evil".to_string()),
+            ("HOME".to_string(), "/Users/test".to_string()),
+        ];
+        let clean = sanitizer.sanitize_env(&env);
+        let keys: Vec<&str> = clean.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"PATH"));
+        assert!(keys.contains(&"HOME"));
+        assert!(!keys.contains(&"DYLD_INSERT_LIBRARIES"));
+        assert!(!keys.contains(&"DYLD_LIBRARY_PATH"));
+        assert!(!keys.contains(&"LD_PRELOAD"));
+        assert!(!keys.contains(&"LD_LIBRARY_PATH"));
     }
 }

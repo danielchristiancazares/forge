@@ -1150,13 +1150,13 @@ impl ToolExecutor for RunCommandTool {
                 &self.shell,
                 self.run_policy,
                 typed.unsafe_allow_unsandboxed,
+                &ctx.working_dir,
             )?;
 
-            let mut command = Command::new(&self.shell.binary);
-            for arg in &self.shell.args {
+            let mut command = Command::new(prepared.program());
+            for arg in prepared.args() {
                 command.arg(arg);
             }
-            command.arg(prepared.command());
             command
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
@@ -1168,7 +1168,7 @@ impl ToolExecutor for RunCommandTool {
             command.env_clear();
             command.envs(sanitized);
 
-            let requires_host_sandbox = prepared.requires_windows_host_sandbox();
+            let requires_host_sandbox = prepared.requires_host_sandbox();
 
             #[cfg(windows)]
             if requires_host_sandbox {

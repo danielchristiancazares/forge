@@ -602,6 +602,9 @@ impl App {
         let windows_run_cfg = tools_cfg
             .and_then(|cfg| cfg.run.as_ref())
             .and_then(|cfg| cfg.windows.as_ref());
+        let macos_run_cfg = tools_cfg
+            .and_then(|cfg| cfg.run.as_ref())
+            .and_then(|cfg| cfg.macos.as_ref());
         let run_policy = tools::RunSandboxPolicy {
             windows: tools::WindowsRunSandboxPolicy {
                 enabled: windows_run_cfg.map(|cfg| cfg.enabled).unwrap_or(true),
@@ -610,6 +613,10 @@ impl App {
                 fallback_mode: parse_run_fallback_mode(
                     windows_run_cfg.map(|cfg| cfg.fallback_mode),
                 ),
+            },
+            macos: tools::MacOsRunSandboxPolicy {
+                enabled: macos_run_cfg.map(|cfg| cfg.enabled).unwrap_or(true),
+                fallback_mode: parse_run_fallback_mode(macos_run_cfg.map(|cfg| cfg.fallback_mode)),
             },
         };
 
