@@ -18,21 +18,31 @@ build:
 release:
     cargo build --release
 
-# Run tests
+# Run tests (concise: one-line summary on pass, full output on fail)
+[windows]
 test:
-    cargo test
+    @& { $r = cargo test 2>&1; if ($LASTEXITCODE -eq 0) { $p=0; $f=0; $i=0; $r | Select-String 'test result:' | ForEach-Object { if ($_ -match '(\d+) passed; (\d+) failed; (\d+) ignored') { $p+=[int]$Matches[1]; $f+=[int]$Matches[2]; $i+=[int]$Matches[3] } }; "ok: $p passed, $f failed, $i ignored" } else { $r | ForEach-Object { "$_" }; exit 1 } }
 
-# Run clippy lints
+[unix]
+test:
+    @r=$(cargo test 2>&1); rc=$?; if [ $rc -eq 0 ]; then echo "$r" | grep 'test result:' | awk '{p+=$4; f+=$6; i+=$8} END {printf "ok: %d passed, %d failed, %d ignored\n", p, f, i}'; else echo "$r"; exit $rc; fi
+
+# Run clippy lints (silent on pass, errors only on fail)
+[windows]
 lint:
-    cargo clippy --workspace --all-targets -- -D warnings
+    @& { $r = cargo clippy --workspace --all-targets -- -D warnings 2>&1; if ($LASTEXITCODE -ne 0) { $r | Where-Object { $_ -notmatch '^\s*(Checking|Compiling|Finished|Downloading|Downloaded|warning: build failed)' } | ForEach-Object { "$_" }; exit 1 } }
+
+[unix]
+lint:
+    @r=$(cargo clippy --workspace --all-targets -- -D warnings 2>&1); rc=$?; if [ $rc -ne 0 ]; then echo "$r" | grep -Ev '^\s*(Checking|Compiling|Finished|Downloading|Downloaded|warning: build failed)'; exit $rc; fi
 
 # Format code
 fmt:
-    cargo fmt --all
+    @cargo fmt --all
 
 # Check formatting without modifying
 fmt-check:
-    cargo fmt -- --check
+    @cargo fmt -- --check
 
 # Coverage report (requires cargo-llvm-cov)
 cov:
