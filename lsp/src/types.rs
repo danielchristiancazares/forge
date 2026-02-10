@@ -198,11 +198,16 @@ impl ForgeDiagnostic {
     }
 
     /// Format as `path:line:col: severity: message` (1-indexed for display).
+    ///
+    /// Path is sanitized to neutralize embedded newlines, tabs, and carriage
+    /// returns that could break TUI layout or be used for UI spoofing.
     #[must_use]
     pub fn display_with_path(&self, path: &std::path::Path) -> String {
+        let path_str = path.display().to_string();
+        let safe_path = forge_types::sanitize_path_display(&path_str);
         format!(
             "{}:{}:{}: {}: [{}] {}",
-            path.display(),
+            safe_path,
             self.line + 1,
             self.col + 1,
             self.severity.label(),

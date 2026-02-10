@@ -606,21 +606,54 @@ fn compute_file_sha256(path: impl AsRef<Path>) -> Result<String> {
 
 /// Ensure database files have secure permissions.
 fn ensure_secure_db_files(path: &Path) -> Result<()> {
-    // Touch the file to ensure it exists
-    OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path)
-        .with_context(|| format!("Failed to create/open {}", path.display()))?;
-
+    if !path.exists() {
+        // Use atomic mode setting on Unix to avoid TOCTOU race between create and chmod
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let _file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .mode(0o600)
+                .open(path)
+                .with_context(|| format!("Failed to create database file: {}", path.display()))?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(path)
+                .with_context(|| format!("Failed to create database file: {}", path.display()))?;
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        // Ensure permissions are correct even for pre-existing files
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .with_context(|| format!("Failed to set permissions on {}", path.display()))?;
+        // Secure WAL/SHM sidecars unconditionally — they may be created after
+        // WAL mode is enabled, so always attempt to fix permissions.
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = path.with_file_name(format!(
+                "{}{}",
+                path.file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default(),
+                suffix
+            ));
+            if sidecar.exists() {
+                let _ = std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o600));
+            }
+        }
     }
-    let _ = path; // Suppress unused warning on Windows
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 

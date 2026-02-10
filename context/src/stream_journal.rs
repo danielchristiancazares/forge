@@ -1068,19 +1068,38 @@ fn ensure_secure_dir(path: &Path) -> Result<()> {
 
 fn ensure_secure_db_files(path: &Path) -> Result<()> {
     if !path.exists() {
-        let _file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path)
-            .with_context(|| format!("Failed to create database file: {}", path.display()))?;
+        // Use atomic mode setting on Unix to avoid TOCTOU race between create and chmod
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let _file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .mode(0o600)
+                .open(path)
+                .with_context(|| format!("Failed to create database file: {}", path.display()))?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(path)
+                .with_context(|| format!("Failed to create database file: {}", path.display()))?;
+        }
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        // Ensure permissions are correct even for pre-existing files
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .with_context(|| format!("Failed to set database permissions: {}", path.display()))?;
+        // Secure WAL/SHM sidecars unconditionally — they may be created after
+        // WAL mode is enabled, so always attempt to fix permissions.
         for suffix in ["-wal", "-shm"] {
             let sidecar = sqlite_sidecar_path(path, suffix);
             if sidecar.exists() {

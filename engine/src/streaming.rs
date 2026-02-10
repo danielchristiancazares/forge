@@ -907,6 +907,11 @@ impl super::App {
             .collect::<Vec<_>>()
             .join("\n");
 
+        // Sanitize before injection — DiagnosticsFound contains workspace-derived
+        // content (file paths, error messages) that could carry escape sequences
+        // or bidi controls from malicious filenames.
+        let combined = crate::security::sanitize_display_text(&combined);
+
         if let Ok(content) = NonEmptyString::new(combined) {
             let msg = Message::assistant(self.model.clone(), content);
             messages.push(CacheableMessage::plain(msg)); // tail = cache-safe

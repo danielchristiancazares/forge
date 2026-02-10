@@ -863,7 +863,7 @@ impl ToolExecutor for ApplyPatchTool {
             let changed_count = staged.iter().filter(|s| s.changed).count();
 
             if any_changed {
-                apply_staged_files(&staged)?;
+                apply_staged_files(&staged, &ctx.sandbox)?;
                 for file in &staged {
                     if !file.changed {
                         continue;
@@ -1446,6 +1446,9 @@ fn read_text_range(
         if line_num >= start && line_num <= end {
             output.push_str(&String::from_utf8_lossy(&line));
         }
+        if line_num >= end {
+            break;
+        }
         line_num += 1;
     }
 
@@ -1497,7 +1500,10 @@ struct StagedFile {
     permissions: Option<std::fs::Permissions>,
 }
 
-fn apply_staged_files(staged: &[StagedFile]) -> Result<(), ToolError> {
+fn apply_staged_files(
+    staged: &[StagedFile],
+    sandbox: &crate::sandbox::Sandbox,
+) -> Result<(), ToolError> {
     for file in staged.iter().filter(|s| s.changed) {
         let parent = file.path.parent().ok_or_else(|| ToolError::PatchFailed {
             file: file.path.clone(),
@@ -1510,6 +1516,9 @@ fn apply_staged_files(staged: &[StagedFile]) -> Result<(), ToolError> {
                 file: file.path.clone(),
                 message: format!("Failed to create parent directories: {e}"),
             })?;
+            // Validate that no symlink was injected between create_dir_all and write.
+            // This mirrors WriteFileTool's post-create validation.
+            sandbox.validate_created_parent(&file.path)?;
         }
 
         // Extract unix mode from existing permissions to preserve across atomic write

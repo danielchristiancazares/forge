@@ -52,14 +52,14 @@ impl super::App {
             self.streaming_overhead(provider)
         };
 
-        let message_ids = match self.context_manager.prepare(overhead) {
+        let needed = match self.context_manager.prepare(overhead) {
             Ok(_) => {
                 if let Some(queued) = queued_request {
                     self.start_streaming(queued);
                 }
                 return DistillationStart::NotNeeded;
             }
-            Err(ContextBuildError::DistillationNeeded(needed)) => needed.messages_to_distill,
+            Err(ContextBuildError::DistillationNeeded(needed)) => needed,
             Err(ContextBuildError::RecentMessagesTooLarge {
                 required_tokens,
                 budget_tokens,
@@ -72,8 +72,12 @@ impl super::App {
             }
         };
 
-        let Some(pending) = self.context_manager.prepare_distillation(&message_ids) else {
-            return fail_with_rollback(self, queued_request);
+        let pending = match self.context_manager.prepare_distillation(&needed) {
+            Ok(pending) => pending,
+            Err(e) => {
+                self.push_notification(format!("Cannot distill: {e}"));
+                return fail_with_rollback(self, queued_request);
+            }
         };
 
         let PendingDistillation {
@@ -175,6 +179,10 @@ impl super::App {
 
         match result {
             Some(Ok(Ok(distillation_text))) => {
+                // Sanitize distillation output before storing — distillates are
+                // injected as system messages and must not contain escape sequences,
+                // bidi controls, or leaked API keys from summarized conversation.
+                let distillation_text = crate::security::sanitize_display_text(&distillation_text);
                 let distillation_text = if let Ok(text) = NonEmptyString::new(distillation_text) {
                     text
                 } else {
