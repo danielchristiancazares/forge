@@ -1450,203 +1450,203 @@ pub fn find_match_positions(path: &str, filter: &str) -> Vec<usize>; @ engine/sr
 /// Single global instance (IFA-7 compliant).
 pub fn sanitize_display_text(input: &str) -> String; @ engine/src/security.rs:259
 
-pub struct App { @ engine/src/lib.rs:411
+pub struct App { @ engine/src/lib.rs:412
 }
 
 impl App {
     pub fn cancel_active_operation(&mut self) -> bool; @ engine/src/commands.rs:255
     /// Check for and recover from a crashed streaming session.
     pub fn check_crash_recovery(&mut self) -> Option<RecoveredStream>; @ engine/src/persistence.rs:304
-    pub fn clear_files_panel_effect(&mut self); @ engine/src/lib.rs:605
-    pub fn clear_modal_effect(&mut self); @ engine/src/lib.rs:1233
+    pub fn clear_files_panel_effect(&mut self); @ engine/src/lib.rs:606
+    pub fn clear_modal_effect(&mut self); @ engine/src/lib.rs:1234
     /// Close the files panel (no-op if already hidden).
-    pub fn close_files_panel(&mut self); @ engine/src/lib.rs:579
-    pub fn command_cursor(&self) -> Option<usize>; @ engine/src/lib.rs:1586
-    pub fn command_cursor_byte_index(&self) -> Option<usize>; @ engine/src/lib.rs:1590
+    pub fn close_files_panel(&mut self); @ engine/src/lib.rs:580
+    pub fn command_cursor(&self) -> Option<usize>; @ engine/src/lib.rs:1587
+    pub fn command_cursor_byte_index(&self) -> Option<usize>; @ engine/src/lib.rs:1591
     /// Get command mode wrapper (requires proof token).
-    pub fn command_mode(&mut self, _token: CommandToken) -> CommandMode<'_>; @ engine/src/input_modes.rs:265
-    pub fn command_text(&self) -> Option<&str>; @ engine/src/lib.rs:1582
+    pub fn command_mode(&mut self, _token: CommandToken) -> CommandMode<'_>; @ engine/src/input_modes.rs:59
+    pub fn command_text(&self) -> Option<&str>; @ engine/src/lib.rs:1583
     /// Get proof token if currently in Command mode.
-    pub fn command_token(&self) -> Option<CommandToken>; @ engine/src/input_modes.rs:255
+    pub fn command_token(&self) -> Option<CommandToken>; @ engine/src/input_modes.rs:49
     /// Get context usage statistics for the UI.
     /// Uses cached value when available to avoid recomputing every frame.
-    pub fn context_usage_status(&mut self) -> ContextUsageStatus; @ engine/src/lib.rs:999
+    pub fn context_usage_status(&mut self) -> ContextUsageStatus; @ engine/src/lib.rs:1000
     /// Get the current API key for the selected provider.
-    pub fn current_api_key(&self) -> Option<&String>; @ engine/src/lib.rs:960
-    pub fn display_items(&self) -> &[DisplayItem]; @ engine/src/lib.rs:941
+    pub fn current_api_key(&self) -> Option<&String>; @ engine/src/lib.rs:961
+    pub fn display_items(&self) -> &[DisplayItem]; @ engine/src/lib.rs:942
     /// Version counter for display changes - used for render caching.
-    pub fn display_version(&self) -> usize; @ engine/src/lib.rs:951
-    pub fn draft_cursor(&self) -> usize; @ engine/src/lib.rs:1574
-    pub fn draft_cursor_byte_index(&self) -> usize; @ engine/src/lib.rs:1578
-    pub fn draft_text(&self) -> &str; @ engine/src/lib.rs:1570
-    pub fn enter_command_mode(&mut self); @ engine/src/lib.rs:1260
+    pub fn display_version(&self) -> usize; @ engine/src/lib.rs:952
+    pub fn draft_cursor(&self) -> usize; @ engine/src/lib.rs:1575
+    pub fn draft_cursor_byte_index(&self) -> usize; @ engine/src/lib.rs:1579
+    pub fn draft_text(&self) -> &str; @ engine/src/lib.rs:1571
+    pub fn enter_command_mode(&mut self); @ engine/src/lib.rs:1261
     /// Enter file select mode, scanning files from the current directory.
-    pub fn enter_file_select_mode(&mut self); @ engine/src/lib.rs:1337
-    pub fn enter_insert_mode(&mut self); @ engine/src/lib.rs:1256
-    pub fn enter_insert_mode_at_end(&mut self); @ engine/src/lib.rs:1241
-    pub fn enter_insert_mode_with_clear(&mut self); @ engine/src/lib.rs:1246
-    pub fn enter_model_select_mode(&mut self); @ engine/src/lib.rs:1264
-    pub fn enter_normal_mode(&mut self); @ engine/src/lib.rs:1251
+    pub fn enter_file_select_mode(&mut self); @ engine/src/lib.rs:1338
+    pub fn enter_insert_mode(&mut self); @ engine/src/lib.rs:1257
+    pub fn enter_insert_mode_at_end(&mut self); @ engine/src/lib.rs:1242
+    pub fn enter_insert_mode_with_clear(&mut self); @ engine/src/lib.rs:1247
+    pub fn enter_model_select_mode(&mut self); @ engine/src/lib.rs:1265
+    pub fn enter_normal_mode(&mut self); @ engine/src/lib.rs:1252
     /// Get the file picker state for rendering.
-    pub fn file_picker(&self) -> &ui::FilePickerState; @ engine/src/lib.rs:1367
+    pub fn file_picker(&self) -> &ui::FilePickerState; @ engine/src/lib.rs:1368
     /// Delete a character from the file select filter (backspace).
-    pub fn file_select_backspace(&mut self); @ engine/src/lib.rs:1409
+    pub fn file_select_backspace(&mut self); @ engine/src/lib.rs:1410
     /// Cancel file selection and return to insert mode.
-    pub fn file_select_cancel(&mut self); @ engine/src/lib.rs:1433
+    pub fn file_select_cancel(&mut self); @ engine/src/lib.rs:1434
     /// Confirm file selection - insert the selected file path into the draft.
-    pub fn file_select_confirm(&mut self); @ engine/src/lib.rs:1417
+    pub fn file_select_confirm(&mut self); @ engine/src/lib.rs:1418
     /// Get filtered files for display.
-    pub fn file_select_files(&self) -> Vec<&ui::FileEntry>; @ engine/src/lib.rs:1362
+    pub fn file_select_files(&self) -> Vec<&ui::FileEntry>; @ engine/src/lib.rs:1363
     /// Get the current file select filter text.
-    pub fn file_select_filter(&self) -> Option<&str>; @ engine/src/lib.rs:1352
+    pub fn file_select_filter(&self) -> Option<&str>; @ engine/src/lib.rs:1353
     /// Get the current file select index.
-    pub fn file_select_index(&self) -> Option<usize>; @ engine/src/lib.rs:1357
+    pub fn file_select_index(&self) -> Option<usize>; @ engine/src/lib.rs:1358
     /// Move file selection down.
-    pub fn file_select_move_down(&mut self); @ engine/src/lib.rs:1381
+    pub fn file_select_move_down(&mut self); @ engine/src/lib.rs:1382
     /// Move file selection up.
-    pub fn file_select_move_up(&mut self); @ engine/src/lib.rs:1372
+    pub fn file_select_move_up(&mut self); @ engine/src/lib.rs:1373
     /// Push a character to the file select filter.
-    pub fn file_select_push_char(&mut self, c: char); @ engine/src/lib.rs:1401
+    pub fn file_select_push_char(&mut self, c: char); @ engine/src/lib.rs:1402
     /// Update the file select filter and refresh filtered results.
-    pub fn file_select_update_filter(&mut self); @ engine/src/lib.rs:1391
+    pub fn file_select_update_filter(&mut self); @ engine/src/lib.rs:1392
     /// Collapse the expanded diff.
-    pub fn files_panel_collapse(&mut self); @ engine/src/lib.rs:696
-    pub fn files_panel_diff(&self) -> Option<FileDiff>; @ engine/src/lib.rs:734
+    pub fn files_panel_collapse(&mut self); @ engine/src/lib.rs:697
+    pub fn files_panel_diff(&self) -> Option<FileDiff>; @ engine/src/lib.rs:735
     /// Get mutable reference to files panel effect for UI processing.
-    pub fn files_panel_effect_mut(&mut self) -> Option<&mut PanelEffect>; @ engine/src/lib.rs:601
-    pub fn files_panel_expanded(&self) -> bool; @ engine/src/lib.rs:687
+    pub fn files_panel_effect_mut(&mut self) -> Option<&mut PanelEffect>; @ engine/src/lib.rs:602
+    pub fn files_panel_expanded(&self) -> bool; @ engine/src/lib.rs:688
     /// Cycle to the next file in the panel (wrapping).
-    pub fn files_panel_next(&mut self); @ engine/src/lib.rs:648
+    pub fn files_panel_next(&mut self); @ engine/src/lib.rs:649
     /// Cycle to the previous file in the panel (wrapping).
-    pub fn files_panel_prev(&mut self); @ engine/src/lib.rs:666
+    pub fn files_panel_prev(&mut self); @ engine/src/lib.rs:667
     /// Scroll the diff view down.
-    pub fn files_panel_scroll_diff_down(&mut self); @ engine/src/lib.rs:726
-    pub fn files_panel_scroll_diff_up(&mut self); @ engine/src/lib.rs:730
-    pub fn files_panel_state(&self) -> &FilesPanelState; @ engine/src/lib.rs:691
-    pub fn files_panel_sync_selection(&mut self); @ engine/src/lib.rs:701
-    pub fn files_panel_visible(&self) -> bool; @ engine/src/lib.rs:596
-    pub fn finish_files_panel_effect(&mut self); @ engine/src/lib.rs:609
+    pub fn files_panel_scroll_diff_down(&mut self); @ engine/src/lib.rs:727
+    pub fn files_panel_scroll_diff_up(&mut self); @ engine/src/lib.rs:731
+    pub fn files_panel_state(&self) -> &FilesPanelState; @ engine/src/lib.rs:692
+    pub fn files_panel_sync_selection(&mut self); @ engine/src/lib.rs:702
+    pub fn files_panel_visible(&self) -> bool; @ engine/src/lib.rs:597
+    pub fn finish_files_panel_effect(&mut self); @ engine/src/lib.rs:610
     /// Get elapsed time since last frame and update timing.
-    pub fn frame_elapsed(&mut self) -> Duration; @ engine/src/lib.rs:1221
-    pub fn has_api_key(&self, provider: Provider) -> bool; @ engine/src/lib.rs:955
-    pub fn history(&self) -> &forge_context::FullHistory; @ engine/src/lib.rs:806
-    pub fn input_mode(&self) -> InputMode; @ engine/src/lib.rs:1237
+    pub fn frame_elapsed(&mut self) -> Duration; @ engine/src/lib.rs:1222
+    pub fn has_api_key(&self, provider: Provider) -> bool; @ engine/src/lib.rs:956
+    pub fn history(&self) -> &forge_context::FullHistory; @ engine/src/lib.rs:807
+    pub fn input_mode(&self) -> InputMode; @ engine/src/lib.rs:1238
     /// Get insert mode wrapper (requires proof token).
-    pub fn insert_mode(&mut self, _token: InsertToken) -> InsertMode<'_>; @ engine/src/input_modes.rs:260
+    pub fn insert_mode(&mut self, _token: InsertToken) -> InsertMode<'_>; @ engine/src/input_modes.rs:54
     /// Get proof token if currently in Insert mode.
-    pub fn insert_token(&self) -> Option<InsertToken>; @ engine/src/input_modes.rs:250
-    pub fn is_empty(&self) -> bool; @ engine/src/lib.rs:925
+    pub fn insert_token(&self) -> Option<InsertToken>; @ engine/src/input_modes.rs:44
+    pub fn is_empty(&self) -> bool; @ engine/src/lib.rs:926
     /// Whether we're currently streaming a response.
-    pub fn is_loading(&self) -> bool; @ engine/src/lib.rs:965
+    pub fn is_loading(&self) -> bool; @ engine/src/lib.rs:966
     /// Whether the named tool should be hidden from UI rendering.
-    pub fn is_tool_hidden(&self, name: &str) -> bool; @ engine/src/lib.rs:946
+    pub fn is_tool_hidden(&self, name: &str) -> bool; @ engine/src/lib.rs:947
     /// API usage from the last completed turn (for status bar display).
-    pub fn last_turn_usage(&self) -> Option<&TurnUsage>; @ engine/src/lib.rs:1027
+    pub fn last_turn_usage(&self) -> Option<&TurnUsage>; @ engine/src/lib.rs:1028
     /// Whether the LSP subsystem is active and has running servers.
     pub fn lsp_active(&self) -> bool; @ engine/src/lsp_integration.rs:153
     /// Get the current diagnostics snapshot for UI display.
     pub fn lsp_snapshot(&self) -> &forge_lsp::DiagnosticsSnapshot; @ engine/src/lsp_integration.rs:147
-    pub fn memory_enabled(&self) -> bool; @ engine/src/lib.rs:1014
+    pub fn memory_enabled(&self) -> bool; @ engine/src/lib.rs:1015
     /// Get mutable reference to modal effect for UI processing.
-    pub fn modal_effect_mut(&mut self) -> Option<&mut ModalEffect>; @ engine/src/lib.rs:1229
-    pub fn model(&self) -> &str; @ engine/src/lib.rs:774
+    pub fn modal_effect_mut(&mut self) -> Option<&mut ModalEffect>; @ engine/src/lib.rs:1230
+    pub fn model(&self) -> &str; @ engine/src/lib.rs:775
     /// Select the current model and return to normal mode.
-    pub fn model_select_confirm(&mut self); @ engine/src/lib.rs:1319
-    pub fn model_select_index(&self) -> Option<usize>; @ engine/src/lib.rs:1278
-    pub fn model_select_move_down(&mut self); @ engine/src/lib.rs:1302
-    pub fn model_select_move_up(&mut self); @ engine/src/lib.rs:1294
-    pub fn model_select_set_index(&mut self, index: usize); @ engine/src/lib.rs:1311
+    pub fn model_select_confirm(&mut self); @ engine/src/lib.rs:1320
+    pub fn model_select_index(&self) -> Option<usize>; @ engine/src/lib.rs:1279
+    pub fn model_select_move_down(&mut self); @ engine/src/lib.rs:1303
+    pub fn model_select_move_up(&mut self); @ engine/src/lib.rs:1295
+    pub fn model_select_set_index(&mut self, index: usize); @ engine/src/lib.rs:1312
     /// Navigate to next (newer) command in Command mode.
-    pub fn navigate_command_history_down(&mut self); @ engine/src/lib.rs:1627
+    pub fn navigate_command_history_down(&mut self); @ engine/src/lib.rs:1628
     /// Navigate to previous (older) command in Command mode.
-    pub fn navigate_command_history_up(&mut self); @ engine/src/lib.rs:1618
+    pub fn navigate_command_history_up(&mut self); @ engine/src/lib.rs:1619
     /// Navigate to next (newer) prompt in Insert mode.
-    pub fn navigate_history_down(&mut self); @ engine/src/lib.rs:1609
+    pub fn navigate_history_down(&mut self); @ engine/src/lib.rs:1610
     /// Navigate to previous (older) prompt in Insert mode.
-    pub fn navigate_history_up(&mut self); @ engine/src/lib.rs:1598
+    pub fn navigate_history_up(&mut self); @ engine/src/lib.rs:1599
     pub fn new(system_prompts: SystemPrompts) -> anyhow::Result<Self>; @ engine/src/init.rs:79
     /// Get ordered list of changed files: modified first (alphabetical), then created.
     /// Filters out files that no longer exist on disk.
-    pub fn ordered_files(&self) -> Vec<(std::path::PathBuf, ChangeKind)>; @ engine/src/lib.rs:627
+    pub fn ordered_files(&self) -> Vec<(std::path::PathBuf, ChangeKind)>; @ engine/src/lib.rs:628
     /// Poll for completed distillation task and apply the result.
     pub fn poll_distillation(&mut self); @ engine/src/distillation.rs:133
     pub fn process_command(&mut self, command: EnteredCommand); @ engine/src/commands.rs:323
     /// Process any pending stream events.
     pub fn process_stream_events(&mut self); @ engine/src/streaming.rs:325
-    pub fn provider(&self) -> Provider; @ engine/src/lib.rs:770
+    pub fn provider(&self) -> Provider; @ engine/src/lib.rs:771
     /// Queue a system notification to be injected into the next API request.
-    pub fn queue_notification(&mut self, notification: notifications::SystemNotification); @ engine/src/lib.rs:1022
+    pub fn queue_notification(&mut self, notification: notifications::SystemNotification); @ engine/src/lib.rs:1023
     /// Human-readable reason for a recovery block (if recovery is blocked).
-    pub fn recovery_blocked_reason(&self) -> Option<String>; @ engine/src/lib.rs:975
-    pub fn request_quit(&mut self); @ engine/src/lib.rs:535
+    pub fn recovery_blocked_reason(&self) -> Option<String>; @ engine/src/lib.rs:976
+    pub fn request_quit(&mut self); @ engine/src/lib.rs:536
     pub fn save_history(&self) -> anyhow::Result<()>; @ engine/src/persistence.rs:35
     /// Save session state (draft input + input history) to disk.
     pub fn save_session(&self) -> anyhow::Result<()>; @ engine/src/persistence.rs:140
-    pub fn scroll_down(&mut self); @ engine/src/lib.rs:1688
-    pub fn scroll_offset_from_top(&self) -> u16; @ engine/src/lib.rs:1657
+    pub fn scroll_down(&mut self); @ engine/src/lib.rs:1689
+    pub fn scroll_offset_from_top(&self) -> u16; @ engine/src/lib.rs:1658
     /// Scroll down by a page.
-    pub fn scroll_page_down(&mut self); @ engine/src/lib.rs:1704
+    pub fn scroll_page_down(&mut self); @ engine/src/lib.rs:1705
     /// Scroll up by a page.
-    pub fn scroll_page_up(&mut self); @ engine/src/lib.rs:1676
-    pub fn scroll_to_bottom(&mut self); @ engine/src/lib.rs:1724
-    pub fn scroll_to_top(&mut self); @ engine/src/lib.rs:1720
-    pub fn scroll_up(&mut self); @ engine/src/lib.rs:1664
+    pub fn scroll_page_up(&mut self); @ engine/src/lib.rs:1677
+    pub fn scroll_to_bottom(&mut self); @ engine/src/lib.rs:1725
+    pub fn scroll_to_top(&mut self); @ engine/src/lib.rs:1721
+    pub fn scroll_up(&mut self); @ engine/src/lib.rs:1665
     /// Scroll up by 20% of total scrollable content.
-    pub fn scroll_up_chunk(&mut self); @ engine/src/lib.rs:1729
-    pub fn session_changes(&self) -> &SessionChangeLog; @ engine/src/lib.rs:621
+    pub fn scroll_up_chunk(&mut self); @ engine/src/lib.rs:1730
+    pub fn session_changes(&self) -> &SessionChangeLog; @ engine/src/lib.rs:622
     /// Set a specific model (called from :model command).
-    pub fn set_model(&mut self, model: ModelName); @ engine/src/lib.rs:1135
-    pub fn should_quit(&self) -> bool; @ engine/src/lib.rs:531
+    pub fn set_model(&mut self, model: ModelName); @ engine/src/lib.rs:1136
+    pub fn should_quit(&self) -> bool; @ engine/src/lib.rs:532
     /// Gracefully shut down all LSP servers.
     pub async fn shutdown_lsp(&mut self); @ engine/src/lsp_integration.rs:166
     /// Trigger distillation of older messages when context is near capacity.
     pub fn start_distillation(&mut self); @ engine/src/distillation.rs:17
     pub fn start_streaming(&mut self, queued: QueuedUserMessage); @ engine/src/streaming.rs:116
-    pub fn streaming(&self) -> Option<&StreamingMessage>; @ engine/src/lib.rs:810
+    pub fn streaming(&self) -> Option<&StreamingMessage>; @ engine/src/lib.rs:811
     /// Check if a transcript clear was requested and clear the flag.
-    pub fn take_clear_transcript(&mut self) -> bool; @ engine/src/lib.rs:540
+    pub fn take_clear_transcript(&mut self) -> bool; @ engine/src/lib.rs:541
     /// Poll background tasks and update wall-clock based timers.
-    pub fn tick(&mut self); @ engine/src/lib.rs:1199
-    pub fn tick_count(&self) -> usize; @ engine/src/lib.rs:802
+    pub fn tick(&mut self); @ engine/src/lib.rs:1200
+    pub fn tick_count(&self) -> usize; @ engine/src/lib.rs:803
     /// Toggle visibility of the files panel.
-    pub fn toggle_files_panel(&mut self); @ engine/src/lib.rs:554
+    pub fn toggle_files_panel(&mut self); @ engine/src/lib.rs:555
     /// Toggle visibility of thinking/reasoning content in the UI.
-    pub fn toggle_thinking(&mut self); @ engine/src/lib.rs:549
+    pub fn toggle_thinking(&mut self); @ engine/src/lib.rs:550
     /// Handle Enter key on approval prompt - action depends on cursor position:
     /// - On tool item: toggle selection
     /// - On Submit button: confirm selected
     /// - On Deny All button: deny all
-    pub fn tool_approval_activate(&mut self); @ engine/src/lib.rs:1504
-    pub fn tool_approval_approve_all(&mut self); @ engine/src/lib.rs:1492
-    pub fn tool_approval_confirm_selected(&mut self); @ engine/src/lib.rs:1519
-    pub fn tool_approval_cursor(&self) -> Option<usize>; @ engine/src/lib.rs:898
-    pub fn tool_approval_deny_all(&mut self); @ engine/src/lib.rs:1496
-    pub fn tool_approval_deny_confirm(&self) -> bool; @ engine/src/lib.rs:906
-    pub fn tool_approval_expanded(&self) -> Option<usize>; @ engine/src/lib.rs:902
-    pub fn tool_approval_move_down(&mut self); @ engine/src/lib.rs:1450
-    pub fn tool_approval_move_up(&mut self); @ engine/src/lib.rs:1437
-    pub fn tool_approval_request_deny_all(&mut self); @ engine/src/lib.rs:1540
-    pub fn tool_approval_requests(&self) -> Option<&[tools::ConfirmationRequest]>; @ engine/src/lib.rs:890
-    pub fn tool_approval_selected(&self) -> Option<&[bool]>; @ engine/src/lib.rs:894
-    pub fn tool_approval_toggle(&mut self); @ engine/src/lib.rs:1464
-    pub fn tool_approval_toggle_details(&mut self); @ engine/src/lib.rs:1476
+    pub fn tool_approval_activate(&mut self); @ engine/src/lib.rs:1505
+    pub fn tool_approval_approve_all(&mut self); @ engine/src/lib.rs:1493
+    pub fn tool_approval_confirm_selected(&mut self); @ engine/src/lib.rs:1520
+    pub fn tool_approval_cursor(&self) -> Option<usize>; @ engine/src/lib.rs:899
+    pub fn tool_approval_deny_all(&mut self); @ engine/src/lib.rs:1497
+    pub fn tool_approval_deny_confirm(&self) -> bool; @ engine/src/lib.rs:907
+    pub fn tool_approval_expanded(&self) -> Option<usize>; @ engine/src/lib.rs:903
+    pub fn tool_approval_move_down(&mut self); @ engine/src/lib.rs:1451
+    pub fn tool_approval_move_up(&mut self); @ engine/src/lib.rs:1438
+    pub fn tool_approval_request_deny_all(&mut self); @ engine/src/lib.rs:1541
+    pub fn tool_approval_requests(&self) -> Option<&[tools::ConfirmationRequest]>; @ engine/src/lib.rs:891
+    pub fn tool_approval_selected(&self) -> Option<&[bool]>; @ engine/src/lib.rs:895
+    pub fn tool_approval_toggle(&mut self); @ engine/src/lib.rs:1465
+    pub fn tool_approval_toggle_details(&mut self); @ engine/src/lib.rs:1477
     /// If present, tools are disabled for safety due to a tool journal error.
-    pub fn tool_journal_disabled_reason(&self) -> Option<&str>; @ engine/src/lib.rs:970
-    pub fn tool_loop_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:861
-    pub fn tool_loop_current_call_id(&self) -> Option<&str>; @ engine/src/lib.rs:873
-    pub fn tool_loop_execute_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:865
-    pub fn tool_loop_output_lines(&self) -> Option<&[String]>; @ engine/src/lib.rs:877
-    pub fn tool_loop_output_lines_for(&self, tool_call_id: &str) -> Option<&[String]>; @ engine/src/lib.rs:883
-    pub fn tool_loop_results(&self) -> Option<&[ToolResult]>; @ engine/src/lib.rs:869
-    pub fn tool_recovery_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:911
-    pub fn tool_recovery_discard(&mut self); @ engine/src/lib.rs:1566
-    pub fn tool_recovery_results(&self) -> Option<&[ToolResult]>; @ engine/src/lib.rs:918
-    pub fn tool_recovery_resume(&mut self); @ engine/src/lib.rs:1562
-    pub fn ui_options(&self) -> UiOptions; @ engine/src/lib.rs:544
-    pub fn update_scroll_max(&mut self, max: u16); @ engine/src/lib.rs:1647
+    pub fn tool_journal_disabled_reason(&self) -> Option<&str>; @ engine/src/lib.rs:971
+    pub fn tool_loop_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:862
+    pub fn tool_loop_current_call_id(&self) -> Option<&str>; @ engine/src/lib.rs:874
+    pub fn tool_loop_execute_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:866
+    pub fn tool_loop_output_lines(&self) -> Option<&[String]>; @ engine/src/lib.rs:878
+    pub fn tool_loop_output_lines_for(&self, tool_call_id: &str) -> Option<&[String]>; @ engine/src/lib.rs:884
+    pub fn tool_loop_results(&self) -> Option<&[ToolResult]>; @ engine/src/lib.rs:870
+    pub fn tool_recovery_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:912
+    pub fn tool_recovery_discard(&mut self); @ engine/src/lib.rs:1567
+    pub fn tool_recovery_results(&self) -> Option<&[ToolResult]>; @ engine/src/lib.rs:919
+    pub fn tool_recovery_resume(&mut self); @ engine/src/lib.rs:1563
+    pub fn ui_options(&self) -> UiOptions; @ engine/src/lib.rs:545
+    pub fn update_scroll_max(&mut self, max: u16); @ engine/src/lib.rs:1648
 }
 
-pub struct AppConfig { @ engine/src/config.rs:47
+pub struct AppConfig { @ engine/src/config.rs:44
     pub model: Option<String>,
     pub tui: Option<String>,
     /// Use ASCII-only glyphs for icons and spinners.
@@ -1660,21 +1660,21 @@ pub struct AppConfig { @ engine/src/config.rs:47
 }
 
 /// Mode wrapper for safe command operations.
-pub struct CommandMode<'a> { @ engine/src/input_modes.rs:244
+pub struct CommandMode<'a> { @ engine/src/input_modes.rs:38
 }
 
 impl CommandMode<'a> {
-    pub fn backspace(&mut self); @ engine/src/input_modes.rs:462
-    pub fn clear_line(&mut self); @ engine/src/input_modes.rs:476
-    pub fn delete_word_backwards(&mut self); @ engine/src/input_modes.rs:469
-    pub fn move_cursor_end(&mut self); @ engine/src/input_modes.rs:448
-    pub fn move_cursor_left(&mut self); @ engine/src/input_modes.rs:427
-    pub fn move_cursor_right(&mut self); @ engine/src/input_modes.rs:434
-    pub fn push_char(&mut self, c: char); @ engine/src/input_modes.rs:455
-    pub fn reset_cursor(&mut self); @ engine/src/input_modes.rs:441
+    pub fn backspace(&mut self); @ engine/src/input_modes.rs:256
+    pub fn clear_line(&mut self); @ engine/src/input_modes.rs:270
+    pub fn delete_word_backwards(&mut self); @ engine/src/input_modes.rs:263
+    pub fn move_cursor_end(&mut self); @ engine/src/input_modes.rs:242
+    pub fn move_cursor_left(&mut self); @ engine/src/input_modes.rs:221
+    pub fn move_cursor_right(&mut self); @ engine/src/input_modes.rs:228
+    pub fn push_char(&mut self, c: char); @ engine/src/input_modes.rs:249
+    pub fn reset_cursor(&mut self); @ engine/src/input_modes.rs:235
     /// Perform shell-style tab completion on the command line.
-    pub fn tab_complete(&mut self); @ engine/src/input_modes.rs:492
-    pub fn take_command(self) -> Option<EnteredCommand>; @ engine/src/input_modes.rs:516
+    pub fn tab_complete(&mut self); @ engine/src/input_modes.rs:286
+    pub fn take_command(self) -> Option<EnteredCommand>; @ engine/src/input_modes.rs:310
 }
 
 pub struct CommandSpec { @ engine/src/commands.rs:12
@@ -1684,7 +1684,7 @@ pub struct CommandSpec { @ engine/src/commands.rs:12
 }
 
 /// Proof token for Command mode operations.
-pub struct CommandToken { @ engine/src/input_modes.rs:236
+pub struct CommandToken { @ engine/src/input_modes.rs:30
 }
 
 pub struct DistillationTask { @ engine/src/state.rs:286
@@ -1716,7 +1716,7 @@ impl DraftInput {
 }
 
 /// Proof that a command line was entered in Command mode.
-pub struct EnteredCommand { @ engine/src/input_modes.rs:226
+pub struct EnteredCommand { @ engine/src/input_modes.rs:20
 }
 
 /// Scanned file entry with display path and full path.
@@ -1759,7 +1759,7 @@ pub struct FilesPanelState { @ engine/src/ui/view_state.rs:22
     pub diff_scroll: usize,
 }
 
-pub struct ForgeConfig { @ engine/src/config.rs:11
+pub struct ForgeConfig { @ engine/src/config.rs:8
     pub app: Option<AppConfig>,
     pub api_keys: Option<ApiKeys>,
     pub context: Option<ContextConfig>,
@@ -1775,10 +1775,10 @@ pub struct ForgeConfig { @ engine/src/config.rs:11
 }
 
 impl ForgeConfig {
-    pub fn load() -> Result<Option<Self>, ConfigError>; @ engine/src/config.rs:466
-    pub fn path() -> Option<PathBuf>; @ engine/src/config.rs:493
+    pub fn load() -> Result<Option<Self>, ConfigError>; @ engine/src/config.rs:453
+    pub fn path() -> Option<PathBuf>; @ engine/src/config.rs:480
     /// Persist the model to the config file.
-    pub fn persist_model(model: &str) -> std::io::Result<()>; @ engine/src/config.rs:501
+    pub fn persist_model(model: &str) -> std::io::Result<()>; @ engine/src/config.rs:488
 }
 
 /// Input history for prompt and command recall.
@@ -1803,27 +1803,27 @@ impl InputHistory {
 }
 
 /// Mode wrapper for safe insert operations.
-pub struct InsertMode<'a> { @ engine/src/input_modes.rs:239
+pub struct InsertMode<'a> { @ engine/src/input_modes.rs:33
 }
 
 impl InsertMode<'a> {
-    pub fn clear_line(&mut self); @ engine/src/input_modes.rs:315
-    pub fn delete_char(&mut self); @ engine/src/input_modes.rs:295
-    pub fn delete_char_forward(&mut self); @ engine/src/input_modes.rs:299
-    pub fn delete_word_backwards(&mut self); @ engine/src/input_modes.rs:303
-    pub fn enter_char(&mut self, new_char: char); @ engine/src/input_modes.rs:283
-    pub fn enter_newline(&mut self); @ engine/src/input_modes.rs:287
-    pub fn enter_text(&mut self, text: &str); @ engine/src/input_modes.rs:291
-    pub fn move_cursor_end(&mut self); @ engine/src/input_modes.rs:311
-    pub fn move_cursor_left(&mut self); @ engine/src/input_modes.rs:275
-    pub fn move_cursor_right(&mut self); @ engine/src/input_modes.rs:279
+    pub fn clear_line(&mut self); @ engine/src/input_modes.rs:109
+    pub fn delete_char(&mut self); @ engine/src/input_modes.rs:89
+    pub fn delete_char_forward(&mut self); @ engine/src/input_modes.rs:93
+    pub fn delete_word_backwards(&mut self); @ engine/src/input_modes.rs:97
+    pub fn enter_char(&mut self, new_char: char); @ engine/src/input_modes.rs:77
+    pub fn enter_newline(&mut self); @ engine/src/input_modes.rs:81
+    pub fn enter_text(&mut self, text: &str); @ engine/src/input_modes.rs:85
+    pub fn move_cursor_end(&mut self); @ engine/src/input_modes.rs:105
+    pub fn move_cursor_left(&mut self); @ engine/src/input_modes.rs:69
+    pub fn move_cursor_right(&mut self); @ engine/src/input_modes.rs:73
     /// Queue the current draft as a user message.
-    pub fn queue_message(self) -> Option<QueuedUserMessage>; @ engine/src/input_modes.rs:324
-    pub fn reset_cursor(&mut self); @ engine/src/input_modes.rs:307
+    pub fn queue_message(self) -> Option<QueuedUserMessage>; @ engine/src/input_modes.rs:118
+    pub fn reset_cursor(&mut self); @ engine/src/input_modes.rs:101
 }
 
 /// Proof token for Insert mode operations.
-pub struct InsertToken { @ engine/src/input_modes.rs:232
+pub struct InsertToken { @ engine/src/input_modes.rs:26
 }
 
 /// Modal animation effect state.
@@ -1860,7 +1860,7 @@ impl PanelEffect {
 }
 
 /// Proof that a user message was validated and queued for sending.
-pub struct QueuedUserMessage { @ engine/src/input_modes.rs:219
+pub struct QueuedUserMessage { @ engine/src/input_modes.rs:13
 }
 
 /// Tracks files created and modified during a session.
@@ -1879,25 +1879,25 @@ impl SessionChangeLog {
 }
 
 /// An in-flight streaming response from an LLM.
-pub struct StreamingMessage { @ engine/src/lib.rs:170
+pub struct StreamingMessage { @ engine/src/lib.rs:171
 }
 
 impl StreamingMessage {
-    pub fn apply_event(&mut self, event: StreamEvent) -> Option<StreamFinishReason>; @ engine/src/lib.rs:238
-    pub fn content(&self) -> &str; @ engine/src/lib.rs:214
-    pub fn has_tool_calls(&self) -> bool; @ engine/src/lib.rs:300
-    pub fn into_message(self) -> Result<Message, forge_types::EmptyStringError>; @ engine/src/lib.rs:380
-    pub fn model_name(&self) -> &ModelName; @ engine/src/lib.rs:209
-    pub fn new(model: ModelName, receiver: mpsc::Receiver<StreamEvent>, max_tool_args_bytes: usize) -> Self; @ engine/src/lib.rs:186
-    pub fn provider(&self) -> Provider; @ engine/src/lib.rs:204
-    pub fn thinking(&self) -> &str; @ engine/src/lib.rs:219
-    pub const fn thinking_signature_state(&self) -> &ThoughtSignatureState; @ engine/src/lib.rs:224
-    pub fn try_recv_event(&mut self) -> Result<StreamEvent, mpsc::error::TryRecvError>; @ engine/src/lib.rs:234
+    pub fn apply_event(&mut self, event: StreamEvent) -> Option<StreamFinishReason>; @ engine/src/lib.rs:239
+    pub fn content(&self) -> &str; @ engine/src/lib.rs:215
+    pub fn has_tool_calls(&self) -> bool; @ engine/src/lib.rs:301
+    pub fn into_message(self) -> Result<Message, forge_types::EmptyStringError>; @ engine/src/lib.rs:381
+    pub fn model_name(&self) -> &ModelName; @ engine/src/lib.rs:210
+    pub fn new(model: ModelName, receiver: mpsc::Receiver<StreamEvent>, max_tool_args_bytes: usize) -> Self; @ engine/src/lib.rs:187
+    pub fn provider(&self) -> Provider; @ engine/src/lib.rs:205
+    pub fn thinking(&self) -> &str; @ engine/src/lib.rs:220
+    pub const fn thinking_signature_state(&self) -> &ThoughtSignatureState; @ engine/src/lib.rs:225
+    pub fn try_recv_event(&mut self) -> Result<StreamEvent, mpsc::error::TryRecvError>; @ engine/src/lib.rs:235
     /// API-reported token usage accumulated during streaming.
-    pub fn usage(&self) -> ApiUsage; @ engine/src/lib.rs:230
+    pub fn usage(&self) -> ApiUsage; @ engine/src/lib.rs:231
 }
 
-pub struct SystemPrompts { @ engine/src/lib.rs:391
+pub struct SystemPrompts { @ engine/src/lib.rs:392
     /// Claude-specific prompt.
     pub claude: &'static str,
     /// OpenAI-specific prompt.
@@ -1907,11 +1907,11 @@ pub struct SystemPrompts { @ engine/src/lib.rs:391
 }
 
 impl SystemPrompts {
-    pub fn get(&self, provider: Provider) -> &'static str; @ engine/src/lib.rs:402
+    pub fn get(&self, provider: Provider) -> &'static str; @ engine/src/lib.rs:403
 }
 
 /// Aggregated API usage for a user turn (may include multiple API calls).
-pub struct TurnUsage { @ engine/src/lib.rs:117
+pub struct TurnUsage { @ engine/src/lib.rs:118
     /// Number of API calls made during this turn.
     pub api_calls: u32,
     /// Total usage aggregated across all API calls.
@@ -1921,7 +1921,7 @@ pub struct TurnUsage { @ engine/src/lib.rs:117
 }
 
 impl TurnUsage {
-    pub fn record_call(&mut self, usage: ApiUsage); @ engine/src/lib.rs:127
+    pub fn record_call(&mut self, usage: ApiUsage); @ engine/src/lib.rs:128
 }
 
 /// UI configuration options derived from config/environment.
@@ -1978,7 +1978,7 @@ pub enum DisplayItem { @ engine/src/ui/display.rs:11
 }
 
 /// Result of diff generation for panel display.
-pub enum FileDiff { @ engine/src/lib.rs:102
+pub enum FileDiff { @ engine/src/lib.rs:103
     /// Unified diff between baseline and current.
     Diff(String),
     /// File was created (no baseline) - show full content as additions.

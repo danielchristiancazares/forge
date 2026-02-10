@@ -12,16 +12,16 @@ Forge brings the efficiency of vim-style modal editing to AI conversation, letti
 | 27-61 | Features: Core Capabilities, Context Infinity, Tool Executor |
 | 62-71 | Requirements |
 | 72-97 | Installation |
-| 98-141 | Quick Start: First Run, Basic Usage |
-| 142-267 | Configuration: Full Reference |
-| 268-360 | Keyboard Shortcuts: All Modes |
-| 361-378 | Commands Reference |
-| 379-409 | Workspace Structure |
-| 410-444 | Development |
-| 445-514 | Troubleshooting |
-| 515-554 | Documentation Index |
-| 555-565 | Contributing and License |
-| 566-568 | License |
+| 98-148 | Quick Start: First Run, Basic Usage |
+| 149-287 | Configuration: Full Reference |
+| 288-380 | Keyboard Shortcuts: All Modes |
+| 381-398 | Commands Reference |
+| 399-433 | Workspace Structure |
+| 434-468 | Development |
+| 469-538 | Troubleshooting |
+| 539-574 | Documentation Index |
+| 575-584 | Contributing and License |
+| 585-587 | License |
 <!-- toc:end -->
 
 ## Features
@@ -30,8 +30,8 @@ Forge brings the efficiency of vim-style modal editing to AI conversation, letti
 
 - **Vim-style Modal Interface**: Navigate with Normal mode, edit with Insert mode, run commands with Command mode, and switch models with ModelSelect mode
 - **Multi-Provider Support**: Seamless switching between Claude (Anthropic), GPT (OpenAI), and Gemini (Google) with provider-specific optimizations
-- **Full/Inline Display Modes**: Full-screen alternate buffer or inline terminal mode that preserves your scrollback
-- **Rich Markdown Rendering**: Tables with box-drawing borders, syntax-highlighted code blocks, lists, and formatting
+- **Full-Screen TUI**: Alternate-screen UI; enables alternate scroll mode so the scroll wheel maps to arrows without mouse capture (terminal dependent)
+- **Rich Markdown Rendering**: Tables with box-drawing borders, styled code blocks, lists, and formatting
 - **Streaming Responses**: Real-time token streaming with animated indicators
 
 ### Distillation
@@ -50,9 +50,9 @@ Enable the LLM to interact with your local filesystem and execute tasks:
 - **Built-in Tools**:
   - File operations: `Read`, `Write`, `Edit` (LP1 patches), `Glob`
   - Search: `Search` (aliases: `search`, `rg`, `ripgrep`, `ugrep`, `ug`)
-  - Shell: `Run`
+  - Shell: `Run` (aliases: `Pwsh`, `shell`, `bash`, `pwsh`)
   - Web: `WebFetch`
-  - Context: `Recall` (retrieve facts from conversation)
+  - Context: `Recall` (retrieve facts), `Memory` (store facts)
   - Git: `GitStatus`, `GitDiff`, `GitAdd`, `GitCommit`, `GitLog`, `GitBranch`, `GitCheckout`, `GitStash`, `GitShow`, `GitBlame`, `GitRestore`
 - **Sandboxed Execution**: Path-based tools are restricted to allowed directories with symlink escape prevention
 - **Interactive Approval**: Review and approve or deny tool calls before execution
@@ -61,7 +61,7 @@ Enable the LLM to interact with your local filesystem and execute tasks:
 
 ## Requirements
 
-- **Rust**: 1.92.0 or later (Rust 2024 edition)
+- **Rust**: 1.93.0 or later (Rust 2024 edition)
 - **Operating System**: Windows, macOS, or Linux
 - **Terminal**: Any terminal supporting ANSI escape codes and Unicode
 - **API Keys**: At least one of:
@@ -75,11 +75,11 @@ Enable the LLM to interact with your local filesystem and execute tasks:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/forge.git
+git clone https://github.com/danielchristiancazares/forge.git
 cd forge
 
 # Build release binary
-cargo build --release
+cargo build -p forge --release
 
 # The binary will be at target/release/forge (or forge.exe on Windows)
 # Optionally, copy it to a directory in your PATH
@@ -112,6 +112,13 @@ export OPENAI_API_KEY="your-key-here"
 export GEMINI_API_KEY="your-key-here"
 ```
 
+```powershell
+# PowerShell
+$env:ANTHROPIC_API_KEY = "your-key-here"
+$env:OPENAI_API_KEY = "your-key-here"
+$env:GEMINI_API_KEY = "your-key-here"
+```
+
 Or create a configuration file at `~/.forge/config.toml`:
 
 ```toml
@@ -125,7 +132,7 @@ google = "${GEMINI_API_KEY}"
 
 ```bash
 # Run with default settings
-cargo run --release
+cargo run --release -p forge
 
 # Or if you installed the binary
 forge
@@ -147,8 +154,14 @@ Create `~/.forge/config.toml` for persistent configuration. All settings are opt
 
 ```toml
 [app]
-model = "claude-opus-4-6"   # Model name (provider inferred from prefix)
-show_thinking = false                  # Render provider thinking/reasoning in UI
+# Model ID (provider inferred). Must be one of:
+# - Claude:  claude-opus-4-6 | claude-haiku-4-5-20251001
+# - OpenAI:  gpt-5.2-pro | gpt-5.2
+# - Gemini:  gemini-3-pro-preview | gemini-3-flash-preview
+model = "claude-opus-4-6"
+# Reserved for future UI variants; currently only "full" is supported.
+tui = "full"
+show_thinking = false                  # Render provider thinking/reasoning in UI (if available)
 
 # Accessibility options
 ascii_only = false                     # Use ASCII-only glyphs (no Unicode icons)
@@ -161,7 +174,9 @@ openai = "${OPENAI_API_KEY}"
 google = "${GEMINI_API_KEY}"
 
 [context]
-infinity = true                        # Enable adaptive context management
+# Enable memory (librarian fact extraction + retrieval). If the [context] section is absent,
+# this defaults to whatever `FORGE_CONTEXT_INFINITY` resolves to (default: on).
+memory = true
 
 [cache]
 enabled = true                         # Legacy prompt caching (Claude only)
@@ -172,19 +187,20 @@ budget_tokens = 10000                  # Legacy thinking budget (min 1024)
 
 [anthropic]
 cache_enabled = true                   # Enable prompt caching (reduces costs)
-thinking_enabled = false               # Enable extended thinking
-thinking_budget_tokens = 10000         # Token budget for thinking
+thinking_enabled = false               # Legacy (pre-Opus 4.6) extended thinking toggle
+thinking_budget_tokens = 10000         # Legacy thinking budget (min 1024)
+thinking_mode = "adaptive"             # "adaptive" (default), "enabled", or "disabled" (Opus 4.6+)
+thinking_effort = "max"                # "low", "medium", "high", or "max" (default) (Opus 4.6+)
 
 [openai]
-reasoning_effort = "high"              # "low", "medium", "high", or "xhigh" (GPT-5+)
-reasoning_summary = "auto"                # "none", "auto", "concise", "detailed" (GPT-5+, shown when show_thinking=true)
-verbosity = "high"                     # "low", "medium", or "high" (GPT-5+)
+reasoning_effort = "high"              # "none", "low", "medium", "high", or "xhigh" (x-high alias ok)
+reasoning_summary = "auto"             # "none", "auto", "concise", "detailed"
+verbosity = "high"                     # "low", "medium", or "high"
 truncation = "auto"                    # "auto" or "disabled"
-# gpt-5.2-pro defaults to xhigh when reasoning_effort is unset.
 
 [google]
-thinking_enabled = true                # Enable thinking (for compatible Gemini models)
-cache_enabled = true                   # Enable explicit context caching
+thinking_enabled = false               # Enable thinking (for compatible Gemini models)
+cache_enabled = false                  # Enable explicit context caching
 cache_ttl_seconds = 3600               # TTL for cached content
 
 [tools]
@@ -197,7 +213,7 @@ allowlist = ["Read", "GitStatus", "GitDiff", "GitLog", "GitShow", "GitBlame"]  #
 denylist = ["Run"]                     # Always deny these tools
 
 [tools.environment]
-denylist = ["*_KEY", "*_TOKEN", "*_SECRET", "*_PASSWORD", "AWS_*", "ANTHROPIC_*", "OPENAI_*"]  # Case-insensitive patterns
+denylist = ["*_KEY", "*_TOKEN", "*_SECRET", "*_PASSWORD", "*_CREDENTIAL*", "*_API_*", "AWS_*", "ANTHROPIC_*", "OPENAI_*", "GEMINI_*", "GOOGLE_*", "AZURE_*", "GH_*", "GITHUB_*", "NPM_*"]  # Case-insensitive patterns
 
 [tools.sandbox]
 allowed_roots = ["."]                  # Allowed base directories
@@ -211,7 +227,7 @@ file_operations_seconds = 30
 shell_commands_seconds = 300           # 5 minutes for shell commands
 
 [tools.output]
-max_bytes = 65536                      # 64 KB max output per tool
+max_bytes = 102400                     # 100 KiB max output per tool
 
 [tools.webfetch]
 user_agent = "forge-webfetch/1.0"      # Custom User-Agent
@@ -219,7 +235,7 @@ timeout_seconds = 20                   # Fetch timeout
 max_download_bytes = 10485760          # 10MB limit
 max_redirects = 5                      # Max HTTP redirects
 default_max_chunk_tokens = 600         # Token budget per chunk
-cache_dir = "/tmp/webfetch"            # Cache directory
+# cache_dir = "${LOCALAPPDATA}/forge/webfetch"  # Optional; default is OS cache dir
 cache_ttl_days = 7                     # Cache TTL in days
 
 [tools.search]
@@ -234,6 +250,10 @@ max_file_size_bytes = 2000000          # Skip files larger than 2MB
 [tools.shell]
 binary = "pwsh"                        # Override shell binary
 args = ["-NoProfile", "-Command"]      # Override shell args
+
+[tools.run.windows]
+enabled = true
+fallback_mode = "prompt"               # "prompt", "deny", or "allow_with_warning"
 
 [tools.read_file]
 max_file_read_bytes = 204800           # Max bytes to read per file
@@ -260,7 +280,7 @@ description = "City name, e.g. 'Seattle, WA'"
 | `ANTHROPIC_API_KEY` | Claude API key (fallback if not in config) |
 | `OPENAI_API_KEY` | GPT API key (fallback if not in config) |
 | `GEMINI_API_KEY` | Gemini API key (fallback if not in config) |
-| `FORGE_CONTEXT_INFINITY` | Override distillation: `1` or `0` |
+| `FORGE_CONTEXT_INFINITY` | Enable/disable memory (aka context infinity) when `[context]` is absent: `1` or `0` |
 | `FORGE_STREAM_IDLE_TIMEOUT_SECS` | Override streaming idle timeout in seconds (default: 60) |
 | `FORGE_STREAM_JOURNAL_FLUSH_THRESHOLD` | Override stream journal flush threshold in deltas (default: 25) |
 | `FORGE_STREAM_JOURNAL_FLUSH_INTERVAL_MS` | Override stream journal flush interval in ms (default: 200) |
@@ -278,7 +298,6 @@ description = "City name, e.g. 'Seattle, WA'"
 | `:` or `/` | Enter Command mode |
 | `m` | Open model selector |
 | `f` | Toggle files panel |
-| `s` | Toggle screen mode (fullscreen/inline) |
 | `j`, `Down`, or scroll wheel | Scroll down |
 | `k`, `Up`, or scroll wheel | Scroll up |
 | `PageDown` or `Ctrl+D` | Scroll page down |
@@ -288,6 +307,7 @@ description = "City name, e.g. 'Seattle, WA'"
 | `Left` | Scroll up by chunk (20%) |
 | `Tab` / `Shift+Tab` | Files panel: next/previous file (when visible) |
 | `Enter` / `Esc` | Files panel: collapse expanded diff |
+| `Backspace` | Files panel: collapse/close |
 
 ### Insert Mode (Editing)
 
@@ -297,7 +317,7 @@ description = "City name, e.g. 'Seattle, WA'"
 | `Enter` | Send message |
 | `Ctrl+Enter`, `Shift+Enter`, `Ctrl+J` | Insert newline (multiline input) |
 | `Up` / `Down` | Navigate prompt history |
-| `Backspace` | Delete character before cursor |
+| `Backspace` | Delete character before cursor (or exit Insert mode if empty) |
 | `Delete` | Delete character after cursor |
 | `Left` / `Right` | Move cursor |
 | `Home` / `End` | Jump to start/end of line |
@@ -313,7 +333,7 @@ description = "City name, e.g. 'Seattle, WA'"
 | `Enter` | Execute command |
 | `Up` / `Down` | Navigate command history |
 | `Tab` | Tab completion |
-| `Backspace` | Delete last character |
+| `Backspace` | Delete last character (or exit Command mode if empty) |
 | `Left` / `Right` | Move cursor |
 | `Home` / `End` | Jump to start/end of line |
 | `Ctrl+A` / `Ctrl+E` | Jump to start/end of line |
@@ -371,10 +391,10 @@ Enter Command mode by pressing `:` or `/` in Normal mode.
 | `/context` | `/ctx` | Show context usage statistics |
 | `/journal` | `/jrnl` | Show stream journal statistics |
 | `/distill` | - | Manually trigger distillation |
-| `/rewind [id\|last] [scope]` | `/rw` | Rewind to an automatic checkpoint (scope: `code`, `conversation`, or `both`) |
+| `/rewind [id\|last\|latest\|#id\|list\|ls] [scope]` | `/rw` | Rewind to a checkpoint (scope: `code`, `conversation`/`chat`, or `both`; defaults to `both`) |
 | `/undo` | - | Undo the last user turn (rewind to last turn checkpoint) |
 | `/retry` | - | Undo the last user turn and restore its prompt into the input box |
-| `/help` | - | Show available commands |
+| `/problems` | `/diag` | Show diagnostics/problems |
 
 ## Workspace Structure
 
@@ -385,7 +405,9 @@ forge/
 ├── cli/            # Binary entry point, terminal session management
 ├── context/        # Distillation: token counting, context budgeting, persistence
 ├── engine/         # Core state machine, commands, streaming orchestration
+├── lsp/            # LSP client for diagnostics
 ├── providers/      # LLM API clients (Claude, OpenAI, Gemini)
+├── tools/          # Tool executor framework (sandboxing, approvals, built-in tools)
 ├── tui/            # Terminal UI rendering (ratatui), input handling
 ├── types/          # Core domain types (Message, Provider, ModelName)
 ├── webfetch/       # Web page fetching and parsing
@@ -400,12 +422,14 @@ forge/
 | Crate | Purpose |
 | --- | --- |
 | `cli` | Application entry point, terminal lifecycle, event loop |
-| `engine` | Input modes, async operations, tool execution, configuration |
-| `tui` | Full-screen and inline rendering, markdown, theming |
+| `engine` | Input modes, async operations, configuration, orchestration |
+| `lsp` | LSP client for diagnostics |
+| `tools` | Tool executor framework (tool registry, sandboxing, approvals, limits) |
+| `tui` | Full-screen rendering, markdown, theming |
 | `context` | Token budgeting, distillation, crash recovery journals |
 | `providers` | HTTP clients, SSE parsing, provider-specific formatting (Claude, OpenAI, Gemini) |
 | `types` | Shared types ensuring compile-time correctness |
-| `webfetch` | Chromium-based web fetching for `web_fetch` tool |
+| `webfetch` | Chromium-based web fetching for `WebFetch` tool |
 
 ## Development
 
@@ -446,7 +470,7 @@ cargo test -p forge-context             # Tests for specific crate
 
 ### Authentication Errors
 
-**Problem**: "Auth error: set ANTHROPIC_API_KEY" or similar
+**Problem**: "No API key configured. Set ANTHROPIC_API_KEY environment variable." (or OpenAI/Gemini equivalent)
 
 **Solution**: Ensure your API key is set correctly:
 
@@ -477,7 +501,7 @@ anthropic = "sk-ant-your-actual-key"
 
 ### Tool Access Denied
 
-**Problem**: File operations fail with "outside sandbox"
+**Problem**: Tool calls fail with errors like "Path outside sandbox (...)" or "matched denied pattern (...)" or "Tool '<name>' is denylisted"
 
 **Solution**: Ensure the file is within an allowed root:
 
@@ -490,7 +514,7 @@ allowed_roots = [".", "/path/to/other/directory"]
 
 **Problem**: `apply_patch` fails saying the file is stale
 
-**Solution**: The LLM must read a file before patching it. Ask the assistant to read the file first, then retry the edit.
+**Solution**: The LLM must `Read` a file before patching it, and must re-`Read` if it changed on disk since the last read.
 
 ### Terminal Display Issues
 
@@ -509,8 +533,8 @@ high_contrast = true    # Increase contrast
 
 If Forge crashes during streaming or tool execution, it will automatically recover on next launch:
 
-- **Stream recovery**: Partial responses are restored with a recovery badge
-- **Tool recovery**: You'll be prompted to resume or discard incomplete tool batches
+- **Stream recovery**: Partial responses are restored and marked (e.g., `[Recovered]`, `[Recovered incomplete]`, `[Recovered error]`)
+- **Tool recovery**: You'll be prompted to finalize (resume) or discard the interrupted tool batch
 
 ## Documentation
 
@@ -523,6 +547,7 @@ Detailed documentation is available in each crate:
 | [`tui/README.md`](tui/README.md) | Terminal UI rendering and input handling |
 | [`context/README.md`](context/README.md) | Distillation implementation |
 | [`providers/README.md`](providers/README.md) | LLM API clients (Claude, OpenAI, Gemini) |
+| [`lsp/README.md`](lsp/README.md) | LSP client and diagnostics integration |
 | [`types/README.md`](types/README.md) | Core domain types |
 | [`webfetch/README.md`](webfetch/README.md) | Web page fetching and HTML-to-markdown |
 | [`scripts/README.md`](scripts/README.md) | Development and maintenance scripts |
@@ -532,34 +557,28 @@ Detailed documentation is available in each crate:
 
 | Document | Description |
 | -------- | ----------- |
-| [`DESIGN.md`](DESIGN.md) | Type-driven design philosophy |
 | [`INVARIANT_FIRST_ARCHITECTURE.md`](INVARIANT_FIRST_ARCHITECTURE.md) | Making invalid states unrepresentable |
 | [`docs/LP1.md`](docs/LP1.md) | Line Patch v1 format specification |
 | [`docs/ANTHROPIC_MESSAGES_API.md`](docs/ANTHROPIC_MESSAGES_API.md) | Claude API reference |
+| [`docs/OPENAI_REASONING_ROUNDTRIP.md`](docs/OPENAI_REASONING_ROUNDTRIP.md) | OpenAI reasoning round-trip notes |
 | [`docs/OPENAI_RESPONSES_GPT52.md`](docs/OPENAI_RESPONSES_GPT52.md) | OpenAI Responses API integration |
 | [`docs/RUST_2024_REFERENCE.md`](docs/RUST_2024_REFERENCE.md) | Rust 2024 edition features |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | Security architecture notes |
+| [`docs/CI_RUNBOOK.md`](docs/CI_RUNBOOK.md) | CI notes and troubleshooting |
 
 ### Additional Specs
 
 | Document | Description |
 | -------- | ----------- |
-| [`docs/SEARCH_SRS.md`](docs/SEARCH_SRS.md) | Search tool specification |
-| [`docs/SEARCH_INDEXING_SRS.md`](docs/SEARCH_INDEXING_SRS.md) | Search indexing and change tracking |
-| [`docs/CONVERSATION_SEARCH_SRS.md`](docs/CONVERSATION_SEARCH_SRS.md) | Conversation search requirements |
-| [`docs/FILEOPS_SRS.md`](docs/FILEOPS_SRS.md) | File operations specification |
-| [`docs/OUTLINE_TOOL_SRS.md`](docs/OUTLINE_TOOL_SRS.md) | Outline tool specification |
-| [`docs/PWSH_TOOL_SRS.md`](docs/PWSH_TOOL_SRS.md) | PowerShell tool specification |
-| [`docs/SUBAGENT_SRS.md`](docs/SUBAGENT_SRS.md) | Subagent delegation specification |
 | [`docs/COLOR_SCHEME.md`](docs/COLOR_SCHEME.md) | Color scheme documentation |
 
 ## Contributing
 
 Contributions are welcome! Please ensure:
 
-1. **Code compiles**: `cargo check` passes
-2. **Tests pass**: `cargo test` succeeds
-3. **Linting passes**: `cargo clippy --workspace --all-targets -- -D warnings` reports no errors
-4. **Commit style**: Use conventional commits with type and scope
+1. **Verify**: `just verify` passes (fmt, clippy, tests)
+2. **Or manually**: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test`
+3. **Commit style**: Use conventional commits with type and scope
    - Example: `feat(context): add token budget display`
    - Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
 
