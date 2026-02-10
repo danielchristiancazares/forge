@@ -16,7 +16,11 @@ use super::working_context::{ContextSegment, ContextUsage, DISTILLATE_PREFIX, Wo
 const MIN_DISTILLATION_RATIO: f32 = 0.01;
 const MAX_DISTILLATION_RATIO: f32 = 0.95;
 const MIN_DISTILLATION_TOKENS: u32 = 64;
-const MAX_DISTILLATION_TOKENS: u32 = 2048;
+/// Upper bound for target_tokens computed here. The actual per-provider max
+/// output limit is enforced in distillation.rs (which knows the distiller model).
+/// This value is deliberately generous so the manager doesn't silently truncate
+/// a target that the distiller model could handle.
+const MAX_DISTILLATION_TOKENS: u32 = 128_000;
 
 #[derive(Debug, Clone)]
 pub struct DistillationConfig {

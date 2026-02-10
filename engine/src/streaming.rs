@@ -117,6 +117,33 @@ fn cache_breakpoint_positions(eligible: usize) -> Vec<usize> {
 }
 
 impl super::App {
+    /// Estimate token overhead from system prompt and tool definitions for a provider.
+    ///
+    /// Both `start_streaming` and `try_start_distillation` must use the same overhead
+    /// when checking context budget, otherwise distillation can loop: `try_start_distillation`
+    /// declares "fits" (with 0 overhead) while `start_streaming` declares "doesn't fit"
+    /// (with real overhead), causing an infinite ping-pong.
+    pub(crate) fn streaming_overhead(&self, provider: Provider) -> u32 {
+        let counter = TokenCounter::new();
+        let sys_tokens = counter.count_str(self.system_prompts.get(provider));
+        let tool_tokens = {
+            let tools: Vec<&ToolDefinition> = self
+                .tool_definitions
+                .iter()
+                .filter(|t| t.provider.is_none() || t.provider == Some(provider))
+                .collect();
+            if tools.is_empty() {
+                0
+            } else {
+                match serde_json::to_string(&tools) {
+                    Ok(s) => counter.count_str(&s),
+                    Err(_) => 0,
+                }
+            }
+        };
+        sys_tokens + tool_tokens
+    }
+
     pub fn start_streaming(&mut self, queued: QueuedUserMessage) {
         if self.busy_reason().is_some() {
             return;
@@ -125,28 +152,16 @@ impl super::App {
         let QueuedUserMessage { config, turn } = queued;
         let memory_enabled = self.memory_enabled();
 
-        // Calculate overhead from system prompt and tools to avoid context overflow
-        let system_prompt = self.system_prompts.get(config.provider());
         let provider = config.provider();
+        let overhead = self.streaming_overhead(provider);
+
+        let system_prompt = self.system_prompts.get(provider);
         let tools: Vec<_> = self
             .tool_definitions
             .iter()
             .filter(|t| t.provider.is_none() || t.provider == Some(provider))
             .cloned()
             .collect();
-
-        let counter = TokenCounter::new();
-        let sys_tokens = counter.count_str(system_prompt);
-        let tool_tokens = if tools.is_empty() {
-            0
-        } else {
-            // Estimate tool definition size
-            match serde_json::to_string(&tools) {
-                Ok(s) => counter.count_str(&s),
-                Err(_) => 0,
-            }
-        };
-        let overhead = sys_tokens + tool_tokens;
 
         // When memory enabled, use distillation-based context management.
         // Otherwise, use basic mode.
@@ -245,7 +260,6 @@ impl super::App {
 
         // Convert messages to cacheable format based on cache_enabled setting
         let cache_enabled = self.cache_enabled;
-        // system_prompt already retrieved above
         let cacheable_messages: Vec<CacheableMessage> = if cache_enabled {
             // Claude allows max 4 cache_control blocks total.
             // System prompt uses 1 slot, leaving 3 for messages.
@@ -272,8 +286,6 @@ impl super::App {
 
         // Inject any pending system notifications as an assistant message
         let cacheable_messages = self.inject_pending_notifications(cacheable_messages);
-
-        // tools already retrieved above (cloned)
 
         // Clone Gemini cache state for async task (only relevant for Gemini provider)
         let gemini_cache_arc = self.gemini_cache.clone();

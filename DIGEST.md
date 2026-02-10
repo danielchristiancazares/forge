@@ -18,7 +18,7 @@ pub fn strip_steganographic_chars(input: &str) -> std::borrow::Cow<'_, str>; @ t
 pub fn truncate_with_ellipsis(raw: &str, max: usize) -> String; @ types/src/text.rs:9
 
 /// API-reported token usage from provider responses.
-pub struct ApiUsage { @ types/src/lib.rs:1230
+pub struct ApiUsage { @ types/src/lib.rs:1323
     /// Total input tokens (includes cached tokens).
     pub input_tokens: u32,
     /// Input tokens read from cache (cache hits).
@@ -31,34 +31,34 @@ pub struct ApiUsage { @ types/src/lib.rs:1230
 
 impl ApiUsage {
     /// Cache hit percentage (0-100).
-    pub fn cache_hit_percentage(&self) -> f64; @ types/src/lib.rs:1270
-    pub const fn has_data(&self) -> bool; @ types/src/lib.rs:1264
+    pub fn cache_hit_percentage(&self) -> f64; @ types/src/lib.rs:1363
+    pub const fn has_data(&self) -> bool; @ types/src/lib.rs:1357
     /// Merge another usage into this one (for aggregation across multiple API calls).
-    pub fn merge(&mut self, other: &ApiUsage); @ types/src/lib.rs:1252
+    pub fn merge(&mut self, other: &ApiUsage); @ types/src/lib.rs:1345
     /// Input tokens that were not read from cache.
-    pub const fn non_cached_input_tokens(&self) -> u32; @ types/src/lib.rs:1247
+    pub const fn non_cached_input_tokens(&self) -> u32; @ types/src/lib.rs:1340
 }
 
-pub struct AssistantMessage { @ types/src/lib.rs:1440
+pub struct AssistantMessage { @ types/src/lib.rs:1533
 }
 
 impl AssistantMessage {
-    pub fn content(&self) -> &str; @ types/src/lib.rs:1458
-    pub fn model(&self) -> &ModelName; @ types/src/lib.rs:1468
-    pub fn new(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1449
-    pub fn provider(&self) -> Provider; @ types/src/lib.rs:1463
+    pub fn content(&self) -> &str; @ types/src/lib.rs:1551
+    pub fn model(&self) -> &ModelName; @ types/src/lib.rs:1561
+    pub fn new(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1542
+    pub fn provider(&self) -> Provider; @ types/src/lib.rs:1556
 }
 
 /// A message with an associated cache hint for API serialization.
-pub struct CacheableMessage { @ types/src/lib.rs:1621
+pub struct CacheableMessage { @ types/src/lib.rs:1749
     pub message: Message,
     pub cache_hint: CacheHint,
 }
 
 impl CacheableMessage {
-    pub fn cached(message: Message) -> Self; @ types/src/lib.rs:1641
-    pub fn new(message: Message, cache_hint: CacheHint) -> Self; @ types/src/lib.rs:1628
-    pub fn plain(message: Message) -> Self; @ types/src/lib.rs:1636
+    pub fn cached(message: Message) -> Self; @ types/src/lib.rs:1769
+    pub fn new(message: Message, cache_hint: CacheHint) -> Self; @ types/src/lib.rs:1756
+    pub fn plain(message: Message) -> Self; @ types/src/lib.rs:1764
 }
 
 pub struct EmptyStringError { @ types/src/lib.rs:68
@@ -161,6 +161,12 @@ impl TryFrom<NonEmptyStaticStr> for NonEmptyString {
     fn try_from(value: NonEmptyStaticStr) -> Result<Self, Self::Error>;
 }
 
+/// An OpenAI reasoning output item captured for stateless replay.
+pub struct OpenAIReasoningItem { @ types/src/lib.rs:1196
+    pub id: String,
+    pub encrypted_content: Option<String>,
+}
+
 pub struct OpenAIRequestOptions { @ types/src/lib.rs:964
 }
 
@@ -221,12 +227,12 @@ impl Debug for SecretString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
 }
 
-pub struct SystemMessage { @ types/src/lib.rs:1398
+pub struct SystemMessage { @ types/src/lib.rs:1491
 }
 
 impl SystemMessage {
-    pub fn content(&self) -> &str; @ types/src/lib.rs:1413
-    pub fn new(content: NonEmptyString) -> Self; @ types/src/lib.rs:1405
+    pub fn content(&self) -> &str; @ types/src/lib.rs:1506
+    pub fn new(content: NonEmptyString) -> Self; @ types/src/lib.rs:1498
 }
 
 /// Validated thinking budget for extended reasoning.
@@ -239,17 +245,19 @@ impl ThinkingBudget {
 }
 
 /// Provider reasoning/thinking content (Claude extended thinking, Gemini thinking, etc.).
-pub struct ThinkingMessage { @ types/src/lib.rs:1479
+pub struct ThinkingMessage { @ types/src/lib.rs:1572
 }
 
 impl ThinkingMessage {
-    pub fn content(&self) -> &str; @ types/src/lib.rs:1511
-    pub const fn has_signature(&self) -> bool; @ types/src/lib.rs:1521
-    pub fn model(&self) -> &ModelName; @ types/src/lib.rs:1531
-    pub fn new(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1491
-    pub fn provider(&self) -> Provider; @ types/src/lib.rs:1526
-    pub const fn signature_state(&self) -> &ThoughtSignatureState; @ types/src/lib.rs:1516
-    pub fn with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self; @ types/src/lib.rs:1501
+    pub fn claude_signature(&self) -> Option<&ThoughtSignature>; @ types/src/lib.rs:1635
+    pub fn content(&self) -> &str; @ types/src/lib.rs:1620
+    pub fn model(&self) -> &ModelName; @ types/src/lib.rs:1648
+    pub fn new(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1584
+    pub fn provider(&self) -> Provider; @ types/src/lib.rs:1643
+    pub fn replay_state(&self) -> &ThinkingReplayState; @ types/src/lib.rs:1625
+    pub fn requires_persistence(&self) -> bool; @ types/src/lib.rs:1630
+    pub fn with_openai_reasoning(model: ModelName, content: NonEmptyString, items: Vec<OpenAIReasoningItem>) -> Self; @ types/src/lib.rs:1606
+    pub fn with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self; @ types/src/lib.rs:1594
 }
 
 /// Opaque provider signature for thinking/tool-call replay.
@@ -270,7 +278,7 @@ impl From<&str> for ThoughtSignature {
     fn from(value: &str) -> Self;
 }
 
-pub struct ToolCall { @ types/src/lib.rs:1312
+pub struct ToolCall { @ types/src/lib.rs:1405
     /// Unique identifier for this tool call (used to match results).
     pub id: String,
     /// The name of the tool being called.
@@ -282,12 +290,12 @@ pub struct ToolCall { @ types/src/lib.rs:1312
 }
 
 impl ToolCall {
-    pub fn new<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(id: impl Into<String>, name: impl Into<String>, arguments: serde_json::Value) -> Self; @ types/src/lib.rs:1324
-    pub fn new_signed<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(id: impl Into<String>, name: impl Into<String>, arguments: serde_json::Value, thought_signature: ThoughtSignature) -> Self; @ types/src/lib.rs:1337
-    pub const fn signature_state(&self) -> &ThoughtSignatureState; @ types/src/lib.rs:1352
+    pub fn new<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(id: impl Into<String>, name: impl Into<String>, arguments: serde_json::Value) -> Self; @ types/src/lib.rs:1417
+    pub fn new_signed<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(id: impl Into<String>, name: impl Into<String>, arguments: serde_json::Value, thought_signature: ThoughtSignature) -> Self; @ types/src/lib.rs:1430
+    pub const fn signature_state(&self) -> &ThoughtSignatureState; @ types/src/lib.rs:1445
 }
 
-pub struct ToolDefinition { @ types/src/lib.rs:1279
+pub struct ToolDefinition { @ types/src/lib.rs:1372
     /// The name of the tool (function name).
     pub name: String,
     /// A description of what the tool does.
@@ -302,10 +310,10 @@ pub struct ToolDefinition { @ types/src/lib.rs:1279
 }
 
 impl ToolDefinition {
-    pub fn new<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(name: impl Into<String>, description: impl Into<String>, parameters: serde_json::Value) -> Self; @ types/src/lib.rs:1296
+    pub fn new<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(name: impl Into<String>, description: impl Into<String>, parameters: serde_json::Value) -> Self; @ types/src/lib.rs:1389
 }
 
-pub struct ToolResult { @ types/src/lib.rs:1358
+pub struct ToolResult { @ types/src/lib.rs:1451
     /// The ID of the tool call this result is for.
     pub tool_call_id: String,
     /// The name of the tool that was called (needed for Gemini's functionResponse).
@@ -317,16 +325,16 @@ pub struct ToolResult { @ types/src/lib.rs:1358
 }
 
 impl ToolResult {
-    pub fn error<impl Into<String>: Into<String>, impl Into<String>: Into<String>, impl Into<String>: Into<String>>(tool_call_id: impl Into<String>, tool_name: impl Into<String>, error: impl Into<String>) -> Self; @ types/src/lib.rs:1383
-    pub fn success<impl Into<String>: Into<String>, impl Into<String>: Into<String>, impl Into<String>: Into<String>>(tool_call_id: impl Into<String>, tool_name: impl Into<String>, content: impl Into<String>) -> Self; @ types/src/lib.rs:1370
+    pub fn error<impl Into<String>: Into<String>, impl Into<String>: Into<String>, impl Into<String>: Into<String>>(tool_call_id: impl Into<String>, tool_name: impl Into<String>, error: impl Into<String>) -> Self; @ types/src/lib.rs:1476
+    pub fn success<impl Into<String>: Into<String>, impl Into<String>: Into<String>, impl Into<String>: Into<String>>(tool_call_id: impl Into<String>, tool_name: impl Into<String>, content: impl Into<String>) -> Self; @ types/src/lib.rs:1463
 }
 
-pub struct UserMessage { @ types/src/lib.rs:1419
+pub struct UserMessage { @ types/src/lib.rs:1512
 }
 
 impl UserMessage {
-    pub fn content(&self) -> &str; @ types/src/lib.rs:1434
-    pub fn new(content: NonEmptyString) -> Self; @ types/src/lib.rs:1426
+    pub fn content(&self) -> &str; @ types/src/lib.rs:1527
+    pub fn new(content: NonEmptyString) -> Self; @ types/src/lib.rs:1519
 }
 
 /// API key with provider tagging. Inner values are opaque [`SecretString`]s
@@ -379,7 +387,7 @@ impl Display for EnumKind {
 }
 
 /// A complete message.
-pub enum Message { @ types/src/lib.rs:1540
+pub enum Message { @ types/src/lib.rs:1657
     System(SystemMessage),
     User(UserMessage),
     Assistant(AssistantMessage),
@@ -392,16 +400,17 @@ pub enum Message { @ types/src/lib.rs:1540
 }
 
 impl Message {
-    pub fn assistant(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1568
-    pub fn content(&self) -> &str; @ types/src/lib.rs:1607
-    pub fn role_str(&self) -> &'static str; @ types/src/lib.rs:1597
-    pub fn system(content: NonEmptyString) -> Self; @ types/src/lib.rs:1554
-    pub fn thinking(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1573
-    pub fn thinking_with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self; @ types/src/lib.rs:1578
-    pub fn tool_result(result: ToolResult) -> Self; @ types/src/lib.rs:1592
-    pub fn tool_use(call: ToolCall) -> Self; @ types/src/lib.rs:1587
-    pub fn try_user<impl Into<String>: Into<String>>(content: impl Into<String>) -> Result<Self, EmptyStringError>; @ types/src/lib.rs:1563
-    pub fn user(content: NonEmptyString) -> Self; @ types/src/lib.rs:1559
+    pub fn assistant(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1685
+    pub fn content(&self) -> &str; @ types/src/lib.rs:1735
+    pub fn role_str(&self) -> &'static str; @ types/src/lib.rs:1725
+    pub fn system(content: NonEmptyString) -> Self; @ types/src/lib.rs:1671
+    pub fn thinking(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1690
+    pub fn thinking_with_openai_reasoning(model: ModelName, content: NonEmptyString, items: Vec<OpenAIReasoningItem>) -> Self; @ types/src/lib.rs:1704
+    pub fn thinking_with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self; @ types/src/lib.rs:1695
+    pub fn tool_result(result: ToolResult) -> Self; @ types/src/lib.rs:1720
+    pub fn tool_use(call: ToolCall) -> Self; @ types/src/lib.rs:1715
+    pub fn try_user<impl Into<String>: Into<String>>(content: impl Into<String>) -> Result<Self, EmptyStringError>; @ types/src/lib.rs:1680
+    pub fn user(content: NonEmptyString) -> Self; @ types/src/lib.rs:1676
 }
 
 pub enum ModelParseError { @ types/src/lib.rs:605
@@ -532,13 +541,18 @@ impl Provider {
     pub fn parse_model(&self, raw: &str) -> Result<ModelName, ModelParseError>; @ types/src/lib.rs:420
 }
 
-pub enum StreamEvent { @ types/src/lib.rs:1195
+pub enum StreamEvent { @ types/src/lib.rs:1283
     /// Text content delta.
     TextDelta(String),
     /// Provider reasoning content delta (Claude extended thinking or OpenAI reasoning summaries).
     ThinkingDelta(String),
     /// Encrypted thinking signature for API replay (Claude extended thinking).
     ThinkingSignature(String),
+    /// Completed OpenAI reasoning output item for stateless replay.
+    OpenAIReasoningDone {
+        id: String,
+        encrypted_content: Option<String>,
+    },
     /// Tool call started - emitted when a `tool_use` content block begins.
     ToolCallStart {
         id: String,
@@ -559,9 +573,29 @@ pub enum StreamEvent { @ types/src/lib.rs:1195
 }
 
 /// Reason a stream finished.
-pub enum StreamFinishReason { @ types/src/lib.rs:1220
+pub enum StreamFinishReason { @ types/src/lib.rs:1313
     Done,
     Error(String),
+}
+
+/// Provider-specific replay state for thinking blocks.
+pub enum ThinkingReplayState { @ types/src/lib.rs:1208
+    Unsigned,
+    ClaudeSigned {
+        signature: ThoughtSignature,
+    },
+    OpenAIReasoning {
+        items: Vec<OpenAIReasoningItem>,
+    },
+}
+
+impl ThinkingReplayState {
+    pub fn requires_persistence(&self) -> bool; @ types/src/lib.rs:1222
+}
+
+impl Deserialize<'de> for ThinkingReplayState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: serde::Deserializer<'de>;
 }
 
 pub enum ThinkingState { @ types/src/lib.rs:1068
@@ -597,22 +631,22 @@ pub async fn create_cache(api_key: &str, model: &str, system_prompt: &str, tools
 
 pub fn generate_idempotency_key() -> String; @ providers/src/retry.rs:158
 
-pub fn http_client() -> &'static reqwest::Client; @ providers/src/lib.rs:80
+pub fn http_client() -> &'static reqwest::Client; @ providers/src/lib.rs:81
 
-pub fn http_client_with_timeout(timeout_secs: u64) -> anyhow::Result<reqwest::Client, reqwest::Error>; @ providers/src/lib.rs:122
+pub fn http_client_with_timeout(timeout_secs: u64) -> anyhow::Result<reqwest::Client, reqwest::Error>; @ providers/src/lib.rs:123
 
 /// Parse `Retry-After` or `Retry-After-Ms` headers.
 pub fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration>; @ providers/src/retry.rs:59
 
-pub async fn read_capped_error_body(response: reqwest::Response) -> String; @ providers/src/lib.rs:323
+pub async fn read_capped_error_body(response: reqwest::Response) -> String; @ providers/src/lib.rs:324
 
-pub async fn send_message(config: &ApiConfig, messages: &[forge_types::CacheableMessage], limits: forge_types::OutputLimits, system_prompt: Option<&str>, tools: Option<&[forge_types::ToolDefinition]>, gemini_cache: Option<&gemini::GeminiCache>, tx: mpsc::Sender<forge_types::StreamEvent>) -> anyhow::Result<()>; @ providers/src/lib.rs:492
+pub async fn send_message(config: &ApiConfig, messages: &[forge_types::CacheableMessage], limits: forge_types::OutputLimits, system_prompt: Option<&str>, tools: Option<&[forge_types::ToolDefinition]>, gemini_cache: Option<&gemini::GeminiCache>, tx: mpsc::Sender<forge_types::StreamEvent>) -> anyhow::Result<()>; @ providers/src/lib.rs:493
 
-pub async fn send_message(config: &crate::ApiConfig, messages: &[forge_types::CacheableMessage], limits: forge_types::OutputLimits, system_prompt: Option<&str>, tools: Option<&[forge_types::ToolDefinition]>, tx: mpsc::Sender<forge_types::StreamEvent>) -> anyhow::Result<()>; @ providers/src/claude.rs:396
+pub async fn send_message(config: &crate::ApiConfig, messages: &[forge_types::CacheableMessage], limits: forge_types::OutputLimits, system_prompt: Option<&str>, tools: Option<&[forge_types::ToolDefinition]>, tx: mpsc::Sender<forge_types::StreamEvent>) -> anyhow::Result<()>; @ providers/src/claude.rs:394
 
 pub async fn send_message(config: &crate::ApiConfig, messages: &[forge_types::CacheableMessage], limits: forge_types::OutputLimits, system_prompt: Option<&str>, tools: Option<&[forge_types::ToolDefinition]>, cache: Option<&GeminiCache>, tx: mpsc::Sender<forge_types::StreamEvent>) -> anyhow::Result<()>; @ providers/src/gemini.rs:498
 
-pub async fn send_message(config: &crate::ApiConfig, messages: &[forge_types::CacheableMessage], limits: forge_types::OutputLimits, system_prompt: Option<&str>, tools: Option<&[forge_types::ToolDefinition]>, tx: mpsc::Sender<forge_types::StreamEvent>) -> anyhow::Result<()>; @ providers/src/openai.rs:501
+pub async fn send_message(config: &crate::ApiConfig, messages: &[forge_types::CacheableMessage], limits: forge_types::OutputLimits, system_prompt: Option<&str>, tools: Option<&[forge_types::ToolDefinition]>, tx: mpsc::Sender<forge_types::StreamEvent>) -> anyhow::Result<()>; @ providers/src/openai.rs:548
 
 /// Send a request with automatic retries.
 pub async fn send_with_retry<F>(build_request: F, timeout: Option<std::time::Duration>, config: &RetryConfig) -> RetryOutcome
@@ -622,22 +656,22 @@ pub async fn send_with_retry<F>(build_request: F, timeout: Option<std::time::Dur
 pub fn should_retry(status: reqwest::StatusCode, headers: &reqwest::header::HeaderMap) -> bool; @ providers/src/retry.rs:89
 
 /// Provider + model configuration with provider-specific tuning knobs.
-pub struct ApiConfig { @ providers/src/lib.rs:396
+pub struct ApiConfig { @ providers/src/lib.rs:397
 }
 
 impl ApiConfig {
-    pub const fn anthropic_thinking_effort(&self) -> &str; @ providers/src/lib.rs:487
-    pub const fn anthropic_thinking_mode(&self) -> &str; @ providers/src/lib.rs:482
-    pub fn api_key(&self) -> &str; @ providers/src/lib.rs:457
-    pub fn api_key_owned(&self) -> ApiKey; @ providers/src/lib.rs:462
-    pub const fn gemini_thinking_enabled(&self) -> bool; @ providers/src/lib.rs:477
-    pub fn model(&self) -> &ModelName; @ providers/src/lib.rs:467
-    pub fn new(api_key: ApiKey, model: ModelName) -> Result<Self, ApiConfigError>; @ providers/src/lib.rs:412
-    pub fn openai_options(&self) -> OpenAIRequestOptions; @ providers/src/lib.rs:472
-    pub fn provider(&self) -> Provider; @ providers/src/lib.rs:452
-    pub fn with_anthropic_thinking(self, mode: &'static str, effort: &'static str) -> Self; @ providers/src/lib.rs:445
-    pub fn with_gemini_thinking_enabled(self, enabled: bool) -> Self; @ providers/src/lib.rs:439
-    pub fn with_openai_options(self, options: OpenAIRequestOptions) -> Self; @ providers/src/lib.rs:433
+    pub const fn anthropic_thinking_effort(&self) -> &str; @ providers/src/lib.rs:488
+    pub const fn anthropic_thinking_mode(&self) -> &str; @ providers/src/lib.rs:483
+    pub fn api_key(&self) -> &str; @ providers/src/lib.rs:458
+    pub fn api_key_owned(&self) -> ApiKey; @ providers/src/lib.rs:463
+    pub const fn gemini_thinking_enabled(&self) -> bool; @ providers/src/lib.rs:478
+    pub fn model(&self) -> &ModelName; @ providers/src/lib.rs:468
+    pub fn new(api_key: ApiKey, model: ModelName) -> Result<Self, ApiConfigError>; @ providers/src/lib.rs:413
+    pub fn openai_options(&self) -> OpenAIRequestOptions; @ providers/src/lib.rs:473
+    pub fn provider(&self) -> Provider; @ providers/src/lib.rs:453
+    pub fn with_anthropic_thinking(self, mode: &'static str, effort: &'static str) -> Self; @ providers/src/lib.rs:446
+    pub fn with_gemini_thinking_enabled(self, enabled: bool) -> Self; @ providers/src/lib.rs:440
+    pub fn with_openai_options(self, options: OpenAIRequestOptions) -> Self; @ providers/src/lib.rs:434
 }
 
 /// Active Gemini cache reference.
@@ -683,7 +717,7 @@ impl Default for RetryConfig {
     fn default() -> Self;
 }
 
-pub enum ApiConfigError { @ providers/src/lib.rs:406
+pub enum ApiConfigError { @ providers/src/lib.rs:407
     ProviderMismatch {
         key: forge_types::Provider,
         model: forge_types::Provider,
@@ -724,7 +758,7 @@ pub fn atomic_write_new_with_options<impl AsRef<Path>: AsRef<std::path::Path>>(p
 pub fn atomic_write_with_options<impl AsRef<Path>: AsRef<std::path::Path>>(path: impl AsRef<std::path::Path>, bytes: &[u8], options: AtomicWriteOptions) -> std::io::Result<()>; @ context/src/atomic_write.rs:119
 
 /// Get the distillation model name for a given provider.
-pub fn distillation_model(provider: forge_types::Provider) -> &'static str; @ context/src/distillation.rs:468
+pub fn distillation_model(provider: forge_types::Provider) -> &'static str; @ context/src/distillation.rs:481
 
 /// Extract facts from a conversation exchange.
 pub async fn extract_facts(api_key: &str, user_message: &str, assistant_message: &str) -> anyhow::Result<ExtractionResult>; @ context/src/librarian.rs:121
@@ -733,7 +767,7 @@ pub async fn extract_facts(api_key: &str, user_message: &str, assistant_message:
 pub fn format_facts_for_context(facts: &[Fact]) -> String; @ context/src/librarian.rs:258
 
 /// Distill conversation messages into a compact Distillate using an LLM.
-pub async fn generate_distillation(config: &forge_providers::ApiConfig, counter: &super::token_counter::TokenCounter, messages: &[(super::MessageId, forge_types::Message)], target_tokens: u32) -> anyhow::Result<String>; @ context/src/distillation.rs:173
+pub async fn generate_distillation(config: &forge_providers::ApiConfig, counter: &super::token_counter::TokenCounter, messages: &[(super::MessageId, forge_types::Message)], target_tokens: u32) -> anyhow::Result<String>; @ context/src/distillation.rs:182
 
 /// Retrieve relevant facts for a user query.
 pub async fn retrieve_relevant(api_key: &str, user_query: &str, available_facts: &[Fact]) -> anyhow::Result<RetrievalResult>; @ context/src/librarian.rs:157
@@ -773,41 +807,41 @@ impl Default for AtomicWriteOptions {
     fn default() -> Self;
 }
 
-pub struct ContextManager { @ context/src/manager.rs:153
+pub struct ContextManager { @ context/src/manager.rs:157
 }
 
 impl ContextManager {
-    pub fn complete_distillation(&mut self, scope: DistillationScope, content: NonEmptyString, generated_by: String) -> Result<DistillateId>; @ context/src/manager.rs:524
-    pub fn current_limits(&self) -> ModelLimits; @ context/src/manager.rs:644
-    pub fn current_limits_source(&self) -> ModelLimitsSource; @ context/src/manager.rs:649
-    pub fn current_model(&self) -> &ModelName; @ context/src/manager.rs:639
+    pub fn complete_distillation(&mut self, scope: DistillationScope, content: NonEmptyString, generated_by: String) -> Result<DistillateId>; @ context/src/manager.rs:528
+    pub fn current_limits(&self) -> ModelLimits; @ context/src/manager.rs:648
+    pub fn current_limits_source(&self) -> ModelLimitsSource; @ context/src/manager.rs:653
+    pub fn current_model(&self) -> &ModelName; @ context/src/manager.rs:643
     /// if history already contains an entry with this `step_id`, we should not recover it again.
-    pub fn has_step_id(&self, step_id: StepId) -> bool; @ context/src/manager.rs:217
-    pub fn history(&self) -> &FullHistory; @ context/src/manager.rs:634
+    pub fn has_step_id(&self, step_id: StepId) -> bool; @ context/src/manager.rs:221
+    pub fn history(&self) -> &FullHistory; @ context/src/manager.rs:638
     /// Load history from a JSON file.
-    pub fn load<impl AsRef<Path>: AsRef<Path>>(path: impl AsRef<Path>, model: ModelName) -> Result<Self>; @ context/src/manager.rs:676
-    pub fn new(initial_model: ModelName) -> Self; @ context/src/manager.rs:167
-    pub fn prepare(&self, overhead: u32) -> Result<PreparedContext<'_>, ContextBuildError>; @ context/src/manager.rs:573
-    pub fn prepare_distillation(&mut self, message_ids: &[MessageId]) -> Option<PendingDistillation>; @ context/src/manager.rs:468
+    pub fn load<impl AsRef<Path>: AsRef<Path>>(path: impl AsRef<Path>, model: ModelName) -> Result<Self>; @ context/src/manager.rs:680
+    pub fn new(initial_model: ModelName) -> Self; @ context/src/manager.rs:171
+    pub fn prepare(&self, overhead: u32) -> Result<PreparedContext<'_>, ContextBuildError>; @ context/src/manager.rs:577
+    pub fn prepare_distillation(&mut self, message_ids: &[MessageId]) -> Option<PendingDistillation>; @ context/src/manager.rs:472
     /// Get the configured preserve_recent count.
-    pub fn preserve_recent_count(&self) -> usize; @ context/src/manager.rs:600
-    pub fn push_message(&mut self, message: Message) -> MessageId; @ context/src/manager.rs:200
-    pub fn push_message_with_step_id(&mut self, message: Message, stream_step_id: StepId) -> MessageId; @ context/src/manager.rs:205
+    pub fn preserve_recent_count(&self) -> usize; @ context/src/manager.rs:604
+    pub fn push_message(&mut self, message: Message) -> MessageId; @ context/src/manager.rs:204
+    pub fn push_message_with_step_id(&mut self, message: Message, stream_step_id: StepId) -> MessageId; @ context/src/manager.rs:209
     /// Get only the N most recent messages, bypassing distillation.
-    pub fn recent_messages_only(&self, count: usize) -> Vec<Message>; @ context/src/manager.rs:589
+    pub fn recent_messages_only(&self, count: usize) -> Vec<Message>; @ context/src/manager.rs:593
     /// This is used for transactional rollback when a stream fails...
-    pub fn rollback_last_message(&mut self, id: MessageId) -> Option<Message>; @ context/src/manager.rs:222
+    pub fn rollback_last_message(&mut self, id: MessageId) -> Option<Message>; @ context/src/manager.rs:226
     /// Save history to a JSON file.
-    pub fn save<impl AsRef<Path>: AsRef<Path>>(&self, path: impl AsRef<Path>) -> Result<()>; @ context/src/manager.rs:660
+    pub fn save<impl AsRef<Path>: AsRef<Path>>(&self, path: impl AsRef<Path>) -> Result<()>; @ context/src/manager.rs:664
     /// Update model limits without triggering distillation behavior.
-    pub fn set_model_without_adaptation(&mut self, new_model: ModelName); @ context/src/manager.rs:254
+    pub fn set_model_without_adaptation(&mut self, new_model: ModelName); @ context/src/manager.rs:258
     /// This allows more input context when users configure smaller output limits.
-    pub fn set_output_limit(&mut self, limit: u32); @ context/src/manager.rs:186
-    pub fn switch_model(&mut self, new_model: ModelName) -> ContextAdaptation; @ context/src/manager.rs:226
+    pub fn set_output_limit(&mut self, limit: u32); @ context/src/manager.rs:190
+    pub fn switch_model(&mut self, new_model: ModelName) -> ContextAdaptation; @ context/src/manager.rs:230
     /// This does not mutate history. If the current model's budget can fit original messages...
-    pub fn try_restore_messages(&self) -> usize; @ context/src/manager.rs:556
+    pub fn try_restore_messages(&self) -> usize; @ context/src/manager.rs:560
     /// Get current usage statistics with explicit distillation status.
-    pub fn usage_status(&self) -> ContextUsageStatus; @ context/src/manager.rs:606
+    pub fn usage_status(&self) -> ContextUsageStatus; @ context/src/manager.rs:610
 }
 
 /// Usage statistics for display in UI.
@@ -848,14 +882,14 @@ impl Distillate {
 pub struct DistillateId { @ context/src/history.rs:38
 }
 
-pub struct DistillationNeeded { @ context/src/manager.rs:52
+pub struct DistillationNeeded { @ context/src/manager.rs:56
     pub excess_tokens: u32,
     pub messages_to_distill: Vec<super::history::MessageId>,
     pub suggestion: String,
 }
 
 /// Contiguous range of message IDs selected for distillation.
-pub struct DistillationScope { @ context/src/manager.rs:63
+pub struct DistillationScope { @ context/src/manager.rs:67
 }
 
 /// Result of fact extraction from a conversation exchange.
@@ -1042,7 +1076,7 @@ impl Default for ModelRegistry {
 }
 
 /// Request for async distillation, created by [`ContextManager::prepare_distillation`].
-pub struct PendingDistillation { @ context/src/manager.rs:92
+pub struct PendingDistillation { @ context/src/manager.rs:96
     /// The scope defining which messages to distill.
     pub scope: DistillationScope,
     /// The actual messages to distill, in order.
@@ -1054,12 +1088,12 @@ pub struct PendingDistillation { @ context/src/manager.rs:92
 }
 
 /// Proof that working context was successfully built within the token budget.
-pub struct PreparedContext<'a> { @ context/src/manager.rs:109
+pub struct PreparedContext<'a> { @ context/src/manager.rs:113
 }
 
 impl PreparedContext<'a> {
-    pub fn api_messages(&self) -> Vec<Message>; @ context/src/manager.rs:116
-    pub fn usage(&self) -> ContextUsage; @ context/src/manager.rs:121
+    pub fn api_messages(&self) -> Vec<Message>; @ context/src/manager.rs:120
+    pub fn usage(&self) -> ContextUsage; @ context/src/manager.rs:125
 }
 
 /// Recovered tool batch data after a crash.
@@ -1260,7 +1294,7 @@ impl Error for BeginSessionError {
     fn source(&self) -> Option<&dyn std::error::Error + 'static>;
 }
 
-pub enum ContextAdaptation { @ context/src/manager.rs:69
+pub enum ContextAdaptation { @ context/src/manager.rs:73
     /// No change in effective budget.
     NoChange,
     /// Switched to a model with smaller context.
@@ -1278,7 +1312,7 @@ pub enum ContextAdaptation { @ context/src/manager.rs:69
     },
 }
 
-pub enum ContextBuildError { @ context/src/manager.rs:39
+pub enum ContextBuildError { @ context/src/manager.rs:43
     /// Older messages need distillation to fit within budget.
     DistillationNeeded(DistillationNeeded),
     /// The most recent N messages alone exceed the budget.
@@ -1312,7 +1346,7 @@ impl ContextSegment {
 }
 
 /// Current context usage state with explicit distillation status.
-pub enum ContextUsageStatus { @ context/src/manager.rs:131
+pub enum ContextUsageStatus { @ context/src/manager.rs:135
     /// Context fits within budget and is ready for use.
     Ready(super::working_context::ContextUsage),
     /// Context exceeds budget; distillation is needed before API call.
@@ -1450,200 +1484,200 @@ pub fn find_match_positions(path: &str, filter: &str) -> Vec<usize>; @ engine/sr
 /// Single global instance (IFA-7 compliant).
 pub fn sanitize_display_text(input: &str) -> String; @ engine/src/security.rs:259
 
-pub struct App { @ engine/src/lib.rs:412
+pub struct App { @ engine/src/lib.rs:430
 }
 
 impl App {
     pub fn cancel_active_operation(&mut self) -> bool; @ engine/src/commands.rs:255
     /// Check for and recover from a crashed streaming session.
     pub fn check_crash_recovery(&mut self) -> Option<RecoveredStream>; @ engine/src/persistence.rs:304
-    pub fn clear_files_panel_effect(&mut self); @ engine/src/lib.rs:606
-    pub fn clear_modal_effect(&mut self); @ engine/src/lib.rs:1234
+    pub fn clear_files_panel_effect(&mut self); @ engine/src/lib.rs:624
+    pub fn clear_modal_effect(&mut self); @ engine/src/lib.rs:1252
     /// Close the files panel (no-op if already hidden).
-    pub fn close_files_panel(&mut self); @ engine/src/lib.rs:580
-    pub fn command_cursor(&self) -> Option<usize>; @ engine/src/lib.rs:1587
-    pub fn command_cursor_byte_index(&self) -> Option<usize>; @ engine/src/lib.rs:1591
+    pub fn close_files_panel(&mut self); @ engine/src/lib.rs:598
+    pub fn command_cursor(&self) -> Option<usize>; @ engine/src/lib.rs:1605
+    pub fn command_cursor_byte_index(&self) -> Option<usize>; @ engine/src/lib.rs:1609
     /// Get command mode wrapper (requires proof token).
     pub fn command_mode(&mut self, _token: CommandToken) -> CommandMode<'_>; @ engine/src/input_modes.rs:59
-    pub fn command_text(&self) -> Option<&str>; @ engine/src/lib.rs:1583
+    pub fn command_text(&self) -> Option<&str>; @ engine/src/lib.rs:1601
     /// Get proof token if currently in Command mode.
     pub fn command_token(&self) -> Option<CommandToken>; @ engine/src/input_modes.rs:49
     /// Get context usage statistics for the UI.
     /// Uses cached value when available to avoid recomputing every frame.
-    pub fn context_usage_status(&mut self) -> ContextUsageStatus; @ engine/src/lib.rs:1000
+    pub fn context_usage_status(&mut self) -> ContextUsageStatus; @ engine/src/lib.rs:1018
     /// Get the current API key for the selected provider.
-    pub fn current_api_key(&self) -> Option<&String>; @ engine/src/lib.rs:961
-    pub fn display_items(&self) -> &[DisplayItem]; @ engine/src/lib.rs:942
+    pub fn current_api_key(&self) -> Option<&String>; @ engine/src/lib.rs:979
+    pub fn display_items(&self) -> &[DisplayItem]; @ engine/src/lib.rs:960
     /// Version counter for display changes - used for render caching.
-    pub fn display_version(&self) -> usize; @ engine/src/lib.rs:952
-    pub fn draft_cursor(&self) -> usize; @ engine/src/lib.rs:1575
-    pub fn draft_cursor_byte_index(&self) -> usize; @ engine/src/lib.rs:1579
-    pub fn draft_text(&self) -> &str; @ engine/src/lib.rs:1571
-    pub fn enter_command_mode(&mut self); @ engine/src/lib.rs:1261
+    pub fn display_version(&self) -> usize; @ engine/src/lib.rs:970
+    pub fn draft_cursor(&self) -> usize; @ engine/src/lib.rs:1593
+    pub fn draft_cursor_byte_index(&self) -> usize; @ engine/src/lib.rs:1597
+    pub fn draft_text(&self) -> &str; @ engine/src/lib.rs:1589
+    pub fn enter_command_mode(&mut self); @ engine/src/lib.rs:1279
     /// Enter file select mode, scanning files from the current directory.
-    pub fn enter_file_select_mode(&mut self); @ engine/src/lib.rs:1338
-    pub fn enter_insert_mode(&mut self); @ engine/src/lib.rs:1257
-    pub fn enter_insert_mode_at_end(&mut self); @ engine/src/lib.rs:1242
-    pub fn enter_insert_mode_with_clear(&mut self); @ engine/src/lib.rs:1247
-    pub fn enter_model_select_mode(&mut self); @ engine/src/lib.rs:1265
-    pub fn enter_normal_mode(&mut self); @ engine/src/lib.rs:1252
+    pub fn enter_file_select_mode(&mut self); @ engine/src/lib.rs:1356
+    pub fn enter_insert_mode(&mut self); @ engine/src/lib.rs:1275
+    pub fn enter_insert_mode_at_end(&mut self); @ engine/src/lib.rs:1260
+    pub fn enter_insert_mode_with_clear(&mut self); @ engine/src/lib.rs:1265
+    pub fn enter_model_select_mode(&mut self); @ engine/src/lib.rs:1283
+    pub fn enter_normal_mode(&mut self); @ engine/src/lib.rs:1270
     /// Get the file picker state for rendering.
-    pub fn file_picker(&self) -> &ui::FilePickerState; @ engine/src/lib.rs:1368
+    pub fn file_picker(&self) -> &ui::FilePickerState; @ engine/src/lib.rs:1386
     /// Delete a character from the file select filter (backspace).
-    pub fn file_select_backspace(&mut self); @ engine/src/lib.rs:1410
+    pub fn file_select_backspace(&mut self); @ engine/src/lib.rs:1428
     /// Cancel file selection and return to insert mode.
-    pub fn file_select_cancel(&mut self); @ engine/src/lib.rs:1434
+    pub fn file_select_cancel(&mut self); @ engine/src/lib.rs:1452
     /// Confirm file selection - insert the selected file path into the draft.
-    pub fn file_select_confirm(&mut self); @ engine/src/lib.rs:1418
+    pub fn file_select_confirm(&mut self); @ engine/src/lib.rs:1436
     /// Get filtered files for display.
-    pub fn file_select_files(&self) -> Vec<&ui::FileEntry>; @ engine/src/lib.rs:1363
+    pub fn file_select_files(&self) -> Vec<&ui::FileEntry>; @ engine/src/lib.rs:1381
     /// Get the current file select filter text.
-    pub fn file_select_filter(&self) -> Option<&str>; @ engine/src/lib.rs:1353
+    pub fn file_select_filter(&self) -> Option<&str>; @ engine/src/lib.rs:1371
     /// Get the current file select index.
-    pub fn file_select_index(&self) -> Option<usize>; @ engine/src/lib.rs:1358
+    pub fn file_select_index(&self) -> Option<usize>; @ engine/src/lib.rs:1376
     /// Move file selection down.
-    pub fn file_select_move_down(&mut self); @ engine/src/lib.rs:1382
+    pub fn file_select_move_down(&mut self); @ engine/src/lib.rs:1400
     /// Move file selection up.
-    pub fn file_select_move_up(&mut self); @ engine/src/lib.rs:1373
+    pub fn file_select_move_up(&mut self); @ engine/src/lib.rs:1391
     /// Push a character to the file select filter.
-    pub fn file_select_push_char(&mut self, c: char); @ engine/src/lib.rs:1402
+    pub fn file_select_push_char(&mut self, c: char); @ engine/src/lib.rs:1420
     /// Update the file select filter and refresh filtered results.
-    pub fn file_select_update_filter(&mut self); @ engine/src/lib.rs:1392
+    pub fn file_select_update_filter(&mut self); @ engine/src/lib.rs:1410
     /// Collapse the expanded diff.
-    pub fn files_panel_collapse(&mut self); @ engine/src/lib.rs:697
-    pub fn files_panel_diff(&self) -> Option<FileDiff>; @ engine/src/lib.rs:735
+    pub fn files_panel_collapse(&mut self); @ engine/src/lib.rs:715
+    pub fn files_panel_diff(&self) -> Option<FileDiff>; @ engine/src/lib.rs:753
     /// Get mutable reference to files panel effect for UI processing.
-    pub fn files_panel_effect_mut(&mut self) -> Option<&mut PanelEffect>; @ engine/src/lib.rs:602
-    pub fn files_panel_expanded(&self) -> bool; @ engine/src/lib.rs:688
+    pub fn files_panel_effect_mut(&mut self) -> Option<&mut PanelEffect>; @ engine/src/lib.rs:620
+    pub fn files_panel_expanded(&self) -> bool; @ engine/src/lib.rs:706
     /// Cycle to the next file in the panel (wrapping).
-    pub fn files_panel_next(&mut self); @ engine/src/lib.rs:649
+    pub fn files_panel_next(&mut self); @ engine/src/lib.rs:667
     /// Cycle to the previous file in the panel (wrapping).
-    pub fn files_panel_prev(&mut self); @ engine/src/lib.rs:667
+    pub fn files_panel_prev(&mut self); @ engine/src/lib.rs:685
     /// Scroll the diff view down.
-    pub fn files_panel_scroll_diff_down(&mut self); @ engine/src/lib.rs:727
-    pub fn files_panel_scroll_diff_up(&mut self); @ engine/src/lib.rs:731
-    pub fn files_panel_state(&self) -> &FilesPanelState; @ engine/src/lib.rs:692
-    pub fn files_panel_sync_selection(&mut self); @ engine/src/lib.rs:702
-    pub fn files_panel_visible(&self) -> bool; @ engine/src/lib.rs:597
-    pub fn finish_files_panel_effect(&mut self); @ engine/src/lib.rs:610
+    pub fn files_panel_scroll_diff_down(&mut self); @ engine/src/lib.rs:745
+    pub fn files_panel_scroll_diff_up(&mut self); @ engine/src/lib.rs:749
+    pub fn files_panel_state(&self) -> &FilesPanelState; @ engine/src/lib.rs:710
+    pub fn files_panel_sync_selection(&mut self); @ engine/src/lib.rs:720
+    pub fn files_panel_visible(&self) -> bool; @ engine/src/lib.rs:615
+    pub fn finish_files_panel_effect(&mut self); @ engine/src/lib.rs:628
     /// Get elapsed time since last frame and update timing.
-    pub fn frame_elapsed(&mut self) -> Duration; @ engine/src/lib.rs:1222
-    pub fn has_api_key(&self, provider: Provider) -> bool; @ engine/src/lib.rs:956
-    pub fn history(&self) -> &forge_context::FullHistory; @ engine/src/lib.rs:807
-    pub fn input_mode(&self) -> InputMode; @ engine/src/lib.rs:1238
+    pub fn frame_elapsed(&mut self) -> Duration; @ engine/src/lib.rs:1240
+    pub fn has_api_key(&self, provider: Provider) -> bool; @ engine/src/lib.rs:974
+    pub fn history(&self) -> &forge_context::FullHistory; @ engine/src/lib.rs:825
+    pub fn input_mode(&self) -> InputMode; @ engine/src/lib.rs:1256
     /// Get insert mode wrapper (requires proof token).
     pub fn insert_mode(&mut self, _token: InsertToken) -> InsertMode<'_>; @ engine/src/input_modes.rs:54
     /// Get proof token if currently in Insert mode.
     pub fn insert_token(&self) -> Option<InsertToken>; @ engine/src/input_modes.rs:44
-    pub fn is_empty(&self) -> bool; @ engine/src/lib.rs:926
+    pub fn is_empty(&self) -> bool; @ engine/src/lib.rs:944
     /// Whether we're currently streaming a response.
-    pub fn is_loading(&self) -> bool; @ engine/src/lib.rs:966
+    pub fn is_loading(&self) -> bool; @ engine/src/lib.rs:984
     /// Whether the named tool should be hidden from UI rendering.
-    pub fn is_tool_hidden(&self, name: &str) -> bool; @ engine/src/lib.rs:947
+    pub fn is_tool_hidden(&self, name: &str) -> bool; @ engine/src/lib.rs:965
     /// API usage from the last completed turn (for status bar display).
-    pub fn last_turn_usage(&self) -> Option<&TurnUsage>; @ engine/src/lib.rs:1028
+    pub fn last_turn_usage(&self) -> Option<&TurnUsage>; @ engine/src/lib.rs:1046
     /// Whether the LSP subsystem is active and has running servers.
     pub fn lsp_active(&self) -> bool; @ engine/src/lsp_integration.rs:153
     /// Get the current diagnostics snapshot for UI display.
     pub fn lsp_snapshot(&self) -> &forge_lsp::DiagnosticsSnapshot; @ engine/src/lsp_integration.rs:147
-    pub fn memory_enabled(&self) -> bool; @ engine/src/lib.rs:1015
+    pub fn memory_enabled(&self) -> bool; @ engine/src/lib.rs:1033
     /// Get mutable reference to modal effect for UI processing.
-    pub fn modal_effect_mut(&mut self) -> Option<&mut ModalEffect>; @ engine/src/lib.rs:1230
-    pub fn model(&self) -> &str; @ engine/src/lib.rs:775
+    pub fn modal_effect_mut(&mut self) -> Option<&mut ModalEffect>; @ engine/src/lib.rs:1248
+    pub fn model(&self) -> &str; @ engine/src/lib.rs:793
     /// Select the current model and return to normal mode.
-    pub fn model_select_confirm(&mut self); @ engine/src/lib.rs:1320
-    pub fn model_select_index(&self) -> Option<usize>; @ engine/src/lib.rs:1279
-    pub fn model_select_move_down(&mut self); @ engine/src/lib.rs:1303
-    pub fn model_select_move_up(&mut self); @ engine/src/lib.rs:1295
-    pub fn model_select_set_index(&mut self, index: usize); @ engine/src/lib.rs:1312
+    pub fn model_select_confirm(&mut self); @ engine/src/lib.rs:1338
+    pub fn model_select_index(&self) -> Option<usize>; @ engine/src/lib.rs:1297
+    pub fn model_select_move_down(&mut self); @ engine/src/lib.rs:1321
+    pub fn model_select_move_up(&mut self); @ engine/src/lib.rs:1313
+    pub fn model_select_set_index(&mut self, index: usize); @ engine/src/lib.rs:1330
     /// Navigate to next (newer) command in Command mode.
-    pub fn navigate_command_history_down(&mut self); @ engine/src/lib.rs:1628
+    pub fn navigate_command_history_down(&mut self); @ engine/src/lib.rs:1646
     /// Navigate to previous (older) command in Command mode.
-    pub fn navigate_command_history_up(&mut self); @ engine/src/lib.rs:1619
+    pub fn navigate_command_history_up(&mut self); @ engine/src/lib.rs:1637
     /// Navigate to next (newer) prompt in Insert mode.
-    pub fn navigate_history_down(&mut self); @ engine/src/lib.rs:1610
+    pub fn navigate_history_down(&mut self); @ engine/src/lib.rs:1628
     /// Navigate to previous (older) prompt in Insert mode.
-    pub fn navigate_history_up(&mut self); @ engine/src/lib.rs:1599
+    pub fn navigate_history_up(&mut self); @ engine/src/lib.rs:1617
     pub fn new(system_prompts: SystemPrompts) -> anyhow::Result<Self>; @ engine/src/init.rs:79
     /// Get ordered list of changed files: modified first (alphabetical), then created.
     /// Filters out files that no longer exist on disk.
-    pub fn ordered_files(&self) -> Vec<(std::path::PathBuf, ChangeKind)>; @ engine/src/lib.rs:628
+    pub fn ordered_files(&self) -> Vec<(std::path::PathBuf, ChangeKind)>; @ engine/src/lib.rs:646
     /// Poll for completed distillation task and apply the result.
     pub fn poll_distillation(&mut self); @ engine/src/distillation.rs:133
     pub fn process_command(&mut self, command: EnteredCommand); @ engine/src/commands.rs:323
     /// Process any pending stream events.
-    pub fn process_stream_events(&mut self); @ engine/src/streaming.rs:325
-    pub fn provider(&self) -> Provider; @ engine/src/lib.rs:771
+    pub fn process_stream_events(&mut self); @ engine/src/streaming.rs:329
+    pub fn provider(&self) -> Provider; @ engine/src/lib.rs:789
     /// Queue a system notification to be injected into the next API request.
-    pub fn queue_notification(&mut self, notification: notifications::SystemNotification); @ engine/src/lib.rs:1023
+    pub fn queue_notification(&mut self, notification: notifications::SystemNotification); @ engine/src/lib.rs:1041
     /// Human-readable reason for a recovery block (if recovery is blocked).
-    pub fn recovery_blocked_reason(&self) -> Option<String>; @ engine/src/lib.rs:976
-    pub fn request_quit(&mut self); @ engine/src/lib.rs:536
+    pub fn recovery_blocked_reason(&self) -> Option<String>; @ engine/src/lib.rs:994
+    pub fn request_quit(&mut self); @ engine/src/lib.rs:554
     pub fn save_history(&self) -> anyhow::Result<()>; @ engine/src/persistence.rs:35
     /// Save session state (draft input + input history) to disk.
     pub fn save_session(&self) -> anyhow::Result<()>; @ engine/src/persistence.rs:140
-    pub fn scroll_down(&mut self); @ engine/src/lib.rs:1689
-    pub fn scroll_offset_from_top(&self) -> u16; @ engine/src/lib.rs:1658
+    pub fn scroll_down(&mut self); @ engine/src/lib.rs:1707
+    pub fn scroll_offset_from_top(&self) -> u16; @ engine/src/lib.rs:1676
     /// Scroll down by a page.
-    pub fn scroll_page_down(&mut self); @ engine/src/lib.rs:1705
+    pub fn scroll_page_down(&mut self); @ engine/src/lib.rs:1723
     /// Scroll up by a page.
-    pub fn scroll_page_up(&mut self); @ engine/src/lib.rs:1677
-    pub fn scroll_to_bottom(&mut self); @ engine/src/lib.rs:1725
-    pub fn scroll_to_top(&mut self); @ engine/src/lib.rs:1721
-    pub fn scroll_up(&mut self); @ engine/src/lib.rs:1665
+    pub fn scroll_page_up(&mut self); @ engine/src/lib.rs:1695
+    pub fn scroll_to_bottom(&mut self); @ engine/src/lib.rs:1743
+    pub fn scroll_to_top(&mut self); @ engine/src/lib.rs:1739
+    pub fn scroll_up(&mut self); @ engine/src/lib.rs:1683
     /// Scroll up by 20% of total scrollable content.
-    pub fn scroll_up_chunk(&mut self); @ engine/src/lib.rs:1730
-    pub fn session_changes(&self) -> &SessionChangeLog; @ engine/src/lib.rs:622
+    pub fn scroll_up_chunk(&mut self); @ engine/src/lib.rs:1748
+    pub fn session_changes(&self) -> &SessionChangeLog; @ engine/src/lib.rs:640
     /// Set a specific model (called from :model command).
-    pub fn set_model(&mut self, model: ModelName); @ engine/src/lib.rs:1136
-    pub fn should_quit(&self) -> bool; @ engine/src/lib.rs:532
+    pub fn set_model(&mut self, model: ModelName); @ engine/src/lib.rs:1154
+    pub fn should_quit(&self) -> bool; @ engine/src/lib.rs:550
     /// Gracefully shut down all LSP servers.
     pub async fn shutdown_lsp(&mut self); @ engine/src/lsp_integration.rs:166
     /// Trigger distillation of older messages when context is near capacity.
     pub fn start_distillation(&mut self); @ engine/src/distillation.rs:17
-    pub fn start_streaming(&mut self, queued: QueuedUserMessage); @ engine/src/streaming.rs:116
-    pub fn streaming(&self) -> Option<&StreamingMessage>; @ engine/src/lib.rs:811
+    pub fn start_streaming(&mut self, queued: QueuedUserMessage); @ engine/src/streaming.rs:120
+    pub fn streaming(&self) -> Option<&StreamingMessage>; @ engine/src/lib.rs:829
     /// Check if a transcript clear was requested and clear the flag.
-    pub fn take_clear_transcript(&mut self) -> bool; @ engine/src/lib.rs:541
+    pub fn take_clear_transcript(&mut self) -> bool; @ engine/src/lib.rs:559
     /// Poll background tasks and update wall-clock based timers.
-    pub fn tick(&mut self); @ engine/src/lib.rs:1200
-    pub fn tick_count(&self) -> usize; @ engine/src/lib.rs:803
+    pub fn tick(&mut self); @ engine/src/lib.rs:1218
+    pub fn tick_count(&self) -> usize; @ engine/src/lib.rs:821
     /// Toggle visibility of the files panel.
-    pub fn toggle_files_panel(&mut self); @ engine/src/lib.rs:555
+    pub fn toggle_files_panel(&mut self); @ engine/src/lib.rs:573
     /// Toggle visibility of thinking/reasoning content in the UI.
-    pub fn toggle_thinking(&mut self); @ engine/src/lib.rs:550
+    pub fn toggle_thinking(&mut self); @ engine/src/lib.rs:568
     /// Handle Enter key on approval prompt - action depends on cursor position:
     /// - On tool item: toggle selection
     /// - On Submit button: confirm selected
     /// - On Deny All button: deny all
-    pub fn tool_approval_activate(&mut self); @ engine/src/lib.rs:1505
-    pub fn tool_approval_approve_all(&mut self); @ engine/src/lib.rs:1493
-    pub fn tool_approval_confirm_selected(&mut self); @ engine/src/lib.rs:1520
-    pub fn tool_approval_cursor(&self) -> Option<usize>; @ engine/src/lib.rs:899
-    pub fn tool_approval_deny_all(&mut self); @ engine/src/lib.rs:1497
-    pub fn tool_approval_deny_confirm(&self) -> bool; @ engine/src/lib.rs:907
-    pub fn tool_approval_expanded(&self) -> Option<usize>; @ engine/src/lib.rs:903
-    pub fn tool_approval_move_down(&mut self); @ engine/src/lib.rs:1451
-    pub fn tool_approval_move_up(&mut self); @ engine/src/lib.rs:1438
-    pub fn tool_approval_request_deny_all(&mut self); @ engine/src/lib.rs:1541
-    pub fn tool_approval_requests(&self) -> Option<&[tools::ConfirmationRequest]>; @ engine/src/lib.rs:891
-    pub fn tool_approval_selected(&self) -> Option<&[bool]>; @ engine/src/lib.rs:895
-    pub fn tool_approval_toggle(&mut self); @ engine/src/lib.rs:1465
-    pub fn tool_approval_toggle_details(&mut self); @ engine/src/lib.rs:1477
+    pub fn tool_approval_activate(&mut self); @ engine/src/lib.rs:1523
+    pub fn tool_approval_approve_all(&mut self); @ engine/src/lib.rs:1511
+    pub fn tool_approval_confirm_selected(&mut self); @ engine/src/lib.rs:1538
+    pub fn tool_approval_cursor(&self) -> Option<usize>; @ engine/src/lib.rs:917
+    pub fn tool_approval_deny_all(&mut self); @ engine/src/lib.rs:1515
+    pub fn tool_approval_deny_confirm(&self) -> bool; @ engine/src/lib.rs:925
+    pub fn tool_approval_expanded(&self) -> Option<usize>; @ engine/src/lib.rs:921
+    pub fn tool_approval_move_down(&mut self); @ engine/src/lib.rs:1469
+    pub fn tool_approval_move_up(&mut self); @ engine/src/lib.rs:1456
+    pub fn tool_approval_request_deny_all(&mut self); @ engine/src/lib.rs:1559
+    pub fn tool_approval_requests(&self) -> Option<&[tools::ConfirmationRequest]>; @ engine/src/lib.rs:909
+    pub fn tool_approval_selected(&self) -> Option<&[bool]>; @ engine/src/lib.rs:913
+    pub fn tool_approval_toggle(&mut self); @ engine/src/lib.rs:1483
+    pub fn tool_approval_toggle_details(&mut self); @ engine/src/lib.rs:1495
     /// If present, tools are disabled for safety due to a tool journal error.
-    pub fn tool_journal_disabled_reason(&self) -> Option<&str>; @ engine/src/lib.rs:971
-    pub fn tool_loop_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:862
-    pub fn tool_loop_current_call_id(&self) -> Option<&str>; @ engine/src/lib.rs:874
-    pub fn tool_loop_execute_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:866
-    pub fn tool_loop_output_lines(&self) -> Option<&[String]>; @ engine/src/lib.rs:878
-    pub fn tool_loop_output_lines_for(&self, tool_call_id: &str) -> Option<&[String]>; @ engine/src/lib.rs:884
-    pub fn tool_loop_results(&self) -> Option<&[ToolResult]>; @ engine/src/lib.rs:870
-    pub fn tool_recovery_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:912
-    pub fn tool_recovery_discard(&mut self); @ engine/src/lib.rs:1567
-    pub fn tool_recovery_results(&self) -> Option<&[ToolResult]>; @ engine/src/lib.rs:919
-    pub fn tool_recovery_resume(&mut self); @ engine/src/lib.rs:1563
-    pub fn ui_options(&self) -> UiOptions; @ engine/src/lib.rs:545
-    pub fn update_scroll_max(&mut self, max: u16); @ engine/src/lib.rs:1648
+    pub fn tool_journal_disabled_reason(&self) -> Option<&str>; @ engine/src/lib.rs:989
+    pub fn tool_loop_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:880
+    pub fn tool_loop_current_call_id(&self) -> Option<&str>; @ engine/src/lib.rs:892
+    pub fn tool_loop_execute_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:884
+    pub fn tool_loop_output_lines(&self) -> Option<&[String]>; @ engine/src/lib.rs:896
+    pub fn tool_loop_output_lines_for(&self, tool_call_id: &str) -> Option<&[String]>; @ engine/src/lib.rs:902
+    pub fn tool_loop_results(&self) -> Option<&[ToolResult]>; @ engine/src/lib.rs:888
+    pub fn tool_recovery_calls(&self) -> Option<&[ToolCall]>; @ engine/src/lib.rs:930
+    pub fn tool_recovery_discard(&mut self); @ engine/src/lib.rs:1585
+    pub fn tool_recovery_results(&self) -> Option<&[ToolResult]>; @ engine/src/lib.rs:937
+    pub fn tool_recovery_resume(&mut self); @ engine/src/lib.rs:1581
+    pub fn ui_options(&self) -> UiOptions; @ engine/src/lib.rs:563
+    pub fn update_scroll_max(&mut self, max: u16); @ engine/src/lib.rs:1666
 }
 
 pub struct AppConfig { @ engine/src/config.rs:44
@@ -1879,25 +1913,25 @@ impl SessionChangeLog {
 }
 
 /// An in-flight streaming response from an LLM.
-pub struct StreamingMessage { @ engine/src/lib.rs:171
+pub struct StreamingMessage { @ engine/src/lib.rs:172
 }
 
 impl StreamingMessage {
-    pub fn apply_event(&mut self, event: StreamEvent) -> Option<StreamFinishReason>; @ engine/src/lib.rs:239
-    pub fn content(&self) -> &str; @ engine/src/lib.rs:215
-    pub fn has_tool_calls(&self) -> bool; @ engine/src/lib.rs:301
-    pub fn into_message(self) -> Result<Message, forge_types::EmptyStringError>; @ engine/src/lib.rs:381
-    pub fn model_name(&self) -> &ModelName; @ engine/src/lib.rs:210
-    pub fn new(model: ModelName, receiver: mpsc::Receiver<StreamEvent>, max_tool_args_bytes: usize) -> Self; @ engine/src/lib.rs:187
-    pub fn provider(&self) -> Provider; @ engine/src/lib.rs:205
-    pub fn thinking(&self) -> &str; @ engine/src/lib.rs:220
-    pub const fn thinking_signature_state(&self) -> &ThoughtSignatureState; @ engine/src/lib.rs:225
-    pub fn try_recv_event(&mut self) -> Result<StreamEvent, mpsc::error::TryRecvError>; @ engine/src/lib.rs:235
+    pub fn apply_event(&mut self, event: StreamEvent) -> Option<StreamFinishReason>; @ engine/src/lib.rs:240
+    pub fn content(&self) -> &str; @ engine/src/lib.rs:216
+    pub fn has_tool_calls(&self) -> bool; @ engine/src/lib.rs:319
+    pub fn into_message(self) -> Result<Message, forge_types::EmptyStringError>; @ engine/src/lib.rs:399
+    pub fn model_name(&self) -> &ModelName; @ engine/src/lib.rs:211
+    pub fn new(model: ModelName, receiver: mpsc::Receiver<StreamEvent>, max_tool_args_bytes: usize) -> Self; @ engine/src/lib.rs:188
+    pub fn provider(&self) -> Provider; @ engine/src/lib.rs:206
+    pub fn thinking(&self) -> &str; @ engine/src/lib.rs:221
+    pub fn thinking_replay_state(&self) -> &ThinkingReplayState; @ engine/src/lib.rs:226
+    pub fn try_recv_event(&mut self) -> Result<StreamEvent, mpsc::error::TryRecvError>; @ engine/src/lib.rs:236
     /// API-reported token usage accumulated during streaming.
-    pub fn usage(&self) -> ApiUsage; @ engine/src/lib.rs:231
+    pub fn usage(&self) -> ApiUsage; @ engine/src/lib.rs:232
 }
 
-pub struct SystemPrompts { @ engine/src/lib.rs:392
+pub struct SystemPrompts { @ engine/src/lib.rs:410
     /// Claude-specific prompt.
     pub claude: &'static str,
     /// OpenAI-specific prompt.
@@ -1907,11 +1941,11 @@ pub struct SystemPrompts { @ engine/src/lib.rs:392
 }
 
 impl SystemPrompts {
-    pub fn get(&self, provider: Provider) -> &'static str; @ engine/src/lib.rs:403
+    pub fn get(&self, provider: Provider) -> &'static str; @ engine/src/lib.rs:421
 }
 
 /// Aggregated API usage for a user turn (may include multiple API calls).
-pub struct TurnUsage { @ engine/src/lib.rs:118
+pub struct TurnUsage { @ engine/src/lib.rs:119
     /// Number of API calls made during this turn.
     pub api_calls: u32,
     /// Total usage aggregated across all API calls.
@@ -1921,7 +1955,7 @@ pub struct TurnUsage { @ engine/src/lib.rs:118
 }
 
 impl TurnUsage {
-    pub fn record_call(&mut self, usage: ApiUsage); @ engine/src/lib.rs:128
+    pub fn record_call(&mut self, usage: ApiUsage); @ engine/src/lib.rs:129
 }
 
 /// UI configuration options derived from config/environment.
@@ -1978,7 +2012,7 @@ pub enum DisplayItem { @ engine/src/ui/display.rs:11
 }
 
 /// Result of diff generation for panel display.
-pub enum FileDiff { @ engine/src/lib.rs:103
+pub enum FileDiff { @ engine/src/lib.rs:104
     /// Unified diff between baseline and current.
     Diff(String),
     /// File was created (no baseline) - show full content as additions.

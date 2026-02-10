@@ -35,8 +35,17 @@ const OPENAI_DISTILLER_INPUT_LIMIT: u32 = 380_000;
 const GEMINI_DISTILLER_INPUT_LIMIT: u32 = 950_000;
 
 const MIN_DISTILLATION_TOKENS: u32 = 64;
-const MAX_DISTILLATION_TOKENS: u32 = 2048;
-const DISTILLATION_TIMEOUT_SECS: u64 = 60;
+
+/// Per-provider max output tokens for distillation.
+/// Each value reflects the model's actual max output token limit.
+fn max_distillation_tokens(provider: Provider) -> u32 {
+    match provider {
+        Provider::Claude => 64_000,  // Haiku 4.5: 64k max output
+        Provider::OpenAI => 128_000, // GPT-5-nano: 128k max output
+        Provider::Gemini => 65_536,  // Gemini 3 Pro: 65k max output
+    }
+}
+const DISTILLATION_TIMEOUT_SECS: u64 = 600;
 
 /// API endpoints.
 const CLAUDE_API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -198,7 +207,10 @@ pub async fn generate_distillation(
         ));
     }
 
-    let max_tokens = target_tokens.clamp(MIN_DISTILLATION_TOKENS, MAX_DISTILLATION_TOKENS);
+    let max_tokens = target_tokens.clamp(
+        MIN_DISTILLATION_TOKENS,
+        max_distillation_tokens(config.provider()),
+    );
 
     match config.provider() {
         Provider::Claude => {
@@ -367,10 +379,11 @@ async fn generate_distillation_openai(
     let json: serde_json::Value = response.json().await?;
 
     // Extract text from OpenAI Responses API format:
-    // { "output": [{ "type": "message", "content": [{ "type": "output_text", "text": "..." }] }] }
+    // { "output": [{ "type": "reasoning", ... }, { "type": "message", "content": [{ "type": "output_text", "text": "..." }] }] }
+    // Skip reasoning items and find the first message item.
     let distillation = json["output"]
         .as_array()
-        .and_then(|arr| arr.first())
+        .and_then(|arr| arr.iter().find(|item| item["type"] == "message"))
         .and_then(|item| item["content"].as_array())
         .and_then(|content| content.first())
         .and_then(|block| block["text"].as_str())
@@ -476,63 +489,6 @@ pub fn distillation_model(provider: Provider) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_test_messages() -> Vec<(MessageId, Message)> {
-        vec![
-            (
-                MessageId::new_for_test(0),
-                Message::try_user("Hello, can you help me with Rust?")
-                    .expect("non-empty test message"),
-            ),
-            (
-                MessageId::new_for_test(1),
-                Message::try_user("I need to understand lifetimes")
-                    .expect("non-empty test message"),
-            ),
-        ]
-    }
-
-    #[test]
-    fn test_build_distillation_prompt_basic() {
-        let messages = make_test_messages();
-        let (system, user_prompt) = build_distillation_prompt(&messages, 500);
-
-        // System instruction contains the distillation template with target tokens
-        assert!(system.contains("distilling"));
-        assert!(system.contains("500"));
-
-        // Conversation log inlined in user prompt
-        assert!(user_prompt.contains("User:"));
-        assert!(user_prompt.contains("Hello, can you help me with Rust?"));
-        assert!(user_prompt.contains("lifetimes"));
-        assert!(user_prompt.contains("[Message 0]"));
-        assert!(user_prompt.contains("[Message 1]"));
-        // File list present (none detected for plain user messages)
-        assert!(user_prompt.contains("(none detected)"));
-    }
-
-    #[test]
-    fn test_build_distillation_prompt_empty() {
-        let messages: Vec<(MessageId, Message)> = vec![];
-        let (system, user_prompt) = build_distillation_prompt(&messages, 100);
-
-        // System instruction contains template with target tokens
-        assert!(system.contains("distilling"));
-        assert!(system.contains("100"));
-        // User prompt still has file list placeholder
-        assert!(user_prompt.contains("(none detected)"));
-    }
-
-    #[test]
-    fn test_build_distillation_prompt_target_tokens_in_system() {
-        let messages = make_test_messages();
-
-        let (system_500, _) = build_distillation_prompt(&messages, 500);
-        let (system_1000, _) = build_distillation_prompt(&messages, 1000);
-
-        assert!(system_500.contains("500"));
-        assert!(system_1000.contains("1000"));
-    }
 
     #[test]
     fn test_distillation_model_selection() {

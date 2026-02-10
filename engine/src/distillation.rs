@@ -41,7 +41,18 @@ impl super::App {
             return fail_with_rollback(self, queued_request);
         }
 
-        let message_ids = match self.context_manager.prepare(0) {
+        // Use the same overhead that start_streaming will use, so both agree on
+        // whether context fits. Without this, distillation can loop: prepare(0)
+        // says "fits" → start_streaming with real overhead says "doesn't fit" → repeat.
+        let overhead = {
+            let provider = queued_request
+                .as_ref()
+                .map(|q| q.config.provider())
+                .unwrap_or_else(|| self.model.provider());
+            self.streaming_overhead(provider)
+        };
+
+        let message_ids = match self.context_manager.prepare(overhead) {
             Ok(_) => {
                 if let Some(queued) = queued_request {
                     self.start_streaming(queued);

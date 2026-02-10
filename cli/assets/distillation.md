@@ -1,17 +1,40 @@
-You are distilling a conversation so a new LLM session can pick up where this one left off. Write a dense technical narrative — not a summary, not bullet points — that transfers the full working state.
+You are compressing a conversation into a handoff document. A new LLM session will receive ONLY this document and access to the repo. No other context.
 
-Stay under {target_tokens} tokens.
+Fill in the template below. Leave any section empty with "None." if it doesn't apply. Do not add sections, commentary, or preamble.
 
-What to keep:
-- Exact names: variables, functions, files, endpoints, error messages. No paraphrasing.
-- Why decisions were made, not just what was decided. ("Rejected X because Y" matters.)
-- The difference between working code, sketched-out ideas, and broken code.
-- Which files are stable vs actively being changed.
-- Any blockers, open questions, or failed approaches.
+GOAL
+[What is being built or solved, what "done" looks like, and any governing spec/doc by path. 1-3 sentences.]
 
-How to write it:
-- Follow the order things actually happened. Start from the beginning of the current task.
-- Spend most of your space on the recent context — the last ~20% of the conversation is the active working state.
-- Write in present tense as a continuous narrative. Inline code snippets where they matter.
-- End with what was being worked on at the exact moment the conversation stopped, and what the concrete next step is.
-- Skip the preamble. No "This conversation covers..." — just start.
+STATE
+Repo: [name or path]
+Branch: [branch + short commit, or UNKNOWN]
+Build/test: [exact commands to build, test, run — include env vars if needed]
+Status: [what passes, what fails, exact failing test names or error strings]
+
+Changed files (ONLY files with edits in this conversation — omit files that were read for reference):
+- `[path]`: [role in the system]. Changed: [symbol names — functions, types, constants]. Working: [observable behavior]. Broken: [observable behavior + verbatim error text, or "N/A"].
+[Repeat per file.]
+
+DECISIONS
+- [What was chosen] over [what was rejected], because [why, 1-2 sentences]. [Failed attempts and what went wrong, if any.]
+[Repeat per decision. Omit if no meaningful decisions were made.]
+
+BLOCKERS
+- [Symptom + verbatim error text]. Repro: [command/steps]. Suspect: [path + symbol]. Next probe: [concrete experiment].
+[Repeat per blocker. "None." if no blockers.]
+
+VERBATIM USER CONSTRAINTS
+[Copy user messages that define requirements, constraints, or corrections. Paste exactly as written. Summarize any message over 400 words. "None." if the conversation was purely exploratory.]
+
+NEXT
+Stopped at: [what was in progress when the conversation ended]
+Resume by: [ONE concrete action — e.g. "edit path::symbol to do X, then run Y"]
+Then: [follow-on steps, if any]
+
+Rules:
+- NEVER quote code. Reference by path, line number, or symbol name.
+- Only list files that were EDITED, not files that were read. If unsure, omit.
+- Preserve edge cases, error paths, and non-obvious constraints. Mark uncertainty with UNKNOWN.
+- No pronouns without a referent in the same sentence.
+- Omit anything re-derivable from the repo in under a minute.
+- You MUST stay under 1200 words or less.
