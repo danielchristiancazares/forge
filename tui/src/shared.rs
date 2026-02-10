@@ -8,6 +8,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 use forge_engine::{App, Message, Provider, ToolResult, sanitize_display_text};
 use forge_types::truncate_with_ellipsis;
+use serde_json::Value;
 
 use crate::theme::{Glyphs, Palette, styles};
 use crate::tool_display;
@@ -208,6 +209,126 @@ pub(crate) struct ApprovalItem {
     pub(crate) homoglyph_warnings: Vec<String>,
 }
 
+fn extract_tool_details(tool_name: &str, args: &Value, max_width: usize) -> Vec<String> {
+    let mut details = Vec::new();
+    match tool_name {
+        "Run" => {
+            if let Some(cmd) = args.get("command").and_then(Value::as_str) {
+                details.push(truncate_with_ellipsis(
+                    &format!("command: {cmd}"),
+                    max_width,
+                ));
+            }
+            if let Some(reason) = args.get("reason").and_then(Value::as_str) {
+                details.push(truncate_with_ellipsis(
+                    &format!("reason: {reason}"),
+                    max_width,
+                ));
+            }
+        }
+        "Read" => {
+            if let Some(path) = args.get("path").and_then(Value::as_str) {
+                details.push(format!("path: {path}"));
+            }
+            if let Some(start) = args.get("start_line").and_then(Value::as_u64) {
+                if let Some(end) = args.get("end_line").and_then(Value::as_u64) {
+                    details.push(format!("lines: {start}-{end}"));
+                } else {
+                    details.push(format!("from line: {start}"));
+                }
+            }
+        }
+        "Write" => {
+            if let Some(path) = args.get("path").and_then(Value::as_str) {
+                details.push(format!("path: {path}"));
+            }
+            if let Some(content) = args.get("content").and_then(Value::as_str) {
+                details.push(format!("size: {} bytes", content.len()));
+            }
+        }
+        "Edit" | "ApplyPatch" => {
+            if let Some(path) = args.get("path").and_then(Value::as_str) {
+                details.push(format!("path: {path}"));
+            }
+            if let Some(patch) = args
+                .get("patch")
+                .or_else(|| args.get("old_snippet"))
+                .and_then(Value::as_str)
+            {
+                for line in patch.lines().take(5) {
+                    details.push(truncate_with_ellipsis(
+                        &sanitize_display_text(line),
+                        max_width,
+                    ));
+                }
+                let total = patch.lines().count();
+                if total > 5 {
+                    details.push(format!("... ({} more lines)", total - 5));
+                }
+            }
+        }
+        "WebFetch" => {
+            if let Some(url) = args.get("url").and_then(Value::as_str) {
+                details.push(truncate_with_ellipsis(&format!("url: {url}"), max_width));
+            }
+        }
+        "Glob" => {
+            if let Some(pattern) = args.get("pattern").and_then(Value::as_str) {
+                details.push(format!("pattern: {pattern}"));
+            }
+            if let Some(path) = args.get("path").and_then(Value::as_str) {
+                details.push(format!("path: {path}"));
+            }
+        }
+        "Search" => {
+            if let Some(pattern) = args.get("pattern").and_then(Value::as_str) {
+                details.push(truncate_with_ellipsis(
+                    &format!("pattern: {pattern}"),
+                    max_width,
+                ));
+            }
+            if let Some(path) = args.get("path").and_then(Value::as_str) {
+                details.push(format!("path: {path}"));
+            }
+        }
+        "Git" => {
+            if let Some(cmd) = args.get("command").and_then(Value::as_str) {
+                details.push(format!("command: git {cmd}"));
+            }
+            if let Some(paths) = args.get("paths").and_then(Value::as_array) {
+                let path_strs: Vec<&str> = paths.iter().filter_map(Value::as_str).take(5).collect();
+                if !path_strs.is_empty() {
+                    details.push(format!("paths: {}", path_strs.join(", ")));
+                }
+            }
+            if let Some(msg) = args.get("message").and_then(Value::as_str) {
+                details.push(truncate_with_ellipsis(
+                    &format!("message: {msg}"),
+                    max_width,
+                ));
+            }
+        }
+        "Memory" => {
+            if let Some(content) = args.get("content").and_then(Value::as_str) {
+                details.push(truncate_with_ellipsis(
+                    &format!("fact: {content}"),
+                    max_width,
+                ));
+            }
+        }
+        _ => {
+            if let Some(obj) = args.as_object() {
+                for (key, val) in obj.iter().take(5) {
+                    if let Some(s) = val.as_str() {
+                        details.push(truncate_with_ellipsis(&format!("{key}: {s}"), max_width));
+                    }
+                }
+            }
+        }
+    }
+    details.iter().map(|d| sanitize_display_text(d)).collect()
+}
+
 pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<ApprovalView> {
     let requests = app.tool_approval_requests()?;
     let selected = app.tool_approval_selected().unwrap_or(&[]);
@@ -215,8 +336,10 @@ pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<Appro
     let deny_confirm = app.tool_approval_deny_confirm();
     let any_selected = selected.iter().any(|flag| *flag);
 
+    let expanded = app.tool_approval_expanded();
+
     let mut items = Vec::with_capacity(requests.len());
-    for req in requests {
+    for (i, req) in requests.iter().enumerate() {
         let tool_name = sanitize_display_text(&req.tool_name);
         let risk_label = format!("{:?}", req.risk_level).to_uppercase();
         let summary = if req.summary.trim().is_empty() {
@@ -228,7 +351,11 @@ pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<Appro
                 max_width.saturating_sub(6),
             ))
         };
-        let details = Vec::new();
+        let details = if expanded == Some(i) {
+            extract_tool_details(&req.tool_name, &req.arguments, max_width.saturating_sub(8))
+        } else {
+            Vec::new()
+        };
 
         // Format homoglyph warnings for display
         let homoglyph_warnings: Vec<String> = req
@@ -263,8 +390,9 @@ pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<Appro
 
 #[cfg(test)]
 mod tests {
-    use super::wrapped_rows_for_line;
+    use super::{extract_tool_details, wrapped_rows_for_line};
     use ratatui::text::Line;
+    use serde_json::json;
 
     #[test]
     fn wrapped_rows_long_word_uses_remaining_space() {
@@ -276,5 +404,40 @@ mod tests {
     fn wrapped_rows_long_word_exact_fill() {
         let line = Line::from("hello abcdefghijklmn");
         assert_eq!(wrapped_rows_for_line(&line, 10), 3);
+    }
+
+    #[test]
+    fn extract_details_run_command_and_reason() {
+        let args = json!({"command": "ls -la", "reason": "list files"});
+        let details = extract_tool_details("Run", &args, 80);
+        assert_eq!(details, vec!["command: ls -la", "reason: list files"]);
+    }
+
+    #[test]
+    fn extract_details_read_path_and_lines() {
+        let args = json!({"path": "src/main.rs", "start_line": 10, "end_line": 20});
+        let details = extract_tool_details("Read", &args, 80);
+        assert_eq!(details, vec!["path: src/main.rs", "lines: 10-20"]);
+    }
+
+    #[test]
+    fn extract_details_unknown_tool_shows_string_keys() {
+        let args = json!({"foo": "bar", "baz": 42});
+        let details = extract_tool_details("UnknownTool", &args, 80);
+        assert_eq!(details, vec!["foo: bar"]);
+    }
+
+    #[test]
+    fn extract_details_git_command_and_paths() {
+        let args = json!({"command": "diff", "paths": ["a.rs", "b.rs"]});
+        let details = extract_tool_details("Git", &args, 80);
+        assert_eq!(details, vec!["command: git diff", "paths: a.rs, b.rs"]);
+    }
+
+    #[test]
+    fn extract_details_search_pattern() {
+        let args = json!({"pattern": "fn main", "path": "src/"});
+        let details = extract_tool_details("Search", &args, 80);
+        assert_eq!(details, vec!["pattern: fn main", "path: src/"]);
     }
 }

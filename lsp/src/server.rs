@@ -38,6 +38,28 @@ enum IncomingFrame {
     },
 }
 
+/// Minimal glob matcher for env var denylist patterns.
+/// Handles `*_SUFFIX`, `PREFIX_*`, `*_INFIX*`, and exact match.
+/// Both pattern and key are compared in uppercase.
+fn env_glob_matches(pattern: &str, key_upper: &str) -> bool {
+    let pat = pattern.to_uppercase();
+    match (pat.starts_with('*'), pat.ends_with('*')) {
+        (true, true) => {
+            let inner = &pat[1..pat.len() - 1];
+            key_upper.contains(inner)
+        }
+        (true, false) => {
+            let suffix = &pat[1..];
+            key_upper.ends_with(suffix)
+        }
+        (false, true) => {
+            let prefix = &pat[..pat.len() - 1];
+            key_upper.starts_with(prefix)
+        }
+        (false, false) => key_upper == pat,
+    }
+}
+
 fn parse_incoming(frame: &serde_json::Value) -> Option<IncomingFrame> {
     let id = frame.get("id");
     let method = frame
@@ -94,18 +116,13 @@ impl RunningServer {
             .stderr(Stdio::null())
             .kill_on_drop(true);
 
-        // Strip secret-bearing env vars from LSP child processes
-        let secret_patterns = [
-            "_KEY",
-            "_TOKEN",
-            "_SECRET",
-            "_PASSWORD",
-            "ANTHROPIC_",
-            "OPENAI_",
-            "GEMINI_",
-        ];
+        // Strip secret-bearing env vars using the canonical denylist from forge-types.
         for (key, _) in std::env::vars() {
-            if secret_patterns.iter().any(|pat| key.contains(pat)) {
+            let upper = key.to_uppercase();
+            if forge_types::ENV_SECRET_DENYLIST
+                .iter()
+                .any(|pat| env_glob_matches(pat, &upper))
+            {
                 cmd.env_remove(&key);
             }
         }
@@ -546,5 +563,33 @@ mod tests {
         });
 
         RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
+    }
+
+    #[test]
+    fn env_glob_suffix_matches() {
+        assert!(env_glob_matches("*_KEY", "API_KEY"));
+        assert!(env_glob_matches("*_KEY", "MY_SECRET_KEY"));
+        assert!(!env_glob_matches("*_KEY", "KEYRING"));
+    }
+
+    #[test]
+    fn env_glob_prefix_matches() {
+        assert!(env_glob_matches("AWS_*", "AWS_ACCESS_KEY_ID"));
+        assert!(env_glob_matches("AWS_*", "AWS_SESSION_TOKEN"));
+        assert!(!env_glob_matches("AWS_*", "MY_AWS"));
+    }
+
+    #[test]
+    fn env_glob_infix_matches() {
+        assert!(env_glob_matches("*_CREDENTIAL*", "DB_CREDENTIAL_FILE"));
+        assert!(env_glob_matches("*_CREDENTIAL*", "MY_CREDENTIALS"));
+        assert!(!env_glob_matches("*_CREDENTIAL*", "CREDENTIAL"));
+    }
+
+    #[test]
+    fn env_glob_case_insensitive() {
+        // The caller uppercases the key before passing it in, so test that path
+        assert!(env_glob_matches("*_KEY", &"api_key".to_uppercase()));
+        assert!(env_glob_matches("AWS_*", &"aws_secret".to_uppercase()));
     }
 }

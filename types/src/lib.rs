@@ -41,6 +41,28 @@ pub use confusables::{HomoglyphWarning, detect_mixed_script};
 pub use sanitize::{sanitize_path_display, sanitize_terminal_text, strip_steganographic_chars};
 pub use text::truncate_with_ellipsis;
 
+/// Canonical environment variable denylist patterns (glob syntax, case-insensitive).
+///
+/// Used by both the tool executor (`EnvSanitizer`) and LSP server child process
+/// sanitization. Single source of truth — do not duplicate.
+pub const ENV_SECRET_DENYLIST: [&str; 15] = [
+    "*_KEY",
+    "*_TOKEN",
+    "*_SECRET",
+    "*_PASSWORD",
+    "*_CREDENTIAL*",
+    "*_API_*",
+    "AWS_*",
+    "ANTHROPIC_*",
+    "OPENAI_*",
+    "GEMINI_*",
+    "GOOGLE_*",
+    "AZURE_*",
+    "GH_*",
+    "GITHUB_*",
+    "NPM_*",
+];
+
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::time::SystemTime;

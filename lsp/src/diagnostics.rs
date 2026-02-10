@@ -24,6 +24,13 @@ impl DiagnosticsStore {
         }
     }
 
+    pub fn remove_for_extensions(&mut self, extensions: &[&str]) {
+        self.data.retain(|path, _| {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            !extensions.contains(&ext)
+        });
+    }
+
     pub fn snapshot(&self) -> DiagnosticsSnapshot {
         let mut files: Vec<(PathBuf, Vec<ForgeDiagnostic>)> = self
             .data

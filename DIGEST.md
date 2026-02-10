@@ -8,17 +8,20 @@ Auto-generated from rustdoc JSON. Public API surface for all workspace crates.
 /// Analyze a string for mixed-script content (MECHANISM per IFA-8).
 pub fn detect_mixed_script(input: &str, field_name: &str) -> Option<HomoglyphWarning>; @ types/src/confusables.rs:77
 
+/// Sanitize a filesystem path string for terminal display.
+pub fn sanitize_path_display(input: &str) -> std::borrow::Cow<'_, str>; @ types/src/sanitize.rs:98
+
 /// Sanitize text for safe terminal display.
 pub fn sanitize_terminal_text(input: &str) -> std::borrow::Cow<'_, str>; @ types/src/sanitize.rs:56
 
 /// Strip invisible Unicode characters used for steganographic prompt injection.
-pub fn strip_steganographic_chars(input: &str) -> std::borrow::Cow<'_, str>; @ types/src/sanitize.rs:292
+pub fn strip_steganographic_chars(input: &str) -> std::borrow::Cow<'_, str>; @ types/src/sanitize.rs:314
 
 /// Truncate a string to a maximum length, adding `...` if needed.
 pub fn truncate_with_ellipsis(raw: &str, max: usize) -> String; @ types/src/text.rs:9
 
 /// API-reported token usage from provider responses.
-pub struct ApiUsage { @ types/src/lib.rs:1323
+pub struct ApiUsage { @ types/src/lib.rs:1360
     /// Total input tokens (includes cached tokens).
     pub input_tokens: u32,
     /// Input tokens read from cache (cache hits).
@@ -31,34 +34,47 @@ pub struct ApiUsage { @ types/src/lib.rs:1323
 
 impl ApiUsage {
     /// Cache hit percentage (0-100).
-    pub fn cache_hit_percentage(&self) -> f64; @ types/src/lib.rs:1363
-    pub const fn has_data(&self) -> bool; @ types/src/lib.rs:1357
+    pub fn cache_hit_percentage(&self) -> f64; @ types/src/lib.rs:1400
+    pub const fn has_data(&self) -> bool; @ types/src/lib.rs:1394
     /// Merge another usage into this one (for aggregation across multiple API calls).
-    pub fn merge(&mut self, other: &ApiUsage); @ types/src/lib.rs:1345
+    pub fn merge(&mut self, other: &ApiUsage); @ types/src/lib.rs:1382
     /// Input tokens that were not read from cache.
-    pub const fn non_cached_input_tokens(&self) -> u32; @ types/src/lib.rs:1340
+    pub const fn non_cached_input_tokens(&self) -> u32; @ types/src/lib.rs:1377
 }
 
-pub struct AssistantMessage { @ types/src/lib.rs:1533
+pub struct AssistantMessage { @ types/src/lib.rs:1570
 }
 
 impl AssistantMessage {
-    pub fn content(&self) -> &str; @ types/src/lib.rs:1551
-    pub fn model(&self) -> &ModelName; @ types/src/lib.rs:1561
-    pub fn new(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1542
-    pub fn provider(&self) -> Provider; @ types/src/lib.rs:1556
+    pub fn content(&self) -> &str; @ types/src/lib.rs:1588
+    pub fn model(&self) -> &ModelName; @ types/src/lib.rs:1598
+    pub fn new(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1579
+    pub fn provider(&self) -> Provider; @ types/src/lib.rs:1593
+}
+
+/// Cache slot budget for a Claude API request.
+pub struct CacheBudget { @ types/src/lib.rs:1043
+}
+
+impl CacheBudget {
+    pub fn full() -> Self; @ types/src/lib.rs:1055
+    /// Construct a budget, clamping to `MAX`.
+    pub fn new(slots: u8) -> Self; @ types/src/lib.rs:1050
+    pub fn remaining(self) -> u8; @ types/src/lib.rs:1060
+    /// Consume one slot. Returns the decremented budget, or `None` if exhausted.
+    pub fn take_one(self) -> Option<CacheBudget>; @ types/src/lib.rs:1066
 }
 
 /// A message with an associated cache hint for API serialization.
-pub struct CacheableMessage { @ types/src/lib.rs:1749
+pub struct CacheableMessage { @ types/src/lib.rs:1786
     pub message: Message,
     pub cache_hint: CacheHint,
 }
 
 impl CacheableMessage {
-    pub fn cached(message: Message) -> Self; @ types/src/lib.rs:1769
-    pub fn new(message: Message, cache_hint: CacheHint) -> Self; @ types/src/lib.rs:1756
-    pub fn plain(message: Message) -> Self; @ types/src/lib.rs:1764
+    pub fn cached(message: Message) -> Self; @ types/src/lib.rs:1806
+    pub fn new(message: Message, cache_hint: CacheHint) -> Self; @ types/src/lib.rs:1793
+    pub fn plain(message: Message) -> Self; @ types/src/lib.rs:1801
 }
 
 pub struct EmptyStringError { @ types/src/lib.rs:68
@@ -162,7 +178,7 @@ impl TryFrom<NonEmptyStaticStr> for NonEmptyString {
 }
 
 /// An OpenAI reasoning output item captured for stateless replay.
-pub struct OpenAIReasoningItem { @ types/src/lib.rs:1196
+pub struct OpenAIReasoningItem { @ types/src/lib.rs:1233
     pub id: String,
     pub encrypted_content: Option<String>,
 }
@@ -227,47 +243,47 @@ impl Debug for SecretString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
 }
 
-pub struct SystemMessage { @ types/src/lib.rs:1491
+pub struct SystemMessage { @ types/src/lib.rs:1528
 }
 
 impl SystemMessage {
-    pub fn content(&self) -> &str; @ types/src/lib.rs:1506
-    pub fn new(content: NonEmptyString) -> Self; @ types/src/lib.rs:1498
+    pub fn content(&self) -> &str; @ types/src/lib.rs:1543
+    pub fn new(content: NonEmptyString) -> Self; @ types/src/lib.rs:1535
 }
 
 /// Validated thinking budget for extended reasoning.
-pub struct ThinkingBudget { @ types/src/lib.rs:1049
+pub struct ThinkingBudget { @ types/src/lib.rs:1086
 }
 
 impl ThinkingBudget {
-    pub const fn as_u32(self) -> u32; @ types/src/lib.rs:1062
-    pub fn new(value: u32) -> Result<Self, OutputLimitsError>; @ types/src/lib.rs:1054
+    pub const fn as_u32(self) -> u32; @ types/src/lib.rs:1099
+    pub fn new(value: u32) -> Result<Self, OutputLimitsError>; @ types/src/lib.rs:1091
 }
 
 /// Provider reasoning/thinking content (Claude extended thinking, Gemini thinking, etc.).
-pub struct ThinkingMessage { @ types/src/lib.rs:1572
+pub struct ThinkingMessage { @ types/src/lib.rs:1609
 }
 
 impl ThinkingMessage {
-    pub fn claude_signature(&self) -> Option<&ThoughtSignature>; @ types/src/lib.rs:1635
-    pub fn content(&self) -> &str; @ types/src/lib.rs:1620
-    pub fn model(&self) -> &ModelName; @ types/src/lib.rs:1648
-    pub fn new(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1584
-    pub fn provider(&self) -> Provider; @ types/src/lib.rs:1643
-    pub fn replay_state(&self) -> &ThinkingReplayState; @ types/src/lib.rs:1625
-    pub fn requires_persistence(&self) -> bool; @ types/src/lib.rs:1630
-    pub fn with_openai_reasoning(model: ModelName, content: NonEmptyString, items: Vec<OpenAIReasoningItem>) -> Self; @ types/src/lib.rs:1606
-    pub fn with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self; @ types/src/lib.rs:1594
+    pub fn claude_signature(&self) -> Option<&ThoughtSignature>; @ types/src/lib.rs:1672
+    pub fn content(&self) -> &str; @ types/src/lib.rs:1657
+    pub fn model(&self) -> &ModelName; @ types/src/lib.rs:1685
+    pub fn new(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1621
+    pub fn provider(&self) -> Provider; @ types/src/lib.rs:1680
+    pub fn replay_state(&self) -> &ThinkingReplayState; @ types/src/lib.rs:1662
+    pub fn requires_persistence(&self) -> bool; @ types/src/lib.rs:1667
+    pub fn with_openai_reasoning(model: ModelName, content: NonEmptyString, items: Vec<OpenAIReasoningItem>) -> Self; @ types/src/lib.rs:1643
+    pub fn with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self; @ types/src/lib.rs:1631
 }
 
 /// Opaque provider signature for thinking/tool-call replay.
-pub struct ThoughtSignature { @ types/src/lib.rs:1150
+pub struct ThoughtSignature { @ types/src/lib.rs:1187
 }
 
 impl ThoughtSignature {
-    pub fn as_str(&self) -> &str; @ types/src/lib.rs:1159
-    pub fn new<impl Into<String>: Into<String>>(raw: impl Into<String>) -> Self; @ types/src/lib.rs:1154
-    pub fn push_str(&mut self, delta: &str); @ types/src/lib.rs:1163
+    pub fn as_str(&self) -> &str; @ types/src/lib.rs:1196
+    pub fn new<impl Into<String>: Into<String>>(raw: impl Into<String>) -> Self; @ types/src/lib.rs:1191
+    pub fn push_str(&mut self, delta: &str); @ types/src/lib.rs:1200
 }
 
 impl From<String> for ThoughtSignature {
@@ -278,7 +294,7 @@ impl From<&str> for ThoughtSignature {
     fn from(value: &str) -> Self;
 }
 
-pub struct ToolCall { @ types/src/lib.rs:1405
+pub struct ToolCall { @ types/src/lib.rs:1442
     /// Unique identifier for this tool call (used to match results).
     pub id: String,
     /// The name of the tool being called.
@@ -290,12 +306,12 @@ pub struct ToolCall { @ types/src/lib.rs:1405
 }
 
 impl ToolCall {
-    pub fn new<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(id: impl Into<String>, name: impl Into<String>, arguments: serde_json::Value) -> Self; @ types/src/lib.rs:1417
-    pub fn new_signed<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(id: impl Into<String>, name: impl Into<String>, arguments: serde_json::Value, thought_signature: ThoughtSignature) -> Self; @ types/src/lib.rs:1430
-    pub const fn signature_state(&self) -> &ThoughtSignatureState; @ types/src/lib.rs:1445
+    pub fn new<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(id: impl Into<String>, name: impl Into<String>, arguments: serde_json::Value) -> Self; @ types/src/lib.rs:1454
+    pub fn new_signed<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(id: impl Into<String>, name: impl Into<String>, arguments: serde_json::Value, thought_signature: ThoughtSignature) -> Self; @ types/src/lib.rs:1467
+    pub const fn signature_state(&self) -> &ThoughtSignatureState; @ types/src/lib.rs:1482
 }
 
-pub struct ToolDefinition { @ types/src/lib.rs:1372
+pub struct ToolDefinition { @ types/src/lib.rs:1409
     /// The name of the tool (function name).
     pub name: String,
     /// A description of what the tool does.
@@ -310,10 +326,10 @@ pub struct ToolDefinition { @ types/src/lib.rs:1372
 }
 
 impl ToolDefinition {
-    pub fn new<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(name: impl Into<String>, description: impl Into<String>, parameters: serde_json::Value) -> Self; @ types/src/lib.rs:1389
+    pub fn new<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(name: impl Into<String>, description: impl Into<String>, parameters: serde_json::Value) -> Self; @ types/src/lib.rs:1426
 }
 
-pub struct ToolResult { @ types/src/lib.rs:1451
+pub struct ToolResult { @ types/src/lib.rs:1488
     /// The ID of the tool call this result is for.
     pub tool_call_id: String,
     /// The name of the tool that was called (needed for Gemini's functionResponse).
@@ -325,16 +341,16 @@ pub struct ToolResult { @ types/src/lib.rs:1451
 }
 
 impl ToolResult {
-    pub fn error<impl Into<String>: Into<String>, impl Into<String>: Into<String>, impl Into<String>: Into<String>>(tool_call_id: impl Into<String>, tool_name: impl Into<String>, error: impl Into<String>) -> Self; @ types/src/lib.rs:1476
-    pub fn success<impl Into<String>: Into<String>, impl Into<String>: Into<String>, impl Into<String>: Into<String>>(tool_call_id: impl Into<String>, tool_name: impl Into<String>, content: impl Into<String>) -> Self; @ types/src/lib.rs:1463
+    pub fn error<impl Into<String>: Into<String>, impl Into<String>: Into<String>, impl Into<String>: Into<String>>(tool_call_id: impl Into<String>, tool_name: impl Into<String>, error: impl Into<String>) -> Self; @ types/src/lib.rs:1513
+    pub fn success<impl Into<String>: Into<String>, impl Into<String>: Into<String>, impl Into<String>: Into<String>>(tool_call_id: impl Into<String>, tool_name: impl Into<String>, content: impl Into<String>) -> Self; @ types/src/lib.rs:1500
 }
 
-pub struct UserMessage { @ types/src/lib.rs:1512
+pub struct UserMessage { @ types/src/lib.rs:1549
 }
 
 impl UserMessage {
-    pub fn content(&self) -> &str; @ types/src/lib.rs:1527
-    pub fn new(content: NonEmptyString) -> Self; @ types/src/lib.rs:1519
+    pub fn content(&self) -> &str; @ types/src/lib.rs:1564
+    pub fn new(content: NonEmptyString) -> Self; @ types/src/lib.rs:1556
 }
 
 /// API key with provider tagging. Inner values are opaque [`SecretString`]s
@@ -387,7 +403,7 @@ impl Display for EnumKind {
 }
 
 /// A complete message.
-pub enum Message { @ types/src/lib.rs:1657
+pub enum Message { @ types/src/lib.rs:1694
     System(SystemMessage),
     User(UserMessage),
     Assistant(AssistantMessage),
@@ -400,17 +416,17 @@ pub enum Message { @ types/src/lib.rs:1657
 }
 
 impl Message {
-    pub fn assistant(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1685
-    pub fn content(&self) -> &str; @ types/src/lib.rs:1735
-    pub fn role_str(&self) -> &'static str; @ types/src/lib.rs:1725
-    pub fn system(content: NonEmptyString) -> Self; @ types/src/lib.rs:1671
-    pub fn thinking(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1690
-    pub fn thinking_with_openai_reasoning(model: ModelName, content: NonEmptyString, items: Vec<OpenAIReasoningItem>) -> Self; @ types/src/lib.rs:1704
-    pub fn thinking_with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self; @ types/src/lib.rs:1695
-    pub fn tool_result(result: ToolResult) -> Self; @ types/src/lib.rs:1720
-    pub fn tool_use(call: ToolCall) -> Self; @ types/src/lib.rs:1715
-    pub fn try_user<impl Into<String>: Into<String>>(content: impl Into<String>) -> Result<Self, EmptyStringError>; @ types/src/lib.rs:1680
-    pub fn user(content: NonEmptyString) -> Self; @ types/src/lib.rs:1676
+    pub fn assistant(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1722
+    pub fn content(&self) -> &str; @ types/src/lib.rs:1772
+    pub fn role_str(&self) -> &'static str; @ types/src/lib.rs:1762
+    pub fn system(content: NonEmptyString) -> Self; @ types/src/lib.rs:1708
+    pub fn thinking(model: ModelName, content: NonEmptyString) -> Self; @ types/src/lib.rs:1727
+    pub fn thinking_with_openai_reasoning(model: ModelName, content: NonEmptyString, items: Vec<OpenAIReasoningItem>) -> Self; @ types/src/lib.rs:1741
+    pub fn thinking_with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self; @ types/src/lib.rs:1732
+    pub fn tool_result(result: ToolResult) -> Self; @ types/src/lib.rs:1757
+    pub fn tool_use(call: ToolCall) -> Self; @ types/src/lib.rs:1752
+    pub fn try_user<impl Into<String>: Into<String>>(content: impl Into<String>) -> Result<Self, EmptyStringError>; @ types/src/lib.rs:1717
+    pub fn user(content: NonEmptyString) -> Self; @ types/src/lib.rs:1713
 }
 
 pub enum ModelParseError { @ types/src/lib.rs:605
@@ -468,7 +484,7 @@ impl OpenAITruncation {
 }
 
 /// Validated output configuration that guarantees invariants.
-pub enum OutputLimits { @ types/src/lib.rs:1085
+pub enum OutputLimits { @ types/src/lib.rs:1122
     Standard {
         max_output_tokens: u32,
     },
@@ -479,17 +495,17 @@ pub enum OutputLimits { @ types/src/lib.rs:1085
 }
 
 impl OutputLimits {
-    pub const fn has_thinking(&self) -> bool; @ types/src/lib.rs:1143
-    pub const fn max_output_tokens(&self) -> u32; @ types/src/lib.rs:1123
+    pub const fn has_thinking(&self) -> bool; @ types/src/lib.rs:1180
+    pub const fn max_output_tokens(&self) -> u32; @ types/src/lib.rs:1160
     /// Create output limits without thinking.
-    pub const fn new(max_output_tokens: u32) -> Self; @ types/src/lib.rs:1098
-    pub const fn thinking(&self) -> ThinkingState; @ types/src/lib.rs:1133
+    pub const fn new(max_output_tokens: u32) -> Self; @ types/src/lib.rs:1135
+    pub const fn thinking(&self) -> ThinkingState; @ types/src/lib.rs:1170
     /// Create output limits with thinking enabled.
-    pub fn with_thinking(max_output_tokens: u32, thinking_budget: u32) -> Result<Self, OutputLimitsError>; @ types/src/lib.rs:1105
+    pub fn with_thinking(max_output_tokens: u32, thinking_budget: u32) -> Result<Self, OutputLimitsError>; @ types/src/lib.rs:1142
 }
 
 /// Error when trying to construct invalid output limits.
-pub enum OutputLimitsError { @ types/src/lib.rs:1040
+pub enum OutputLimitsError { @ types/src/lib.rs:1077
     ThinkingBudgetTooLarge {
         budget: u32,
         max_output: u32,
@@ -541,7 +557,7 @@ impl Provider {
     pub fn parse_model(&self, raw: &str) -> Result<ModelName, ModelParseError>; @ types/src/lib.rs:420
 }
 
-pub enum StreamEvent { @ types/src/lib.rs:1283
+pub enum StreamEvent { @ types/src/lib.rs:1320
     /// Text content delta.
     TextDelta(String),
     /// Provider reasoning content delta (Claude extended thinking or OpenAI reasoning summaries).
@@ -573,13 +589,13 @@ pub enum StreamEvent { @ types/src/lib.rs:1283
 }
 
 /// Reason a stream finished.
-pub enum StreamFinishReason { @ types/src/lib.rs:1313
+pub enum StreamFinishReason { @ types/src/lib.rs:1350
     Done,
     Error(String),
 }
 
 /// Provider-specific replay state for thinking blocks.
-pub enum ThinkingReplayState { @ types/src/lib.rs:1208
+pub enum ThinkingReplayState { @ types/src/lib.rs:1245
     Unsigned,
     ClaudeSigned {
         signature: ThoughtSignature,
@@ -590,7 +606,7 @@ pub enum ThinkingReplayState { @ types/src/lib.rs:1208
 }
 
 impl ThinkingReplayState {
-    pub fn requires_persistence(&self) -> bool; @ types/src/lib.rs:1222
+    pub fn requires_persistence(&self) -> bool; @ types/src/lib.rs:1259
 }
 
 impl Deserialize<'de> for ThinkingReplayState {
@@ -598,22 +614,22 @@ impl Deserialize<'de> for ThinkingReplayState {
     where D: serde::Deserializer<'de>;
 }
 
-pub enum ThinkingState { @ types/src/lib.rs:1068
+pub enum ThinkingState { @ types/src/lib.rs:1105
     Disabled,
     Enabled(ThinkingBudget),
 }
 
 impl ThinkingState {
-    pub const fn is_enabled(self) -> bool; @ types/src/lib.rs:1075
+    pub const fn is_enabled(self) -> bool; @ types/src/lib.rs:1112
 }
 
-pub enum ThoughtSignatureState { @ types/src/lib.rs:1182
+pub enum ThoughtSignatureState { @ types/src/lib.rs:1219
     Unsigned,
     Signed(ThoughtSignature),
 }
 
 impl ThoughtSignatureState {
-    pub const fn is_signed(&self) -> bool; @ types/src/lib.rs:1189
+    pub const fn is_signed(&self) -> bool; @ types/src/lib.rs:1226
 }
 ```
 
@@ -627,7 +643,7 @@ pub fn add_retry_headers(builder: reqwest::RequestBuilder, retry_count: u32, ide
 pub fn calculate_retry_delay(backoff_step: u32, config: &RetryConfig, headers: Option<&reqwest::header::HeaderMap>) -> std::time::Duration; @ providers/src/retry.rs:114
 
 /// Create a cached content object with the system prompt and tools.
-pub async fn create_cache(api_key: &str, model: &str, system_prompt: &str, tools: Option<&[forge_types::ToolDefinition]>, ttl_seconds: u32) -> anyhow::Result<GeminiCache>; @ providers/src/gemini.rs:101
+pub async fn create_cache(api_key: &str, model: &str, system_prompt: &str, tools: Option<&[forge_types::ToolDefinition]>, ttl_seconds: u32) -> anyhow::Result<GeminiCache>; @ providers/src/gemini.rs:102
 
 pub fn generate_idempotency_key() -> String; @ providers/src/retry.rs:158
 
@@ -640,13 +656,13 @@ pub fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<std::ti
 
 pub async fn read_capped_error_body(response: reqwest::Response) -> String; @ providers/src/lib.rs:324
 
-pub async fn send_message(config: &ApiConfig, messages: &[forge_types::CacheableMessage], limits: forge_types::OutputLimits, system_prompt: Option<&str>, tools: Option<&[forge_types::ToolDefinition]>, gemini_cache: Option<&gemini::GeminiCache>, tx: mpsc::Sender<forge_types::StreamEvent>) -> anyhow::Result<()>; @ providers/src/lib.rs:493
+pub async fn send_message(config: &ApiConfig, messages: &[forge_types::CacheableMessage], limits: forge_types::OutputLimits, system_prompt: Option<&str>, tools: Option<&[forge_types::ToolDefinition]>, system_cache_hint: forge_types::CacheHint, cache_last_tool: bool, gemini_cache: Option<&gemini::GeminiCache>, tx: mpsc::Sender<forge_types::StreamEvent>) -> anyhow::Result<()>; @ providers/src/lib.rs:494
 
-pub async fn send_message(config: &crate::ApiConfig, messages: &[forge_types::CacheableMessage], limits: forge_types::OutputLimits, system_prompt: Option<&str>, tools: Option<&[forge_types::ToolDefinition]>, tx: mpsc::Sender<forge_types::StreamEvent>) -> anyhow::Result<()>; @ providers/src/claude.rs:394
+pub async fn send_message(config: &crate::ApiConfig, messages: &[forge_types::CacheableMessage], limits: forge_types::OutputLimits, system_prompt: Option<&str>, tools: Option<&[forge_types::ToolDefinition]>, system_cache_hint: forge_types::CacheHint, cache_last_tool: bool, tx: mpsc::Sender<forge_types::StreamEvent>) -> anyhow::Result<()>; @ providers/src/claude.rs:406
 
-pub async fn send_message(config: &crate::ApiConfig, messages: &[forge_types::CacheableMessage], limits: forge_types::OutputLimits, system_prompt: Option<&str>, tools: Option<&[forge_types::ToolDefinition]>, cache: Option<&GeminiCache>, tx: mpsc::Sender<forge_types::StreamEvent>) -> anyhow::Result<()>; @ providers/src/gemini.rs:498
+pub async fn send_message(config: &crate::ApiConfig, messages: &[forge_types::CacheableMessage], limits: forge_types::OutputLimits, system_prompt: Option<&str>, tools: Option<&[forge_types::ToolDefinition]>, cache: Option<&GeminiCache>, tx: mpsc::Sender<forge_types::StreamEvent>) -> anyhow::Result<()>; @ providers/src/gemini.rs:505
 
-pub async fn send_message(config: &crate::ApiConfig, messages: &[forge_types::CacheableMessage], limits: forge_types::OutputLimits, system_prompt: Option<&str>, tools: Option<&[forge_types::ToolDefinition]>, tx: mpsc::Sender<forge_types::StreamEvent>) -> anyhow::Result<()>; @ providers/src/openai.rs:548
+pub async fn send_message(config: &crate::ApiConfig, messages: &[forge_types::CacheableMessage], limits: forge_types::OutputLimits, system_prompt: Option<&str>, tools: Option<&[forge_types::ToolDefinition]>, tx: mpsc::Sender<forge_types::StreamEvent>) -> anyhow::Result<()>; @ providers/src/openai.rs:553
 
 /// Send a request with automatic retries.
 pub async fn send_with_retry<F>(build_request: F, timeout: Option<std::time::Duration>, config: &RetryConfig) -> RetryOutcome
@@ -675,7 +691,7 @@ impl ApiConfig {
 }
 
 /// Active Gemini cache reference.
-pub struct GeminiCache { @ providers/src/gemini.rs:24
+pub struct GeminiCache { @ providers/src/gemini.rs:25
     /// Cache name returned by API (e.g., "cachedContents/abc123")
     pub name: String,
     /// When this cache expires (UTC)
@@ -688,13 +704,13 @@ pub struct GeminiCache { @ providers/src/gemini.rs:24
 
 impl GeminiCache {
     /// Check if this cache has expired.
-    pub fn is_expired(&self) -> bool; @ providers/src/gemini.rs:38
+    pub fn is_expired(&self) -> bool; @ providers/src/gemini.rs:39
     /// Check if this cache matches the given system prompt and tools.
-    pub fn matches_config(&self, prompt: &str, tools: Option<&[ToolDefinition]>) -> bool; @ providers/src/gemini.rs:44
+    pub fn matches_config(&self, prompt: &str, tools: Option<&[ToolDefinition]>) -> bool; @ providers/src/gemini.rs:45
 }
 
 /// Configuration for Gemini caching.
-pub struct GeminiCacheConfig { @ providers/src/gemini.rs:51
+pub struct GeminiCacheConfig { @ providers/src/gemini.rs:52
     /// Whether caching is enabled
     pub enabled: bool,
     /// TTL in seconds for cached content (default: 3600 = 1 hour)
@@ -761,16 +777,16 @@ pub fn atomic_write_with_options<impl AsRef<Path>: AsRef<std::path::Path>>(path:
 pub fn distillation_model(provider: forge_types::Provider) -> &'static str; @ context/src/distillation.rs:481
 
 /// Extract facts from a conversation exchange.
-pub async fn extract_facts(api_key: &str, user_message: &str, assistant_message: &str) -> anyhow::Result<ExtractionResult>; @ context/src/librarian.rs:121
+pub async fn extract_facts(api_key: &str, user_message: &str, assistant_message: &str) -> anyhow::Result<ExtractionResult>; @ context/src/librarian.rs:122
 
 /// Format retrieved facts for injection into context.
-pub fn format_facts_for_context(facts: &[Fact]) -> String; @ context/src/librarian.rs:258
+pub fn format_facts_for_context(facts: &[Fact]) -> String; @ context/src/librarian.rs:259
 
 /// Distill conversation messages into a compact Distillate using an LLM.
 pub async fn generate_distillation(config: &forge_providers::ApiConfig, counter: &super::token_counter::TokenCounter, messages: &[(super::MessageId, forge_types::Message)], target_tokens: u32) -> anyhow::Result<String>; @ context/src/distillation.rs:182
 
 /// Retrieve relevant facts for a user query.
-pub async fn retrieve_relevant(api_key: &str, user_query: &str, available_facts: &[Fact]) -> anyhow::Result<RetrievalResult>; @ context/src/librarian.rs:157
+pub async fn retrieve_relevant(api_key: &str, user_query: &str, available_facts: &[Fact]) -> anyhow::Result<RetrievalResult>; @ context/src/librarian.rs:158
 
 /// Active streaming journal.
 pub struct ActiveJournal { @ context/src/stream_journal.rs:239
@@ -893,13 +909,13 @@ pub struct DistillationScope { @ context/src/manager.rs:67
 }
 
 /// Result of fact extraction from a conversation exchange.
-pub struct ExtractionResult { @ context/src/librarian.rs:71
+pub struct ExtractionResult { @ context/src/librarian.rs:72
     /// Extracted facts.
     pub facts: Vec<Fact>,
 }
 
 /// A distilled fact extracted from conversation.
-pub struct Fact { @ context/src/librarian.rs:60
+pub struct Fact { @ context/src/librarian.rs:61
     /// The type of fact.
     pub fact_type: FactType,
     /// The fact content.
@@ -1003,36 +1019,36 @@ pub struct JournalStats { @ context/src/stream_journal.rs:999
 }
 
 /// The Librarian - manages fact extraction, storage, and retrieval.
-pub struct Librarian { @ context/src/librarian.rs:287
+pub struct Librarian { @ context/src/librarian.rs:288
 }
 
 impl Librarian {
     /// Get all stored facts (for debugging/inspection).
-    pub fn all_facts(&self) -> Result<Vec<Fact>>; @ context/src/librarian.rs:409
+    pub fn all_facts(&self) -> Result<Vec<Fact>>; @ context/src/librarian.rs:415
     /// Get the API key for direct API calls.
-    pub fn api_key(&self) -> &str; @ context/src/librarian.rs:329
+    pub fn api_key(&self) -> &str; @ context/src/librarian.rs:330
     /// Clear all facts (for testing/reset).
-    pub fn clear(&mut self) -> Result<()>; @ context/src/librarian.rs:432
+    pub fn clear(&mut self) -> Result<()>; @ context/src/librarian.rs:438
     /// Post-turn: Extract and store facts from a conversation exchange.
-    pub async fn extract_and_store(&mut self, user_message: &str, assistant_message: &str) -> Result<ExtractionResult>; @ context/src/librarian.rs:386
-    pub fn fact_count(&self) -> usize; @ context/src/librarian.rs:320
+    pub async fn extract_and_store(&mut self, user_message: &str, assistant_message: &str) -> Result<ExtractionResult>; @ context/src/librarian.rs:387
+    pub fn fact_count(&self) -> usize; @ context/src/librarian.rs:321
     /// Increment the turn counter.
-    pub fn increment_turn(&mut self); @ context/src/librarian.rs:336
-    pub fn open<impl AsRef<Path>: AsRef<Path>>(path: impl AsRef<Path>, api_key: String) -> Result<Self>; @ context/src/librarian.rs:294
-    pub fn open_in_memory(api_key: String) -> Result<Self>; @ context/src/librarian.rs:304
+    pub fn increment_turn(&mut self); @ context/src/librarian.rs:337
+    pub fn open<impl AsRef<Path>: AsRef<Path>>(path: impl AsRef<Path>, api_key: SecretString) -> Result<Self>; @ context/src/librarian.rs:295
+    pub fn open_in_memory(api_key: SecretString) -> Result<Self>; @ context/src/librarian.rs:305
     /// Add a user-pinned fact.
-    pub fn pin_fact(&mut self, content: &str, entities: &[String]) -> Result<()>; @ context/src/librarian.rs:402
+    pub fn pin_fact(&mut self, content: &str, entities: &[String]) -> Result<()>; @ context/src/librarian.rs:408
     /// Pre-flight: Retrieve relevant facts for a user query.
-    pub async fn retrieve_context(&self, user_query: &str) -> Result<RetrievalResult>; @ context/src/librarian.rs:373
+    pub async fn retrieve_context(&self, user_query: &str) -> Result<RetrievalResult>; @ context/src/librarian.rs:374
     /// Search facts by keyword.
-    pub fn search(&self, keyword: &str) -> Result<Vec<Fact>>; @ context/src/librarian.rs:415
+    pub fn search(&self, keyword: &str) -> Result<Vec<Fact>>; @ context/src/librarian.rs:421
     /// Search facts by keyword with staleness information.
-    pub fn search_with_staleness(&self, keyword: &str) -> Result<Vec<super::fact_store::FactWithStaleness>>; @ context/src/librarian.rs:424
+    pub fn search_with_staleness(&self, keyword: &str) -> Result<Vec<super::fact_store::FactWithStaleness>>; @ context/src/librarian.rs:430
     /// Store extracted facts (sync operation).
-    pub fn store_facts(&mut self, facts: &[Fact]) -> Result<()>; @ context/src/librarian.rs:343
+    pub fn store_facts(&mut self, facts: &[Fact]) -> Result<()>; @ context/src/librarian.rs:344
     /// Store extracted facts and link them to source files.
-    pub fn store_facts_with_sources(&mut self, facts: &[Fact], source_paths: &[String]) -> Result<()>; @ context/src/librarian.rs:354
-    pub fn turn_counter(&self) -> u64; @ context/src/librarian.rs:315
+    pub fn store_facts_with_sources(&mut self, facts: &[Fact], source_paths: &[String]) -> Result<()>; @ context/src/librarian.rs:355
+    pub fn turn_counter(&self) -> u64; @ context/src/librarian.rs:316
 }
 
 impl Debug for Librarian {
@@ -1130,7 +1146,7 @@ impl ResolvedModelLimits {
 }
 
 /// Result of relevance retrieval for a user query.
-pub struct RetrievalResult { @ context/src/librarian.rs:78
+pub struct RetrievalResult { @ context/src/librarian.rs:79
     /// Facts deemed relevant to the query, ordered by relevance.
     pub relevant_facts: Vec<Fact>,
     /// Total token estimate for the retrieved facts.
@@ -1368,7 +1384,7 @@ pub enum ContextUsageStatus { @ context/src/manager.rs:135
 }
 
 /// Types of facts the Librarian can extract.
-pub enum FactType { @ context/src/librarian.rs:32
+pub enum FactType { @ context/src/librarian.rs:33
     /// Entities: files, functions, variables, paths, URLs, etc.
     Entity,
     /// Decisions: "we chose X because Y"
@@ -1382,7 +1398,7 @@ pub enum FactType { @ context/src/librarian.rs:32
 }
 
 impl FactType {
-    pub fn as_str(&self) -> &'static str; @ context/src/librarian.rs:47
+    pub fn as_str(&self) -> &'static str; @ context/src/librarian.rs:48
 }
 
 pub enum HistoryEntry { @ context/src/history.rs:52
@@ -1479,7 +1495,7 @@ pub enum RecoveredStream { @ context/src/stream_journal.rs:349
 pub fn command_specs() -> &'static [CommandSpec]; @ engine/src/commands.rs:82
 
 /// Find match positions for highlighting in the UI.
-pub fn find_match_positions(path: &str, filter: &str) -> Vec<usize>; @ engine/src/ui/file_picker.rs:222
+pub fn find_match_positions(path: &str, filter: &str) -> Vec<usize>; @ engine/src/ui/file_picker.rs:224
 
 /// Single global instance (IFA-7 compliant).
 pub fn sanitize_display_text(input: &str) -> String; @ engine/src/security.rs:259
@@ -1506,7 +1522,7 @@ impl App {
     /// Uses cached value when available to avoid recomputing every frame.
     pub fn context_usage_status(&mut self) -> ContextUsageStatus; @ engine/src/lib.rs:1018
     /// Get the current API key for the selected provider.
-    pub fn current_api_key(&self) -> Option<&String>; @ engine/src/lib.rs:979
+    pub fn current_api_key(&self) -> Option<&SecretString>; @ engine/src/lib.rs:979
     pub fn display_items(&self) -> &[DisplayItem]; @ engine/src/lib.rs:960
     /// Version counter for display changes - used for render caching.
     pub fn display_version(&self) -> usize; @ engine/src/lib.rs:970
@@ -1603,10 +1619,10 @@ impl App {
     /// Filters out files that no longer exist on disk.
     pub fn ordered_files(&self) -> Vec<(std::path::PathBuf, ChangeKind)>; @ engine/src/lib.rs:646
     /// Poll for completed distillation task and apply the result.
-    pub fn poll_distillation(&mut self); @ engine/src/distillation.rs:133
+    pub fn poll_distillation(&mut self); @ engine/src/distillation.rs:144
     pub fn process_command(&mut self, command: EnteredCommand); @ engine/src/commands.rs:323
     /// Process any pending stream events.
-    pub fn process_stream_events(&mut self); @ engine/src/streaming.rs:329
+    pub fn process_stream_events(&mut self); @ engine/src/streaming.rs:431
     pub fn provider(&self) -> Provider; @ engine/src/lib.rs:789
     /// Queue a system notification to be injected into the next API request.
     pub fn queue_notification(&mut self, notification: notifications::SystemNotification); @ engine/src/lib.rs:1041
@@ -1635,7 +1651,7 @@ impl App {
     pub async fn shutdown_lsp(&mut self); @ engine/src/lsp_integration.rs:166
     /// Trigger distillation of older messages when context is near capacity.
     pub fn start_distillation(&mut self); @ engine/src/distillation.rs:17
-    pub fn start_streaming(&mut self, queued: QueuedUserMessage); @ engine/src/streaming.rs:120
+    pub fn start_streaming(&mut self, queued: QueuedUserMessage); @ engine/src/streaming.rs:209
     pub fn streaming(&self) -> Option<&StreamingMessage>; @ engine/src/lib.rs:829
     /// Check if a transcript clear was requested and clear the flag.
     pub fn take_clear_transcript(&mut self) -> bool; @ engine/src/lib.rs:559
@@ -1754,7 +1770,7 @@ pub struct EnteredCommand { @ engine/src/input_modes.rs:20
 }
 
 /// Scanned file entry with display path and full path.
-pub struct FileEntry { @ engine/src/ui/file_picker.rs:15
+pub struct FileEntry { @ engine/src/ui/file_picker.rs:16
     /// Display path (relative to root, using forward slashes).
     pub display: String,
     /// Full absolute path.
@@ -1762,23 +1778,23 @@ pub struct FileEntry { @ engine/src/ui/file_picker.rs:15
 }
 
 /// File picker state for the "@" reference feature.
-pub struct FilePickerState { @ engine/src/ui/file_picker.rs:24
+pub struct FilePickerState { @ engine/src/ui/file_picker.rs:25
 }
 
 impl FilePickerState {
-    pub fn filtered_count(&self) -> usize; @ engine/src/ui/file_picker.rs:145
+    pub fn filtered_count(&self) -> usize; @ engine/src/ui/file_picker.rs:147
     /// Get filtered file entries for display.
-    pub fn filtered_files(&self) -> Vec<&FileEntry>; @ engine/src/ui/file_picker.rs:130
-    pub fn get_selected(&self, selected: usize) -> Option<&FileEntry>; @ engine/src/ui/file_picker.rs:138
+    pub fn filtered_files(&self) -> Vec<&FileEntry>; @ engine/src/ui/file_picker.rs:132
+    pub fn get_selected(&self, selected: usize) -> Option<&FileEntry>; @ engine/src/ui/file_picker.rs:140
     /// Check if files have been scanned.
-    pub fn is_scanned(&self) -> bool; @ engine/src/ui/file_picker.rs:151
-    pub fn new() -> Self; @ engine/src/ui/file_picker.rs:35
+    pub fn is_scanned(&self) -> bool; @ engine/src/ui/file_picker.rs:153
+    pub fn new() -> Self; @ engine/src/ui/file_picker.rs:36
     /// Scan files from the given root directory, respecting .gitignore.
-    pub fn scan_files(&mut self, root: &Path); @ engine/src/ui/file_picker.rs:40
+    pub fn scan_files(&mut self, root: &Path); @ engine/src/ui/file_picker.rs:41
     /// Get total file count (before filtering).
-    pub fn total_count(&self) -> usize; @ engine/src/ui/file_picker.rs:157
+    pub fn total_count(&self) -> usize; @ engine/src/ui/file_picker.rs:159
     /// Update filtered results based on filter text.
-    pub fn update_filter(&mut self, filter: &str); @ engine/src/ui/file_picker.rs:91
+    pub fn update_filter(&mut self, filter: &str); @ engine/src/ui/file_picker.rs:93
 }
 
 /// Interactive state for the files panel.
@@ -2093,7 +2109,7 @@ pub fn clear_render_cache(); @ tui/src/markdown.rs:108
 
 pub fn draw(frame: &mut ratatui::Frame<'_>, app: &mut forge_engine::App); @ tui/src/lib.rs:102
 
-pub fn draw_model_selector(frame: &mut ratatui::Frame<'_>, app: &mut forge_engine::App, palette: &Palette, glyphs: &Glyphs, elapsed: std::time::Duration); @ tui/src/lib.rs:1576
+pub fn draw_model_selector(frame: &mut ratatui::Frame<'_>, app: &mut forge_engine::App, palette: &Palette, glyphs: &Glyphs, elapsed: std::time::Duration); @ tui/src/lib.rs:1577
 
 pub fn glyphs(options: forge_engine::UiOptions) -> Glyphs; @ tui/src/theme.rs:176
 
@@ -2182,285 +2198,6 @@ pub struct Palette { @ tui/src/theme.rs:52
 impl Palette {
     pub fn high_contrast() -> Self; @ tui/src/theme.rs:107
     pub fn standard() -> Self; @ tui/src/theme.rs:79
-}
-```
-
-## forge-webfetch
-
-```rust
-pub async fn fetch(input: WebFetchInput, config: &WebFetchConfig) -> Result<WebFetchOutput, WebFetchError>; @ webfetch/src/lib.rs:25
-
-/// Browser-specific configuration.
-pub struct BrowserConfig { @ webfetch/src/types.rs:377
-    /// Whether browser fallback is enabled. Default: true.
-    pub enabled: bool,
-    /// Path to Chromium executable.
-    pub chromium_path: Option<std::path::PathBuf>,
-    /// Browser navigation timeout in seconds.
-    pub timeout_seconds: Option<u32>,
-    /// Maximum rendered DOM size in bytes.
-    pub max_rendered_dom_bytes: Option<u64>,
-    /// Maximum subresource download bytes.
-    pub max_subresource_bytes: Option<u64>,
-    /// Blocked resource types (e.g., "image", "font").
-    pub blocked_resource_types: Option<Vec<String>>,
-}
-
-/// Error details as key-value pairs.
-pub struct ErrorDetails { @ webfetch/src/types.rs:583
-    Vec<(String, String)>,
-}
-
-/// A chunk of extracted content.
-pub struct FetchChunk { @ webfetch/src/types.rs:177
-    /// Most recent preceding heading text, or empty string if none.
-    pub heading: String,
-    /// Chunk content as Markdown.
-    pub text: String,
-    /// Token count of `text` field only.
-    pub token_count: u32,
-}
-
-/// HTTP-specific configuration.
-pub struct HttpConfig { @ webfetch/src/types.rs:418
-    /// Additional request headers.
-    pub headers: Option<Vec<(String, String)>>,
-    /// Use system proxy settings (`HTTP_PROXY/HTTPS_PROXY`).
-    pub use_system_proxy: bool,
-    /// Connect timeout in seconds.
-    pub connect_timeout_seconds: Option<u32>,
-    /// Read timeout in seconds.
-    pub read_timeout_seconds: Option<u32>,
-}
-
-/// robots.txt-specific configuration.
-pub struct RobotsConfig { @ webfetch/src/types.rs:435
-    /// User-agent token for robots.txt matching.
-    pub user_agent_token: Option<String>,
-    /// Fail-open if robots.txt unavailable. Default: false.
-    pub fail_open: bool,
-}
-
-/// Security-specific configuration.
-pub struct SecurityConfig { @ webfetch/src/types.rs:400
-    /// Additional blocked CIDR ranges.
-    pub blocked_cidrs: Option<Vec<String>>,
-    /// Allowed ports (overrides default allowlist).
-    pub allowed_ports: Option<Vec<u16>>,
-    /// Allow insecure TLS (for testing only).
-    pub allow_insecure_tls: bool,
-    /// Require explicit override for security relaxations.
-    pub allow_insecure_overrides: bool,
-}
-
-/// `WebFetch` tool configuration.
-pub struct WebFetchConfig { @ webfetch/src/types.rs:258
-    /// Whether the tool is enabled. Default: true.
-    pub enabled: bool,
-    /// User-Agent string for HTTP requests.
-    pub user_agent: Option<String>,
-    /// Request timeout in seconds. Default: 20.
-    pub timeout_seconds: Option<u32>,
-    /// Maximum redirects to follow. Default: 5.
-    pub max_redirects: Option<u32>,
-    /// Default max tokens per chunk. Default: 600.
-    pub default_max_chunk_tokens: Option<u32>,
-    /// Cache directory path.
-    pub cache_dir: Option<std::path::PathBuf>,
-    /// Cache TTL in days. Default: 7.
-    pub cache_ttl_days: Option<u32>,
-    /// Maximum cache entries. Default: 1000.
-    pub max_cache_entries: Option<u32>,
-    /// Maximum total cache size in bytes. Default: 1 GiB.
-    pub max_cache_bytes: Option<u64>,
-    /// Maximum download size in bytes. Default: 10 MiB.
-    pub max_download_bytes: Option<u64>,
-    /// Maximum DNS resolution attempts. Default: 3.
-    pub max_dns_attempts: Option<u32>,
-    /// robots.txt cache entries. Default: 100.
-    pub robots_cache_entries: Option<u32>,
-    /// robots.txt cache TTL in hours. Default: 24.
-    pub robots_cache_ttl_hours: Option<u32>,
-    /// Allow auto-execution without approval prompts.
-    pub allow_auto_execution: bool,
-    /// Browser-specific configuration.
-    pub browser: Option<BrowserConfig>,
-    /// Security-specific configuration.
-    pub security: Option<SecurityConfig>,
-    /// HTTP-specific configuration.
-    pub http: Option<HttpConfig>,
-    /// robots.txt-specific configuration.
-    pub robots: Option<RobotsConfig>,
-}
-
-impl WebFetchConfig {
-    pub fn default_max_chunk_tokens(&self) -> u32; @ webfetch/src/types.rs:363
-    pub fn max_download_bytes(&self) -> u64; @ webfetch/src/types.rs:369
-    pub fn max_redirects(&self) -> u32; @ webfetch/src/types.rs:358
-    pub fn timeout_seconds(&self) -> u32; @ webfetch/src/types.rs:352
-}
-
-/// `WebFetch` error with structured details.
-pub struct WebFetchError { @ webfetch/src/types.rs:453
-    /// Stable error code.
-    pub code: ErrorCode,
-    /// Human-readable description.
-    pub message: String,
-    /// Whether retry may succeed.
-    pub retryable: bool,
-    /// Error-specific context.
-    pub details: ErrorDetails,
-}
-
-impl WebFetchError {
-    pub fn new<impl Into<String>: Into<String>>(code: ErrorCode, message: impl Into<String>, retryable: bool) -> Self; @ webfetch/src/types.rs:468
-    /// Serialize to JSON for tool output.
-    pub fn to_json(&self) -> serde_json::Value; @ webfetch/src/types.rs:485
-    /// Add a detail field.
-    pub fn with_detail<impl Into<String>: Into<String>, impl Into<String>: Into<String>>(self, key: impl Into<String>, value: impl Into<String>) -> Self; @ webfetch/src/types.rs:478
-}
-
-impl Serialize for WebFetchError {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: serde::Serializer;
-}
-
-/// Input parameters for a `WebFetch` request.
-pub struct WebFetchInput { @ webfetch/src/types.rs:20
-    /// Maximum tokens per chunk. Default: config value (typically 600).
-    /// Must be in range [128, 2048] per FR-WF-02a.
-    pub max_chunk_tokens: Option<u32>,
-    /// If true, bypass cache and fetch fresh. Default: false.
-    pub no_cache: bool,
-    /// If true, force browser rendering even if HTTP succeeds. Default: false.
-    pub force_browser: bool,
-}
-
-impl WebFetchInput {
-    /// Create a new `WebFetchInput` from a URL string.
-    pub fn new<impl Into<String>: Into<String>>(url: impl Into<String>) -> Result<Self, WebFetchError>; @ webfetch/src/types.rs:52
-    pub fn original_url(&self) -> &str; @ webfetch/src/types.rs:126
-    pub fn url(&self) -> &Url; @ webfetch/src/types.rs:121
-    pub fn with_force_browser(self, force_browser: bool) -> Self; @ webfetch/src/types.rs:115
-    /// # Errors
-    pub fn with_max_chunk_tokens(self, tokens: u32) -> Result<Self, WebFetchError>; @ webfetch/src/types.rs:87
-    pub fn with_no_cache(self, no_cache: bool) -> Self; @ webfetch/src/types.rs:109
-}
-
-/// Successful response from `WebFetch`.
-pub struct WebFetchOutput { @ webfetch/src/types.rs:135
-    /// Original input URL as provided (unchanged). FR-WF-RESP-URL-01.
-    pub requested_url: String,
-    /// Canonicalized URL of last fetched URL with fragment removed. FR-WF-RESP-URL-01.
-    pub final_url: String,
-    /// Original fetch time (RFC3339, second precision). FR-WF-CCH-TS-01.
-    pub fetched_at: String,
-    /// Page title from `<title>` or first `<h1>`. Optional.
-    pub title: Option<String>,
-    /// Language from `<html lang>` (BCP-47 tag). Optional.
-    pub language: Option<String>,
-    /// Content chunks. FR-WF-03b.
-    pub chunks: Vec<FetchChunk>,
-    /// Method used to fetch content. FR-WF-RESP-METHOD-01.
-    pub rendering_method: RenderingMethod,
-    /// True if content is incomplete. FR-WF-TRUNC-01.
-    pub truncated: bool,
-    /// Reason for truncation (if truncated). FR-WF-TRUNC-REASON-01.
-    pub truncation_reason: Option<TruncationReason>,
-    /// Condition tokens from fetch pipeline. FR-WF-03c.
-    pub notes: Vec<Note>,
-}
-
-/// Error codes per FR-WF-18 registry.
-pub enum ErrorCode { @ webfetch/src/types.rs:519
-    /// Invalid request parameters.
-    BadArgs,
-    /// URL parsing failed.
-    InvalidUrl,
-    /// Non-http(s) scheme.
-    InvalidScheme,
-    /// Invalid host (e.g., numeric IP forms).
-    InvalidHost,
-    /// Port not in allowlist.
-    PortBlocked,
-    /// SSRF protection triggered.
-    SsrfBlocked,
-    /// DNS resolution failed.
-    DnsFailed,
-    /// robots.txt disallows path.
-    RobotsDisallowed,
-    /// Could not fetch robots.txt.
-    RobotsUnavailable,
-    /// Max redirects exceeded.
-    RedirectLimit,
-    /// Request timeout.
-    Timeout,
-    /// Network/connection error.
-    Network,
-    /// Response exceeds size limit.
-    ResponseTooLarge,
-    /// Content-Type not supported.
-    UnsupportedContentType,
-    /// HTTP 4xx client error.
-    Http4xx,
-    /// HTTP 5xx server error.
-    Http5xx,
-    /// Chromium not found/runnable.
-    BrowserUnavailable,
-    /// Browser process crashed.
-    BrowserCrashed,
-    /// HTML extraction failed.
-    ExtractionFailed,
-    /// Unexpected internal error.
-    Internal,
-}
-
-impl ErrorCode {
-    /// Check if this error code is retryable by default.
-    pub fn default_retryable(&self) -> bool; @ webfetch/src/types.rs:567
-}
-
-/// Condition tokens for the `notes` array.
-pub enum Note { @ webfetch/src/types.rs:215
-    /// HTTP URL was automatically upgraded to HTTPS.
-    HttpUpgradedToHttps,
-    /// Response served from cache.
-    CacheHit,
-    /// robots.txt unavailable but `fail_open=true`.
-    RobotsUnavailableFailOpen,
-    /// Browser fallback requested but unavailable.
-    BrowserUnavailableUsedHttp,
-    /// DOM exceeded `max_rendered_dom_bytes`.
-    BrowserDomTruncated,
-    /// Browser blocked non-GET/HEAD subrequests.
-    BrowserBlockedNonGet,
-    /// Unknown charset; fell back to UTF-8 with replacement.
-    CharsetFallback,
-    /// Cache write failed (fetch still succeeded).
-    CacheWriteFailed,
-    /// Output truncated to fit byte budget.
-    ToolOutputLimit,
-}
-
-impl Note {
-    /// Canonical ordering per FR-WF-NOTES-ORDER-01.
-    pub fn order(&self) -> u8; @ webfetch/src/types.rs:239
-}
-
-/// Method used to render/fetch the page.
-pub enum RenderingMethod { @ webfetch/src/types.rs:191
-    /// Standard HTTP fetch.
-    Http,
-    /// Headless browser rendering.
-    Browser,
-}
-
-/// Reason for content truncation.
-pub enum TruncationReason { @ webfetch/src/types.rs:203
-    /// Output byte budget enforcement truncated chunks.
-    ToolOutputLimit,
-    /// Browser DOM exceeded `max_rendered_dom_bytes`.
-    BrowserDomTruncated,
 }
 ```
 
@@ -2604,5 +2341,727 @@ pub fn init(); @ cli/src/assets.rs:40
 
 /// Returns provider-specific system prompts for LLM initialization.
 pub fn system_prompts() -> forge_engine::SystemPrompts; @ cli/src/assets.rs:50
+```
+
+## forge-tools
+
+```rust
+/// Analyze tool arguments for homoglyphs (BOUNDARY per IFA-11).
+pub fn analyze_tool_arguments(tool_name: &str, args: &serde_json::Value) -> Vec<forge_types::HomoglyphWarning>; @ tools/src/lib.rs:113
+
+pub fn apply_ops(content: &mut FileContent, ops: &[Op]) -> Result<(), PatchError>; @ tools/src/lp1.rs:362
+
+/// Compute diff stats (additions and deletions) between old and new content.
+pub fn compute_diff_stats(old_bytes: &[u8], new_bytes: &[u8]) -> (u32, u32); @ tools/src/builtins.rs:265
+
+/// Serde helper for fields that default to `true`.
+pub const fn default_true() -> bool; @ tools/src/config.rs:10
+
+/// Detect the best available shell based on config and platform.
+pub fn detect_shell(config: Option<&crate::config::ShellConfig>) -> DetectedShell; @ tools/src/shell.rs:30
+
+pub fn emit_file(content: &FileContent) -> Vec<u8>; @ tools/src/lp1.rs:343
+
+pub async fn fetch(input: WebFetchInput, config: &WebFetchConfig) -> Result<WebFetchOutput, WebFetchError>; @ tools/src/webfetch/mod.rs:38
+
+/// Format a unified diff between old and new file content.
+pub fn format_unified_diff(path: &str, old_bytes: &[u8], new_bytes: &[u8], existed: bool) -> String; @ tools/src/builtins.rs:152
+
+/// Like `format_unified_diff`, but accepts a minimum line-number column width.
+pub fn format_unified_diff_width(_path: &str, old_bytes: &[u8], new_bytes: &[u8], _existed: bool, min_line_num_width: usize) -> String; @ tools/src/builtins.rs:167
+
+pub fn parse_file(bytes: &[u8]) -> Result<FileContent, PatchError>; @ tools/src/lp1.rs:286
+
+pub fn parse_patch(input: &str) -> Result<Patch, PatchError>; @ tools/src/lp1.rs:72
+
+/// Best-effort lookup of a process start timestamp (Unix epoch milliseconds).
+pub fn process_started_at_unix_ms(pid: u32) -> Option<i64>; @ tools/src/process.rs:63
+
+/// Redact sensitive tokens from a string.
+pub fn redact_api_keys(raw: &str) -> String; @ tools/src/security.rs:310
+
+/// Redact obvious secrets in output distillates (best-effort).
+pub fn redact_distillate(raw: &str) -> String; @ tools/src/lib.rs:510
+
+/// Register built-in tools into the registry.
+pub fn register_builtins(registry: &mut super::ToolRegistry, read_limits: super::ReadFileLimits, patch_limits: super::PatchLimits, search_config: super::SearchToolConfig, webfetch_config: super::WebFetchToolConfig, shell: super::DetectedShell, run_policy: super::RunSandboxPolicy) -> Result<(), super::ToolError>; @ tools/src/builtins.rs:1308
+
+pub fn register_git_tool(registry: &mut super::ToolRegistry) -> Result<(), super::ToolError>; @ tools/src/git.rs:506
+
+/// Single global instance (IFA-7 compliant).
+pub fn sanitize_display_text(input: &str) -> String; @ tools/src/security.rs:259
+
+/// Sanitize tool output for terminal display and context inclusion.
+pub fn sanitize_output(output: &str) -> String; @ tools/src/lib.rs:504
+
+/// Sanitize a stream error message by redacting secrets and stripping controls.
+pub fn sanitize_stream_error(raw: &str) -> String; @ tools/src/security.rs:286
+
+/// Get the global secret redactor instance.
+pub fn secret_redactor() -> &'static SecretRedactor; @ tools/src/security.rs:274
+
+/// Truncate tool output to the effective maximum length.
+pub fn truncate_output(output: String, effective_max: usize) -> String; @ tools/src/lib.rs:477
+
+/// Terminate a process (and its process group on Unix) best-effort.
+pub fn try_kill_process_group(pid: u32) -> std::io::Result<KillOutcome>; @ tools/src/process.rs:88
+
+/// Validate arguments against a JSON schema.
+pub fn validate_args(schema: &serde_json::Value, args: &serde_json::Value) -> Result<(), ToolError>; @ tools/src/lib.rs:462
+
+pub struct ApplyPatchTool { @ tools/src/builtins.rs:60
+}
+
+impl ApplyPatchTool {
+    pub fn new(limits: PatchLimits) -> Self; @ tools/src/builtins.rs:92
+}
+
+impl ToolExecutor for ApplyPatchTool {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    fn schema(&self) -> serde_json::Value;
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool;
+    fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError>;
+    fn execute<'a>(&'a Self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
+}
+
+/// Capability token that allows tool executors to record file changes.
+pub struct ChangeRecorder { @ tools/src/change_recording.rs:45
+}
+
+impl ChangeRecorder {
+    pub fn record_created(&self, path: PathBuf); @ tools/src/change_recording.rs:113
+    pub fn record_modified(&self, path: PathBuf); @ tools/src/change_recording.rs:121
+    pub fn record_stats(&self, path: PathBuf, additions: u32, deletions: u32); @ tools/src/change_recording.rs:129
+}
+
+/// RAII guard that kills a child process (and its process group on Unix) on drop.
+pub struct ChildGuard { @ tools/src/process.rs:8
+}
+
+impl ChildGuard {
+    pub fn child_mut(&mut self) -> &mut tokio::process::Child; @ tools/src/process.rs:18
+    pub fn disarm(&mut self); @ tools/src/process.rs:22
+    pub fn new(child: tokio::process::Child) -> Self; @ tools/src/process.rs:14
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self);
+}
+
+/// Command blacklist validator.
+pub struct CommandBlacklist { @ tools/src/command_blacklist.rs:80
+}
+
+impl CommandBlacklist {
+    /// Create a new blacklist from pattern-reason pairs.
+    pub fn new(patterns: &[(&str, &str)]) -> Result<Self, ToolError>; @ tools/src/command_blacklist.rs:88
+    /// Validate a command against the blacklist.
+    pub fn validate(&self, command: &str) -> Result<(), ToolError>; @ tools/src/command_blacklist.rs:115
+    /// Create a blacklist with default patterns.
+    pub fn with_defaults() -> Result<Self, ToolError>; @ tools/src/command_blacklist.rs:105
+}
+
+/// Confirmation request for a tool call.
+pub struct ConfirmationRequest { @ tools/src/lib.rs:95
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub summary: String,
+    /// Optional user-facing reason provided by the model for escalation prompts.
+    pub reason: Option<String>,
+    pub risk_level: RiskLevel,
+    pub arguments: serde_json::Value,
+    /// Homoglyph warnings detected in tool arguments.
+    /// Existence of warnings proves analysis was performed and found issues.
+    pub warnings: Vec<forge_types::HomoglyphWarning>,
+}
+
+/// Detected shell for command execution.
+pub struct DetectedShell { @ tools/src/shell.rs:9
+    /// Path or name of the shell binary.
+    pub binary: std::path::PathBuf,
+    /// Arguments to pass before the command (e.g., `["-c"]` or `["/C"]`).
+    pub args: Vec<String>,
+    /// Human-readable name for logging.
+    pub name: String,
+}
+
+impl Display for DetectedShell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
+}
+
+/// Stats for a single file change (lines added/removed).
+pub struct DiffStats { @ tools/src/change_recording.rs:21
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+/// Sanitizes environment variables before executing commands.
+pub struct EnvSanitizer { @ tools/src/lib.rs:428
+}
+
+impl EnvSanitizer {
+    pub fn new(patterns: &[String]) -> Result<Self, ToolError>; @ tools/src/lib.rs:433
+    pub fn sanitize_env(&self, env: &[(String, String)]) -> Vec<(String, String)>; @ tools/src/lib.rs:453
+}
+
+/// File SHA cache entry for stale file detection.
+pub struct FileCacheEntry { @ tools/src/lib.rs:336
+    pub sha256: [u8; 32],
+    pub read_at: std::time::SystemTime,
+}
+
+pub struct FileContent { @ tools/src/lp1.rs:66
+    pub lines: Vec<String>,
+    pub final_newline: bool,
+    pub eol_kind: Option<EolKind>,
+}
+
+pub struct FilePatch { @ tools/src/lp1.rs:11
+    pub path: String,
+    pub ops: Vec<Op>,
+}
+
+pub struct GlobTool { @ tools/src/builtins.rs:81
+}
+
+impl ToolExecutor for GlobTool {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    fn schema(&self) -> serde_json::Value;
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool;
+    fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError>;
+    fn execute<'a>(&'a Self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
+}
+
+/// Tool for storing facts in the Librarian's memory.
+pub struct MemoryTool { @ tools/src/memory.rs:10
+}
+
+impl ToolExecutor for MemoryTool {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    fn schema(&self) -> serde_json::Value;
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool;
+    fn risk_level(&self, _args: &serde_json::Value) -> RiskLevel;
+    fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError>;
+    fn execute<'a>(&'a Self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
+}
+
+pub struct Patch { @ tools/src/lp1.rs:6
+    pub files: Vec<FilePatch>,
+}
+
+pub struct PatchError { @ tools/src/lp1.rs:47
+    pub message: String,
+}
+
+impl Display for PatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
+}
+
+/// Tool-specific limits for `apply_patch`.
+pub struct PatchLimits { @ tools/src/lib.rs:396
+    pub max_patch_bytes: usize,
+}
+
+pub struct PhaseGateTool { @ tools/src/phase_gate.rs:15
+}
+
+impl ToolExecutor for PhaseGateTool {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    fn schema(&self) -> Value;
+    fn is_side_effecting(&self, _args: &Value) -> bool;
+    fn requires_approval(&self) -> bool;
+    fn risk_level(&self, _args: &Value) -> RiskLevel;
+    fn is_hidden(&self) -> bool;
+    fn target_provider(&self) -> Option<Provider>;
+    fn approval_summary(&self, args: &Value) -> Result<String, ToolError>;
+    fn execute<'a>(&'a Self, args: Value, _ctx: &'a mut ToolCtx) -> ToolFut<'a>;
+}
+
+/// Policy for tool approval and deny/allow lists.
+pub struct Policy { @ tools/src/lib.rs:75
+    pub mode: ApprovalMode,
+    pub allowlist: std::collections::HashSet<String>,
+    pub denylist: std::collections::HashSet<String>,
+}
+
+impl Policy {
+    pub fn is_allowlisted(&self, tool: &str) -> bool; @ tools/src/lib.rs:83
+    pub fn is_denylisted(&self, tool: &str) -> bool; @ tools/src/lib.rs:88
+}
+
+/// Prepared command after sandbox policy evaluation.
+pub struct PreparedRunCommand { @ tools/src/windows_run.rs:77
+}
+
+impl PreparedRunCommand {
+    pub fn command(&self) -> &str; @ tools/src/windows_run.rs:93
+    pub fn requires_windows_host_sandbox(&self) -> bool; @ tools/src/windows_run.rs:103
+    pub fn warning(&self) -> Option<&str>; @ tools/src/windows_run.rs:98
+}
+
+/// Tool-specific limits for `read_file`.
+pub struct ReadFileLimits { @ tools/src/lib.rs:389
+    pub max_file_read_bytes: usize,
+    pub max_scan_bytes: usize,
+}
+
+pub struct ReadFileTool { @ tools/src/builtins.rs:55
+}
+
+impl ReadFileTool {
+    pub fn new(limits: ReadFileLimits) -> Self; @ tools/src/builtins.rs:85
+}
+
+impl ToolExecutor for ReadFileTool {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    fn schema(&self) -> serde_json::Value;
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool;
+    fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError>;
+    fn execute<'a>(&'a Self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
+}
+
+/// Tool for recalling facts from the Librarian.
+pub struct RecallTool { @ tools/src/recall.rs:14
+}
+
+impl ToolExecutor for RecallTool {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    fn schema(&self) -> serde_json::Value;
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool;
+    fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError>;
+    fn execute<'a>(&'a Self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
+}
+
+pub struct RunCommandTool { @ tools/src/builtins.rs:68
+}
+
+impl RunCommandTool {
+    pub fn new(shell: super::DetectedShell, run_policy: RunSandboxPolicy) -> Self; @ tools/src/builtins.rs:75
+}
+
+impl ToolExecutor for RunCommandTool {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    fn schema(&self) -> serde_json::Value;
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool;
+    fn requires_approval(&self) -> bool;
+    fn risk_level(&self, _args: &serde_json::Value) -> RiskLevel;
+    fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError>;
+    fn execute<'a>(&'a Self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
+}
+
+/// Aggregate run sandbox policy (platform-specific sub-policies).
+pub struct RunSandboxPolicy { @ tools/src/windows_run.rs:71
+    pub windows: WindowsRunSandboxPolicy,
+}
+
+/// Filesystem sandbox configuration and validation.
+pub struct Sandbox { @ tools/src/sandbox.rs:13
+}
+
+impl Sandbox {
+    pub fn allow_absolute(&self) -> bool; @ tools/src/sandbox.rs:79
+    pub fn allowed_roots(&self) -> &[PathBuf]; @ tools/src/sandbox.rs:73
+    /// Validate a resolved path (absolute) against sandbox rules.
+    pub fn ensure_path_allowed(&self, path: &Path) -> Result<PathBuf, ToolError>; @ tools/src/sandbox.rs:303
+    pub fn new(allowed_roots: Vec<PathBuf>, denied_patterns: Vec<String>, allow_absolute: bool) -> Result<Self, ToolError>; @ tools/src/sandbox.rs:33
+    /// Validate and resolve a path within the sandbox.
+    pub fn resolve_path(&self, path: &str, working_dir: &Path) -> Result<PathBuf, ToolError>; @ tools/src/sandbox.rs:107
+    /// Validate and resolve a path for file creation, allowing non-existent directories.
+    pub fn resolve_path_for_create(&self, path: &str, working_dir: &Path) -> Result<PathBuf, ToolError>; @ tools/src/sandbox.rs:191
+    /// Post-creation validation for TOCTOU mitigation.
+    pub fn validate_created_parent(&self, path: &Path) -> Result<(), ToolError>; @ tools/src/sandbox.rs:339
+    pub fn working_dir(&self) -> PathBuf; @ tools/src/sandbox.rs:84
+}
+
+pub struct SearchTool { @ tools/src/search.rs:49
+}
+
+impl SearchTool {
+    pub fn new(config: SearchToolConfig) -> Self; @ tools/src/search.rs:56
+}
+
+impl ToolExecutor for SearchTool {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    fn schema(&self) -> serde_json::Value;
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool;
+    fn risk_level(&self, _args: &serde_json::Value) -> RiskLevel;
+    fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError>;
+    fn execute<'a>(&'a Self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
+}
+
+pub struct SearchToolConfig { @ tools/src/search.rs:24
+    pub binary: String,
+    pub fallback_binary: String,
+    pub default_timeout_ms: u64,
+    pub default_max_results: usize,
+    pub max_matches_per_file: usize,
+    pub max_files: usize,
+    pub max_file_size_bytes: u64,
+}
+
+impl Default for SearchToolConfig {
+    fn default() -> Self;
+}
+
+/// Runtime secret redactor built from environment variables.
+pub struct SecretRedactor { @ tools/src/security.rs:50
+}
+
+impl SecretRedactor {
+    /// Build redactor from environment (AUTHORITY BOUNDARY per IFA-7).
+    pub fn from_env() -> Self; @ tools/src/security.rs:69
+    /// Returns true if any secrets were detected in the environment.
+    pub fn has_secrets(&self) -> bool; @ tools/src/security.rs:143
+    /// Redact all known secret values from input.
+    pub fn redact<'a>(&self, input: &'a str) -> std::borrow::Cow<'a, str>; @ tools/src/security.rs:110
+    /// Returns the number of unique secrets detected.
+    pub fn secret_count(&self) -> usize; @ tools/src/security.rs:150
+}
+
+impl Debug for SecretRedactor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
+}
+
+/// Shared batch-level tool context.
+pub struct SharedToolCtx { @ tools/src/lib.rs:369
+    pub sandbox: sandbox::Sandbox,
+    pub output_tx: mpsc::Sender<ToolEvent>,
+    pub default_timeout: std::time::Duration,
+    pub max_output_bytes: usize,
+    pub initial_capacity_bytes: usize,
+    pub env_sanitizer: EnvSanitizer,
+    pub file_cache: std::sync::Arc<tokio::sync::Mutex<ToolFileCache>>,
+}
+
+/// Shell configuration for command execution.
+pub struct ShellConfig { @ tools/src/config.rs:22
+    /// Override shell binary (e.g., "pwsh", "bash", "/usr/local/bin/fish").
+    pub binary: Option<String>,
+    /// Override shell args (e.g., `["-c"]` or `["/C"]`).
+    pub args: Option<Vec<String>>,
+}
+
+/// Per-call tool context.
+pub struct ToolCtx { @ tools/src/lib.rs:346
+    pub sandbox: sandbox::Sandbox,
+    pub abort: futures_util::future::AbortHandle,
+    pub output_tx: mpsc::Sender<ToolEvent>,
+    pub default_timeout: std::time::Duration,
+    pub max_output_bytes: usize,
+    pub available_capacity_bytes: usize,
+    pub tool_call_id: String,
+    pub allow_truncation: bool,
+    pub working_dir: std::path::PathBuf,
+    pub env_sanitizer: EnvSanitizer,
+    pub file_cache: std::sync::Arc<tokio::sync::Mutex<ToolFileCache>>,
+    pub turn_changes: change_recording::ChangeRecorder,
+    /// The Librarian for fact recall (Context Infinity).
+    pub librarian: Option<std::sync::Arc<tokio::sync::Mutex<forge_context::Librarian>>>,
+    /// Command blacklist for blocking catastrophic commands.
+    pub command_blacklist: CommandBlacklist,
+}
+
+/// Per-batch limits for tool execution.
+pub struct ToolLimits { @ tools/src/lib.rs:381
+    pub max_tool_calls_per_batch: usize,
+    pub max_tool_iterations_per_user_turn: u32,
+    pub max_tool_args_bytes: usize,
+}
+
+/// Tool registry for executors.
+pub struct ToolRegistry { @ tools/src/lib.rs:288
+}
+
+impl ToolRegistry {
+    pub fn definitions(&self) -> Vec<ToolDefinition>; @ tools/src/lib.rs:312
+    pub fn is_empty(&self) -> bool; @ tools/src/lib.rs:329
+    pub fn lookup(&self, name: &str) -> Result<&dyn ToolExecutor, ToolError>; @ tools/src/lib.rs:302
+    pub fn register(&mut self, executor: Box<dyn ToolExecutor>) -> Result<(), ToolError>; @ tools/src/lib.rs:293
+}
+
+/// Aggregated tool settings derived from config.
+pub struct ToolSettings { @ tools/src/lib.rs:410
+    pub limits: ToolLimits,
+    pub read_limits: ReadFileLimits,
+    pub patch_limits: PatchLimits,
+    pub search: SearchToolConfig,
+    pub webfetch: WebFetchToolConfig,
+    pub shell: DetectedShell,
+    pub timeouts: ToolTimeouts,
+    pub max_output_bytes: usize,
+    pub policy: Policy,
+    pub sandbox: sandbox::Sandbox,
+    pub env_sanitizer: EnvSanitizer,
+    pub command_blacklist: CommandBlacklist,
+    pub run_policy: RunSandboxPolicy,
+}
+
+/// Tool-specific timeout configuration.
+pub struct ToolTimeouts { @ tools/src/lib.rs:402
+    pub default_timeout: std::time::Duration,
+    pub file_operations_timeout: std::time::Duration,
+    pub shell_commands_timeout: std::time::Duration,
+}
+
+/// Non-empty summary of changes made during a turn.
+pub struct TurnChangeSummary { @ tools/src/change_recording.rs:58
+}
+
+impl TurnChangeSummary {
+    pub fn into_message(self) -> NonEmptyString; @ tools/src/change_recording.rs:142
+}
+
+/// Proof that a user turn is active (IFA §10 capability token).
+pub struct TurnContext { @ tools/src/change_recording.rs:37
+}
+
+impl TurnContext {
+    /// Consume the turn and produce a report with the raw path sets.
+    pub fn finish(self, working_dir: &Path) -> (TurnChangeReport, BTreeSet<PathBuf>, BTreeSet<PathBuf>); @ tools/src/change_recording.rs:96
+    pub fn new() -> Self; @ tools/src/change_recording.rs:70
+    pub fn new_for_recovery() -> Self; @ tools/src/change_recording.rs:77
+    pub fn new_for_tests() -> Self; @ tools/src/change_recording.rs:82
+    pub fn recorder(&self) -> ChangeRecorder; @ tools/src/change_recording.rs:87
+}
+
+impl Default for TurnContext {
+    fn default() -> Self;
+}
+
+/// `WebFetch` tool executor.
+pub struct WebFetchTool { @ tools/src/webfetch/mod.rs:243
+}
+
+impl WebFetchTool {
+    pub fn new(config: WebFetchToolConfig) -> Self; @ tools/src/webfetch/mod.rs:249
+}
+
+impl ToolExecutor for WebFetchTool {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    fn schema(&self) -> serde_json::Value;
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool;
+    fn requires_approval(&self) -> bool;
+    fn risk_level(&self, _args: &serde_json::Value) -> RiskLevel;
+    fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError>;
+    fn execute<'a>(&'a Self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
+}
+
+/// Configuration for the `WebFetch` tool.
+pub struct WebFetchToolConfig { @ tools/src/webfetch/mod.rs:217
+    pub user_agent: Option<String>,
+    pub timeout_seconds: u32,
+    pub max_redirects: u32,
+    pub default_max_chunk_tokens: u32,
+    pub max_download_bytes: u64,
+    pub cache_dir: Option<std::path::PathBuf>,
+    pub cache_ttl_days: u32,
+}
+
+impl Default for WebFetchToolConfig {
+    fn default() -> Self;
+}
+
+/// Windows-specific run sandbox policy.
+pub struct WindowsRunSandboxPolicy { @ tools/src/windows_run.rs:51
+    pub enabled: bool,
+    pub enforce_powershell_only: bool,
+    pub block_network: bool,
+    pub fallback_mode: RunSandboxFallbackMode,
+}
+
+impl Default for WindowsRunSandboxPolicy {
+    fn default() -> Self;
+}
+
+pub struct WriteFileTool { @ tools/src/builtins.rs:65
+}
+
+impl ToolExecutor for WriteFileTool {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    fn schema(&self) -> serde_json::Value;
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool;
+    fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError>;
+    fn execute<'a>(&'a Self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
+}
+
+/// Approval decision from the user.
+pub enum ApprovalDecision { @ tools/src/lib.rs:56
+    ApproveAll,
+    ApproveSelected(Vec<String>),
+    DenyAll,
+}
+
+/// Approval mode policy.
+pub enum ApprovalMode { @ tools/src/lib.rs:64
+    /// Auto-approve most tools, only prompt for high-risk operations.
+    Permissive,
+    /// Prompt for any side-effecting tool unless allowlisted.
+    Default,
+    /// Deny all tools unless explicitly allowlisted.
+    Strict,
+}
+
+/// Denial reason for sandbox or policy.
+pub enum DenialReason { @ tools/src/lib.rs:199
+    Denylisted {
+        tool: String,
+    },
+    PathOutsideSandbox {
+        attempted: std::path::PathBuf,
+        resolved: std::path::PathBuf,
+    },
+    DeniedPatternMatched {
+        attempted: std::path::PathBuf,
+        pattern: String,
+    },
+    LimitsExceeded {
+        message: String,
+    },
+    CommandBlacklisted {
+        command: String,
+        reason: String,
+    },
+}
+
+impl Display for DenialReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
+}
+
+pub enum EolKind { @ tools/src/lp1.rs:60
+    Lf,
+    CrLf,
+}
+
+pub enum KillOutcome { @ tools/src/process.rs:52
+    NotRunning,
+    Killed,
+}
+
+pub enum Op { @ tools/src/lp1.rs:17
+    Replace {
+        occ: Option<usize>,
+        find: Vec<String>,
+        replace: Vec<String>,
+    },
+    InsertAfter {
+        occ: Option<usize>,
+        find: Vec<String>,
+        insert: Vec<String>,
+    },
+    InsertBefore {
+        occ: Option<usize>,
+        find: Vec<String>,
+        insert: Vec<String>,
+    },
+    Erase {
+        occ: Option<usize>,
+        find: Vec<String>,
+    },
+    Append {
+        block: Vec<String>,
+    },
+    Prepend {
+        block: Vec<String>,
+    },
+    SetFinalNewline(bool),
+}
+
+/// Planned disposition for a tool call.
+pub enum PlannedDisposition { @ tools/src/lib.rs:139
+    ExecuteNow,
+    RequiresConfirmation(ConfirmationRequest),
+    PreResolved(forge_types::ToolResult),
+}
+
+/// Risk level for approval prompts.
+pub enum RiskLevel { @ tools/src/lib.rs:48
+    Low,
+    Medium,
+    High,
+}
+
+/// Behavior when Windows sandbox prerequisites are unavailable.
+pub enum RunSandboxFallbackMode { @ tools/src/windows_run.rs:40
+    /// Require explicit opt-in per call before allowing unsandboxed execution.
+    Prompt,
+    /// Never allow unsandboxed execution.
+    Deny,
+    /// Automatically allow unsandboxed execution with a warning.
+    AllowWithWarning,
+}
+
+/// Error types for tool execution.
+pub enum ToolError { @ tools/src/lib.rs:176
+    BadArgs {
+        message: String,
+    },
+    Timeout {
+        tool: String,
+        elapsed: std::time::Duration,
+    },
+    SandboxViolation(DenialReason),
+    ExecutionFailed {
+        tool: String,
+        message: String,
+    },
+    UnknownTool {
+        name: String,
+    },
+    DuplicateTool {
+        name: String,
+    },
+    DuplicateToolCallId {
+        id: String,
+    },
+    PatchFailed {
+        file: std::path::PathBuf,
+        message: String,
+    },
+    StaleFile {
+        file: std::path::PathBuf,
+        reason: String,
+    },
+}
+
+/// Tool events for streaming output.
+pub enum ToolEvent { @ tools/src/lib.rs:147
+    Started {
+        tool_call_id: String,
+        tool_name: String,
+    },
+    /// A subprocess-backed tool spawned an OS process (best-effort metadata).
+    ProcessSpawned {
+        tool_call_id: String,
+        pid: u32,
+        process_started_at_unix_ms: Option<i64>,
+    },
+    StdoutChunk {
+        tool_call_id: String,
+        chunk: String,
+    },
+    StderrChunk {
+        tool_call_id: String,
+        chunk: String,
+    },
+    Completed {
+        tool_call_id: String,
+    },
+}
+
+/// Result of finishing a turn.
+pub enum TurnChangeReport { @ tools/src/change_recording.rs:51
+    NoChanges,
+    Changes(TurnChangeSummary),
+}
 ```
 

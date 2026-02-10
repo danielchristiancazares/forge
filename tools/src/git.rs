@@ -323,6 +323,13 @@ impl ToolExecutor for GitTool {
         }
     }
 
+    fn reads_user_data(&self, args: &Value) -> bool {
+        match Self::parse_kind(args) {
+            Ok(kind) => !kind.is_side_effecting(),
+            Err(_) => true,
+        }
+    }
+
     fn risk_level(&self, args: &Value) -> RiskLevel {
         match Self::parse_kind(args) {
             Ok(GitToolKind::Diff)
@@ -1944,6 +1951,30 @@ mod tests {
         let args = json!({"command": "unknown"});
         assert!(tool.is_side_effecting(&args));
         assert_eq!(tool.risk_level(&args), RiskLevel::High);
+    }
+
+    #[test]
+    fn status_reads_user_data() {
+        let tool = GitTool;
+        assert!(tool.reads_user_data(&json!({"command": "status"})));
+    }
+
+    #[test]
+    fn diff_reads_user_data() {
+        let tool = GitTool;
+        assert!(tool.reads_user_data(&json!({"command": "diff"})));
+    }
+
+    #[test]
+    fn commit_does_not_read_user_data() {
+        let tool = GitTool;
+        assert!(!tool.reads_user_data(&json!({"command": "commit", "message": "test"})));
+    }
+
+    #[test]
+    fn restore_does_not_read_user_data() {
+        let tool = GitTool;
+        assert!(!tool.reads_user_data(&json!({"command": "restore", "paths": ["f.rs"]})));
     }
 
     #[test]

@@ -241,6 +241,10 @@ impl ToolExecutor for SearchTool {
         false
     }
 
+    fn reads_user_data(&self, _args: &serde_json::Value) -> bool {
+        true
+    }
+
     fn risk_level(&self, _args: &serde_json::Value) -> RiskLevel {
         RiskLevel::Medium
     }
@@ -1718,5 +1722,11 @@ mod tests {
     fn pattern_detects_ascii_uppercase() {
         assert!(pattern_has_ascii_uppercase("Foo"));
         assert!(!pattern_has_ascii_uppercase("foo"));
+    }
+
+    #[test]
+    fn search_tool_reads_user_data() {
+        let tool = SearchTool::new(SearchToolConfig::default());
+        assert!(tool.reads_user_data(&serde_json::json!({"pattern": "test"})));
     }
 }

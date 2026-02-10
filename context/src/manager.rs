@@ -54,10 +54,38 @@ pub enum ContextBuildError {
 
 #[derive(Debug, Clone)]
 pub struct DistillationNeeded {
+    pub tokens_to_distill: u32,
+    pub available_tokens: u32,
     pub excess_tokens: u32,
     pub messages_to_distill: Vec<MessageId>,
     pub suggestion: String,
 }
+
+#[derive(Debug, Clone)]
+pub enum DistillationPlanError {
+    EmptyScope,
+    BudgetTooTight {
+        available_tokens: u32,
+        required_tokens: u32,
+    },
+}
+
+impl std::fmt::Display for DistillationPlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyScope => write!(f, "no messages selected for distillation"),
+            Self::BudgetTooTight {
+                available_tokens,
+                required_tokens,
+            } => write!(
+                f,
+                "no room to insert distillate: available {available_tokens} tokens, need at least {required_tokens} tokens"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DistillationPlanError {}
 
 /// Contiguous range of message IDs selected for distillation.
 ///
@@ -443,6 +471,8 @@ impl ContextManager {
 
             let msg_count = need_distillation.len();
             return Err(ContextBuildError::DistillationNeeded(DistillationNeeded {
+                tokens_to_distill,
+                available_tokens: available_left,
                 excess_tokens,
                 messages_to_distill: need_distillation,
                 suggestion: format!("{msg_count} older messages need distillation"),
@@ -469,16 +499,22 @@ impl ContextManager {
         Ok(ctx)
     }
 
+    fn distillate_prefix_message_tokens(&self) -> u32 {
+        let content = NonEmptyString::new(format!("{}\n", DISTILLATE_PREFIX.as_str()))
+            .expect("DISTILLATE_PREFIX is non-empty");
+        self.counter.count_message(&Message::system(content))
+    }
+
     pub fn prepare_distillation(
         &mut self,
-        message_ids: &[MessageId],
-    ) -> Option<PendingDistillation> {
-        let mut ids: Vec<MessageId> = message_ids.to_vec();
+        needed: &DistillationNeeded,
+    ) -> std::result::Result<PendingDistillation, DistillationPlanError> {
+        let mut ids: Vec<MessageId> = needed.messages_to_distill.clone();
         ids.sort_by_key(super::history::MessageId::as_u64);
         ids.dedup();
 
         if ids.is_empty() {
-            return None;
+            return Err(DistillationPlanError::EmptyScope);
         }
 
         // Keep only the first contiguous run - distillations must represent a contiguous slice of history.
@@ -506,18 +542,39 @@ impl ContextManager {
             .distillation_config
             .target_ratio
             .clamp(MIN_DISTILLATION_RATIO, MAX_DISTILLATION_RATIO);
-        let target_tokens = (f64::from(original_tokens) * f64::from(ratio)).round() as u32;
-        let target_tokens = target_tokens.clamp(MIN_DISTILLATION_TOKENS, MAX_DISTILLATION_TOKENS);
+        let ratio_target = (f64::from(original_tokens) * f64::from(ratio)).round() as u32;
 
-        let first = ids.first().copied()?;
-        let last = ids.last().copied()?;
+        let prefix_msg_tokens = self.distillate_prefix_message_tokens();
+        let max_target_tokens = needed
+            .available_tokens
+            .saturating_sub(prefix_msg_tokens)
+            .min(MAX_DISTILLATION_TOKENS);
+
+        if max_target_tokens == 0 {
+            return Err(DistillationPlanError::BudgetTooTight {
+                available_tokens: needed.available_tokens,
+                required_tokens: prefix_msg_tokens.saturating_add(1),
+            });
+        }
+
+        let min_target_tokens = MIN_DISTILLATION_TOKENS.min(max_target_tokens);
+        let target_tokens = ratio_target.clamp(min_target_tokens, max_target_tokens);
+
+        let first = ids
+            .first()
+            .copied()
+            .ok_or(DistillationPlanError::EmptyScope)?;
+        let last = ids
+            .last()
+            .copied()
+            .ok_or(DistillationPlanError::EmptyScope)?;
         let end_exclusive = last.next();
         let scope = DistillationScope {
             ids,
             range: first..end_exclusive,
         };
 
-        Some(PendingDistillation {
+        Ok(PendingDistillation {
             scope,
             messages,
             original_tokens,
@@ -1059,5 +1116,46 @@ mod tests {
         // Verify content method works
         assert!(entries[0].message().content().contains("get_weather"));
         assert!(entries[1].message().content().contains("72°F"));
+    }
+
+    #[test]
+    fn test_prepare_distillation_clamps_to_available_budget() {
+        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
+
+        let limits = ModelLimits::new(2_000, 500);
+        manager.set_registry_override(PredefinedModel::ClaudeOpus, limits);
+        manager.set_model_without_adaptation(model(PredefinedModel::ClaudeOpus));
+
+        for i in 0..30 {
+            manager.push_message(
+                Message::try_user(format!("Message {i}: {}", "word ".repeat(40)))
+                    .expect("non-empty"),
+            );
+        }
+
+        let ids: Vec<MessageId> = (0..20).map(MessageId::new_for_test).collect();
+
+        let tokens_to_distill: u32 = ids
+            .iter()
+            .map(|id| manager.history.get_entry(*id).token_count())
+            .sum();
+
+        let prefix_msg_tokens = manager.distillate_prefix_message_tokens();
+        let available_tokens = prefix_msg_tokens + 20;
+
+        let needed = DistillationNeeded {
+            tokens_to_distill,
+            available_tokens,
+            excess_tokens: tokens_to_distill.saturating_sub(available_tokens),
+            messages_to_distill: ids,
+            suggestion: "test".to_string(),
+        };
+
+        let pending = manager
+            .prepare_distillation(&needed)
+            .expect("pending distillation");
+
+        assert_eq!(pending.target_tokens, 20);
+        assert!(pending.target_tokens < MIN_DISTILLATION_TOKENS);
     }
 }

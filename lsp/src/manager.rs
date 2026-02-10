@@ -137,6 +137,13 @@ impl LspManager {
                         tracing::warn!(server = %server, error = %msg, "LSP server failed");
                     }
                 }
+                let exts: Vec<&str> = self
+                    .extension_map
+                    .iter()
+                    .filter(|(_, srv)| *srv == &server)
+                    .map(|(ext, _)| ext.as_str())
+                    .collect();
+                self.diagnostics.remove_for_extensions(&exts);
                 self.servers.remove(&server);
             }
             LspEvent::Diagnostics { path, items } => {

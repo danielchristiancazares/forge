@@ -686,6 +686,7 @@ impl App {
                 tools::ApprovalMode::Default => {
                     exec.requires_approval()
                         || (exec.is_side_effecting(&call.arguments) && !allowlisted)
+                        || (exec.reads_user_data(&call.arguments) && !allowlisted)
                 }
             };
 

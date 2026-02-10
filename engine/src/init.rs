@@ -31,24 +31,7 @@ pub(crate) const DEFAULT_TOOL_CAPACITY_BYTES: usize = 64 * 1024;
 pub(crate) const TOOL_OUTPUT_SAFETY_MARGIN_TOKENS: u32 = 256;
 pub(crate) const TOOL_EVENT_CHANNEL_CAPACITY: usize = 64;
 
-// Environment variable denylist patterns
-const DEFAULT_ENV_DENYLIST: [&str; 15] = [
-    "*_KEY",
-    "*_TOKEN",
-    "*_SECRET",
-    "*_PASSWORD",
-    "*_CREDENTIAL*",
-    "*_API_*",
-    "AWS_*",
-    "ANTHROPIC_*",
-    "OPENAI_*",
-    "GEMINI_*",
-    "GOOGLE_*",
-    "AZURE_*",
-    "GH_*",
-    "GITHUB_*",
-    "NPM_*",
-];
+use forge_types::ENV_SECRET_DENYLIST as DEFAULT_ENV_DENYLIST;
 
 // Sandbox deny patterns for sensitive files
 const DEFAULT_SANDBOX_DENIES: [&str; 21] = [

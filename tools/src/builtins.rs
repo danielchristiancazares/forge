@@ -323,6 +323,10 @@ impl ToolExecutor for GlobTool {
         false
     }
 
+    fn reads_user_data(&self, _args: &serde_json::Value) -> bool {
+        true
+    }
+
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
         let typed: GlobArgs = parse_args(args)?;
         let base = typed.path.as_deref().unwrap_or(".");
@@ -524,6 +528,10 @@ impl ToolExecutor for ReadFileTool {
 
     fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
         false
+    }
+
+    fn reads_user_data(&self, _args: &serde_json::Value) -> bool {
+        true
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
@@ -1712,6 +1720,12 @@ mod tests {
     }
 
     #[test]
+    fn glob_tool_reads_user_data() {
+        let tool = GlobTool;
+        assert!(tool.reads_user_data(&serde_json::json!({})));
+    }
+
+    #[test]
     fn glob_tool_risk_level_is_low() {
         let tool = GlobTool;
         assert_eq!(tool.risk_level(&serde_json::json!({})), RiskLevel::Low);
@@ -1782,5 +1796,20 @@ mod tests {
         let content = "only line";
         let result = format_with_line_numbers(content, 1);
         assert_eq!(result, "1| only line");
+    }
+
+    #[test]
+    fn read_tool_reads_user_data() {
+        let tool = ReadFileTool::new(ReadFileLimits {
+            max_file_read_bytes: 1024,
+            max_scan_bytes: 4096,
+        });
+        assert!(tool.reads_user_data(&serde_json::json!({"path": "foo.rs"})));
+    }
+
+    #[test]
+    fn write_tool_does_not_read_user_data() {
+        let tool = WriteFileTool;
+        assert!(!tool.reads_user_data(&serde_json::json!({})));
     }
 }

@@ -411,6 +411,15 @@ impl SseParser for GeminiParser {
         let mut events = Vec::new();
         let mut finish_action: Option<SseParseAction> = None;
 
+        if let Some(usage) = response.usage_metadata {
+            events.push(StreamEvent::Usage(crate::ApiUsage {
+                input_tokens: usage.prompt_token_count,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                output_tokens: usage.candidates_token_count,
+            }));
+        }
+
         // Process candidates
         if let Some(candidates) = response.candidates {
             for candidate in candidates {

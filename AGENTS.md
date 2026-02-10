@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Forge is a vim-modal TUI for LLMs built with ratatui/crossterm.
 Environment: Windows, PowerShell 7. Use `Pwsh` tool, not Bash.
@@ -38,7 +38,7 @@ This prevents uncommitted changes from one session bleeding into another's build
 
 ## Shell Pitfalls (Windows)
 
-- No `2>&1` redirection — just run the command directly
+- Avoid `2>&1` redirection in suggested commands — tool output already captures stderr.
 - No `cd dir && command` chaining — commands run from repo root; use `--manifest-path` for cargo
 - No `Push-Location`/`Set-Location` with semicolons — run commands directly
 
@@ -91,7 +91,7 @@ thinking_enabled = true      # thinkingLevel="high" for Gemini 3 Pro
 
 Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_CONTEXT_INFINITY=0`
 
-## Crates (9)
+## Crates (8)
 
 | Crate | Purpose |
 |-------|---------|
@@ -103,7 +103,6 @@ Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_C
 | `tools` | Tool executor framework, built-in tools, URL fetch/extraction |
 | `tui` | TUI rendering (ratatui), input handling, themes |
 | `lsp` | LSP client for language server diagnostics |
-| `tests` | Integration tests |
 
 ## Key Files
 
@@ -175,7 +174,7 @@ Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_C
 
 ## Testing
 
-Uses wiremock for HTTP mocking, insta for snapshots, tempfile for isolation.
+Integration tests live in `tests/`. Uses wiremock for HTTP mocking, insta for snapshots, tempfile for isolation.
 
 ## Reference Docs
 
@@ -185,6 +184,11 @@ Uses wiremock for HTTP mocking, insta for snapshots, tempfile for isolation.
 | `SECURITY.md` | Security sanitization infrastructure |
 | `docs/ANTHROPIC_MESSAGES_API.md` | Claude API reference |
 | `docs/OPENAI_RESPONSES_GPT52.md` | OpenAI Responses API integration |
+| `docs/OPENAI_REASONING_ROUNDTRIP.md` | OpenAI reasoning item replay notes |
+| `docs/PARALLEL_TOOL_EXECUTION.md` | Parallel tool execution design |
+| `docs/CI_RUNBOOK.md` | CI troubleshooting notes |
+| `docs/COLOR_SCHEME.md` | TUI palette reference |
+| `docs/LP1.md` | Line-oriented patch DSL |
 | `docs/RUST_2024_REFERENCE.md` | Rust 2024 edition features used |
 | `docs/SECURITY.md` | Security sanitization (detailed) |
 

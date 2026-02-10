@@ -1040,9 +1040,21 @@ async fn distillation_failure_goes_to_idle_no_retry() {
 
     let content = NonEmptyString::new("alpha").expect("non-empty");
     let msg_id = app.push_history_message(Message::user(content));
+    let tokens = app
+        .context_manager
+        .history()
+        .get_entry(msg_id)
+        .token_count();
+    let needed = DistillationNeeded {
+        tokens_to_distill: tokens,
+        available_tokens: 10_000,
+        excess_tokens: 0,
+        messages_to_distill: vec![msg_id],
+        suggestion: "test".to_string(),
+    };
     let pending = app
         .context_manager
-        .prepare_distillation(&[msg_id])
+        .prepare_distillation(&needed)
         .expect("pending distillation");
 
     let config = ApiConfig::new(ApiKey::claude("test"), app.model.clone()).expect("api config");

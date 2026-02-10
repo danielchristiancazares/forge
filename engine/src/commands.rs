@@ -270,6 +270,10 @@ impl super::App {
                 // Rollback the user message since no response was generated.
                 self.rollback_pending_user_message();
 
+                // Discard any partial usage from the cancelled stream so it
+                // doesn't leak into the next turn's accounting.
+                self.turn_usage = None;
+
                 self.push_notification("Streaming cancelled");
                 true
             }

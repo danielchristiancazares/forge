@@ -43,7 +43,7 @@ pub use librarian::{
 };
 pub use manager::{
     ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus, DistillationNeeded,
-    DistillationScope, PendingDistillation, PreparedContext,
+    DistillationPlanError, DistillationScope, PendingDistillation, PreparedContext,
 };
 pub use model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry, ResolvedModelLimits};
 pub use stream_journal::{

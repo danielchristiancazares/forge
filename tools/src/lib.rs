@@ -250,6 +250,11 @@ pub trait ToolExecutor: Send + Sync + std::panic::UnwindSafe {
     fn description(&self) -> &'static str;
     fn schema(&self) -> Value;
     fn is_side_effecting(&self, args: &Value) -> bool;
+    /// Whether this tool reads local user data that will be sent to the LLM provider.
+    /// In Default approval mode, such tools require approval unless allowlisted.
+    fn reads_user_data(&self, _args: &Value) -> bool {
+        false
+    }
     fn requires_approval(&self) -> bool {
         false
     }
