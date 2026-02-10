@@ -15,9 +15,9 @@ use reqwest::header::LOCATION;
 use tokio::sync::RwLock;
 use url::Url;
 
-use crate::http;
-use crate::resolved::ResolvedConfig;
-use crate::types::{ErrorCode, WebFetchError};
+use super::http;
+use super::resolved::ResolvedConfig;
+use super::types::{ErrorCode, WebFetchError};
 
 /// Maximum robots.txt file size (FR-WF-ROBOTS-SIZE-01).
 pub const MAX_ROBOTS_SIZE: usize = 512 * 1024; // 512 KiB

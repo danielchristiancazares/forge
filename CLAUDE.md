@@ -91,7 +91,7 @@ thinking_enabled = true      # thinkingLevel="high" for Gemini 3 Pro
 
 Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_CONTEXT_INFINITY=0`
 
-## Crates (9)
+## Crates (8)
 
 | Crate | Purpose |
 |-------|---------|
@@ -100,10 +100,9 @@ Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_C
 | `providers` | LLM API clients: Claude, OpenAI, Gemini |
 | `context` | Context window management, SQLite persistence, journaling |
 | `engine` | App state machine, commands, tool execution |
+| `tools` | Tool executor framework, built-in tools, URL fetch/extraction |
 | `tui` | TUI rendering (ratatui), input handling, themes |
 | `lsp` | LSP client for language server diagnostics |
-| `webfetch` | URL fetch, HTML→Markdown, chunking for LLM context |
-| `tests` | Integration tests |
 
 ## Key Files
 
@@ -144,7 +143,7 @@ Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_C
 | `lsp` | `protocol.rs` | LSP message serde types |
 | `lsp` | `diagnostics.rs` | Per-file diagnostics, `DiagnosticsSnapshot` |
 | `lsp` | `types.rs` | `LspConfig`, `ServerConfig`, `ForgeDiagnostic` |
-| `webfetch` | `lib.rs` | URL fetch orchestration, chunking |
+| `tools` | `webfetch/mod.rs` | URL fetch pipeline and tool executor |
 
 ## Extension Points
 

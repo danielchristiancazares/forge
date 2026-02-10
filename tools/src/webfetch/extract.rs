@@ -10,7 +10,7 @@
 use scraper::{ElementRef, Html, Node, Selector};
 use url::Url;
 
-use crate::types::{ErrorCode, WebFetchError};
+use super::types::{ErrorCode, WebFetchError};
 use forge_types::strip_steganographic_chars;
 
 /// Minimum extracted content length (Unicode scalar values).

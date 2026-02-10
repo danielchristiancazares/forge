@@ -11,9 +11,12 @@ workspace = true
 [dependencies]
 forge-types.workspace = true
 forge-context.workspace = true
-forge-webfetch.workspace = true
 
-tokio = { workspace = true, features = ["sync", "rt", "time", "process", "io-util", "fs"] }
+tokio = { workspace = true, features = ["sync", "rt", "time", "process", "io-util", "fs", "net"] }
+reqwest = { workspace = true, features = ["gzip", "brotli", "deflate"] }
+url.workspace = true
+scraper.workspace = true
+tiktoken-rs.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
@@ -55,3 +58,4 @@ windows-sys = { version = "0.61", features = [
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 tempfile.workspace = true
+wiremock.workspace = true

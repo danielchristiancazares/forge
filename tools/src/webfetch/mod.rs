@@ -1,14 +1,214 @@
-//! `WebFetch` tool executor for URL fetching.
+//! WebFetch: URL fetching, extraction, chunking, and tool executor.
+
+#[allow(dead_code)]
+mod cache;
+#[allow(dead_code)]
+mod chunk;
+#[allow(dead_code)]
+mod extract;
+#[allow(dead_code)]
+mod http;
+#[allow(dead_code)]
+mod resolved;
+#[allow(dead_code)]
+mod robots;
+pub mod types;
+
+use cache::{Cache, CacheEntry, CacheResult, CacheWriteError};
+use resolved::{CachePolicy, ResolvedConfig, ResolvedRequest};
+use robots::RobotsResult;
+
+pub use types::{
+    ErrorCode, ErrorDetails, FetchChunk, HttpConfig, Note, RobotsConfig, SecurityConfig,
+    TruncationReason, WebFetchConfig, WebFetchError, WebFetchInput, WebFetchOutput,
+};
 
 use serde::Deserialize;
 use std::path::PathBuf;
-
-use forge_webfetch::{Note, TruncationReason, WebFetchOutput};
 
 use super::{
     RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, parse_args, redact_distillate,
     sanitize_output,
 };
+
+// ---------------------------------------------------------------------------
+// Core fetch pipeline
+// ---------------------------------------------------------------------------
+
+pub async fn fetch(
+    input: WebFetchInput,
+    config: &WebFetchConfig,
+) -> Result<WebFetchOutput, WebFetchError> {
+    let mut notes = Vec::new();
+    let resolved = ResolvedConfig::from_config(config)?;
+    let mut request = ResolvedRequest::from_input(input, &resolved);
+
+    // Upgrade http → https unless insecure overrides are enabled (testing)
+    if request.url.scheme() == "http" && !resolved.security.allow_insecure_overrides {
+        if request.url.port() == Some(80) {
+            let _ = request.url.set_port(None);
+        }
+        let _ = request.url.set_scheme("https");
+        notes.push(Note::HttpUpgradedToHttps);
+    }
+
+    let max_chunk_tokens = request.max_chunk_tokens;
+
+    if !request.no_cache
+        && let Some(output) = check_cache(&request, &resolved)?
+    {
+        return Ok(output);
+    }
+
+    let resolved_ips = http::validate_url(&request.requested_url, &request.url, &resolved).await?;
+
+    check_robots(&request.url, &resolved, &mut notes).await?;
+
+    let (html, final_url, charset_fallback) =
+        fetch_content(&request, &resolved, &resolved_ips).await?;
+
+    let extracted = extract::extract(&html, &final_url)?;
+
+    let chunks = chunk::chunk(&extracted.markdown, max_chunk_tokens);
+
+    let mut fetched_at = cache::format_rfc3339(std::time::SystemTime::now());
+    if let CachePolicy::Enabled(settings) = &resolved.cache {
+        let cache_entry = CacheEntry::new(
+            canonicalize_url(&final_url),
+            extracted.title.clone(),
+            extracted.language.clone(),
+            extracted.markdown.clone(),
+            settings.ttl,
+        );
+        fetched_at = cache_entry.fetched_at.clone();
+        if write_to_cache(&request.url, &cache_entry, settings).is_err() {
+            notes.push(Note::CacheWriteFailed);
+        }
+    }
+
+    if charset_fallback {
+        notes.push(Note::CharsetFallback);
+    }
+
+    notes.sort_by_key(types::Note::order);
+    notes.dedup();
+
+    Ok(WebFetchOutput {
+        requested_url: request.requested_url,
+        final_url: canonicalize_url(&final_url),
+        fetched_at,
+        title: extracted.title,
+        language: extracted.language,
+        chunks,
+        truncated: false,
+        truncation_reason: None,
+        notes,
+    })
+}
+
+fn check_cache(
+    request: &ResolvedRequest,
+    config: &ResolvedConfig,
+) -> Result<Option<WebFetchOutput>, WebFetchError> {
+    let CachePolicy::Enabled(settings) = &config.cache else {
+        return Ok(None);
+    };
+    let mut cache = match Cache::new(settings) {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
+
+    match cache.get(&request.url) {
+        CacheResult::Hit(entry) => {
+            let chunks = chunk::chunk(&entry.markdown, request.max_chunk_tokens);
+
+            Ok(Some(WebFetchOutput {
+                requested_url: request.requested_url.clone(),
+                final_url: entry.final_url,
+                fetched_at: entry.fetched_at,
+                title: entry.title,
+                language: entry.language,
+                chunks,
+                truncated: false,
+                truncation_reason: None,
+                notes: vec![Note::CacheHit],
+            }))
+        }
+        CacheResult::Miss | CacheResult::VersionMismatch => Ok(None),
+    }
+}
+
+async fn check_robots(
+    url: &url::Url,
+    config: &ResolvedConfig,
+    notes: &mut Vec<Note>,
+) -> Result<(), WebFetchError> {
+    let result = robots::check(url, config).await?;
+
+    match result {
+        RobotsResult::Allowed => Ok(()),
+        RobotsResult::Disallowed { rule } => Err(WebFetchError::new(
+            ErrorCode::RobotsDisallowed,
+            format!("robots.txt disallows this path: {rule}"),
+            false,
+        )
+        .with_detail("rule", rule)),
+        RobotsResult::Unavailable { error: _ } => {
+            notes.push(Note::RobotsUnavailableFailOpen);
+            Ok(())
+        }
+    }
+}
+
+async fn fetch_content(
+    input: &ResolvedRequest,
+    config: &ResolvedConfig,
+    resolved_ips: &[std::net::IpAddr],
+) -> Result<(String, url::Url, bool), WebFetchError> {
+    let response = http::fetch(&input.url, resolved_ips, config).await?;
+    let charset_fallback = response.charset_fallback;
+    let html = decode_body(&response.body, response.charset.as_deref())?;
+    Ok((html, response.final_url, charset_fallback))
+}
+
+fn decode_body(body: &[u8], charset: Option<&str>) -> Result<String, WebFetchError> {
+    match charset {
+        Some("utf-8" | "UTF-8") | None => String::from_utf8(body.to_vec()).map_err(|e| {
+            WebFetchError::new(
+                ErrorCode::ExtractionFailed,
+                format!("invalid UTF-8 in response body: {e}"),
+                false,
+            )
+        }),
+        Some(other) => {
+            tracing::warn!(
+                "charset {} not fully supported, using UTF-8 fallback",
+                other
+            );
+            Ok(String::from_utf8_lossy(body).into_owned())
+        }
+    }
+}
+
+fn write_to_cache(
+    url: &url::Url,
+    entry: &CacheEntry,
+    settings: &resolved::CacheSettings,
+) -> Result<(), CacheWriteError> {
+    let mut cache =
+        Cache::new(settings).map_err(|e| CacheWriteError::Io(std::io::Error::other(e.message)))?;
+    cache.put(url, entry)
+}
+
+fn canonicalize_url(url: &url::Url) -> String {
+    let mut url = url.clone();
+    url.set_fragment(None);
+    url.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Tool executor
+// ---------------------------------------------------------------------------
 
 const WEBFETCH_TOOL_NAME: &str = "WebFetch";
 
@@ -50,8 +250,8 @@ impl WebFetchTool {
         Self { config }
     }
 
-    fn build_config(&self) -> forge_webfetch::WebFetchConfig {
-        forge_webfetch::WebFetchConfig {
+    fn build_config(&self) -> WebFetchConfig {
+        WebFetchConfig {
             user_agent: self.config.user_agent.clone(),
             timeout_seconds: Some(self.config.timeout_seconds),
             max_redirects: Some(self.config.max_redirects),
@@ -135,11 +335,9 @@ impl ToolExecutor for WebFetchTool {
                 });
             }
 
-            // Build input
-            let mut input =
-                forge_webfetch::WebFetchInput::new(&typed.url).map_err(|e| ToolError::BadArgs {
-                    message: e.message.clone(),
-                })?;
+            let mut input = WebFetchInput::new(&typed.url).map_err(|e| ToolError::BadArgs {
+                message: e.message.clone(),
+            })?;
 
             if let Some(tokens) = typed.max_chunk_tokens {
                 input = input
@@ -151,18 +349,15 @@ impl ToolExecutor for WebFetchTool {
 
             input = input.with_no_cache(typed.no_cache);
 
-            // Build config
             let config = self.build_config();
 
-            // Execute fetch
-            let output = forge_webfetch::fetch(input, &config).await.map_err(|e| {
-                ToolError::ExecutionFailed {
+            let output = fetch(input, &config)
+                .await
+                .map_err(|e| ToolError::ExecutionFailed {
                     tool: WEBFETCH_TOOL_NAME.to_string(),
                     message: e.message.clone(),
-                }
-            })?;
+                })?;
 
-            // Trim to fit output budget while preserving valid JSON.
             let effective_max = ctx.max_output_bytes.min(ctx.available_capacity_bytes);
             let output_str = shrink_output_to_fit(output, effective_max)?;
             Ok(sanitize_output(&output_str))
@@ -244,7 +439,7 @@ fn shrink_output_to_fit(mut output: WebFetchOutput, max_bytes: usize) -> Result<
 }
 
 #[cfg(test)]
-mod tests {
+mod unit_tests {
     use super::*;
 
     #[test]
@@ -257,17 +452,17 @@ mod tests {
     #[test]
     fn shrink_output_to_fit_preserves_valid_json() {
         let chunks = vec![
-            forge_webfetch::FetchChunk {
+            FetchChunk {
                 heading: "Header 1".to_string(),
                 text: "A".repeat(120),
                 token_count: 120,
             },
-            forge_webfetch::FetchChunk {
+            FetchChunk {
                 heading: "Header 2".to_string(),
                 text: "B".repeat(120),
                 token_count: 120,
             },
-            forge_webfetch::FetchChunk {
+            FetchChunk {
                 heading: "Header 3".to_string(),
                 text: "C".repeat(120),
                 token_count: 120,
@@ -290,5 +485,11 @@ mod tests {
         assert!(json.len() <= 200);
         let parsed: WebFetchOutput = serde_json::from_str(&json).expect("valid json");
         assert!(parsed.truncated);
+    }
+
+    #[test]
+    fn test_canonicalize_url() {
+        let url = url::Url::parse("https://example.com/page#section").unwrap();
+        assert_eq!(canonicalize_url(&url), "https://example.com/page");
     }
 }

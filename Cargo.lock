@@ -1050,27 +1050,31 @@ dependencies = [
  "dirs",
  "forge-context",
  "forge-types",
- "forge-webfetch",
  "futures-util",
  "globset",
  "ignore",
  "jsonschema",
  "libc",
  "regex",
+ "reqwest",
+ "scraper",
  "serde",
  "serde_json",
  "sha2",
  "similar",
  "tempfile",
  "thiserror 2.0.18",
+ "tiktoken-rs",
  "tokio",
  "toml",
  "toml_edit",
  "tracing",
  "unicode-normalization",
  "unicode-segmentation",
+ "url",
  "which",
  "windows-sys 0.61.2",
+ "wiremock",
 ]
 
 [[package]]
@@ -1100,29 +1104,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "unicode-script",
-]
-
-[[package]]
-name = "forge-webfetch"
-version = "0.0.0"
-dependencies = [
- "base64",
- "dirs",
- "forge-context",
- "forge-types",
- "futures-util",
- "reqwest",
- "scraper",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.18",
- "tiktoken-rs",
- "tokio",
- "tracing",
- "url",
- "wiremock",
 ]
 
 [[package]]

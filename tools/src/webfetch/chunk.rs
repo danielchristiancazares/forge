@@ -9,7 +9,7 @@
 
 use forge_context::TokenCounter;
 
-use crate::types::FetchChunk;
+use super::types::FetchChunk;
 
 /// Block types detected during parsing.
 #[derive(Debug, Clone)]

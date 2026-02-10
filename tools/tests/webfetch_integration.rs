@@ -3,7 +3,7 @@
 //! These tests exercise the full fetch pipeline: URL validation → robots.txt →
 //! HTTP fetch → extraction → chunking → caching.
 
-use forge_webfetch::{
+use forge_tools::webfetch::{
     ErrorCode, HttpConfig, Note, RobotsConfig, SecurityConfig, WebFetchConfig, WebFetchInput,
 };
 use std::path::Path;
@@ -134,7 +134,7 @@ async fn test_basic_fetch_success() {
     let input = WebFetchInput::new(server.uri()).expect("valid URL");
     let config = test_config();
 
-    let output = forge_webfetch::fetch(input, &config)
+    let output = forge_tools::webfetch::fetch(input, &config)
         .await
         .expect("fetch should succeed");
 
@@ -174,7 +174,7 @@ async fn test_fetch_with_path() {
     let input = WebFetchInput::new(&url).expect("valid URL");
     let config = test_config();
 
-    let output = forge_webfetch::fetch(input, &config)
+    let output = forge_tools::webfetch::fetch(input, &config)
         .await
         .expect("fetch should succeed");
 
@@ -191,7 +191,7 @@ async fn test_fetch_preserves_requested_url() {
     let input = WebFetchInput::new(&requested).expect("valid URL");
     let config = test_config();
 
-    let output = forge_webfetch::fetch(input, &config)
+    let output = forge_tools::webfetch::fetch(input, &config)
         .await
         .expect("fetch should succeed");
 
@@ -227,7 +227,7 @@ async fn test_robots_disallow_blocks_fetch() {
     let input = WebFetchInput::new(&url).expect("valid URL");
     let config = test_config();
 
-    let result = forge_webfetch::fetch(input, &config).await;
+    let result = forge_tools::webfetch::fetch(input, &config).await;
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -258,7 +258,7 @@ async fn test_robots_404_allows_fetch() {
     let input = WebFetchInput::new(server.uri()).expect("valid URL");
     let config = test_config();
 
-    let output = forge_webfetch::fetch(input, &config)
+    let output = forge_tools::webfetch::fetch(input, &config)
         .await
         .expect("fetch should succeed");
     assert_eq!(output.title, Some("Public".to_string()));
@@ -291,7 +291,7 @@ async fn test_robots_user_agent_specific_rules() {
     let input = WebFetchInput::new(server.uri()).expect("valid URL");
     let config = test_config(); // Uses forge-test UA
 
-    let output = forge_webfetch::fetch(input, &config)
+    let output = forge_tools::webfetch::fetch(input, &config)
         .await
         .expect("fetch should succeed");
     assert_eq!(output.title, Some("Allowed".to_string()));
@@ -336,7 +336,7 @@ async fn test_extraction_removes_boilerplate() {
     let input = WebFetchInput::new(server.uri()).expect("valid URL");
     let config = test_config();
 
-    let output = forge_webfetch::fetch(input, &config)
+    let output = forge_tools::webfetch::fetch(input, &config)
         .await
         .expect("fetch should succeed");
 
@@ -389,7 +389,7 @@ async fn test_extraction_converts_links() {
     let input = WebFetchInput::new(server.uri()).expect("valid URL");
     let config = test_config();
 
-    let output = forge_webfetch::fetch(input, &config)
+    let output = forge_tools::webfetch::fetch(input, &config)
         .await
         .expect("fetch should succeed");
     let all_text: String = output.chunks.iter().map(|c| c.text.as_str()).collect();
@@ -426,7 +426,7 @@ async fn test_chunking_respects_max_tokens() {
 
     let config = test_config();
 
-    let output = forge_webfetch::fetch(input, &config)
+    let output = forge_tools::webfetch::fetch(input, &config)
         .await
         .expect("fetch should succeed");
 
@@ -473,7 +473,7 @@ async fn test_chunking_tracks_headings() {
 
     let config = test_config();
 
-    let output = forge_webfetch::fetch(input, &config)
+    let output = forge_tools::webfetch::fetch(input, &config)
         .await
         .expect("fetch should succeed");
 
@@ -500,7 +500,7 @@ async fn test_cache_hit_returns_cached_content() {
 
     // First fetch - should populate cache
     let input1 = WebFetchInput::new(&url).expect("valid URL");
-    let output1 = forge_webfetch::fetch(input1, &config)
+    let output1 = forge_tools::webfetch::fetch(input1, &config)
         .await
         .expect("first fetch");
 
@@ -511,7 +511,7 @@ async fn test_cache_hit_returns_cached_content() {
 
     // Second fetch - should be cache hit
     let input2 = WebFetchInput::new(&url).expect("valid URL");
-    let output2 = forge_webfetch::fetch(input2, &config)
+    let output2 = forge_tools::webfetch::fetch(input2, &config)
         .await
         .expect("second fetch");
 
@@ -534,7 +534,7 @@ async fn test_no_cache_bypasses_cache() {
 
     // First fetch to populate cache
     let input1 = WebFetchInput::new(&url).expect("valid URL");
-    let _ = forge_webfetch::fetch(input1, &config)
+    let _ = forge_tools::webfetch::fetch(input1, &config)
         .await
         .expect("first fetch");
 
@@ -542,7 +542,7 @@ async fn test_no_cache_bypasses_cache() {
     let input2 = WebFetchInput::new(&url)
         .expect("valid URL")
         .with_no_cache(true);
-    let output2 = forge_webfetch::fetch(input2, &config)
+    let output2 = forge_tools::webfetch::fetch(input2, &config)
         .await
         .expect("second fetch");
 
@@ -566,7 +566,7 @@ async fn test_cache_rechunks_with_different_token_limit() {
         .expect("valid URL")
         .with_max_chunk_tokens(2000)
         .expect("valid max_chunk_tokens");
-    let output1 = forge_webfetch::fetch(input1, &config)
+    let output1 = forge_tools::webfetch::fetch(input1, &config)
         .await
         .expect("first fetch");
     let chunk_count1 = output1.chunks.len();
@@ -576,7 +576,7 @@ async fn test_cache_rechunks_with_different_token_limit() {
         .expect("valid URL")
         .with_max_chunk_tokens(128)
         .expect("valid max_chunk_tokens");
-    let output2 = forge_webfetch::fetch(input2, &config)
+    let output2 = forge_tools::webfetch::fetch(input2, &config)
         .await
         .expect("second fetch");
 
@@ -597,7 +597,7 @@ async fn test_invalid_url_rejected() {
 async fn test_non_http_scheme_rejected() {
     let input = WebFetchInput::new("ftp://example.com/file").expect("valid URL");
     let config = test_config_secure();
-    let result = forge_webfetch::fetch(input, &config).await;
+    let result = forge_tools::webfetch::fetch(input, &config).await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.code, ErrorCode::InvalidScheme);
@@ -609,7 +609,7 @@ async fn test_ssrf_localhost_blocked() {
     let input = WebFetchInput::new("http://127.0.0.1/").expect("valid URL");
     let config = test_config_secure();
 
-    let result = forge_webfetch::fetch(input, &config).await;
+    let result = forge_tools::webfetch::fetch(input, &config).await;
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -622,7 +622,7 @@ async fn test_ssrf_private_ip_blocked() {
     let input = WebFetchInput::new("http://192.168.1.1/").expect("valid URL");
     let config = test_config_secure();
 
-    let result = forge_webfetch::fetch(input, &config).await;
+    let result = forge_tools::webfetch::fetch(input, &config).await;
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -649,7 +649,7 @@ async fn test_http_404_error() {
     let input = WebFetchInput::new(&url).expect("valid URL");
     let config = test_config();
 
-    let result = forge_webfetch::fetch(input, &config).await;
+    let result = forge_tools::webfetch::fetch(input, &config).await;
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -676,7 +676,7 @@ async fn test_http_500_error() {
     let input = WebFetchInput::new(&url).expect("valid URL");
     let config = test_config();
 
-    let result = forge_webfetch::fetch(input, &config).await;
+    let result = forge_tools::webfetch::fetch(input, &config).await;
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -707,7 +707,7 @@ async fn test_non_html_content_type_rejected() {
     let input = WebFetchInput::new(&url).expect("valid URL");
     let config = test_config();
 
-    let result = forge_webfetch::fetch(input, &config).await;
+    let result = forge_tools::webfetch::fetch(input, &config).await;
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -744,7 +744,7 @@ async fn test_redirect_followed() {
     let input = WebFetchInput::new(&url).expect("valid URL");
     let config = test_config();
 
-    let output = forge_webfetch::fetch(input, &config)
+    let output = forge_tools::webfetch::fetch(input, &config)
         .await
         .expect("fetch should succeed");
 
@@ -767,7 +767,7 @@ async fn test_output_has_fetched_at_timestamp() {
     let input = WebFetchInput::new(server.uri()).expect("valid URL");
     let config = test_config();
 
-    let output = forge_webfetch::fetch(input, &config)
+    let output = forge_tools::webfetch::fetch(input, &config)
         .await
         .expect("fetch should succeed");
 
@@ -785,7 +785,7 @@ async fn test_chunk_has_token_count() {
     let input = WebFetchInput::new(server.uri()).expect("valid URL");
     let config = test_config();
 
-    let output = forge_webfetch::fetch(input, &config)
+    let output = forge_tools::webfetch::fetch(input, &config)
         .await
         .expect("fetch should succeed");
 
@@ -806,7 +806,7 @@ async fn test_url_fragment_removed_from_final_url() {
     let input = WebFetchInput::new(&url_with_fragment).expect("valid URL");
     let config = test_config();
 
-    let output = forge_webfetch::fetch(input, &config)
+    let output = forge_tools::webfetch::fetch(input, &config)
         .await
         .expect("fetch should succeed");
 
@@ -825,7 +825,7 @@ async fn test_http_upgraded_to_https() {
     let input = WebFetchInput::new("http://127.0.0.1/").expect("valid URL");
     let config = test_config_secure();
 
-    let result = forge_webfetch::fetch(input, &config).await;
+    let result = forge_tools::webfetch::fetch(input, &config).await;
 
     // Should be SSRF blocked (upgrade happened, then SSRF check ran)
     assert!(result.is_err());
@@ -841,7 +841,7 @@ async fn test_http_not_upgraded_when_insecure_overrides() {
     let input = WebFetchInput::new(server.uri()).expect("valid URL");
     let config = test_config(); // allow_insecure_overrides = true
 
-    let output = forge_webfetch::fetch(input, &config)
+    let output = forge_tools::webfetch::fetch(input, &config)
         .await
         .expect("fetch should succeed");
 

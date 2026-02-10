@@ -6,8 +6,8 @@
 //! - DNS pinning for rebinding mitigation (FR-WF-DNS-01)
 //! - HTTP fetching with redirect handling (FR-WF-07)
 //! - Content-Type detection and validation (FR-WF-10)
-use crate::resolved::{ResolvedConfig, TimeoutSetting};
-use crate::types::{ErrorCode, SsrfBlockReason, TimeoutPhase, WebFetchError};
+use super::resolved::{ResolvedConfig, TimeoutSetting};
+use super::types::{ErrorCode, SsrfBlockReason, TimeoutPhase, WebFetchError};
 use futures_util::StreamExt;
 use reqwest::Method;
 use reqwest::header::{CONTENT_TYPE, LOCATION};
@@ -1024,8 +1024,8 @@ fn timeout_phase_label(phase: TimeoutPhase) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use super::super::resolved::DEFAULT_ALLOWED_PORTS;
     use super::*;
-    use crate::resolved::DEFAULT_ALLOWED_PORTS;
 
     #[test]
     fn test_default_blocked_cidrs() {

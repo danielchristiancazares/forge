@@ -8,7 +8,6 @@ members = [
     "tools",
     "tui",
     "types",
-    "webfetch",
 ]
 resolver = "3"
 
@@ -27,7 +26,6 @@ forge-engine = { path = "engine" }
 forge-tui = { path = "tui" }
 forge-lsp = { path = "lsp" }
 forge-tools = { path = "tools" }
-forge-webfetch = { path = "webfetch" }
 
 # TUI framework
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }

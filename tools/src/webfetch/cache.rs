@@ -17,8 +17,8 @@ use url::Url;
 
 use forge_context::{AtomicWriteOptions, atomic_write_with_options};
 
-use crate::resolved::CacheSettings;
-use crate::types::{ErrorCode, WebFetchError};
+use super::resolved::CacheSettings;
+use super::types::{ErrorCode, WebFetchError};
 
 /// Current cache entry format version.
 pub const CACHE_VERSION: u32 = 2;
