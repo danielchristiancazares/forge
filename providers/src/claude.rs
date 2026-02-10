@@ -39,17 +39,20 @@ fn content_block(text: &str, cache_hint: CacheHint) -> serde_json::Value {
         CacheHint::Ephemeral => json!({
             "type": "text",
             "text": text,
-            "cache_control": { "type": "ephemeral" }
+            "cache_control": { "type": "ephemeral", "ttl": 3600 }
         }),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_request_body(
     model: &str,
     messages: &[CacheableMessage],
     limits: OutputLimits,
     system_prompt: Option<&str>,
+    system_cache_hint: CacheHint,
     tools: Option<&[ToolDefinition]>,
+    cache_last_tool: bool,
     thinking_mode: &str,
     thinking_effort: &str,
 ) -> serde_json::Value {
@@ -59,7 +62,7 @@ fn build_request_body(
     if let Some(prompt) = system_prompt
         && !prompt.trim().is_empty()
     {
-        system_blocks.push(content_block(prompt, CacheHint::Ephemeral));
+        system_blocks.push(content_block(prompt, system_cache_hint));
     }
 
     // Track pending assistant content blocks for grouping
@@ -75,7 +78,7 @@ fn build_request_body(
                            messages: &mut Vec<serde_json::Value>| {
         if !content.is_empty() {
             if *cached && let Some(last) = content.last_mut() {
-                last["cache_control"] = json!({"type": "ephemeral"});
+                last["cache_control"] = json!({"type": "ephemeral", "ttl": 3600});
             }
             messages.push(json!({
                 "role": "assistant",
@@ -141,7 +144,7 @@ fn build_request_body(
                     "is_error": result.is_error
                 });
                 if matches!(hint, CacheHint::Ephemeral) {
-                    block["cache_control"] = json!({"type": "ephemeral"});
+                    block["cache_control"] = json!({"type": "ephemeral", "ttl": 3600});
                 }
                 api_messages.push(json!({
                     "role": "user",
@@ -195,7 +198,7 @@ fn build_request_body(
     if let Some(tools) = tools
         && !tools.is_empty()
     {
-        let tool_schemas: Vec<serde_json::Value> = tools
+        let mut tool_schemas: Vec<serde_json::Value> = tools
             .iter()
             .map(|t| {
                 json!({
@@ -205,6 +208,9 @@ fn build_request_body(
                 })
             })
             .collect();
+        if cache_last_tool && let Some(last) = tool_schemas.last_mut() {
+            last["cache_control"] = json!({"type": "ephemeral", "ttl": 3600});
+        }
         body.insert("tools".into(), json!(tool_schemas));
     }
 
@@ -396,12 +402,15 @@ impl SseParser for ClaudeParser {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn send_message(
     config: &ApiConfig,
     messages: &[CacheableMessage],
     limits: OutputLimits,
     system_prompt: Option<&str>,
     tools: Option<&[ToolDefinition]>,
+    system_cache_hint: CacheHint,
+    cache_last_tool: bool,
     tx: mpsc::Sender<StreamEvent>,
 ) -> Result<()> {
     let client = http_client();
@@ -412,7 +421,9 @@ pub async fn send_message(
         messages,
         limits,
         system_prompt,
+        system_cache_hint,
         tools,
+        cache_last_tool,
         config.anthropic_thinking_mode(),
         config.anthropic_thinking_effort(),
     );
@@ -472,7 +483,9 @@ mod tests {
             &messages,
             limits,
             None,
+            CacheHint::Default,
             None,
+            false,
             "adaptive",
             "max",
         );
@@ -495,12 +508,15 @@ mod tests {
             NonEmptyString::new("Distillate").unwrap(),
         ))];
 
+        // With Default hint, system prompt should NOT have cache_control
         let body = build_request_body(
             model.as_str(),
             &messages,
             limits,
             Some("prompt"),
+            CacheHint::Default,
             None,
+            false,
             "adaptive",
             "max",
         );
@@ -508,11 +524,100 @@ mod tests {
         let system = body.get("system").unwrap().as_array().unwrap();
         assert_eq!(system.len(), 2);
         assert_eq!(system[0]["text"].as_str(), Some("prompt"));
+        assert!(system[0].get("cache_control").is_none());
+        assert_eq!(system[1]["text"].as_str(), Some("Distillate"));
+    }
+
+    #[test]
+    fn system_prompt_cached_when_hint_ephemeral() {
+        let model = Provider::Claude.default_model();
+        let limits = OutputLimits::new(1024);
+        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+
+        let body = build_request_body(
+            model.as_str(),
+            &messages,
+            limits,
+            Some("prompt"),
+            CacheHint::Ephemeral,
+            None,
+            false,
+            "adaptive",
+            "max",
+        );
+
+        let system = body.get("system").unwrap().as_array().unwrap();
         assert_eq!(
             system[0]["cache_control"]["type"].as_str(),
             Some("ephemeral")
         );
-        assert_eq!(system[1]["text"].as_str(), Some("Distillate"));
+        assert_eq!(system[0]["cache_control"]["ttl"].as_u64(), Some(3600));
+    }
+
+    #[test]
+    fn tool_schema_cache_control_with_ttl() {
+        let model = Provider::Claude.default_model();
+        let limits = OutputLimits::new(1024);
+        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let tools = vec![
+            ToolDefinition::new("tool_a", "desc a", json!({"type": "object"})),
+            ToolDefinition::new("tool_b", "desc b", json!({"type": "object"})),
+        ];
+
+        let body = build_request_body(
+            model.as_str(),
+            &messages,
+            limits,
+            None,
+            CacheHint::Default,
+            Some(&tools),
+            true,
+            "adaptive",
+            "max",
+        );
+
+        let api_tools = body["tools"].as_array().unwrap();
+        assert_eq!(api_tools.len(), 2);
+        // Only last tool has cache_control
+        assert!(api_tools[0].get("cache_control").is_none());
+        assert_eq!(
+            api_tools[1]["cache_control"]["type"].as_str(),
+            Some("ephemeral")
+        );
+        assert_eq!(api_tools[1]["cache_control"]["ttl"].as_u64(), Some(3600));
+    }
+
+    #[test]
+    fn message_cache_control_has_ttl() {
+        let model = Provider::Claude.default_model();
+        let limits = OutputLimits::new(1024);
+        let messages = vec![
+            CacheableMessage::cached(Message::try_user("cached msg").unwrap()),
+            CacheableMessage::plain(Message::try_user("plain msg").unwrap()),
+        ];
+
+        let body = build_request_body(
+            model.as_str(),
+            &messages,
+            limits,
+            None,
+            CacheHint::Default,
+            None,
+            false,
+            "adaptive",
+            "max",
+        );
+
+        let api_messages = body["messages"].as_array().unwrap();
+        let cached_content = api_messages[0]["content"][0].clone();
+        assert_eq!(
+            cached_content["cache_control"]["type"].as_str(),
+            Some("ephemeral")
+        );
+        assert_eq!(cached_content["cache_control"]["ttl"].as_u64(), Some(3600));
+
+        let plain_content = api_messages[1]["content"][0].clone();
+        assert!(plain_content.get("cache_control").is_none());
     }
 
     #[test]
@@ -526,7 +631,9 @@ mod tests {
             &messages,
             limits,
             None,
+            CacheHint::Default,
             None,
+            false,
             "adaptive",
             "max",
         );
@@ -548,7 +655,9 @@ mod tests {
             &messages,
             limits,
             None,
+            CacheHint::Default,
             None,
+            false,
             "adaptive",
             "max",
         );
@@ -568,7 +677,9 @@ mod tests {
             &messages,
             limits,
             None,
+            CacheHint::Default,
             None,
+            false,
             "disabled",
             "max",
         );
@@ -591,7 +702,9 @@ mod tests {
             &messages,
             limits,
             None,
+            CacheHint::Default,
             None,
+            false,
             "enabled",
             "high",
         );
@@ -613,7 +726,9 @@ mod tests {
                 &messages,
                 limits,
                 None,
+                CacheHint::Default,
                 None,
+                false,
                 "adaptive",
                 effort,
             );
@@ -634,7 +749,9 @@ mod tests {
             &messages,
             limits,
             None,
+            CacheHint::Default,
             None,
+            false,
             "adaptive",
             "max",
         );
@@ -664,7 +781,9 @@ mod tests {
             &messages,
             limits,
             None,
+            CacheHint::Default,
             None,
+            false,
             "adaptive",
             "max",
         );
@@ -711,7 +830,9 @@ mod tests {
             &messages,
             limits,
             None,
+            CacheHint::Default,
             None,
+            false,
             "adaptive",
             "max",
         );
@@ -739,7 +860,9 @@ mod tests {
             &messages,
             limits,
             None,
+            CacheHint::Default,
             None,
+            false,
             "adaptive",
             "max",
         );
@@ -780,7 +903,9 @@ mod tests {
             &messages,
             limits,
             None,
+            CacheHint::Default,
             None,
+            false,
             "adaptive",
             "max",
         );

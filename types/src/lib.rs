@@ -1035,6 +1035,43 @@ pub enum CacheHint {
     Ephemeral,
 }
 
+/// Cache slot budget for a Claude API request.
+///
+/// Claude allows at most 4 `cache_control` blocks per request. This type
+/// makes >4 unrepresentable by construction (IFA §2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheBudget(u8);
+
+impl CacheBudget {
+    pub const MAX: u8 = 4;
+
+    /// Construct a budget, clamping to `MAX`.
+    #[must_use]
+    pub fn new(slots: u8) -> Self {
+        Self(slots.min(Self::MAX))
+    }
+
+    #[must_use]
+    pub fn full() -> Self {
+        Self(Self::MAX)
+    }
+
+    #[must_use]
+    pub fn remaining(self) -> u8 {
+        self.0
+    }
+
+    /// Consume one slot. Returns the decremented budget, or `None` if exhausted.
+    #[must_use]
+    pub fn take_one(self) -> Option<CacheBudget> {
+        if self.0 > 0 {
+            Some(Self(self.0 - 1))
+        } else {
+            None
+        }
+    }
+}
+
 /// Error when trying to construct invalid output limits.
 #[derive(Debug, Clone, Error)]
 pub enum OutputLimitsError {
@@ -2349,5 +2386,35 @@ mod tests {
             msg.replay_state(),
             ThinkingReplayState::ClaudeSigned { signature } if signature.as_str() == "abc"
         ));
+    }
+
+    #[test]
+    fn cache_budget_clamps_at_max() {
+        assert_eq!(CacheBudget::new(10).remaining(), CacheBudget::MAX);
+        assert_eq!(CacheBudget::new(4).remaining(), 4);
+        assert_eq!(CacheBudget::new(0).remaining(), 0);
+    }
+
+    #[test]
+    fn cache_budget_take_one_decrements() {
+        let b = CacheBudget::full();
+        assert_eq!(b.remaining(), 4);
+        let b = b.take_one().unwrap();
+        assert_eq!(b.remaining(), 3);
+        let b = b.take_one().unwrap();
+        assert_eq!(b.remaining(), 2);
+        let b = b.take_one().unwrap();
+        assert_eq!(b.remaining(), 1);
+        let b = b.take_one().unwrap();
+        assert_eq!(b.remaining(), 0);
+    }
+
+    #[test]
+    fn cache_budget_exhausted_returns_none() {
+        let b = CacheBudget::new(0);
+        assert!(b.take_one().is_none());
+
+        let b = CacheBudget::new(1).take_one().unwrap();
+        assert!(b.take_one().is_none());
     }
 }

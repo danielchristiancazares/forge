@@ -490,18 +490,31 @@ impl ApiConfig {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn send_message(
     config: &ApiConfig,
     messages: &[CacheableMessage],
     limits: OutputLimits,
     system_prompt: Option<&str>,
     tools: Option<&[ToolDefinition]>,
+    system_cache_hint: CacheHint,
+    cache_last_tool: bool,
     gemini_cache: Option<&gemini::GeminiCache>,
     tx: mpsc::Sender<StreamEvent>,
 ) -> Result<()> {
     match config.provider() {
         Provider::Claude => {
-            claude::send_message(config, messages, limits, system_prompt, tools, tx).await
+            claude::send_message(
+                config,
+                messages,
+                limits,
+                system_prompt,
+                tools,
+                system_cache_hint,
+                cache_last_tool,
+                tx,
+            )
+            .await
         }
         Provider::OpenAI => {
             openai::send_message(config, messages, limits, system_prompt, tools, tx).await

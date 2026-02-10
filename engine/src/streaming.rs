@@ -38,7 +38,7 @@ fn tool_args_journal_flush_interval() -> Duration {
 }
 
 use forge_context::{BeginSessionError, TokenCounter};
-use forge_types::{ModelName, Provider, ToolDefinition};
+use forge_types::{CacheBudget, CacheHint, ModelName, Provider, ToolDefinition};
 
 use super::{
     ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError,
@@ -84,36 +84,98 @@ fn build_thinking_message(
     None
 }
 
-/// Geometric grid of cache breakpoint positions (0-indexed message indices).
-///
-/// Each value is approximately 1.5× the previous, providing stability proportional
-/// to position depth: a breakpoint at position P is stable for roughly P/2 messages
-/// of conversation growth before the next grid point is reached and breakpoints shift.
-///
-/// The grid covers conversations up to ~1024 messages. Beyond that, the last three
-/// grid points still provide substantial coverage.
-const CACHE_BREAKPOINT_GRID: &[usize] = &[
-    3, 7, 15, 23, 31, 47, 63, 95, 127, 191, 255, 383, 511, 767, 1023,
-];
+/// Minimum token count for a content section to be worth caching.
+/// Claude's minimum cacheable prefix is 1024 tokens, but smaller sections
+/// waste a slot for negligible savings. 4096 is a practical threshold.
+const MIN_CACHEABLE_TOKENS: u32 = 4096;
 
-/// Select up to 3 cache breakpoint positions from the geometric grid.
-///
-/// Takes the 3 highest grid positions that fit within `eligible` (the number of
-/// messages excluding the fresh tail). This maximizes cache prefix coverage while
-/// maintaining cross-turn stability — breakpoints only shift when the conversation
-/// grows past the next grid boundary, and when they do, the lower breakpoints
-/// typically survive as cache hits.
-///
-/// Returns an empty vec when `eligible` is 0.
-fn cache_breakpoint_positions(eligible: usize) -> Vec<usize> {
-    let fitting: Vec<usize> = CACHE_BREAKPOINT_GRID
-        .iter()
-        .copied()
-        .filter(|&pos| pos < eligible)
-        .collect();
+/// Token step for placing message breakpoints. Breakpoints are placed at
+/// cumulative-token boundaries that are multiples of this value, so they
+/// shift only when a boundary is crossed — not on every new message.
+const CACHE_TOKEN_STEP: u32 = 4096;
 
-    let start = fitting.len().saturating_sub(3);
-    fitting[start..].to_vec()
+/// A fully resolved cache slot allocation for a Claude API request.
+///
+/// Produced solely by `plan_cache_allocation`. The sum of allocated slots
+/// is bounded by `CacheBudget::MAX` (4) by construction.
+pub(crate) struct CachePlan {
+    pub cache_system: bool,
+    pub cache_tools: bool,
+    pub message_breakpoints: Vec<usize>,
+}
+
+/// Allocate cache slots across system prompt, tools, and messages.
+///
+/// Policy: system and tools each get a slot only if they exceed
+/// `MIN_CACHEABLE_TOKENS`. Remaining budget goes to message breakpoints
+/// placed at `CACHE_TOKEN_STEP` boundaries.
+fn plan_cache_allocation(
+    budget: CacheBudget,
+    system_tokens: u32,
+    tool_tokens: u32,
+    message_tokens: &[u32],
+) -> CachePlan {
+    let mut budget = budget;
+    let mut cache_system = false;
+    let mut cache_tools = false;
+
+    if system_tokens >= MIN_CACHEABLE_TOKENS
+        && let Some(b) = budget.take_one()
+    {
+        budget = b;
+        cache_system = true;
+    }
+
+    if tool_tokens >= MIN_CACHEABLE_TOKENS
+        && let Some(b) = budget.take_one()
+    {
+        budget = b;
+        cache_tools = true;
+    }
+
+    // Remaining budget goes to message breakpoints
+    let message_breakpoints = select_token_breakpoints(budget.remaining() as usize, message_tokens);
+
+    CachePlan {
+        cache_system,
+        cache_tools,
+        message_breakpoints,
+    }
+}
+
+/// Select message breakpoint indices at cumulative token-step boundaries.
+///
+/// Excludes the last message (still evolving). Places breakpoints where
+/// cumulative tokens cross multiples of `CACHE_TOKEN_STEP`. Takes the
+/// last `max_breakpoints` such indices for maximum prefix coverage.
+fn select_token_breakpoints(max_breakpoints: usize, message_tokens: &[u32]) -> Vec<usize> {
+    if max_breakpoints == 0 || message_tokens.is_empty() {
+        return Vec::new();
+    }
+
+    // Exclude last message (still evolving)
+    let eligible = message_tokens.len().saturating_sub(1);
+    if eligible == 0 {
+        return Vec::new();
+    }
+
+    let mut cumulative: u32 = 0;
+    let mut boundary_indices: Vec<usize> = Vec::new();
+    let mut next_boundary = CACHE_TOKEN_STEP;
+
+    for (i, &tokens) in message_tokens[..eligible].iter().enumerate() {
+        cumulative = cumulative.saturating_add(tokens);
+        while cumulative >= next_boundary {
+            boundary_indices.push(i);
+            next_boundary = next_boundary.saturating_add(CACHE_TOKEN_STEP);
+        }
+    }
+
+    // Take the last `max_breakpoints` — deepest stable breakpoints
+    // Deduplicate: multiple boundaries can land on the same message index
+    boundary_indices.dedup();
+    let start = boundary_indices.len().saturating_sub(max_breakpoints);
+    boundary_indices[start..].to_vec()
 }
 
 impl super::App {
@@ -258,30 +320,56 @@ impl super::App {
         // Invariant: if thinking is enabled, budget < max_tokens (guaranteed by type)
         let limits = self.output_limits;
 
-        // Convert messages to cacheable format based on cache_enabled setting
+        // Plan cache allocation and convert messages to cacheable format
         let cache_enabled = self.cache_enabled;
-        let cacheable_messages: Vec<CacheableMessage> = if cache_enabled {
-            // Claude allows max 4 cache_control blocks total.
-            // System prompt uses 1 slot, leaving 3 for messages.
-            // Keep the last 4 messages uncached (fresh tail — still evolving).
-            let eligible = api_messages.len().saturating_sub(4);
-            let breakpoints = cache_breakpoint_positions(eligible);
-            api_messages
+        let (cacheable_messages, system_cache_hint, cache_last_tool): (
+            Vec<CacheableMessage>,
+            CacheHint,
+            bool,
+        ) = if cache_enabled && provider == Provider::Claude {
+            let counter = TokenCounter::new();
+            let sys_tokens = counter.count_str(self.system_prompts.get(provider));
+            let tool_tokens = if tools.is_empty() {
+                0
+            } else {
+                match serde_json::to_string(&tools) {
+                    Ok(s) => counter.count_str(&s),
+                    Err(_) => 0,
+                }
+            };
+            let msg_tokens: Vec<u32> = api_messages
+                .iter()
+                .map(|m| counter.count_message(m))
+                .collect();
+
+            let plan =
+                plan_cache_allocation(CacheBudget::full(), sys_tokens, tool_tokens, &msg_tokens);
+
+            let msgs = api_messages
                 .into_iter()
                 .enumerate()
                 .map(|(i, msg)| {
-                    if breakpoints.contains(&i) {
+                    if plan.message_breakpoints.contains(&i) {
                         CacheableMessage::cached(msg)
                     } else {
                         CacheableMessage::plain(msg)
                     }
                 })
-                .collect()
+                .collect();
+
+            let sys_hint = if plan.cache_system {
+                CacheHint::Ephemeral
+            } else {
+                CacheHint::Default
+            };
+
+            (msgs, sys_hint, plan.cache_tools)
         } else {
-            api_messages
+            let msgs = api_messages
                 .into_iter()
                 .map(CacheableMessage::plain)
-                .collect()
+                .collect();
+            (msgs, CacheHint::Default, false)
         };
 
         // Inject any pending system notifications as an assistant message
@@ -321,6 +409,8 @@ impl super::App {
                 limits,
                 Some(system_prompt),
                 tools_ref,
+                system_cache_hint,
+                cache_last_tool,
                 gemini_cache.as_ref(),
                 tx.clone(),
             )
@@ -889,61 +979,119 @@ async fn get_or_create_gemini_cache(
 }
 
 #[cfg(test)]
-mod cache_breakpoint_tests {
-    use super::cache_breakpoint_positions;
+mod token_cache_planner_tests {
+    use super::*;
+    use forge_types::CacheBudget;
 
     #[test]
-    fn empty_eligible_returns_no_breakpoints() {
-        assert_eq!(cache_breakpoint_positions(0), Vec::<usize>::new());
+    fn empty_messages_no_breakpoints() {
+        let plan = plan_cache_allocation(CacheBudget::full(), 0, 0, &[]);
+        assert!(!plan.cache_system);
+        assert!(!plan.cache_tools);
+        assert!(plan.message_breakpoints.is_empty());
     }
 
     #[test]
-    fn small_eligible_below_first_grid_point() {
-        assert_eq!(cache_breakpoint_positions(3), Vec::<usize>::new());
+    fn below_min_tokens_no_breakpoints() {
+        let plan = plan_cache_allocation(CacheBudget::full(), 100, 100, &[100, 200, 300]);
+        assert!(!plan.cache_system);
+        assert!(!plan.cache_tools);
+        assert!(plan.message_breakpoints.is_empty());
     }
 
     #[test]
-    fn single_grid_point_fits() {
-        // eligible=8: grid points 3 and 7 fit
-        assert_eq!(cache_breakpoint_positions(8), vec![3, 7]);
+    fn system_skipped_when_small() {
+        // System < 4096, tools >= 4096
+        let plan = plan_cache_allocation(CacheBudget::full(), 1000, 5000, &[2000, 2000, 2000]);
+        assert!(!plan.cache_system);
+        assert!(plan.cache_tools);
     }
 
     #[test]
-    fn three_grid_points_for_medium_conversation() {
-        // eligible=100: grid points ≤99 are [3,7,15,23,31,47,63,95], last 3 = [47,63,95]
-        assert_eq!(cache_breakpoint_positions(100), vec![47, 63, 95]);
+    fn tools_skipped_when_small() {
+        // System >= 4096, tools < 4096
+        let plan = plan_cache_allocation(CacheBudget::full(), 5000, 1000, &[2000, 2000, 2000]);
+        assert!(plan.cache_system);
+        assert!(!plan.cache_tools);
+    }
+
+    #[test]
+    fn budget_exhausted_by_system_and_tools() {
+        // System + tools use 2 slots, leaving 2 for messages
+        // 8 messages × 1000 tokens = 8000 tokens → boundaries at 4096 and 8192
+        // Only 4096 boundary exists (8000 < 8192), so 1 breakpoint
+        let plan = plan_cache_allocation(
+            CacheBudget::full(),
+            5000,
+            5000,
+            &[1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000],
+        );
+        assert!(plan.cache_system);
+        assert!(plan.cache_tools);
+        // Cumulative at eligible[0..8]: 1000,2000,3000,4000,5000,6000,7000,8000
+        // 4096 boundary crossed at index 3 (cumulative=4000→nope, 4th=4000 still < 4096)
+        // Actually: index 4 → cumulative=5000 >= 4096 → breakpoint at 4
+        // 8192 boundary: index 7 → cumulative=8000 < 8192 → no
+        assert_eq!(plan.message_breakpoints, vec![4]);
+    }
+
+    #[test]
+    fn single_step_boundary() {
+        // 5 messages of 1000 tokens each, last excluded
+        // Cumulative eligible[0..4]: 1000, 2000, 3000, 4000
+        // 4096 boundary NOT crossed (4000 < 4096)
+        let plan =
+            plan_cache_allocation(CacheBudget::full(), 0, 0, &[1000, 1000, 1000, 1000, 1000]);
+        assert!(plan.message_breakpoints.is_empty());
+
+        // 6 messages of 1000 tokens each, last excluded
+        // Cumulative eligible[0..5]: 1000, 2000, 3000, 4000, 5000
+        // 4096 boundary crossed at index 4 (cumulative=5000)
+        let plan = plan_cache_allocation(
+            CacheBudget::full(),
+            0,
+            0,
+            &[1000, 1000, 1000, 1000, 1000, 1000],
+        );
+        assert_eq!(plan.message_breakpoints, vec![4]);
     }
 
     #[test]
     fn stable_across_small_growth() {
-        let base = cache_breakpoint_positions(100);
-        assert_eq!(cache_breakpoint_positions(105), base);
-        assert_eq!(cache_breakpoint_positions(110), base);
-        assert_eq!(cache_breakpoint_positions(120), base);
-        assert_eq!(cache_breakpoint_positions(127), base);
+        // Same breakpoints when adding small messages that don't cross a boundary
+        let base = plan_cache_allocation(CacheBudget::full(), 0, 0, &[2000, 2000, 2000, 100]);
+        let grown = plan_cache_allocation(CacheBudget::full(), 0, 0, &[2000, 2000, 2000, 100, 100]);
+        assert_eq!(base.message_breakpoints, grown.message_breakpoints);
     }
 
     #[test]
-    fn shifts_at_grid_boundary() {
-        let before = cache_breakpoint_positions(127);
-        let after = cache_breakpoint_positions(128);
-        assert_eq!(before, vec![47, 63, 95]);
-        assert_eq!(after, vec![63, 95, 127]);
-        // Two positions survive the transition
-        assert_eq!(before[1], after[0]);
-        assert_eq!(before[2], after[1]);
+    fn shifts_at_step_boundary() {
+        // 10 messages × 2048 tokens, last excluded → 9 eligible
+        // Cumulative: 2048, 4096, 6144, 8192, 10240, 12288, 14336, 16384, 18432
+        // Boundaries at: index 1 (4096), 2 (→8192? no, 6144<8192), 3 (8192), 5 (12288→12288=3×4096), etc.
+        // Let's be precise: boundary crossing at multiples of 4096
+        // idx0: 2048 (<4096)
+        // idx1: 4096 (>=4096) → breakpoint, next_boundary=8192
+        // idx2: 6144 (<8192)
+        // idx3: 8192 (>=8192) → breakpoint, next_boundary=12288
+        // idx4: 10240 (<12288)
+        // idx5: 12288 (>=12288) → breakpoint, next_boundary=16384
+        // idx6: 14336 (<16384)
+        // idx7: 16384 (>=16384) → breakpoint, next_boundary=20480
+        // idx8: 18432 (<20480)
+        // Boundary indices: [1, 3, 5, 7], last 4 = [1, 3, 5, 7]
+        let tokens: Vec<u32> = vec![2048; 10];
+        let plan = plan_cache_allocation(CacheBudget::full(), 0, 0, &tokens);
+        assert_eq!(plan.message_breakpoints, vec![1, 3, 5, 7]);
     }
 
     #[test]
-    fn large_conversation_coverage() {
-        // 500 messages: highest fitting grid point is 383
-        let positions = cache_breakpoint_positions(500);
-        assert_eq!(positions, vec![191, 255, 383]);
-    }
-
-    #[test]
-    fn max_grid_coverage() {
-        let positions = cache_breakpoint_positions(2000);
-        assert_eq!(positions, vec![511, 767, 1023]);
+    fn total_slots_never_exceed_four() {
+        // System + tools + 4 message breakpoints would be 6, but budget caps at 4
+        let tokens: Vec<u32> = vec![4096; 20];
+        let plan = plan_cache_allocation(CacheBudget::full(), 5000, 5000, &tokens);
+        let total =
+            plan.cache_system as u8 + plan.cache_tools as u8 + plan.message_breakpoints.len() as u8;
+        assert!(total <= CacheBudget::MAX);
     }
 }
