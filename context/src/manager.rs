@@ -915,13 +915,11 @@ mod tests {
 
         assert_eq!(manager.history().len(), 2);
 
-        // Rollback the last message
         let rolled_back = manager.rollback_last_message(id2);
         assert!(rolled_back.is_some());
         assert_eq!(rolled_back.unwrap().content(), "World");
         assert_eq!(manager.history().len(), 1);
 
-        // Rollback the remaining message
         let rolled_back = manager.rollback_last_message(id1);
         assert!(rolled_back.is_some());
         assert_eq!(rolled_back.unwrap().content(), "Hello");
@@ -935,10 +933,9 @@ mod tests {
         let id1 = manager.push_message(Message::try_user("Hello").expect("non-empty"));
         let _id2 = manager.push_message(Message::try_user("World").expect("non-empty"));
 
-        // Try to rollback with wrong ID
         let rolled_back = manager.rollback_last_message(id1);
         assert!(rolled_back.is_none());
-        assert_eq!(manager.history().len(), 2); // Nothing was removed
+        assert_eq!(manager.history().len(), 2);
     }
 
     // ========================================================================
@@ -949,20 +946,14 @@ mod tests {
     fn test_set_output_limit() {
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
-        // Get initial budget (without configured output limit)
         let _initial_budget = manager.effective_budget();
 
-        // Set a smaller output limit - should increase effective input budget
         manager.set_output_limit(4096);
 
-        // The budget should be different (typically higher) when we reserve less for output
-        // This depends on model limits, but setting a limit should have an effect
         let new_budget = manager.effective_budget();
 
-        // At minimum, setting an output limit should not panic
         assert!(new_budget > 0);
 
-        // Test that limits are accessible
         let limits = manager.current_limits();
         assert!(limits.context_window() > 0);
     }
@@ -971,7 +962,6 @@ mod tests {
     fn test_current_limits_source() {
         let manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
-        // Known model should come from prefix match
         let source = manager.current_limits_source();
         assert!(matches!(source, ModelLimitsSource::Catalog(_)));
     }
@@ -984,39 +974,31 @@ mod tests {
     fn test_save_load_roundtrip() {
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
-        // Add some messages
         manager.push_message(Message::try_user("Hello").expect("non-empty"));
         manager.push_message(Message::try_user("World").expect("non-empty"));
 
         assert_eq!(manager.history().len(), 2);
 
-        // Create temp file
         let tmp_dir = std::env::temp_dir();
         let tmp_path = tmp_dir.join(format!("forge_test_{}.json", std::process::id()));
 
-        // Save
         manager.save(&tmp_path).expect("save should succeed");
 
-        // Verify file exists
         assert!(tmp_path.exists());
 
-        // Load into new manager
         let loaded = ContextManager::load(&tmp_path, model(PredefinedModel::ClaudeOpus))
             .expect("load should succeed");
 
-        // Verify content preserved
         assert_eq!(loaded.history().len(), 2);
         assert_eq!(
             loaded.current_model().as_str(),
             PredefinedModel::ClaudeOpus.model_id()
         );
 
-        // Verify message content
         let entries: Vec<_> = loaded.history().entries().iter().collect();
         assert_eq!(entries[0].message().content(), "Hello");
         assert_eq!(entries[1].message().content(), "World");
 
-        // Cleanup
         let _ = std::fs::remove_file(&tmp_path);
     }
 
@@ -1030,13 +1012,10 @@ mod tests {
 
         manager.save(&tmp_path).expect("save");
 
-        // Load with a different model
         let loaded = ContextManager::load(&tmp_path, model(PredefinedModel::Gpt52))
             .expect("load should succeed");
 
-        // History preserved
         assert_eq!(loaded.history().len(), 1);
-        // But model is the new one
         assert_eq!(
             loaded.current_model().as_str(),
             PredefinedModel::Gpt52.model_id()
@@ -1063,7 +1042,6 @@ mod tests {
         let manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
         let status = manager.usage_status();
 
-        // Empty history should always be ready
         assert!(matches!(status, ContextUsageStatus::Ready(_)));
     }
 
@@ -1071,13 +1049,11 @@ mod tests {
     fn test_push_message_with_step_id_and_has_step_id() {
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
-        // Push with step ID
         let _id = manager.push_message_with_step_id(
             Message::try_user("Hello").expect("non-empty"),
             StepId::new(12345),
         );
 
-        // Check step ID exists
         assert!(manager.has_step_id(StepId::new(12345)));
         assert!(!manager.has_step_id(StepId::new(99999)));
     }
@@ -1088,7 +1064,6 @@ mod tests {
 
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
-        // Add a tool use message
         let tool_call = ToolCall::new(
             "call_123".to_string(),
             "get_weather".to_string(),
@@ -1096,7 +1071,6 @@ mod tests {
         );
         let id1 = manager.push_message(Message::tool_use(tool_call));
 
-        // Add a tool result
         let result = ToolResult::success(
             "call_123".to_string(),
             "get_weather".to_string(),
@@ -1108,12 +1082,10 @@ mod tests {
         assert_eq!(id1.as_u64(), 0);
         assert_eq!(id2.as_u64(), 1);
 
-        // Verify messages are correct type via their roles
         let entries: Vec<_> = manager.history().entries().iter().collect();
         assert_eq!(entries[0].message().role_str(), "assistant");
         assert_eq!(entries[1].message().role_str(), "user");
 
-        // Verify content method works
         assert!(entries[0].message().content().contains("get_weather"));
         assert!(entries[1].message().content().contains("72°F"));
     }

@@ -462,7 +462,6 @@ impl StreamJournal {
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
             .context("Failed to set pragmas")?;
 
-        // Create schema
         db.execute_batch(Self::SCHEMA)
             .context("Failed to create schema")?;
 

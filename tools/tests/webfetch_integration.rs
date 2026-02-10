@@ -143,7 +143,6 @@ async fn test_basic_fetch_success() {
     assert!(!output.truncated);
     assert!(!output.chunks.is_empty());
 
-    // Verify content is in chunks
     let all_text: String = output.chunks.iter().map(|c| c.text.as_str()).collect();
     assert!(all_text.contains("Hello, World!"));
 }
@@ -195,7 +194,6 @@ async fn test_fetch_preserves_requested_url() {
         .await
         .expect("fetch should succeed");
 
-    // requested_url should be preserved exactly as given
     assert!(output.requested_url.starts_with(&requested));
 }
 
