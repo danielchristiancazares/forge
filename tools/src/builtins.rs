@@ -319,7 +319,7 @@ impl ToolExecutor for GlobTool {
         })
     }
 
-    fn is_side_effecting(&self) -> bool {
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
         false
     }
 
@@ -522,7 +522,7 @@ impl ToolExecutor for ReadFileTool {
         })
     }
 
-    fn is_side_effecting(&self) -> bool {
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
         false
     }
 
@@ -673,7 +673,7 @@ impl ToolExecutor for ApplyPatchTool {
         })
     }
 
-    fn is_side_effecting(&self) -> bool {
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
         true
     }
 
@@ -946,7 +946,7 @@ impl ToolExecutor for WriteFileTool {
         })
     }
 
-    fn is_side_effecting(&self) -> bool {
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
         true
     }
 
@@ -1079,7 +1079,7 @@ impl ToolExecutor for RunCommandTool {
         })
     }
 
-    fn is_side_effecting(&self) -> bool {
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
         true
     }
 
@@ -1087,7 +1087,7 @@ impl ToolExecutor for RunCommandTool {
         true
     }
 
-    fn risk_level(&self) -> RiskLevel {
+    fn risk_level(&self, _args: &serde_json::Value) -> RiskLevel {
         RiskLevel::High
     }
 
@@ -1317,7 +1317,7 @@ pub fn register_builtins(
     registry.register(Box::new(WriteFileTool))?;
     registry.register(Box::new(RunCommandTool::new(shell, run_policy)))?;
     registry.register(Box::new(GlobTool))?;
-    git::register_git_tools(registry)?;
+    git::register_git_tool(registry)?;
     registry.register(Box::new(SearchTool::new(search_config)))?;
     registry.register(Box::new(WebFetchTool::new(webfetch_config)))?;
     registry.register(Box::new(RecallTool))?;
@@ -1691,7 +1691,7 @@ mod tests {
     #[test]
     fn glob_tool_is_not_side_effecting() {
         let tool = GlobTool;
-        assert!(!tool.is_side_effecting());
+        assert!(!tool.is_side_effecting(&serde_json::json!({})));
     }
 
     #[test]
@@ -1703,7 +1703,7 @@ mod tests {
     #[test]
     fn glob_tool_risk_level_is_low() {
         let tool = GlobTool;
-        assert_eq!(tool.risk_level(), RiskLevel::Low);
+        assert_eq!(tool.risk_level(&serde_json::json!({})), RiskLevel::Low);
     }
 
     #[test]

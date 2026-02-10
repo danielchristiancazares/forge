@@ -191,7 +191,7 @@ impl tools::ToolExecutor for MockTool {
         })
     }
 
-    fn is_side_effecting(&self) -> bool {
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
         false
     }
 

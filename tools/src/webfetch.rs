@@ -113,7 +113,7 @@ impl ToolExecutor for WebFetchTool {
         })
     }
 
-    fn is_side_effecting(&self) -> bool {
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
         false
     }
 
@@ -121,7 +121,7 @@ impl ToolExecutor for WebFetchTool {
         true
     }
 
-    fn risk_level(&self) -> RiskLevel {
+    fn risk_level(&self, _args: &serde_json::Value) -> RiskLevel {
         RiskLevel::Medium
     }
 

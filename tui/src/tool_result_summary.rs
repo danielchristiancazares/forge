@@ -15,7 +15,7 @@
 //! | Search | "3 matches in 2 files" |
 //! | Glob | "5 files" |
 //! | Run/Pwsh | "exit 0: first line" |
-//! | GitStatus | "1 staged, 2 modified" |
+//! | Git:status | "1 staged, 2 modified" |
 
 use std::collections::HashSet;
 
@@ -53,7 +53,15 @@ struct ReadRange {
 impl ToolCallMeta {
     pub(crate) fn from_call(call: &ToolCall) -> Self {
         let canonical = canonical_tool_name(&call.name);
-        let kind = ToolKind::from_canonical(canonical.as_ref());
+        let kind = if canonical == "Git" {
+            match call.arguments.get("command").and_then(|v| v.as_str()) {
+                Some("status") => ToolKind::GitStatus,
+                Some("commit") => ToolKind::GitCommit,
+                _ => ToolKind::Other,
+            }
+        } else {
+            ToolKind::from_canonical(canonical.as_ref())
+        };
         let read_range = if matches!(kind, ToolKind::Read) {
             extract_read_range(&call.arguments)
         } else {
@@ -73,8 +81,6 @@ impl ToolKind {
             "Run" | "Pwsh" => ToolKind::Shell,
             "Edit" => ToolKind::Edit,
             "Write" => ToolKind::Write,
-            "GitStatus" => ToolKind::GitStatus,
-            "GitCommit" => ToolKind::GitCommit,
             _ => ToolKind::Other,
         }
     }
@@ -570,7 +576,11 @@ mod tests {
 
     #[test]
     fn summary_git_status_counts_porcelain() {
-        let call = ToolCall::new("call_5", "GitStatus", json!({"porcelain": true}));
+        let call = ToolCall::new(
+            "call_5",
+            "Git",
+            json!({"command": "status", "porcelain": true}),
+        );
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"{"stdout":" M file1\nA  file2\n?? file3\n"}"#;
         let summary = format_tool_result_summary(Some(&meta), content, false, 80);
@@ -647,8 +657,8 @@ mod tests {
     fn summary_git_commit_shows_hash_and_message() {
         let call = ToolCall::new(
             "call_6",
-            "GitCommit",
-            json!({"type": "feat", "message": "add feature"}),
+            "Git",
+            json!({"command": "commit", "type": "feat", "message": "add feature"}),
         );
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"{"commit_hash":"abc1234","commit_message":"feat: add feature","exit_code":0,"stdout":"[main abc1234] feat: add feature\n 1 file changed","stderr":"","isError":false}"#;
@@ -660,8 +670,8 @@ mod tests {
     fn summary_git_commit_truncates_long_hash() {
         let call = ToolCall::new(
             "call_7",
-            "GitCommit",
-            json!({"type": "fix", "message": "bug"}),
+            "Git",
+            json!({"command": "commit", "type": "fix", "message": "bug"}),
         );
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"{"commit_hash":"abc1234def5678","commit_message":"fix: bug","exit_code":0,"stdout":"","stderr":"","isError":false}"#;
@@ -673,8 +683,8 @@ mod tests {
     fn summary_git_commit_missing_hash_shows_placeholder() {
         let call = ToolCall::new(
             "call_8",
-            "GitCommit",
-            json!({"type": "fix", "message": "bug"}),
+            "Git",
+            json!({"command": "commit", "type": "fix", "message": "bug"}),
         );
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"{"commit_hash":null,"commit_message":"fix: bug","exit_code":0,"stdout":"","stderr":"","isError":false}"#;
@@ -686,8 +696,8 @@ mod tests {
     fn summary_git_commit_error_falls_through() {
         let call = ToolCall::new(
             "call_9",
-            "GitCommit",
-            json!({"type": "feat", "message": "x"}),
+            "Git",
+            json!({"command": "commit", "type": "feat", "message": "x"}),
         );
         let meta = ToolCallMeta::from_call(&call);
         let content = "nothing to commit, working tree clean";
@@ -699,8 +709,8 @@ mod tests {
     fn summary_git_commit_multiline_uses_subject_only() {
         let call = ToolCall::new(
             "call_10",
-            "GitCommit",
-            json!({"type": "refactor", "scope": "docs", "message": "update documentation"}),
+            "Git",
+            json!({"command": "commit", "type": "refactor", "scope": "docs", "message": "update documentation"}),
         );
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"{"commit_hash":"9562496","commit_message":"refactor(docs): update documentation\n\nThis commit contains:\n- Comprehensive rewrite","exit_code":0,"stdout":"","stderr":"","isError":false}"#;

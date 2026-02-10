@@ -119,6 +119,7 @@ pub fn analyze_tool_arguments(tool_name: &str, args: &Value) -> Vec<HomoglyphWar
         "WebFetch" | "web_fetch" => &["url"],
         "Run" | "Pwsh" | "run" | "shell" | "bash" | "pwsh" => &["command"],
         "Read" | "Write" | "Edit" | "read" | "write" | "edit" | "patch" => &["path", "file_path"],
+        "Git" => &["path", "paths", "branch", "create_branch"],
         _ => &[],
     };
 
@@ -249,12 +250,12 @@ pub trait ToolExecutor: Send + Sync + std::panic::UnwindSafe {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn schema(&self) -> Value;
-    fn is_side_effecting(&self) -> bool;
+    fn is_side_effecting(&self, args: &Value) -> bool;
     fn requires_approval(&self) -> bool {
         false
     }
-    fn risk_level(&self) -> RiskLevel {
-        if self.is_side_effecting() {
+    fn risk_level(&self, args: &Value) -> RiskLevel {
+        if self.is_side_effecting(args) {
             RiskLevel::Medium
         } else {
             RiskLevel::Low

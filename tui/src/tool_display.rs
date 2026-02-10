@@ -39,18 +39,8 @@ pub(crate) fn canonical_tool_name(name: &str) -> std::borrow::Cow<'static, str> 
         "Glob" => Cow::Borrowed("Glob"),
         "Search" => Cow::Borrowed("Search"),
 
-        // Git tools
-        "GitStatus" => Cow::Borrowed("GitStatus"),
-        "GitDiff" => Cow::Borrowed("GitDiff"),
-        "GitAdd" => Cow::Borrowed("GitAdd"),
-        "GitCommit" => Cow::Borrowed("GitCommit"),
-        "GitStash" => Cow::Borrowed("GitStash"),
-        "GitRestore" => Cow::Borrowed("GitRestore"),
-        "GitBranch" => Cow::Borrowed("GitBranch"),
-        "GitCheckout" => Cow::Borrowed("GitCheckout"),
-        "GitShow" => Cow::Borrowed("GitShow"),
-        "GitLog" => Cow::Borrowed("GitLog"),
-        "GitBlame" => Cow::Borrowed("GitBlame"),
+        // Git tool
+        "Git" => Cow::Borrowed("Git"),
 
         // Shell/command tools
         "Pwsh" => Cow::Borrowed("Pwsh"),
@@ -76,18 +66,9 @@ fn extract_primary_arg(name: &str, args: &Value) -> Option<String> {
 
     let key = match name {
         "Glob" | "Search" => "pattern",
-        "Read" | "Write" | "Edit" | "Delete" | "ListDir" | "Outline" | "GitBlame" => "path",
+        "Read" | "Write" | "Edit" | "Delete" | "ListDir" | "Outline" => "path",
         "Move" | "Copy" => "source",
-        "GitCommit" => return format_git_commit(obj),
-        "GitDiff" => return format_git_diff(obj),
-        "GitAdd" => return format_git_add(obj),
-        "GitStash" => return format_git_stash(obj),
-        "GitRestore" => return format_git_restore(obj),
-        "GitBranch" => return format_git_branch(obj),
-        "GitCheckout" => return format_git_checkout(obj),
-        "GitShow" => return format_git_show(obj),
-        "GitLog" => return format_git_log(obj),
-        "GitStatus" => return None,
+        "Git" => return format_git_tool(obj),
         "Pwsh" | "Run" => "command",
         "WebFetch" => "url",
         "Build" | "Test" => return format_build_test(obj),
@@ -236,6 +217,27 @@ fn format_git_log(obj: &serde_json::Map<String, Value>) -> Option<String> {
     None
 }
 
+fn format_git_tool(obj: &serde_json::Map<String, Value>) -> Option<String> {
+    let cmd = obj.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+    let detail = match cmd {
+        "commit" => format_git_commit(obj),
+        "diff" => format_git_diff(obj),
+        "add" => format_git_add(obj),
+        "stash" => format_git_stash(obj),
+        "restore" => format_git_restore(obj),
+        "branch" => format_git_branch(obj),
+        "checkout" => format_git_checkout(obj),
+        "show" => format_git_show(obj),
+        "log" => format_git_log(obj),
+        "blame" => obj.get("path").and_then(|v| v.as_str()).map(String::from),
+        _ => None,
+    };
+    match detail {
+        Some(d) => Some(format!("{cmd}({d})")),
+        None => Some(cmd.to_string()),
+    }
+}
+
 fn format_patch_summary(obj: &serde_json::Map<String, Value>) -> Option<String> {
     if let Some(patch) = obj.get("patch").and_then(|v| v.as_str()) {
         // Extract file paths from LP1 format (lines starting with "F ")
@@ -345,93 +347,96 @@ mod tests {
     }
 
     #[test]
-    fn test_git_status_no_args() {
-        let args = json!({});
-        assert_eq!(format_tool_call_compact("GitStatus", &args), "GitStatus");
+    fn test_git_status() {
+        let args = json!({"command": "status"});
+        assert_eq!(format_tool_call_compact("Git", &args), "Git(status)");
     }
 
     #[test]
     fn test_git_commit_with_scope() {
         let args = json!({
+            "command": "commit",
             "type": "feat",
             "scope": "tui",
             "message": "add compact display"
         });
         assert_eq!(
-            format_tool_call_compact("GitCommit", &args),
-            "GitCommit(feat(tui): add compact display)"
+            format_tool_call_compact("Git", &args),
+            "Git(commit(feat(tui): add compact display))"
         );
     }
 
     #[test]
     fn test_git_commit_without_scope() {
         let args = json!({
+            "command": "commit",
             "type": "fix",
             "message": "resolve bug"
         });
         assert_eq!(
-            format_tool_call_compact("GitCommit", &args),
-            "GitCommit(fix: resolve bug)"
+            format_tool_call_compact("Git", &args),
+            "Git(commit(fix: resolve bug))"
         );
     }
 
     #[test]
     fn test_git_diff_refs() {
         let args = json!({
+            "command": "diff",
             "from_ref": "main",
             "to_ref": "feature"
         });
         assert_eq!(
-            format_tool_call_compact("GitDiff", &args),
-            "GitDiff(main..feature)"
+            format_tool_call_compact("Git", &args),
+            "Git(diff(main..feature))"
         );
     }
 
     #[test]
     fn test_git_diff_cached() {
-        let args = json!({"cached": true});
+        let args = json!({"command": "diff", "cached": true});
         assert_eq!(
-            format_tool_call_compact("GitDiff", &args),
-            "GitDiff(--cached)"
+            format_tool_call_compact("Git", &args),
+            "Git(diff(--cached))"
         );
     }
 
     #[test]
     fn test_git_add_all() {
-        let args = json!({"all": true});
-        assert_eq!(format_tool_call_compact("GitAdd", &args), "GitAdd(-A)");
+        let args = json!({"command": "add", "all": true});
+        assert_eq!(format_tool_call_compact("Git", &args), "Git(add(-A))");
     }
 
     #[test]
     fn test_git_add_files() {
-        let args = json!({"paths": ["a.rs", "b.rs", "c.rs"]});
+        let args = json!({"command": "add", "paths": ["a.rs", "b.rs", "c.rs"]});
         assert_eq!(
-            format_tool_call_compact("GitAdd", &args),
-            "GitAdd(3 file(s))"
+            format_tool_call_compact("Git", &args),
+            "Git(add(3 file(s)))"
         );
     }
 
     #[test]
     fn test_git_stash_action() {
-        let args = json!({"action": "pop"});
-        assert_eq!(format_tool_call_compact("GitStash", &args), "GitStash(pop)");
+        let args = json!({"command": "stash", "action": "pop"});
+        assert_eq!(format_tool_call_compact("Git", &args), "Git(stash(pop))");
     }
 
     #[test]
     fn test_git_branch_create() {
-        let args = json!({"create": "feature-x"});
+        let args = json!({"command": "branch", "create": "feature-x"});
         assert_eq!(
-            format_tool_call_compact("GitBranch", &args),
-            "GitBranch(create feature-x)"
+            format_tool_call_compact("Git", &args),
+            "Git(branch(create feature-x))"
         );
     }
 
     #[test]
     fn test_git_checkout_branch() {
-        let args = json!({"branch": "main"});
+        let args = json!({"command": "checkout", "branch": "main"});
         assert_eq!(
-            format_tool_call_compact("GitCheckout", &args),
-            "GitCheckout(main)"
+            format_tool_call_compact("Git", &args),
+            "Git(checkout(main))"
         );
     }
 

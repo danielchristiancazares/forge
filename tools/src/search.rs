@@ -237,11 +237,11 @@ impl ToolExecutor for SearchTool {
         })
     }
 
-    fn is_side_effecting(&self) -> bool {
+    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
         false
     }
 
-    fn risk_level(&self) -> RiskLevel {
+    fn risk_level(&self, _args: &serde_json::Value) -> RiskLevel {
         RiskLevel::Medium
     }
 
