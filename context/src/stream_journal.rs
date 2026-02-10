@@ -792,7 +792,7 @@ impl StreamJournal {
             .query_row(
                 "SELECT COALESCE(MAX(seq), 0) FROM stream_journal WHERE step_id = ?1",
                 params![step_id],
-                |row| row.get(0),
+                |row| row.get::<_, i64>(0).map(|v| v as u64),
             )
             .context("Failed to query last sequence")?;
 

@@ -1,4 +1,4 @@
-//! `WebFetch` tool executor for URL fetching with browser fallback.
+//! `WebFetch` tool executor for URL fetching.
 
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -70,8 +70,6 @@ struct WebFetchArgs {
     max_chunk_tokens: Option<u32>,
     #[serde(default)]
     no_cache: bool,
-    #[serde(default)]
-    force_browser: bool,
 }
 
 impl ToolExecutor for WebFetchTool {
@@ -102,11 +100,6 @@ impl ToolExecutor for WebFetchTool {
                     "type": "boolean",
                     "default": false,
                     "description": "Bypass cache and fetch fresh content"
-                },
-                "force_browser": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Force headless browser rendering"
                 }
             },
             "required": ["url"]
@@ -157,7 +150,6 @@ impl ToolExecutor for WebFetchTool {
             }
 
             input = input.with_no_cache(typed.no_cache);
-            input = input.with_force_browser(typed.force_browser);
 
             // Build config
             let config = self.build_config();
@@ -289,7 +281,6 @@ mod tests {
             title: Some("Example".to_string()),
             language: Some("en".to_string()),
             chunks,
-            rendering_method: forge_webfetch::RenderingMethod::Http,
             truncated: false,
             truncation_reason: None,
             notes: Vec::new(),

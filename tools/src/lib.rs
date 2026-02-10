@@ -31,7 +31,6 @@ use std::time::{Duration, SystemTime};
 use change_recording::ChangeRecorder;
 use forge_context::Librarian;
 use forge_types::{HomoglyphWarning, Provider, ToolDefinition, ToolResult, detect_mixed_script};
-use jsonschema::JSONSchema;
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 
@@ -461,15 +460,14 @@ impl EnvSanitizer {
 
 /// Validate arguments against a JSON schema.
 pub fn validate_args(schema: &Value, args: &Value) -> Result<(), ToolError> {
-    let compiled = JSONSchema::compile(schema).map_err(|e| ToolError::BadArgs {
+    let validator = jsonschema::validator_for(schema).map_err(|e| ToolError::BadArgs {
         message: format!("Invalid tool schema: {e}"),
     })?;
-    if let Err(errors) = compiled.validate(args) {
-        let msg = errors
-            .map(|err| err.to_string())
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(ToolError::BadArgs { message: msg });
+    let result = validator.validate(args);
+    if let Err(err) = result {
+        return Err(ToolError::BadArgs {
+            message: err.to_string(),
+        });
     }
     Ok(())
 }

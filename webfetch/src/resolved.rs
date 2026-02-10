@@ -11,7 +11,6 @@
 //! - [`ResolvedConfig`]: Fully resolved configuration with concrete values
 //! - [`ResolvedRequest`]: Request parameters with resolved defaults
 //! - [`CachePolicy`]: Enabled with settings or Disabled
-//! - [`BrowserPolicy`]: Enabled with settings or Disabled
 //!
 //! # Usage
 //!
@@ -29,9 +28,6 @@ use url::Url;
 use crate::types::{ErrorCode, WebFetchConfig, WebFetchError, WebFetchInput};
 
 pub(crate) const DEFAULT_USER_AGENT: &str = "forge-webfetch/1.0";
-const DEFAULT_MAX_RENDERED_DOM_BYTES: u64 = 5 * 1024 * 1024;
-const DEFAULT_MAX_SUBRESOURCE_BYTES: u64 = 20 * 1024 * 1024;
-
 pub(crate) const DEFAULT_ALLOWED_PORTS: &[u16] = &[80, 443];
 
 #[derive(Debug, Clone)]
@@ -40,7 +36,6 @@ pub(crate) struct ResolvedRequest {
     pub requested_url: String,
     pub max_chunk_tokens: u32,
     pub no_cache: bool,
-    pub force_browser: bool,
 }
 
 impl ResolvedRequest {
@@ -53,7 +48,6 @@ impl ResolvedRequest {
             requested_url: input.original_url().to_string(),
             max_chunk_tokens,
             no_cache: input.no_cache,
-            force_browser: input.force_browser,
         }
     }
 }
@@ -68,7 +62,6 @@ pub(crate) struct ResolvedConfig {
     pub max_dns_attempts: u32,
     pub cache: CachePolicy,
     pub robots: ResolvedRobotsConfig,
-    pub browser: BrowserPolicy,
     pub security: ResolvedSecurityConfig,
     pub http: ResolvedHttpConfig,
 }
@@ -94,7 +87,6 @@ impl ResolvedConfig {
         let security = ResolvedSecurityConfig::from_config(config);
         let http = ResolvedHttpConfig::from_config(config);
         let robots = ResolvedRobotsConfig::from_config(config, &user_agent);
-        let browser = BrowserPolicy::from_config(config);
         let cache = CachePolicy::from_config(config);
 
         Ok(Self {
@@ -106,7 +98,6 @@ impl ResolvedConfig {
             max_dns_attempts,
             cache,
             robots,
-            browser,
             security,
             http,
         })
@@ -257,65 +248,6 @@ pub(crate) struct CacheSettings {
     pub max_entries: u32,
     pub max_bytes: u64,
     pub ttl: Duration,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum BrowserPolicy {
-    Disabled,
-    Enabled(ResolvedBrowserConfig),
-}
-
-impl BrowserPolicy {
-    fn from_config(config: &WebFetchConfig) -> Self {
-        let Some(browser) = config.browser.as_ref() else {
-            return BrowserPolicy::Disabled;
-        };
-        if !browser.enabled {
-            return BrowserPolicy::Disabled;
-        }
-
-        let chromium_path = browser
-            .chromium_path
-            .clone()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map_or(ChromiumLocation::SearchPath, ChromiumLocation::Explicit);
-
-        let timeout_seconds = browser.timeout_seconds.unwrap_or(config.timeout_seconds());
-        let timeout = Duration::from_secs(u64::from(timeout_seconds));
-        let max_rendered_dom_bytes = browser
-            .max_rendered_dom_bytes
-            .unwrap_or(DEFAULT_MAX_RENDERED_DOM_BYTES);
-        let max_subresource_bytes = browser
-            .max_subresource_bytes
-            .unwrap_or(DEFAULT_MAX_SUBRESOURCE_BYTES);
-        let blocked_resource_types = browser
-            .blocked_resource_types
-            .clone()
-            .unwrap_or_else(|| vec!["image".into(), "font".into(), "media".into()]);
-
-        BrowserPolicy::Enabled(ResolvedBrowserConfig {
-            chromium_path,
-            timeout,
-            max_rendered_dom_bytes,
-            max_subresource_bytes,
-            blocked_resource_types,
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ResolvedBrowserConfig {
-    pub chromium_path: ChromiumLocation,
-    pub timeout: Duration,
-    pub max_rendered_dom_bytes: u64,
-    pub max_subresource_bytes: u64,
-    pub blocked_resource_types: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum ChromiumLocation {
-    SearchPath,
-    Explicit(PathBuf),
 }
 
 fn default_cache_dir() -> PathBuf {

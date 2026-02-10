@@ -23,24 +23,6 @@ use crate::types::{ErrorCode, WebFetchError};
 /// Current cache entry format version.
 pub const CACHE_VERSION: u32 = 2;
 
-/// Rendering method for cache key derivation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenderingMethod {
-    /// Standard HTTP fetch.
-    Http,
-    /// Headless browser rendering.
-    Browser,
-}
-
-impl RenderingMethod {
-    fn as_str(&self) -> &'static str {
-        match self {
-            RenderingMethod::Http => "http",
-            RenderingMethod::Browser => "browser",
-        }
-    }
-}
-
 /// Cache entry stored on disk.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CacheEntry {
@@ -179,8 +161,8 @@ impl Cache {
     ///
     /// FR-WF-CCH-READ-01: Cache read failures are treated as cache miss.
     /// Updates `last_accessed_at` on hit (but does NOT slide TTL).
-    pub fn get(&mut self, url: &Url, method: RenderingMethod) -> CacheResult {
-        let key = cache_key(url, method);
+    pub fn get(&mut self, url: &Url) -> CacheResult {
+        let key = cache_key(url);
         let path = self.entry_path(&key);
 
         // Check if file exists
@@ -239,15 +221,9 @@ impl Cache {
     ///
     /// Uses atomic write (temp file + rename) per FR-WF-16g.
     /// FR-WF-16h: Returns error for oversized entries (caller adds note).
-    pub fn put(
-        &mut self,
-        url: &Url,
-        method: RenderingMethod,
-        entry: &CacheEntry,
-    ) -> Result<(), CacheWriteError> {
+    pub fn put(&mut self, url: &Url, entry: &CacheEntry) -> Result<(), CacheWriteError> {
         let size = entry.estimated_size();
 
-        // Check if entry is too large
         if size > self.max_bytes {
             return Err(CacheWriteError::EntryTooLarge {
                 size,
@@ -255,7 +231,7 @@ impl Cache {
             });
         }
 
-        let key = cache_key(url, method);
+        let key = cache_key(url);
 
         // Evict if necessary per FR-WF-CCH-EVICT-01
         self.evict_if_needed(size)?;
@@ -421,21 +397,17 @@ impl From<std::io::Error> for CacheWriteError {
     }
 }
 
-/// Derive cache key from URL and rendering method.
+/// Derive cache key from URL.
 ///
-/// Per FR-WF-16a: SHA256 of `canonical_url + "\n" + rendering_method`.
-/// Fragment is removed from URL before hashing.
-pub fn cache_key(url: &Url, method: RenderingMethod) -> String {
+/// SHA256 of canonical URL with fragment removed.
+pub fn cache_key(url: &Url) -> String {
     let mut url = url.clone();
     url.set_fragment(None);
 
-    let input = format!("{}\n{}", url.as_str(), method.as_str());
-
     let mut hasher = Sha256::new();
-    hasher.update(input.as_bytes());
+    hasher.update(url.as_str().as_bytes());
     let result = hasher.finalize();
 
-    // Full SHA256 as hex (64 chars)
     hex_encode(&result)
 }
 
@@ -559,39 +531,21 @@ mod tests {
     fn test_cache_key_deterministic() {
         let url1 = Url::parse("https://example.com/path").unwrap();
         let url2 = Url::parse("https://example.com/path").unwrap();
-        assert_eq!(
-            cache_key(&url1, RenderingMethod::Http),
-            cache_key(&url2, RenderingMethod::Http)
-        );
+        assert_eq!(cache_key(&url1), cache_key(&url2));
     }
 
     #[test]
     fn test_cache_key_ignores_fragment() {
         let url1 = Url::parse("https://example.com/path#section1").unwrap();
         let url2 = Url::parse("https://example.com/path#section2").unwrap();
-        assert_eq!(
-            cache_key(&url1, RenderingMethod::Http),
-            cache_key(&url2, RenderingMethod::Http)
-        );
+        assert_eq!(cache_key(&url1), cache_key(&url2));
     }
 
     #[test]
     fn test_cache_key_different_urls() {
         let url1 = Url::parse("https://example.com/path1").unwrap();
         let url2 = Url::parse("https://example.com/path2").unwrap();
-        assert_ne!(
-            cache_key(&url1, RenderingMethod::Http),
-            cache_key(&url2, RenderingMethod::Http)
-        );
-    }
-
-    #[test]
-    fn test_cache_key_different_methods() {
-        let url = Url::parse("https://example.com/path").unwrap();
-        assert_ne!(
-            cache_key(&url, RenderingMethod::Http),
-            cache_key(&url, RenderingMethod::Browser)
-        );
+        assert_ne!(cache_key(&url1), cache_key(&url2));
     }
 
     #[test]
@@ -620,7 +574,7 @@ mod tests {
         let cache = Cache::new(&settings).unwrap();
 
         let url = Url::parse("https://example.com/test").unwrap();
-        let key = cache_key(&url, RenderingMethod::Http);
+        let key = cache_key(&url);
         let path = cache.entry_path(&key);
 
         // Should have subdirectory based on first 2 chars

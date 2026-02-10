@@ -38,7 +38,7 @@ dirs.workspace = true
 tracing.workspace = true
 
 unicode-segmentation.workspace = true
-which = "7"
+which = "8"
 similar = "2"
 
 [target.'cfg(unix)'.dependencies]

@@ -4,8 +4,7 @@
 //! HTTP fetch → extraction → chunking → caching.
 
 use forge_webfetch::{
-    BrowserConfig, ErrorCode, HttpConfig, Note, RenderingMethod, RobotsConfig, SecurityConfig,
-    WebFetchConfig, WebFetchInput,
+    ErrorCode, HttpConfig, Note, RobotsConfig, SecurityConfig, WebFetchConfig, WebFetchInput,
 };
 use std::path::Path;
 use tempfile::TempDir;
@@ -22,10 +21,6 @@ fn test_config() -> WebFetchConfig {
         max_cache_entries: Some(0), // Disable cache for most tests
         robots_cache_entries: Some(0),
         robots_cache_ttl_hours: Some(1),
-        browser: Some(BrowserConfig {
-            enabled: false, // Disable browser for unit tests
-            ..Default::default()
-        }),
         robots: Some(RobotsConfig {
             user_agent_token: Some("forge-test".to_string()),
             fail_open: true,
@@ -145,7 +140,6 @@ async fn test_basic_fetch_success() {
 
     assert_eq!(output.title, Some("Test Page".to_string()));
     assert_eq!(output.language, Some("en".to_string()));
-    assert_eq!(output.rendering_method, RenderingMethod::Http);
     assert!(!output.truncated);
     assert!(!output.chunks.is_empty());
 

@@ -1,6 +1,6 @@
 [package]
 name = "forge-webfetch"
-description = "URL fetching with browser fallback for Forge"
+description = "URL fetching for Forge"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -21,7 +21,6 @@ futures-util = { workspace = true }
 # HTTP
 reqwest = { workspace = true, features = ["gzip", "brotli", "deflate"] }
 url = { workspace = true }
-chromiumoxide = { workspace = true }
 
 # HTML processing
 scraper = { workspace = true }

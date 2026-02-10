@@ -15,7 +15,6 @@ use url::Url;
 /// - `url` (required): The URL to fetch
 /// - `max_chunk_tokens` (optional): Token budget per chunk [128, 2048]
 /// - `no_cache` (optional): Bypass cache
-/// - `force_browser` (optional): Force browser rendering
 #[derive(Debug, Clone)]
 pub struct WebFetchInput {
     /// The URL to fetch (validated, non-empty).
@@ -30,9 +29,6 @@ pub struct WebFetchInput {
 
     /// If true, bypass cache and fetch fresh. Default: false.
     pub no_cache: bool,
-
-    /// If true, force browser rendering even if HTTP succeeds. Default: false.
-    pub force_browser: bool,
 }
 
 impl WebFetchInput {
@@ -77,7 +73,6 @@ impl WebFetchInput {
             original_url: original,
             max_chunk_tokens: None,
             no_cache: false,
-            force_browser: false,
         })
     }
 
@@ -108,12 +103,6 @@ impl WebFetchInput {
     #[must_use]
     pub fn with_no_cache(mut self, no_cache: bool) -> Self {
         self.no_cache = no_cache;
-        self
-    }
-
-    #[must_use]
-    pub fn with_force_browser(mut self, force_browser: bool) -> Self {
-        self.force_browser = force_browser;
         self
     }
 
@@ -153,9 +142,6 @@ pub struct WebFetchOutput {
     /// Content chunks. FR-WF-03b.
     pub chunks: Vec<FetchChunk>,
 
-    /// Method used to fetch content. FR-WF-RESP-METHOD-01.
-    pub rendering_method: RenderingMethod,
-
     /// True if content is incomplete. FR-WF-TRUNC-01.
     pub truncated: bool,
 
@@ -185,26 +171,12 @@ pub struct FetchChunk {
     pub token_count: u32,
 }
 
-/// Method used to render/fetch the page.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RenderingMethod {
-    /// Standard HTTP fetch.
-    Http,
-    /// Headless browser rendering.
-    Browser,
-}
-
 /// Reason for content truncation.
-///
-/// Per FR-WF-TRUNC-REASON-01.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TruncationReason {
     /// Output byte budget enforcement truncated chunks.
     ToolOutputLimit,
-    /// Browser DOM exceeded `max_rendered_dom_bytes`.
-    BrowserDomTruncated,
 }
 
 /// Condition tokens for the `notes` array.
@@ -219,12 +191,6 @@ pub enum Note {
     CacheHit,
     /// robots.txt unavailable but `fail_open=true`.
     RobotsUnavailableFailOpen,
-    /// Browser fallback requested but unavailable.
-    BrowserUnavailableUsedHttp,
-    /// DOM exceeded `max_rendered_dom_bytes`.
-    BrowserDomTruncated,
-    /// Browser blocked non-GET/HEAD subrequests.
-    BrowserBlockedNonGet,
     /// Unknown charset; fell back to UTF-8 with replacement.
     CharsetFallback,
     /// Cache write failed (fetch still succeeded).
@@ -241,12 +207,9 @@ impl Note {
             Note::HttpUpgradedToHttps => 1,
             Note::CacheHit => 2,
             Note::RobotsUnavailableFailOpen => 3,
-            Note::BrowserUnavailableUsedHttp => 4,
-            Note::BrowserDomTruncated => 5,
-            Note::BrowserBlockedNonGet => 6,
-            Note::CharsetFallback => 7,
-            Note::CacheWriteFailed => 8,
-            Note::ToolOutputLimit => 9,
+            Note::CharsetFallback => 4,
+            Note::CacheWriteFailed => 5,
+            Note::ToolOutputLimit => 6,
         }
     }
 }
@@ -299,9 +262,6 @@ pub struct WebFetchConfig {
     /// Allow auto-execution without approval prompts.
     #[serde(default)]
     pub allow_auto_execution: bool,
-
-    /// Browser-specific configuration.
-    pub browser: Option<BrowserConfig>,
 
     /// Security-specific configuration.
     pub security: Option<SecurityConfig>,
@@ -370,29 +330,6 @@ impl WebFetchConfig {
         self.max_download_bytes
             .unwrap_or(Self::DEFAULT_MAX_DOWNLOAD_BYTES)
     }
-}
-
-/// Browser-specific configuration.
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct BrowserConfig {
-    /// Whether browser fallback is enabled. Default: true.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-
-    /// Path to Chromium executable.
-    pub chromium_path: Option<PathBuf>,
-
-    /// Browser navigation timeout in seconds.
-    pub timeout_seconds: Option<u32>,
-
-    /// Maximum rendered DOM size in bytes.
-    pub max_rendered_dom_bytes: Option<u64>,
-
-    /// Maximum subresource download bytes.
-    pub max_subresource_bytes: Option<u64>,
-
-    /// Blocked resource types (e.g., "image", "font").
-    pub blocked_resource_types: Option<Vec<String>>,
 }
 
 /// Security-specific configuration.
@@ -549,10 +486,6 @@ pub enum ErrorCode {
     Http4xx,
     /// HTTP 5xx server error.
     Http5xx,
-    /// Chromium not found/runnable.
-    BrowserUnavailable,
-    /// Browser process crashed.
-    BrowserCrashed,
     /// HTML extraction failed.
     ExtractionFailed,
     /// Unexpected internal error.
@@ -572,7 +505,6 @@ impl ErrorCode {
                 | ErrorCode::Timeout
                 | ErrorCode::Network
                 | ErrorCode::Http5xx
-                | ErrorCode::BrowserCrashed
                 | ErrorCode::Internal
         )
     }
@@ -598,10 +530,6 @@ pub enum TimeoutPhase {
     Response,
     /// Timeout budget exhausted across redirect chain.
     Redirect,
-    /// Browser: timeout waiting for initial page load.
-    BrowserNavigation,
-    /// Browser: timeout waiting for network idle.
-    BrowserNetworkIdle,
     /// Timeout during robots.txt fetch.
     Robots,
 }

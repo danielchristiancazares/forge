@@ -1018,8 +1018,6 @@ fn timeout_phase_label(phase: TimeoutPhase) -> &'static str {
         TimeoutPhase::Request => "request",
         TimeoutPhase::Response => "response",
         TimeoutPhase::Redirect => "redirect",
-        TimeoutPhase::BrowserNavigation => "browser_navigation",
-        TimeoutPhase::BrowserNetworkIdle => "browser_network_idle",
         TimeoutPhase::Robots => "robots",
     }
 }
