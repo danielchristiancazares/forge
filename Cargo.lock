@@ -990,6 +990,7 @@ dependencies = [
  "futures-util",
  "globset",
  "ignore",
+ "libc",
  "regex",
  "serde",
  "serde_json",
