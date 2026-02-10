@@ -1153,6 +1153,18 @@ async fn handle_git_diff(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
         }
     }
 
+    // Reject refs starting with '-' to prevent flag injection (e.g. --output=).
+    if req.from_ref.as_ref().is_some_and(|s| s.starts_with('-')) {
+        return Err(ToolError::BadArgs {
+            message: "from_ref cannot start with '-'".to_string(),
+        });
+    }
+    if req.to_ref.as_ref().is_some_and(|s| s.starts_with('-')) {
+        return Err(ToolError::BadArgs {
+            message: "to_ref cannot start with '-'".to_string(),
+        });
+    }
+
     let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
     let working_dir = ctx.working_dir.clone();
 
@@ -1229,6 +1241,7 @@ async fn handle_git_diff(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
     // Ref-to-ref inline comparison (without output_dir).
     // `from_ref` alone → `git diff <from_ref>` (ref vs working tree).
     // Both refs → `git diff <from_ref> <to_ref>`.
+    // Note: '-' prefix validation already done above.
     if let Some(from_ref) = &req.from_ref {
         cmd_args.push(from_ref.clone());
         if let Some(to_ref) = &req.to_ref {
@@ -1931,5 +1944,34 @@ mod tests {
         let args = json!({"command": "unknown"});
         assert!(tool.is_side_effecting(&args));
         assert_eq!(tool.risk_level(&args), RiskLevel::High);
+    }
+
+    #[test]
+    fn diff_args_rejects_from_ref_starting_with_dash() {
+        let args: GitDiffArgs = serde_json::from_value(json!({
+            "from_ref": "--output=/tmp/exfil"
+        }))
+        .unwrap();
+        assert!(args.from_ref.as_ref().unwrap().starts_with('-'));
+    }
+
+    #[test]
+    fn diff_args_rejects_to_ref_starting_with_dash() {
+        let args: GitDiffArgs = serde_json::from_value(json!({
+            "to_ref": "--work-tree=/tmp"
+        }))
+        .unwrap();
+        assert!(args.to_ref.as_ref().unwrap().starts_with('-'));
+    }
+
+    #[test]
+    fn diff_args_accepts_valid_refs() {
+        let args: GitDiffArgs = serde_json::from_value(json!({
+            "from_ref": "main",
+            "to_ref": "HEAD~3"
+        }))
+        .unwrap();
+        assert!(!args.from_ref.as_ref().unwrap().starts_with('-'));
+        assert!(!args.to_ref.as_ref().unwrap().starts_with('-'));
     }
 }

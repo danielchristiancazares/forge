@@ -265,7 +265,7 @@ impl App {
         let librarian = if memory_enabled {
             if let Some(gemini_key) = api_keys.get(&Provider::Gemini) {
                 let librarian_path = data_dir.join("librarian.db");
-                match Librarian::open(&librarian_path, gemini_key.expose_secret().to_string()) {
+                match Librarian::open(&librarian_path, gemini_key.clone()) {
                     Ok(lib) => {
                         tracing::info!("Librarian initialized with {} facts", lib.fact_count());
                         Some(std::sync::Arc::new(tokio::sync::Mutex::new(lib)))

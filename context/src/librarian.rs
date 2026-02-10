@@ -17,6 +17,7 @@
 use std::fmt::Write;
 
 use anyhow::{Result, anyhow};
+use forge_types::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -286,12 +287,12 @@ use std::path::Path;
 /// and called at appropriate points in the turn lifecycle.
 pub struct Librarian {
     store: FactStore,
-    api_key: String,
+    api_key: SecretString,
     turn_counter: u64,
 }
 
 impl Librarian {
-    pub fn open(path: impl AsRef<Path>, api_key: String) -> Result<Self> {
+    pub fn open(path: impl AsRef<Path>, api_key: SecretString) -> Result<Self> {
         let store = FactStore::open(path)?;
         let turn_counter = store.max_turn_number()?;
         Ok(Self {
@@ -301,7 +302,7 @@ impl Librarian {
         })
     }
 
-    pub fn open_in_memory(api_key: String) -> Result<Self> {
+    pub fn open_in_memory(api_key: SecretString) -> Result<Self> {
         let store = FactStore::open_in_memory()?;
         let turn_counter = store.max_turn_number()?;
         Ok(Self {
@@ -327,7 +328,7 @@ impl Librarian {
     /// holding the Librarian lock (to avoid Send/Sync issues with SQLite).
     #[must_use]
     pub fn api_key(&self) -> &str {
-        &self.api_key
+        self.api_key.expose_secret()
     }
 
     /// Increment the turn counter.
@@ -377,7 +378,7 @@ impl Librarian {
         }
 
         let facts: Vec<Fact> = stored.into_iter().map(|sf| sf.fact).collect();
-        retrieve_relevant(&self.api_key, user_query, &facts).await
+        retrieve_relevant(self.api_key.expose_secret(), user_query, &facts).await
     }
 
     /// Post-turn: Extract and store facts from a conversation exchange.
@@ -389,7 +390,12 @@ impl Librarian {
         assistant_message: &str,
     ) -> Result<ExtractionResult> {
         self.turn_counter += 1;
-        let result = extract_facts(&self.api_key, user_message, assistant_message).await?;
+        let result = extract_facts(
+            self.api_key.expose_secret(),
+            user_message,
+            assistant_message,
+        )
+        .await?;
 
         if !result.facts.is_empty() {
             self.store.store_facts(&result.facts, self.turn_counter)?;
