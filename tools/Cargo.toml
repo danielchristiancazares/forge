@@ -25,7 +25,6 @@ globset.workspace = true
 jsonschema.workspace = true
 regex.workspace = true
 sha2.workspace = true
-tempfile.workspace = true
 ignore.workspace = true
 unicode-normalization.workspace = true
 chrono.workspace = true
@@ -43,7 +42,7 @@ which = "7"
 similar = "2"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -54,5 +53,5 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
 tempfile.workspace = true
