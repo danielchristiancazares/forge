@@ -89,22 +89,6 @@ engine/
     ├── lsp_integration.rs      # LSP event polling, diagnostics injection
     ├── util.rs                 # Utility functions
     ├── tests.rs                # Integration tests for engine logic
-    ├── tools/
-    │   ├── mod.rs              # ToolRegistry, ToolExecutor trait, ToolError
-    │   ├── builtins.rs         # Built-in tool implementations (Read, Write, Edit, Run, Glob)
-    │   ├── git.rs              # Git tool executors (status, diff, commit, etc.)
-    │   ├── lp1.rs              # LP1 patch format parser and applier
-    │   ├── sandbox.rs          # Sandbox path resolution and enforcement
-    │   ├── search.rs           # Search tool (ugrep/ripgrep backend)
-    │   ├── shell.rs            # Shell detection and command execution
-    │   ├── webfetch.rs         # WebFetch tool for URL fetching
-    │   ├── recall.rs           # Recall tool for Context Infinity fact queries
-    │   ├── memory.rs           # Memory tool for Librarian fact storage
-    │   ├── phase_gate.rs       # PhaseGate tool (hidden, Gemini-only)
-    │   ├── command_blacklist.rs # Command blacklist for blocking destructive commands
-    │   ├── powershell_ast.rs   # PowerShell AST analysis for safety checks
-    │   ├── windows_run.rs      # Windows Run sandbox policy and isolation
-    │   └── windows_run_host.rs # Windows Job Object host process isolation
     └── ui/
         ├── mod.rs              # UI types re-exports
         ├── display.rs          # DisplayItem enum
@@ -116,6 +100,8 @@ engine/
         ├── scroll.rs           # ScrollState tracking
         └── view_state.rs       # ViewState, UiOptions, FilesPanelState, ChangeKind
 ```
+
+> **Note:** Tool executors, sandboxing, and the `ToolRegistry` live in the `forge-tools` crate (`tools/src/`). `forge-engine` re-exports it as `crate::tools` (`pub use forge_tools as tools;`) and registers built-ins via `builtins::register_builtins()` in `engine/src/init.rs`.
 
 ### Dependencies
 
@@ -997,7 +983,7 @@ thinking_budget_tokens = 10000   # Only used when thinking_mode = "enabled"
 
 ```toml
 [openai]
-reasoning_effort = "high"  # disabled | low | medium | high | xhigh
+reasoning_effort = "high"  # none | low | medium | high | xhigh (also accepts "x-high")
 reasoning_summary = "auto" # none | auto | concise | detailed (shown when show_thinking=true)
 verbosity = "high"         # low | medium | high
 truncation = "auto"        # auto | disabled
@@ -1994,7 +1980,7 @@ pub struct SystemPrompts {
 
 ### Adding a New Built-in Tool
 
-1. **Create tool executor** (`engine/src/tools/my_tool.rs`):
+1. **Create tool executor** (`tools/src/my_tool.rs` in the `forge-tools` crate):
 
 ```rust
 pub struct MyTool;
@@ -2044,16 +2030,16 @@ impl ToolExecutor for MyTool {
 }
 ```
 
-2. **Register in `App::new()`** (`engine/src/init.rs`):
+2. **Register in `register_builtins()`** (`tools/src/builtins.rs`):
 
-Tool registration occurs during application initialization. Add your tool to the registry setup in `init.rs`:
+Tool registration occurs via `register_builtins()`, which `engine/src/init.rs` calls during `App::new()`:
 
 ```rust
-// In App::new() initialization
+// In register_builtins()
 registry.register(Box::new(MyTool))?;
 ```
 
-3. **Add module declaration** (`engine/src/tools/mod.rs`):
+3. **Add module declaration** (`tools/src/lib.rs`):
 
 ```rust
 pub mod my_tool;
