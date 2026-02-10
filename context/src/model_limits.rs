@@ -362,7 +362,6 @@ mod tests {
             let limits = registry.get(&model(PredefinedModel::ClaudeOpus)).limits();
             assert_eq!(limits.context_window(), 1_000_000);
 
-            // Set override
             registry.set_override(PredefinedModel::ClaudeOpus, ModelLimits::new(50_000, 8000));
 
             // After override, uses custom limits

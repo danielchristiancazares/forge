@@ -724,10 +724,8 @@ mod tests {
 
         history.add_distillate(distillate).expect("Distillate add");
 
-        // First two should be Distilled
         assert!(history.get_entry(id1).is_distilled());
         assert!(history.get_entry(id2).is_distilled());
-        // Third should not
         assert!(!history.entries()[2].is_distilled());
 
         assert_eq!(history.distilled_count(), 2);
@@ -769,10 +767,8 @@ mod tests {
         history.push(make_test_message("First"), 100);
         history.push(make_test_message("Second"), 100);
 
-        // No distillates yet, so no orphans
         assert!(history.orphaned_distillates().is_empty());
 
-        // Add a Distillate
         let distillate_id = history.next_distillate_id();
         let distillate = Distillate::new(
             distillate_id,
@@ -784,7 +780,6 @@ mod tests {
         );
         history.add_distillate(distillate).expect("add Distillate");
 
-        // Distillate is referenced, so still no orphans
         assert!(history.orphaned_distillates().is_empty());
     }
 
@@ -792,12 +787,10 @@ mod tests {
     fn test_overlapping_distillate_creates_orphan() {
         let mut history = FullHistory::new();
 
-        // Add 4 messages
         for i in 0..4 {
             history.push(make_test_message(&format!("Message {i}")), 100);
         }
 
-        // Create first Distillate covering messages 0-2
         let distillate0_id = history.next_distillate_id();
         let distillate0 = Distillate::new(
             distillate0_id,
@@ -811,7 +804,6 @@ mod tests {
             .add_distillate(distillate0)
             .expect("add Distillate 0");
 
-        // Verify messages 0-1 point to Distillate 0
         assert_eq!(
             history.get_entry(MessageId::new(0)).distillate_id(),
             Some(distillate0_id)
@@ -822,7 +814,6 @@ mod tests {
         );
         assert!(history.orphaned_distillates().is_empty());
 
-        // Create overlapping Distillate covering messages 0-4 (includes already-Distilled 0-1)
         let distillate1_id = history.next_distillate_id();
         let distillate1 = Distillate::new(
             distillate1_id,
@@ -836,7 +827,6 @@ mod tests {
             .add_distillate(distillate1)
             .expect("add Distillate 1");
 
-        // Now messages 0-3 should point to Distillate 1
         for i in 0..4 {
             assert_eq!(
                 history.get_entry(MessageId::new(i)).distillate_id(),
@@ -845,7 +835,6 @@ mod tests {
             );
         }
 
-        // Distillate 0 should now be orphaned (no messages reference it)
         let orphans = history.orphaned_distillates();
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0], distillate0_id);
@@ -860,13 +849,11 @@ mod tests {
 
         assert_eq!(history.len(), 2);
 
-        // Pop the last message
         let popped = history.pop_if_last(id2);
         assert!(popped.is_some());
         assert_eq!(popped.unwrap().content(), "Second");
         assert_eq!(history.len(), 1);
 
-        // Pop the remaining message
         let popped = history.pop_if_last(id1);
         assert!(popped.is_some());
         assert_eq!(popped.unwrap().content(), "First");
@@ -880,17 +867,15 @@ mod tests {
         let id1 = history.push(make_test_message("First"), 10);
         let _id2 = history.push(make_test_message("Second"), 20);
 
-        // Try to pop with wrong ID (not the last message)
         let popped = history.pop_if_last(id1);
         assert!(popped.is_none());
-        assert_eq!(history.len(), 2); // Nothing was removed
+        assert_eq!(history.len(), 2);
     }
 
     #[test]
     fn test_pop_if_last_empty_history() {
         let mut history = FullHistory::new();
 
-        // Try to pop from empty history
         let popped = history.pop_if_last(MessageId::new_for_test(0));
         assert!(popped.is_none());
         assert_eq!(history.len(), 0);
@@ -903,7 +888,6 @@ mod tests {
         let id1 = history.push(make_test_message("First"), 100);
         let id2 = history.push(make_test_message("Second"), 100);
 
-        // Create a Distillate covering both messages
         let distillate_id = history.next_distillate_id();
         let distillate = Distillate::new(
             distillate_id,
@@ -915,13 +899,11 @@ mod tests {
         );
         history.add_distillate(distillate).expect("add Distillate");
 
-        // Both messages should now be Distilled
         assert!(history.get_entry(id2).is_distilled());
 
-        // Try to pop the last (Distilled) message - should refuse
         let popped = history.pop_if_last(id2);
         assert!(popped.is_none());
-        assert_eq!(history.len(), 2); // Nothing was removed
+        assert_eq!(history.len(), 2);
     }
 
     #[test]
@@ -931,11 +913,9 @@ mod tests {
         let _id1 = history.push(make_test_message("First"), 10);
         let id2 = history.push(make_test_message("Second"), 20);
 
-        // Pop the last message
         history.pop_if_last(id2);
 
-        // Push a new message - should get the recycled ID
         let id3 = history.push(make_test_message("Third"), 30);
-        assert_eq!(id3.as_u64(), 1); // Same ID as the popped message
+        assert_eq!(id3.as_u64(), 1);
     }
 }

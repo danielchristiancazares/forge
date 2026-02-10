@@ -812,7 +812,6 @@ mod tests {
     #[test]
     fn finish_reason_unknown_continues() {
         let reason = typed::FinishReason::parse("UNKNOWN_REASON");
-        // Unknown reasons should continue processing (not error)
         assert!(reason.error_message().is_none());
     }
 
@@ -830,7 +829,6 @@ mod tests {
             tools_hash: 0,
         };
 
-        // Create some tools to verify they're NOT included when cache is present
         let tools = vec![forge_types::ToolDefinition::new(
             "test_tool".to_string(),
             "A test tool".to_string(),
@@ -846,13 +844,10 @@ mod tests {
             Some(&cache),
         );
 
-        // Should have cachedContent reference
         assert_eq!(body.get("cachedContent").unwrap(), "cachedContents/abc123");
 
-        // Should NOT have system_instruction (it's in the cache)
         assert!(body.get("system_instruction").is_none());
 
-        // Should NOT have tools (they're in the cache)
         assert!(body.get("tools").is_none());
     }
 
@@ -860,7 +855,6 @@ mod tests {
     fn cache_expiry_check() {
         use chrono::TimeZone;
 
-        // Expired cache
         let expired = GeminiCache {
             name: "test".to_string(),
             expire_time: Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap(),
@@ -869,7 +863,6 @@ mod tests {
         };
         assert!(expired.is_expired());
 
-        // Future cache
         let future = GeminiCache {
             name: "test".to_string(),
             expire_time: Utc.with_ymd_and_hms(2030, 1, 1, 0, 0, 0).unwrap(),
@@ -895,13 +888,10 @@ mod tests {
             tools_hash: hash_tools(Some(&tools)),
         };
 
-        // Matches when both prompt and tools match
         assert!(cache.matches_config(prompt, Some(&tools)));
 
-        // Doesn't match with different prompt
         assert!(!cache.matches_config("Different prompt", Some(&tools)));
 
-        // Doesn't match with different tools
         let different_tools = vec![forge_types::ToolDefinition::new(
             "other_tool".to_string(),
             "Another tool".to_string(),
@@ -909,7 +899,6 @@ mod tests {
         )];
         assert!(!cache.matches_config(prompt, Some(&different_tools)));
 
-        // Doesn't match with no tools when cache has tools
         assert!(!cache.matches_config(prompt, None));
     }
 

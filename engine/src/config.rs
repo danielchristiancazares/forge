@@ -514,7 +514,6 @@ impl ForgeConfig {
             }
         }
 
-        // Load existing config or create empty document
         let content = if path.exists() {
             fs::read_to_string(&path)?
         } else {
@@ -525,15 +524,12 @@ impl ForgeConfig {
             .parse::<toml_edit::DocumentMut>()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-        // Ensure [app] table exists
         if !doc.contains_key("app") {
             doc["app"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
 
-        // Set the model
         doc["app"]["model"] = toml_edit::value(model);
 
-        // Write back atomically
         let serialized = doc.to_string();
         forge_context::atomic_write_with_options(
             &path,

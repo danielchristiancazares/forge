@@ -474,7 +474,6 @@ mod tests {
 
     #[test]
     fn strips_c1_controls() {
-        // C1 control characters
         let input = "Hello\u{0080}World\u{009a}Test\u{009f}";
         assert_eq!(sanitize_terminal_text(input), "HelloWorldTest");
     }
@@ -501,7 +500,6 @@ mod tests {
 
     #[test]
     fn handles_incomplete_escape() {
-        // ESC at end of string
         let input = "Text\x1b";
         assert_eq!(sanitize_terminal_text(input), "Text");
     }

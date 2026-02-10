@@ -14,8 +14,6 @@ use crate::init::DEFAULT_MAX_TOOL_ARGS_BYTES;
 use crate::state::DataDirSource;
 use crate::ui::DraftInput;
 
-// StreamEvent is already in scope from the use statement above
-
 /// Test system prompts for unit tests.
 const TEST_SYSTEM_PROMPTS: SystemPrompts = SystemPrompts {
     claude: "You are a helpful assistant.",
@@ -289,10 +287,8 @@ fn submit_message_adds_user_message() {
     assert!(app.draft_text().is_empty());
     assert_eq!(app.draft_cursor(), 0);
     assert_eq!(app.view.scroll, ScrollState::AutoBottom);
-    // Streaming is started separately by start_streaming()
     assert!(!app.is_loading());
 
-    // Only user message added; streaming message created by start_streaming()
     assert_eq!(app.history().len(), 1);
     let first = app.history().entries().first().expect("user message");
     assert!(matches!(first.message(), Message::User(_)));
@@ -365,7 +361,6 @@ fn process_command_clear_requests_transcript_clear() {
 fn process_stream_events_applies_deltas_and_done() {
     let mut app = test_app();
 
-    // Start streaming using the new architecture
     let (tx, rx) = mpsc::channel(1024);
     let streaming = StreamingMessage::new(
         app.model.clone(),
@@ -577,10 +572,9 @@ fn queue_message_sets_pending_user_message() {
         .queue_message()
         .expect("queued message");
 
-    // Verify pending_user_message is set
     assert!(app.pending_user_message.is_some());
     let (msg_id, original_text) = app.pending_user_message.as_ref().unwrap();
-    assert_eq!(msg_id.as_u64(), 0); // First message
+    assert_eq!(msg_id.as_u64(), 0);
     assert_eq!(original_text, "test message");
 }
 
@@ -608,7 +602,6 @@ async fn distillation_not_needed_starts_queued_request() {
 fn rollback_pending_user_message_restores_input() {
     let mut app = test_app();
 
-    // Simulate: user sends message (stored in history and pending)
     let content = NonEmptyString::new("my message").expect("non-empty");
     let msg_id = app.push_history_message(Message::user(content));
     app.pending_user_message = Some((msg_id, "my message".to_string()));
@@ -616,18 +609,12 @@ fn rollback_pending_user_message_restores_input() {
     assert_eq!(app.history().len(), 1);
     assert_eq!(app.display.len(), 1);
 
-    // Rollback the pending message
     app.rollback_pending_user_message();
 
-    // Message should be removed from history
     assert_eq!(app.history().len(), 0);
-    // Display should be updated
     assert_eq!(app.display.len(), 0);
-    // Input should be restored
     assert_eq!(app.draft_text(), "my message");
-    // Should be in insert mode for easy retry
     assert_eq!(app.input_mode(), InputMode::Insert);
-    // Pending should be cleared
     assert!(app.pending_user_message.is_none());
 }
 
@@ -635,10 +622,8 @@ fn rollback_pending_user_message_restores_input() {
 fn rollback_pending_user_message_no_op_when_empty() {
     let mut app = test_app();
 
-    // No pending message
     assert!(app.pending_user_message.is_none());
 
-    // Rollback should be a no-op
     app.rollback_pending_user_message();
 
     assert!(app.draft_text().is_empty());
@@ -700,7 +685,6 @@ fn streaming_message_apply_thinking_delta_ignored() {
     stream.apply_event(StreamEvent::TextDelta("visible".to_string()));
     stream.apply_event(StreamEvent::ThinkingDelta("thinking...".to_string()));
 
-    // Thinking content should not appear in content
     assert_eq!(stream.content(), "visible");
 }
 
@@ -736,7 +720,6 @@ fn streaming_message_into_message_empty_fails() {
     let model = Provider::Claude.default_model();
     let stream = StreamingMessage::new(model, rx, DEFAULT_MAX_TOOL_ARGS_BYTES);
 
-    // No content added
     let result = stream.into_message();
     assert!(result.is_err());
 }
@@ -1030,7 +1013,6 @@ async fn tool_loop_write_then_read_same_batch() {
         .find(|result| result.tool_call_id == "call-read")
         .expect("read result");
     assert!(!read_result.is_error);
-    // read_file now shows line numbers by default
     assert_eq!(read_result.content, "1| hello");
 }
 
