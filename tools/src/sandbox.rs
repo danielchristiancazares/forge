@@ -329,6 +329,55 @@ impl Sandbox {
         Ok(canonical)
     }
 
+    /// Post-creation validation for TOCTOU mitigation.
+    ///
+    /// After `create_dir_all` creates the directory tree and before writing content,
+    /// re-canonicalize the parent and verify it's still within allowed roots and
+    /// contains no symlinks in the path chain. This closes the race window where
+    /// an attacker process could replace a directory with a symlink between
+    /// `resolve_path_for_create` and the actual write.
+    pub fn validate_created_parent(&self, path: &Path) -> Result<(), ToolError> {
+        let parent = path.parent().ok_or_else(|| ToolError::BadArgs {
+            message: "path has no parent directory".to_string(),
+        })?;
+
+        // Walk the path chain checking for symlinks
+        let mut current = parent.to_path_buf();
+        loop {
+            if let Ok(meta) = std::fs::symlink_metadata(&current)
+                && meta.file_type().is_symlink()
+            {
+                return Err(ToolError::SandboxViolation(
+                    DenialReason::PathOutsideSandbox {
+                        attempted: path.to_path_buf(),
+                        resolved: current,
+                    },
+                ));
+            }
+            match current.parent() {
+                Some(p) if p != current => current = p.to_path_buf(),
+                _ => break,
+            }
+        }
+
+        // Re-canonicalize and verify within allowed roots
+        let canonical = std::fs::canonicalize(parent).map_err(|_| {
+            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                attempted: path.to_path_buf(),
+                resolved: parent.to_path_buf(),
+            })
+        })?;
+        if !self.is_within_allowed_roots(&canonical) {
+            return Err(ToolError::SandboxViolation(
+                DenialReason::PathOutsideSandbox {
+                    attempted: path.to_path_buf(),
+                    resolved: canonical,
+                },
+            ));
+        }
+        Ok(())
+    }
+
     fn is_within_allowed_roots(&self, path: &Path) -> bool {
         self.allowed_roots.iter().any(|root| path.starts_with(root))
     }

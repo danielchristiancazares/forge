@@ -1,12 +1,15 @@
 //! Small pure helper functions.
 
-use forge_types::{ApiKey, ModelName, PredefinedModel, Provider};
+use forge_types::{ApiKey, ModelName, PredefinedModel, Provider, SecretString};
 
 pub use forge_types::truncate_with_ellipsis;
 
-/// Wrap a raw API key string in the provider-specific `ApiKey` enum variant.
+/// Wrap a `SecretString` API key in the provider-specific `ApiKey` enum variant.
+///
+/// Deliberately exposes the secret at the boundary where it enters the provider API.
 #[inline]
-pub fn wrap_api_key(provider: Provider, raw: String) -> ApiKey {
+pub fn wrap_api_key(provider: Provider, secret: SecretString) -> ApiKey {
+    let raw = secret.expose_secret().to_string();
     match provider {
         Provider::Claude => ApiKey::claude(raw),
         Provider::OpenAI => ApiKey::openai(raw),

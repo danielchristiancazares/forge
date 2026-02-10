@@ -87,12 +87,30 @@ impl RunningServer {
         workspace_root: &Path,
         event_tx: mpsc::Sender<LspEvent>,
     ) -> Result<Self> {
-        let mut child = Command::new(config.command())
-            .args(config.args())
+        let mut cmd = Command::new(config.command());
+        cmd.args(config.args())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+
+        // Strip secret-bearing env vars from LSP child processes
+        let secret_patterns = [
+            "_KEY",
+            "_TOKEN",
+            "_SECRET",
+            "_PASSWORD",
+            "ANTHROPIC_",
+            "OPENAI_",
+            "GEMINI_",
+        ];
+        for (key, _) in std::env::vars() {
+            if secret_patterns.iter().any(|pat| key.contains(pat)) {
+                cmd.env_remove(&key);
+            }
+        }
+
+        let mut child = cmd
             .spawn()
             .with_context(|| format!("spawning {}", config.command()))?;
 

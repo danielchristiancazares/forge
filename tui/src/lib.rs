@@ -35,7 +35,7 @@ use forge_engine::{
     PredefinedModel, Provider, TurnUsage, UiOptions, command_specs, find_match_positions,
     sanitize_display_text, sanitize_terminal_text,
 };
-use forge_types::ToolResult;
+use forge_types::{ToolResult, sanitize_path_display};
 
 use self::diff_render::render_tool_result_lines;
 pub use self::markdown::clear_render_cache;
@@ -1542,7 +1542,8 @@ fn strip_windows_prefix(path: &str) -> String {
 
 /// Truncate a path for display, keeping the filename and as much of the parent as fits.
 fn truncate_path_display(path: &std::path::Path, max_width: usize) -> String {
-    let display = strip_windows_prefix(&path.display().to_string());
+    let display =
+        sanitize_path_display(&strip_windows_prefix(&path.display().to_string())).into_owned();
     if display.width() <= max_width {
         return display;
     }

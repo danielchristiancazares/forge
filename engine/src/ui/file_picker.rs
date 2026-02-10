@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use forge_types::sanitize_path_display;
 use ignore::WalkBuilder;
 
 /// Maximum number of files to scan (prevents slowdown on huge repos).
@@ -69,11 +70,12 @@ impl FilePickerState {
             }
 
             let path = entry.path().to_path_buf();
-            let display = path
+            let raw = path
                 .strip_prefix(root)
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
+            let display = sanitize_path_display(&raw).into_owned();
 
             if display.is_empty() || display == root_str {
                 continue;

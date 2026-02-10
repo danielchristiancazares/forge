@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use forge_types::{OutputLimits, Provider};
+use forge_types::{OutputLimits, Provider, SecretString};
 
 use crate::config::{self, ForgeConfig, OpenAIConfig};
 use crate::state::{DataDir, DataDirSource, OperationState};
@@ -89,21 +89,21 @@ impl App {
                 let resolved = config::expand_env_vars(key);
                 let trimmed = resolved.trim();
                 if !trimmed.is_empty() {
-                    api_keys.insert(Provider::Claude, trimmed.to_string());
+                    api_keys.insert(Provider::Claude, SecretString::new(trimmed.to_string()));
                 }
             }
             if let Some(key) = keys.openai.as_ref() {
                 let resolved = config::expand_env_vars(key);
                 let trimmed = resolved.trim();
                 if !trimmed.is_empty() {
-                    api_keys.insert(Provider::OpenAI, trimmed.to_string());
+                    api_keys.insert(Provider::OpenAI, SecretString::new(trimmed.to_string()));
                 }
             }
             if let Some(key) = keys.google.as_ref() {
                 let resolved = config::expand_env_vars(key);
                 let trimmed = resolved.trim();
                 if !trimmed.is_empty() {
-                    api_keys.insert(Provider::Gemini, trimmed.to_string());
+                    api_keys.insert(Provider::Gemini, SecretString::new(trimmed.to_string()));
                 }
             }
         }
@@ -113,7 +113,7 @@ impl App {
         {
             let key = key.trim().to_string();
             if !key.is_empty() {
-                e.insert(key);
+                e.insert(SecretString::new(key));
             }
         }
         if let std::collections::hash_map::Entry::Vacant(e) = api_keys.entry(Provider::OpenAI)
@@ -121,7 +121,7 @@ impl App {
         {
             let key = key.trim().to_string();
             if !key.is_empty() {
-                e.insert(key);
+                e.insert(SecretString::new(key));
             }
         }
         if let std::collections::hash_map::Entry::Vacant(e) = api_keys.entry(Provider::Gemini)
@@ -129,7 +129,7 @@ impl App {
         {
             let key = key.trim().to_string();
             if !key.is_empty() {
-                e.insert(key);
+                e.insert(SecretString::new(key));
             }
         }
 
@@ -263,9 +263,9 @@ impl App {
 
         // Initialize Librarian for memory (if enabled and Gemini API key available)
         let librarian = if memory_enabled {
-            if let Some(gemini_key) = api_keys.get(&Provider::Gemini).cloned() {
+            if let Some(gemini_key) = api_keys.get(&Provider::Gemini) {
                 let librarian_path = data_dir.join("librarian.db");
-                match Librarian::open(&librarian_path, gemini_key) {
+                match Librarian::open(&librarian_path, gemini_key.expose_secret().to_string()) {
                     Ok(lib) => {
                         tracing::info!("Librarian initialized with {} facts", lib.fact_count());
                         Some(std::sync::Arc::new(tokio::sync::Mutex::new(lib)))

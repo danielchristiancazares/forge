@@ -1,7 +1,8 @@
 use crate::{
-    ApiConfig, ApiResponse, CacheableMessage, Message, OutputLimits, Result, SseParseAction,
-    SseParser, StreamEvent, ThoughtSignature, ThoughtSignatureState, ToolDefinition,
-    handle_response, http_client, mpsc, process_sse_stream, read_capped_error_body,
+    ApiConfig, ApiResponse, CacheableMessage, MAX_SSE_PARSE_ERROR_PREVIEW, Message, OutputLimits,
+    Result, SseParseAction, SseParser, StreamEvent, ThoughtSignature, ThoughtSignatureState,
+    ToolDefinition, handle_response, http_client, http_client_with_timeout, mpsc,
+    process_sse_stream, read_capped_error_body,
     retry::{RetryConfig, send_with_retry},
 };
 use chrono::{DateTime, Utc};
@@ -142,7 +143,8 @@ pub async fn create_cache(
         }]);
     }
 
-    let response = http_client()
+    let client = http_client_with_timeout(120).map_err(|e| anyhow::anyhow!("HTTP client: {e}"))?;
+    let response = client
         .post(&url)
         .header("x-goog-api-key", api_key)
         .header("content-type", "application/json")
@@ -391,7 +393,12 @@ impl SseParser for GeminiParser {
         let response: typed::Response = match serde_json::from_value(json.clone()) {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!("Failed to parse Gemini SSE response: {e} — raw: {json}");
+                let preview: String = json
+                    .to_string()
+                    .chars()
+                    .take(MAX_SSE_PARSE_ERROR_PREVIEW)
+                    .collect();
+                tracing::warn!(%e, preview = %preview, "Failed to parse Gemini SSE event");
                 return SseParseAction::Continue;
             }
         };

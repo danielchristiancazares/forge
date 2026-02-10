@@ -25,7 +25,7 @@ const TEST_SYSTEM_PROMPTS: SystemPrompts = SystemPrompts {
 
 fn test_app() -> App {
     let mut api_keys = HashMap::new();
-    api_keys.insert(Provider::Claude, "test".to_string());
+    api_keys.insert(Provider::Claude, SecretString::new("test".to_string()));
     let model = Provider::Claude.default_model();
     let stream_journal = StreamJournal::open_in_memory().expect("in-memory journal for tests");
     let data_dir_path = tempdir().expect("temp data dir for tests").keep();

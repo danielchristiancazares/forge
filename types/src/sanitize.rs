@@ -86,6 +86,28 @@ pub fn sanitize_terminal_text(input: &str) -> Cow<'_, str> {
     Cow::Owned(result)
 }
 
+/// Sanitize a filesystem path string for terminal display.
+///
+/// Applies [`sanitize_terminal_text`] to strip escape sequences and control chars,
+/// then additionally replaces `\n`, `\r`, `\t` with visible Unicode substitutes.
+/// Unlike `sanitize_terminal_text` (which preserves whitespace controls for prose),
+/// path display must never contain embedded newlines or tabs — these can break
+/// TUI layout and are a realistic attack vector on Unix (filenames may contain
+/// any byte except NUL and `/`).
+#[must_use]
+pub fn sanitize_path_display(input: &str) -> Cow<'_, str> {
+    let base = sanitize_terminal_text(input);
+    if base.contains(['\n', '\r', '\t']) {
+        Cow::Owned(
+            base.replace('\n', "\u{240A}")
+                .replace('\r', "\u{240D}")
+                .replace('\t', "\u{2409}"),
+        )
+    } else {
+        base
+    }
+}
+
 /// Check if text contains any characters that need sanitization.
 fn needs_sanitization(input: &str) -> bool {
     input.chars().any(|c| {
@@ -763,5 +785,54 @@ mod tests {
         let terminal_safe = sanitize_terminal_text(input);
         let fully_safe = strip_steganographic_chars(&terminal_safe);
         assert_eq!(fully_safe, "HelloWorld");
+    }
+
+    // --- Path display sanitization tests ---
+
+    #[test]
+    fn path_display_clean_no_allocation() {
+        let input = "src/main.rs";
+        match sanitize_path_display(input) {
+            Cow::Borrowed(s) => assert_eq!(s, input),
+            Cow::Owned(_) => panic!("should not allocate for clean path"),
+        }
+    }
+
+    #[test]
+    fn path_display_strips_escape_sequences() {
+        assert_eq!(sanitize_path_display("src/\x1b[2Jmain.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn path_display_strips_osc52_clipboard_hijack() {
+        let input = "\x1b]52;c;SGVsbG8=\x07notes.md";
+        let result = sanitize_path_display(input);
+        assert!(!result.contains('\x1b'));
+        assert!(!result.contains('\x07'));
+        assert!(result.contains("notes.md"));
+    }
+
+    #[test]
+    fn path_display_replaces_newlines_tabs() {
+        let input = "dir\nnested/file\there.rs";
+        let result = sanitize_path_display(input);
+        assert!(!result.contains('\n'));
+        assert!(!result.contains('\t'));
+        assert!(result.contains('\u{240A}')); // visible newline substitute
+        assert!(result.contains('\u{2409}')); // visible tab substitute
+    }
+
+    #[test]
+    fn path_display_replaces_carriage_return() {
+        let input = "path\rwith\rcr.txt";
+        let result = sanitize_path_display(input);
+        assert!(!result.contains('\r'));
+        assert!(result.contains('\u{240D}')); // visible CR substitute
+    }
+
+    #[test]
+    fn path_display_strips_bidi_controls() {
+        let input = "src/\u{202E}evil\u{202C}.rs";
+        assert_eq!(sanitize_path_display(input), "src/evil.rs");
     }
 }

@@ -54,8 +54,8 @@ pub use forge_types::{
     ApiKey, ApiUsage, CacheHint, CacheableMessage, EmptyStringError, Message, ModelName,
     NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort, OpenAIReasoningItem,
     OpenAIReasoningSummary, OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation,
-    OutputLimits, Provider, StreamEvent, StreamFinishReason, ThinkingReplayState, ThinkingState,
-    ThoughtSignature, ThoughtSignatureState, ToolCall, ToolDefinition, ToolResult,
+    OutputLimits, Provider, SecretString, StreamEvent, StreamFinishReason, ThinkingReplayState,
+    ThinkingState, ThoughtSignature, ThoughtSignatureState, ToolCall, ToolDefinition, ToolResult,
     sanitize_terminal_text,
 };
 
@@ -436,7 +436,7 @@ pub struct App {
     should_quit: bool,
     /// View state for rendering (scroll, status, modal effects).
     view: ViewState,
-    api_keys: HashMap<Provider, String>,
+    api_keys: HashMap<Provider, SecretString>,
     model: ModelName,
     tick: usize,
     data_dir: DataDir,
@@ -976,7 +976,7 @@ impl App {
     }
 
     /// Get the current API key for the selected provider.
-    pub fn current_api_key(&self) -> Option<&String> {
+    pub fn current_api_key(&self) -> Option<&SecretString> {
         self.api_keys.get(&self.model.provider())
     }
 

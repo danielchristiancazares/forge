@@ -311,11 +311,31 @@ impl ToolExecutor for GitTool {
     }
 
     fn is_side_effecting(&self, args: &Value) -> bool {
-        Self::parse_kind(args).map_or(true, GitToolKind::is_side_effecting)
+        match Self::parse_kind(args) {
+            Ok(GitToolKind::Diff) => {
+                // Diff is side-effecting when output_dir is specified (writes patch files)
+                args.get("output_dir")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.trim().is_empty())
+            }
+            Ok(kind) => kind.is_side_effecting(),
+            Err(_) => true,
+        }
     }
 
     fn risk_level(&self, args: &Value) -> RiskLevel {
-        Self::parse_kind(args).map_or(RiskLevel::High, GitToolKind::risk_level)
+        match Self::parse_kind(args) {
+            Ok(GitToolKind::Diff)
+                if args
+                    .get("output_dir")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.trim().is_empty()) =>
+            {
+                RiskLevel::Medium
+            }
+            Ok(kind) => kind.risk_level(),
+            Err(_) => RiskLevel::High,
+        }
     }
 
     fn approval_summary(&self, args: &Value) -> Result<String, ToolError> {
@@ -751,6 +771,10 @@ async fn write_patches_to_dir(
             tool: "Git:diff".to_string(),
             message: format!("Failed to create output directory: {e}"),
         })?;
+    // TOCTOU mitigation: revalidate after directory creation
+    // Use a dummy child path since validate_created_parent checks the parent
+    ctx.sandbox
+        .validate_created_parent(&output_dir.join("_check"))?;
 
     // Build the ref range arg: "from..to", just "from", or omit entirely.
     let ref_range: Option<String> = match (from_ref, to_ref) {
@@ -1847,4 +1871,65 @@ async fn handle_git_blame(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError
     extra_fields.insert("max_bytes", json!(max_bytes));
 
     Ok(build_git_response(&exec, text, Some(extra_fields)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn diff_without_output_dir_is_not_side_effecting() {
+        let tool = GitTool;
+        let args = json!({"command": "diff"});
+        assert!(!tool.is_side_effecting(&args));
+        assert_eq!(tool.risk_level(&args), RiskLevel::Low);
+    }
+
+    #[test]
+    fn diff_with_output_dir_is_side_effecting() {
+        let tool = GitTool;
+        let args = json!({"command": "diff", "output_dir": "patches"});
+        assert!(tool.is_side_effecting(&args));
+        assert_eq!(tool.risk_level(&args), RiskLevel::Medium);
+    }
+
+    #[test]
+    fn diff_with_empty_output_dir_is_not_side_effecting() {
+        let tool = GitTool;
+        let args = json!({"command": "diff", "output_dir": ""});
+        assert!(!tool.is_side_effecting(&args));
+        assert_eq!(tool.risk_level(&args), RiskLevel::Low);
+    }
+
+    #[test]
+    fn diff_with_whitespace_output_dir_is_not_side_effecting() {
+        let tool = GitTool;
+        let args = json!({"command": "diff", "output_dir": "  "});
+        assert!(!tool.is_side_effecting(&args));
+    }
+
+    #[test]
+    fn status_is_not_side_effecting() {
+        let tool = GitTool;
+        let args = json!({"command": "status"});
+        assert!(!tool.is_side_effecting(&args));
+        assert_eq!(tool.risk_level(&args), RiskLevel::Low);
+    }
+
+    #[test]
+    fn restore_is_side_effecting_high_risk() {
+        let tool = GitTool;
+        let args = json!({"command": "restore", "paths": ["file.rs"]});
+        assert!(tool.is_side_effecting(&args));
+        assert_eq!(tool.risk_level(&args), RiskLevel::High);
+    }
+
+    #[test]
+    fn unknown_command_is_side_effecting_high_risk() {
+        let tool = GitTool;
+        let args = json!({"command": "unknown"});
+        assert!(tool.is_side_effecting(&args));
+        assert_eq!(tool.risk_level(&args), RiskLevel::High);
+    }
 }

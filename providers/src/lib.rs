@@ -74,7 +74,7 @@ const MAX_SSE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
 const MAX_SSE_PARSE_ERRORS: usize = 3;
 
-const MAX_SSE_PARSE_ERROR_PREVIEW: usize = 160;
+pub(crate) const MAX_SSE_PARSE_ERROR_PREVIEW: usize = 160;
 
 const MAX_ERROR_BODY_BYTES: usize = 32 * 1024;
 

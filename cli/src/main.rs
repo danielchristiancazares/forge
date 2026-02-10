@@ -28,7 +28,7 @@ use ratatui::prelude::*;
 use std::{
     fs::{self, OpenOptions},
     io::{Stdout, Write, stdout},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Mutex,
     time::Duration,
 };
@@ -77,11 +77,30 @@ fn open_forge_log_file() -> (Option<(PathBuf, std::fs::File)>, Vec<String>) {
             continue;
         }
 
-        match OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&candidate)
+        // Enforce secure permissions on the log directory (Unix)
+        #[cfg(unix)]
+        if let Some(parent) = candidate.parent() {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = fs::metadata(parent) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o700);
+                let _ = fs::set_permissions(parent, perms);
+            }
+        }
+
+        // Reject symlinks at the log file path to prevent write redirection
+        if let Ok(meta) = fs::symlink_metadata(&candidate)
+            && meta.file_type().is_symlink()
         {
+            warnings.push(format!(
+                "Refusing symlink log path: {}",
+                candidate.display()
+            ));
+            continue;
+        }
+
+        let file_result = open_log_file_secure(&candidate);
+        match file_result {
             Ok(file) => return (Some((candidate, file)), warnings),
             Err(e) => {
                 warnings.push(format!(
@@ -95,18 +114,34 @@ fn open_forge_log_file() -> (Option<(PathBuf, std::fs::File)>, Vec<String>) {
     (None, warnings)
 }
 
+/// Open a log file with secure permissions on Unix (0600).
+fn open_log_file_secure(path: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)
+    }
+    #[cfg(not(unix))]
+    {
+        OpenOptions::new().create(true).append(true).open(path)
+    }
+}
+
 fn forge_log_file_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    // Primary: ~/.forge/logs/forge.log
+    // Only use ~/.forge/logs/forge.log — no CWD fallback.
+    // A CWD fallback is dangerous: untrusted repos can place symlinks at
+    // .forge/logs/forge.log to hijack log writes to arbitrary files.
     if let Some(config_path) = forge_engine::ForgeConfig::path()
         && let Some(config_dir) = config_path.parent()
     {
         candidates.push(config_dir.join("logs").join("forge.log"));
     }
-
-    // Fallback: ./.forge/logs/forge.log (useful in constrained environments)
-    candidates.push(PathBuf::from(".forge").join("logs").join("forge.log"));
 
     candidates
 }

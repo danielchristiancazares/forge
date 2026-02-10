@@ -38,7 +38,7 @@ mod confusables;
 mod sanitize;
 mod text;
 pub use confusables::{HomoglyphWarning, detect_mixed_script};
-pub use sanitize::{sanitize_terminal_text, strip_steganographic_chars};
+pub use sanitize::{sanitize_path_display, sanitize_terminal_text, strip_steganographic_chars};
 pub use text::truncate_with_ellipsis;
 
 use serde::{Deserialize, Serialize};

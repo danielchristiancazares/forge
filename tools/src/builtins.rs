@@ -987,6 +987,8 @@ impl ToolExecutor for WriteFileTool {
                         ),
                     }
                 })?;
+                // TOCTOU mitigation: revalidate after directory creation
+                ctx.sandbox.validate_created_parent(&resolved)?;
             }
 
             let bytes = typed.content.into_bytes();

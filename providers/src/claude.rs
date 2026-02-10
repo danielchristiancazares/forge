@@ -1,7 +1,7 @@
 use crate::{
-    ApiConfig, ApiResponse, ApiUsage, CacheHint, CacheableMessage, Message, OutputLimits, Result,
-    SseParseAction, SseParser, StreamEvent, ThinkingReplayState, ThoughtSignatureState,
-    ToolDefinition, handle_response, http_client, mpsc, process_sse_stream,
+    ApiConfig, ApiResponse, ApiUsage, CacheHint, CacheableMessage, MAX_SSE_PARSE_ERROR_PREVIEW,
+    Message, OutputLimits, Result, SseParseAction, SseParser, StreamEvent, ThinkingReplayState,
+    ThoughtSignatureState, ToolDefinition, handle_response, http_client, mpsc, process_sse_stream,
     retry::{RetryConfig, send_with_retry},
 };
 use forge_types::ThinkingState;
@@ -274,7 +274,12 @@ impl SseParser for ClaudeParser {
         let event: typed::Event = match serde_json::from_value(json.clone()) {
             Ok(e) => e,
             Err(e) => {
-                tracing::warn!("Failed to parse Claude SSE event: {e} — raw: {json}");
+                let preview: String = json
+                    .to_string()
+                    .chars()
+                    .take(MAX_SSE_PARSE_ERROR_PREVIEW)
+                    .collect();
+                tracing::warn!(%e, preview = %preview, "Failed to parse Claude SSE event");
                 return SseParseAction::Continue;
             }
         };
