@@ -29,7 +29,7 @@ Forge processes untrusted content from multiple sources:
 | Persisted content | Log spoofing via CR | `PersistableContent` |
 | Tool arguments | Homoglyph attacks | `detect_mixed_script` |
 
-All sanitization functions live in `types/src/sanitize.rs`, `types/src/confusables.rs`, and `engine/src/security.rs`.
+Core sanitization and analysis live in `types/src/sanitize.rs` and `types/src/confusables.rs`. Secret redaction and display sanitization are implemented in both `engine/src/security.rs` and `tools/src/security.rs` (the tools crate cannot depend on the engine crate). Tool-output sanitization is provided via `tools/src/lib.rs` (`sanitize_output`), which composes the core routines.
 
 ## Terminal Sanitization
 
@@ -167,19 +167,20 @@ Apply steganographic sanitization to **untrusted external content only**:
 
 **Location**: `engine/src/security.rs`
 
-Prevents API keys from leaking into logs, error messages, or terminal output.
+Prevents obvious secrets from leaking into logs, error messages, or terminal output. Despite the name, `redact_api_keys` covers a broader set of common credential formats (API keys, tokens, key IDs, and private key blocks).
 
 ### Detected Patterns
 
-| Provider | Pattern | Redacted To |
+| Class | Pattern (examples) | Redacted To |
 |----------|---------|-------------|
 | OpenAI | `sk-...` | `sk-***` |
 | Anthropic | `sk-ant-...` | `sk-ant-***` |
 | Google/Gemini | `AIza...` | `AIza***` |
-
-### Key Delimiters
-
-Redaction stops at: whitespace, `"`, `'`, `,`, `}`, `]`, `)`, `\`
+| GitHub | `ghp_...`, `github_pat_...` | `<prefix>***` |
+| AWS access keys | `AKIA...`, `ASIA...` (and paired secret keys) | `<prefix>***` / `[REDACTED]` |
+| Stripe | `sk_live_...`, `rk_test_...`, `whsec_...` | `<prefix>***` |
+| Bearer JWTs | `Bearer <jwt>` | `Bearer [REDACTED]` |
+| PEM private keys | `-----BEGIN ... PRIVATE KEY----- ...` | `[REDACTED]` |
 
 ### Usage Example
 
@@ -343,7 +344,7 @@ Warnings are displayed in the tool approval UI with yellow styling:
 
 **Function**: `sanitize_output(output: &str) -> String`
 
-**Location**: `engine/src/tools/mod.rs`
+**Location**: `tools/src/lib.rs`
 
 Tool output is untrusted external content that enters the LLM context
 window, so we apply terminal + stego normalization and secret redaction:
@@ -388,7 +389,7 @@ pub fn sanitize_stream_error(raw: &str) -> String {
 
 ### Web Content Sanitization
 
-**Location**: `webfetch/src/extract.rs`
+**Location**: `tools/src/webfetch/extract.rs`
 
 Applied after HTML-to-Markdown conversion:
 

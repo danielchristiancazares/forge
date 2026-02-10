@@ -1967,10 +1967,11 @@ fn apply_tool_event_to_output_lines(
             tool_name,
         } => {
             let lines = output_lines.entry(tool_call_id.clone()).or_default();
+            let safe_tool_call_id = crate::security::sanitize_display_text(&tool_call_id);
             lines.push(format!(
                 "▶ {} ({})",
                 tools::sanitize_output(&tool_name),
-                tool_call_id
+                safe_tool_call_id
             ));
         }
         tools::ToolEvent::ProcessSpawned {
@@ -1995,7 +1996,8 @@ fn apply_tool_event_to_output_lines(
         }
         tools::ToolEvent::Completed { tool_call_id } => {
             let lines = output_lines.entry(tool_call_id.clone()).or_default();
-            lines.push(format!("✓ Tool completed ({tool_call_id})"));
+            let safe_tool_call_id = crate::security::sanitize_display_text(&tool_call_id);
+            lines.push(format!("✓ Tool completed ({safe_tool_call_id})"));
         }
     }
 }
