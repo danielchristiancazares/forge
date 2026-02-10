@@ -209,21 +209,15 @@ pub(crate) struct ApprovalItem {
     pub(crate) homoglyph_warnings: Vec<String>,
 }
 
-fn extract_tool_details(tool_name: &str, args: &Value, max_width: usize) -> Vec<String> {
+fn extract_tool_details(tool_name: &str, args: &Value, _max_width: usize) -> Vec<String> {
     let mut details = Vec::new();
     match tool_name {
         "Run" => {
             if let Some(cmd) = args.get("command").and_then(Value::as_str) {
-                details.push(truncate_with_ellipsis(
-                    &format!("command: {cmd}"),
-                    max_width,
-                ));
+                details.push(format!("command: {cmd}"));
             }
             if let Some(reason) = args.get("reason").and_then(Value::as_str) {
-                details.push(truncate_with_ellipsis(
-                    &format!("reason: {reason}"),
-                    max_width,
-                ));
+                details.push(format!("reason: {reason}"));
             }
         }
         "Read" => {
@@ -256,10 +250,7 @@ fn extract_tool_details(tool_name: &str, args: &Value, max_width: usize) -> Vec<
                 .and_then(Value::as_str)
             {
                 for line in patch.lines().take(5) {
-                    details.push(truncate_with_ellipsis(
-                        &sanitize_display_text(line),
-                        max_width,
-                    ));
+                    details.push(sanitize_display_text(line));
                 }
                 let total = patch.lines().count();
                 if total > 5 {
@@ -269,23 +260,12 @@ fn extract_tool_details(tool_name: &str, args: &Value, max_width: usize) -> Vec<
         }
         "WebFetch" => {
             if let Some(url) = args.get("url").and_then(Value::as_str) {
-                details.push(truncate_with_ellipsis(&format!("url: {url}"), max_width));
+                details.push(format!("url: {url}"));
             }
         }
-        "Glob" => {
+        "Glob" | "Search" => {
             if let Some(pattern) = args.get("pattern").and_then(Value::as_str) {
                 details.push(format!("pattern: {pattern}"));
-            }
-            if let Some(path) = args.get("path").and_then(Value::as_str) {
-                details.push(format!("path: {path}"));
-            }
-        }
-        "Search" => {
-            if let Some(pattern) = args.get("pattern").and_then(Value::as_str) {
-                details.push(truncate_with_ellipsis(
-                    &format!("pattern: {pattern}"),
-                    max_width,
-                ));
             }
             if let Some(path) = args.get("path").and_then(Value::as_str) {
                 details.push(format!("path: {path}"));
@@ -302,25 +282,19 @@ fn extract_tool_details(tool_name: &str, args: &Value, max_width: usize) -> Vec<
                 }
             }
             if let Some(msg) = args.get("message").and_then(Value::as_str) {
-                details.push(truncate_with_ellipsis(
-                    &format!("message: {msg}"),
-                    max_width,
-                ));
+                details.push(format!("message: {msg}"));
             }
         }
         "Memory" => {
             if let Some(content) = args.get("content").and_then(Value::as_str) {
-                details.push(truncate_with_ellipsis(
-                    &format!("fact: {content}"),
-                    max_width,
-                ));
+                details.push(format!("fact: {content}"));
             }
         }
         _ => {
             if let Some(obj) = args.as_object() {
                 for (key, val) in obj.iter().take(5) {
                     if let Some(s) = val.as_str() {
-                        details.push(truncate_with_ellipsis(&format!("{key}: {s}"), max_width));
+                        details.push(format!("{key}: {s}"));
                     }
                 }
             }

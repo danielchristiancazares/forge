@@ -373,10 +373,13 @@ impl ToolExecutor for SearchTool {
                 {
                     files_scanned = 1;
                     match ctx.sandbox.ensure_path_allowed(&resolved) {
-                        Ok(_canon) => {
+                        Ok(canon) => {
                             let size = metadata.len();
                             if size <= max_file_size_bytes {
-                                files.push(FileCandidate { rel_path: rel });
+                                files.push(FileCandidate {
+                                    rel_path: rel,
+                                    canonical: canon,
+                                });
                             }
                         }
                         Err(err) => {
@@ -450,7 +453,7 @@ impl ToolExecutor for SearchTool {
                             }
                             files_scanned += 1;
 
-                            let _canonical = match ctx.sandbox.ensure_path_allowed(path) {
+                            let canonical = match ctx.sandbox.ensure_path_allowed(path) {
                                 Ok(canon) => canon,
                                 Err(err) => {
                                     errors.push(SearchFileError::from_tool_error(
@@ -478,7 +481,10 @@ impl ToolExecutor for SearchTool {
                                 continue;
                             }
 
-                            files.push(FileCandidate { rel_path: rel });
+                            files.push(FileCandidate {
+                                rel_path: rel,
+                                canonical,
+                            });
                         }
                         Err(err) => {
                             errors.push(SearchFileError {
@@ -648,6 +654,7 @@ struct SearchArgs {
 #[derive(Debug, Clone)]
 struct FileCandidate {
     rel_path: String,
+    canonical: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -901,7 +908,7 @@ struct UgrepRun<'a> {
 #[derive(Debug, Clone)]
 struct BackendInfo {
     kind: BackendKind,
-    binary: String,
+    binary: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -911,7 +918,8 @@ enum BackendKind {
 }
 
 async fn probe_backend(binary: &str) -> Option<BackendInfo> {
-    let mut cmd = Command::new(binary);
+    let resolved = which::which(binary).unwrap_or_else(|_| PathBuf::from(binary));
+    let mut cmd = Command::new(&resolved);
     cmd.arg("--version");
     let output = cmd.output().await.ok()?;
     if !output.status.success() {
@@ -922,13 +930,13 @@ async fn probe_backend(binary: &str) -> Option<BackendInfo> {
     if first_line.to_ascii_lowercase().contains("ripgrep") && version_ok(first_line, 13) {
         return Some(BackendInfo {
             kind: BackendKind::Ripgrep,
-            binary: binary.to_string(),
+            binary: resolved,
         });
     }
     if first_line.to_ascii_lowercase().contains("ugrep") && version_ok(first_line, 3) {
         return Some(BackendInfo {
             kind: BackendKind::Ugrep,
-            binary: binary.to_string(),
+            binary: resolved,
         });
     }
     None
@@ -1241,7 +1249,13 @@ async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
         cmd.arg("--");
         cmd.arg(pattern);
         for file in batch {
-            cmd.arg(&file.rel_path);
+            let current = search_root.join(&file.rel_path);
+            if current
+                .canonicalize()
+                .is_ok_and(|actual| actual == file.canonical)
+            {
+                cmd.arg(&file.rel_path);
+            }
         }
 
         cmd.stdout(std::process::Stdio::piped())
@@ -1439,7 +1453,13 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
         cmd.arg("--");
         cmd.arg(pattern);
         for file in batch {
-            cmd.arg(&file.rel_path);
+            let current = search_root.join(&file.rel_path);
+            if current
+                .canonicalize()
+                .is_ok_and(|actual| actual == file.canonical)
+            {
+                cmd.arg(&file.rel_path);
+            }
         }
 
         cmd.stdout(std::process::Stdio::piped())

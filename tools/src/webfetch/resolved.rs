@@ -220,10 +220,11 @@ impl CachePolicy {
             return CachePolicy::Disabled;
         }
 
-        let dir = config.cache_dir.clone().unwrap_or_else(default_cache_dir);
-        if dir.as_os_str().is_empty() {
-            return CachePolicy::Disabled;
-        }
+        let dir = config.cache_dir.clone().or_else(default_cache_dir);
+        let dir = match dir {
+            Some(d) if !d.as_os_str().is_empty() => d,
+            _ => return CachePolicy::Disabled,
+        };
 
         let ttl_days = config
             .cache_ttl_days
@@ -250,11 +251,8 @@ pub(crate) struct CacheSettings {
     pub ttl: Duration,
 }
 
-fn default_cache_dir() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("forge")
-        .join("webfetch")
+fn default_cache_dir() -> Option<PathBuf> {
+    Some(dirs::cache_dir()?.join("forge").join("webfetch"))
 }
 
 fn derive_robots_token(user_agent: &str) -> String {

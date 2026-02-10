@@ -1,7 +1,7 @@
 //! Server handle — owns a child process and manages the LSP lifecycle.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
@@ -109,7 +109,9 @@ impl RunningServer {
         workspace_root: &Path,
         event_tx: mpsc::Sender<LspEvent>,
     ) -> Result<Self> {
-        let mut cmd = Command::new(config.command());
+        let resolved_cmd =
+            which::which(config.command()).unwrap_or_else(|_| PathBuf::from(config.command()));
+        let mut cmd = Command::new(&resolved_cmd);
         cmd.args(config.args())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -486,7 +486,7 @@ pub fn register_git_tool(registry: &mut super::ToolRegistry) -> Result<(), ToolE
 
 #[derive(Debug, Clone)]
 struct GitExecResult {
-    git_bin: String,
+    git_bin: PathBuf,
     args: Vec<String>,
     working_dir: Option<PathBuf>,
     exit_code: Option<i32>,
@@ -506,7 +506,7 @@ fn build_git_response(
     let mut payload = json!({
         "content": [{"type": "text", "text": text}],
         "isError": !exec.success,
-        "git_bin": exec.git_bin,
+        "git_bin": exec.git_bin.display().to_string(),
         "args": exec.args,
         "working_dir": exec.working_dir.as_ref().map(|p| p.display().to_string()),
         "exit_code": exec.exit_code,
@@ -551,7 +551,8 @@ async fn run_git(
     let max_stdout_bytes = max_stdout_bytes.clamp(1, MAX_OUTPUT_BYTES);
     let max_stderr_bytes = max_stderr_bytes.clamp(1, MAX_OUTPUT_BYTES);
 
-    let git_bin = if cfg!(windows) { "git.exe" } else { "git" }.to_string();
+    let bare_name = if cfg!(windows) { "git.exe" } else { "git" };
+    let git_bin = which::which(bare_name).unwrap_or_else(|_| PathBuf::from(bare_name));
 
     let mut args: Vec<String> = vec!["--no-pager".into(), "-c".into(), "color.ui=false".into()];
     args.extend(subcommand_args);

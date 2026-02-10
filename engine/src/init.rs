@@ -413,15 +413,20 @@ impl App {
 
     /// Get the base data directory for forge.
     pub(crate) fn data_dir() -> DataDir {
-        match dirs::data_local_dir() {
-            Some(path) => DataDir {
+        if let Some(path) = dirs::data_local_dir() {
+            DataDir {
                 path: path.join("forge"),
                 source: DataDirSource::System,
-            },
-            None => DataDir {
+            }
+        } else {
+            tracing::warn!(
+                "System data directory unavailable; falling back to ./forge in \
+                 current directory. Set XDG_DATA_HOME or equivalent to avoid this."
+            );
+            DataDir {
                 path: PathBuf::from(".").join("forge"),
                 source: DataDirSource::Fallback,
-            },
+            }
         }
     }
 

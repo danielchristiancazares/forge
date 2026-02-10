@@ -135,7 +135,7 @@ impl Cache {
     pub fn new(settings: &CacheSettings) -> Result<Self, WebFetchError> {
         let dir = settings.dir.clone();
 
-        // Ensure cache directory exists
+        // Ensure cache directory exists with secure permissions
         fs::create_dir_all(&dir).map_err(|e| {
             WebFetchError::new(
                 ErrorCode::Internal,
@@ -143,6 +143,20 @@ impl Cache {
                 false,
             )
         })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            if let Ok(meta) = fs::metadata(&dir) {
+                let our_uid = unsafe { libc::getuid() };
+                if meta.uid() == our_uid {
+                    let mode = meta.permissions().mode() & 0o777;
+                    if mode & 0o077 != 0 {
+                        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+                    }
+                }
+            }
+        }
 
         let mut cache = Self {
             dir,

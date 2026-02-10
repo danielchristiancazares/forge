@@ -64,25 +64,22 @@ fn default_args_for(binary: &str) -> Vec<String> {
 
 #[cfg(windows)]
 fn detect_platform_shell() -> DetectedShell {
-    // Try pwsh.exe first (PowerShell 7+)
-    if which::which("pwsh").is_ok() {
+    if let Ok(path) = which::which("pwsh") {
         return DetectedShell {
-            binary: "pwsh".into(),
+            binary: path,
             args: vec!["-NoProfile".to_string(), "-Command".to_string()],
             name: "pwsh".into(),
         };
     }
 
-    // Fall back to powershell.exe (5.1, always available on modern Windows)
-    if which::which("powershell").is_ok() {
+    if let Ok(path) = which::which("powershell") {
         return DetectedShell {
-            binary: "powershell".into(),
+            binary: path,
             args: vec!["-NoProfile".to_string(), "-Command".to_string()],
             name: "powershell".into(),
         };
     }
 
-    // Last resort: cmd.exe
     DetectedShell {
         binary: "cmd.exe".into(),
         args: vec!["/C".to_string()],
@@ -110,16 +107,14 @@ fn detect_platform_shell() -> DetectedShell {
         }
     }
 
-    // Try bash
-    if which::which("bash").is_ok() {
+    if let Ok(path) = which::which("bash") {
         return DetectedShell {
-            binary: "bash".into(),
+            binary: path,
             args: vec!["-c".to_string()],
             name: "bash".into(),
         };
     }
 
-    // Fallback to sh (POSIX)
     DetectedShell {
         binary: "sh".into(),
         args: vec!["-c".to_string()],

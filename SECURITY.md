@@ -504,6 +504,16 @@ Actual: Cyrillic 'І' (U+0406) instead of Latin 'l'
 
 **Mitigation**: `detect_mixed_script` warns users in tool approval UI when mixed scripts are detected.
 
+### Windows Network Policy (`block_network`)
+
+**Scope**: Best-effort heuristic, not an enforcement boundary.
+
+The `block_network` run policy on Windows uses a token blocklist (`NETWORK_BLOCKLIST`) to reject commands containing known network-capable utilities (`Invoke-WebRequest`, `curl.exe`, `wget.exe`, etc.). This is a convenience mechanism that catches common cases.
+
+**Limitations**: A token blocklist cannot prevent all network egress. Commands not in the blocklist (DNS utilities like `nslookup` or `Resolve-DnsName`, SSH, custom binaries, .NET networking APIs invoked inline) bypass the check. PowerShell AST normalization helps detect aliased forms of blocked commands but cannot cover arbitrary network-capable code.
+
+**Not an isolation boundary**: True network isolation requires OS-level enforcement (Windows AppContainer, WFP firewall rules, or restricted tokens with network deny ACLs). The `block_network` policy does not implement OS-level controls and should not be relied upon as a security boundary for untrusted code execution.
+
 ### DoS Considerations
 
 **Attack**: Extremely large inputs could cause sanitization to consume excessive resources.

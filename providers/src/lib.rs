@@ -74,8 +74,6 @@ const MAX_SSE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
 const MAX_SSE_PARSE_ERRORS: usize = 3;
 
-pub(crate) const MAX_SSE_PARSE_ERROR_PREVIEW: usize = 160;
-
 const MAX_ERROR_BODY_BYTES: usize = 32 * 1024;
 
 pub fn http_client() -> &'static reqwest::Client {
@@ -292,10 +290,9 @@ pub(crate) async fn process_sse_stream<P: SseParser>(
                 }
                 Err(e) => {
                     parse_errors = parse_errors.saturating_add(1);
-                    let preview: String = data.chars().take(MAX_SSE_PARSE_ERROR_PREVIEW).collect();
                     tracing::warn!(
                         %e,
-                        preview = %preview,
+                        payload_bytes = data.len(),
                         provider = parser.provider_name(),
                         "Invalid SSE JSON payload"
                     );

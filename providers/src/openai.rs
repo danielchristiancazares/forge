@@ -1,7 +1,7 @@
 use crate::{
-    ApiConfig, ApiResponse, ApiUsage, CacheableMessage, MAX_SSE_PARSE_ERROR_PREVIEW, Message,
-    OutputLimits, Result, SseParseAction, SseParser, StreamEvent, ThinkingReplayState,
-    ThoughtSignatureState, ToolDefinition, handle_response, http_client, mpsc, process_sse_stream,
+    ApiConfig, ApiResponse, ApiUsage, CacheableMessage, Message, OutputLimits, Result,
+    SseParseAction, SseParser, StreamEvent, ThinkingReplayState, ThoughtSignatureState,
+    ToolDefinition, handle_response, http_client, mpsc, process_sse_stream,
     retry::{RetryConfig, send_with_retry},
     send_event,
 };
@@ -156,12 +156,7 @@ impl SseParser for OpenAIParser {
         let event: typed::Event = match serde_json::from_value(json.clone()) {
             Ok(e) => e,
             Err(e) => {
-                let preview: String = json
-                    .to_string()
-                    .chars()
-                    .take(MAX_SSE_PARSE_ERROR_PREVIEW)
-                    .collect();
-                tracing::warn!(%e, preview = %preview, "Failed to parse OpenAI SSE event");
+                tracing::warn!(%e, "Failed to parse OpenAI SSE event");
                 return SseParseAction::Continue;
             }
         };
