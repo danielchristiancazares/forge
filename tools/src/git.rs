@@ -122,177 +122,142 @@ impl GitTool {
 }
 
 fn git_tool_schema() -> Value {
-    let mut variants = Vec::with_capacity(11);
+    let mut props = serde_json::Map::new();
 
-    variants.push(json!({
-        "title": "status",
-        "description": "Show working tree status: staged, modified, and untracked files.",
-        "properties": {
-            "command": { "type": "string", "const": "status" },
-            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
-            "porcelain": { "type": "boolean", "default": true, "description": "Use porcelain output (--porcelain=1)" },
-            "branch": { "type": "boolean", "default": true, "description": "Include branch info (-b) in porcelain mode" },
-            "untracked": { "type": "boolean", "default": true, "description": "Include untracked files (false uses -uno)" }
-        },
-        "required": ["command"]
+    props.insert("command".into(), json!({
+        "type": "string",
+        "enum": ["status", "diff", "restore", "add", "commit", "log", "branch", "checkout", "stash", "show", "blame"],
+        "description": "Git subcommand to run"
     }));
+    props.insert(
+        "timeout_ms".into(),
+        json!({
+            "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100
+        }),
+    );
 
-    variants.push(json!({
-        "title": "diff",
-        "description": "Show file changes in working tree, staging area, or between refs. When from_ref+to_ref+output_dir are set, writes per-file patches.",
-        "properties": {
-            "command": { "type": "string", "const": "diff" },
-            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
-            "cached": { "type": "boolean", "default": false, "description": "Diff staged changes (--cached)" },
-            "stat": { "type": "boolean", "default": false, "description": "Show diffstat only (--stat)" },
-            "name_only": { "type": "boolean", "default": false, "description": "Show only changed file names" },
-            "unified": { "type": "integer", "minimum": 0, "description": "Context lines (-U<N>)" },
-            "paths": { "type": "array", "items": { "type": "string" }, "description": "Paths to diff (after --)" },
-            "max_bytes": { "type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "Max stdout bytes" },
-            "from_ref": { "type": "string", "description": "Starting ref for ref-to-ref comparison" },
-            "to_ref": { "type": "string", "description": "Ending ref for ref-to-ref comparison" },
-            "output_dir": { "type": "string", "description": "Directory to write per-file patches (requires from_ref+to_ref)" }
-        },
-        "required": ["command"]
-    }));
+    // status
+    props.insert("porcelain".into(), json!({ "type": "boolean", "default": true, "description": "[status] Use porcelain output (--porcelain=1)" }));
+    props.insert("branch".into(), json!({ "type": "boolean", "default": true, "description": "[status] Include branch info (-b) in porcelain mode" }));
+    props.insert("untracked".into(), json!({ "type": "boolean", "default": true, "description": "[status] Include untracked files (false uses -uno)" }));
 
-    variants.push(json!({
-        "title": "restore",
-        "description": "Discard uncommitted changes to specific files. WARNING: destructive.",
-        "properties": {
-            "command": { "type": "string", "const": "restore" },
-            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
-            "paths": { "type": "array", "items": { "type": "string" }, "description": "Paths to restore (after --)" },
-            "staged": { "type": "boolean", "default": false, "description": "Restore the index/staging area (--staged)" },
-            "worktree": { "type": "boolean", "default": true, "description": "Restore the working tree (--worktree)" }
-        },
-        "required": ["command", "paths"]
-    }));
+    // diff
+    props.insert("cached".into(), json!({ "type": "boolean", "default": false, "description": "[diff] Diff staged changes (--cached)" }));
+    props.insert("stat".into(), json!({ "type": "boolean", "default": false, "description": "[diff/show] Show diffstat only (--stat)" }));
+    props.insert("name_only".into(), json!({ "type": "boolean", "default": false, "description": "[diff/show] Show only changed file names" }));
+    props.insert(
+        "unified".into(),
+        json!({ "type": "integer", "minimum": 0, "description": "[diff] Context lines (-U<N>)" }),
+    );
+    props.insert(
+        "from_ref".into(),
+        json!({ "type": "string", "description": "[diff] Starting ref for ref-to-ref comparison" }),
+    );
+    props.insert(
+        "to_ref".into(),
+        json!({ "type": "string", "description": "[diff] Ending ref for ref-to-ref comparison" }),
+    );
+    props.insert("output_dir".into(), json!({ "type": "string", "description": "[diff] Directory to write per-file patches (requires from_ref+to_ref)" }));
 
-    variants.push(json!({
-        "title": "add",
-        "description": "Stage files for commit.",
-        "properties": {
-            "command": { "type": "string", "const": "add" },
-            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
-            "paths": { "type": "array", "items": { "type": "string" }, "description": "Files to stage" },
-            "all": { "type": "boolean", "default": false, "description": "Stage all changes (-A)" },
-            "update": { "type": "boolean", "default": false, "description": "Stage modified/deleted only (-u)" }
-        },
-        "required": ["command"]
-    }));
+    // restore
+    props.insert("staged".into(), json!({ "type": "boolean", "default": false, "description": "[restore] Restore the index/staging area (--staged)" }));
+    props.insert("worktree".into(), json!({ "type": "boolean", "default": true, "description": "[restore] Restore the working tree (--worktree)" }));
 
-    variants.push(json!({
-        "title": "commit",
-        "description": "Create a conventional commit (type(scope): message).",
-        "properties": {
-            "command": { "type": "string", "const": "commit" },
-            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
-            "type": { "type": "string", "description": "Commit type: feat, fix, docs, style, refactor, test, chore" },
-            "scope": { "type": "string", "description": "Optional scope/area of change" },
-            "message": { "type": "string", "description": "Commit description" }
-        },
-        "required": ["command", "type", "message"]
-    }));
+    // add
+    props.insert("all".into(), json!({ "type": "boolean", "default": false, "description": "[add] Stage all changes (-A)" }));
+    props.insert("update".into(), json!({ "type": "boolean", "default": false, "description": "[add] Stage modified/deleted only (-u)" }));
 
-    variants.push(json!({
-        "title": "log",
-        "description": "Show commit history with configurable format and filters.",
-        "properties": {
-            "command": { "type": "string", "const": "log" },
-            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
-            "max_count": { "type": "integer", "minimum": 1, "description": "Limit number of commits" },
-            "oneline": { "type": "boolean", "default": false, "description": "One line per commit" },
-            "format": { "type": "string", "description": "Pretty-print format (e.g. '%H %s')" },
-            "author": { "type": "string", "description": "Filter by author" },
-            "since": { "type": "string", "description": "After date (e.g. '2024-01-01')" },
-            "until": { "type": "string", "description": "Before date" },
-            "grep": { "type": "string", "description": "Filter by message pattern" },
-            "path": { "type": "string", "description": "Show commits affecting this path" },
-            "max_bytes": { "type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "Max output bytes" }
-        },
-        "required": ["command"]
-    }));
+    // commit
+    props.insert("type".into(), json!({ "type": "string", "description": "[commit] Commit type: feat, fix, docs, style, refactor, test, chore" }));
+    props.insert(
+        "scope".into(),
+        json!({ "type": "string", "description": "[commit] Optional scope/area of change" }),
+    );
+    props.insert(
+        "message".into(),
+        json!({ "type": "string", "description": "[commit/stash] Message text" }),
+    );
 
-    variants.push(json!({
-        "title": "branch",
-        "description": "List, create, rename, or delete branches.",
-        "properties": {
-            "command": { "type": "string", "const": "branch" },
-            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
-            "list_all": { "type": "boolean", "default": false, "description": "List local and remote branches (-a)" },
-            "list_remote": { "type": "boolean", "default": false, "description": "List only remote branches (-r)" },
-            "create": { "type": "string", "description": "Create a new branch with this name" },
-            "delete": { "type": "string", "description": "Delete this branch (-d, must be merged)" },
-            "force_delete": { "type": "string", "description": "Force delete this branch (-D)" },
-            "rename": { "type": "string", "description": "Rename this branch (requires new_name)" },
-            "new_name": { "type": "string", "description": "New name when renaming" }
-        },
-        "required": ["command"]
-    }));
+    // log
+    props.insert(
+        "max_count".into(),
+        json!({ "type": "integer", "minimum": 1, "description": "[log] Limit number of commits" }),
+    );
+    props.insert(
+        "oneline".into(),
+        json!({ "type": "boolean", "default": false, "description": "[log] One line per commit" }),
+    );
+    props.insert(
+        "author".into(),
+        json!({ "type": "string", "description": "[log] Filter by author" }),
+    );
+    props.insert(
+        "since".into(),
+        json!({ "type": "string", "description": "[log] After date (e.g. '2024-01-01')" }),
+    );
+    props.insert(
+        "until".into(),
+        json!({ "type": "string", "description": "[log] Before date" }),
+    );
+    props.insert(
+        "grep".into(),
+        json!({ "type": "string", "description": "[log] Filter by message pattern" }),
+    );
 
-    variants.push(json!({
-        "title": "checkout",
-        "description": "Switch branches or restore working tree files.",
-        "properties": {
-            "command": { "type": "string", "const": "checkout" },
-            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
-            "branch": { "type": "string", "description": "Branch to switch to" },
-            "create_branch": { "type": "string", "description": "Create and switch to new branch (-b)" },
-            "commit": { "type": "string", "description": "Checkout a specific commit (detached HEAD)" },
-            "paths": { "type": "array", "items": { "type": "string" }, "description": "Restore these paths from HEAD" }
-        },
-        "required": ["command"]
-    }));
+    // branch
+    props.insert("list_all".into(), json!({ "type": "boolean", "default": false, "description": "[branch] List local and remote branches (-a)" }));
+    props.insert("list_remote".into(), json!({ "type": "boolean", "default": false, "description": "[branch] List only remote branches (-r)" }));
+    props.insert(
+        "create".into(),
+        json!({ "type": "string", "description": "[branch] Create a new branch with this name" }),
+    );
+    props.insert("delete".into(), json!({ "type": "string", "description": "[branch] Delete this branch (-d, must be merged)" }));
+    props.insert(
+        "force_delete".into(),
+        json!({ "type": "string", "description": "[branch] Force delete this branch (-D)" }),
+    );
+    props.insert("rename".into(), json!({ "type": "string", "description": "[branch] Rename this branch (requires new_name)" }));
+    props.insert(
+        "new_name".into(),
+        json!({ "type": "string", "description": "[branch] New name when renaming" }),
+    );
 
-    variants.push(json!({
-        "title": "stash",
-        "description": "Stash changes in a dirty working directory.",
-        "properties": {
-            "command": { "type": "string", "const": "stash" },
-            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
-            "action": { "type": "string", "enum": ["push", "pop", "apply", "drop", "list", "show", "clear"], "default": "push", "description": "Stash action" },
-            "message": { "type": "string", "description": "Message for stash (with push)" },
-            "index": { "type": "integer", "minimum": 0, "description": "Stash index for pop/apply/drop/show" },
-            "include_untracked": { "type": "boolean", "default": false, "description": "Include untracked files (with push)" }
-        },
-        "required": ["command"]
-    }));
+    // checkout
+    props.insert("create_branch".into(), json!({ "type": "string", "description": "[checkout] Create and switch to new branch (-b)" }));
 
-    variants.push(json!({
-        "title": "show",
-        "description": "Show commit details and diff.",
-        "properties": {
-            "command": { "type": "string", "const": "show" },
-            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
-            "commit": { "type": "string", "description": "Commit to show (default: HEAD)" },
-            "stat": { "type": "boolean", "default": false, "description": "Show diffstat only" },
-            "name_only": { "type": "boolean", "default": false, "description": "Show only changed file names" },
-            "format": { "type": "string", "description": "Pretty-print format" },
-            "max_bytes": { "type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "Max output bytes" }
-        },
-        "required": ["command"]
-    }));
+    // stash
+    props.insert("action".into(), json!({ "type": "string", "enum": ["push", "pop", "apply", "drop", "list", "show", "clear"], "default": "push", "description": "[stash] Stash action" }));
+    props.insert("index".into(), json!({ "type": "integer", "minimum": 0, "description": "[stash] Stash index for pop/apply/drop/show" }));
+    props.insert("include_untracked".into(), json!({ "type": "boolean", "default": false, "description": "[stash] Include untracked files (with push)" }));
 
-    variants.push(json!({
-        "title": "blame",
-        "description": "Show what revision and author last modified each line of a file.",
-        "properties": {
-            "command": { "type": "string", "const": "blame" },
-            "timeout_ms": { "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 },
-            "path": { "type": "string", "description": "File path to blame" },
-            "start_line": { "type": "integer", "minimum": 1, "description": "Start line for range" },
-            "end_line": { "type": "integer", "minimum": 1, "description": "End line for range" },
-            "commit": { "type": "string", "description": "Blame at specific commit instead of HEAD" },
-            "max_bytes": { "type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "Max output bytes" }
-        },
-        "required": ["command", "path"]
-    }));
+    // shared
+    props.insert("paths".into(), json!({ "type": "array", "items": { "type": "string" }, "description": "[diff/restore/add/checkout] File paths" }));
+    props.insert(
+        "path".into(),
+        json!({ "type": "string", "description": "[log/blame] File path" }),
+    );
+    props.insert(
+        "commit".into(),
+        json!({ "type": "string", "description": "[show/checkout/blame] Commit ref" }),
+    );
+    props.insert(
+        "format".into(),
+        json!({ "type": "string", "description": "[log/show] Pretty-print format" }),
+    );
+    props.insert("max_bytes".into(), json!({ "type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "[diff/log/show/blame] Max output bytes" }));
+    props.insert(
+        "start_line".into(),
+        json!({ "type": "integer", "minimum": 1, "description": "[blame] Start line for range" }),
+    );
+    props.insert(
+        "end_line".into(),
+        json!({ "type": "integer", "minimum": 1, "description": "[blame] End line for range" }),
+    );
 
     json!({
         "type": "object",
         "required": ["command"],
-        "oneOf": variants
+        "properties": Value::Object(props)
     })
 }
 
@@ -302,8 +267,12 @@ impl ToolExecutor for GitTool {
     }
 
     fn description(&self) -> &'static str {
-        "Git version control. Use `command` to select: status, diff, restore, add, commit, \
-         log, branch, checkout, stash, show, blame."
+        "Git version control. Commands: status (working tree status), diff (file changes, \
+         ref-to-ref with from_ref/to_ref/output_dir), restore (discard changes, DESTRUCTIVE), \
+         add (stage files), commit (type+message required), log (history with filters), \
+         branch (list/create/rename/delete), checkout (switch branch or restore paths), \
+         stash (push/pop/apply/drop/list/show/clear), show (commit details), \
+         blame (per-line authorship, path required)."
     }
 
     fn schema(&self) -> Value {
