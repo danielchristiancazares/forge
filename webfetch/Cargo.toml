@@ -47,8 +47,5 @@ tracing = { workspace = true }
 dirs = { workspace = true }
 
 [dev-dependencies]
-tokio-test = { workspace = true }
 wiremock = { workspace = true }
 tempfile = { workspace = true }
-pretty_assertions = { workspace = true }
-insta = { workspace = true }

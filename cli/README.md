@@ -79,7 +79,7 @@ cli/
 | `tracing` | Structured logging facade |
 | `tracing-subscriber` | Logging infrastructure (fmt layer, env filter) |
 
-Dev-dependencies: `forge-types`, `tokio-test`, `wiremock`, `serde_json`, `tempfile`, `pretty_assertions`, `insta`, `vt100`.
+Dev-dependencies: `forge-types`, `wiremock`, `serde_json`, `tempfile`, `insta`, `vt100`.
 
 ---
 
