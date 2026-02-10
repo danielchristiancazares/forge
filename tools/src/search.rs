@@ -19,7 +19,6 @@ use super::{
 };
 
 const SEARCH_TOOL_NAME: &str = "Search";
-const SEARCH_TOOL_ALIASES: &[&str] = &["Search", "search", "rg", "ripgrep", "ugrep", "ug"];
 
 #[derive(Debug, Clone)]
 pub struct SearchToolConfig {
@@ -54,13 +53,11 @@ pub struct SearchTool {
 
 impl SearchTool {
     #[must_use]
-    pub fn with_name(name: &'static str, config: SearchToolConfig) -> Self {
-        Self { name, config }
-    }
-
-    #[must_use]
-    pub fn aliases() -> &'static [&'static str] {
-        SEARCH_TOOL_ALIASES
+    pub fn new(config: SearchToolConfig) -> Self {
+        Self {
+            name: SEARCH_TOOL_NAME,
+            config,
+        }
     }
 
     async fn select_backend(

@@ -1318,9 +1318,7 @@ pub fn register_builtins(
     registry.register(Box::new(RunCommandTool::new(shell, run_policy)))?;
     registry.register(Box::new(GlobTool))?;
     git::register_git_tools(registry)?;
-    for name in SearchTool::aliases() {
-        registry.register(Box::new(SearchTool::with_name(name, search_config.clone())))?;
-    }
+    registry.register(Box::new(SearchTool::new(search_config)))?;
     registry.register(Box::new(WebFetchTool::new(webfetch_config)))?;
     registry.register(Box::new(RecallTool))?;
     registry.register(Box::new(MemoryTool))?;
