@@ -427,9 +427,9 @@ fn prepare_macos_run_command(
 
 #[cfg(target_os = "macos")]
 fn generate_seatbelt_profile(cwd: &Path, tmp: &Path, home: &Path) -> String {
-    let cwd = cwd.to_string_lossy();
-    let tmp = tmp.to_string_lossy();
-    let home = home.to_string_lossy();
+    let cwd = escape_seatbelt_literal(&cwd.to_string_lossy());
+    let tmp = escape_seatbelt_literal(&tmp.to_string_lossy());
+    let home = escape_seatbelt_literal(&home.to_string_lossy());
     format!(
         r#"(version 1)
 (deny default)
@@ -451,6 +451,22 @@ fn generate_seatbelt_profile(cwd: &Path, tmp: &Path, home: &Path) -> String {
     )
 }
 
+#[cfg(any(test, target_os = "macos"))]
+fn escape_seatbelt_literal(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -467,6 +483,12 @@ mod tests {
 
     fn cmd(command: &str) -> RunCommandText<'_> {
         RunCommandText::new(command, command)
+    }
+
+    #[test]
+    fn escapes_seatbelt_literals() {
+        let escaped = escape_seatbelt_literal("a\\b\"c\nd\re\tf");
+        assert_eq!(escaped, "a\\\\b\\\"c\\nd\\re\\tf");
     }
 
     #[test]

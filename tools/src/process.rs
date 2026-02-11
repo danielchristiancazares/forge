@@ -195,16 +195,17 @@ fn macos_process_started_at_unix_ms(pid: u32) -> Option<i64> {
     }
 
     let mut info = MaybeUninit::<ProcBsdInfo>::uninit();
+    let expected_size = size_of::<ProcBsdInfo>() as libc::c_int;
     let ret = unsafe {
         proc_pidinfo(
             pid as libc::c_int,
             PROC_PIDTBSDINFO,
             0,
             info.as_mut_ptr().cast(),
-            size_of::<ProcBsdInfo>() as libc::c_int,
+            expected_size,
         )
     };
-    if ret <= 0 {
+    if ret != expected_size {
         return None;
     }
 
@@ -320,6 +321,7 @@ pub fn set_new_session(cmd: &mut tokio::process::Command) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
     use super::*;
 
     #[cfg(target_os = "macos")]
