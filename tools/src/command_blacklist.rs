@@ -71,6 +71,37 @@ pub const DEFAULT_PATTERNS: &[(&str, &str)] = &[
         r"(?i)\bri\s+-(?:Recurse|Force)\s+-(?:Recurse|Force)\s+(?:C:\\|~)(?:\s|$)",
         "Attempting to delete system drive or home directory via ri alias",
     ),
+    // Dump extraction and dump API invocation
+    (
+        r"(?i)\b(?:gcore|coredumpctl|procdump(?:64)?(?:\.exe)?|minidumpwritedump)\b",
+        "Attempting to capture or access crash dumps",
+    ),
+    // Crash-inducing signals
+    (
+        r"(?i)\b(?:kill|pkill|killall)\b[^\n]*(?:-s\s+|-)(?:SIG)?(?:SEGV|ABRT)\b",
+        "Attempting to trigger crash signals",
+    ),
+    (
+        r"(?i)\bkill\b[^\n]*\s-(?:11|6)\b",
+        "Attempting to trigger crash signals",
+    ),
+    // Re-enable core dumps
+    (
+        r"(?i)\bulimit\b[^\n]*\s-c(?:\s+|=)(?:unlimited|[1-9]\d*)\b",
+        "Attempting to enable core dumps",
+    ),
+    (
+        r"(?i)\bsysctl\b[^\n]*(?:-w\s+)?(?:kernel\.core_pattern|kernel\.core_uses_pid|kern\.coredump)\s*=",
+        "Attempting to configure core dump settings",
+    ),
+    (
+        r"(?i)\b(?:echo|printf)\b[^\n]*(?:>|>>)\s*/proc/sys/kernel/core_pattern\b",
+        "Attempting to configure core dump settings",
+    ),
+    (
+        r"(?i)\btee\b[^\n]*/proc/sys/kernel/core_pattern\b",
+        "Attempting to configure core dump settings",
+    ),
 ];
 
 /// Command blacklist validator.
@@ -319,6 +350,55 @@ mod tests {
         assert!(bl.validate("MKFS.EXT4 /dev/sda1").is_err());
         assert!(bl.validate("CHMOD -R 777 /").is_err());
         assert!(bl.validate("SUDO RM -RF /").is_err());
+    }
+
+    #[test]
+    fn blocks_dump_exfiltration_commands() {
+        let bl = default_blacklist();
+        assert!(bl.validate("gcore 1234").is_err());
+        assert!(bl.validate("coredumpctl dump 1234").is_err());
+        assert!(bl.validate("procdump.exe -ma 1234 dump.dmp").is_err());
+        assert!(
+            bl.validate("powershell -c \"[Dbghelp]::MiniDumpWriteDump(...)\"")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn blocks_crash_induction_signal_commands() {
+        let bl = default_blacklist();
+        assert!(bl.validate("kill -SEGV 1234").is_err());
+        assert!(bl.validate("kill -11 1234").is_err());
+        assert!(bl.validate("pkill -ABRT forge").is_err());
+        assert!(bl.validate("killall -s SIGSEGV forge").is_err());
+    }
+
+    #[test]
+    fn blocks_core_dump_reenable_commands() {
+        let bl = default_blacklist();
+        assert!(bl.validate("ulimit -c unlimited").is_err());
+        assert!(bl.validate("ulimit -S -c 1024").is_err());
+        assert!(
+            bl.validate("sysctl -w kernel.core_pattern=/tmp/core.%e.%p")
+                .is_err()
+        );
+        assert!(bl.validate("sysctl kern.coredump=1").is_err());
+        assert!(
+            bl.validate("echo '/tmp/core.%e.%p' > /proc/sys/kernel/core_pattern")
+                .is_err()
+        );
+        assert!(
+            bl.validate("printf '/tmp/core' | tee /proc/sys/kernel/core_pattern")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn allows_safe_non_dump_variants() {
+        let bl = default_blacklist();
+        assert!(bl.validate("ulimit -c 0").is_ok());
+        assert!(bl.validate("kill -TERM 1234").is_ok());
+        assert!(bl.validate("sysctl kernel.threads-max").is_ok());
     }
 
     #[test]

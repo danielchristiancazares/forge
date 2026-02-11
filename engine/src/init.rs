@@ -34,7 +34,7 @@ pub(crate) const TOOL_EVENT_CHANNEL_CAPACITY: usize = 64;
 use forge_types::ENV_SECRET_DENYLIST as DEFAULT_ENV_DENYLIST;
 
 // Sandbox deny patterns for sensitive files
-const DEFAULT_SANDBOX_DENIES: [&str; 21] = [
+const DEFAULT_SANDBOX_DENIES: [&str; 27] = [
     "**/.ssh/**",
     "**/.gnupg/**",
     "**/.aws/**",
@@ -56,6 +56,12 @@ const DEFAULT_SANDBOX_DENIES: [&str; 21] = [
     "**/*.p12",
     "**/*.pfx",
     "**/*.der",
+    "**/core",
+    "**/core.*",
+    "**/*.core",
+    "**/*.dmp",
+    "**/*.mdmp",
+    "**/*.stackdump",
 ];
 
 impl App {

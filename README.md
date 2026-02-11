@@ -281,6 +281,7 @@ description = "City name, e.g. 'Seattle, WA'"
 | `OPENAI_API_KEY` | GPT API key (fallback if not in config) |
 | `GEMINI_API_KEY` | Gemini API key (fallback if not in config) |
 | `FORGE_CONTEXT_INFINITY` | Enable/disable memory (aka context infinity) when `[context]` is absent: `1` or `0` |
+| `FORGE_ALLOW_COREDUMPS` | Opt out of startup crash-dump hardening for debugging (`1`, `true`, or `yes`) |
 | `FORGE_STREAM_IDLE_TIMEOUT_SECS` | Override streaming idle timeout in seconds (default: 60) |
 | `FORGE_STREAM_JOURNAL_FLUSH_THRESHOLD` | Override stream journal flush threshold in deltas (default: 25) |
 | `FORGE_STREAM_JOURNAL_FLUSH_INTERVAL_MS` | Override stream journal flush interval in ms (default: 200) |
