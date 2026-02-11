@@ -1215,6 +1215,7 @@ Default denied patterns (`DEFAULT_SANDBOX_DENIES` in `engine/src/init.rs`):
 - `**/.env`, `**/.env.*`, `**/*.env` - Environment files
 - `**/id_rsa*`, `**/id_ed25519*`, `**/id_ecdsa*` - SSH private keys
 - `**/*.pem`, `**/*.key`, `**/*.p12`, `**/*.pfx`, `**/*.der` - Certificate/key files
+- `**/core`, `**/core.*`, `**/*.core`, `**/*.dmp`, `**/*.mdmp`, `**/*.stackdump` - Crash dump artifacts
 
 ### Command Blacklist
 

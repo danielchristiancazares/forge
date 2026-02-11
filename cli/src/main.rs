@@ -17,6 +17,7 @@
 //! 6. Render frame
 
 mod assets;
+mod crash_hardening;
 
 use anyhow::Result;
 use crossterm::{
@@ -219,6 +220,7 @@ impl Drop for TerminalSession {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
+    crash_hardening::apply()?;
 
     // Install a panic hook that restores the terminal before printing the
     // backtrace. Without this, a panic leaves the terminal in raw mode with

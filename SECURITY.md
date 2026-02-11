@@ -5,6 +5,7 @@ This document describes Forge's defense-in-depth security sanitization infrastru
 ## Table of Contents
 
 - [Overview](#overview)
+- [Crash Dump Hardening](#crash-dump-hardening)
 - [Terminal Sanitization](#terminal-sanitization)
 - [Steganographic Sanitization](#steganographic-sanitization)
 - [API Key Redaction](#api-key-redaction)
@@ -30,6 +31,26 @@ Forge processes untrusted content from multiple sources:
 | Tool arguments | Homoglyph attacks | `detect_mixed_script` |
 
 Core sanitization and analysis live in `types/src/sanitize.rs` and `types/src/confusables.rs`. Secret redaction and display sanitization are implemented in both `engine/src/security.rs` and `tools/src/security.rs` (the tools crate cannot depend on the engine crate). Tool-output sanitization is provided via `tools/src/lib.rs` (`sanitize_output`), which composes the core routines.
+
+## Crash Dump Hardening
+
+Forge disables crash-dump generation by default at startup to reduce post-crash secret exposure.
+
+- Unix: sets `RLIMIT_CORE=0` for the Forge process.
+- Linux additionally sets `PR_SET_DUMPABLE=0`.
+- Windows sets process error-reporting flags (`SetErrorMode` and `WerSetFlags`) to suppress crash UI/reporting paths.
+
+For local debugging, operators can opt out with:
+
+- `FORGE_ALLOW_COREDUMPS=1`
+- `FORGE_ALLOW_COREDUMPS=true`
+- `FORGE_ALLOW_COREDUMPS=yes`
+
+Defense in depth for dump artifacts:
+
+- Tool sandbox default deny patterns include common dump filenames/extensions.
+- `Read` blocks direct reads of known dump artifacts (`core`, `.core`, `.dmp`, `.mdmp`, `.stackdump`).
+- `Run` command blacklist blocks common dump-extraction tools, crash-signal commands, and core-dump re-enable commands.
 
 ## Terminal Sanitization
 

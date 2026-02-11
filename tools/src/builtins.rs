@@ -594,6 +594,12 @@ impl ToolExecutor for ReadFileTool {
                     message: "path is a directory".to_string(),
                 });
             }
+            if is_crash_dump_artifact(&resolved) {
+                return Err(ToolError::ExecutionFailed {
+                    tool: "Read".to_string(),
+                    message: "reading crash-dump artifacts is blocked".to_string(),
+                });
+            }
 
             let output_limit = ctx.max_output_bytes.min(ctx.available_capacity_bytes);
             let read_limit = self
@@ -1356,6 +1362,28 @@ fn sniff_binary(path: &Path) -> Result<bool, std::io::Error> {
     Ok(false)
 }
 
+fn is_crash_dump_artifact(path: &Path) -> bool {
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            let lower = name.to_ascii_lowercase();
+            lower == "core" || lower.starts_with("core.")
+        })
+    {
+        return true;
+    }
+
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "core" | "dmp" | "mdmp" | "stackdump"
+            )
+        })
+}
+
 fn read_binary(path: &Path, output_limit: usize) -> Result<String, ToolError> {
     let mut header = "[binary:base64]".to_string();
     let meta = std::fs::metadata(path).map_err(|e| ToolError::ExecutionFailed {
@@ -1620,6 +1648,31 @@ mod tests {
             },
             RunSandboxPolicy::default(),
         )
+    }
+
+    #[test]
+    fn detects_crash_dump_artifacts() {
+        assert!(is_crash_dump_artifact(std::path::Path::new("core")));
+        assert!(is_crash_dump_artifact(std::path::Path::new("core.1234")));
+        assert!(is_crash_dump_artifact(std::path::Path::new("dump.dmp")));
+        assert!(is_crash_dump_artifact(std::path::Path::new("dump.mdmp")));
+        assert!(is_crash_dump_artifact(std::path::Path::new(
+            "panic.stackdump"
+        )));
+        assert!(is_crash_dump_artifact(std::path::Path::new(
+            "snapshot.core"
+        )));
+    }
+
+    #[test]
+    fn allows_non_dump_file_names() {
+        assert!(!is_crash_dump_artifact(std::path::Path::new("src/main.rs")));
+        assert!(!is_crash_dump_artifact(std::path::Path::new(
+            "docs/core-concepts.md"
+        )));
+        assert!(!is_crash_dump_artifact(std::path::Path::new(
+            "notes.dmp.txt"
+        )));
     }
 
     #[test]
