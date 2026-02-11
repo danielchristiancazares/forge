@@ -7,9 +7,21 @@ use forge_tools::webfetch::{
     ErrorCode, HttpConfig, Note, RobotsConfig, SecurityConfig, WebFetchConfig, WebFetchInput,
 };
 use std::path::Path;
+use std::time::Duration;
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+const GZIP_BOMB_PAYLOAD: &[u8] = &[
+    0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xed, 0xc1, 0x81, 0x00, 0x00, 0x00,
+    0x00, 0x80, 0x20, 0xb6, 0xfd, 0xa5, 0x16, 0xa9, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x6a, 0x80, 0x06, 0x9b, 0xa0, 0x00, 0x00, 0x01, 0x00,
+];
 
 fn test_config() -> WebFetchConfig {
     WebFetchConfig {
@@ -124,6 +136,44 @@ async fn setup_mock_server_with_robots(html: &str) -> MockServer {
         .await;
 
     server
+}
+
+async fn setup_robots_body_stall_server(delay: Duration) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind local listener");
+    let address = listener.local_addr().expect("listener local_addr");
+
+    let handle = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept connection");
+
+        let mut request = [0u8; 2048];
+        let _ = socket.read(&mut request).await;
+
+        let first = b"User-agent: *\n";
+        let second = b"Allow: /\n";
+        let content_length = first.len() + second.len();
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
+        );
+        socket
+            .write_all(header.as_bytes())
+            .await
+            .expect("write headers");
+        socket
+            .write_all(first)
+            .await
+            .expect("write first robots bytes");
+        socket.flush().await.expect("flush first robots bytes");
+        tokio::time::sleep(delay).await;
+        socket
+            .write_all(second)
+            .await
+            .expect("write second robots bytes");
+        socket.flush().await.expect("flush second robots bytes");
+    });
+
+    (format!("http://{address}"), handle)
 }
 
 #[tokio::test]
@@ -710,6 +760,56 @@ async fn test_non_html_content_type_rejected() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.code, ErrorCode::UnsupportedContentType);
+}
+
+#[tokio::test]
+async fn test_compressed_response_over_limit_is_rejected() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/robots.txt"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("User-agent: *\nAllow: /"))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(GZIP_BOMB_PAYLOAD.to_vec(), "text/plain; charset=utf-8")
+                .insert_header("Content-Encoding", "gzip"),
+        )
+        .mount(&server)
+        .await;
+
+    let mut config = test_config();
+    config.max_download_bytes = Some(1024);
+
+    let input = WebFetchInput::new(server.uri()).expect("valid URL");
+    let result = forge_tools::webfetch::fetch(input, &config).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.code, ErrorCode::ResponseTooLarge);
+}
+
+#[tokio::test]
+async fn test_robots_body_stream_timeout_returns_unavailable() {
+    let (base_url, server_task) = setup_robots_body_stall_server(Duration::from_millis(1500)).await;
+
+    let mut config = test_config();
+    config.timeout_seconds = Some(1);
+    if let Some(robots) = config.robots.as_mut() {
+        robots.fail_open = false;
+    }
+
+    let input = WebFetchInput::new(&base_url).expect("valid URL");
+    let result = forge_tools::webfetch::fetch(input, &config).await;
+    server_task.abort();
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.code, ErrorCode::RobotsUnavailable);
 }
 
 #[tokio::test]

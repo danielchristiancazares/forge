@@ -260,7 +260,17 @@ async fn fetch_robots(url: &Url, config: &ResolvedConfig) -> Result<FetchResult,
             }
 
             let mut stream = response.bytes_stream();
-            while let Some(chunk) = stream.next().await {
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(robots_timeout(&origin, config));
+                }
+                let next = tokio::time::timeout(remaining, stream.next())
+                    .await
+                    .map_err(|_| robots_timeout(&origin, config))?;
+                let Some(chunk) = next else {
+                    break;
+                };
                 let chunk = chunk.map_err(|e| {
                     WebFetchError::new(
                         ErrorCode::Network,
@@ -381,6 +391,12 @@ fn robots_unavailable(origin: &str, error: impl Into<String>) -> WebFetchError {
     WebFetchError::new(ErrorCode::RobotsUnavailable, "robots.txt unavailable", true)
         .with_detail("origin", origin.to_string())
         .with_detail("error", error.into())
+}
+
+fn robots_timeout(origin: &str, config: &ResolvedConfig) -> WebFetchError {
+    robots_unavailable(origin, "request timed out")
+        .with_detail("timeout_ms", config.timeout.as_millis().to_string())
+        .with_detail("phase", "robots")
 }
 
 fn map_robots_error(err: WebFetchError, origin: &str, config: &ResolvedConfig) -> WebFetchError {
