@@ -16,6 +16,7 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.93.0"
 authors = ["Daniel Cazares"]
+publish = false
 
 [workspace.dependencies]
 # Internal crates

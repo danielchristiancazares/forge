@@ -3,6 +3,7 @@ name = "forge-tui"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 description = "TUI rendering and input handling for Forge"
 
 [lints]
