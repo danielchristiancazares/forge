@@ -110,6 +110,11 @@ impl Sandbox {
                 message: "path contains invalid control characters".to_string(),
             });
         }
+        if contains_ntfs_ads(path) {
+            return Err(ToolError::BadArgs {
+                message: "path contains NTFS alternate data stream syntax".to_string(),
+            });
+        }
         let input = PathBuf::from(path);
         if input
             .components()
@@ -196,6 +201,11 @@ impl Sandbox {
         if contains_unsafe_path_chars(path) {
             return Err(ToolError::BadArgs {
                 message: "path contains invalid control characters".to_string(),
+            });
+        }
+        if contains_ntfs_ads(path) {
+            return Err(ToolError::BadArgs {
+                message: "path contains NTFS alternate data stream syntax".to_string(),
             });
         }
         let input = PathBuf::from(path);
@@ -394,7 +404,58 @@ impl Sandbox {
 }
 
 fn normalize_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        strip_ads_suffixes(&normalized)
+    } else {
+        normalized
+    }
+}
+
+/// Strip NTFS Alternate Data Stream suffixes from path segments for deny matching.
+///
+/// Defense-in-depth: even if `contains_ntfs_ads` rejects ADS paths at the entry
+/// point, this ensures deny patterns match the base filename (e.g. `.env::$DATA`
+/// is matched as `.env`).
+fn strip_ads_suffixes(path: &str) -> String {
+    let mut result = String::with_capacity(path.len());
+    let mut first = true;
+    for segment in path.split('/') {
+        if !first {
+            result.push('/');
+        }
+        // Preserve drive letter (e.g. "C:")
+        if first
+            && segment.len() == 2
+            && segment.as_bytes()[0].is_ascii_alphabetic()
+            && segment.as_bytes()[1] == b':'
+        {
+            result.push_str(segment);
+        } else if let Some(pos) = segment.find(':') {
+            result.push_str(&segment[..pos]);
+        } else {
+            result.push_str(segment);
+        }
+        first = false;
+    }
+    result
+}
+
+/// Detect NTFS Alternate Data Stream syntax in path components.
+///
+/// On Windows, `:` in a `Component::Normal` is always ADS syntax — it's not a
+/// valid filename character except in the drive letter prefix (`C:`). Paths like
+/// `.env::$DATA` or `file.txt:stream` can bypass deny pattern matching because
+/// the glob sees the ADS-suffixed name instead of the base filename.
+///
+/// Returns `false` on non-Windows platforms (colons are valid in Unix filenames).
+fn contains_ntfs_ads(input: &str) -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    Path::new(input)
+        .components()
+        .any(|c| matches!(c, std::path::Component::Normal(s) if s.to_string_lossy().contains(':')))
 }
 
 #[allow(dead_code)] // Available for alternative path resolution strategy
@@ -813,6 +874,60 @@ mod tests {
 
         let result = sandbox.ensure_path_allowed(&file_path);
         assert!(result.is_err());
+    }
+
+    // NTFS ADS detection tests
+
+    #[test]
+    fn contains_ntfs_ads_detects_stream_syntax() {
+        if cfg!(windows) {
+            assert!(contains_ntfs_ads(".env::$DATA"));
+            assert!(contains_ntfs_ads("secret.key:stream"));
+            assert!(contains_ntfs_ads("sub/.env::$DATA"));
+            // Drive letter is not ADS
+            assert!(!contains_ntfs_ads("C:\\Users\\test\\file.txt"));
+        } else {
+            // On non-Windows, colons are valid filenames
+            assert!(!contains_ntfs_ads(".env::$DATA"));
+        }
+    }
+
+    #[test]
+    fn strip_ads_suffixes_removes_stream_names() {
+        assert_eq!(strip_ads_suffixes(".env::$DATA"), ".env");
+        assert_eq!(strip_ads_suffixes("secret.key:stream"), "secret.key");
+        assert_eq!(strip_ads_suffixes("sub/.env::$DATA"), "sub/.env");
+        assert_eq!(strip_ads_suffixes("no_ads/file.txt"), "no_ads/file.txt");
+        // Preserve drive letter
+        assert_eq!(strip_ads_suffixes("C:/Users/test"), "C:/Users/test");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_path_rejects_ntfs_ads() {
+        let temp = tempdir().unwrap();
+        std::fs::write(temp.path().join(".env"), "SECRET=x").unwrap();
+        let sandbox = Sandbox::new(
+            vec![temp.path().to_path_buf()],
+            vec!["**/.env".to_string()],
+            false,
+        )
+        .unwrap();
+
+        // ADS bypass attempt must be rejected
+        let result = sandbox.resolve_path(".env::$DATA", temp.path());
+        assert!(result.is_err());
+        let result = sandbox.resolve_path(".env:stream", temp.path());
+        assert!(result.is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalize_path_strips_ads_for_deny_matching() {
+        let path = Path::new("C:\\Users\\test\\.env::$DATA");
+        let normalized = normalize_path(path);
+        assert!(normalized.contains(".env"));
+        assert!(!normalized.contains("::$DATA"));
     }
 
     // DenyPattern tests

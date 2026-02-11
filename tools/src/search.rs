@@ -1221,6 +1221,8 @@ async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
         cmd.current_dir(search_root);
         cmd.arg("--no-config");
         cmd.arg("--json");
+        cmd.arg("--max-columns");
+        cmd.arg("10000");
         cmd.arg("--max-count");
         cmd.arg(accumulator.max_matches_per_file.to_string());
         if context > 0 {
@@ -1297,11 +1299,11 @@ async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
                 message: "failed to capture stderr".to_string(),
             })?;
 
-        let mut stderr_reader = BufReader::new(stderr);
         let stderr_task = tokio::spawn(async move {
-            let mut buf = String::new();
-            let _ = stderr_reader.read_to_string(&mut buf).await;
-            buf
+            const MAX_STDERR: u64 = 64 * 1024;
+            let mut buf = Vec::with_capacity(1024);
+            let _ = stderr.take(MAX_STDERR).read_to_end(&mut buf).await;
+            String::from_utf8_lossy(&buf).into_owned()
         });
 
         let mut stdout_reader = BufReader::new(stdout).lines();
@@ -1507,11 +1509,11 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
                 message: "failed to capture stderr".to_string(),
             })?;
 
-        let mut stderr_reader = BufReader::new(stderr);
         let stderr_task = tokio::spawn(async move {
-            let mut buf = String::new();
-            let _ = stderr_reader.read_to_string(&mut buf).await;
-            buf
+            const MAX_STDERR: u64 = 64 * 1024;
+            let mut buf = Vec::with_capacity(1024);
+            let _ = stderr.take(MAX_STDERR).read_to_end(&mut buf).await;
+            String::from_utf8_lossy(&buf).into_owned()
         });
 
         let mut stdout_reader = BufReader::new(stdout).lines();

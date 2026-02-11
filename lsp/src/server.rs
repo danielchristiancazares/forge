@@ -1,7 +1,7 @@
 //! Server handle — owns a child process and manages the LSP lifecycle.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
@@ -58,6 +58,20 @@ fn env_glob_matches(pattern: &str, key_upper: &str) -> bool {
         }
         (false, false) => key_upper == pat,
     }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = Vec::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out.iter().collect()
 }
 
 fn parse_incoming(frame: &serde_json::Value) -> Option<IncomingFrame> {
@@ -160,6 +174,7 @@ impl RunningServer {
         let reader_event_tx = event_tx.clone();
         let reader_writer_tx = writer_tx.clone();
         let reader_name = name.clone();
+        let reader_workspace_root = normalize_path(workspace_root);
         let reader_handle = tokio::spawn(async move {
             let mut reader = FrameReader::new(stdout);
             loop {
@@ -171,6 +186,7 @@ impl RunningServer {
                             &reader_event_tx,
                             &reader_writer_tx,
                             &reader_name,
+                            &reader_workspace_root,
                         )
                         .await;
                     }
@@ -222,6 +238,7 @@ impl RunningServer {
         event_tx: &mpsc::Sender<LspEvent>,
         writer_tx: &mpsc::Sender<WriterCommand>,
         server_name: &str,
+        workspace_root: &Path,
     ) {
         let Some(incoming) = parse_incoming(frame) else {
             tracing::trace!("Ignoring malformed JSON-RPC frame from '{server_name}'");
@@ -252,7 +269,8 @@ impl RunningServer {
                 let _ = writer_tx.send(WriterCommand::Send(response)).await;
             }
             IncomingFrame::Notification { method, params } => {
-                Self::handle_notification(server_name, &method, params, event_tx).await;
+                Self::handle_notification(server_name, &method, params, event_tx, workspace_root)
+                    .await;
             }
         }
     }
@@ -262,6 +280,7 @@ impl RunningServer {
         method: &str,
         params: Option<serde_json::Value>,
         event_tx: &mpsc::Sender<LspEvent>,
+        workspace_root: &Path,
     ) {
         match method {
             "textDocument/publishDiagnostics" => {
@@ -269,6 +288,15 @@ impl RunningServer {
                 match serde_json::from_value::<PublishDiagnosticsParams>(params) {
                     Ok(diag_params) => {
                         if let Some(path) = protocol::file_uri_to_path(&diag_params.uri) {
+                            let normalized = normalize_path(&path);
+                            if !normalized.starts_with(workspace_root) {
+                                tracing::warn!(
+                                    "LSP '{server_name}' reported diagnostics for path outside \
+                                     workspace: {}",
+                                    path.display()
+                                );
+                                return;
+                            }
                             let items = diag_params
                                 .diagnostics
                                 .iter()
@@ -432,9 +460,20 @@ mod tests {
         (pending, event_tx, event_rx, writer_tx, writer_rx)
     }
 
+    #[cfg(windows)]
+    fn test_workspace_root() -> PathBuf {
+        PathBuf::from(r"C:\test")
+    }
+
+    #[cfg(not(windows))]
+    fn test_workspace_root() -> PathBuf {
+        PathBuf::from("/test")
+    }
+
     #[tokio::test]
     async fn test_dispatch_response_routes_to_pending() {
         let (pending, event_tx, _event_rx, writer_tx, _writer_rx) = test_channels();
+        let root = test_workspace_root();
 
         let (tx, rx) = oneshot::channel();
         pending.lock().await.insert(1, tx);
@@ -445,7 +484,7 @@ mod tests {
             "result": { "capabilities": {} }
         });
 
-        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
+        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test", &root).await;
 
         let response = rx.await.unwrap();
         assert!(response["result"]["capabilities"].is_object());
@@ -455,6 +494,7 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_notification_publishes_diagnostics() {
         let (pending, event_tx, mut event_rx, writer_tx, _writer_rx) = test_channels();
+        let root = test_workspace_root();
 
         #[cfg(windows)]
         let uri = "file:///C:/test/main.rs";
@@ -475,7 +515,7 @@ mod tests {
             }
         });
 
-        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
+        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test", &root).await;
 
         let event = event_rx.try_recv().unwrap();
         match event {
@@ -495,8 +535,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_dispatch_rejects_diagnostics_outside_workspace() {
+        let (pending, event_tx, mut event_rx, writer_tx, _writer_rx) = test_channels();
+        let root = test_workspace_root();
+
+        #[cfg(windows)]
+        let uri = "file:///C:/etc/passwd";
+        #[cfg(not(windows))]
+        let uri = "file:///etc/passwd";
+
+        let frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": uri,
+                "diagnostics": [{
+                    "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } },
+                    "severity": 1,
+                    "source": "evil",
+                    "message": "gotcha"
+                }]
+            }
+        });
+
+        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test", &root).await;
+
+        assert!(
+            event_rx.try_recv().is_err(),
+            "diagnostics outside workspace must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_rejects_diagnostics_with_path_traversal() {
+        let (pending, event_tx, mut event_rx, writer_tx, _writer_rx) = test_channels();
+        let root = test_workspace_root();
+
+        #[cfg(windows)]
+        let uri = "file:///C:/test/../etc/passwd";
+        #[cfg(not(windows))]
+        let uri = "file:///test/../etc/passwd";
+
+        let frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": uri,
+                "diagnostics": [{
+                    "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } },
+                    "severity": 1,
+                    "source": "evil",
+                    "message": "traversal"
+                }]
+            }
+        });
+
+        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test", &root).await;
+
+        assert!(
+            event_rx.try_recv().is_err(),
+            "path traversal diagnostics must be rejected"
+        );
+    }
+
+    #[tokio::test]
     async fn test_dispatch_server_request_sends_method_not_found() {
         let (pending, event_tx, _event_rx, writer_tx, mut writer_rx) = test_channels();
+        let root = test_workspace_root();
 
         let frame = serde_json::json!({
             "jsonrpc": "2.0",
@@ -505,7 +610,7 @@ mod tests {
             "params": {}
         });
 
-        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
+        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test", &root).await;
 
         let cmd = writer_rx.try_recv().unwrap();
         match cmd {
@@ -522,6 +627,7 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_unknown_notification_ignored() {
         let (pending, event_tx, mut event_rx, writer_tx, mut writer_rx) = test_channels();
+        let root = test_workspace_root();
 
         let frame = serde_json::json!({
             "jsonrpc": "2.0",
@@ -529,7 +635,7 @@ mod tests {
             "params": { "type": 3, "message": "hello" }
         });
 
-        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
+        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test", &root).await;
 
         assert!(event_rx.try_recv().is_err());
         assert!(writer_rx.try_recv().is_err());
@@ -538,6 +644,7 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_response_with_error_routes_to_pending() {
         let (pending, event_tx, _event_rx, writer_tx, _writer_rx) = test_channels();
+        let root = test_workspace_root();
 
         let (tx, rx) = oneshot::channel();
         pending.lock().await.insert(2, tx);
@@ -548,7 +655,7 @@ mod tests {
             "error": { "code": -32600, "message": "invalid request" }
         });
 
-        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
+        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test", &root).await;
 
         let response = rx.await.unwrap();
         assert!(response["error"].is_object());
@@ -557,6 +664,7 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_response_for_unknown_id_ignored() {
         let (pending, event_tx, _event_rx, writer_tx, _writer_rx) = test_channels();
+        let root = test_workspace_root();
 
         let frame = serde_json::json!({
             "jsonrpc": "2.0",
@@ -564,7 +672,7 @@ mod tests {
             "result": {}
         });
 
-        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test").await;
+        RunningServer::dispatch_frame(&frame, &pending, &event_tx, &writer_tx, "test", &root).await;
     }
 
     #[test]
