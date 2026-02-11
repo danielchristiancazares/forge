@@ -144,7 +144,7 @@ toc-all:
 # Normalize line endings to LF for source and doc files
 [windows]
 fix:
-    Get-ChildItem -Path . -Include *.rs,*.md -Recurse | Where-Object { $_.FullName -notmatch '[\\/]target[\\/]' -and $_.FullName -notmatch '[\\/]gemini-review[\\/]' } | ForEach-Object { $c = [System.IO.File]::ReadAllText($_.FullName); if ($c -match "`r`n") { [System.IO.File]::WriteAllText($_.FullName, ($c -replace "`r`n", "`n")); Write-Host "fixed: $($_.FullName)" } }
+    @& { $ErrorActionPreference = 'Stop'; try { Get-ChildItem -Path . -Include *.rs,*.md -Recurse -ErrorAction Stop | Where-Object { $_.FullName -notmatch '[\\/]target[\\/]' -and $_.FullName -notmatch '[\\/]gemini-review[\\/]' } | ForEach-Object { $c = [System.IO.File]::ReadAllText($_.FullName); if ($c -match "`r`n") { [System.IO.File]::WriteAllText($_.FullName, ($c -replace "`r`n", "`n")); Write-Host "fixed: $($_.FullName)" } } } catch { Write-Error $_; exit 1 } }
 
 [unix]
 fix:
