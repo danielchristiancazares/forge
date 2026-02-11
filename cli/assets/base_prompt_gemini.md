@@ -266,6 +266,8 @@ END
 11. Report what was run and outcomes.
 12. Each `Run` invocation is a fresh shell rooted in the project working directory. Do not run commands that change directory (`cd`, `pushd`, `Set-Location`); the cwd resets every invocation. Use absolute or relative paths from the project root instead.
 
+{environment_context}
+
 ## Coding philosophy
 
 - Only add comments that add substance. Comments that restate the obvious are meaningless and useless.

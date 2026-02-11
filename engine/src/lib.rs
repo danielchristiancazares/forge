@@ -77,6 +77,7 @@ pub use security::sanitize_display_text;
 mod session_state;
 pub use session_state::SessionChangeLog;
 mod distillation;
+mod environment;
 mod lsp_integration;
 mod state;
 mod streaming;
@@ -89,6 +90,7 @@ pub use input_modes::{
 
 pub use commands::{CommandSpec, command_specs};
 
+pub use environment::{EnvironmentContext, assemble_prompt};
 pub use notifications::SystemNotification;
 
 pub(crate) use persistence::{ABORTED_JOURNAL_BADGE, EMPTY_RESPONSE_BADGE};
@@ -457,6 +459,9 @@ pub struct App {
     /// Provider-specific system prompts.
     /// The correct prompt is selected at streaming time based on the active provider.
     system_prompts: SystemPrompts,
+    /// Runtime environment context gathered at startup.
+    /// Used to inject date, platform, cwd, and git status into system prompts.
+    environment: EnvironmentContext,
     /// Cached context usage status (invalidated when history/model changes).
     cached_usage_status: Option<ContextUsageStatus>,
     /// Pending user message awaiting stream completion.

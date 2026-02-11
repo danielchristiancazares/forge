@@ -11,9 +11,9 @@ use crate::state::{DataDir, DataDirSource, OperationState};
 use crate::tools::{self, builtins};
 use crate::ui::InputState;
 use crate::{
-    App, ContextManager, Librarian, OpenAIReasoningEffort, OpenAIReasoningSummary,
-    OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation, StreamJournal, SystemPrompts,
-    ToolJournal, UiOptions, ViewState,
+    App, ContextManager, EnvironmentContext, Librarian, OpenAIReasoningEffort,
+    OpenAIReasoningSummary, OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation,
+    StreamJournal, SystemPrompts, ToolJournal, UiOptions, ViewState,
 };
 
 // Tool limit defaults
@@ -311,6 +311,8 @@ impl App {
             .and_then(|cfg| cfg.lsp.clone())
             .filter(forge_lsp::LspConfig::enabled);
 
+        let environment = EnvironmentContext::gather();
+
         let ui_options = Self::ui_options_from_config(config.as_ref());
         let view = ViewState {
             ui_options,
@@ -336,6 +338,7 @@ impl App {
             openai_options,
             openai_reasoning_effort_explicit,
             system_prompts,
+            environment,
             cached_usage_status: None,
             pending_user_message: None,
             tool_definitions,

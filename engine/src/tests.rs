@@ -74,6 +74,7 @@ fn test_app() -> App {
         openai_options: OpenAIRequestOptions::default(),
         openai_reasoning_effort_explicit: false,
         system_prompts: TEST_SYSTEM_PROMPTS,
+        environment: EnvironmentContext::gather(),
         cached_usage_status: None,
         pending_user_message: None,
         tool_definitions,

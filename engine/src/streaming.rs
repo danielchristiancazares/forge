@@ -187,7 +187,12 @@ impl super::App {
     /// (with real overhead), causing an infinite ping-pong.
     pub(crate) fn streaming_overhead(&self, provider: Provider) -> u32 {
         let counter = TokenCounter::new();
-        let sys_tokens = counter.count_str(self.system_prompts.get(provider));
+        let assembled = crate::environment::assemble_prompt(
+            self.system_prompts.get(provider),
+            &self.environment,
+            self.model.as_str(),
+        );
+        let sys_tokens = counter.count_str(&assembled);
         let tool_tokens = {
             let tools: Vec<&ToolDefinition> = self
                 .tool_definitions
@@ -217,7 +222,11 @@ impl super::App {
         let provider = config.provider();
         let overhead = self.streaming_overhead(provider);
 
-        let system_prompt = self.system_prompts.get(provider);
+        let system_prompt = crate::environment::assemble_prompt(
+            self.system_prompts.get(provider),
+            &self.environment,
+            config.model().as_str(),
+        );
         let tools: Vec<_> = self
             .tool_definitions
             .iter()
@@ -328,7 +337,7 @@ impl super::App {
             bool,
         ) = if cache_enabled && provider == Provider::Claude {
             let counter = TokenCounter::new();
-            let sys_tokens = counter.count_str(self.system_prompts.get(provider));
+            let sys_tokens = counter.count_str(&system_prompt);
             let tool_tokens = if tools.is_empty() {
                 0
             } else {
@@ -395,7 +404,7 @@ impl super::App {
                     &gemini_cache_config,
                     config.api_key(),
                     config.model().as_str(),
-                    system_prompt,
+                    &system_prompt,
                     tools_ref,
                 )
                 .await
@@ -407,7 +416,7 @@ impl super::App {
                 config: &config,
                 messages: &cacheable_messages,
                 limits,
-                system_prompt: Some(system_prompt),
+                system_prompt: Some(&system_prompt),
                 tools: tools_ref,
                 system_cache_hint,
                 cache_last_tool,

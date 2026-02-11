@@ -234,6 +234,8 @@ END
   - Use absolute or relative paths from the project root instead of changing directories.
 - Use the `Run` tool only for operations unsupported by built-in tools or when no built-in tool exists.
 
+{environment_context}
+
 ## Response style
 
 - The user cannot see raw command output, file diffs, or file contents. Distill; avoid long output unless explicitly requested.
