@@ -21,7 +21,7 @@ release:
 # Run tests (concise: one-line summary on pass, full output on fail)
 [windows]
 test:
-    @& { $r = cargo test 2>&1; if ($LASTEXITCODE -eq 0) { $p=0; $f=0; $i=0; $r | Select-String 'test result:' | ForEach-Object { if ($_ -match '(\d+) passed; (\d+) failed; (\d+) ignored') { $p+=[int]$Matches[1]; $f+=[int]$Matches[2]; $i+=[int]$Matches[3] } }; "ok: $p passed, $f failed, $i ignored" } else { $r | ForEach-Object { "$_" }; exit 1 } }
+    @& { $r = cargo test 2>&1; $rc = $LASTEXITCODE; if ($rc -eq 0) { $p=0; $f=0; $i=0; $r | Select-String 'test result:' | ForEach-Object { if ($_ -match '(\d+) passed; (\d+) failed; (\d+) ignored') { $p+=[int]$Matches[1]; $f+=[int]$Matches[2]; $i+=[int]$Matches[3] } }; "ok: $p passed, $f failed, $i ignored" } else { $r | ForEach-Object { "$_" }; exit $rc } }
 
 [unix]
 test:
@@ -30,7 +30,7 @@ test:
 # Run clippy lints (silent on pass, errors only on fail)
 [windows]
 lint:
-    @& { $r = cargo clippy --workspace --all-targets -- -D warnings 2>&1; if ($LASTEXITCODE -ne 0) { $r | Where-Object { $_ -notmatch '^\s*(Checking|Compiling|Finished|Downloading|Downloaded|warning: build failed)' } | ForEach-Object { "$_" }; exit 1 } }
+    @& { $r = cargo clippy --workspace --all-targets -- -D warnings 2>&1; $rc = $LASTEXITCODE; if ($rc -ne 0) { $r | Where-Object { $_ -notmatch '^\s*(Checking|Compiling|Finished|Downloading|Downloaded|warning: build failed)' } | ForEach-Object { "$_" }; exit $rc } }
 
 [unix]
 lint:
@@ -140,7 +140,7 @@ toc-all:
 # Normalize line endings to LF for source and doc files
 [windows]
 fix:
-    Get-ChildItem -Path . -Include *.rs,*.md -Recurse | Where-Object { $_.FullName -notmatch '[\\/]target[\\/]' -and $_.FullName -notmatch '[\\/]gemini-review[\\/]' } | ForEach-Object { $c = [System.IO.File]::ReadAllText($_.FullName); if ($c -match "`r`n") { [System.IO.File]::WriteAllText($_.FullName, ($c -replace "`r`n", "`n")); Write-Host "fixed: $($_.FullName)" } }
+    @& { $ErrorActionPreference = 'Stop'; try { Get-ChildItem -Path . -Include *.rs,*.md -Recurse -ErrorAction Stop | Where-Object { $_.FullName -notmatch '[\\/]target[\\/]' -and $_.FullName -notmatch '[\\/]gemini-review[\\/]' } | ForEach-Object { $c = [System.IO.File]::ReadAllText($_.FullName); if ($c -match "`r`n") { [System.IO.File]::WriteAllText($_.FullName, ($c -replace "`r`n", "`n")); Write-Host "fixed: $($_.FullName)" } } } catch { Write-Error $_; exit 1 } }
 
 [unix]
 fix:
