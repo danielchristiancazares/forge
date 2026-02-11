@@ -80,8 +80,11 @@ fn detect_platform_shell() -> DetectedShell {
         };
     }
 
+    let comspec = std::env::var("ComSpec")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(r"C:\Windows\System32\cmd.exe"));
     DetectedShell {
-        binary: "cmd.exe".into(),
+        binary: comspec,
         args: vec!["/C".to_string()],
         name: "cmd".into(),
     }
@@ -116,7 +119,7 @@ fn detect_platform_shell() -> DetectedShell {
     }
 
     DetectedShell {
-        binary: "sh".into(),
+        binary: PathBuf::from("/bin/sh"),
         args: vec!["-c".to_string()],
         name: "sh".into(),
     }

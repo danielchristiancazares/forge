@@ -26,7 +26,7 @@ When writing instructions or scripts, avoid assuming a single shell. If you need
 - `String::new()` not `"".to_string()`
 - `.map(ToString::to_string)` not `.map(|m| m.to_string())`
 - Method references over closures (`clippy::redundant_closure_for_method_calls`)
-- Collapse `if` statements (`clippy::collapsible_if`)
+- Collapse every collapsible `if` with no exceptions; treat `clippy::collapsible_if` as a hard error. Never suppress it (`#[allow(clippy::collapsible_if)]` is forbidden).
 - Inline `format!` args (`clippy::uninlined_format_args`)
 - Test assertions: compare whole objects, not field-by-field
 

@@ -29,7 +29,7 @@ fn test_app() -> App {
     let data_dir_path = tempdir().expect("temp data dir for tests").keep();
     let data_dir = DataDir {
         path: data_dir_path,
-        source: DataDirSource::Fallback,
+        source: DataDirSource::System,
     };
     let output_limits = OutputLimits::new(4096);
     let mut context_manager = ContextManager::new(model.clone());

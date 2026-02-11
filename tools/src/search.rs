@@ -14,8 +14,8 @@ use tokio::process::Command;
 use unicode_normalization::UnicodeNormalization;
 
 use super::{
-    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, parse_args, redact_distillate,
-    sanitize_output,
+    EnvSanitizer, RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, parse_args,
+    redact_distillate, sanitize_output,
 };
 
 const SEARCH_TOOL_NAME: &str = "Search";
@@ -535,6 +535,7 @@ impl ToolExecutor for SearchTool {
                             word_regexp,
                             deadline,
                             accumulator: &mut accumulator,
+                            env_sanitizer: &ctx.env_sanitizer,
                         },
                         context,
                         no_ignore,
@@ -555,6 +556,7 @@ impl ToolExecutor for SearchTool {
                             word_regexp,
                             deadline,
                             accumulator: &mut accumulator,
+                            env_sanitizer: &ctx.env_sanitizer,
                         },
                         fuzzy,
                     };
@@ -891,6 +893,7 @@ struct RunBase<'a> {
     word_regexp: bool,
     deadline: Instant,
     accumulator: &'a mut SearchAccumulator,
+    env_sanitizer: &'a EnvSanitizer,
 }
 
 struct RipgrepRun<'a> {
@@ -918,7 +921,7 @@ enum BackendKind {
 }
 
 async fn probe_backend(binary: &str) -> Option<BackendInfo> {
-    let resolved = which::which(binary).unwrap_or_else(|_| PathBuf::from(binary));
+    let resolved = which::which(binary).ok()?;
     let mut cmd = Command::new(&resolved);
     cmd.arg("--version");
     let output = cmd.output().await.ok()?;
@@ -1197,6 +1200,7 @@ async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
         word_regexp,
         deadline,
         accumulator,
+        env_sanitizer,
     } = base;
     let mut timed_out = false;
     let mut exit_code = None;
@@ -1215,6 +1219,7 @@ async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
 
         let mut cmd = Command::new(&backend.binary);
         cmd.current_dir(search_root);
+        cmd.arg("--no-config");
         cmd.arg("--json");
         cmd.arg("--max-count");
         cmd.arg(accumulator.max_matches_per_file.to_string());
@@ -1257,6 +1262,11 @@ async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
                 cmd.arg(&file.rel_path);
             }
         }
+
+        let env: Vec<(String, String)> = std::env::vars().collect();
+        let sanitized = env_sanitizer.sanitize_env(&env);
+        cmd.env_clear();
+        cmd.envs(sanitized);
 
         cmd.stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -1403,6 +1413,7 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
         word_regexp,
         deadline,
         accumulator,
+        env_sanitizer,
     } = base;
     // ugrep formatted output does not include context; fuzzy context is injected separately.
     let mut timed_out = false;
@@ -1461,6 +1472,11 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
                 cmd.arg(&file.rel_path);
             }
         }
+
+        let env: Vec<(String, String)> = std::env::vars().collect();
+        let sanitized = env_sanitizer.sanitize_env(&env);
+        cmd.env_clear();
+        cmd.envs(sanitized);
 
         cmd.stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());

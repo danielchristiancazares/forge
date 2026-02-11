@@ -922,6 +922,12 @@ impl App {
         self.tool_approval_ref()?.data().expanded
     }
 
+    pub fn tool_approval_scroll_offset(&self) -> usize {
+        self.tool_approval_ref()
+            .map(|s| s.data().scroll_offset)
+            .unwrap_or(0)
+    }
+
     pub fn tool_approval_deny_confirm(&self) -> bool {
         self.tool_approval_ref()
             .is_some_and(state::ApprovalState::is_confirming_deny)

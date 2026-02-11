@@ -242,7 +242,7 @@ impl App {
             .map(|cfg| cfg.thinking_enabled)
             .unwrap_or(false);
 
-        let data_dir = Self::data_dir();
+        let data_dir = Self::data_dir()?;
 
         // Initialize Librarian for memory (if enabled and Gemini API key available)
         let librarian = if memory_enabled {
@@ -391,9 +391,9 @@ impl App {
             app.push_notification(message);
         }
 
-        if matches!(app.data_dir.source, DataDirSource::Fallback) {
+        if matches!(app.data_dir.source, DataDirSource::Custom) {
             app.push_notification(format!(
-                "Using fallback data dir: {}",
+                "Using custom data dir: {}",
                 app.data_dir.path.display()
             ));
         }
@@ -412,21 +412,22 @@ impl App {
     }
 
     /// Get the base data directory for forge.
-    pub(crate) fn data_dir() -> DataDir {
+    pub(crate) fn data_dir() -> anyhow::Result<DataDir> {
+        if let Ok(custom) = std::env::var("FORGE_DATA_DIR") {
+            return Ok(DataDir {
+                path: PathBuf::from(custom),
+                source: DataDirSource::Custom,
+            });
+        }
         if let Some(path) = dirs::data_local_dir() {
-            DataDir {
+            Ok(DataDir {
                 path: path.join("forge"),
                 source: DataDirSource::System,
-            }
+            })
         } else {
-            tracing::warn!(
-                "System data directory unavailable; falling back to ./forge in \
-                 current directory. Set XDG_DATA_HOME or equivalent to avoid this."
-            );
-            DataDir {
-                path: PathBuf::from(".").join("forge"),
-                source: DataDirSource::Fallback,
-            }
+            anyhow::bail!(
+                "System data directory unavailable. Set FORGE_DATA_DIR to specify a data directory."
+            )
         }
     }
 

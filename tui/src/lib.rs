@@ -1898,9 +1898,10 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
         .style(Style::default().bg(palette.bg_panel))
         .padding(Padding::uniform(1));
 
-    let height = content_height.saturating_add(4);
-    let width = content_width.saturating_add(4);
     let area = frame.area();
+    let max_height = area.height.saturating_sub(2);
+    let height = content_height.saturating_add(4).min(max_height);
+    let width = content_width.saturating_add(4);
     let rect = Rect {
         x: area.x + (area.width.saturating_sub(width) / 2),
         y: area.y + (area.height.saturating_sub(height) / 2),
@@ -1909,7 +1910,13 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
     };
 
     frame.render_widget(Clear, rect);
-    frame.render_widget(Paragraph::new(lines).block(block), rect);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .scroll((view.scroll_offset as u16, 0)),
+        rect,
+    );
 }
 
 fn draw_tool_recovery_prompt(frame: &mut Frame, app: &App, palette: &Palette, glyphs: &Glyphs) {

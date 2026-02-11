@@ -199,6 +199,7 @@ pub(crate) struct ApprovalView {
     pub(crate) cursor: usize,
     pub(crate) any_selected: bool,
     pub(crate) deny_confirm: bool,
+    pub(crate) scroll_offset: usize,
 }
 
 pub(crate) struct ApprovalItem {
@@ -209,97 +210,18 @@ pub(crate) struct ApprovalItem {
     pub(crate) homoglyph_warnings: Vec<String>,
 }
 
-fn extract_tool_details(tool_name: &str, args: &Value, _max_width: usize) -> Vec<String> {
+fn extract_tool_details(_tool_name: &str, args: &Value, _max_width: usize) -> Vec<String> {
     let mut details = Vec::new();
-    match tool_name {
-        "Run" => {
-            if let Some(cmd) = args.get("command").and_then(Value::as_str) {
-                details.push(format!("command: {cmd}"));
-            }
-            if let Some(reason) = args.get("reason").and_then(Value::as_str) {
-                details.push(format!("reason: {reason}"));
-            }
+
+    // Always show the full raw JSON so no field is hidden by selective extraction.
+    if let Ok(raw) = serde_json::to_string_pretty(args) {
+        details.push("--- raw args ---".to_string());
+        for line in raw.lines() {
+            details.push(sanitize_display_text(line));
         }
-        "Read" => {
-            if let Some(path) = args.get("path").and_then(Value::as_str) {
-                details.push(format!("path: {path}"));
-            }
-            if let Some(start) = args.get("start_line").and_then(Value::as_u64) {
-                if let Some(end) = args.get("end_line").and_then(Value::as_u64) {
-                    details.push(format!("lines: {start}-{end}"));
-                } else {
-                    details.push(format!("from line: {start}"));
-                }
-            }
-        }
-        "Write" => {
-            if let Some(path) = args.get("path").and_then(Value::as_str) {
-                details.push(format!("path: {path}"));
-            }
-            if let Some(content) = args.get("content").and_then(Value::as_str) {
-                details.push(format!("size: {} bytes", content.len()));
-            }
-        }
-        "Edit" | "ApplyPatch" => {
-            if let Some(path) = args.get("path").and_then(Value::as_str) {
-                details.push(format!("path: {path}"));
-            }
-            if let Some(patch) = args
-                .get("patch")
-                .or_else(|| args.get("old_snippet"))
-                .and_then(Value::as_str)
-            {
-                for line in patch.lines().take(5) {
-                    details.push(sanitize_display_text(line));
-                }
-                let total = patch.lines().count();
-                if total > 5 {
-                    details.push(format!("... ({} more lines)", total - 5));
-                }
-            }
-        }
-        "WebFetch" => {
-            if let Some(url) = args.get("url").and_then(Value::as_str) {
-                details.push(format!("url: {url}"));
-            }
-        }
-        "Glob" | "Search" => {
-            if let Some(pattern) = args.get("pattern").and_then(Value::as_str) {
-                details.push(format!("pattern: {pattern}"));
-            }
-            if let Some(path) = args.get("path").and_then(Value::as_str) {
-                details.push(format!("path: {path}"));
-            }
-        }
-        "Git" => {
-            if let Some(cmd) = args.get("command").and_then(Value::as_str) {
-                details.push(format!("command: git {cmd}"));
-            }
-            if let Some(paths) = args.get("paths").and_then(Value::as_array) {
-                let path_strs: Vec<&str> = paths.iter().filter_map(Value::as_str).take(5).collect();
-                if !path_strs.is_empty() {
-                    details.push(format!("paths: {}", path_strs.join(", ")));
-                }
-            }
-            if let Some(msg) = args.get("message").and_then(Value::as_str) {
-                details.push(format!("message: {msg}"));
-            }
-        }
-        "Memory" => {
-            if let Some(content) = args.get("content").and_then(Value::as_str) {
-                details.push(format!("fact: {content}"));
-            }
-        }
-        _ => {
-            if let Some(obj) = args.as_object() {
-                for (key, val) in obj.iter().take(5) {
-                    if let Some(s) = val.as_str() {
-                        details.push(format!("{key}: {s}"));
-                    }
-                }
-            }
-        }
+        details.push("----------------".to_string());
     }
+
     details.iter().map(|d| sanitize_display_text(d)).collect()
 }
 
@@ -359,6 +281,7 @@ pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<Appro
         cursor,
         any_selected,
         deny_confirm,
+        scroll_offset: app.tool_approval_scroll_offset(),
     })
 }
 
@@ -381,37 +304,34 @@ mod tests {
     }
 
     #[test]
-    fn extract_details_run_command_and_reason() {
+    fn extract_details_shows_raw_json() {
         let args = json!({"command": "ls -la", "reason": "list files"});
         let details = extract_tool_details("Run", &args, 80);
-        assert_eq!(details, vec!["command: ls -la", "reason: list files"]);
+        assert_eq!(details[0], "--- raw args ---");
+        assert!(details.contains(&r#"  "command": "ls -la","#.to_string()));
+        assert!(details.contains(&r#"  "reason": "list files""#.to_string()));
+        assert_eq!(details.last().unwrap(), "----------------");
     }
 
     #[test]
-    fn extract_details_read_path_and_lines() {
-        let args = json!({"path": "src/main.rs", "start_line": 10, "end_line": 20});
-        let details = extract_tool_details("Read", &args, 80);
-        assert_eq!(details, vec!["path: src/main.rs", "lines: 10-20"]);
-    }
-
-    #[test]
-    fn extract_details_unknown_tool_shows_string_keys() {
-        let args = json!({"foo": "bar", "baz": 42});
-        let details = extract_tool_details("UnknownTool", &args, 80);
-        assert_eq!(details, vec!["foo: bar"]);
-    }
-
-    #[test]
-    fn extract_details_git_command_and_paths() {
+    fn extract_details_includes_all_fields() {
         let args = json!({"command": "diff", "paths": ["a.rs", "b.rs"]});
         let details = extract_tool_details("Git", &args, 80);
-        assert_eq!(details, vec!["command: git diff", "paths: a.rs, b.rs"]);
+        let joined = details.join("\n");
+        assert!(joined.contains("command"));
+        assert!(joined.contains("diff"));
+        assert!(joined.contains("a.rs"));
+        assert!(joined.contains("b.rs"));
     }
 
     #[test]
-    fn extract_details_search_pattern() {
-        let args = json!({"pattern": "fn main", "path": "src/"});
-        let details = extract_tool_details("Search", &args, 80);
-        assert_eq!(details, vec!["pattern: fn main", "path: src/"]);
+    fn extract_details_non_string_values_shown() {
+        let args = json!({"foo": "bar", "baz": 42});
+        let details = extract_tool_details("UnknownTool", &args, 80);
+        let joined = details.join("\n");
+        assert!(joined.contains("foo"));
+        assert!(joined.contains("bar"));
+        assert!(joined.contains("baz"));
+        assert!(joined.contains("42"));
     }
 }

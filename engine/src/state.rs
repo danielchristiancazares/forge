@@ -17,7 +17,7 @@ use crate::tools::ConfirmationRequest;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DataDirSource {
     System,
-    Fallback,
+    Custom,
 }
 
 #[derive(Debug, Clone)]
@@ -346,6 +346,7 @@ pub(crate) struct ApprovalData {
     pub(crate) selected: Vec<bool>,
     pub(crate) cursor: usize,
     pub(crate) expanded: Option<usize>,
+    pub(crate) scroll_offset: usize,
 }
 
 impl ApprovalData {
@@ -356,6 +357,7 @@ impl ApprovalData {
             selected: vec![true; len],
             cursor: 0,
             expanded: None,
+            scroll_offset: 0,
         }
     }
 }

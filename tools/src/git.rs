@@ -552,10 +552,32 @@ async fn run_git(
     let max_stderr_bytes = max_stderr_bytes.clamp(1, MAX_OUTPUT_BYTES);
 
     let bare_name = if cfg!(windows) { "git.exe" } else { "git" };
-    let git_bin = which::which(bare_name).unwrap_or_else(|_| PathBuf::from(bare_name));
+    let git_bin = which::which(bare_name).map_err(|_| ToolError::ExecutionFailed {
+        tool: "git".to_string(),
+        message: format!("{bare_name} not found in PATH"),
+    })?;
 
-    let mut args: Vec<String> = vec!["--no-pager".into(), "-c".into(), "color.ui=false".into()];
-    args.extend(subcommand_args);
+    let mut args: Vec<String> = vec![
+        "--no-pager".into(),
+        "-c".into(),
+        "color.ui=false".into(),
+        "-c".into(),
+        "core.hooksPath=".into(),
+    ];
+
+    // Inject safety flags for diff-producing commands to prevent execution
+    // of external diff drivers (--no-ext-diff) and textconv filters
+    // (--no-textconv) which can run arbitrary programs.
+    let subcmd = subcommand_args.first().map(String::as_str);
+    if matches!(subcmd, Some("diff" | "show" | "log")) {
+        if let Some(cmd_name) = subcommand_args.first() {
+            args.push(cmd_name.clone());
+            args.extend(["--no-ext-diff".into(), "--no-textconv".into()]);
+            args.extend(subcommand_args[1..].iter().cloned());
+        }
+    } else {
+        args.extend(subcommand_args);
+    }
 
     let mut cmd = Command::new(&git_bin);
     cmd.args(&args)
