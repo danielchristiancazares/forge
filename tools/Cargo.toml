@@ -13,7 +13,7 @@ workspace = true
 forge-types.workspace = true
 forge-context.workspace = true
 
-tokio = { workspace = true, features = ["sync", "rt", "time", "process", "io-util", "fs", "net"] }
+tokio = { workspace = true, features = ["sync", "rt", "time", "process", "io-util", "fs", "net", "macros"] }
 reqwest = { workspace = true, features = ["gzip", "brotli", "deflate"] }
 url.workspace = true
 scraper.workspace = true
