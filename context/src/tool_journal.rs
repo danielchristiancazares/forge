@@ -383,7 +383,7 @@ impl ToolJournal {
         batch_id: ToolBatchId,
         tool_call_id: &str,
         process_id: i64,
-        process_started_at_unix_ms: Option<i64>,
+        process_started_at_unix_ms: i64,
     ) -> Result<()> {
         let (existing_pid, existing_started_at): (Option<i64>, Option<i64>) = self
             .db
@@ -396,19 +396,15 @@ impl ToolJournal {
             )
             .with_context(|| format!("Failed to load tool call {tool_call_id} for PID update"))?;
 
-        let start_time_matches = match process_started_at_unix_ms {
-            None => true,
-            Some(value) => existing_started_at == Some(value),
-        };
-        if existing_pid == Some(process_id) && start_time_matches {
+        if existing_pid == Some(process_id)
+            && existing_started_at == Some(process_started_at_unix_ms)
+        {
             return Ok(());
         }
         if existing_pid.is_some() && existing_pid != Some(process_id) {
             bail!("Tool call {tool_call_id} already has a different recorded PID");
         }
-        if existing_started_at.is_some()
-            && process_started_at_unix_ms.is_some()
-            && existing_started_at != process_started_at_unix_ms
+        if existing_started_at.is_some() && existing_started_at != Some(process_started_at_unix_ms)
         {
             bail!("Tool call {tool_call_id} already has a different recorded process start time");
         }
@@ -1351,7 +1347,7 @@ mod tests {
             .mark_call_started(batch_id, "1", 1_700_000_000_000)
             .unwrap();
         journal
-            .record_call_process(batch_id, "1", 4242, Some(1_700_000_000_123))
+            .record_call_process(batch_id, "1", 4242, 1_700_000_000_123)
             .unwrap();
 
         let recovered = journal.recover().unwrap().expect("should recover");

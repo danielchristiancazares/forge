@@ -507,13 +507,16 @@ impl App {
                         continue;
                     };
 
-                    let Some(observed_start) =
-                        crate::tools::process::process_started_at_unix_ms(pid)
-                    else {
-                        self.push_notification(format!(
-                            "Warning: unable to verify `Run` pid {pid}; not terminating automatically."
-                        ));
-                        continue;
+                    let observed_start = match crate::tools::process::process_started_at_unix_ms(
+                        pid,
+                    ) {
+                        Ok(ts) => ts,
+                        Err(e) => {
+                            self.push_notification(format!(
+                                    "Warning: unable to verify `Run` pid {pid}: {e}; not terminating automatically."
+                                ));
+                            continue;
+                        }
                     };
 
                     if observed_start.abs_diff(expected_start)
