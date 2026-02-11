@@ -259,8 +259,8 @@ foreach ($entry in $groups.Values) {
             continue
         }
 
-        # Skip noisy suggestion diff payload lines.
-        if ($line -match '^\s*(?:\d+\s*)?\|\s*[-+~]') {
+        # Skip noisy suggestion diff payload lines only within help sections.
+        if ($section -eq 'help' -and $line -match '^\s*(?:\d+\s*)?\|\s*[-+~]') {
             continue
         }
 
