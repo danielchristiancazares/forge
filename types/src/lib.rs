@@ -30,10 +30,6 @@
 //! | Messages | [`SystemMessage`], [`UserMessage`], [`AssistantMessage`], [`Message`], [`CacheableMessage`] |
 //! | Security | [`sanitize_terminal_text`], [`strip_steganographic_chars`], [`detect_mixed_script`], [`HomoglyphWarning`] |
 
-// Pedantic lint configuration - these are intentional design choices
-#![allow(clippy::missing_errors_doc)] // Result-returning functions are self-explanatory
-#![allow(clippy::missing_panics_doc)] // Panics are documented in assertions
-
 mod confusables;
 mod sanitize;
 mod text;

@@ -403,17 +403,17 @@ impl super::App {
                 None
             };
 
-            let result = forge_providers::send_message(
-                &config,
-                &cacheable_messages,
+            let result = forge_providers::send_message(forge_providers::SendMessageRequest {
+                config: &config,
+                messages: &cacheable_messages,
                 limits,
-                Some(system_prompt),
-                tools_ref,
+                system_prompt: Some(system_prompt),
+                tools: tools_ref,
                 system_cache_hint,
                 cache_last_tool,
-                gemini_cache.as_ref(),
-                tx.clone(),
-            )
+                gemini_cache: gemini_cache.as_ref(),
+                tx: tx.clone(),
+            })
             .await;
 
             if let Err(e) = result {
@@ -825,16 +825,16 @@ impl super::App {
             // 1. The user message was already committed to history
             // 2. We need the user query for Librarian extraction when the turn completes
             // 3. rollback_pending_user_message() safely fails if it's not the last message
-            self.handle_tool_calls(
+            self.handle_tool_calls(crate::state::ToolLoopInput {
                 assistant_text,
-                parsed.calls,
-                parsed.pre_resolved,
+                thinking_message,
+                calls: parsed.calls,
+                pre_resolved: parsed.pre_resolved,
                 model,
                 step_id,
                 tool_batch_id,
                 turn,
-                thinking_message,
-            );
+            });
             return;
         }
 

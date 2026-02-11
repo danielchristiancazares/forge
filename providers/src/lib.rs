@@ -40,10 +40,6 @@
 //! error occurs. Low-level failures that prevent reading the HTTP response stream (e.g.
 //! mid-stream I/O errors) may still return `Err`.
 
-// Pedantic lint configuration - these are intentional design choices
-#![allow(clippy::missing_errors_doc)] // Result-returning functions are self-explanatory
-#![allow(clippy::missing_panics_doc)] // Panics are documented in assertions
-
 pub mod retry;
 pub mod sse_types;
 
@@ -487,44 +483,41 @@ impl ApiConfig {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn send_message(
-    config: &ApiConfig,
-    messages: &[CacheableMessage],
-    limits: OutputLimits,
-    system_prompt: Option<&str>,
-    tools: Option<&[ToolDefinition]>,
-    system_cache_hint: CacheHint,
-    cache_last_tool: bool,
-    gemini_cache: Option<&gemini::GeminiCache>,
-    tx: mpsc::Sender<StreamEvent>,
-) -> Result<()> {
-    match config.provider() {
-        Provider::Claude => {
-            claude::send_message(
-                config,
-                messages,
-                limits,
-                system_prompt,
-                tools,
-                system_cache_hint,
-                cache_last_tool,
-                tx,
+pub struct SendMessageRequest<'a> {
+    pub config: &'a ApiConfig,
+    pub messages: &'a [CacheableMessage],
+    pub limits: OutputLimits,
+    pub system_prompt: Option<&'a str>,
+    pub tools: Option<&'a [ToolDefinition]>,
+    pub system_cache_hint: CacheHint,
+    pub cache_last_tool: bool,
+    pub gemini_cache: Option<&'a gemini::GeminiCache>,
+    pub tx: mpsc::Sender<StreamEvent>,
+}
+
+pub async fn send_message(request: SendMessageRequest<'_>) -> Result<()> {
+    match request.config.provider() {
+        Provider::Claude => claude::send_message(&request).await,
+        Provider::OpenAI => {
+            openai::send_message(
+                request.config,
+                request.messages,
+                request.limits,
+                request.system_prompt,
+                request.tools,
+                request.tx,
             )
             .await
         }
-        Provider::OpenAI => {
-            openai::send_message(config, messages, limits, system_prompt, tools, tx).await
-        }
         Provider::Gemini => {
             gemini::send_message(
-                config,
-                messages,
-                limits,
-                system_prompt,
-                tools,
-                gemini_cache,
-                tx,
+                request.config,
+                request.messages,
+                request.limits,
+                request.system_prompt,
+                request.tools,
+                request.gemini_cache,
+                request.tx,
             )
             .await
         }

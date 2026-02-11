@@ -1,7 +1,7 @@
 use crate::{
-    ApiConfig, ApiResponse, ApiUsage, CacheHint, CacheableMessage, Message, OutputLimits, Result,
-    SseParseAction, SseParser, StreamEvent, ThinkingReplayState, ThoughtSignatureState,
-    ToolDefinition, handle_response, http_client, mpsc, process_sse_stream,
+    ApiResponse, ApiUsage, CacheHint, CacheableMessage, Message, OutputLimits, Result,
+    SendMessageRequest, SseParseAction, SseParser, StreamEvent, ThinkingReplayState,
+    ThoughtSignatureState, ToolDefinition, handle_response, http_client, process_sse_stream,
     retry::{RetryConfig, send_with_retry},
 };
 use forge_types::ThinkingState;
@@ -44,18 +44,31 @@ fn content_block(text: &str, cache_hint: CacheHint) -> serde_json::Value {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_request_body(
-    model: &str,
-    messages: &[CacheableMessage],
+struct ClaudeRequestBodyInput<'a> {
+    model: &'a str,
+    messages: &'a [CacheableMessage],
     limits: OutputLimits,
-    system_prompt: Option<&str>,
+    system_prompt: Option<&'a str>,
     system_cache_hint: CacheHint,
-    tools: Option<&[ToolDefinition]>,
+    tools: Option<&'a [ToolDefinition]>,
     cache_last_tool: bool,
-    thinking_mode: &str,
-    thinking_effort: &str,
-) -> serde_json::Value {
+    thinking_mode: &'a str,
+    thinking_effort: &'a str,
+}
+
+fn build_request_body(input: ClaudeRequestBodyInput<'_>) -> serde_json::Value {
+    let ClaudeRequestBodyInput {
+        model,
+        messages,
+        limits,
+        system_prompt,
+        system_cache_hint,
+        tools,
+        cache_last_tool,
+        thinking_mode,
+        thinking_effort,
+    } = input;
+
     let mut system_blocks: Vec<serde_json::Value> = Vec::new();
     let mut api_messages: Vec<serde_json::Value> = Vec::new();
 
@@ -397,32 +410,23 @@ impl SseParser for ClaudeParser {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn send_message(
-    config: &ApiConfig,
-    messages: &[CacheableMessage],
-    limits: OutputLimits,
-    system_prompt: Option<&str>,
-    tools: Option<&[ToolDefinition]>,
-    system_cache_hint: CacheHint,
-    cache_last_tool: bool,
-    tx: mpsc::Sender<StreamEvent>,
-) -> Result<()> {
+pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
     let client = http_client();
     let retry_config = RetryConfig::default();
+    let config = request.config;
 
-    let body = build_request_body(
-        config.model().as_str(),
-        messages,
-        limits,
-        system_prompt,
-        system_cache_hint,
-        tools,
-        cache_last_tool,
-        config.anthropic_thinking_mode(),
-        config.anthropic_thinking_effort(),
-    );
-    let beta_header = anthropic_beta_header(config.model().as_str(), limits);
+    let body = build_request_body(ClaudeRequestBodyInput {
+        model: config.model().as_str(),
+        messages: request.messages,
+        limits: request.limits,
+        system_prompt: request.system_prompt,
+        system_cache_hint: request.system_cache_hint,
+        tools: request.tools,
+        cache_last_tool: request.cache_last_tool,
+        thinking_mode: config.anthropic_thinking_mode(),
+        thinking_effort: config.anthropic_thinking_effort(),
+    });
+    let beta_header = anthropic_beta_header(config.model().as_str(), request.limits);
 
     let api_key = config.api_key().to_string();
     let body_json = body.clone();
@@ -448,13 +452,19 @@ pub async fn send_message(
     )
     .await;
 
-    let response = match handle_response(outcome, &tx).await? {
+    let response = match handle_response(outcome, &request.tx).await? {
         ApiResponse::Success(resp) => resp,
         ApiResponse::StreamTerminated => return Ok(()),
     };
 
     let mut parser = ClaudeParser::default();
-    process_sse_stream(response, &mut parser, &tx, crate::stream_idle_timeout()).await
+    process_sse_stream(
+        response,
+        &mut parser,
+        &request.tx,
+        crate::stream_idle_timeout(),
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -473,17 +483,17 @@ mod tests {
             CacheableMessage::plain(Message::try_user("hi").unwrap()),
         ];
 
-        let body = build_request_body(
-            model.as_str(),
-            &messages,
+        let body = build_request_body(ClaudeRequestBodyInput {
+            model: model.as_str(),
+            messages: &messages,
             limits,
-            None,
-            CacheHint::Default,
-            None,
-            false,
-            "adaptive",
-            "max",
-        );
+            system_prompt: None,
+            system_cache_hint: CacheHint::Default,
+            tools: None,
+            cache_last_tool: false,
+            thinking_mode: "adaptive",
+            thinking_effort: "max",
+        });
 
         let system = body.get("system").unwrap().as_array().unwrap();
         assert_eq!(system.len(), 1);
@@ -504,17 +514,17 @@ mod tests {
         ))];
 
         // With Default hint, system prompt should NOT have cache_control
-        let body = build_request_body(
-            model.as_str(),
-            &messages,
+        let body = build_request_body(ClaudeRequestBodyInput {
+            model: model.as_str(),
+            messages: &messages,
             limits,
-            Some("prompt"),
-            CacheHint::Default,
-            None,
-            false,
-            "adaptive",
-            "max",
-        );
+            system_prompt: Some("prompt"),
+            system_cache_hint: CacheHint::Default,
+            tools: None,
+            cache_last_tool: false,
+            thinking_mode: "adaptive",
+            thinking_effort: "max",
+        });
 
         let system = body.get("system").unwrap().as_array().unwrap();
         assert_eq!(system.len(), 2);
@@ -529,17 +539,17 @@ mod tests {
         let limits = OutputLimits::new(1024);
         let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
 
-        let body = build_request_body(
-            model.as_str(),
-            &messages,
+        let body = build_request_body(ClaudeRequestBodyInput {
+            model: model.as_str(),
+            messages: &messages,
             limits,
-            Some("prompt"),
-            CacheHint::Ephemeral,
-            None,
-            false,
-            "adaptive",
-            "max",
-        );
+            system_prompt: Some("prompt"),
+            system_cache_hint: CacheHint::Ephemeral,
+            tools: None,
+            cache_last_tool: false,
+            thinking_mode: "adaptive",
+            thinking_effort: "max",
+        });
 
         let system = body.get("system").unwrap().as_array().unwrap();
         assert_eq!(
@@ -559,17 +569,17 @@ mod tests {
             ToolDefinition::new("tool_b", "desc b", json!({"type": "object"})),
         ];
 
-        let body = build_request_body(
-            model.as_str(),
-            &messages,
+        let body = build_request_body(ClaudeRequestBodyInput {
+            model: model.as_str(),
+            messages: &messages,
             limits,
-            None,
-            CacheHint::Default,
-            Some(&tools),
-            true,
-            "adaptive",
-            "max",
-        );
+            system_prompt: None,
+            system_cache_hint: CacheHint::Default,
+            tools: Some(&tools),
+            cache_last_tool: true,
+            thinking_mode: "adaptive",
+            thinking_effort: "max",
+        });
 
         let api_tools = body["tools"].as_array().unwrap();
         assert_eq!(api_tools.len(), 2);
@@ -591,17 +601,17 @@ mod tests {
             CacheableMessage::plain(Message::try_user("plain msg").unwrap()),
         ];
 
-        let body = build_request_body(
-            model.as_str(),
-            &messages,
+        let body = build_request_body(ClaudeRequestBodyInput {
+            model: model.as_str(),
+            messages: &messages,
             limits,
-            None,
-            CacheHint::Default,
-            None,
-            false,
-            "adaptive",
-            "max",
-        );
+            system_prompt: None,
+            system_cache_hint: CacheHint::Default,
+            tools: None,
+            cache_last_tool: false,
+            thinking_mode: "adaptive",
+            thinking_effort: "max",
+        });
 
         let api_messages = body["messages"].as_array().unwrap();
         let cached_content = api_messages[0]["content"][0].clone();
@@ -621,17 +631,17 @@ mod tests {
         let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
         let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
 
-        let body = build_request_body(
-            model.as_str(),
-            &messages,
+        let body = build_request_body(ClaudeRequestBodyInput {
+            model: model.as_str(),
+            messages: &messages,
             limits,
-            None,
-            CacheHint::Default,
-            None,
-            false,
-            "adaptive",
-            "max",
-        );
+            system_prompt: None,
+            system_cache_hint: CacheHint::Default,
+            tools: None,
+            cache_last_tool: false,
+            thinking_mode: "adaptive",
+            thinking_effort: "max",
+        });
 
         assert_eq!(body["thinking"]["type"].as_str(), Some("adaptive"));
         assert_eq!(body["output_config"]["effort"].as_str(), Some("max"));
@@ -645,17 +655,17 @@ mod tests {
         let limits = OutputLimits::new(16_000);
         let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
 
-        let body = build_request_body(
-            model.as_str(),
-            &messages,
+        let body = build_request_body(ClaudeRequestBodyInput {
+            model: model.as_str(),
+            messages: &messages,
             limits,
-            None,
-            CacheHint::Default,
-            None,
-            false,
-            "adaptive",
-            "max",
-        );
+            system_prompt: None,
+            system_cache_hint: CacheHint::Default,
+            tools: None,
+            cache_last_tool: false,
+            thinking_mode: "adaptive",
+            thinking_effort: "max",
+        });
 
         assert_eq!(body["thinking"]["type"].as_str(), Some("adaptive"));
         assert_eq!(body["output_config"]["effort"].as_str(), Some("max"));
@@ -667,17 +677,17 @@ mod tests {
         let limits = OutputLimits::new(16_000);
         let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
 
-        let body = build_request_body(
-            model.as_str(),
-            &messages,
+        let body = build_request_body(ClaudeRequestBodyInput {
+            model: model.as_str(),
+            messages: &messages,
             limits,
-            None,
-            CacheHint::Default,
-            None,
-            false,
-            "disabled",
-            "max",
-        );
+            system_prompt: None,
+            system_cache_hint: CacheHint::Default,
+            tools: None,
+            cache_last_tool: false,
+            thinking_mode: "disabled",
+            thinking_effort: "max",
+        });
 
         assert_eq!(body["thinking"]["type"].as_str(), Some("disabled"));
         // No effort when thinking is disabled
@@ -692,17 +702,17 @@ mod tests {
         let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
         let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
 
-        let body = build_request_body(
-            model.as_str(),
-            &messages,
+        let body = build_request_body(ClaudeRequestBodyInput {
+            model: model.as_str(),
+            messages: &messages,
             limits,
-            None,
-            CacheHint::Default,
-            None,
-            false,
-            "enabled",
-            "high",
-        );
+            system_prompt: None,
+            system_cache_hint: CacheHint::Default,
+            tools: None,
+            cache_last_tool: false,
+            thinking_mode: "enabled",
+            thinking_effort: "high",
+        });
 
         assert_eq!(body["thinking"]["type"].as_str(), Some("enabled"));
         assert_eq!(body["thinking"]["budget_tokens"].as_u64(), Some(4096));
@@ -716,17 +726,17 @@ mod tests {
         let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
 
         for effort in &["low", "medium", "high", "max"] {
-            let body = build_request_body(
-                model.as_str(),
-                &messages,
+            let body = build_request_body(ClaudeRequestBodyInput {
+                model: model.as_str(),
+                messages: &messages,
                 limits,
-                None,
-                CacheHint::Default,
-                None,
-                false,
-                "adaptive",
-                effort,
-            );
+                system_prompt: None,
+                system_cache_hint: CacheHint::Default,
+                tools: None,
+                cache_last_tool: false,
+                thinking_mode: "adaptive",
+                thinking_effort: effort,
+            });
             assert_eq!(body["output_config"]["effort"].as_str(), Some(*effort));
         }
     }
@@ -739,17 +749,17 @@ mod tests {
         let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
         let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
 
-        let body = build_request_body(
-            model.as_str(),
-            &messages,
+        let body = build_request_body(ClaudeRequestBodyInput {
+            model: model.as_str(),
+            messages: &messages,
             limits,
-            None,
-            CacheHint::Default,
-            None,
-            false,
-            "adaptive",
-            "max",
-        );
+            system_prompt: None,
+            system_cache_hint: CacheHint::Default,
+            tools: None,
+            cache_last_tool: false,
+            thinking_mode: "adaptive",
+            thinking_effort: "max",
+        });
 
         assert_eq!(body["thinking"]["type"].as_str(), Some("enabled"));
         assert_eq!(body["thinking"]["budget_tokens"].as_u64(), Some(4096));
@@ -771,17 +781,17 @@ mod tests {
             )),
         ];
 
-        let body = build_request_body(
-            model.as_str(),
-            &messages,
+        let body = build_request_body(ClaudeRequestBodyInput {
+            model: model.as_str(),
+            messages: &messages,
             limits,
-            None,
-            CacheHint::Default,
-            None,
-            false,
-            "adaptive",
-            "max",
-        );
+            system_prompt: None,
+            system_cache_hint: CacheHint::Default,
+            tools: None,
+            cache_last_tool: false,
+            thinking_mode: "adaptive",
+            thinking_effort: "max",
+        });
         let request_messages = body["messages"].as_array().unwrap();
 
         assert_eq!(request_messages.len(), 1);
@@ -820,17 +830,17 @@ mod tests {
             CacheableMessage::cached(Message::tool_result(result)),
         ];
 
-        let body = build_request_body(
-            model.as_str(),
-            &messages,
+        let body = build_request_body(ClaudeRequestBodyInput {
+            model: model.as_str(),
+            messages: &messages,
             limits,
-            None,
-            CacheHint::Default,
-            None,
-            false,
-            "adaptive",
-            "max",
-        );
+            system_prompt: None,
+            system_cache_hint: CacheHint::Default,
+            tools: None,
+            cache_last_tool: false,
+            thinking_mode: "adaptive",
+            thinking_effort: "max",
+        });
         let api_messages = body["messages"].as_array().unwrap();
 
         // tool_result is the last user-role message
@@ -850,17 +860,17 @@ mod tests {
             CacheableMessage::plain(Message::tool_result(result)),
         ];
 
-        let body = build_request_body(
-            model.as_str(),
-            &messages,
+        let body = build_request_body(ClaudeRequestBodyInput {
+            model: model.as_str(),
+            messages: &messages,
             limits,
-            None,
-            CacheHint::Default,
-            None,
-            false,
-            "adaptive",
-            "max",
-        );
+            system_prompt: None,
+            system_cache_hint: CacheHint::Default,
+            tools: None,
+            cache_last_tool: false,
+            thinking_mode: "adaptive",
+            thinking_effort: "max",
+        });
         let api_messages = body["messages"].as_array().unwrap();
         let tool_msg = &api_messages[api_messages.len() - 1];
         let block = &tool_msg["content"][0];
@@ -893,17 +903,17 @@ mod tests {
             ))),
         ];
 
-        let body = build_request_body(
-            model.as_str(),
-            &messages,
+        let body = build_request_body(ClaudeRequestBodyInput {
+            model: model.as_str(),
+            messages: &messages,
             limits,
-            None,
-            CacheHint::Default,
-            None,
-            false,
-            "adaptive",
-            "max",
-        );
+            system_prompt: None,
+            system_cache_hint: CacheHint::Default,
+            tools: None,
+            cache_last_tool: false,
+            thinking_mode: "adaptive",
+            thinking_effort: "max",
+        });
         let api_messages = body["messages"].as_array().unwrap();
 
         // Find the assistant message (should have text + tool_use blocks)

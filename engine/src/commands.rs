@@ -282,16 +282,7 @@ impl super::App {
                 if let ToolLoopPhase::Executing(exec) = &phase {
                     exec.spawned.abort();
                 }
-                self.cancel_tool_batch(
-                    batch.assistant_text,
-                    batch.calls,
-                    batch.results,
-                    batch.model,
-                    batch.step_id,
-                    batch.journal_status,
-                    batch.turn,
-                    batch.thinking_message,
-                );
+                self.cancel_tool_batch(batch);
                 self.push_notification("Tool execution cancelled");
                 true
             }

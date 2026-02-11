@@ -1053,7 +1053,6 @@ impl App {
         self.last_turn_usage.as_ref()
     }
 
-    #[allow(clippy::unused_self)] // Kept as method for API consistency
     fn idle_state(&self) -> OperationState {
         if self.tool_journal_disabled_reason.is_some() {
             OperationState::ToolsDisabled(state::ToolsDisabledState)

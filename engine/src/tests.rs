@@ -830,16 +830,16 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
         NonEmptyString::new("thinking").expect("non-empty"),
         "sig".to_string(),
     );
-    app.handle_tool_calls(
-        "assistant".to_string(),
-        vec![call],
-        Vec::new(),
-        app.model.clone(),
-        StepId::new(1),
-        None,
-        crate::input_modes::TurnContext::new_for_tests(),
-        Some(thinking),
-    );
+    app.handle_tool_calls(crate::state::ToolLoopInput {
+        assistant_text: "assistant".to_string(),
+        thinking_message: Some(thinking),
+        calls: vec![call],
+        pre_resolved: Vec::new(),
+        model: app.model.clone(),
+        step_id: StepId::new(1),
+        tool_batch_id: None,
+        turn: crate::input_modes::TurnContext::new_for_tests(),
+    });
 
     match &app.state {
         OperationState::ToolLoop(state) => match state.phase {
@@ -885,16 +885,16 @@ async fn run_approval_request_captures_reason_without_changing_summary() {
             "reason": "Need to verify the local build toolchain."
         }),
     );
-    app.handle_tool_calls(
-        "assistant".to_string(),
-        vec![call],
-        Vec::new(),
-        app.model.clone(),
-        StepId::new(1),
-        None,
-        crate::input_modes::TurnContext::new_for_tests(),
-        None,
-    );
+    app.handle_tool_calls(crate::state::ToolLoopInput {
+        assistant_text: "assistant".to_string(),
+        thinking_message: None,
+        calls: vec![call],
+        pre_resolved: Vec::new(),
+        model: app.model.clone(),
+        step_id: StepId::new(1),
+        tool_batch_id: None,
+        turn: crate::input_modes::TurnContext::new_for_tests(),
+    });
 
     let requests = app
         .tool_approval_requests()
@@ -926,16 +926,16 @@ async fn tool_loop_preserves_order_after_approval() {
         ToolCall::new("call-a", "mock_a", json!({})),
         ToolCall::new("call-b", "mock_b", json!({})),
     ];
-    app.handle_tool_calls(
-        "assistant".to_string(),
+    app.handle_tool_calls(crate::state::ToolLoopInput {
+        assistant_text: "assistant".to_string(),
+        thinking_message: None,
         calls,
-        Vec::new(),
-        app.model.clone(),
-        StepId::new(1),
-        None,
-        crate::input_modes::TurnContext::new_for_tests(),
-        None,
-    );
+        pre_resolved: Vec::new(),
+        model: app.model.clone(),
+        step_id: StepId::new(1),
+        tool_batch_id: None,
+        turn: crate::input_modes::TurnContext::new_for_tests(),
+    });
 
     match &app.state {
         OperationState::ToolLoop(state) => match state.phase {
@@ -976,16 +976,16 @@ async fn tool_loop_write_then_read_same_batch() {
         ToolCall::new("call-read", "Read", json!({ "path": "test.txt" })),
     ];
 
-    app.handle_tool_calls(
-        "assistant".to_string(),
+    app.handle_tool_calls(crate::state::ToolLoopInput {
+        assistant_text: "assistant".to_string(),
+        thinking_message: None,
         calls,
-        Vec::new(),
-        app.model.clone(),
-        StepId::new(1),
-        None,
-        crate::input_modes::TurnContext::new_for_tests(),
-        None,
-    );
+        pre_resolved: Vec::new(),
+        model: app.model.clone(),
+        step_id: StepId::new(1),
+        tool_batch_id: None,
+        turn: crate::input_modes::TurnContext::new_for_tests(),
+    });
 
     // In Permissive mode, neither write_file nor read_file requires approval,
     // so the batch should execute directly without awaiting approval.
@@ -1074,16 +1074,16 @@ fn tool_loop_max_iterations_short_circuits() {
         "Edit",
         json!({ "patch": "LP1\nF foo.txt\nT\nhello\n.\nEND\n" }),
     );
-    app.handle_tool_calls(
-        "assistant".to_string(),
-        vec![call],
-        Vec::new(),
-        app.model.clone(),
-        StepId::new(1),
-        None,
-        crate::input_modes::TurnContext::new_for_tests(),
-        None,
-    );
+    app.handle_tool_calls(crate::state::ToolLoopInput {
+        assistant_text: "assistant".to_string(),
+        thinking_message: None,
+        calls: vec![call],
+        pre_resolved: Vec::new(),
+        model: app.model.clone(),
+        step_id: StepId::new(1),
+        tool_batch_id: None,
+        turn: crate::input_modes::TurnContext::new_for_tests(),
+    });
 
     assert!(matches!(app.state, OperationState::Idle));
     let last = app.history().entries().last().expect("tool result");

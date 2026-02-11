@@ -1,8 +1,4 @@
 //! Git tool executors.
-//!
-//! Note: JSON schema literals use numbers like 5000000 which clippy warns about,
-//! but JSON doesn't support numeric separators, so we allow this lint.
-#![allow(clippy::unreadable_literal)]
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -244,7 +240,7 @@ fn git_tool_schema() -> Value {
         "format".into(),
         json!({ "type": "string", "description": "[log/show] Pretty-print format" }),
     );
-    props.insert("max_bytes".into(), json!({ "type": "integer", "minimum": 1, "maximum": 5000000, "default": 200000, "description": "[diff/log/show/blame] Max output bytes" }));
+    props.insert("max_bytes".into(), json!({ "type": "integer", "minimum": 1, "maximum": 5_000_000, "default": 200_000, "description": "[diff/log/show/blame] Max output bytes" }));
     props.insert(
         "start_line".into(),
         json!({ "type": "integer", "minimum": 1, "description": "[blame] Start line for range" }),

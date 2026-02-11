@@ -8,13 +8,13 @@ use futures_util::future::{AbortHandle, Abortable, FutureExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use forge_context::{ContextUsageStatus, StepId, ToolBatchId};
-use forge_types::{ModelName, ToolCall, ToolResult};
+use forge_context::{ContextUsageStatus, ToolBatchId};
+use forge_types::{ToolCall, ToolResult};
 
 use crate::input_modes::{ChangeRecorder, TurnChangeReport, TurnContext};
 use crate::state::{
-    ApprovalState, JournalStatus, OperationState, ToolBatch, ToolLoopPhase, ToolLoopState,
-    ToolPlan, ToolRecoveryDecision, ToolRecoveryState,
+    ApprovalState, JournalStatus, OperationState, ToolBatch, ToolCommitPayload, ToolLoopInput,
+    ToolLoopPhase, ToolLoopState, ToolPlan, ToolRecoveryDecision, ToolRecoveryState,
 };
 use crate::tools::{self, ConfirmationRequest, analyze_tool_arguments};
 use crate::util;
@@ -210,18 +210,18 @@ impl App {
         true
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn handle_tool_calls(
-        &mut self,
-        assistant_text: String,
-        tool_calls: Vec<ToolCall>,
-        pre_resolved: Vec<ToolResult>,
-        model: ModelName,
-        step_id: StepId,
-        tool_batch_id: Option<ToolBatchId>,
-        turn: TurnContext,
-        thinking_message: Option<Message>,
-    ) {
+    pub(crate) fn handle_tool_calls(&mut self, input: ToolLoopInput) {
+        let ToolLoopInput {
+            assistant_text,
+            thinking_message,
+            calls: tool_calls,
+            pre_resolved,
+            model,
+            step_id,
+            tool_batch_id,
+            turn,
+        } = input;
+
         if tool_calls.is_empty() {
             self.finish_turn(turn);
             return;
@@ -273,14 +273,16 @@ impl App {
             }
 
             self.commit_tool_batch_without_journal(
-                assistant_text,
-                tool_calls,
-                results,
-                model,
-                step_id,
+                ToolCommitPayload {
+                    assistant_text,
+                    thinking_message,
+                    calls: tool_calls,
+                    results,
+                    model,
+                    step_id,
+                    turn,
+                },
                 true,
-                turn,
-                thinking_message,
             );
             return;
         }
@@ -342,14 +344,16 @@ impl App {
                             }
 
                             self.commit_tool_batch_without_journal(
-                                assistant_text,
-                                tool_calls,
-                                results,
-                                model,
-                                step_id,
+                                ToolCommitPayload {
+                                    assistant_text,
+                                    thinking_message,
+                                    calls: tool_calls,
+                                    results,
+                                    model,
+                                    step_id,
+                                    turn,
+                                },
                                 true,
-                                turn,
-                                thinking_message,
                             );
                             return;
                         }
@@ -397,14 +401,16 @@ impl App {
                     }
 
                     self.commit_tool_batch_without_journal(
-                        assistant_text,
-                        tool_calls,
-                        results,
-                        model,
-                        step_id,
+                        ToolCommitPayload {
+                            assistant_text,
+                            thinking_message,
+                            calls: tool_calls,
+                            results,
+                            model,
+                            step_id,
+                            turn,
+                        },
                         true,
-                        turn,
-                        thinking_message,
                     );
                     return;
                 }
@@ -412,29 +418,32 @@ impl App {
         };
 
         self.start_tool_loop(
-            assistant_text,
-            tool_calls,
-            pre_resolved,
-            model,
-            step_id,
+            ToolLoopInput {
+                assistant_text,
+                thinking_message,
+                calls: tool_calls,
+                pre_resolved,
+                model,
+                step_id,
+                tool_batch_id: None,
+                turn,
+            },
             journal_status,
-            turn,
-            thinking_message,
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn start_tool_loop(
-        &mut self,
-        assistant_text: String,
-        tool_calls: Vec<ToolCall>,
-        pre_resolved: Vec<ToolResult>,
-        model: ModelName,
-        step_id: StepId,
-        journal_status: JournalStatus,
-        turn: TurnContext,
-        thinking_message: Option<Message>,
-    ) {
+    fn start_tool_loop(&mut self, input: ToolLoopInput, journal_status: JournalStatus) {
+        let ToolLoopInput {
+            assistant_text,
+            thinking_message,
+            calls: tool_calls,
+            pre_resolved,
+            model,
+            step_id,
+            tool_batch_id: _,
+            turn,
+        } = input;
+
         let next_iteration = self.tool_iterations.saturating_add(1);
         if next_iteration > self.tool_settings.limits.max_tool_iterations_per_user_turn {
             let mut results = pre_resolved;
@@ -452,15 +461,17 @@ impl App {
                 }
             }
             self.commit_tool_batch(
-                assistant_text,
-                tool_calls,
-                results,
-                model,
-                step_id,
+                ToolCommitPayload {
+                    assistant_text,
+                    thinking_message,
+                    calls: tool_calls,
+                    results,
+                    model,
+                    step_id,
+                    turn,
+                },
                 journal_status,
                 true,
-                turn,
-                thinking_message,
             );
             return;
         }
@@ -485,15 +496,17 @@ impl App {
                         ));
                     }
                     self.commit_tool_batch(
-                        assistant_text,
-                        tool_calls,
-                        results,
-                        model,
-                        step_id,
+                        ToolCommitPayload {
+                            assistant_text,
+                            thinking_message,
+                            calls: tool_calls,
+                            results,
+                            model,
+                            step_id,
+                            turn,
+                        },
                         journal_status,
                         true,
-                        turn,
-                        thinking_message,
                     );
                     return;
                 }
@@ -531,17 +544,8 @@ impl App {
 
         let calls_to_execute = batch.execute_now.clone();
         if calls_to_execute.is_empty() {
-            self.commit_tool_batch(
-                batch.assistant_text,
-                batch.calls,
-                batch.results,
-                batch.model,
-                batch.step_id,
-                batch.journal_status,
-                true,
-                batch.turn,
-                batch.thinking_message,
-            );
+            let journal_status = batch.journal_status.clone();
+            self.commit_tool_batch(batch.into_commit(), journal_status, true);
             return;
         }
 
@@ -570,15 +574,17 @@ impl App {
                 }
 
                 self.commit_tool_batch(
-                    batch.assistant_text,
-                    batch.calls,
-                    results,
-                    batch.model,
-                    batch.step_id,
+                    ToolCommitPayload {
+                        assistant_text: batch.assistant_text,
+                        thinking_message: batch.thinking_message,
+                        calls: batch.calls,
+                        results,
+                        model: batch.model,
+                        step_id: batch.step_id,
+                        turn: batch.turn,
+                    },
                     batch.journal_status,
                     true,
-                    batch.turn,
-                    batch.thinking_message,
                 );
                 return;
             }
@@ -947,15 +953,17 @@ impl App {
                     }
 
                     self.commit_tool_batch(
-                        batch.assistant_text,
-                        batch.calls,
-                        results,
-                        batch.model,
-                        batch.step_id,
+                        ToolCommitPayload {
+                            assistant_text: batch.assistant_text,
+                            thinking_message: batch.thinking_message,
+                            calls: batch.calls,
+                            results,
+                            model: batch.model,
+                            step_id: batch.step_id,
+                            turn: batch.turn,
+                        },
                         batch.journal_status,
                         true,
-                        batch.turn,
-                        batch.thinking_message,
                     );
                     return;
                 }
@@ -964,15 +972,17 @@ impl App {
                 if queue.is_empty() {
                     // Queue empty - commit batch
                     self.commit_tool_batch(
-                        batch.assistant_text,
-                        batch.calls,
-                        batch.results,
-                        batch.model,
-                        batch.step_id,
+                        ToolCommitPayload {
+                            assistant_text: batch.assistant_text,
+                            thinking_message: batch.thinking_message,
+                            calls: batch.calls,
+                            results: batch.results,
+                            model: batch.model,
+                            step_id: batch.step_id,
+                            turn: batch.turn,
+                        },
                         batch.journal_status,
                         true,
-                        batch.turn,
-                        batch.thinking_message,
                     );
                 } else {
                     // Spawn next tool
@@ -1000,15 +1010,17 @@ impl App {
                                 }
 
                                 self.commit_tool_batch(
-                                    batch.assistant_text,
-                                    batch.calls,
-                                    results,
-                                    batch.model,
-                                    batch.step_id,
+                                    ToolCommitPayload {
+                                        assistant_text: batch.assistant_text,
+                                        thinking_message: batch.thinking_message,
+                                        calls: batch.calls,
+                                        results,
+                                        model: batch.model,
+                                        step_id: batch.step_id,
+                                        turn: batch.turn,
+                                    },
                                     batch.journal_status,
                                     true,
-                                    batch.turn,
-                                    batch.thinking_message,
                                 );
                                 return;
                             }
@@ -1134,15 +1146,17 @@ impl App {
                             ));
                         }
                         self.commit_tool_batch(
-                            batch.assistant_text,
-                            batch.calls,
-                            results,
-                            batch.model,
-                            batch.step_id,
+                            ToolCommitPayload {
+                                assistant_text: batch.assistant_text,
+                                thinking_message: batch.thinking_message,
+                                calls: batch.calls,
+                                results,
+                                model: batch.model,
+                                step_id: batch.step_id,
+                                turn: batch.turn,
+                            },
                             batch.journal_status,
                             true,
-                            batch.turn,
-                            batch.thinking_message,
                         );
                         return;
                     }
@@ -1162,15 +1176,17 @@ impl App {
                     if new_queue.is_empty() {
                         // All tools done - commit batch
                         self.commit_tool_batch(
-                            batch.assistant_text,
-                            batch.calls,
-                            batch.results,
-                            batch.model,
-                            batch.step_id,
+                            ToolCommitPayload {
+                                assistant_text: batch.assistant_text,
+                                thinking_message: batch.thinking_message,
+                                calls: batch.calls,
+                                results: batch.results,
+                                model: batch.model,
+                                step_id: batch.step_id,
+                                turn: batch.turn,
+                            },
                             batch.journal_status,
                             true,
-                            batch.turn,
-                            batch.thinking_message,
                         );
                     } else {
                         // If tool journaling was disabled mid-loop, fail closed and do not execute
@@ -1191,15 +1207,17 @@ impl App {
                             }
 
                             self.commit_tool_batch(
-                                batch.assistant_text,
-                                batch.calls,
-                                results,
-                                batch.model,
-                                batch.step_id,
+                                ToolCommitPayload {
+                                    assistant_text: batch.assistant_text,
+                                    thinking_message: batch.thinking_message,
+                                    calls: batch.calls,
+                                    results,
+                                    model: batch.model,
+                                    step_id: batch.step_id,
+                                    turn: batch.turn,
+                                },
                                 batch.journal_status,
                                 true,
-                                batch.turn,
-                                batch.thinking_message,
                             );
                             return;
                         }
@@ -1230,15 +1248,17 @@ impl App {
                                 }
 
                                 self.commit_tool_batch(
-                                    batch.assistant_text,
-                                    batch.calls,
-                                    results,
-                                    batch.model,
-                                    batch.step_id,
+                                    ToolCommitPayload {
+                                        assistant_text: batch.assistant_text,
+                                        thinking_message: batch.thinking_message,
+                                        calls: batch.calls,
+                                        results,
+                                        model: batch.model,
+                                        step_id: batch.step_id,
+                                        turn: batch.turn,
+                                    },
                                     batch.journal_status,
                                     true,
-                                    batch.turn,
-                                    batch.thinking_message,
                                 );
                                 return;
                             }
@@ -1257,61 +1277,37 @@ impl App {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn cancel_tool_batch(
-        &mut self,
-        assistant_text: String,
-        calls: Vec<ToolCall>,
-        mut results: Vec<ToolResult>,
-        model: ModelName,
-        step_id: StepId,
-        journal_status: JournalStatus,
-        turn: TurnContext,
-        thinking_message: Option<Message>,
-    ) {
-        let existing: HashSet<String> = results.iter().map(|r| r.tool_call_id.clone()).collect();
-        for call in &calls {
+    pub(crate) fn cancel_tool_batch(&mut self, mut batch: ToolBatch) {
+        let existing: HashSet<String> = batch
+            .results
+            .iter()
+            .map(|r| r.tool_call_id.clone())
+            .collect();
+        for call in &batch.calls {
             if existing.contains(&call.id) {
                 continue;
             }
             let result = ToolResult::error(call.id.clone(), call.name.clone(), "Cancelled by user");
             let _ = self.record_tool_result_or_disable(
-                journal_status.batch_id(),
+                batch.journal_status.batch_id(),
                 &result,
                 "cancelled tool result",
             );
-            results.push(result);
+            batch.results.push(result);
         }
 
-        self.commit_tool_batch(
-            assistant_text,
-            calls,
-            results,
-            model,
-            step_id,
-            journal_status,
-            false,
-            turn,
-            thinking_message,
-        );
+        let journal_status = batch.journal_status.clone();
+        self.commit_tool_batch(batch.into_commit(), journal_status, false);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn commit_tool_batch_messages(
-        &mut self,
-        assistant_text: String,
-        tool_calls: Vec<ToolCall>,
-        results: Vec<ToolResult>,
-        model: ModelName,
-        step_id: StepId,
-        thinking_message: Option<Message>,
-    ) -> bool {
+    fn commit_tool_batch_messages(&mut self, payload: &ToolCommitPayload) -> bool {
         // Defensive: recovered batches and alternate entry points might bypass handle_tool_calls.
         // This is idempotent and ensures we never persist/display raw untrusted assistant text.
-        let assistant_text = crate::security::sanitize_display_text(&assistant_text);
+        let assistant_text = crate::security::sanitize_display_text(&payload.assistant_text);
+        let step_id = payload.step_id;
 
         let mut step_id_recorded = false;
-        if let Some(thinking_message) = thinking_message {
+        if let Some(thinking_message) = payload.thinking_message.clone() {
             let requires_persistence = matches!(
                 &thinking_message,
                 Message::Thinking(thinking) if thinking.requires_persistence()
@@ -1323,21 +1319,21 @@ impl App {
             }
         }
         if let Ok(content) = NonEmptyString::new(assistant_text.clone()) {
-            let message = Message::assistant(model.clone(), content);
+            let message = Message::assistant(payload.model.clone(), content);
             self.push_history_message_with_step_id(message, step_id);
             step_id_recorded = true;
         }
 
         let mut result_map: std::collections::HashMap<String, ToolResult> =
             std::collections::HashMap::new();
-        for result in results {
+        for result in payload.results.iter().cloned() {
             result_map
                 .entry(result.tool_call_id.clone())
                 .or_insert(result);
         }
 
         let mut ordered_results: Vec<ToolResult> = Vec::new();
-        for call in &tool_calls {
+        for call in &payload.calls {
             if let Some(result) = result_map.remove(&call.id) {
                 ordered_results.push(result);
             } else {
@@ -1352,7 +1348,7 @@ impl App {
         // Group all tool calls first (so they appear as a single block in history/API).
         // This is critical for providers like Gemini that require thoughtSignature round-tripping
         // within the same turn structure, and for parallel tool call correctness.
-        for (idx, call) in tool_calls.iter().enumerate() {
+        for (idx, call) in payload.calls.iter().enumerate() {
             if !step_id_recorded && idx == 0 {
                 self.push_history_message_with_step_id(Message::tool_use(call.clone()), step_id);
                 step_id_recorded = true;
@@ -1369,29 +1365,21 @@ impl App {
         self.autosave_history()
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn commit_tool_batch(
         &mut self,
-        assistant_text: String,
-        tool_calls: Vec<ToolCall>,
-        results: Vec<ToolResult>,
-        model: ModelName,
-        step_id: StepId,
+        payload: ToolCommitPayload,
         journal_status: JournalStatus,
         auto_resume: bool,
-        turn: TurnContext,
-        thinking_message: Option<Message>,
     ) {
         self.state = self.idle_state();
 
-        let autosave_succeeded = self.commit_tool_batch_messages(
-            assistant_text,
-            tool_calls,
-            results,
-            model.clone(),
+        let autosave_succeeded = self.commit_tool_batch_messages(&payload);
+        let ToolCommitPayload {
+            model,
             step_id,
-            thinking_message,
-        );
+            turn,
+            ..
+        } = payload;
         let mut tool_cleanup_failed = false;
         if autosave_succeeded {
             self.finalize_journal_commit(step_id);
@@ -1479,28 +1467,20 @@ impl App {
         self.finish_turn(turn);
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn commit_tool_batch_without_journal(
         &mut self,
-        assistant_text: String,
-        tool_calls: Vec<ToolCall>,
-        results: Vec<ToolResult>,
-        model: ModelName,
-        step_id: StepId,
+        payload: ToolCommitPayload,
         auto_resume: bool,
-        turn: TurnContext,
-        thinking_message: Option<Message>,
     ) {
         self.state = self.idle_state();
 
-        let autosave_succeeded = self.commit_tool_batch_messages(
-            assistant_text,
-            tool_calls,
-            results,
-            model.clone(),
+        let autosave_succeeded = self.commit_tool_batch_messages(&payload);
+        let ToolCommitPayload {
+            model,
             step_id,
-            thinking_message,
-        );
+            turn,
+            ..
+        } = payload;
         if autosave_succeeded {
             self.finalize_journal_commit(step_id);
         }
@@ -1653,15 +1633,17 @@ impl App {
             }
 
             self.commit_tool_batch(
-                batch.assistant_text,
-                batch.calls,
-                results,
-                batch.model,
-                batch.step_id,
+                ToolCommitPayload {
+                    assistant_text: batch.assistant_text,
+                    thinking_message: batch.thinking_message,
+                    calls: batch.calls,
+                    results,
+                    model: batch.model,
+                    step_id: batch.step_id,
+                    turn: batch.turn,
+                },
                 batch.journal_status,
                 true,
-                batch.turn,
-                batch.thinking_message,
             );
             return;
         }
@@ -1684,15 +1666,17 @@ impl App {
 
         if queue.is_empty() {
             self.commit_tool_batch(
-                batch.assistant_text,
-                batch.calls,
-                batch.results,
-                batch.model,
-                batch.step_id,
+                ToolCommitPayload {
+                    assistant_text: batch.assistant_text,
+                    thinking_message: batch.thinking_message,
+                    calls: batch.calls,
+                    results: batch.results,
+                    model: batch.model,
+                    step_id: batch.step_id,
+                    turn: batch.turn,
+                },
                 batch.journal_status,
                 true,
-                batch.turn,
-                batch.thinking_message,
             );
             return;
         }
@@ -1723,15 +1707,17 @@ impl App {
                 }
 
                 self.commit_tool_batch(
-                    batch.assistant_text,
-                    batch.calls,
-                    results,
-                    batch.model,
-                    batch.step_id,
+                    ToolCommitPayload {
+                        assistant_text: batch.assistant_text,
+                        thinking_message: batch.thinking_message,
+                        calls: batch.calls,
+                        results,
+                        model: batch.model,
+                        step_id: batch.step_id,
+                        turn: batch.turn,
+                    },
                     batch.journal_status,
                     true,
-                    batch.turn,
-                    batch.thinking_message,
                 );
                 return;
             }
@@ -1808,15 +1794,17 @@ impl App {
 
         let auto_resume = true;
         self.commit_tool_batch(
-            assistant_text,
-            batch.calls,
-            results,
-            model,
-            step_id,
+            ToolCommitPayload {
+                assistant_text,
+                thinking_message,
+                calls: batch.calls,
+                results,
+                model,
+                step_id,
+                turn: TurnContext::new_for_recovery(),
+            },
             JournalStatus::new(batch.batch_id),
             auto_resume,
-            TurnContext::new_for_recovery(),
-            thinking_message,
         );
 
         match decision {

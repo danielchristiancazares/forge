@@ -52,6 +52,29 @@ impl JournalStatus {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct ToolLoopInput {
+    pub(crate) assistant_text: String,
+    pub(crate) thinking_message: Option<Message>,
+    pub(crate) calls: Vec<ToolCall>,
+    pub(crate) pre_resolved: Vec<ToolResult>,
+    pub(crate) model: ModelName,
+    pub(crate) step_id: StepId,
+    pub(crate) tool_batch_id: Option<ToolBatchId>,
+    pub(crate) turn: TurnContext,
+}
+
+#[derive(Debug)]
+pub(crate) struct ToolCommitPayload {
+    pub(crate) assistant_text: String,
+    pub(crate) thinking_message: Option<Message>,
+    pub(crate) calls: Vec<ToolCall>,
+    pub(crate) results: Vec<ToolResult>,
+    pub(crate) model: ModelName,
+    pub(crate) step_id: StepId,
+    pub(crate) turn: TurnContext,
+}
+
 /// Buffered tool-argument deltas for the tool journal during streaming.
 ///
 /// Providers may emit many tiny `ToolCallDelta` chunks; writing each chunk to
@@ -338,6 +361,20 @@ pub(crate) struct ToolBatch {
     pub(crate) execute_now: Vec<ToolCall>,
     pub(crate) approval_calls: Vec<ToolCall>,
     pub(crate) turn: TurnContext,
+}
+
+impl ToolBatch {
+    pub(crate) fn into_commit(self) -> ToolCommitPayload {
+        ToolCommitPayload {
+            assistant_text: self.assistant_text,
+            thinking_message: self.thinking_message,
+            calls: self.calls,
+            results: self.results,
+            model: self.model,
+            step_id: self.step_id,
+            turn: self.turn,
+        }
+    }
 }
 
 #[derive(Debug)]
