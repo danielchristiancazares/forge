@@ -69,6 +69,33 @@ function Is-ErrorHeader {
     return $true
 }
 
+function Is-NonErrorDiagnosticHeader {
+    param([string]$Line)
+
+    if ([string]::IsNullOrWhiteSpace($Line)) {
+        return $false
+    }
+
+    # Only split on top-level diagnostics, not indented in-block detail lines.
+    if ($Line -notmatch '^\S') {
+        return $false
+    }
+
+    if ($Line -match '^(warning|note|help)(?:\[[^\]]+\])?:\s+') {
+        return $true
+    }
+
+    if ($Line -match '^error(?:\[[A-Z]\d+\])?:\s+') {
+        return $true
+    }
+
+    if ($Line -match '^(could not compile|aborting due to|for more information about this error|recipe\s+`?.+`?\s+failed|build failed)\b') {
+        return $true
+    }
+
+    return $false
+}
+
 function Get-ErrorInfo {
     param([object[]]$Block)
 
@@ -160,6 +187,14 @@ foreach ($lineInfo in $lineInfos) {
         continue
     }
 
+    if ($null -ne $current -and (Is-NonErrorDiagnosticHeader $lineInfo.Clean)) {
+        if ($current.Count -gt 0) {
+            $blocks.Add($current.ToArray())
+        }
+        $current = $null
+        continue
+    }
+
     if ($null -ne $current) {
         $current.Add($lineInfo)
     }
@@ -219,6 +254,7 @@ foreach ($entry in $groups.Values) {
     $coreDiagnostics = [System.Collections.Generic.List[string]]::new()
     $section = ''
     $noteEmitted = $false
+    $includeCurrentNoteSection = $false
 
     foreach ($lineInfo in $info.Block) {
         $line = $lineInfo.Clean
@@ -229,6 +265,7 @@ foreach ($entry in $groups.Values) {
 
         if ($line -match '^\s*(?:=\s*)?help:\s*(.*)$') {
             $section = 'help'
+            $includeCurrentNoteSection = $false
             if ($KeepHelp) {
                 $coreDiagnostics.Add($line)
             }
@@ -239,15 +276,19 @@ foreach ($entry in $groups.Values) {
             $section = 'note'
             if ($KeepNotes -or -not $noteEmitted) {
                 $coreDiagnostics.Add($line)
+                $includeCurrentNoteSection = $true
                 if (-not $KeepNotes) {
                     $noteEmitted = $true
                 }
+            } else {
+                $includeCurrentNoteSection = $false
             }
             continue
         }
 
         if ([string]::IsNullOrWhiteSpace($line)) {
             $section = ''
+            $includeCurrentNoteSection = $false
             continue
         }
 
@@ -255,7 +296,7 @@ foreach ($entry in $groups.Values) {
             continue
         }
 
-        if ($section -eq 'note' -and -not $KeepNotes -and $noteEmitted) {
+        if ($section -eq 'note' -and -not $KeepNotes -and -not $includeCurrentNoteSection) {
             continue
         }
 
