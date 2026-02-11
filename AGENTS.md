@@ -1,7 +1,15 @@
 # AGENTS.md
 
 Forge is a vim-modal TUI for LLMs built with ratatui/crossterm.
-Environment: Windows, PowerShell 7. Use `Pwsh` tool, not Bash.
+
+## Environment
+
+Forge is developed on multiple OSes. This repo’s agent/test workflow should work from:
+
+- Windows (PowerShell 7)
+- macOS/Linux (zsh/bash)
+
+When writing instructions or scripts, avoid assuming a single shell. If you need shell-specific syntax, call it out explicitly as **PowerShell** or **POSIX shell**.
 
 ## Rules
 
@@ -38,9 +46,16 @@ This prevents uncommitted changes from one session bleeding into another's build
 
 ## Shell Pitfalls (Windows)
 
-- Avoid `2>&1` redirection in suggested commands — tool output already captures stderr.
-- No `cd dir && command` chaining — commands run from repo root; use `--manifest-path` for cargo
-- No `Push-Location`/`Set-Location` with semicolons — run commands directly
+These are **PowerShell-specific** pitfalls (and/or apply when running commands in a tool runner that does not preserve a working directory):
+
+- Avoid `2>&1` redirection in suggested commands (stderr is already captured).
+- Avoid `cd dir && command` patterns in automation; prefer `--manifest-path` (Cargo) or an explicit working directory option when available.
+- Avoid `Push-Location`/`Set-Location` sequences; run commands directly.
+
+## Shell Pitfalls (macOS/Linux)
+
+- Prefer POSIX-compatible examples (zsh/bash). If a command needs GNU-only flags, mention it.
+- In automation, prefer `--manifest-path` (Cargo) or an explicit working directory option rather than relying on `cd` state.
 
 ## Commands
 
