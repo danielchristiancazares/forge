@@ -158,7 +158,7 @@ pub enum ToolEvent {
     ProcessSpawned {
         tool_call_id: String,
         pid: u32,
-        process_started_at_unix_ms: Option<i64>,
+        process_started_at_unix_ms: i64,
     },
     StdoutChunk {
         tool_call_id: String,

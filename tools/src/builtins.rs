@@ -1192,12 +1192,18 @@ impl ToolExecutor for RunCommandTool {
             let mut guard = ChildGuard::new(child);
 
             if let Some(pid) = guard.child_mut().id() {
-                let process_started_at_unix_ms = super::process::process_started_at_unix_ms(pid);
-                let _ = ctx.output_tx.try_send(super::ToolEvent::ProcessSpawned {
-                    tool_call_id: ctx.tool_call_id.clone(),
-                    pid,
-                    process_started_at_unix_ms,
-                });
+                match super::process::process_started_at_unix_ms(pid) {
+                    Ok(process_started_at_unix_ms) => {
+                        let _ = ctx.output_tx.try_send(super::ToolEvent::ProcessSpawned {
+                            tool_call_id: ctx.tool_call_id.clone(),
+                            pid,
+                            process_started_at_unix_ms,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(pid, "failed to read process start time: {e}");
+                    }
+                }
             }
 
             #[cfg(windows)]
