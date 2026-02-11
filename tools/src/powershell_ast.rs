@@ -8,7 +8,8 @@ use std::path::Path;
 use serde::Deserialize;
 use tokio::process::Command;
 
-use super::{DenialReason, ToolError};
+use super::process::ChildGuard;
+use super::{DenialReason, EnvSanitizer, ToolError};
 
 /// Result of parsing a PowerShell command into a policy-facing normalized form.
 ///
@@ -184,27 +185,100 @@ const AST_PROBE_SCRIPT: &str = r"& {
   $out | ConvertTo-Json -Compress -Depth 6
 }";
 
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const MAX_PROBE_OUTPUT: usize = 64 * 1024;
+
 pub(crate) async fn policy_text_for_command(
     powershell_binary: &Path,
     raw_command: &str,
+    env_sanitizer: &EnvSanitizer,
 ) -> Result<PowerShellPolicyText, ToolError> {
-    let output = Command::new(powershell_binary)
-        .env("FORGE_POWERSHELL_AST_RAW", raw_command)
-        .arg("-NoProfile")
+    let mut cmd = Command::new(powershell_binary);
+
+    let env: Vec<(String, String)> = std::env::vars().collect();
+    let sanitized = env_sanitizer.sanitize_env(&env);
+    cmd.env_clear();
+    cmd.envs(sanitized);
+    cmd.env("FORGE_POWERSHELL_AST_RAW", raw_command);
+
+    cmd.arg("-NoProfile")
         .arg("-NonInteractive")
         .arg("-Command")
         .arg(AST_PROBE_SCRIPT)
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    #[cfg(unix)]
+    super::process::set_new_session(&mut cmd);
+
+    let child = cmd.spawn().map_err(|e| ToolError::ExecutionFailed {
+        tool: "Run".to_string(),
+        message: format!("failed to invoke PowerShell AST probe: {e}"),
+    })?;
+    let mut guard = ChildGuard::new(child);
+
+    let stdout_pipe =
+        guard
+            .child_mut()
+            .stdout
+            .take()
+            .ok_or_else(|| ToolError::ExecutionFailed {
+                tool: "Run".to_string(),
+                message: "failed to capture PowerShell AST probe stdout".to_string(),
+            })?;
+    let stderr_pipe =
+        guard
+            .child_mut()
+            .stderr
+            .take()
+            .ok_or_else(|| ToolError::ExecutionFailed {
+                tool: "Run".to_string(),
+                message: "failed to capture PowerShell AST probe stderr".to_string(),
+            })?;
+
+    let io_future = async {
+        use tokio::io::AsyncReadExt;
+        let mut stdout_buf = Vec::with_capacity(4096);
+        let mut stderr_buf = Vec::with_capacity(1024);
+        let mut stdout_bounded = stdout_pipe.take(MAX_PROBE_OUTPUT as u64);
+        let mut stderr_bounded = stderr_pipe.take(MAX_PROBE_OUTPUT as u64);
+        let (r1, r2) = tokio::join!(
+            stdout_bounded.read_to_end(&mut stdout_buf),
+            stderr_bounded.read_to_end(&mut stderr_buf),
+        );
+        r1.map_err(|e| ToolError::ExecutionFailed {
+            tool: "Run".to_string(),
+            message: format!("failed to read PowerShell AST probe stdout: {e}"),
+        })?;
+        r2.map_err(|e| ToolError::ExecutionFailed {
+            tool: "Run".to_string(),
+            message: format!("failed to read PowerShell AST probe stderr: {e}"),
+        })?;
+        Ok::<_, ToolError>((stdout_buf, stderr_buf))
+    };
+
+    let (stdout_buf, stderr_buf) = tokio::time::timeout(PROBE_TIMEOUT, io_future)
+        .await
+        .map_err(|_| ToolError::ExecutionFailed {
+            tool: "Run".to_string(),
+            message: "PowerShell AST probe timed out (10s)".to_string(),
+        })??;
+
+    let status = guard
+        .child_mut()
+        .wait()
         .await
         .map_err(|e| ToolError::ExecutionFailed {
             tool: "Run".to_string(),
-            message: format!("failed to invoke PowerShell AST probe: {e}"),
+            message: format!("failed to wait on PowerShell AST probe: {e}"),
         })?;
+    guard.disarm();
 
-    if !output.status.success() {
-        let code = output.status.code().unwrap_or(-1);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
+    if !status.success() {
+        let code = status.code().unwrap_or(-1);
+        let stderr = String::from_utf8_lossy(&stderr_buf);
+        let stdout = String::from_utf8_lossy(&stdout_buf);
         return Err(ToolError::ExecutionFailed {
             tool: "Run".to_string(),
             message: format!(
@@ -215,8 +289,8 @@ pub(crate) async fn policy_text_for_command(
         });
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&stdout_buf);
+    let stderr = String::from_utf8_lossy(&stderr_buf);
     let probe: ProbeOutput =
         serde_json::from_str(stdout.trim()).map_err(|e| ToolError::ExecutionFailed {
             tool: "Run".to_string(),
@@ -274,10 +348,15 @@ mod tests {
             .expect("PowerShell binary")
     }
 
+    fn test_sanitizer() -> EnvSanitizer {
+        EnvSanitizer::new(&[]).expect("empty denylist")
+    }
+
     #[tokio::test]
     async fn policy_text_normalizes_backtick_escapes_in_command_name() {
         let bin = powershell_binary();
-        let out = policy_text_for_command(&bin, "Start-Pr`ocess notepad")
+        let san = test_sanitizer();
+        let out = policy_text_for_command(&bin, "Start-Pr`ocess notepad", &san)
             .await
             .expect("policy text");
         assert!(out.as_str().starts_with("Start-Process "));
@@ -286,7 +365,8 @@ mod tests {
     #[tokio::test]
     async fn policy_text_rejects_multiple_statements() {
         let bin = powershell_binary();
-        let err = policy_text_for_command(&bin, "cd ~; ls")
+        let san = test_sanitizer();
+        let err = policy_text_for_command(&bin, "cd ~; ls", &san)
             .await
             .expect_err("expected rejection");
         match err {
@@ -300,7 +380,8 @@ mod tests {
     #[tokio::test]
     async fn policy_text_rejects_expandable_strings() {
         let bin = powershell_binary();
-        let err = policy_text_for_command(&bin, "echo \"foo $bar\"")
+        let san = test_sanitizer();
+        let err = policy_text_for_command(&bin, "echo \"foo $bar\"", &san)
             .await
             .expect_err("expected rejection");
         match err {
@@ -314,7 +395,8 @@ mod tests {
     #[tokio::test]
     async fn policy_text_rejects_verbatim_arguments() {
         let bin = powershell_binary();
-        let err = policy_text_for_command(&bin, "cmd --% /c whoami")
+        let san = test_sanitizer();
+        let err = policy_text_for_command(&bin, "cmd --% /c whoami", &san)
             .await
             .expect_err("expected rejection");
         match err {

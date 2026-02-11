@@ -1137,6 +1137,7 @@ impl ToolExecutor for RunCommandTool {
                     super::powershell_ast::policy_text_for_command(
                         &self.shell.binary,
                         &typed.command,
+                        &ctx.env_sanitizer,
                     )
                     .await?,
                 )

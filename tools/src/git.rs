@@ -535,6 +535,41 @@ fn effective_max_bytes(ctx: &ToolCtx) -> usize {
         .max(1)
 }
 
+/// Path used for `core.hooksPath` to disable Git hook execution.
+///
+/// An empty `core.hooksPath=` has ambiguous behavior across Git versions — some
+/// resolve hooks relative to the working directory, which is attacker-controlled
+/// in untrusted repos. Instead we point to a known non-hook path:
+///
+/// - **Unix**: `/dev/null` is a file, not a directory, so Git can't find
+///   `<hooks_path>/pre-commit` etc.
+/// - **Windows**: A per-process empty directory under the system temp dir,
+///   created lazily and reused for the process lifetime.
+fn git_hooks_disabled_path() -> &'static str {
+    static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        #[cfg(unix)]
+        {
+            "/dev/null".to_string()
+        }
+        #[cfg(not(unix))]
+        {
+            let mut path = std::env::temp_dir();
+            // Use RandomState-seeded hash for an unpredictable directory name,
+            // preventing pre-population attacks via PID prediction.
+            let unique = {
+                use std::hash::{BuildHasher, Hasher};
+                let mut hasher = std::hash::RandomState::new().build_hasher();
+                hasher.write_u32(std::process::id());
+                hasher.finish()
+            };
+            path.push(format!("forge-hooks-{unique:016x}"));
+            let _ = std::fs::create_dir_all(&path);
+            path.display().to_string()
+        }
+    })
+}
+
 async fn run_git(
     ctx: &ToolCtx,
     working_dir: &Path,
@@ -558,7 +593,7 @@ async fn run_git(
         "-c".into(),
         "color.ui=false".into(),
         "-c".into(),
-        "core.hooksPath=".into(),
+        format!("core.hooksPath={}", git_hooks_disabled_path()),
     ];
 
     // Inject safety flags for diff-producing commands to prevent execution
