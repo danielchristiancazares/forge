@@ -578,20 +578,20 @@ impl ForgeConfig {
         // likely contains raw API keys (as opposed to ${ENV_VAR} references).
         #[cfg(windows)]
         {
-            if let Ok(parsed) = serialized.parse::<toml::Value>() {
-                if let Some(api_keys) = parsed.get("api_keys").and_then(|v| v.as_table()) {
-                    let has_literal = api_keys
-                        .values()
-                        .filter_map(|v| v.as_str())
-                        .any(|v| !v.starts_with("${"));
-                    if has_literal {
-                        tracing::warn!(
-                            path = %path.display(),
-                            "Config file may contain literal API keys. \
-                             Windows does not enforce file permissions like Unix. \
-                             Consider using ${{ENV_VAR}} syntax for API keys instead."
-                        );
-                    }
+            if let Ok(parsed) = serialized.parse::<toml::Value>()
+                && let Some(api_keys) = parsed.get("api_keys").and_then(|v| v.as_table())
+            {
+                let has_literal = api_keys
+                    .values()
+                    .filter_map(|v| v.as_str())
+                    .any(|v| !v.starts_with("${"));
+                if has_literal {
+                    tracing::warn!(
+                        path = %path.display(),
+                        "Config file may contain literal API keys. \
+                         Windows does not enforce file permissions like Unix. \
+                         Consider using ${{ENV_VAR}} syntax for API keys instead."
+                    );
                 }
             }
         }
