@@ -375,7 +375,7 @@ pub fn set_new_session(cmd: &mut tokio::process::Command) {
 #[cfg(test)]
 mod tests {
     #[cfg(target_os = "macos")]
-    use super::*;
+    use super::process_started_at_unix_ms;
 
     #[cfg(target_os = "macos")]
     #[test]
