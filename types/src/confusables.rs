@@ -168,14 +168,12 @@ mod tests {
 
     #[test]
     fn ignores_pure_cyrillic() {
-        // Legitimate Russian content
         let warning = detect_mixed_script("привет", "text");
         assert!(warning.is_none());
     }
 
     #[test]
     fn ignores_pure_greek() {
-        // Legitimate Greek content
         let warning = detect_mixed_script("γεια", "text");
         assert!(warning.is_none());
     }

@@ -1,5 +1,8 @@
 use serde::Deserialize;
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 pub(crate) use forge_tools::config::default_true;
 
@@ -56,6 +59,14 @@ pub struct AppConfig {
     pub reduced_motion: bool,
     /// Render provider thinking/reasoning deltas in the UI (if available).
     #[serde(default)]
+    pub show_thinking: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppUiSettings {
+    pub ascii_only: bool,
+    pub high_contrast: bool,
+    pub reduced_motion: bool,
     pub show_thinking: bool,
 }
 
@@ -504,104 +515,131 @@ impl ForgeConfig {
         config_path()
     }
 
-    /// Persist the model to the config file.
-    ///
-    /// Uses `toml_edit` to preserve comments and formatting.
-    /// Creates the config file and parent directory if they don't exist.
     pub fn persist_model(model: &str) -> std::io::Result<()> {
-        let path = match config_path() {
-            Some(path) => path,
-            None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Could not determine config path",
-                ));
-            }
-        };
+        update_app_section(|app| {
+            app["model"] = toml_edit::value(model);
+            Ok(())
+        })
+    }
 
-        // Ensure parent directory exists with secure permissions
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::{MetadataExt, PermissionsExt};
-                let metadata = fs::metadata(parent)?;
-                // Only modify permissions if we own the directory
-                let our_uid = unsafe { libc::getuid() };
-                if metadata.uid() == our_uid {
-                    let mode = metadata.permissions().mode() & 0o777;
-                    if mode & 0o077 != 0 {
-                        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-                    }
-                }
-            }
+    pub fn persist_ui_settings(settings: AppUiSettings) -> std::io::Result<()> {
+        update_app_section(|app| {
+            app["ascii_only"] = toml_edit::value(settings.ascii_only);
+            app["high_contrast"] = toml_edit::value(settings.high_contrast);
+            app["reduced_motion"] = toml_edit::value(settings.reduced_motion);
+            app["show_thinking"] = toml_edit::value(settings.show_thinking);
+            Ok(())
+        })
+    }
+}
+
+fn update_app_section<F>(mut update: F) -> std::io::Result<()>
+where
+    F: FnMut(&mut toml_edit::Table) -> std::io::Result<()>,
+{
+    let path = match config_path() {
+        Some(path) => path,
+        None => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Could not determine config path",
+            ));
         }
+    };
 
-        let content = if path.exists() {
-            fs::read_to_string(&path)?
-        } else {
-            String::new()
-        };
+    ensure_config_parent_secure(&path)?;
 
-        let mut doc = content
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let content = if path.exists() {
+        fs::read_to_string(&path)?
+    } else {
+        String::new()
+    };
 
-        if !doc.contains_key("app") {
-            doc["app"] = toml_edit::Item::Table(toml_edit::Table::new());
-        }
+    let mut doc = content
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-        doc["app"]["model"] = toml_edit::value(model);
+    if !doc.contains_key("app") {
+        doc["app"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
 
-        let serialized = doc.to_string();
-        forge_context::atomic_write_with_options(
-            &path,
-            serialized.as_bytes(),
-            forge_context::AtomicWriteOptions {
-                sync_all: true,
-                dir_sync: true,
-                unix_mode: None,
-            },
-        )?;
+    let Some(app) = doc["app"].as_table_mut() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "[app] must be a table",
+        ));
+    };
+    update(app)?;
 
-        // Ensure config file has secure permissions (user-only read/write)
+    persist_config_doc(&path, &doc)
+}
+
+fn ensure_config_parent_secure(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::{MetadataExt, PermissionsExt};
-            let metadata = fs::metadata(&path)?;
+            let metadata = fs::metadata(parent)?;
             let our_uid = unsafe { libc::getuid() };
             if metadata.uid() == our_uid {
                 let mode = metadata.permissions().mode() & 0o777;
                 if mode & 0o077 != 0 {
-                    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+                    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
                 }
             }
         }
-
-        // Windows: no equivalent to Unix file modes. Warn if the config file
-        // likely contains raw API keys (as opposed to ${ENV_VAR} references).
-        #[cfg(windows)]
-        {
-            if let Ok(parsed) = serialized.parse::<toml::Value>()
-                && let Some(api_keys) = parsed.get("api_keys").and_then(|v| v.as_table())
-            {
-                let has_literal = api_keys
-                    .values()
-                    .filter_map(|v| v.as_str())
-                    .any(|v| !v.starts_with("${"));
-                if has_literal {
-                    tracing::warn!(
-                        path = %path.display(),
-                        "Config file may contain literal API keys. \
-                         Windows does not enforce file permissions like Unix. \
-                         Consider using ${{ENV_VAR}} syntax for API keys instead."
-                    );
-                }
-            }
-        }
-
-        Ok(())
     }
+    Ok(())
+}
+
+fn persist_config_doc(path: &Path, doc: &toml_edit::DocumentMut) -> std::io::Result<()> {
+    let serialized = doc.to_string();
+
+    forge_context::atomic_write_with_options(
+        path,
+        serialized.as_bytes(),
+        forge_context::AtomicWriteOptions {
+            sync_all: true,
+            dir_sync: true,
+            unix_mode: None,
+        },
+    )?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let metadata = fs::metadata(path)?;
+        let our_uid = unsafe { libc::getuid() };
+        if metadata.uid() == our_uid {
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(parsed) = serialized.parse::<toml::Value>()
+            && let Some(api_keys) = parsed.get("api_keys").and_then(|v| v.as_table())
+        {
+            let has_literal = api_keys
+                .values()
+                .filter_map(|v| v.as_str())
+                .any(|v| !v.starts_with("${"));
+            if has_literal {
+                tracing::warn!(
+                    path = %path.display(),
+                    "Config file may contain literal API keys. \
+                     Windows does not enforce file permissions like Unix. \
+                     Consider using ${{ENV_VAR}} syntax for API keys instead."
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[must_use]

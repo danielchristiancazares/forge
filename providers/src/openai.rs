@@ -1,10 +1,11 @@
 use crate::{
     ApiConfig, ApiResponse, ApiUsage, CacheableMessage, Message, OutputLimits, Result,
-    SseParseAction, SseParser, StreamEvent, ThinkingReplayState, ThoughtSignatureState,
-    ToolDefinition, handle_response, http_client, mpsc, process_sse_stream,
+    SendMessageRequest, SseParseAction, SseParser, StreamEvent, ThinkingReplayState,
+    ThoughtSignatureState, ToolDefinition, handle_response, http_client, process_sse_stream,
     retry::{RetryConfig, send_with_retry},
     send_event,
 };
+
 use forge_types::{OpenAIReasoningEffort, OpenAIReasoningSummary};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -87,10 +88,6 @@ impl Drop for BackgroundCancelGuard {
         });
     }
 }
-
-// ========================================================================
-// OpenAI SSE Parser
-// ========================================================================
 
 #[derive(Default)]
 struct OpenAIParser {
@@ -545,14 +542,9 @@ fn build_request_body(
     Value::Object(body)
 }
 
-pub async fn send_message(
-    config: &ApiConfig,
-    messages: &[CacheableMessage],
-    limits: OutputLimits,
-    system_prompt: Option<&str>,
-    tools: Option<&[ToolDefinition]>,
-    tx: mpsc::Sender<StreamEvent>,
-) -> Result<()> {
+pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
+    let config = request.config;
+    let tx = &request.tx;
     let client = http_client();
     let retry_config = RetryConfig::default();
     let is_pro = is_pro_model(config.model());
@@ -564,7 +556,7 @@ pub async fn send_message(
             | OpenAIReasoningEffort::XHigh => {}
             other => {
                 let _ = send_event(
-                    &tx,
+                    tx,
                     StreamEvent::Error(format!(
                         "gpt-5.2-pro requires reasoning_effort {{medium, high, xhigh}}; got {}",
                         other.as_str()
@@ -576,7 +568,13 @@ pub async fn send_message(
         }
     }
 
-    let body = build_request_body(config, messages, limits, system_prompt, tools);
+    let body = build_request_body(
+        config,
+        request.messages,
+        request.limits,
+        request.system_prompt,
+        request.tools,
+    );
 
     let auth_header = format!("Bearer {}", config.api_key());
     let body_json = body.clone();
@@ -603,7 +601,7 @@ pub async fn send_message(
     )
     .await;
 
-    let response = match handle_response(outcome, &tx).await? {
+    let response = match handle_response(outcome, tx).await? {
         ApiResponse::Success(resp) => resp,
         ApiResponse::StreamTerminated => {
             if let Some(g) = cancel_guard.as_mut() {
@@ -627,7 +625,7 @@ pub async fn send_message(
     } else {
         OpenAIParser::default()
     };
-    let result = process_sse_stream(response, &mut parser, &tx, idle_timeout).await;
+    let result = process_sse_stream(response, &mut parser, tx, idle_timeout).await;
     if let Some(g) = cancel_guard.as_mut() {
         g.disarm();
     }
@@ -636,14 +634,15 @@ pub async fn send_message(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::SseParser;
+    use super::{BackgroundStreamState, OpenAIParser, StreamEvent, build_request_body};
+    use crate::{ApiConfig, CacheableMessage, Message, OutputLimits, SseParser};
     use forge_types::NonEmptyString;
     use forge_types::{
         ApiKey, OpenAIReasoningEffort, OpenAIReasoningSummary, OpenAIRequestOptions,
         OpenAITextVerbosity, OpenAITruncation, Provider,
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
+    use std::sync::{Arc, Mutex};
 
     fn collect_events(json: Value, parser: &mut OpenAIParser) -> Vec<StreamEvent> {
         match parser.parse(&json) {

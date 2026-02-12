@@ -342,7 +342,6 @@ impl DistillationState {
         }
     }
 
-    /// Check if there's a queued user message.
     pub(crate) fn has_queued_message(&self) -> bool {
         matches!(self, DistillationState::CompletedWithQueued { .. })
     }

@@ -599,7 +599,6 @@ impl MarkdownRenderer {
             }
         }
 
-        // Bottom border
         let bottom_border = Self::make_table_border(&col_widths, '└', '┴', '┘', '─');
         self.lines.push(Line::from(vec![
             Span::raw("    "),

@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use std::path::Path;
+use thiserror::Error;
 
 #[cfg(test)]
 use forge_types::PredefinedModel;
@@ -61,31 +62,18 @@ pub struct DistillationNeeded {
     pub suggestion: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
 pub enum DistillationPlanError {
+    #[error("no messages selected for distillation")]
     EmptyScope,
+    #[error(
+        "no room to insert distillate: available {available_tokens} tokens, need at least {required_tokens} tokens"
+    )]
     BudgetTooTight {
         available_tokens: u32,
         required_tokens: u32,
     },
 }
-
-impl std::fmt::Display for DistillationPlanError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EmptyScope => write!(f, "no messages selected for distillation"),
-            Self::BudgetTooTight {
-                available_tokens,
-                required_tokens,
-            } => write!(
-                f,
-                "no room to insert distillate: available {available_tokens} tokens, need at least {required_tokens} tokens"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for DistillationPlanError {}
 
 /// Contiguous range of message IDs selected for distillation.
 ///

@@ -455,7 +455,6 @@ impl Robots {
         // Find matching group (most specific wins)
         let group = self.find_group(user_agent);
 
-        // Evaluate rules
         if let Some(g) = group
             && let Some(disallowed_rule) = g.is_disallowed(path)
         {
@@ -575,7 +574,6 @@ fn path_matches(path: &str, pattern: &str) -> bool {
 
     // If no wildcards, simple prefix match
     if pattern.contains('*') {
-        // Wildcard matching
         wildcard_match(path, pattern, anchored)
     } else if anchored {
         path == pattern
@@ -670,7 +668,6 @@ pub fn parse(content: &str) -> Result<Robots, WebFetchError> {
             continue;
         }
 
-        // Parse directive
         if let Some((directive, value)) = line.split_once(':') {
             let directive = directive.trim().to_lowercase();
             let value = value.trim();

@@ -23,7 +23,10 @@ use anyhow::Result;
 use crossterm::{
     event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode,
+    },
 };
 use ratatui::prelude::*;
 use std::{
@@ -193,7 +196,12 @@ impl TerminalSession {
                 // Disable alternate scroll mode: CSI ? 1007 l
                 let _ = out.write_all(b"\x1b[?1007l");
                 let _ = out.flush();
-                let _ = execute!(out, LeaveAlternateScreen, DisableBracketedPaste);
+                let _ = execute!(
+                    out,
+                    Clear(ClearType::All),
+                    LeaveAlternateScreen,
+                    DisableBracketedPaste
+                );
                 return Err(err.into());
             }
         };
@@ -208,8 +216,13 @@ impl Drop for TerminalSession {
         // Disable alternate scroll mode: CSI ? 1007 l
         let _ = self.terminal.backend_mut().write_all(b"\x1b[?1007l");
         let _ = std::io::Write::flush(&mut *self.terminal.backend_mut());
+        // Clear the alternate screen before leaving it. iTerm2 (and some other
+        // macOS terminals) can copy the final alternate-screen frame into the
+        // main scrollback buffer on LeaveAlternateScreen; blanking first
+        // prevents TUI remnants from lingering in the history.
         let _ = execute!(
             self.terminal.backend_mut(),
+            Clear(ClearType::All),
             LeaveAlternateScreen,
             DisableBracketedPaste
         );
@@ -232,7 +245,12 @@ async fn main() -> Result<()> {
         // Disable alternate scroll mode
         let _ = out.write_all(b"\x1b[?1007l");
         let _ = out.flush();
-        let _ = execute!(out, LeaveAlternateScreen, DisableBracketedPaste);
+        let _ = execute!(
+            out,
+            Clear(ClearType::All),
+            LeaveAlternateScreen,
+            DisableBracketedPaste
+        );
         original_hook(info);
     }));
 

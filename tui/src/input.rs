@@ -413,35 +413,27 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
     }
 
     match key.code {
-        // Quit
         KeyCode::Char('q') => {
             app.request_quit();
         }
-        // Enter insert mode
         KeyCode::Char('i') => {
             app.enter_insert_mode();
         }
-        // Enter insert mode at end
         KeyCode::Char('a') => {
             app.enter_insert_mode_at_end();
         }
-        // Toggle thinking visibility
         KeyCode::Char('o') => {
             app.toggle_thinking();
         }
-        // Enter command mode
         KeyCode::Char(':' | '/') => {
             app.enter_command_mode();
         }
-        // Scroll up
         KeyCode::Char('k') | KeyCode::Up => {
             app.scroll_up();
         }
-        // Page up
         KeyCode::PageUp => {
             app.scroll_page_up();
         }
-        // Page down
         KeyCode::PageDown => {
             app.scroll_page_down();
         }
@@ -461,7 +453,6 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
                 app.scroll_page_down();
             }
         }
-        // Scroll down
         KeyCode::Char('j') | KeyCode::Down => {
             app.scroll_down();
         }
@@ -620,7 +611,6 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
                 KeyCode::End => {
                     insert.move_cursor_end();
                 }
-                // Clear line
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     insert.clear_line();
                 }
@@ -669,7 +659,6 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.enter_normal_mode();
         }
-        // Execute command
         KeyCode::Enter => {
             let Some(token) = app.command_token() else {
                 return;
@@ -731,11 +720,9 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     command_mode.delete_word_backwards();
                 }
-                // Clear line
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     command_mode.clear_line();
                 }
-                // Tab completion
                 KeyCode::Tab => {
                     command_mode.tab_complete();
                 }
@@ -755,7 +742,6 @@ fn handle_model_select_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.enter_normal_mode();
         }
-        // Confirm selection
         KeyCode::Enter => {
             app.model_select_confirm();
         }
@@ -786,7 +772,6 @@ fn handle_file_select_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.file_select_cancel();
         }
-        // Confirm selection - insert file path into draft
         KeyCode::Enter => {
             app.file_select_confirm();
         }
@@ -816,27 +801,63 @@ fn handle_file_select_mode(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_settings_mode(app: &mut App, key: KeyEvent) {
+    if !app.settings_is_root_surface() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+                app.settings_close_or_exit();
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    if app.settings_detail_view().is_some() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                app.settings_close_or_exit();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.settings_detail_move_up();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.settings_detail_move_down();
+            }
+            KeyCode::Enter | KeyCode::Char(' ' | 'e') => {
+                app.settings_detail_toggle_selected();
+            }
+            KeyCode::Char('s') => {
+                app.settings_save_edits();
+            }
+            KeyCode::Char('r') => {
+                app.settings_revert_edits();
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => {
+        KeyCode::Esc => {
+            app.settings_close_or_exit();
+        }
+        KeyCode::Char('q') if !app.settings_filter_active() => {
             app.settings_close_or_exit();
         }
         KeyCode::Enter => {
             app.settings_activate();
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            if !app.settings_filter_active() && app.settings_detail_view().is_none() {
+            if !app.settings_filter_active() {
                 app.settings_move_up();
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if !app.settings_filter_active() && app.settings_detail_view().is_none() {
+            if !app.settings_filter_active() {
                 app.settings_move_down();
             }
         }
         KeyCode::Char('/') => {
-            if app.settings_detail_view().is_none() {
-                app.settings_start_filter();
-            }
+            app.settings_start_filter();
         }
         KeyCode::Backspace => {
             if app.settings_filter_active() {

@@ -47,6 +47,21 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         description: "Open the settings modal",
     },
     CommandSpec {
+        palette_label: "runtime",
+        help_label: "runtime",
+        description: "Show active runtime configuration",
+    },
+    CommandSpec {
+        palette_label: "resolve",
+        help_label: "resolve",
+        description: "Show resolved configuration cascade",
+    },
+    CommandSpec {
+        palette_label: "validate",
+        help_label: "validate",
+        description: "Show configuration validation dashboard",
+    },
+    CommandSpec {
         palette_label: "ctx",
         help_label: "ctx",
         description: "Show context usage",
@@ -94,6 +109,9 @@ pub(crate) enum CommandKind {
     Clear,
     Model,
     Settings,
+    Runtime,
+    Resolve,
+    Validate,
     Context,
     Journal,
     Distill,
@@ -140,6 +158,18 @@ const COMMAND_ALIASES: &[CommandAlias] = &[
     CommandAlias {
         name: "config",
         kind: CommandKind::Settings,
+    },
+    CommandAlias {
+        name: "runtime",
+        kind: CommandKind::Runtime,
+    },
+    CommandAlias {
+        name: "resolve",
+        kind: CommandKind::Resolve,
+    },
+    CommandAlias {
+        name: "validate",
+        kind: CommandKind::Validate,
     },
     CommandAlias {
         name: "ctx",
@@ -212,6 +242,9 @@ pub(crate) enum Command<'a> {
     Clear,
     Model(Option<&'a str>),
     Settings,
+    Runtime,
+    Resolve,
+    Validate,
     Context,
     Journal,
     Distill,
@@ -252,6 +285,9 @@ impl<'a> Command<'a> {
             CommandKind::Clear => Command::Clear,
             CommandKind::Model => Command::Model(parts.get(1).copied()),
             CommandKind::Settings => Command::Settings,
+            CommandKind::Runtime => Command::Runtime,
+            CommandKind::Resolve => Command::Resolve,
+            CommandKind::Validate => Command::Validate,
             CommandKind::Context => Command::Context,
             CommandKind::Journal => Command::Journal,
             CommandKind::Distill => Command::Distill,
@@ -434,6 +470,15 @@ impl super::App {
             }
             Command::Settings => {
                 self.enter_settings_mode();
+            }
+            Command::Runtime => {
+                self.enter_runtime_mode();
+            }
+            Command::Resolve => {
+                self.enter_resolve_mode();
+            }
+            Command::Validate => {
+                self.enter_validate_mode();
             }
             Command::Context => {
                 let usage_status = self.context_usage_status();
@@ -664,6 +709,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_observability_commands() {
+        assert_eq!(Command::parse("runtime"), Command::Runtime);
+        assert_eq!(Command::parse("resolve"), Command::Resolve);
+        assert_eq!(Command::parse("validate"), Command::Validate);
+    }
+
+    #[test]
     fn parse_context_commands() {
         assert_eq!(Command::parse("context"), Command::Context);
         assert_eq!(Command::parse("ctx"), Command::Context);
@@ -703,10 +755,13 @@ mod tests {
         assert_eq!(Command::parse("Clear"), Command::Clear);
         assert_eq!(Command::parse("MODEL"), Command::Model(None));
         assert_eq!(Command::parse("Settings"), Command::Settings);
+        assert_eq!(Command::parse("Validate"), Command::Validate);
 
         assert_eq!(Command::parse("/quit"), Command::Quit);
         assert_eq!(Command::parse("/clear"), Command::Clear);
         assert_eq!(Command::parse("/config"), Command::Settings);
+        assert_eq!(Command::parse("/runtime"), Command::Runtime);
+        assert_eq!(Command::parse("/resolve"), Command::Resolve);
         assert_eq!(
             Command::parse("/model gpt-5"),
             Command::Model(Some("gpt-5"))

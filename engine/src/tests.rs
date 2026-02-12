@@ -61,6 +61,12 @@ fn test_app() -> App {
         display_version: 0,
         should_quit: false,
         view: ViewState::default(),
+        configured_model: model.clone(),
+        configured_ui_options: UiOptions::default(),
+        pending_turn_model: None,
+        pending_turn_ui_options: None,
+        settings_model_editor: None,
+        settings_appearance_editor: None,
         api_keys,
         model: model.clone(),
         tick: 0,
@@ -379,6 +385,236 @@ fn process_command_settings_opens_settings_modal() {
     assert!(!app.settings_filter_active());
     assert_eq!(app.settings_selected_index(), Some(0));
     assert_eq!(app.settings_detail_view(), None);
+    assert_eq!(app.settings_surface(), Some(SettingsSurface::Root));
+}
+
+#[test]
+fn process_command_runtime_opens_runtime_panel() {
+    let mut app = test_app();
+    app.enter_command_mode();
+
+    let command = {
+        let token = app.command_token().expect("command mode");
+        let mut command_mode = app.command_mode(token);
+        for c in "runtime".chars() {
+            command_mode.push_char(c);
+        }
+        command_mode.take_command().expect("take command")
+    };
+
+    app.process_command(command);
+
+    assert_eq!(app.input_mode(), InputMode::Settings);
+    assert_eq!(app.settings_surface(), Some(SettingsSurface::Runtime));
+}
+
+#[test]
+fn process_command_resolve_opens_resolve_panel() {
+    let mut app = test_app();
+    app.enter_command_mode();
+
+    let command = {
+        let token = app.command_token().expect("command mode");
+        let mut command_mode = app.command_mode(token);
+        for c in "resolve".chars() {
+            command_mode.push_char(c);
+        }
+        command_mode.take_command().expect("take command")
+    };
+
+    app.process_command(command);
+
+    assert_eq!(app.input_mode(), InputMode::Settings);
+    assert_eq!(app.settings_surface(), Some(SettingsSurface::Resolve));
+}
+
+#[test]
+fn process_command_validate_opens_validation_panel() {
+    let mut app = test_app();
+    app.enter_command_mode();
+
+    let command = {
+        let token = app.command_token().expect("command mode");
+        let mut command_mode = app.command_mode(token);
+        for c in "validate".chars() {
+            command_mode.push_char(c);
+        }
+        command_mode.take_command().expect("take command")
+    };
+
+    app.process_command(command);
+
+    assert_eq!(app.input_mode(), InputMode::Settings);
+    assert_eq!(app.settings_surface(), Some(SettingsSurface::Validate));
+}
+
+fn open_appearance_settings(app: &mut App) {
+    app.enter_settings_mode();
+    for _ in 0..SettingsCategory::ALL.len().saturating_sub(1) {
+        app.settings_move_down();
+    }
+    app.settings_activate();
+}
+
+fn open_models_settings(app: &mut App) {
+    app.enter_settings_mode();
+    app.settings_move_down();
+    app.settings_activate();
+}
+
+#[test]
+fn settings_activate_models_initializes_editor_snapshot() {
+    let mut app = test_app();
+
+    open_models_settings(&mut app);
+
+    assert_eq!(app.settings_detail_view(), Some(SettingsCategory::Models));
+    assert_eq!(
+        app.settings_model_editor_snapshot(),
+        Some(ModelEditorSnapshot {
+            draft: app.settings_configured_model().clone(),
+            selected: 0,
+            dirty: false,
+        })
+    );
+}
+
+#[test]
+fn settings_models_select_and_revert_updates_dirty_state() {
+    let mut app = test_app();
+    open_models_settings(&mut app);
+
+    app.settings_detail_move_down();
+    app.settings_detail_toggle_selected();
+
+    let selected_model = ModelName::from_predefined(PredefinedModel::ClaudeHaiku);
+    assert_eq!(
+        app.settings_model_editor_snapshot(),
+        Some(ModelEditorSnapshot {
+            draft: selected_model,
+            selected: 1,
+            dirty: true,
+        })
+    );
+
+    app.settings_revert_edits();
+    assert_eq!(
+        app.settings_model_editor_snapshot(),
+        Some(ModelEditorSnapshot {
+            draft: app.settings_configured_model().clone(),
+            selected: 0,
+            dirty: false,
+        })
+    );
+}
+
+#[test]
+fn settings_activate_appearance_initializes_editor_snapshot() {
+    let mut app = test_app();
+
+    open_appearance_settings(&mut app);
+
+    assert_eq!(
+        app.settings_detail_view(),
+        Some(SettingsCategory::Appearance)
+    );
+    assert_eq!(
+        app.settings_appearance_editor_snapshot(),
+        Some(AppearanceEditorSnapshot {
+            draft: UiOptions::default(),
+            selected: 0,
+            dirty: false,
+        })
+    );
+}
+
+#[test]
+fn settings_appearance_toggle_and_revert_updates_dirty_state() {
+    let mut app = test_app();
+    open_appearance_settings(&mut app);
+
+    app.settings_detail_toggle_selected();
+    assert_eq!(
+        app.settings_appearance_editor_snapshot(),
+        Some(AppearanceEditorSnapshot {
+            draft: UiOptions {
+                ascii_only: true,
+                ..UiOptions::default()
+            },
+            selected: 0,
+            dirty: true,
+        })
+    );
+
+    app.settings_revert_edits();
+    assert_eq!(
+        app.settings_appearance_editor_snapshot(),
+        Some(AppearanceEditorSnapshot {
+            draft: UiOptions::default(),
+            selected: 0,
+            dirty: false,
+        })
+    );
+}
+
+#[test]
+fn apply_pending_turn_settings_consumes_staged_defaults() {
+    let mut app = test_app();
+    let pending = UiOptions {
+        ascii_only: true,
+        high_contrast: true,
+        reduced_motion: true,
+        show_thinking: true,
+    };
+    app.pending_turn_ui_options = Some(pending);
+
+    app.apply_pending_turn_settings();
+
+    assert_eq!(app.ui_options(), pending);
+    assert!(!app.settings_pending_apply_next_turn());
+}
+
+#[test]
+fn queue_message_applies_pending_model_before_request_config() {
+    let mut app = test_app();
+    let pending_model = ModelName::from_predefined(PredefinedModel::ClaudeHaiku);
+    app.pending_turn_model = Some(pending_model.clone());
+    app.input = InputState::Insert(DraftInput {
+        text: "pending model".to_string(),
+        cursor: 13,
+    });
+
+    let token = app.insert_token().expect("insert mode");
+    let queued = app
+        .insert_mode(token)
+        .queue_message()
+        .expect("queued message");
+
+    assert_eq!(queued.config.model(), &pending_model);
+    assert_eq!(app.model(), pending_model.as_str());
+    assert!(!app.settings_pending_model_apply_next_turn());
+}
+
+#[test]
+fn session_config_hash_is_stable_without_changes() {
+    let app = test_app();
+    let first = app.session_config_hash();
+    let second = app.session_config_hash();
+    assert_eq!(first, second);
+}
+
+#[test]
+fn validation_findings_include_fix_paths() {
+    let app = test_app();
+    let report = app.validate_config();
+    for finding in report
+        .errors
+        .iter()
+        .chain(report.warnings.iter())
+        .chain(report.healthy.iter())
+    {
+        assert!(!finding.fix_path.trim().is_empty());
+    }
 }
 
 #[test]

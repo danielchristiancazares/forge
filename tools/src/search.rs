@@ -47,17 +47,13 @@ impl Default for SearchToolConfig {
 
 #[derive(Debug)]
 pub struct SearchTool {
-    name: &'static str,
     config: SearchToolConfig,
 }
 
 impl SearchTool {
     #[must_use]
     pub fn new(config: SearchToolConfig) -> Self {
-        Self {
-            name: SEARCH_TOOL_NAME,
-            config,
-        }
+        Self { config }
     }
 
     async fn select_backend(
@@ -121,7 +117,7 @@ impl SearchTool {
 
 impl ToolExecutor for SearchTool {
     fn name(&self) -> &'static str {
-        self.name
+        SEARCH_TOOL_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -1242,9 +1238,7 @@ async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
                 cmd.arg("--no-unicode");
             }
             CaseMode::Smart => {
-                if pattern_has_ascii_uppercase(pattern) {
-                    // treat as sensitive
-                } else {
+                if !pattern_has_ascii_uppercase(pattern) {
                     cmd.arg("-i");
                     cmd.arg("--no-unicode");
                 }
@@ -1452,9 +1446,7 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
                 cmd.arg("-i");
             }
             CaseMode::Smart => {
-                if pattern_has_ascii_uppercase(pattern) {
-                    // sensitive
-                } else {
+                if !pattern_has_ascii_uppercase(pattern) {
                     cmd.arg("-i");
                 }
             }

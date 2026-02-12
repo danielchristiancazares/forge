@@ -44,8 +44,8 @@ futures-util = "0.3"
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "0.9"
-toml_edit = "0.24"
+toml = "1.0"
+toml_edit = "0.25"
 
 # Tooling
 aho-corasick = "1.1"

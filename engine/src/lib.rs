@@ -29,6 +29,7 @@
 //! - [`PreparedContext`]: Proof that context was built within token budget
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
@@ -38,7 +39,8 @@ use ui::InputState;
 pub use ui::{
     ChangeKind, DisplayItem, DraftInput, FileEntry, FilePickerState, FilesPanelState, InputHistory,
     InputMode, ModalEffect, ModalEffectKind, PanelEffect, PanelEffectKind, PredefinedModel,
-    ScrollState, SettingsCategory, SettingsModalState, UiOptions, ViewState, find_match_positions,
+    ScrollState, SettingsCategory, SettingsModalState, SettingsSurface, UiOptions, ViewState,
+    find_match_positions,
 };
 
 pub use forge_context::{
@@ -135,6 +137,71 @@ impl TurnUsage {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeSnapshot {
+    pub active_profile: String,
+    pub session_config_hash: String,
+    pub mode: String,
+    pub active_model: String,
+    pub provider: Provider,
+    pub provider_status: String,
+    pub context_used_tokens: u32,
+    pub context_budget_tokens: u32,
+    pub distill_threshold_tokens: u32,
+    pub auto_attached: Vec<String>,
+    pub rate_limit_state: String,
+    pub last_api_call: String,
+    pub last_error: Option<String>,
+    pub session_overrides: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolveLayerValue {
+    pub layer: &'static str,
+    pub value: String,
+    pub is_winner: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolveSetting {
+    pub setting: &'static str,
+    pub layers: Vec<ResolveLayerValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolveCascade {
+    pub settings: Vec<ResolveSetting>,
+    pub session_config_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationFinding {
+    pub title: String,
+    pub detail: String,
+    pub fix_path: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ValidationReport {
+    pub errors: Vec<ValidationFinding>,
+    pub warnings: Vec<ValidationFinding>,
+    pub healthy: Vec<ValidationFinding>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppearanceEditorSnapshot {
+    pub draft: UiOptions,
+    pub selected: usize,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelEditorSnapshot {
+    pub draft: ModelName,
+    pub selected: usize,
+    pub dirty: bool,
+}
+
 pub use state::DistillationTask;
 
 use state::{
@@ -155,6 +222,73 @@ struct ToolCallAccumulator {
 struct ParsedToolCalls {
     calls: Vec<ToolCall>,
     pre_resolved: Vec<ToolResult>,
+}
+
+const APPEARANCE_SETTINGS_COUNT: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AppearanceSettingsEditor {
+    baseline: UiOptions,
+    draft: UiOptions,
+    selected: usize,
+}
+
+impl AppearanceSettingsEditor {
+    fn new(initial: UiOptions) -> Self {
+        Self {
+            baseline: initial,
+            draft: initial,
+            selected: 0,
+        }
+    }
+
+    fn is_dirty(self) -> bool {
+        self.draft != self.baseline
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModelSettingsEditor {
+    baseline: ModelName,
+    draft: ModelName,
+    selected: usize,
+}
+
+impl ModelSettingsEditor {
+    fn new(initial: ModelName) -> Self {
+        let selected = Self::index_for_model(&initial).unwrap_or(0);
+        Self {
+            baseline: initial.clone(),
+            draft: initial,
+            selected,
+        }
+    }
+
+    fn update_draft_from_selected(&mut self) {
+        if let Some(predefined) = PredefinedModel::all().get(self.selected) {
+            self.draft = predefined.to_model_name();
+        }
+    }
+
+    fn sync_selected_to_draft(&mut self) {
+        if let Some(index) = Self::index_for_model(&self.draft) {
+            self.selected = index;
+        }
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.draft != self.baseline
+    }
+
+    fn max_index() -> usize {
+        PredefinedModel::all().len().saturating_sub(1)
+    }
+
+    fn index_for_model(model: &ModelName) -> Option<usize> {
+        PredefinedModel::all()
+            .iter()
+            .position(|predefined| predefined.to_model_name() == *model)
+    }
 }
 
 /// An in-flight streaming response from an LLM.
@@ -438,6 +572,18 @@ pub struct App {
     should_quit: bool,
     /// View state for rendering (scroll, status, modal effects).
     view: ViewState,
+    /// Persisted model default loaded from config and edited in `/settings`.
+    configured_model: ModelName,
+    /// Persisted UI defaults loaded from config and edited in `/settings`.
+    configured_ui_options: UiOptions,
+    /// Saved model default staged to take effect at the start of the next turn.
+    pending_turn_model: Option<ModelName>,
+    /// Saved UI defaults staged to take effect at the start of the next turn.
+    pending_turn_ui_options: Option<UiOptions>,
+    /// Models detail editor state for `/settings`.
+    settings_model_editor: Option<ModelSettingsEditor>,
+    /// Appearance detail editor state for `/settings`.
+    settings_appearance_editor: Option<AppearanceSettingsEditor>,
     api_keys: HashMap<Provider, SecretString>,
     model: ModelName,
     tick: usize,
@@ -560,13 +706,81 @@ impl App {
         self.should_quit = true;
     }
 
-    /// Check if a transcript clear was requested and clear the flag.
     pub fn take_clear_transcript(&mut self) -> bool {
         std::mem::take(&mut self.view.clear_transcript)
     }
 
     pub fn ui_options(&self) -> UiOptions {
         self.view.ui_options
+    }
+
+    #[must_use]
+    pub fn settings_configured_model(&self) -> &ModelName {
+        &self.configured_model
+    }
+
+    #[must_use]
+    pub fn settings_configured_ui_options(&self) -> UiOptions {
+        self.configured_ui_options
+    }
+
+    #[must_use]
+    pub fn settings_pending_model_apply_next_turn(&self) -> bool {
+        self.pending_turn_model.is_some()
+    }
+
+    #[must_use]
+    pub fn settings_pending_ui_apply_next_turn(&self) -> bool {
+        self.pending_turn_ui_options.is_some()
+    }
+
+    #[must_use]
+    pub fn settings_pending_apply_next_turn(&self) -> bool {
+        self.settings_pending_model_apply_next_turn() || self.settings_pending_ui_apply_next_turn()
+    }
+
+    #[must_use]
+    pub fn settings_model_editor_snapshot(&self) -> Option<ModelEditorSnapshot> {
+        self.settings_model_editor
+            .as_ref()
+            .map(|editor| ModelEditorSnapshot {
+                draft: editor.draft.clone(),
+                selected: editor.selected,
+                dirty: editor.is_dirty(),
+            })
+    }
+
+    #[must_use]
+    pub fn settings_appearance_editor_snapshot(&self) -> Option<AppearanceEditorSnapshot> {
+        self.settings_appearance_editor
+            .map(|editor| AppearanceEditorSnapshot {
+                draft: editor.draft,
+                selected: editor.selected,
+                dirty: editor.is_dirty(),
+            })
+    }
+
+    #[must_use]
+    pub fn settings_has_unsaved_edits(&self) -> bool {
+        self.settings_model_editor
+            .as_ref()
+            .is_some_and(ModelSettingsEditor::is_dirty)
+            || self
+                .settings_appearance_editor
+                .is_some_and(AppearanceSettingsEditor::is_dirty)
+    }
+
+    pub(crate) fn apply_pending_turn_settings(&mut self) {
+        if let Some(model) = self.pending_turn_model.take() {
+            self.set_model_internal(model, false);
+        }
+        if let Some(pending) = self.pending_turn_ui_options.take() {
+            self.view.ui_options = pending;
+            if pending.reduced_motion {
+                self.view.modal_effect = None;
+                self.view.files_panel_effect = None;
+            }
+        }
     }
 
     /// Toggle visibility of thinking/reasoning content in the UI.
@@ -986,12 +1200,10 @@ impl App {
         self.api_keys.contains_key(&provider)
     }
 
-    /// Get the current API key for the selected provider.
     pub fn current_api_key(&self) -> Option<&SecretString> {
         self.api_keys.get(&self.model.provider())
     }
 
-    /// Whether we're currently streaming a response.
     pub fn is_loading(&self) -> bool {
         self.busy_reason().is_some()
     }
@@ -1158,11 +1370,10 @@ impl App {
             .set_output_limit(clamped.max_output_tokens());
     }
 
-    /// Set a specific model (called from :model command).
-    ///
-    /// Persists the model to `~/.forge/config.toml` for future sessions.
-    pub fn set_model(&mut self, model: ModelName) {
+    fn set_model_internal(&mut self, model: ModelName, persist: bool) {
         self.model = model.clone();
+        self.configured_model = model.clone();
+        self.pending_turn_model = None;
         if self.memory_enabled() {
             self.handle_context_adaptation();
         } else {
@@ -1172,9 +1383,14 @@ impl App {
 
         self.clamp_output_limits_to_model();
 
-        if let Err(e) = config::ForgeConfig::persist_model(model.as_str()) {
+        if persist && let Err(e) = config::ForgeConfig::persist_model(model.as_str()) {
             tracing::warn!("Failed to persist model to config: {e}");
         }
+    }
+
+    /// Persists the model to `~/.forge/config.toml` for future sessions.
+    pub fn set_model(&mut self, model: ModelName) {
+        self.set_model_internal(model, true);
     }
 
     /// Handle context adaptation after a model switch.
@@ -1279,6 +1495,7 @@ impl App {
 
     pub fn enter_normal_mode(&mut self) {
         self.input = std::mem::take(&mut self.input).into_normal();
+        self.reset_settings_detail_editor();
         self.view.modal_effect = None;
     }
 
@@ -1290,14 +1507,47 @@ impl App {
         self.input = std::mem::take(&mut self.input).into_command();
     }
 
-    pub fn enter_settings_mode(&mut self) {
-        self.input = std::mem::take(&mut self.input).into_settings();
+    fn enter_settings_surface(&mut self, surface: SettingsSurface) {
+        let current = std::mem::take(&mut self.input);
+        self.input = if surface == SettingsSurface::Root {
+            current.into_settings()
+        } else {
+            current.into_settings_surface(surface)
+        };
+        self.reset_settings_detail_editor();
         if self.view.ui_options.reduced_motion {
             self.view.modal_effect = None;
         } else {
             self.view.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
             self.view.last_frame = Instant::now();
         }
+    }
+
+    pub fn enter_settings_mode(&mut self) {
+        self.enter_settings_surface(SettingsSurface::Root);
+    }
+
+    pub fn enter_runtime_mode(&mut self) {
+        self.enter_settings_surface(SettingsSurface::Runtime);
+    }
+
+    pub fn enter_resolve_mode(&mut self) {
+        self.enter_settings_surface(SettingsSurface::Resolve);
+    }
+
+    pub fn enter_validate_mode(&mut self) {
+        self.enter_settings_surface(SettingsSurface::Validate);
+    }
+
+    #[must_use]
+    pub fn settings_surface(&self) -> Option<SettingsSurface> {
+        self.input.settings_modal().map(|modal| modal.surface)
+    }
+
+    #[must_use]
+    pub fn settings_is_root_surface(&self) -> bool {
+        self.settings_surface()
+            .is_some_and(|surface| surface == SettingsSurface::Root)
     }
 
     #[must_use]
@@ -1326,8 +1576,38 @@ impl App {
 
     #[must_use]
     pub fn settings_categories(&self) -> Vec<SettingsCategory> {
+        if !self.settings_is_root_surface() {
+            return Vec::new();
+        }
         let filter = self.settings_filter_text().unwrap_or_default();
         SettingsCategory::filtered(filter)
+    }
+
+    fn open_settings_detail(&mut self, category: SettingsCategory) {
+        if let Some(modal) = self.input.settings_modal_mut() {
+            modal.detail_view = Some(category);
+        }
+        match category {
+            SettingsCategory::Models => {
+                self.settings_model_editor =
+                    Some(ModelSettingsEditor::new(self.configured_model.clone()));
+                self.settings_appearance_editor = None;
+            }
+            SettingsCategory::Appearance => {
+                self.settings_appearance_editor =
+                    Some(AppearanceSettingsEditor::new(self.configured_ui_options));
+                self.settings_model_editor = None;
+            }
+            _ => {
+                self.settings_model_editor = None;
+                self.settings_appearance_editor = None;
+            }
+        }
+    }
+
+    fn reset_settings_detail_editor(&mut self) {
+        self.settings_model_editor = None;
+        self.settings_appearance_editor = None;
     }
 
     #[must_use]
@@ -1336,6 +1616,9 @@ impl App {
     }
 
     pub fn settings_move_up(&mut self) {
+        if !self.settings_is_root_surface() {
+            return;
+        }
         let Some(selected) = self.settings_selected_index() else {
             return;
         };
@@ -1348,6 +1631,9 @@ impl App {
     }
 
     pub fn settings_move_down(&mut self) {
+        if !self.settings_is_root_surface() {
+            return;
+        }
         let Some(selected) = self.settings_selected_index() else {
             return;
         };
@@ -1361,6 +1647,9 @@ impl App {
     }
 
     pub fn settings_start_filter(&mut self) {
+        if !self.settings_is_root_surface() {
+            return;
+        }
         if let Some(modal) = self.input.settings_modal_mut() {
             modal.filter_active = true;
         }
@@ -1373,6 +1662,9 @@ impl App {
     }
 
     pub fn settings_filter_push_char(&mut self, c: char) {
+        if !self.settings_is_root_surface() {
+            return;
+        }
         if let Some(modal) = self.input.settings_modal_mut() {
             modal.filter.enter_char(c);
         }
@@ -1380,13 +1672,136 @@ impl App {
     }
 
     pub fn settings_filter_backspace(&mut self) {
+        if !self.settings_is_root_surface() {
+            return;
+        }
         if let Some(modal) = self.input.settings_modal_mut() {
             modal.filter.delete_char();
         }
         self.settings_clamp_selection();
     }
 
+    pub fn settings_detail_move_up(&mut self) {
+        if let Some(editor) = self.settings_model_editor.as_mut() {
+            if editor.selected > 0 {
+                editor.selected -= 1;
+            }
+            return;
+        }
+        if let Some(editor) = self.settings_appearance_editor.as_mut()
+            && editor.selected > 0
+        {
+            editor.selected -= 1;
+        }
+    }
+
+    pub fn settings_detail_move_down(&mut self) {
+        if let Some(editor) = self.settings_model_editor.as_mut() {
+            let max_index = ModelSettingsEditor::max_index();
+            if editor.selected < max_index {
+                editor.selected += 1;
+            }
+            return;
+        }
+        if let Some(editor) = self.settings_appearance_editor.as_mut()
+            && editor.selected + 1 < APPEARANCE_SETTINGS_COUNT
+        {
+            editor.selected += 1;
+        }
+    }
+
+    pub fn settings_detail_toggle_selected(&mut self) {
+        if let Some(editor) = self.settings_model_editor.as_mut() {
+            editor.update_draft_from_selected();
+            return;
+        }
+        let Some(editor) = self.settings_appearance_editor.as_mut() else {
+            return;
+        };
+        match editor.selected {
+            0 => {
+                editor.draft.ascii_only = !editor.draft.ascii_only;
+            }
+            1 => {
+                editor.draft.high_contrast = !editor.draft.high_contrast;
+            }
+            2 => {
+                editor.draft.reduced_motion = !editor.draft.reduced_motion;
+            }
+            3 => {
+                editor.draft.show_thinking = !editor.draft.show_thinking;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn settings_revert_edits(&mut self) {
+        if let Some(editor) = self.settings_model_editor.as_mut() {
+            editor.draft = editor.baseline.clone();
+            editor.sync_selected_to_draft();
+            return;
+        }
+        let defaults = self.configured_ui_options;
+        if let Some(editor) = self.settings_appearance_editor.as_mut() {
+            editor.draft = defaults;
+        }
+    }
+
+    pub fn settings_save_edits(&mut self) {
+        if let Some(editor) = self.settings_model_editor.as_ref() {
+            if !editor.is_dirty() {
+                self.push_notification("No settings changes to save.");
+                return;
+            }
+            let draft = editor.draft.clone();
+            if let Err(err) = config::ForgeConfig::persist_model(draft.as_str()) {
+                tracing::warn!("Failed to persist model setting: {err}");
+                self.push_notification(format!("Failed to save settings: {err}"));
+                return;
+            }
+            self.configured_model = draft.clone();
+            self.pending_turn_model = Some(draft.clone());
+            if let Some(editor) = self.settings_model_editor.as_mut() {
+                editor.baseline = draft;
+                editor.sync_selected_to_draft();
+            }
+            self.push_notification("Model default saved. Changes apply on the next turn.");
+            return;
+        }
+
+        let Some(editor) = self.settings_appearance_editor else {
+            return;
+        };
+        if !editor.is_dirty() {
+            self.push_notification("No settings changes to save.");
+            return;
+        }
+
+        let draft = editor.draft;
+        let persist = config::AppUiSettings {
+            ascii_only: draft.ascii_only,
+            high_contrast: draft.high_contrast,
+            reduced_motion: draft.reduced_motion,
+            show_thinking: draft.show_thinking,
+        };
+        if let Err(err) = config::ForgeConfig::persist_ui_settings(persist) {
+            tracing::warn!("Failed to persist UI settings: {err}");
+            self.push_notification(format!("Failed to save settings: {err}"));
+            return;
+        }
+
+        self.configured_ui_options = draft;
+        self.pending_turn_ui_options = Some(draft);
+        if let Some(editor) = self.settings_appearance_editor.as_mut() {
+            editor.baseline = draft;
+        }
+        self.push_notification("Settings saved. Changes apply on the next turn.");
+    }
+
     pub fn settings_activate(&mut self) {
+        if !self.settings_is_root_surface() {
+            return;
+        }
         let Some((filter_active, detail_view, selected)) = self
             .input
             .settings_modal()
@@ -1409,9 +1824,7 @@ impl App {
             return;
         };
 
-        if let Some(modal) = self.input.settings_modal_mut() {
-            modal.detail_view = Some(category);
-        }
+        self.open_settings_detail(category);
     }
 
     pub fn settings_close_or_exit(&mut self) {
@@ -1432,6 +1845,7 @@ impl App {
             if let Some(modal) = self.input.settings_modal_mut() {
                 modal.detail_view = None;
             }
+            self.reset_settings_detail_editor();
             return;
         }
 
@@ -1446,6 +1860,304 @@ impl App {
             } else if modal.selected >= len {
                 modal.selected = len - 1;
             }
+        }
+    }
+
+    #[must_use]
+    pub fn session_config_hash(&self) -> String {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.model.as_str().hash(&mut hasher);
+        self.provider().as_str().hash(&mut hasher);
+        self.memory_enabled.hash(&mut hasher);
+        self.cache_enabled.hash(&mut hasher);
+        self.output_limits.max_output_tokens().hash(&mut hasher);
+        match self.output_limits.thinking() {
+            ThinkingState::Disabled => {
+                0u32.hash(&mut hasher);
+            }
+            ThinkingState::Enabled(budget) => {
+                budget.as_u32().hash(&mut hasher);
+            }
+        }
+        self.openai_options
+            .reasoning_effort()
+            .as_str()
+            .hash(&mut hasher);
+        self.openai_options
+            .reasoning_summary()
+            .as_str()
+            .hash(&mut hasher);
+        self.openai_options.verbosity().as_str().hash(&mut hasher);
+        self.openai_options.truncation().as_str().hash(&mut hasher);
+        for provider in Provider::all() {
+            provider.as_str().hash(&mut hasher);
+            self.has_api_key(*provider).hash(&mut hasher);
+        }
+        self.tool_settings
+            .limits
+            .max_tool_calls_per_batch
+            .hash(&mut hasher);
+        self.tool_settings
+            .limits
+            .max_tool_iterations_per_user_turn
+            .hash(&mut hasher);
+        self.tool_settings
+            .limits
+            .max_tool_args_bytes
+            .hash(&mut hasher);
+        self.tool_settings.max_output_bytes.hash(&mut hasher);
+        self.tool_settings.policy.allowlist.len().hash(&mut hasher);
+        self.tool_settings.policy.denylist.len().hash(&mut hasher);
+        match self.tool_settings.policy.mode {
+            tools::ApprovalMode::Permissive => "permissive",
+            tools::ApprovalMode::Default => "default",
+            tools::ApprovalMode::Strict => "strict",
+        }
+        .hash(&mut hasher);
+        let hash = hasher.finish();
+        format!("{hash:07x}")
+    }
+
+    pub fn runtime_snapshot(&mut self) -> RuntimeSnapshot {
+        let usage_status = self.context_usage_status();
+        let usage = match usage_status {
+            ContextUsageStatus::Ready(usage)
+            | ContextUsageStatus::NeedsDistillation { usage, .. }
+            | ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => usage,
+        };
+        let distill_threshold_tokens = usage.budget_tokens.saturating_mul(8) / 10;
+        let provider = self.provider();
+        let provider_status = if self.has_api_key(provider) {
+            "configured".to_string()
+        } else {
+            "missing_api_key".to_string()
+        };
+        let mode = if matches!(self.input_mode(), InputMode::Insert) {
+            "chat".to_string()
+        } else {
+            "code".to_string()
+        };
+        let last_error = self
+            .tool_journal_disabled_reason()
+            .map(ToString::to_string)
+            .or_else(|| self.recovery_blocked_reason());
+        let rate_limit_state = if self.is_loading() {
+            "busy".to_string()
+        } else {
+            "healthy".to_string()
+        };
+        let last_api_call = if self.last_turn_usage().is_some() {
+            "recent_success".to_string()
+        } else if self.is_loading() {
+            "in_progress".to_string()
+        } else {
+            "none".to_string()
+        };
+
+        RuntimeSnapshot {
+            active_profile: "default".to_string(),
+            session_config_hash: self.session_config_hash(),
+            mode,
+            active_model: self.model().to_string(),
+            provider,
+            provider_status,
+            context_used_tokens: usage.used_tokens,
+            context_budget_tokens: usage.budget_tokens,
+            distill_threshold_tokens,
+            auto_attached: vec!["AGENTS.md".to_string()],
+            rate_limit_state,
+            last_api_call,
+            last_error,
+            session_overrides: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn resolve_cascade(&self) -> ResolveCascade {
+        let mut settings = Vec::new();
+        settings.push(ResolveSetting {
+            setting: "Model",
+            layers: vec![
+                ResolveLayerValue {
+                    layer: "Global",
+                    value: self.model().to_string(),
+                    is_winner: true,
+                },
+                ResolveLayerValue {
+                    layer: "Project",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Profile",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Session",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+            ],
+        });
+
+        settings.push(ResolveSetting {
+            setting: "Temperature",
+            layers: vec![
+                ResolveLayerValue {
+                    layer: "Global",
+                    value: "provider-default".to_string(),
+                    is_winner: true,
+                },
+                ResolveLayerValue {
+                    layer: "Project",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Profile",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Session",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+            ],
+        });
+
+        let context_limit = self
+            .context_manager
+            .current_limits()
+            .effective_input_budget();
+        settings.push(ResolveSetting {
+            setting: "Context Limit",
+            layers: vec![
+                ResolveLayerValue {
+                    layer: "Global",
+                    value: context_limit.to_string(),
+                    is_winner: true,
+                },
+                ResolveLayerValue {
+                    layer: "Project",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Profile",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Session",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+            ],
+        });
+
+        let approval_mode = match self.tool_settings.policy.mode {
+            tools::ApprovalMode::Permissive => "permissive",
+            tools::ApprovalMode::Default => "default",
+            tools::ApprovalMode::Strict => "strict",
+        };
+        settings.push(ResolveSetting {
+            setting: "Tool Approval Mode",
+            layers: vec![
+                ResolveLayerValue {
+                    layer: "Global",
+                    value: approval_mode.to_string(),
+                    is_winner: true,
+                },
+                ResolveLayerValue {
+                    layer: "Project",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Profile",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Session",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+            ],
+        });
+
+        ResolveCascade {
+            settings,
+            session_config_hash: self.session_config_hash(),
+        }
+    }
+
+    #[must_use]
+    pub fn validate_config(&self) -> ValidationReport {
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        let mut healthy = Vec::new();
+
+        for provider in Provider::all() {
+            if self.has_api_key(*provider) {
+                healthy.push(ValidationFinding {
+                    title: format!("{} API key configured", provider.display_name()),
+                    detail: format!(
+                        "{} is available for model selection.",
+                        provider.display_name()
+                    ),
+                    fix_path: "Settings > Providers".to_string(),
+                });
+            } else {
+                warnings.push(ValidationFinding {
+                    title: format!("{} API key missing", provider.display_name()),
+                    detail: format!(
+                        "{} models will be blocked until a key is configured.",
+                        provider.display_name()
+                    ),
+                    fix_path: format!("Settings > Providers > {}", provider.display_name()),
+                });
+            }
+        }
+
+        if self.current_api_key().is_some() {
+            healthy.push(ValidationFinding {
+                title: "Active model provider is configured".to_string(),
+                detail: format!("{} can run immediately.", self.model()),
+                fix_path: "Settings > Models".to_string(),
+            });
+        } else {
+            errors.push(ValidationFinding {
+                title: "Active model provider is not configured".to_string(),
+                detail: format!(
+                    "Model '{}' requires {} API key.",
+                    self.model(),
+                    self.provider().env_var()
+                ),
+                fix_path: "Settings > Providers".to_string(),
+            });
+        }
+
+        if self.tool_journal_disabled_reason().is_some() {
+            warnings.push(ValidationFinding {
+                title: "Tool journal safety latch is active".to_string(),
+                detail: "Tool execution is disabled for crash-consistency safety.".to_string(),
+                fix_path: "Run /clear to reset journal state".to_string(),
+            });
+        } else {
+            healthy.push(ValidationFinding {
+                title: "Tool journal safety latch is clear".to_string(),
+                detail: "Tool execution is available.".to_string(),
+                fix_path: "Settings > Tools".to_string(),
+            });
+        }
+
+        ValidationReport {
+            errors,
+            warnings,
+            healthy,
         }
     }
 
@@ -1541,22 +2253,18 @@ impl App {
         self.input.file_select_filter()
     }
 
-    /// Get the current file select index.
     pub fn file_select_index(&self) -> Option<usize> {
         self.input.file_select_index()
     }
 
-    /// Get filtered files for display.
     pub fn file_select_files(&self) -> Vec<&ui::FileEntry> {
         self.file_picker.filtered_files()
     }
 
-    /// Get the file picker state for rendering.
     pub fn file_picker(&self) -> &ui::FilePickerState {
         &self.file_picker
     }
 
-    /// Move file selection up.
     pub fn file_select_move_up(&mut self) {
         if let InputState::FileSelect { selected, .. } = &mut self.input
             && *selected > 0
@@ -1565,7 +2273,6 @@ impl App {
         }
     }
 
-    /// Move file selection down.
     pub fn file_select_move_down(&mut self) {
         if let InputState::FileSelect { selected, .. } = &mut self.input {
             let max_index = self.file_picker.filtered_count().saturating_sub(1);

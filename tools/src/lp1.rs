@@ -1,6 +1,6 @@
 //! LP1 (Line Patch v1) parsing and application.
 
-use std::fmt;
+use thiserror::Error;
 
 #[derive(Debug, Clone)]
 pub struct Patch {
@@ -43,18 +43,11 @@ pub enum Op {
     SetFinalNewline(bool),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
+#[error("{message}")]
 pub struct PatchError {
     pub message: String,
 }
-
-impl fmt::Display for PatchError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.message.fmt(f)
-    }
-}
-
-impl std::error::Error for PatchError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EolKind {
@@ -76,7 +69,6 @@ pub fn parse_patch(input: &str) -> Result<Patch, PatchError> {
         .collect();
     let mut i = 0;
 
-    // Header
     while i < lines.len() && is_blank_or_comment(&lines[i]) {
         i += 1;
     }
@@ -280,8 +272,6 @@ fn err(message: &str) -> PatchError {
         message: message.to_string(),
     }
 }
-
-// File content representation
 
 pub fn parse_file(bytes: &[u8]) -> Result<FileContent, PatchError> {
     let mut lines: Vec<String> = Vec::new();

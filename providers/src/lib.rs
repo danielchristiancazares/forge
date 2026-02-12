@@ -498,29 +498,8 @@ pub struct SendMessageRequest<'a> {
 pub async fn send_message(request: SendMessageRequest<'_>) -> Result<()> {
     match request.config.provider() {
         Provider::Claude => claude::send_message(&request).await,
-        Provider::OpenAI => {
-            openai::send_message(
-                request.config,
-                request.messages,
-                request.limits,
-                request.system_prompt,
-                request.tools,
-                request.tx,
-            )
-            .await
-        }
-        Provider::Gemini => {
-            gemini::send_message(
-                request.config,
-                request.messages,
-                request.limits,
-                request.system_prompt,
-                request.tools,
-                request.gemini_cache,
-                request.tx,
-            )
-            .await
-        }
+        Provider::OpenAI => openai::send_message(&request).await,
+        Provider::Gemini => gemini::send_message(&request).await,
     }
 }
 

@@ -31,10 +31,6 @@ use super::{
     sanitize_output,
 };
 
-// ---------------------------------------------------------------------------
-// Core fetch pipeline
-// ---------------------------------------------------------------------------
-
 pub async fn fetch(
     input: WebFetchInput,
     config: &WebFetchConfig,
@@ -205,10 +201,6 @@ fn canonicalize_url(url: &url::Url) -> String {
     url.set_fragment(None);
     url.to_string()
 }
-
-// ---------------------------------------------------------------------------
-// Tool executor
-// ---------------------------------------------------------------------------
 
 const WEBFETCH_TOOL_NAME: &str = "WebFetch";
 
