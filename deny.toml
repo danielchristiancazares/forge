@@ -39,10 +39,8 @@ ignore = true
 # --- Crate bans (duplicates, wildcards) ---------------------------------------
 
 [bans]
-multiple-versions = "warn"
-# "warn" rather than "deny": cargo-deny misreports dotted-key workspace deps
-# (e.g. forge-engine.workspace = true) as wildcards — false positives.
-wildcards = "warn"
+multiple-versions = "allow"  # transitive deps we can't control
+wildcards = "allow"          # cargo-deny misreports workspace deps as wildcards
 highlight = "all"
 
 # --- Source origin (registry/git allowlist) ------------------------------------
