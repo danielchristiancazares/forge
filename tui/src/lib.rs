@@ -1932,7 +1932,7 @@ fn settings_category_summary(app: &App, category: SettingsCategory) -> String {
         SettingsCategory::Models => app.settings_configured_model().to_string(),
         SettingsCategory::ModelOverrides | SettingsCategory::Profiles => "planned".to_string(),
         SettingsCategory::Context => {
-            if app.memory_enabled() {
+            if app.settings_configured_context_memory_enabled() {
                 "memory on".to_string()
             } else {
                 "memory off".to_string()
@@ -1969,12 +1969,14 @@ fn settings_detail_lines(
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(""));
-    let phase_label =
-        if category == SettingsCategory::Appearance || category == SettingsCategory::Models {
-            " Editable defaults (Phase 3)"
-        } else {
-            " Read-only preview"
-        };
+    let phase_label = if category == SettingsCategory::Appearance
+        || category == SettingsCategory::Models
+        || category == SettingsCategory::Context
+    {
+        " Editable defaults (Phase 3)"
+    } else {
+        " Read-only preview"
+    };
     lines.push(Line::from(Span::styled(
         phase_label,
         Style::default().fg(palette.text_muted),
@@ -2091,15 +2093,68 @@ fn settings_detail_lines(
             )));
         }
         SettingsCategory::Context => {
-            let memory = if app.memory_enabled() { "on" } else { "off" };
+            let editor = app.settings_context_editor_snapshot();
+            let configured_memory = app.settings_configured_context_memory_enabled();
+            let selected = editor.map(|state| state.selected);
+            let draft_memory_enabled = editor
+                .map(|state| state.draft_memory_enabled)
+                .unwrap_or(configured_memory);
+            let active_memory = app.memory_enabled();
+
             lines.push(Line::from(vec![
-                Span::styled("  Memory: ", Style::default().fg(palette.text_muted)),
-                Span::styled(memory, Style::default().fg(palette.text_secondary)),
+                Span::styled("  Active now: ", Style::default().fg(palette.text_muted)),
+                Span::styled(
+                    if active_memory { "on" } else { "off" },
+                    Style::default().fg(palette.text_secondary),
+                ),
             ]));
-            lines.push(Line::from(Span::styled(
-                "  Context controls are read-only in Phase 1.",
-                Style::default().fg(palette.text_muted),
-            )));
+
+            lines.push(Line::from(""));
+            let is_selected = selected == Some(0);
+            let marker = if is_selected { glyphs.selected } else { " " };
+            let value = if draft_memory_enabled { "on" } else { "off" };
+            let label = format!(" {marker} Memory-enabled context");
+            let filler = content_width.saturating_sub(label.width() + value.width() + 2);
+            let bg = is_selected.then_some(palette.bg_highlight);
+            let mut label_style = if is_selected {
+                Style::default()
+                    .fg(palette.text_primary)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette.text_secondary)
+            };
+            let mut filler_style = Style::default();
+            let mut value_style = Style::default().fg(palette.text_muted);
+            if let Some(bg) = bg {
+                label_style = label_style.bg(bg);
+                filler_style = filler_style.bg(bg);
+                value_style = value_style.bg(bg);
+            }
+            lines.push(Line::from(vec![
+                Span::styled(label, label_style),
+                Span::styled(" ".repeat(filler), filler_style),
+                Span::styled("  ", filler_style),
+                Span::styled(value, value_style),
+            ]));
+
+            lines.push(Line::from(""));
+            let dirty = editor.is_some_and(|state| state.dirty);
+            lines.push(Line::from(vec![
+                Span::styled("  Dirty: ", Style::default().fg(palette.text_muted)),
+                Span::styled(
+                    if dirty { "yes" } else { "no" },
+                    Style::default().fg(palette.text_secondary),
+                ),
+            ]));
+            let apply_value = if app.settings_pending_context_apply_next_turn() {
+                "next turn"
+            } else {
+                "none"
+            };
+            lines.push(Line::from(vec![
+                Span::styled("  Pending apply: ", Style::default().fg(palette.text_muted)),
+                Span::styled(apply_value, Style::default().fg(palette.text_secondary)),
+            ]));
         }
         SettingsCategory::Tools => {
             lines.push(Line::from(vec![
@@ -2206,7 +2261,10 @@ fn settings_detail_lines(
         "─".repeat(content_width),
         Style::default().fg(palette.primary_dim),
     )));
-    if category == SettingsCategory::Appearance || category == SettingsCategory::Models {
+    if category == SettingsCategory::Appearance
+        || category == SettingsCategory::Models
+        || category == SettingsCategory::Context
+    {
         let action_label = if category == SettingsCategory::Models {
             " select  "
         } else {

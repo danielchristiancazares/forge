@@ -202,6 +202,13 @@ pub struct ModelEditorSnapshot {
     pub dirty: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextEditorSnapshot {
+    pub draft_memory_enabled: bool,
+    pub selected: usize,
+    pub dirty: bool,
+}
+
 pub use state::DistillationTask;
 
 use state::{
@@ -225,6 +232,7 @@ struct ParsedToolCalls {
 }
 
 const APPEARANCE_SETTINGS_COUNT: usize = 4;
+const CONTEXT_SETTINGS_COUNT: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AppearanceSettingsEditor {
@@ -288,6 +296,27 @@ impl ModelSettingsEditor {
         PredefinedModel::all()
             .iter()
             .position(|predefined| predefined.to_model_name() == *model)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ContextSettingsEditor {
+    baseline_memory_enabled: bool,
+    draft_memory_enabled: bool,
+    selected: usize,
+}
+
+impl ContextSettingsEditor {
+    fn new(initial_memory_enabled: bool) -> Self {
+        Self {
+            baseline_memory_enabled: initial_memory_enabled,
+            draft_memory_enabled: initial_memory_enabled,
+            selected: 0,
+        }
+    }
+
+    fn is_dirty(self) -> bool {
+        self.draft_memory_enabled != self.baseline_memory_enabled
     }
 }
 
@@ -574,14 +603,20 @@ pub struct App {
     view: ViewState,
     /// Persisted model default loaded from config and edited in `/settings`.
     configured_model: ModelName,
+    /// Persisted context defaults loaded from config and edited in `/settings`.
+    configured_context_memory_enabled: bool,
     /// Persisted UI defaults loaded from config and edited in `/settings`.
     configured_ui_options: UiOptions,
     /// Saved model default staged to take effect at the start of the next turn.
     pending_turn_model: Option<ModelName>,
+    /// Saved context defaults staged to take effect at the start of the next turn.
+    pending_turn_context_memory_enabled: Option<bool>,
     /// Saved UI defaults staged to take effect at the start of the next turn.
     pending_turn_ui_options: Option<UiOptions>,
     /// Models detail editor state for `/settings`.
     settings_model_editor: Option<ModelSettingsEditor>,
+    /// Context detail editor state for `/settings`.
+    settings_context_editor: Option<ContextSettingsEditor>,
     /// Appearance detail editor state for `/settings`.
     settings_appearance_editor: Option<AppearanceSettingsEditor>,
     api_keys: HashMap<Provider, SecretString>,
@@ -720,6 +755,11 @@ impl App {
     }
 
     #[must_use]
+    pub fn settings_configured_context_memory_enabled(&self) -> bool {
+        self.configured_context_memory_enabled
+    }
+
+    #[must_use]
     pub fn settings_configured_ui_options(&self) -> UiOptions {
         self.configured_ui_options
     }
@@ -735,8 +775,15 @@ impl App {
     }
 
     #[must_use]
+    pub fn settings_pending_context_apply_next_turn(&self) -> bool {
+        self.pending_turn_context_memory_enabled.is_some()
+    }
+
+    #[must_use]
     pub fn settings_pending_apply_next_turn(&self) -> bool {
-        self.settings_pending_model_apply_next_turn() || self.settings_pending_ui_apply_next_turn()
+        self.settings_pending_model_apply_next_turn()
+            || self.settings_pending_context_apply_next_turn()
+            || self.settings_pending_ui_apply_next_turn()
     }
 
     #[must_use]
@@ -745,6 +792,16 @@ impl App {
             .as_ref()
             .map(|editor| ModelEditorSnapshot {
                 draft: editor.draft.clone(),
+                selected: editor.selected,
+                dirty: editor.is_dirty(),
+            })
+    }
+
+    #[must_use]
+    pub fn settings_context_editor_snapshot(&self) -> Option<ContextEditorSnapshot> {
+        self.settings_context_editor
+            .map(|editor| ContextEditorSnapshot {
+                draft_memory_enabled: editor.draft_memory_enabled,
                 selected: editor.selected,
                 dirty: editor.is_dirty(),
             })
@@ -766,11 +823,17 @@ impl App {
             .as_ref()
             .is_some_and(ModelSettingsEditor::is_dirty)
             || self
+                .settings_context_editor
+                .is_some_and(ContextSettingsEditor::is_dirty)
+            || self
                 .settings_appearance_editor
                 .is_some_and(AppearanceSettingsEditor::is_dirty)
     }
 
     pub(crate) fn apply_pending_turn_settings(&mut self) {
+        if let Some(memory_enabled) = self.pending_turn_context_memory_enabled.take() {
+            self.set_context_memory_enabled_internal(memory_enabled, false);
+        }
         if let Some(model) = self.pending_turn_model.take() {
             self.set_model_internal(model, false);
         }
@@ -1393,6 +1456,21 @@ impl App {
         self.set_model_internal(model, true);
     }
 
+    fn set_context_memory_enabled_internal(&mut self, enabled: bool, persist: bool) {
+        self.memory_enabled = enabled;
+        self.configured_context_memory_enabled = enabled;
+        self.pending_turn_context_memory_enabled = None;
+        self.invalidate_usage_cache();
+        if persist
+            && let Err(err) =
+                config::ForgeConfig::persist_context_settings(config::ContextSettings {
+                    memory: enabled,
+                })
+        {
+            tracing::warn!("Failed to persist context settings: {err}");
+        }
+    }
+
     /// Handle context adaptation after a model switch.
     ///
     /// This method is called after `set_model()` to handle the context adaptation result:
@@ -1591,15 +1669,25 @@ impl App {
             SettingsCategory::Models => {
                 self.settings_model_editor =
                     Some(ModelSettingsEditor::new(self.configured_model.clone()));
+                self.settings_context_editor = None;
+                self.settings_appearance_editor = None;
+            }
+            SettingsCategory::Context => {
+                self.settings_context_editor = Some(ContextSettingsEditor::new(
+                    self.configured_context_memory_enabled,
+                ));
+                self.settings_model_editor = None;
                 self.settings_appearance_editor = None;
             }
             SettingsCategory::Appearance => {
                 self.settings_appearance_editor =
                     Some(AppearanceSettingsEditor::new(self.configured_ui_options));
                 self.settings_model_editor = None;
+                self.settings_context_editor = None;
             }
             _ => {
                 self.settings_model_editor = None;
+                self.settings_context_editor = None;
                 self.settings_appearance_editor = None;
             }
         }
@@ -1607,6 +1695,7 @@ impl App {
 
     fn reset_settings_detail_editor(&mut self) {
         self.settings_model_editor = None;
+        self.settings_context_editor = None;
         self.settings_appearance_editor = None;
     }
 
@@ -1688,6 +1777,12 @@ impl App {
             }
             return;
         }
+        if let Some(editor) = self.settings_context_editor.as_mut() {
+            if editor.selected > 0 {
+                editor.selected -= 1;
+            }
+            return;
+        }
         if let Some(editor) = self.settings_appearance_editor.as_mut()
             && editor.selected > 0
         {
@@ -1703,6 +1798,12 @@ impl App {
             }
             return;
         }
+        if let Some(editor) = self.settings_context_editor.as_mut() {
+            if editor.selected + 1 < CONTEXT_SETTINGS_COUNT {
+                editor.selected += 1;
+            }
+            return;
+        }
         if let Some(editor) = self.settings_appearance_editor.as_mut()
             && editor.selected + 1 < APPEARANCE_SETTINGS_COUNT
         {
@@ -1713,6 +1814,12 @@ impl App {
     pub fn settings_detail_toggle_selected(&mut self) {
         if let Some(editor) = self.settings_model_editor.as_mut() {
             editor.update_draft_from_selected();
+            return;
+        }
+        if let Some(editor) = self.settings_context_editor.as_mut() {
+            if editor.selected == 0 {
+                editor.draft_memory_enabled = !editor.draft_memory_enabled;
+            }
             return;
         }
         let Some(editor) = self.settings_appearance_editor.as_mut() else {
@@ -1741,6 +1848,10 @@ impl App {
             editor.sync_selected_to_draft();
             return;
         }
+        if let Some(editor) = self.settings_context_editor.as_mut() {
+            editor.draft_memory_enabled = editor.baseline_memory_enabled;
+            return;
+        }
         let defaults = self.configured_ui_options;
         if let Some(editor) = self.settings_appearance_editor.as_mut() {
             editor.draft = defaults;
@@ -1766,6 +1877,30 @@ impl App {
                 editor.sync_selected_to_draft();
             }
             self.push_notification("Model default saved. Changes apply on the next turn.");
+            return;
+        }
+
+        if let Some(editor) = self.settings_context_editor {
+            if !editor.is_dirty() {
+                self.push_notification("No settings changes to save.");
+                return;
+            }
+            let draft = editor.draft_memory_enabled;
+            if let Err(err) =
+                config::ForgeConfig::persist_context_settings(config::ContextSettings {
+                    memory: draft,
+                })
+            {
+                tracing::warn!("Failed to persist context setting: {err}");
+                self.push_notification(format!("Failed to save settings: {err}"));
+                return;
+            }
+            self.configured_context_memory_enabled = draft;
+            self.pending_turn_context_memory_enabled = Some(draft);
+            if let Some(editor) = self.settings_context_editor.as_mut() {
+                editor.baseline_memory_enabled = draft;
+            }
+            self.push_notification("Context defaults saved. Changes apply on the next turn.");
             return;
         }
 

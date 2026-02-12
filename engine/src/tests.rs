@@ -62,10 +62,13 @@ fn test_app() -> App {
         should_quit: false,
         view: ViewState::default(),
         configured_model: model.clone(),
+        configured_context_memory_enabled: true,
         configured_ui_options: UiOptions::default(),
         pending_turn_model: None,
+        pending_turn_context_memory_enabled: None,
         pending_turn_ui_options: None,
         settings_model_editor: None,
+        settings_context_editor: None,
         settings_appearance_editor: None,
         api_keys,
         model: model.clone(),
@@ -462,6 +465,14 @@ fn open_models_settings(app: &mut App) {
     app.settings_activate();
 }
 
+fn open_context_settings(app: &mut App) {
+    app.enter_settings_mode();
+    for _ in 0..3 {
+        app.settings_move_down();
+    }
+    app.settings_activate();
+}
+
 #[test]
 fn settings_activate_models_initializes_editor_snapshot() {
     let mut app = test_app();
@@ -502,6 +513,49 @@ fn settings_models_select_and_revert_updates_dirty_state() {
         app.settings_model_editor_snapshot(),
         Some(ModelEditorSnapshot {
             draft: app.settings_configured_model().clone(),
+            selected: 0,
+            dirty: false,
+        })
+    );
+}
+
+#[test]
+fn settings_activate_context_initializes_editor_snapshot() {
+    let mut app = test_app();
+
+    open_context_settings(&mut app);
+
+    assert_eq!(app.settings_detail_view(), Some(SettingsCategory::Context));
+    assert_eq!(
+        app.settings_context_editor_snapshot(),
+        Some(ContextEditorSnapshot {
+            draft_memory_enabled: true,
+            selected: 0,
+            dirty: false,
+        })
+    );
+}
+
+#[test]
+fn settings_context_toggle_and_revert_updates_dirty_state() {
+    let mut app = test_app();
+    open_context_settings(&mut app);
+
+    app.settings_detail_toggle_selected();
+    assert_eq!(
+        app.settings_context_editor_snapshot(),
+        Some(ContextEditorSnapshot {
+            draft_memory_enabled: false,
+            selected: 0,
+            dirty: true,
+        })
+    );
+
+    app.settings_revert_edits();
+    assert_eq!(
+        app.settings_context_editor_snapshot(),
+        Some(ContextEditorSnapshot {
+            draft_memory_enabled: true,
             selected: 0,
             dirty: false,
         })
@@ -593,6 +647,25 @@ fn queue_message_applies_pending_model_before_request_config() {
     assert_eq!(queued.config.model(), &pending_model);
     assert_eq!(app.model(), pending_model.as_str());
     assert!(!app.settings_pending_model_apply_next_turn());
+}
+
+#[test]
+fn queue_message_applies_pending_context_before_request_config() {
+    let mut app = test_app();
+    app.pending_turn_context_memory_enabled = Some(false);
+    app.input = InputState::Insert(DraftInput {
+        text: "pending context".to_string(),
+        cursor: 15,
+    });
+
+    let token = app.insert_token().expect("insert mode");
+    let _queued = app
+        .insert_mode(token)
+        .queue_message()
+        .expect("queued message");
+
+    assert!(!app.memory_enabled());
+    assert!(!app.settings_pending_context_apply_next_turn());
 }
 
 #[test]

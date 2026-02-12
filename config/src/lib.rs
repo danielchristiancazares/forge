@@ -70,6 +70,11 @@ pub struct AppUiSettings {
     pub show_thinking: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextSettings {
+    pub memory: bool,
+}
+
 #[derive(Default, Deserialize)]
 pub struct ApiKeys {
     pub anthropic: Option<String>,
@@ -531,9 +536,30 @@ impl ForgeConfig {
             Ok(())
         })
     }
+
+    pub fn persist_context_settings(settings: ContextSettings) -> std::io::Result<()> {
+        update_context_section(|context| {
+            context["memory"] = toml_edit::value(settings.memory);
+            Ok(())
+        })
+    }
 }
 
 fn update_app_section<F>(mut update: F) -> std::io::Result<()>
+where
+    F: FnMut(&mut toml_edit::Table) -> std::io::Result<()>,
+{
+    update_named_section("app", &mut update)
+}
+
+fn update_context_section<F>(mut update: F) -> std::io::Result<()>
+where
+    F: FnMut(&mut toml_edit::Table) -> std::io::Result<()>,
+{
+    update_named_section("context", &mut update)
+}
+
+fn update_named_section<F>(section: &str, mut update: F) -> std::io::Result<()>
 where
     F: FnMut(&mut toml_edit::Table) -> std::io::Result<()>,
 {
@@ -559,17 +585,17 @@ where
         .parse::<toml_edit::DocumentMut>()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-    if !doc.contains_key("app") {
-        doc["app"] = toml_edit::Item::Table(toml_edit::Table::new());
+    if !doc.contains_key(section) {
+        doc[section] = toml_edit::Item::Table(toml_edit::Table::new());
     }
 
-    let Some(app) = doc["app"].as_table_mut() else {
+    let Some(section_table) = doc[section].as_table_mut() else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "[app] must be a table",
+            format!("[{section}] must be a table"),
         ));
     };
-    update(app)?;
+    update(section_table)?;
 
     persist_config_doc(&path, &doc)
 }
