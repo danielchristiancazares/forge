@@ -1,8 +1,8 @@
 use crate::{
-    ApiResponse, ApiUsage, CacheHint, CacheableMessage, Message, OutputLimits, Result,
-    SendMessageRequest, SseParseAction, SseParser, StreamEvent, ThinkingReplayState,
-    ThoughtSignatureState, ToolDefinition, handle_response, http_client, process_sse_stream,
-    retry::{RetryConfig, send_with_retry},
+    ApiUsage, CacheHint, CacheableMessage, Message, OutputLimits, Result, SendMessageRequest,
+    SseParseAction, SseParser, StreamEvent, ThinkingReplayState, ThoughtSignatureState,
+    ToolDefinition, emit_or_continue, http_client, parse_sse_payload, retry::RetryConfig,
+    send_retried_sse_request,
 };
 use forge_types::ThinkingState;
 use serde_json::json;
@@ -30,18 +30,19 @@ fn anthropic_beta_header(model: &str, limits: OutputLimits) -> Option<&'static s
     }
 }
 
+fn apply_ephemeral_cache_control(block: &mut serde_json::Value) {
+    block["cache_control"] = json!({ "type": "ephemeral", "ttl": "1h" });
+}
+
 fn content_block(text: &str, cache_hint: CacheHint) -> serde_json::Value {
-    match cache_hint {
-        CacheHint::Default => json!({
-            "type": "text",
-            "text": text
-        }),
-        CacheHint::Ephemeral => json!({
-            "type": "text",
-            "text": text,
-            "cache_control": { "type": "ephemeral", "ttl": "1h" }
-        }),
+    let mut block = json!({
+        "type": "text",
+        "text": text
+    });
+    if matches!(cache_hint, CacheHint::Ephemeral) {
+        apply_ephemeral_cache_control(&mut block);
     }
+    block
 }
 
 struct ClaudeRequestBodyInput<'a> {
@@ -91,7 +92,7 @@ fn build_request_body(input: ClaudeRequestBodyInput<'_>) -> serde_json::Value {
                            messages: &mut Vec<serde_json::Value>| {
         if !content.is_empty() {
             if *cached && let Some(last) = content.last_mut() {
-                last["cache_control"] = json!({"type": "ephemeral", "ttl": "1h"});
+                apply_ephemeral_cache_control(last);
             }
             messages.push(json!({
                 "role": "assistant",
@@ -157,7 +158,7 @@ fn build_request_body(input: ClaudeRequestBodyInput<'_>) -> serde_json::Value {
                     "is_error": result.is_error
                 });
                 if matches!(hint, CacheHint::Ephemeral) {
-                    block["cache_control"] = json!({"type": "ephemeral", "ttl": "1h"});
+                    apply_ephemeral_cache_control(&mut block);
                 }
                 api_messages.push(json!({
                     "role": "user",
@@ -222,7 +223,7 @@ fn build_request_body(input: ClaudeRequestBodyInput<'_>) -> serde_json::Value {
             })
             .collect();
         if cache_last_tool && let Some(last) = tool_schemas.last_mut() {
-            last["cache_control"] = json!({"type": "ephemeral", "ttl": "1h"});
+            apply_ephemeral_cache_control(last);
         }
         body.insert("tools".into(), json!(tool_schemas));
     }
@@ -290,12 +291,8 @@ struct ClaudeParser {
 impl SseParser for ClaudeParser {
     fn parse(&mut self, json: &serde_json::Value) -> SseParseAction {
         // Deserialize into typed event - forward compatible via Unknown variant
-        let event: typed::Event = match serde_json::from_value(json.clone()) {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!(%e, "Failed to parse Claude SSE event");
-                return SseParseAction::Continue;
-            }
+        let Some(event) = parse_sse_payload::<typed::Event>(json, "Claude") else {
+            return SseParseAction::Continue;
         };
 
         let mut events = Vec::new();
@@ -398,11 +395,7 @@ impl SseParser for ClaudeParser {
             typed::Event::Ping | typed::Event::Unknown => {}
         }
 
-        if events.is_empty() {
-            SseParseAction::Continue
-        } else {
-            SseParseAction::Emit(events)
-        }
+        emit_or_continue(events)
     }
 
     fn provider_name(&self) -> &'static str {
@@ -429,11 +422,10 @@ pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
     let beta_header = anthropic_beta_header(config.model().as_str(), request.limits);
 
     let api_key = config.api_key().to_string();
-    let body_json = body.clone();
+    let body_json = body;
 
-    // Wrap request with retry logic (REQ-4)
-    // Streaming requests omit X-Stainless-Timeout (no total timeout)
-    let outcome = send_with_retry(
+    let mut parser = ClaudeParser::default();
+    send_retried_sse_request(
         || {
             let mut request = client
                 .post(API_URL)
@@ -447,21 +439,9 @@ pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
 
             request.json(&body_json)
         },
-        None, // No timeout header for streaming
         &retry_config,
-    )
-    .await;
-
-    let response = match handle_response(outcome, &request.tx).await? {
-        ApiResponse::Success(resp) => resp,
-        ApiResponse::StreamTerminated => return Ok(()),
-    };
-
-    let mut parser = ClaudeParser::default();
-    process_sse_stream(
-        response,
-        &mut parser,
         &request.tx,
+        &mut parser,
         crate::stream_idle_timeout(),
     )
     .await

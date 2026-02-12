@@ -2,6 +2,7 @@
 //!
 //! Used by the TUI for rendering/input, intentionally separate from orchestration.
 
+mod animation;
 mod display;
 mod file_picker;
 mod history;

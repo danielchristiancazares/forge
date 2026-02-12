@@ -35,23 +35,7 @@ fn test_app() -> App {
     let mut context_manager = ContextManager::new(model.clone());
     context_manager.set_output_limit(output_limits.max_output_tokens());
     let tool_settings = App::tool_settings_from_config(None);
-    let mut tool_registry = tools::ToolRegistry::default();
-    let _ = tools::builtins::register_builtins(
-        &mut tool_registry,
-        tool_settings.read_limits,
-        tool_settings.patch_limits,
-        tool_settings.search.clone(),
-        tool_settings.webfetch.clone(),
-        tool_settings.shell.clone(),
-        tool_settings.run_policy,
-    );
-    let tool_registry = std::sync::Arc::new(tool_registry);
-    let tool_definitions = tool_registry.definitions();
-    let hidden_tools: std::collections::HashSet<String> = tool_definitions
-        .iter()
-        .filter(|d| d.hidden)
-        .map(|d| d.name.clone())
-        .collect();
+    let (tool_registry, tool_definitions, hidden_tools) = App::build_tool_registry(&tool_settings);
     let tool_journal = ToolJournal::open_in_memory().expect("in-memory tool journal");
     let tool_file_cache = std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 

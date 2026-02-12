@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use super::animation::normalized_progress;
+
 /// The kind of modal animation effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalEffectKind {
@@ -52,12 +54,7 @@ impl ModalEffect {
 
     #[must_use]
     pub fn progress(&self) -> f32 {
-        if self.duration.is_zero() {
-            return 1.0;
-        }
-        let elapsed = self.elapsed.as_secs_f32();
-        let total = self.duration.as_secs_f32();
-        (elapsed / total).clamp(0.0, 1.0)
+        normalized_progress(self.elapsed, self.duration)
     }
 
     #[must_use]

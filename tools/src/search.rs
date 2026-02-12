@@ -905,6 +905,13 @@ struct UgrepRun<'a> {
 }
 
 #[derive(Debug, Clone)]
+struct BatchExecutionResult {
+    timed_out: bool,
+    exit_code: Option<i32>,
+    stderr: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 struct BackendInfo {
     kind: BackendKind,
     binary: PathBuf,
@@ -1178,6 +1185,177 @@ fn finalize_output(response: SearchResponse, ctx: &ToolCtx) -> Result<String, To
     }
 }
 
+fn add_batch_files(cmd: &mut Command, pattern: &str, batch: &[FileCandidate], search_root: &Path) {
+    cmd.arg("--");
+    cmd.arg(pattern);
+    for file in batch {
+        let current = search_root.join(&file.rel_path);
+        if current
+            .canonicalize()
+            .is_ok_and(|actual| actual == file.canonical)
+        {
+            cmd.arg(&file.rel_path);
+        }
+    }
+}
+
+async fn execute_backend_batch<F>(
+    mut cmd: Command,
+    deadline: Instant,
+    mut handle_line: F,
+) -> Result<BatchExecutionResult, ToolError>
+where
+    F: FnMut(&str) -> Result<(), ToolError>,
+{
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    #[cfg(unix)]
+    super::process::set_new_session(&mut cmd);
+
+    let child = cmd.spawn().map_err(|e| ToolError::ExecutionFailed {
+        tool: SEARCH_TOOL_NAME.to_string(),
+        message: e.to_string(),
+    })?;
+    let mut guard = super::process::ChildGuard::new(child);
+
+    let stdout = guard
+        .child_mut()
+        .stdout
+        .take()
+        .ok_or_else(|| ToolError::ExecutionFailed {
+            tool: SEARCH_TOOL_NAME.to_string(),
+            message: "failed to capture stdout".to_string(),
+        })?;
+    let stderr = guard
+        .child_mut()
+        .stderr
+        .take()
+        .ok_or_else(|| ToolError::ExecutionFailed {
+            tool: SEARCH_TOOL_NAME.to_string(),
+            message: "failed to capture stderr".to_string(),
+        })?;
+
+    let stderr_task = tokio::spawn(async move {
+        const MAX_STDERR: u64 = 64 * 1024;
+        let mut buf = Vec::with_capacity(1024);
+        let _ = stderr.take(MAX_STDERR).read_to_end(&mut buf).await;
+        String::from_utf8_lossy(&buf).into_owned()
+    });
+
+    let mut timed_out = false;
+    let mut stdout_reader = BufReader::new(stdout).lines();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            timed_out = true;
+            let _ = guard.child_mut().kill().await;
+            break;
+        }
+        let line = match tokio::time::timeout(remaining, stdout_reader.next_line()).await {
+            Ok(Ok(line)) => line,
+            Ok(Err(err)) => {
+                return Err(ToolError::ExecutionFailed {
+                    tool: SEARCH_TOOL_NAME.to_string(),
+                    message: err.to_string(),
+                });
+            }
+            Err(_) => {
+                timed_out = true;
+                let _ = guard.child_mut().kill().await;
+                break;
+            }
+        };
+        let Some(line) = line else {
+            break;
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        handle_line(&line)?;
+    }
+
+    let status = guard
+        .child_mut()
+        .wait()
+        .await
+        .map_err(|e| ToolError::ExecutionFailed {
+            tool: SEARCH_TOOL_NAME.to_string(),
+            message: e.to_string(),
+        })?;
+    guard.disarm();
+
+    let stderr_text = stderr_task.await.unwrap_or_default();
+    let stderr = if stderr_text.trim().is_empty() {
+        None
+    } else {
+        Some(stderr_text)
+    };
+    Ok(BatchExecutionResult {
+        timed_out,
+        exit_code: status.code(),
+        stderr,
+    })
+}
+
+fn apply_shared_match_flags(cmd: &mut Command, fixed_strings: bool, word_regexp: bool) {
+    if fixed_strings {
+        cmd.arg("-F");
+    }
+    if word_regexp {
+        cmd.arg("-w");
+    }
+}
+
+fn apply_case_mode_flags(
+    cmd: &mut Command,
+    case_mode: CaseMode,
+    pattern: &str,
+    disable_unicode: bool,
+) {
+    match case_mode {
+        CaseMode::Sensitive => {}
+        CaseMode::Insensitive => {
+            cmd.arg("-i");
+            if disable_unicode {
+                cmd.arg("--no-unicode");
+            }
+        }
+        CaseMode::Smart => {
+            if !pattern_has_ascii_uppercase(pattern) {
+                cmd.arg("-i");
+                if disable_unicode {
+                    cmd.arg("--no-unicode");
+                }
+            }
+        }
+    }
+}
+
+fn parse_backend_json_line(line: &str, backend_name: &str) -> Result<serde_json::Value, ToolError> {
+    serde_json::from_str(line).map_err(|e| ToolError::ExecutionFailed {
+        tool: SEARCH_TOOL_NAME.to_string(),
+        message: format!("invalid JSON from {backend_name}: {e}"),
+    })
+}
+
+fn merge_batch_result(
+    batch_result: BatchExecutionResult,
+    timed_out: &mut bool,
+    exit_code: &mut Option<i32>,
+    stderr_out: &mut Option<String>,
+) -> bool {
+    *exit_code = batch_result.exit_code;
+    if let Some(stderr) = batch_result.stderr {
+        *stderr_out = Some(stderr);
+    }
+    if batch_result.timed_out {
+        *timed_out = true;
+        return true;
+    }
+    false
+}
+
 async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
     let RipgrepRun {
         base,
@@ -1225,117 +1403,19 @@ async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
             cmd.arg("-C");
             cmd.arg(context.to_string());
         }
-        if fixed_strings {
-            cmd.arg("-F");
-        }
-        if word_regexp {
-            cmd.arg("-w");
-        }
-        match case_mode {
-            CaseMode::Sensitive => {}
-            CaseMode::Insensitive => {
-                cmd.arg("-i");
-                cmd.arg("--no-unicode");
-            }
-            CaseMode::Smart => {
-                if !pattern_has_ascii_uppercase(pattern) {
-                    cmd.arg("-i");
-                    cmd.arg("--no-unicode");
-                }
-            }
-        }
+        apply_shared_match_flags(&mut cmd, fixed_strings, word_regexp);
+        apply_case_mode_flags(&mut cmd, *case_mode, pattern, true);
         if no_ignore {
             cmd.arg("--no-ignore");
         }
-        cmd.arg("--");
-        cmd.arg(pattern);
-        for file in batch {
-            let current = search_root.join(&file.rel_path);
-            if current
-                .canonicalize()
-                .is_ok_and(|actual| actual == file.canonical)
-            {
-                cmd.arg(&file.rel_path);
-            }
-        }
+        add_batch_files(&mut cmd, pattern, batch, search_root);
 
-        let env: Vec<(String, String)> = std::env::vars().collect();
-        let sanitized = env_sanitizer.sanitize_env(&env);
-        cmd.env_clear();
-        cmd.envs(sanitized);
+        super::process::apply_sanitized_env(&mut cmd, env_sanitizer);
 
-        cmd.stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        #[cfg(unix)]
-        super::process::set_new_session(&mut cmd);
-
-        let child = cmd.spawn().map_err(|e| ToolError::ExecutionFailed {
-            tool: SEARCH_TOOL_NAME.to_string(),
-            message: e.to_string(),
-        })?;
-        let mut guard = super::process::ChildGuard::new(child);
-
-        let stdout = guard
-            .child_mut()
-            .stdout
-            .take()
-            .ok_or_else(|| ToolError::ExecutionFailed {
-                tool: SEARCH_TOOL_NAME.to_string(),
-                message: "failed to capture stdout".to_string(),
-            })?;
-        let stderr = guard
-            .child_mut()
-            .stderr
-            .take()
-            .ok_or_else(|| ToolError::ExecutionFailed {
-                tool: SEARCH_TOOL_NAME.to_string(),
-                message: "failed to capture stderr".to_string(),
-            })?;
-
-        let stderr_task = tokio::spawn(async move {
-            const MAX_STDERR: u64 = 64 * 1024;
-            let mut buf = Vec::with_capacity(1024);
-            let _ = stderr.take(MAX_STDERR).read_to_end(&mut buf).await;
-            String::from_utf8_lossy(&buf).into_owned()
-        });
-
-        let mut stdout_reader = BufReader::new(stdout).lines();
-
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                timed_out = true;
-                let _ = guard.child_mut().kill().await;
-                break;
-            }
-            let line = match tokio::time::timeout(remaining, stdout_reader.next_line()).await {
-                Ok(Ok(line)) => line,
-                Ok(Err(err)) => {
-                    return Err(ToolError::ExecutionFailed {
-                        tool: SEARCH_TOOL_NAME.to_string(),
-                        message: err.to_string(),
-                    });
-                }
-                Err(_) => {
-                    timed_out = true;
-                    let _ = guard.child_mut().kill().await;
-                    break;
-                }
-            };
-            let Some(line) = line else {
-                break;
-            };
-            if line.trim().is_empty() {
-                continue;
-            }
-            let value: serde_json::Value =
-                serde_json::from_str(&line).map_err(|e| ToolError::ExecutionFailed {
-                    tool: SEARCH_TOOL_NAME.to_string(),
-                    message: format!("invalid JSON from ripgrep: {e}"),
-                })?;
+        let batch_result = execute_backend_batch(cmd, deadline, |line| {
+            let value = parse_backend_json_line(line, "ripgrep")?;
             let Some(kind) = value.get("type").and_then(|v| v.as_str()) else {
-                continue;
+                return Ok(());
             };
             match kind {
                 "match" => {
@@ -1367,24 +1447,16 @@ async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
                 }
                 _ => {}
             }
-        }
+            Ok(())
+        })
+        .await?;
 
-        let status = guard
-            .child_mut()
-            .wait()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed {
-                tool: SEARCH_TOOL_NAME.to_string(),
-                message: e.to_string(),
-            })?;
-        guard.disarm();
-        exit_code = status.code();
-        let stderr = stderr_task.await.unwrap_or_default();
-        if !stderr.trim().is_empty() {
-            stderr_out = Some(stderr);
-        }
-
-        if timed_out {
+        if merge_batch_result(
+            batch_result,
+            &mut timed_out,
+            &mut exit_code,
+            &mut stderr_out,
+        ) {
             break;
         }
     }
@@ -1434,113 +1506,18 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
         cmd.arg(
             r#"--format={"path": %h, "line": %n, "column": %k, "size": %d, "line_text": %J}%~"#,
         );
-        if fixed_strings {
-            cmd.arg("-F");
-        }
-        if word_regexp {
-            cmd.arg("-w");
-        }
-        match case_mode {
-            CaseMode::Sensitive => {}
-            CaseMode::Insensitive => {
-                cmd.arg("-i");
-            }
-            CaseMode::Smart => {
-                if !pattern_has_ascii_uppercase(pattern) {
-                    cmd.arg("-i");
-                }
-            }
-        }
+        apply_shared_match_flags(&mut cmd, fixed_strings, word_regexp);
+        apply_case_mode_flags(&mut cmd, *case_mode, pattern, false);
         if let Some(level) = fuzzy {
             cmd.arg(format!("-Z{level}"));
         }
 
-        cmd.arg("--");
-        cmd.arg(pattern);
-        for file in batch {
-            let current = search_root.join(&file.rel_path);
-            if current
-                .canonicalize()
-                .is_ok_and(|actual| actual == file.canonical)
-            {
-                cmd.arg(&file.rel_path);
-            }
-        }
+        add_batch_files(&mut cmd, pattern, batch, search_root);
 
-        let env: Vec<(String, String)> = std::env::vars().collect();
-        let sanitized = env_sanitizer.sanitize_env(&env);
-        cmd.env_clear();
-        cmd.envs(sanitized);
+        super::process::apply_sanitized_env(&mut cmd, env_sanitizer);
 
-        cmd.stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        #[cfg(unix)]
-        super::process::set_new_session(&mut cmd);
-
-        let child = cmd.spawn().map_err(|e| ToolError::ExecutionFailed {
-            tool: SEARCH_TOOL_NAME.to_string(),
-            message: e.to_string(),
-        })?;
-        let mut guard = super::process::ChildGuard::new(child);
-
-        let stdout = guard
-            .child_mut()
-            .stdout
-            .take()
-            .ok_or_else(|| ToolError::ExecutionFailed {
-                tool: SEARCH_TOOL_NAME.to_string(),
-                message: "failed to capture stdout".to_string(),
-            })?;
-        let stderr = guard
-            .child_mut()
-            .stderr
-            .take()
-            .ok_or_else(|| ToolError::ExecutionFailed {
-                tool: SEARCH_TOOL_NAME.to_string(),
-                message: "failed to capture stderr".to_string(),
-            })?;
-
-        let stderr_task = tokio::spawn(async move {
-            const MAX_STDERR: u64 = 64 * 1024;
-            let mut buf = Vec::with_capacity(1024);
-            let _ = stderr.take(MAX_STDERR).read_to_end(&mut buf).await;
-            String::from_utf8_lossy(&buf).into_owned()
-        });
-
-        let mut stdout_reader = BufReader::new(stdout).lines();
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                timed_out = true;
-                let _ = guard.child_mut().kill().await;
-                break;
-            }
-            let line = match tokio::time::timeout(remaining, stdout_reader.next_line()).await {
-                Ok(Ok(line)) => line,
-                Ok(Err(err)) => {
-                    return Err(ToolError::ExecutionFailed {
-                        tool: SEARCH_TOOL_NAME.to_string(),
-                        message: err.to_string(),
-                    });
-                }
-                Err(_) => {
-                    timed_out = true;
-                    let _ = guard.child_mut().kill().await;
-                    break;
-                }
-            };
-            let Some(line) = line else {
-                break;
-            };
-            if line.trim().is_empty() {
-                continue;
-            }
-            let value: serde_json::Value =
-                serde_json::from_str(&line).map_err(|e| ToolError::ExecutionFailed {
-                    tool: SEARCH_TOOL_NAME.to_string(),
-                    message: format!("invalid JSON from ugrep: {e}"),
-                })?;
+        let batch_result = execute_backend_batch(cmd, deadline, |line| {
+            let value = parse_backend_json_line(line, "ugrep")?;
             if let Some(event) = parse_ugrep_match(&value, order_root, search_root) {
                 accumulator.push_match(
                     event.path,
@@ -1551,24 +1528,16 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
                     event.match_text,
                 );
             }
-        }
+            Ok(())
+        })
+        .await?;
 
-        let status = guard
-            .child_mut()
-            .wait()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed {
-                tool: SEARCH_TOOL_NAME.to_string(),
-                message: e.to_string(),
-            })?;
-        guard.disarm();
-        exit_code = status.code();
-        let stderr = stderr_task.await.unwrap_or_default();
-        if !stderr.trim().is_empty() {
-            stderr_out = Some(stderr);
-        }
-
-        if timed_out {
+        if merge_batch_result(
+            batch_result,
+            &mut timed_out,
+            &mut exit_code,
+            &mut stderr_out,
+        ) {
             break;
         }
     }
@@ -1578,6 +1547,26 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
         exit_code,
         stderr: stderr_out,
     })
+}
+
+fn build_normalized_path_and_sort_key(
+    path_text: &str,
+    search_root: &Path,
+    order_root: &Path,
+) -> (String, Vec<u8>) {
+    let path = normalize_path_text(path_text);
+    let abs_path = search_root.join(path_text);
+    let sort_key = path_sort_key(&abs_path, order_root);
+    (path, sort_key)
+}
+
+fn extract_match_text(line_text: &str, start: usize, end: usize) -> String {
+    line_text
+        .as_bytes()
+        .get(start..end)
+        .and_then(|s| std::str::from_utf8(s).ok())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn parse_rg_match(
@@ -1595,17 +1584,10 @@ fn parse_rg_match(
     let start = submatch.get("start")?.as_u64()? as usize;
     let end = submatch.get("end")?.as_u64()? as usize;
 
-    let match_text = line_text
-        .as_bytes()
-        .get(start..end)
-        .and_then(|s| std::str::from_utf8(s).ok())
-        .unwrap_or("")
-        .to_string();
+    let match_text = extract_match_text(&line_text, start, end);
 
     let column = start as u64 + 1;
-    let path = normalize_path_text(path_text);
-    let abs_path = search_root.join(path_text);
-    let sort_key = path_sort_key(&abs_path, order_root);
+    let (path, sort_key) = build_normalized_path_and_sort_key(path_text, search_root, order_root);
 
     Some(ParsedMatchEvent {
         path,
@@ -1628,9 +1610,7 @@ fn parse_rg_context(
     let lines_text = data.get("lines")?.get("text")?.as_str()?;
     let line_text = trim_line_endings(lines_text);
 
-    let path = normalize_path_text(path_text);
-    let abs_path = search_root.join(path_text);
-    let sort_key = path_sort_key(&abs_path, order_root);
+    let (path, sort_key) = build_normalized_path_and_sort_key(path_text, search_root, order_root);
 
     Some(ParsedContextEvent {
         path,
@@ -1667,16 +1647,9 @@ fn parse_ugrep_match(
     let line_text = trim_line_endings(line_text_raw);
 
     let start = column.saturating_sub(1) as usize;
-    let match_text = line_text
-        .as_bytes()
-        .get(start..start.saturating_add(size))
-        .and_then(|s| std::str::from_utf8(s).ok())
-        .unwrap_or("")
-        .to_string();
+    let match_text = extract_match_text(&line_text, start, start.saturating_add(size));
 
-    let path = normalize_path_text(path_text);
-    let abs_path = search_root.join(path_text);
-    let sort_key = path_sort_key(&abs_path, order_root);
+    let (path, sort_key) = build_normalized_path_and_sort_key(path_text, search_root, order_root);
 
     Some(ParsedMatchEvent {
         path,

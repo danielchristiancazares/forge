@@ -634,10 +634,7 @@ async fn run_git(
         .stderr(std::process::Stdio::piped())
         .current_dir(working_dir);
 
-    let env: Vec<(String, String)> = std::env::vars().collect();
-    let sanitized = ctx.env_sanitizer.sanitize_env(&env);
-    cmd.env_clear();
-    cmd.envs(sanitized);
+    super::process::apply_sanitized_env(&mut cmd, &ctx.env_sanitizer);
 
     #[cfg(unix)]
     super::process::set_new_session(&mut cmd);

@@ -7,7 +7,6 @@
 //! Source tracking allows facts to be linked to the files they were derived from,
 //! enabling staleness detection when files change externally.
 
-use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,6 +16,7 @@ use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
 use super::librarian::{Fact, FactType};
+use crate::sqlite_security::prepare_db_path;
 
 /// Unique identifier for a stored fact.
 pub type FactId = i64;
@@ -110,16 +110,7 @@ impl FactStore {
     /// Open or create fact store database at the given path.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        if let Some(parent) = path.parent()
-            && !parent.exists()
-        {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
-        }
-        if let Some(parent) = path.parent() {
-            ensure_secure_dir(parent)?;
-        }
-        ensure_secure_db_files(path)?;
+        prepare_db_path(path)?;
 
         let db = Connection::open(path)
             .with_context(|| format!("Failed to open fact store at {}", path.display()))?;
@@ -562,23 +553,6 @@ fn day_of_year_to_month_day(day_of_year: i32, leap: bool) -> (i32, i32) {
     (12, 31) // Fallback
 }
 
-/// Ensure directory has secure permissions.
-fn ensure_secure_dir(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let metadata = std::fs::metadata(path)
-            .with_context(|| format!("Failed to read metadata for {}", path.display()))?;
-        let mode = metadata.permissions().mode();
-        if mode & 0o077 != 0 {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-                .with_context(|| format!("Failed to set permissions on {}", path.display()))?;
-        }
-    }
-    let _ = path; // Suppress unused warning on Windows
-    Ok(())
-}
-
 /// Compute SHA256 hash of a file.
 fn compute_file_sha256(path: impl AsRef<Path>) -> Result<String> {
     let path = path.as_ref();
@@ -602,59 +576,6 @@ fn compute_file_sha256(path: impl AsRef<Path>) -> Result<String> {
     // Manual hex encoding to avoid hex crate dependency
     let hex_chars: Vec<String> = hash.iter().map(|b| format!("{b:02x}")).collect();
     Ok(hex_chars.join(""))
-}
-
-/// Ensure database files have secure permissions.
-fn ensure_secure_db_files(path: &Path) -> Result<()> {
-    if !path.exists() {
-        // Use atomic mode setting on Unix to avoid TOCTOU race between create and chmod
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            let _file = OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .read(true)
-                .write(true)
-                .mode(0o600)
-                .open(path)
-                .with_context(|| format!("Failed to create database file: {}", path.display()))?;
-        }
-        #[cfg(not(unix))]
-        {
-            let _file = OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .read(true)
-                .write(true)
-                .open(path)
-                .with_context(|| format!("Failed to create database file: {}", path.display()))?;
-        }
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Ensure permissions are correct even for pre-existing files
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("Failed to set permissions on {}", path.display()))?;
-        // Secure WAL/SHM sidecars unconditionally — they may be created after
-        // WAL mode is enabled, so always attempt to fix permissions.
-        for suffix in ["-wal", "-shm"] {
-            let sidecar = path.with_file_name(format!(
-                "{}{}",
-                path.file_name()
-                    .map(|n| n.to_string_lossy())
-                    .unwrap_or_default(),
-                suffix
-            ));
-            if sidecar.exists() {
-                let _ = std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o600));
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
 }
 
 #[cfg(test)]

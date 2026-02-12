@@ -48,6 +48,16 @@ impl Drop for ChildGuard {
     }
 }
 
+pub(crate) fn apply_sanitized_env(
+    cmd: &mut tokio::process::Command,
+    env_sanitizer: &crate::EnvSanitizer,
+) {
+    let env: Vec<(String, String)> = std::env::vars().collect();
+    let sanitized = env_sanitizer.sanitize_env(&env);
+    cmd.env_clear();
+    cmd.envs(sanitized);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KillOutcome {
     NotRunning,

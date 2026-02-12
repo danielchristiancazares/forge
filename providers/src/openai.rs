@@ -1,9 +1,8 @@
 use crate::{
     ApiConfig, ApiResponse, ApiUsage, CacheableMessage, Message, OutputLimits, Result,
     SendMessageRequest, SseParseAction, SseParser, StreamEvent, ThinkingReplayState,
-    ThoughtSignatureState, ToolDefinition, handle_response, http_client, process_sse_stream,
-    retry::{RetryConfig, send_with_retry},
-    send_event,
+    ThoughtSignatureState, ToolDefinition, emit_or_continue, http_client, parse_sse_payload,
+    process_sse_stream, retry::RetryConfig, send_event, send_retried_request,
 };
 
 use forge_types::{OpenAIReasoningEffort, OpenAIReasoningSummary};
@@ -150,12 +149,8 @@ impl OpenAIParser {
 impl SseParser for OpenAIParser {
     fn parse(&mut self, json: &Value) -> SseParseAction {
         // Deserialize into typed event - forward compatible via Unknown variant
-        let event: typed::Event = match serde_json::from_value(json.clone()) {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!(%e, "Failed to parse OpenAI SSE event");
-                return SseParseAction::Continue;
-            }
+        let Some(event) = parse_sse_payload::<typed::Event>(json, "OpenAI") else {
+            return SseParseAction::Continue;
         };
 
         let mut events = Vec::new();
@@ -380,11 +375,7 @@ impl SseParser for OpenAIParser {
             typed::Event::Unknown => {}
         }
 
-        if events.is_empty() {
-            SseParseAction::Continue
-        } else {
-            SseParseAction::Emit(events)
-        }
+        emit_or_continue(events)
     }
 
     fn provider_name(&self) -> &'static str {
@@ -577,7 +568,7 @@ pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
     );
 
     let auth_header = format!("Bearer {}", config.api_key());
-    let body_json = body.clone();
+    let body_json = body;
 
     let background_state = if is_pro {
         Some(Arc::new(Mutex::new(BackgroundStreamState::default())))
@@ -588,7 +579,7 @@ pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
         .as_ref()
         .map(|st| BackgroundCancelGuard::new(client.clone(), auth_header.clone(), st.clone()));
 
-    let outcome = send_with_retry(
+    let response = match send_retried_request(
         || {
             client
                 .post(API_URL)
@@ -596,12 +587,11 @@ pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
                 .header("content-type", "application/json")
                 .json(&body_json)
         },
-        None,
         &retry_config,
+        tx,
     )
-    .await;
-
-    let response = match handle_response(outcome, tx).await? {
+    .await?
+    {
         ApiResponse::Success(resp) => resp,
         ApiResponse::StreamTerminated => {
             if let Some(g) = cancel_guard.as_mut() {
