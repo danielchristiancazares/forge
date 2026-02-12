@@ -61,8 +61,11 @@ fn test_app() -> App {
         display_version: 0,
         should_quit: false,
         view: ViewState::default(),
+        configured_model: model.clone(),
         configured_ui_options: UiOptions::default(),
+        pending_turn_model: None,
         pending_turn_ui_options: None,
+        settings_model_editor: None,
         settings_appearance_editor: None,
         api_keys,
         model: model.clone(),
@@ -453,6 +456,58 @@ fn open_appearance_settings(app: &mut App) {
     app.settings_activate();
 }
 
+fn open_models_settings(app: &mut App) {
+    app.enter_settings_mode();
+    app.settings_move_down();
+    app.settings_activate();
+}
+
+#[test]
+fn settings_activate_models_initializes_editor_snapshot() {
+    let mut app = test_app();
+
+    open_models_settings(&mut app);
+
+    assert_eq!(app.settings_detail_view(), Some(SettingsCategory::Models));
+    assert_eq!(
+        app.settings_model_editor_snapshot(),
+        Some(ModelEditorSnapshot {
+            draft: app.settings_configured_model().clone(),
+            selected: 0,
+            dirty: false,
+        })
+    );
+}
+
+#[test]
+fn settings_models_select_and_revert_updates_dirty_state() {
+    let mut app = test_app();
+    open_models_settings(&mut app);
+
+    app.settings_detail_move_down();
+    app.settings_detail_toggle_selected();
+
+    let selected_model = ModelName::from_predefined(PredefinedModel::ClaudeHaiku);
+    assert_eq!(
+        app.settings_model_editor_snapshot(),
+        Some(ModelEditorSnapshot {
+            draft: selected_model,
+            selected: 1,
+            dirty: true,
+        })
+    );
+
+    app.settings_revert_edits();
+    assert_eq!(
+        app.settings_model_editor_snapshot(),
+        Some(ModelEditorSnapshot {
+            draft: app.settings_configured_model().clone(),
+            selected: 0,
+            dirty: false,
+        })
+    );
+}
+
 #[test]
 fn settings_activate_appearance_initializes_editor_snapshot() {
     let mut app = test_app();
@@ -517,6 +572,27 @@ fn apply_pending_turn_settings_consumes_staged_defaults() {
 
     assert_eq!(app.ui_options(), pending);
     assert!(!app.settings_pending_apply_next_turn());
+}
+
+#[test]
+fn queue_message_applies_pending_model_before_request_config() {
+    let mut app = test_app();
+    let pending_model = ModelName::from_predefined(PredefinedModel::ClaudeHaiku);
+    app.pending_turn_model = Some(pending_model.clone());
+    app.input = InputState::Insert(DraftInput {
+        text: "pending model".to_string(),
+        cursor: 13,
+    });
+
+    let token = app.insert_token().expect("insert mode");
+    let queued = app
+        .insert_mode(token)
+        .queue_message()
+        .expect("queued message");
+
+    assert_eq!(queued.config.model(), &pending_model);
+    assert_eq!(app.model(), pending_model.as_str());
+    assert!(!app.settings_pending_model_apply_next_turn());
 }
 
 #[test]

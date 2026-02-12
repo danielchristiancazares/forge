@@ -453,7 +453,6 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
                 app.scroll_page_down();
             }
         }
-        // Scroll down
         KeyCode::Char('j') | KeyCode::Down => {
             app.scroll_down();
         }
@@ -612,7 +611,6 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
                 KeyCode::End => {
                     insert.move_cursor_end();
                 }
-                // Clear line
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     insert.clear_line();
                 }
@@ -661,7 +659,6 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.enter_normal_mode();
         }
-        // Execute command
         KeyCode::Enter => {
             let Some(token) = app.command_token() else {
                 return;
@@ -723,11 +720,9 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
                 KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     command_mode.delete_word_backwards();
                 }
-                // Clear line
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     command_mode.clear_line();
                 }
-                // Tab completion
                 KeyCode::Tab => {
                     command_mode.tab_complete();
                 }
@@ -747,7 +742,6 @@ fn handle_model_select_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.enter_normal_mode();
         }
-        // Confirm selection
         KeyCode::Enter => {
             app.model_select_confirm();
         }
@@ -778,7 +772,6 @@ fn handle_file_select_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.file_select_cancel();
         }
-        // Confirm selection - insert file path into draft
         KeyCode::Enter => {
             app.file_select_confirm();
         }

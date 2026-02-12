@@ -195,6 +195,13 @@ pub struct AppearanceEditorSnapshot {
     pub dirty: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelEditorSnapshot {
+    pub draft: ModelName,
+    pub selected: usize,
+    pub dirty: bool,
+}
+
 pub use state::DistillationTask;
 
 use state::{
@@ -237,6 +244,50 @@ impl AppearanceSettingsEditor {
 
     fn is_dirty(self) -> bool {
         self.draft != self.baseline
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModelSettingsEditor {
+    baseline: ModelName,
+    draft: ModelName,
+    selected: usize,
+}
+
+impl ModelSettingsEditor {
+    fn new(initial: ModelName) -> Self {
+        let selected = Self::index_for_model(&initial).unwrap_or(0);
+        Self {
+            baseline: initial.clone(),
+            draft: initial,
+            selected,
+        }
+    }
+
+    fn update_draft_from_selected(&mut self) {
+        if let Some(predefined) = PredefinedModel::all().get(self.selected) {
+            self.draft = predefined.to_model_name();
+        }
+    }
+
+    fn sync_selected_to_draft(&mut self) {
+        if let Some(index) = Self::index_for_model(&self.draft) {
+            self.selected = index;
+        }
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.draft != self.baseline
+    }
+
+    fn max_index() -> usize {
+        PredefinedModel::all().len().saturating_sub(1)
+    }
+
+    fn index_for_model(model: &ModelName) -> Option<usize> {
+        PredefinedModel::all()
+            .iter()
+            .position(|predefined| predefined.to_model_name() == *model)
     }
 }
 
@@ -521,10 +572,16 @@ pub struct App {
     should_quit: bool,
     /// View state for rendering (scroll, status, modal effects).
     view: ViewState,
+    /// Persisted model default loaded from config and edited in `/settings`.
+    configured_model: ModelName,
     /// Persisted UI defaults loaded from config and edited in `/settings`.
     configured_ui_options: UiOptions,
+    /// Saved model default staged to take effect at the start of the next turn.
+    pending_turn_model: Option<ModelName>,
     /// Saved UI defaults staged to take effect at the start of the next turn.
     pending_turn_ui_options: Option<UiOptions>,
+    /// Models detail editor state for `/settings`.
+    settings_model_editor: Option<ModelSettingsEditor>,
     /// Appearance detail editor state for `/settings`.
     settings_appearance_editor: Option<AppearanceSettingsEditor>,
     api_keys: HashMap<Provider, SecretString>,
@@ -658,13 +715,39 @@ impl App {
     }
 
     #[must_use]
+    pub fn settings_configured_model(&self) -> &ModelName {
+        &self.configured_model
+    }
+
+    #[must_use]
     pub fn settings_configured_ui_options(&self) -> UiOptions {
         self.configured_ui_options
     }
 
     #[must_use]
-    pub fn settings_pending_apply_next_turn(&self) -> bool {
+    pub fn settings_pending_model_apply_next_turn(&self) -> bool {
+        self.pending_turn_model.is_some()
+    }
+
+    #[must_use]
+    pub fn settings_pending_ui_apply_next_turn(&self) -> bool {
         self.pending_turn_ui_options.is_some()
+    }
+
+    #[must_use]
+    pub fn settings_pending_apply_next_turn(&self) -> bool {
+        self.settings_pending_model_apply_next_turn() || self.settings_pending_ui_apply_next_turn()
+    }
+
+    #[must_use]
+    pub fn settings_model_editor_snapshot(&self) -> Option<ModelEditorSnapshot> {
+        self.settings_model_editor
+            .as_ref()
+            .map(|editor| ModelEditorSnapshot {
+                draft: editor.draft.clone(),
+                selected: editor.selected,
+                dirty: editor.is_dirty(),
+            })
     }
 
     #[must_use]
@@ -679,18 +762,24 @@ impl App {
 
     #[must_use]
     pub fn settings_has_unsaved_edits(&self) -> bool {
-        self.settings_appearance_editor
-            .is_some_and(AppearanceSettingsEditor::is_dirty)
+        self.settings_model_editor
+            .as_ref()
+            .is_some_and(ModelSettingsEditor::is_dirty)
+            || self
+                .settings_appearance_editor
+                .is_some_and(AppearanceSettingsEditor::is_dirty)
     }
 
     pub(crate) fn apply_pending_turn_settings(&mut self) {
-        let Some(pending) = self.pending_turn_ui_options.take() else {
-            return;
-        };
-        self.view.ui_options = pending;
-        if pending.reduced_motion {
-            self.view.modal_effect = None;
-            self.view.files_panel_effect = None;
+        if let Some(model) = self.pending_turn_model.take() {
+            self.set_model_internal(model, false);
+        }
+        if let Some(pending) = self.pending_turn_ui_options.take() {
+            self.view.ui_options = pending;
+            if pending.reduced_motion {
+                self.view.modal_effect = None;
+                self.view.files_panel_effect = None;
+            }
         }
     }
 
@@ -1281,9 +1370,10 @@ impl App {
             .set_output_limit(clamped.max_output_tokens());
     }
 
-    /// Persists the model to `~/.forge/config.toml` for future sessions.
-    pub fn set_model(&mut self, model: ModelName) {
+    fn set_model_internal(&mut self, model: ModelName, persist: bool) {
         self.model = model.clone();
+        self.configured_model = model.clone();
+        self.pending_turn_model = None;
         if self.memory_enabled() {
             self.handle_context_adaptation();
         } else {
@@ -1293,9 +1383,14 @@ impl App {
 
         self.clamp_output_limits_to_model();
 
-        if let Err(e) = config::ForgeConfig::persist_model(model.as_str()) {
+        if persist && let Err(e) = config::ForgeConfig::persist_model(model.as_str()) {
             tracing::warn!("Failed to persist model to config: {e}");
         }
+    }
+
+    /// Persists the model to `~/.forge/config.toml` for future sessions.
+    pub fn set_model(&mut self, model: ModelName) {
+        self.set_model_internal(model, true);
     }
 
     /// Handle context adaptation after a model switch.
@@ -1492,14 +1587,26 @@ impl App {
         if let Some(modal) = self.input.settings_modal_mut() {
             modal.detail_view = Some(category);
         }
-        self.settings_appearance_editor = if category == SettingsCategory::Appearance {
-            Some(AppearanceSettingsEditor::new(self.configured_ui_options))
-        } else {
-            None
-        };
+        match category {
+            SettingsCategory::Models => {
+                self.settings_model_editor =
+                    Some(ModelSettingsEditor::new(self.configured_model.clone()));
+                self.settings_appearance_editor = None;
+            }
+            SettingsCategory::Appearance => {
+                self.settings_appearance_editor =
+                    Some(AppearanceSettingsEditor::new(self.configured_ui_options));
+                self.settings_model_editor = None;
+            }
+            _ => {
+                self.settings_model_editor = None;
+                self.settings_appearance_editor = None;
+            }
+        }
     }
 
     fn reset_settings_detail_editor(&mut self) {
+        self.settings_model_editor = None;
         self.settings_appearance_editor = None;
     }
 
@@ -1575,6 +1682,12 @@ impl App {
     }
 
     pub fn settings_detail_move_up(&mut self) {
+        if let Some(editor) = self.settings_model_editor.as_mut() {
+            if editor.selected > 0 {
+                editor.selected -= 1;
+            }
+            return;
+        }
         if let Some(editor) = self.settings_appearance_editor.as_mut()
             && editor.selected > 0
         {
@@ -1583,6 +1696,13 @@ impl App {
     }
 
     pub fn settings_detail_move_down(&mut self) {
+        if let Some(editor) = self.settings_model_editor.as_mut() {
+            let max_index = ModelSettingsEditor::max_index();
+            if editor.selected < max_index {
+                editor.selected += 1;
+            }
+            return;
+        }
         if let Some(editor) = self.settings_appearance_editor.as_mut()
             && editor.selected + 1 < APPEARANCE_SETTINGS_COUNT
         {
@@ -1591,6 +1711,10 @@ impl App {
     }
 
     pub fn settings_detail_toggle_selected(&mut self) {
+        if let Some(editor) = self.settings_model_editor.as_mut() {
+            editor.update_draft_from_selected();
+            return;
+        }
         let Some(editor) = self.settings_appearance_editor.as_mut() else {
             return;
         };
@@ -1612,6 +1736,11 @@ impl App {
     }
 
     pub fn settings_revert_edits(&mut self) {
+        if let Some(editor) = self.settings_model_editor.as_mut() {
+            editor.draft = editor.baseline.clone();
+            editor.sync_selected_to_draft();
+            return;
+        }
         let defaults = self.configured_ui_options;
         if let Some(editor) = self.settings_appearance_editor.as_mut() {
             editor.draft = defaults;
@@ -1619,6 +1748,27 @@ impl App {
     }
 
     pub fn settings_save_edits(&mut self) {
+        if let Some(editor) = self.settings_model_editor.as_ref() {
+            if !editor.is_dirty() {
+                self.push_notification("No settings changes to save.");
+                return;
+            }
+            let draft = editor.draft.clone();
+            if let Err(err) = config::ForgeConfig::persist_model(draft.as_str()) {
+                tracing::warn!("Failed to persist model setting: {err}");
+                self.push_notification(format!("Failed to save settings: {err}"));
+                return;
+            }
+            self.configured_model = draft.clone();
+            self.pending_turn_model = Some(draft.clone());
+            if let Some(editor) = self.settings_model_editor.as_mut() {
+                editor.baseline = draft;
+                editor.sync_selected_to_draft();
+            }
+            self.push_notification("Model default saved. Changes apply on the next turn.");
+            return;
+        }
+
         let Some(editor) = self.settings_appearance_editor else {
             return;
         };

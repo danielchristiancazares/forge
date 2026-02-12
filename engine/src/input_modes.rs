@@ -123,6 +123,8 @@ impl InsertMode<'_> {
             return None;
         }
 
+        self.app.apply_pending_turn_settings();
+
         if self.app.draft_text().trim().is_empty() {
             return None;
         }
