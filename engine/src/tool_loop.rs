@@ -188,8 +188,8 @@ impl App {
         tracing::warn!("Tool journal error during {context}: {error}");
 
         // Latch tools-disabled state so future tool calls are pre-resolved.
-        let was_disabled = self.tool_journal_disabled_reason.is_some();
-        self.tool_journal_disabled_reason = Some(error.clone());
+        let was_disabled = self.tools_disabled_state.is_some();
+        self.tools_disabled_state = Some(crate::state::ToolsDisabledState::new(error.clone()));
         if !was_disabled {
             self.push_notification(format!(
                 "Tool journal error during {context}; tool execution disabled for safety. ({error})"
@@ -241,7 +241,11 @@ impl App {
             .unwrap_or_default();
 
         // If tools are disabled due to journal health, fail closed: pre-resolve tool calls to errors.
-        if let Some(reason) = self.tool_journal_disabled_reason.clone() {
+        if let Some(reason) = self
+            .tools_disabled_state
+            .as_ref()
+            .map(|state| state.reason().to_string())
+        {
             if let Some(batch_id) = tool_batch_id
                 && let Err(e) = self.tool_journal.discard_batch(batch_id)
             {
@@ -314,7 +318,8 @@ impl App {
                         Ok(new_id) => JournalStatus::new(new_id),
                         Err(e2) => {
                             tracing::warn!("Tool journal begin failed after retry: {e2}");
-                            self.tool_journal_disabled_reason = Some(e2.to_string());
+                            self.tools_disabled_state =
+                                Some(crate::state::ToolsDisabledState::new(e2.to_string()));
                             self.push_notification(format!(
                                 "Tool execution disabled: cannot persist tool journal for crash recovery. ({e2})"
                             ));
@@ -372,7 +377,8 @@ impl App {
                 Ok(id) => JournalStatus::new(id),
                 Err(e) => {
                     tracing::warn!("Tool journal begin failed: {e}");
-                    self.tool_journal_disabled_reason = Some(e.to_string());
+                    self.tools_disabled_state =
+                        Some(crate::state::ToolsDisabledState::new(e.to_string()));
                     self.push_notification(format!(
                         "Tool execution disabled: cannot persist tool journal for crash recovery. ({e})"
                     ));
@@ -937,7 +943,7 @@ impl App {
             ToolLoopPhase::Processing(queue) => {
                 // If tool journaling was disabled mid-loop, fail closed and do not execute
                 // any additional tools in this turn.
-                if self.tool_journal_disabled_reason.is_some() {
+                if self.tools_disabled_state.is_some() {
                     let mut results = batch.results;
                     let existing: HashSet<String> =
                         results.iter().map(|r| r.tool_call_id.clone()).collect();
@@ -1191,7 +1197,7 @@ impl App {
                     } else {
                         // If tool journaling was disabled mid-loop, fail closed and do not execute
                         // any additional tools in this turn.
-                        if self.tool_journal_disabled_reason.is_some() {
+                        if self.tools_disabled_state.is_some() {
                             let mut results = batch.results;
                             let existing: HashSet<String> =
                                 results.iter().map(|r| r.tool_call_id.clone()).collect();
@@ -1424,7 +1430,7 @@ impl App {
         if auto_resume && tool_cleanup_failed {
             // If tools are already disabled due to journal errors, allow streaming to continue.
             // The pending batch will be cleaned up best-effort or cleared manually via /clear.
-            if self.tool_journal_disabled_reason.is_none() {
+            if self.tools_disabled_state.is_none() {
                 self.push_notification(
                     "Cannot continue tool loop: tool journal cleanup failed. Stopping to prevent stuck state.",
                 );
@@ -1617,7 +1623,7 @@ impl App {
 
         // If tool journaling failed while recording denied results, fail closed and do not execute
         // any additional tools in this turn.
-        if self.tool_journal_disabled_reason.is_some() {
+        if self.tools_disabled_state.is_some() {
             let mut results = batch.results;
             let existing: HashSet<String> =
                 results.iter().map(|r| r.tool_call_id.clone()).collect();

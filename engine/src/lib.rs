@@ -582,7 +582,7 @@ impl StreamingMessage {
             }
             StreamEvent::ThinkingSignature(signature_delta) => {
                 match &mut self.thinking_replay {
-                    ThinkingReplayState::Unsigned => {
+                    ThinkingReplayState::Unsigned | ThinkingReplayState::Unknown => {
                         self.thinking_replay = ThinkingReplayState::ClaudeSigned {
                             signature: ThoughtSignature::new(signature_delta),
                         };
@@ -845,12 +845,11 @@ pub struct App {
     tool_settings: tools::ToolSettings,
     /// Tool journal for crash recovery.
     tool_journal: ToolJournal,
-    /// When set, tool execution is disabled for safety due to tool journal errors.
+    /// Session-scoped tools-disabled latch.
     ///
-    /// This is a session-scoped safety latch: once tools are disabled, we pre-resolve
-    /// tool calls to errors rather than executing them. This avoids running tools when
-    /// crash-consistency guarantees cannot be upheld.
-    tool_journal_disabled_reason: Option<String>,
+    /// When set, tool execution is disabled for safety due to tool journal errors.
+    /// The same state payload is carried in `OperationState::ToolsDisabled` when idle.
+    tools_disabled_state: Option<state::ToolsDisabledState>,
     /// Pending stream journal step ID that needs commit+prune cleanup.
     ///
     /// Best-effort retries run during `tick()` when idle. If this remains uncleared,
@@ -1655,7 +1654,9 @@ impl App {
 
     /// If present, tools are disabled for safety due to a tool journal error.
     pub fn tool_journal_disabled_reason(&self) -> Option<&str> {
-        self.tool_journal_disabled_reason.as_deref()
+        self.tools_disabled_state
+            .as_ref()
+            .map(state::ToolsDisabledState::reason)
     }
 
     /// Human-readable reason for a recovery block (if recovery is blocked).
@@ -1716,8 +1717,8 @@ impl App {
     }
 
     fn idle_state(&self) -> OperationState {
-        if self.tool_journal_disabled_reason.is_some() {
-            OperationState::ToolsDisabled(state::ToolsDisabledState)
+        if let Some(disabled) = self.tools_disabled_state.clone() {
+            OperationState::ToolsDisabled(disabled)
         } else {
             OperationState::Idle
         }

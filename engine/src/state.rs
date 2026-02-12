@@ -506,8 +506,24 @@ pub(crate) struct ToolRecoveryState {
 ///
 /// This is an *idle* state: streaming may continue, but any tool calls are
 /// pre-resolved to errors rather than executed (fail closed for safety).
-#[derive(Debug)]
-pub(crate) struct ToolsDisabledState;
+#[derive(Debug, Clone)]
+pub(crate) struct ToolsDisabledState {
+    reason: String,
+}
+
+impl ToolsDisabledState {
+    #[must_use]
+    pub(crate) fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn reason(&self) -> &str {
+        &self.reason
+    }
+}
 
 /// Crash recovery could not proceed due to journal errors.
 ///

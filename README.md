@@ -13,15 +13,15 @@ Forge brings the efficiency of vim-style modal editing to AI conversation, letti
 | 62-71 | Requirements |
 | 72-97 | Installation |
 | 98-148 | Quick Start: First Run, Basic Usage |
-| 149-288 | Configuration: Full Reference |
-| 289-381 | Keyboard Shortcuts: All Modes |
-| 382-399 | Commands Reference |
-| 400-434 | Workspace Structure |
-| 435-469 | Development |
-| 470-539 | Troubleshooting |
-| 540-575 | Documentation Index |
-| 576-585 | Contributing and License |
-| 586-588 | License |
+| 149-289 | Configuration: Full Reference |
+| 290-382 | Keyboard Shortcuts: All Modes |
+| 383-400 | Commands Reference |
+| 401-435 | Workspace Structure |
+| 436-470 | Development |
+| 471-540 | Troubleshooting |
+| 541-576 | Documentation Index |
+| 577-586 | Contributing and License |
+| 587-589 | License |
 <!-- toc:end -->
 
 ## Features
@@ -409,10 +409,9 @@ forge/
 ├── engine/         # Core state machine, commands, streaming orchestration
 ├── lsp/            # LSP client for diagnostics
 ├── providers/      # LLM API clients (Claude, OpenAI, Gemini)
-├── tools/          # Tool executor framework (sandboxing, approvals, built-in tools)
+├── tools/          # Tool executor framework (sandboxing, approvals, built-ins, webfetch)
 ├── tui/            # Terminal UI rendering (ratatui), input handling
 ├── types/          # Core domain types (Message, Provider, ModelName)
-├── webfetch/       # Web page fetching and parsing
 │
 ├── tests/          # Integration tests (not a workspace crate)
 ├── docs/           # Architecture and design documentation
@@ -426,12 +425,11 @@ forge/
 | `cli` | Application entry point, terminal lifecycle, event loop |
 | `engine` | Input modes, async operations, configuration, orchestration |
 | `lsp` | LSP client for diagnostics |
-| `tools` | Tool executor framework (tool registry, sandboxing, approvals, limits) |
+| `tools` | Tool executor framework (tool registry, sandboxing, approvals, limits, `webfetch` module) |
 | `tui` | Full-screen rendering, markdown, theming |
 | `context` | Token budgeting, distillation, crash recovery journals |
 | `providers` | HTTP clients, SSE parsing, provider-specific formatting (Claude, OpenAI, Gemini) |
 | `types` | Shared types ensuring compile-time correctness |
-| `webfetch` | Chromium-based web fetching for `WebFetch` tool |
 
 ## Development
 

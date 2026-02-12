@@ -1259,13 +1259,18 @@ pub enum ThinkingReplayState {
     OpenAIReasoning {
         items: Vec<OpenAIReasoningItem>,
     },
+    /// Replay payload contained a replay discriminator but could not be decoded.
+    ///
+    /// This keeps malformed/unknown persisted shapes observable instead of
+    /// silently collapsing to `Unsigned`.
+    Unknown,
 }
 
 impl ThinkingReplayState {
     #[must_use]
     pub fn requires_persistence(&self) -> bool {
         match self {
-            Self::Unsigned => false,
+            Self::Unsigned | Self::Unknown => false,
             Self::ClaudeSigned { .. } => true,
             Self::OpenAIReasoning { items } => !items.is_empty(),
         }
@@ -1278,13 +1283,14 @@ impl<'de> Deserialize<'de> for ThinkingReplayState {
         D: serde::Deserializer<'de>,
     {
         let v = serde_json::Value::deserialize(deserializer)?;
-
-        let Some(obj) = v.as_object() else {
-            return Ok(Self::Unsigned);
+        let (has_kind, has_state) = if let Some(obj) = v.as_object() {
+            (obj.contains_key("kind"), obj.contains_key("state"))
+        } else {
+            return Ok(Self::Unknown);
         };
 
         // New format: discriminated by "kind"
-        if obj.contains_key("kind") {
+        if has_kind {
             #[derive(Deserialize)]
             #[serde(tag = "kind", rename_all = "snake_case")]
             enum New {
@@ -1297,26 +1303,25 @@ impl<'de> Deserialize<'de> for ThinkingReplayState {
                     items: Vec<OpenAIReasoningItem>,
                 },
             }
-
-            if let Ok(parsed) = serde_json::from_value::<New>(v) {
-                return Ok(match parsed {
+            return Ok(match serde_json::from_value::<New>(v) {
+                Ok(parsed) => match parsed {
                     New::Unsigned => Self::Unsigned,
                     New::ClaudeSigned { signature } => Self::ClaudeSigned { signature },
                     New::OpenAIReasoning { items } => Self::OpenAIReasoning { items },
-                });
-            }
-            return Ok(Self::Unsigned);
+                },
+                Err(_) => Self::Unknown,
+            });
         }
 
         // Old format: discriminated by "state"
-        if obj.contains_key("state") {
-            if let Ok(old) = serde_json::from_value::<ThoughtSignatureState>(v) {
-                return Ok(match old {
+        if has_state {
+            return Ok(match serde_json::from_value::<ThoughtSignatureState>(v) {
+                Ok(old) => match old {
                     ThoughtSignatureState::Unsigned => Self::Unsigned,
                     ThoughtSignatureState::Signed(sig) => Self::ClaudeSigned { signature: sig },
-                });
-            }
-            return Ok(Self::Unsigned);
+                },
+                Err(_) => Self::Unknown,
+            });
         }
 
         Ok(Self::Unsigned)
@@ -2339,6 +2344,24 @@ mod tests {
     }
 
     #[test]
+    fn thinking_replay_state_invalid_discriminator_is_unknown() {
+        let json = r#"{"kind":"claude_signed","signature":42}"#;
+        let state: ThinkingReplayState = serde_json::from_str(json).unwrap();
+        assert!(matches!(state, ThinkingReplayState::Unknown));
+
+        let json = r#"{"state":"signed","signature":42}"#;
+        let state: ThinkingReplayState = serde_json::from_str(json).unwrap();
+        assert!(matches!(state, ThinkingReplayState::Unknown));
+    }
+
+    #[test]
+    fn thinking_replay_state_non_object_is_unknown() {
+        let json = r#""not an object""#;
+        let state: ThinkingReplayState = serde_json::from_str(json).unwrap();
+        assert!(matches!(state, ThinkingReplayState::Unknown));
+    }
+
+    #[test]
     fn thinking_replay_state_requires_persistence() {
         assert!(!ThinkingReplayState::Unsigned.requires_persistence());
         assert!(
@@ -2356,6 +2379,7 @@ mod tests {
             }
             .requires_persistence()
         );
+        assert!(!ThinkingReplayState::Unknown.requires_persistence());
         assert!(!ThinkingReplayState::OpenAIReasoning { items: vec![] }.requires_persistence());
     }
 

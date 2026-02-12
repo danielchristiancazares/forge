@@ -63,7 +63,9 @@ pub(crate) fn build_thinking_message(
             ThinkingReplayState::OpenAIReasoning { items } => {
                 Message::thinking_with_openai_reasoning(model, thinking, items)
             }
-            ThinkingReplayState::Unsigned => Message::thinking(model, thinking),
+            ThinkingReplayState::Unsigned | ThinkingReplayState::Unknown => {
+                Message::thinking(model, thinking)
+            }
         });
     }
 
@@ -77,7 +79,7 @@ pub(crate) fn build_thinking_message(
             ThinkingReplayState::OpenAIReasoning { items } => {
                 Message::thinking_with_openai_reasoning(model, placeholder, items)
             }
-            ThinkingReplayState::Unsigned => unreachable!(),
+            ThinkingReplayState::Unsigned | ThinkingReplayState::Unknown => unreachable!(),
         });
     }
 
@@ -861,7 +863,9 @@ impl super::App {
                     ThinkingReplayState::OpenAIReasoning { items } => {
                         Message::thinking_with_openai_reasoning(model, thinking, items.clone())
                     }
-                    ThinkingReplayState::Unsigned => Message::thinking(model, thinking),
+                    ThinkingReplayState::Unsigned | ThinkingReplayState::Unknown => {
+                        Message::thinking(model, thinking)
+                    }
                 };
                 self.push_local_message(thinking_msg);
             }

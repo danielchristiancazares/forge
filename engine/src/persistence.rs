@@ -351,7 +351,8 @@ impl App {
             Ok(batch) => batch,
             Err(e) => {
                 tracing::warn!("Tool journal recovery failed: {e}");
-                self.tool_journal_disabled_reason = Some(e.to_string());
+                self.tools_disabled_state =
+                    Some(crate::state::ToolsDisabledState::new(e.to_string()));
                 self.push_notification(format!(
                     "Tool journal recovery failed; tool execution disabled for safety. ({e})"
                 ));
@@ -451,7 +452,8 @@ impl App {
                             "Failed to discard idempotent tool batch {}: {e}",
                             recovered_batch.batch_id
                         );
-                        self.tool_journal_disabled_reason = Some(e.to_string());
+                        self.tools_disabled_state =
+                            Some(crate::state::ToolsDisabledState::new(e.to_string()));
                     }
                     if self.autosave_history() {
                         self.finalize_journal_commit(step_id);
@@ -560,7 +562,8 @@ impl App {
             );
             if let Err(e) = self.tool_journal.discard_batch(recovered_batch.batch_id) {
                 tracing::warn!("Failed to discard orphaned tool batch: {e}");
-                self.tool_journal_disabled_reason = Some(e.to_string());
+                self.tools_disabled_state =
+                    Some(crate::state::ToolsDisabledState::new(e.to_string()));
                 self.push_notification(format!(
                     "Tool journal error: failed to discard orphaned batch; tools disabled. ({e})"
                 ));

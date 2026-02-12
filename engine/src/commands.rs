@@ -439,7 +439,7 @@ impl super::App {
                     tracing::warn!("Failed to discard pending tool batch on clear: {e}");
                 }
                 self.pending_tool_cleanup_failures = 0;
-                self.tool_journal_disabled_reason = None;
+                self.tools_disabled_state = None;
                 self.invalidate_usage_cache();
                 self.autosave_history();
                 self.push_notification("Conversation cleared");

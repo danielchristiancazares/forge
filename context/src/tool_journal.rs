@@ -987,7 +987,10 @@ fn serialize_replay_if_persistent(replay: &ThinkingReplayState) -> Option<String
     }
 }
 
-/// Deserialize replay state from nullable JSON. NULL or invalid → `Unsigned` (IFA §11.1).
+/// Deserialize replay state from nullable JSON.
+///
+/// NULL/empty values become `Unsigned`. JSON that parses but has an unknown or
+/// malformed replay discriminator yields `ThinkingReplayState::Unknown`.
 fn deserialize_replay(json: Option<&str>) -> ThinkingReplayState {
     let Some(json) = json else {
         return ThinkingReplayState::default();
@@ -996,7 +999,12 @@ fn deserialize_replay(json: Option<&str>) -> ThinkingReplayState {
         return ThinkingReplayState::default();
     }
     match serde_json::from_str(json) {
-        Ok(state) => state,
+        Ok(state) => {
+            if matches!(state, ThinkingReplayState::Unknown) {
+                tracing::warn!("Thinking replay state had an unknown or corrupt discriminator");
+            }
+            state
+        }
         Err(e) => {
             tracing::warn!("Failed to deserialize thinking replay state: {e}");
             ThinkingReplayState::default()

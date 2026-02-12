@@ -147,7 +147,7 @@ impl TokenCounter {
                                     .map_or(0, |e| self.count_str(e))
                         })
                         .sum(),
-                    ThinkingReplayState::Unsigned => 0,
+                    ThinkingReplayState::Unsigned | ThinkingReplayState::Unknown => 0,
                 };
                 content_tokens + replay_tokens
             }
