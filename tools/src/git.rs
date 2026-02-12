@@ -36,6 +36,8 @@ enum GitToolKind {
     Stash,
     Show,
     Blame,
+    Push,
+    Pull,
 }
 
 impl GitToolKind {
@@ -52,6 +54,8 @@ impl GitToolKind {
             "stash" => Some(Self::Stash),
             "show" => Some(Self::Show),
             "blame" => Some(Self::Blame),
+            "push" => Some(Self::Push),
+            "pull" => Some(Self::Pull),
             _ => None,
         }
     }
@@ -69,6 +73,8 @@ impl GitToolKind {
             Self::Stash => "stash",
             Self::Show => "show",
             Self::Blame => "blame",
+            Self::Push => "push",
+            Self::Pull => "pull",
         }
     }
 
@@ -81,6 +87,8 @@ impl GitToolKind {
                 | GitToolKind::Branch
                 | GitToolKind::Checkout
                 | GitToolKind::Stash
+                | GitToolKind::Push
+                | GitToolKind::Pull
         )
     }
 
@@ -97,6 +105,8 @@ impl GitToolKind {
             | GitToolKind::Log
             | GitToolKind::Show
             | GitToolKind::Blame => RiskLevel::Low,
+            GitToolKind::Push => RiskLevel::Medium,
+            GitToolKind::Pull => RiskLevel::Medium,
         }
     }
 }
@@ -122,7 +132,7 @@ fn git_tool_schema() -> Value {
 
     props.insert("command".into(), json!({
         "type": "string",
-        "enum": ["status", "diff", "restore", "add", "commit", "log", "branch", "checkout", "stash", "show", "blame"],
+        "enum": ["status", "diff", "restore", "add", "commit", "log", "branch", "checkout", "stash", "show", "blame", "push", "pull"],
         "description": "Git subcommand to run"
     }));
     props.insert(
@@ -226,6 +236,26 @@ fn git_tool_schema() -> Value {
     props.insert("index".into(), json!({ "type": "integer", "minimum": 0, "description": "[stash] Stash index for pop/apply/drop/show" }));
     props.insert("include_untracked".into(), json!({ "type": "boolean", "default": false, "description": "[stash] Include untracked files (with push)" }));
 
+    // push
+    props.insert(
+        "remote".into(),
+        json!({ "type": "string", "description": "[push/pull] Remote name (default: origin)" }),
+    );
+    props.insert(
+        "ref_spec".into(),
+        json!({ "type": "string", "description": "[push/pull] Branch or refspec" }),
+    );
+    props.insert("set_upstream".into(), json!({ "type": "boolean", "default": false, "description": "[push] Set upstream tracking reference (-u)" }));
+    props.insert("force".into(), json!({ "type": "boolean", "default": false, "description": "[push] Force push (--force-with-lease, not --force)" }));
+    props.insert(
+        "tags".into(),
+        json!({ "type": "boolean", "default": false, "description": "[push] Push tags (--tags)" }),
+    );
+
+    // pull
+    props.insert("rebase".into(), json!({ "type": "boolean", "default": false, "description": "[pull] Rebase instead of merge (--rebase)" }));
+    props.insert("ff_only".into(), json!({ "type": "boolean", "default": false, "description": "[pull] Fast-forward only (--ff-only)" }));
+
     // shared
     props.insert("paths".into(), json!({ "type": "array", "items": { "type": "string" }, "description": "[diff/restore/add/checkout] File paths" }));
     props.insert(
@@ -268,7 +298,8 @@ impl ToolExecutor for GitTool {
          add (stage files), commit (type+message required), log (history with filters), \
          branch (list/create/rename/delete), checkout (switch branch or restore paths), \
          stash (push/pop/apply/drop/list/show/clear), show (commit details), \
-         blame (per-line authorship, path required)."
+         blame (per-line authorship, path required), push (upload commits to remote), \
+         pull (fetch and integrate remote changes)."
     }
 
     fn schema(&self) -> Value {
@@ -355,6 +386,22 @@ impl ToolExecutor for GitTool {
                 let typed: GitBlameArgs = parse_args(args)?;
                 format!("Git blame {}", typed.path)
             }
+            GitToolKind::Push => {
+                let typed: GitPushArgs = parse_args(args)?;
+                let remote = typed.remote.as_deref().unwrap_or("origin");
+                match typed.ref_spec {
+                    Some(ref_spec) => format!("Git push {remote} {ref_spec}"),
+                    None => format!("Git push {remote}"),
+                }
+            }
+            GitToolKind::Pull => {
+                let typed: GitPullArgs = parse_args(args)?;
+                let remote = typed.remote.as_deref().unwrap_or("origin");
+                match typed.ref_spec {
+                    Some(ref_spec) => format!("Git pull {remote} {ref_spec}"),
+                    None => format!("Git pull {remote}"),
+                }
+            }
         };
 
         Ok(redact_distillate(&distillate))
@@ -383,6 +430,8 @@ impl ToolExecutor for GitTool {
                 GitToolKind::Stash => handle_git_stash(ctx, args).await?,
                 GitToolKind::Show => handle_git_show(ctx, args).await?,
                 GitToolKind::Blame => handle_git_blame(ctx, args).await?,
+                GitToolKind::Push => handle_git_push(ctx, args).await?,
+                GitToolKind::Pull => handle_git_pull(ctx, args).await?,
             };
 
             // Ensure JSON output fits within capacity by shrinking large fields
@@ -1117,6 +1166,36 @@ struct GitBlameArgs {
     commit: Option<String>,
     #[serde(default)]
     max_bytes: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct GitPushArgs {
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    remote: Option<String>,
+    #[serde(default)]
+    ref_spec: Option<String>,
+    #[serde(default)]
+    set_upstream: bool,
+    #[serde(default)]
+    force: bool,
+    #[serde(default)]
+    tags: bool,
+}
+
+#[derive(Deserialize)]
+struct GitPullArgs {
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    remote: Option<String>,
+    #[serde(default)]
+    ref_spec: Option<String>,
+    #[serde(default)]
+    rebase: bool,
+    #[serde(default)]
+    ff_only: bool,
 }
 
 // ===== Handlers =====
@@ -1916,6 +1995,133 @@ async fn handle_git_blame(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError
     Ok(build_git_response(&exec, text, Some(extra_fields)))
 }
 
+
+async fn handle_git_push(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError> {
+    let req: GitPushArgs = parse_args(&args)?;
+
+    let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
+    let working_dir = ctx.working_dir.clone();
+    let max_cap = effective_max_bytes(ctx);
+
+    let mut cmd_args: Vec<String> = vec!["push".into()];
+
+    if req.set_upstream {
+        cmd_args.push("-u".into());
+    }
+    if req.force {
+        cmd_args.push("--force-with-lease".into());
+    }
+    if req.tags {
+        cmd_args.push("--tags".into());
+    }
+
+    if let Some(remote) = &req.remote {
+        if remote.starts_with('-') {
+            return Err(ToolError::BadArgs {
+                message: "remote cannot start with '-'".to_string(),
+            });
+        }
+        cmd_args.push(remote.clone());
+    }
+
+    if let Some(ref_spec) = &req.ref_spec {
+        if ref_spec.starts_with('-') {
+            return Err(ToolError::BadArgs {
+                message: "ref_spec cannot start with '-'".to_string(),
+            });
+        }
+        cmd_args.push(ref_spec.clone());
+    }
+
+    let exec = run_git(
+        ctx,
+        &working_dir,
+        cmd_args,
+        timeout_ms,
+        DEFAULT_GIT_STDOUT_BYTES.min(max_cap),
+        DEFAULT_GIT_STDERR_BYTES.min(max_cap),
+    )
+    .await?;
+
+    // Git push writes progress to stderr even on success
+    let text = if exec.success {
+        if !exec.stderr.trim().is_empty() {
+            trim_output(&exec.stderr)
+        } else if !exec.stdout.trim().is_empty() {
+            trim_output(&exec.stdout)
+        } else {
+            "ok".to_string()
+        }
+    } else if !exec.stderr.trim().is_empty() {
+        trim_output(&exec.stderr)
+    } else {
+        trim_output(&exec.stdout)
+    };
+
+    Ok(build_git_response(&exec, text, None))
+}
+
+async fn handle_git_pull(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError> {
+    let req: GitPullArgs = parse_args(&args)?;
+
+    let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
+    let working_dir = ctx.working_dir.clone();
+    let max_cap = effective_max_bytes(ctx);
+
+    let mut cmd_args: Vec<String> = vec!["pull".into()];
+
+    if req.rebase {
+        cmd_args.push("--rebase".into());
+    }
+    if req.ff_only {
+        cmd_args.push("--ff-only".into());
+    }
+
+    if let Some(remote) = &req.remote {
+        if remote.starts_with('-') {
+            return Err(ToolError::BadArgs {
+                message: "remote cannot start with '-'".to_string(),
+            });
+        }
+        cmd_args.push(remote.clone());
+    }
+
+    if let Some(ref_spec) = &req.ref_spec {
+        if ref_spec.starts_with('-') {
+            return Err(ToolError::BadArgs {
+                message: "ref_spec cannot start with '-'".to_string(),
+            });
+        }
+        cmd_args.push(ref_spec.clone());
+    }
+
+    let exec = run_git(
+        ctx,
+        &working_dir,
+        cmd_args,
+        timeout_ms,
+        DEFAULT_GIT_STDOUT_BYTES.min(max_cap),
+        DEFAULT_GIT_STDERR_BYTES.min(max_cap),
+    )
+    .await?;
+
+    let text = if exec.success {
+        if !exec.stdout.trim().is_empty() {
+            trim_output(&exec.stdout)
+        } else if !exec.stderr.trim().is_empty() {
+            trim_output(&exec.stderr)
+        } else {
+            "ok".to_string()
+        }
+    } else if !exec.stderr.trim().is_empty() {
+        trim_output(&exec.stderr)
+    } else {
+        trim_output(&exec.stdout)
+    };
+
+    Ok(build_git_response(&exec, text, None))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2029,3 +2235,53 @@ mod tests {
         assert!(!args.to_ref.as_ref().unwrap().starts_with('-'));
     }
 }
+
+    #[test]
+    fn push_is_side_effecting_medium_risk() {
+        let tool = GitTool;
+        let args = json!({"command": "push"});
+        assert!(tool.is_side_effecting(&args));
+        assert_eq!(tool.risk_level(&args), RiskLevel::Medium);
+        assert!(!tool.reads_user_data(&args));
+    }
+
+    #[test]
+    fn pull_is_side_effecting_medium_risk() {
+        let tool = GitTool;
+        let args = json!({"command": "pull"});
+        assert!(tool.is_side_effecting(&args));
+        assert_eq!(tool.risk_level(&args), RiskLevel::Medium);
+        assert!(!tool.reads_user_data(&args));
+    }
+
+    #[test]
+    fn push_approval_summary_with_remote_and_ref() {
+        let tool = GitTool;
+        let args = json!({"command": "push", "remote": "origin", "ref_spec": "main"});
+        let summary = tool.approval_summary(&args).unwrap();
+        assert_eq!(summary, "Git push origin main");
+    }
+
+    #[test]
+    fn push_approval_summary_defaults_to_origin() {
+        let tool = GitTool;
+        let args = json!({"command": "push"});
+        let summary = tool.approval_summary(&args).unwrap();
+        assert_eq!(summary, "Git push origin");
+    }
+
+    #[test]
+    fn pull_approval_summary_with_remote_and_ref() {
+        let tool = GitTool;
+        let args = json!({"command": "pull", "remote": "upstream", "ref_spec": "develop"});
+        let summary = tool.approval_summary(&args).unwrap();
+        assert_eq!(summary, "Git pull upstream develop");
+    }
+
+    #[test]
+    fn pull_approval_summary_defaults_to_origin() {
+        let tool = GitTool;
+        let args = json!({"command": "pull"});
+        let summary = tool.approval_summary(&args).unwrap();
+        assert_eq!(summary, "Git pull origin");
+    }
