@@ -143,6 +143,28 @@ fn last_notification(app: &App) -> Option<&str> {
     None
 }
 
+fn set_streaming_state(app: &mut App) {
+    let (_tx, rx) = mpsc::channel(1);
+    let streaming = StreamingMessage::new(
+        app.model.clone(),
+        rx,
+        app.tool_settings.limits.max_tool_args_bytes,
+    );
+    let (abort_handle, _abort_registration) = AbortHandle::new_pair();
+    let journal = app
+        .stream_journal
+        .begin_session(app.model.as_str())
+        .expect("journal session");
+    app.state = OperationState::Streaming(ActiveStream::Transient {
+        message: streaming,
+        journal,
+        abort_handle,
+        tool_call_seq: 0,
+        tool_args_journal_bytes: std::collections::HashMap::new(),
+        turn: crate::input_modes::TurnContext::new_for_tests(),
+    });
+}
+
 #[test]
 fn openai_options_default_upgrade_for_gpt_52_pro() {
     let app = test_app();
@@ -397,6 +419,31 @@ fn process_command_settings_opens_settings_modal() {
     assert_eq!(app.settings_selected_index(), Some(0));
     assert_eq!(app.settings_detail_view(), None);
     assert_eq!(app.settings_surface(), Some(SettingsSurface::Root));
+}
+
+#[test]
+fn process_command_settings_shows_guardrail_when_busy() {
+    let mut app = test_app();
+    set_streaming_state(&mut app);
+    app.enter_command_mode();
+
+    let command = {
+        let token = app.command_token().expect("command mode");
+        let mut command_mode = app.command_mode(token);
+        for c in "settings".chars() {
+            command_mode.push_char(c);
+        }
+        command_mode.take_command().expect("take command")
+    };
+
+    app.process_command(command);
+
+    assert_eq!(
+        last_notification(&app),
+        Some(
+            "Settings edits apply on the next turn. Active turn remains unchanged while streaming a response."
+        )
+    );
 }
 
 #[test]
