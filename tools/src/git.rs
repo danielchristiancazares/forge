@@ -1200,6 +1200,21 @@ struct GitPullArgs {
 
 // ===== Handlers =====
 
+fn resolved_remote_or_default(remote: Option<&str>) -> Result<String, ToolError> {
+    let remote = remote.unwrap_or("origin").trim();
+    if remote.is_empty() {
+        return Err(ToolError::BadArgs {
+            message: "remote cannot be empty".to_string(),
+        });
+    }
+    if remote.starts_with('-') {
+        return Err(ToolError::BadArgs {
+            message: "remote cannot start with '-'".to_string(),
+        });
+    }
+    Ok(remote.to_string())
+}
+
 async fn handle_git_status(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError> {
     let req: GitStatusArgs = parse_args(&args)?;
 
@@ -2014,14 +2029,8 @@ async fn handle_git_push(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
         cmd_args.push("--tags".into());
     }
 
-    if let Some(remote) = &req.remote {
-        if remote.starts_with('-') {
-            return Err(ToolError::BadArgs {
-                message: "remote cannot start with '-'".to_string(),
-            });
-        }
-        cmd_args.push(remote.clone());
-    }
+    let remote = resolved_remote_or_default(req.remote.as_deref())?;
+    cmd_args.push(remote);
 
     if let Some(ref_spec) = &req.ref_spec {
         if ref_spec.starts_with('-') {
@@ -2076,14 +2085,8 @@ async fn handle_git_pull(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
         cmd_args.push("--ff-only".into());
     }
 
-    if let Some(remote) = &req.remote {
-        if remote.starts_with('-') {
-            return Err(ToolError::BadArgs {
-                message: "remote cannot start with '-'".to_string(),
-            });
-        }
-        cmd_args.push(remote.clone());
-    }
+    let remote = resolved_remote_or_default(req.remote.as_deref())?;
+    cmd_args.push(remote);
 
     if let Some(ref_spec) = &req.ref_spec {
         if ref_spec.starts_with('-') {
@@ -2283,4 +2286,22 @@ fn pull_approval_summary_defaults_to_origin() {
     let args = json!({"command": "pull"});
     let summary = tool.approval_summary(&args).unwrap();
     assert_eq!(summary, "Git pull origin");
+}
+
+#[test]
+fn resolved_remote_defaults_to_origin() {
+    let remote = resolved_remote_or_default(None).unwrap();
+    assert_eq!(remote, "origin");
+}
+
+#[test]
+fn resolved_remote_rejects_empty() {
+    let err = resolved_remote_or_default(Some("  ")).unwrap_err();
+    assert!(err.to_string().contains("remote cannot be empty"));
+}
+
+#[test]
+fn resolved_remote_rejects_leading_dash() {
+    let err = resolved_remote_or_default(Some("--upload-pack=evil")).unwrap_err();
+    assert!(err.to_string().contains("remote cannot start with '-'"));
 }
