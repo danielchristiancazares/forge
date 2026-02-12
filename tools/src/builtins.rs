@@ -27,6 +27,21 @@ fn display_path(path: &Path) -> String {
     path_string_without_verbatim_prefix(path)
 }
 
+/// Normalize a path for use as a cache key.
+///
+/// On Windows, paths are case-insensitive but HashMap keys are case-sensitive.
+/// This normalizes to lowercase to prevent cache misses due to casing differences
+/// in canonicalized paths (e.g., `C:\Users\Danie` vs `C:\Users\danie`).
+#[cfg(windows)]
+fn normalize_cache_key(path: &Path) -> PathBuf {
+    PathBuf::from(path.to_string_lossy().to_lowercase())
+}
+
+#[cfg(not(windows))]
+fn normalize_cache_key(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
 fn display_path_relative(path: &Path, root: &Path) -> String {
     let path = PathBuf::from(path_string_without_verbatim_prefix(path));
     let root = PathBuf::from(path_string_without_verbatim_prefix(root));
@@ -655,7 +670,7 @@ impl ToolExecutor for ReadFileTool {
             if should_hash && let Ok(sha) = compute_sha256(&resolved) {
                 let mut cache = ctx.file_cache.lock().await;
                 cache.insert(
-                    resolved.clone(),
+                    normalize_cache_key(&resolved),
                     FileCacheEntry {
                         sha256: sha,
                         read_at: SystemTime::now(),
@@ -764,7 +779,7 @@ impl ToolExecutor for ApplyPatchTool {
                 if existed {
                     let entry = {
                         let cache = ctx.file_cache.lock().await;
-                        cache.get(&resolved).cloned()
+                        cache.get(&normalize_cache_key(&resolved)).cloned()
                     };
                     let Some(entry) = entry else {
                         return Err(ToolError::StaleFile {
@@ -897,7 +912,7 @@ impl ToolExecutor for ApplyPatchTool {
                     let sha = compute_sha256_bytes(&file.bytes);
                     let mut cache = ctx.file_cache.lock().await;
                     cache.insert(
-                        file.path.clone(),
+                        normalize_cache_key(&file.path),
                         FileCacheEntry {
                             sha256: sha,
                             read_at: SystemTime::now(),
@@ -1055,7 +1070,7 @@ impl ToolExecutor for WriteFileTool {
             if let Ok(sha) = compute_sha256(&resolved) {
                 let mut cache = ctx.file_cache.lock().await;
                 cache.insert(
-                    resolved.clone(),
+                    normalize_cache_key(&resolved),
                     FileCacheEntry {
                         sha256: sha,
                         read_at: SystemTime::now(),
