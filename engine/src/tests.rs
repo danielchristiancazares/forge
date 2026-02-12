@@ -618,6 +618,36 @@ fn open_tools_settings(app: &mut App) {
 }
 
 #[test]
+fn settings_close_or_exit_blocks_with_unsaved_detail_changes() {
+    let mut app = test_app();
+    open_models_settings(&mut app);
+
+    app.settings_detail_move_down();
+    app.settings_detail_toggle_selected();
+    app.settings_close_or_exit();
+
+    assert_eq!(app.settings_detail_view(), Some(SettingsCategory::Models));
+    assert_eq!(
+        last_notification(&app),
+        Some("Unsaved settings changes. Press s to save or r to revert before leaving.")
+    );
+}
+
+#[test]
+fn settings_close_or_exit_allows_leaving_detail_after_revert() {
+    let mut app = test_app();
+    open_models_settings(&mut app);
+
+    app.settings_detail_move_down();
+    app.settings_detail_toggle_selected();
+    app.settings_revert_edits();
+    app.settings_close_or_exit();
+
+    assert_eq!(app.settings_detail_view(), None);
+    assert_eq!(app.input_mode(), InputMode::Settings);
+}
+
+#[test]
 fn settings_usable_model_count_reflects_configured_providers() {
     let mut app = test_app();
     assert_eq!(app.settings_usable_model_count(), 2);

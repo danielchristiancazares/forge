@@ -2432,6 +2432,12 @@ impl App {
         }
 
         if detail_view.is_some() {
+            if self.settings_has_unsaved_edits() {
+                self.push_notification(
+                    "Unsaved settings changes. Press s to save or r to revert before leaving.",
+                );
+                return;
+            }
             if let Some(modal) = self.input.settings_modal_mut() {
                 modal.detail_view = None;
             }
