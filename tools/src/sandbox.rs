@@ -2,6 +2,45 @@ use std::path::{Path, PathBuf};
 
 use super::{DenialReason, ToolError};
 
+/// Default deny patterns for sensitive files in tool filesystem sandbox policy.
+pub const DEFAULT_SANDBOX_DENY_PATTERNS: &[&str] = &[
+    "**/.ssh/**",
+    "**/.gnupg/**",
+    "**/.aws/**",
+    "**/.azure/**",
+    "**/.config/gcloud/**",
+    "**/.git/**",
+    "**/.git-credentials",
+    "**/.npmrc",
+    "**/.pypirc",
+    "**/.netrc",
+    "**/.env",
+    "**/.env.*",
+    "**/*.env",
+    "**/id_rsa*",
+    "**/id_ed25519*",
+    "**/id_ecdsa*",
+    "**/*.pem",
+    "**/*.key",
+    "**/*.p12",
+    "**/*.pfx",
+    "**/*.der",
+    "**/core",
+    "**/core.*",
+    "**/*.core",
+    "**/*.dmp",
+    "**/*.mdmp",
+    "**/*.stackdump",
+];
+
+#[must_use]
+pub fn default_sandbox_deny_patterns() -> Vec<String> {
+    DEFAULT_SANDBOX_DENY_PATTERNS
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 struct DenyPattern {
     pattern: String,

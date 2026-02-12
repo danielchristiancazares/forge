@@ -72,8 +72,15 @@ fn test_app() -> App {
         memory_enabled: true,
         output_limits,
         cache_enabled: false,
-        openai_options: OpenAIRequestOptions::default(),
-        openai_reasoning_effort_explicit: false,
+        provider_runtime: crate::ProviderRuntimeState {
+            openai_options: OpenAIRequestOptions::default(),
+            openai_reasoning_effort_explicit: false,
+            gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            gemini_thinking_enabled: false,
+            anthropic_thinking_mode: crate::config::AnthropicThinkingMode::default(),
+            anthropic_thinking_effort: crate::config::AnthropicEffort::default(),
+            gemini_cache_config: crate::GeminiCacheConfig::default(),
+        },
         system_prompts: TEST_SYSTEM_PROMPTS,
         environment: EnvironmentContext::gather(),
         cached_usage_status: None,
@@ -93,11 +100,6 @@ fn test_app() -> App {
         tool_iterations: 0,
         history_load_warning_shown: false,
         autosave_warning_shown: false,
-        gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
-        gemini_thinking_enabled: false,
-        anthropic_thinking_mode: crate::config::AnthropicThinkingMode::default(),
-        anthropic_thinking_effort: crate::config::AnthropicEffort::default(),
-        gemini_cache_config: crate::GeminiCacheConfig::default(),
         librarian: None, // No Gemini API key in tests
         input_history: crate::ui::InputHistory::default(),
         last_ui_tick: Instant::now(),
@@ -108,10 +110,12 @@ fn test_app() -> App {
         turn_usage: None,
         last_turn_usage: None,
         notification_queue: crate::notifications::NotificationQueue::new(),
-        lsp_config: None,
-        lsp: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
-        lsp_snapshot: forge_lsp::DiagnosticsSnapshot::default(),
-        pending_diag_check: None,
+        lsp_runtime: crate::LspRuntimeState {
+            config: None,
+            manager: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            snapshot: forge_lsp::DiagnosticsSnapshot::default(),
+            pending_diag_check: None,
+        },
     }
 }
 
@@ -165,12 +169,12 @@ fn openai_options_default_upgrade_for_gpt_52_pro() {
 #[test]
 fn openai_options_respects_explicit_effort_for_gpt_52_pro() {
     let mut app = test_app();
-    app.openai_reasoning_effort_explicit = true;
-    app.openai_options = OpenAIRequestOptions::new(
+    app.provider_runtime.openai_reasoning_effort_explicit = true;
+    app.provider_runtime.openai_options = OpenAIRequestOptions::new(
         OpenAIReasoningEffort::Medium,
-        app.openai_options.reasoning_summary(),
-        app.openai_options.verbosity(),
-        app.openai_options.truncation(),
+        app.provider_runtime.openai_options.reasoning_summary(),
+        app.provider_runtime.openai_options.verbosity(),
+        app.provider_runtime.openai_options.truncation(),
     );
     let pro_model = ModelName::from_predefined(PredefinedModel::Gpt52Pro);
     let pro_options = app.openai_options_for_model(&pro_model);

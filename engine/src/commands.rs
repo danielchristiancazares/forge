@@ -643,7 +643,7 @@ impl super::App {
                 }
             }
             Command::Problems => {
-                let snapshot = self.lsp_snapshot.clone();
+                let snapshot = self.lsp_runtime.snapshot.clone();
                 if snapshot.is_empty() {
                     self.push_notification("No diagnostics");
                 } else {

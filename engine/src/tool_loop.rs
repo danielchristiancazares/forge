@@ -1454,10 +1454,10 @@ impl App {
             let config = match ApiConfig::new(api_key, model.clone()) {
                 Ok(config) => config
                     .with_openai_options(self.openai_options_for_model(&model))
-                    .with_gemini_thinking_enabled(self.gemini_thinking_enabled)
+                    .with_gemini_thinking_enabled(self.provider_runtime.gemini_thinking_enabled)
                     .with_anthropic_thinking(
-                        self.anthropic_thinking_mode.as_str(),
-                        self.anthropic_thinking_effort.as_str(),
+                        self.provider_runtime.anthropic_thinking_mode.as_str(),
+                        self.provider_runtime.anthropic_thinking_effort.as_str(),
                     ),
                 Err(e) => {
                     self.push_notification(format!("Cannot resume after tools: {e}"));
@@ -1520,10 +1520,10 @@ impl App {
             let config = match ApiConfig::new(api_key, model.clone()) {
                 Ok(config) => config
                     .with_openai_options(self.openai_options_for_model(&model))
-                    .with_gemini_thinking_enabled(self.gemini_thinking_enabled)
+                    .with_gemini_thinking_enabled(self.provider_runtime.gemini_thinking_enabled)
                     .with_anthropic_thinking(
-                        self.anthropic_thinking_mode.as_str(),
-                        self.anthropic_thinking_effort.as_str(),
+                        self.provider_runtime.anthropic_thinking_mode.as_str(),
+                        self.provider_runtime.anthropic_thinking_effort.as_str(),
                     ),
                 Err(e) => {
                     self.push_notification(format!("Cannot resume after tools: {e}"));

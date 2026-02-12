@@ -26,36 +26,36 @@ impl App {
     ///
     /// Called from `tick()` each frame. Non-blocking.
     pub(crate) fn poll_lsp_events(&mut self) {
-        let Ok(mut guard) = self.lsp.try_lock() else {
+        let Ok(mut guard) = self.lsp_runtime.manager.try_lock() else {
             return;
         };
         let Some(lsp) = guard.as_mut() else { return };
 
         let processed = lsp.poll_events(LSP_EVENT_BUDGET);
         if processed > 0 {
-            self.lsp_snapshot = lsp.snapshot();
+            self.lsp_runtime.snapshot = lsp.snapshot();
         }
 
         // Check deferred diagnostics: after the deadline, inject errors as agent feedback
-        if let Some((paths, deadline)) = &mut self.pending_diag_check
+        if let Some((paths, deadline)) = &mut self.lsp_runtime.pending_diag_check
             && Instant::now() >= *deadline
         {
             if !lsp.has_running_servers() {
                 // Manager exists but no servers survived — stop waiting.
-                self.pending_diag_check = None;
+                self.lsp_runtime.pending_diag_check = None;
                 return;
             }
 
             let errors = lsp.errors_for_files(paths);
             if errors.is_empty() {
-                self.pending_diag_check = None;
+                self.lsp_runtime.pending_diag_check = None;
                 return;
             }
 
             let summary = format_error_summary(&errors);
             self.notification_queue
                 .push(SystemNotification::DiagnosticsFound { summary });
-            self.pending_diag_check = None;
+            self.lsp_runtime.pending_diag_check = None;
         }
     }
 
@@ -82,14 +82,18 @@ impl App {
             return;
         }
 
-        let lsp = self.lsp.clone();
+        let lsp = self.lsp_runtime.manager.clone();
         // Consume config on first call — `take()` ensures single initialization.
-        let config = self.lsp_config.take();
+        let config = self.lsp_runtime.config.take();
         let needs_start = config.is_some();
 
         // If no config to start and no existing manager, LSP is disabled.
         if !needs_start {
-            let has_mgr = self.lsp.try_lock().is_ok_and(|g| g.is_some());
+            let has_mgr = self
+                .lsp_runtime
+                .manager
+                .try_lock()
+                .is_ok_and(|g| g.is_some());
             if !has_mgr {
                 return;
             }
@@ -138,20 +142,22 @@ impl App {
         });
 
         if !notified_paths.is_empty() {
-            self.pending_diag_check = Some((notified_paths, Instant::now() + DIAG_CHECK_DELAY));
+            self.lsp_runtime.pending_diag_check =
+                Some((notified_paths, Instant::now() + DIAG_CHECK_DELAY));
         }
     }
 
     /// Get the current diagnostics snapshot for UI display.
     #[must_use]
     pub fn lsp_snapshot(&self) -> &forge_lsp::DiagnosticsSnapshot {
-        &self.lsp_snapshot
+        &self.lsp_runtime.snapshot
     }
 
     /// Whether the LSP subsystem is active and has running servers.
     #[must_use]
     pub fn lsp_active(&self) -> bool {
-        self.lsp
+        self.lsp_runtime
+            .manager
             .try_lock()
             .ok()
             .and_then(|guard| {
@@ -164,7 +170,7 @@ impl App {
 
     /// Gracefully shut down all LSP servers.
     pub async fn shutdown_lsp(&mut self) {
-        let mut guard = self.lsp.lock().await;
+        let mut guard = self.lsp_runtime.manager.lock().await;
         if let Some(mgr) = guard.as_mut() {
             mgr.shutdown().await;
         }

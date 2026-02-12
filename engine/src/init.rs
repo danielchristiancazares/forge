@@ -33,37 +33,6 @@ pub(crate) const TOOL_EVENT_CHANNEL_CAPACITY: usize = 64;
 
 use forge_types::ENV_SECRET_DENYLIST as DEFAULT_ENV_DENYLIST;
 
-// Sandbox deny patterns for sensitive files
-const DEFAULT_SANDBOX_DENIES: [&str; 27] = [
-    "**/.ssh/**",
-    "**/.gnupg/**",
-    "**/.aws/**",
-    "**/.azure/**",
-    "**/.config/gcloud/**",
-    "**/.git/**",
-    "**/.git-credentials",
-    "**/.npmrc",
-    "**/.pypirc",
-    "**/.netrc",
-    "**/.env",
-    "**/.env.*",
-    "**/*.env",
-    "**/id_rsa*",
-    "**/id_ed25519*",
-    "**/id_ecdsa*",
-    "**/*.pem",
-    "**/*.key",
-    "**/*.p12",
-    "**/*.pfx",
-    "**/*.der",
-    "**/core",
-    "**/core.*",
-    "**/*.core",
-    "**/*.dmp",
-    "**/*.mdmp",
-    "**/*.stackdump",
-];
-
 fn default_env_denylist_patterns() -> Vec<String> {
     DEFAULT_ENV_DENYLIST
         .iter()
@@ -72,10 +41,7 @@ fn default_env_denylist_patterns() -> Vec<String> {
 }
 
 fn default_sandbox_deny_patterns() -> Vec<String> {
-    DEFAULT_SANDBOX_DENIES
-        .iter()
-        .map(std::string::ToString::to_string)
-        .collect()
+    tools::sandbox::default_sandbox_deny_patterns()
 }
 
 fn insert_resolved_key(
@@ -365,8 +331,15 @@ impl App {
             memory_enabled,
             output_limits,
             cache_enabled,
-            openai_options,
-            openai_reasoning_effort_explicit,
+            provider_runtime: crate::ProviderRuntimeState {
+                openai_options,
+                openai_reasoning_effort_explicit,
+                gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+                gemini_thinking_enabled,
+                anthropic_thinking_mode,
+                anthropic_thinking_effort,
+                gemini_cache_config,
+            },
             system_prompts,
             environment,
             cached_usage_status: None,
@@ -386,11 +359,6 @@ impl App {
             tool_iterations: 0,
             history_load_warning_shown: false,
             autosave_warning_shown: false,
-            gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
-            gemini_thinking_enabled,
-            anthropic_thinking_mode,
-            anthropic_thinking_effort,
-            gemini_cache_config,
             librarian,
             input_history: crate::ui::InputHistory::default(),
             last_ui_tick: Instant::now(),
@@ -401,10 +369,12 @@ impl App {
             turn_usage: None,
             last_turn_usage: None,
             notification_queue: crate::notifications::NotificationQueue::new(),
-            lsp_config,
-            lsp: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
-            lsp_snapshot: forge_lsp::DiagnosticsSnapshot::default(),
-            pending_diag_check: None,
+            lsp_runtime: crate::LspRuntimeState {
+                config: lsp_config,
+                manager: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+                snapshot: forge_lsp::DiagnosticsSnapshot::default(),
+                pending_diag_check: None,
+            },
         };
 
         app.clamp_output_limits_to_model();

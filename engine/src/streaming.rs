@@ -381,8 +381,8 @@ impl super::App {
         let cacheable_messages = self.inject_pending_notifications(cacheable_messages);
 
         // Clone Gemini cache state for async task (only relevant for Gemini provider)
-        let gemini_cache_arc = self.gemini_cache.clone();
-        let gemini_cache_config = self.gemini_cache_config.clone();
+        let gemini_cache_arc = self.provider_runtime.gemini_cache.clone();
+        let gemini_cache_config = self.provider_runtime.gemini_cache_config.clone();
         let is_gemini = config.provider() == Provider::Gemini;
 
         let task = async move {

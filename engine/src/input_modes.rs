@@ -194,10 +194,10 @@ impl InsertMode<'_> {
         let config = match ApiConfig::new(api_key, self.app.model.clone()) {
             Ok(config) => config
                 .with_openai_options(self.app.openai_options_for_model(&self.app.model))
-                .with_gemini_thinking_enabled(self.app.gemini_thinking_enabled)
+                .with_gemini_thinking_enabled(self.app.provider_runtime.gemini_thinking_enabled)
                 .with_anthropic_thinking(
-                    self.app.anthropic_thinking_mode.as_str(),
-                    self.app.anthropic_thinking_effort.as_str(),
+                    self.app.provider_runtime.anthropic_thinking_mode.as_str(),
+                    self.app.provider_runtime.anthropic_thinking_effort.as_str(),
                 ),
             Err(e) => {
                 self.app

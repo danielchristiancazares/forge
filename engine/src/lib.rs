@@ -760,6 +760,35 @@ impl SystemPrompts {
     }
 }
 
+#[derive(Clone)]
+struct ProviderRuntimeState {
+    /// `OpenAI` request defaults (reasoning/summary/verbosity/truncation).
+    openai_options: OpenAIRequestOptions,
+    openai_reasoning_effort_explicit: bool,
+    /// Active Gemini cache (if caching enabled and cache created).
+    /// Uses `Arc<Mutex>` because cache is created/updated inside async streaming tasks.
+    gemini_cache: std::sync::Arc<tokio::sync::Mutex<Option<GeminiCache>>>,
+    /// Whether Gemini thinking mode is enabled via config.
+    gemini_thinking_enabled: bool,
+    anthropic_thinking_mode: config::AnthropicThinkingMode,
+    /// Anthropic effort level for Opus 4.6+ ("low", "medium", "high", "max").
+    anthropic_thinking_effort: config::AnthropicEffort,
+    /// Gemini cache configuration.
+    gemini_cache_config: GeminiCacheConfig,
+}
+
+struct LspRuntimeState {
+    /// LSP config, consumed on first start. `None` once started or if LSP is disabled.
+    config: Option<forge_lsp::LspConfig>,
+    /// LSP client manager. Populated lazily on first tool batch via `LspManager::start()`.
+    /// `Arc<Mutex<Option<>>>` so the spawned startup task can populate it.
+    manager: std::sync::Arc<tokio::sync::Mutex<Option<forge_lsp::LspManager>>>,
+    /// Cached diagnostics snapshot for UI display and agent feedback.
+    snapshot: forge_lsp::DiagnosticsSnapshot,
+    /// Pending diagnostics check: edited files + deadline for deferred error injection.
+    pending_diag_check: Option<(Vec<std::path::PathBuf>, Instant)>,
+}
+
 pub struct App {
     input: InputState,
     display: Vec<DisplayItem>,
@@ -818,9 +847,7 @@ pub struct App {
     output_limits: OutputLimits,
     /// Whether prompt caching is enabled (for Claude).
     cache_enabled: bool,
-    /// `OpenAI` request defaults (reasoning/summary/verbosity/truncation).
-    openai_options: OpenAIRequestOptions,
-    openai_reasoning_effort_explicit: bool,
+    provider_runtime: ProviderRuntimeState,
     /// Provider-specific system prompts.
     /// The correct prompt is selected at streaming time based on the active provider.
     system_prompts: SystemPrompts,
@@ -872,16 +899,6 @@ pub struct App {
     history_load_warning_shown: bool,
     /// Whether we've already warned about autosave failures.
     autosave_warning_shown: bool,
-    /// Active Gemini cache (if caching enabled and cache created).
-    /// Uses `Arc<Mutex>` because cache is created/updated inside async streaming tasks.
-    gemini_cache: std::sync::Arc<tokio::sync::Mutex<Option<GeminiCache>>>,
-    /// Whether Gemini thinking mode is enabled via config.
-    gemini_thinking_enabled: bool,
-    anthropic_thinking_mode: config::AnthropicThinkingMode,
-    /// Anthropic effort level for Opus 4.6+ ("low", "medium", "high", "max").
-    anthropic_thinking_effort: config::AnthropicEffort,
-    /// Gemini cache configuration.
-    gemini_cache_config: GeminiCacheConfig,
     /// The Librarian for fact extraction and retrieval (Context Infinity).
     /// Uses `Arc<Mutex>` because it's accessed from async tasks for extraction.
     /// None if context_infinity is disabled or no Gemini API key.
@@ -904,15 +921,7 @@ pub struct App {
     last_turn_usage: Option<TurnUsage>,
     /// Queue of pending system notifications to inject into next API request.
     notification_queue: notifications::NotificationQueue,
-    /// LSP config, consumed on first start. `None` once started or if LSP is disabled.
-    lsp_config: Option<forge_lsp::LspConfig>,
-    /// LSP client manager. Populated lazily on first tool batch via `LspManager::start()`.
-    /// `Arc<Mutex<Option<>>>` so the spawned startup task can populate it.
-    lsp: std::sync::Arc<tokio::sync::Mutex<Option<forge_lsp::LspManager>>>,
-    /// Cached diagnostics snapshot for UI display and agent feedback.
-    lsp_snapshot: forge_lsp::DiagnosticsSnapshot,
-    /// Pending diagnostics check: edited files + deadline for deferred error injection.
-    pending_diag_check: Option<(Vec<std::path::PathBuf>, Instant)>,
+    lsp_runtime: LspRuntimeState,
 }
 
 impl App {
@@ -1364,7 +1373,7 @@ impl App {
 
     pub(crate) fn openai_options_for_model(&self, model: &ModelName) -> OpenAIRequestOptions {
         if model.provider() != Provider::OpenAI {
-            return self.openai_options;
+            return self.provider_runtime.openai_options;
         }
 
         if model
@@ -1372,18 +1381,19 @@ impl App {
             .trim()
             .to_ascii_lowercase()
             .starts_with("gpt-5.2-pro")
-            && !self.openai_reasoning_effort_explicit
-            && self.openai_options.reasoning_effort() != OpenAIReasoningEffort::XHigh
+            && !self.provider_runtime.openai_reasoning_effort_explicit
+            && self.provider_runtime.openai_options.reasoning_effort()
+                != OpenAIReasoningEffort::XHigh
         {
             return OpenAIRequestOptions::new(
                 OpenAIReasoningEffort::XHigh,
-                self.openai_options.reasoning_summary(),
-                self.openai_options.verbosity(),
-                self.openai_options.truncation(),
+                self.provider_runtime.openai_options.reasoning_summary(),
+                self.provider_runtime.openai_options.verbosity(),
+                self.provider_runtime.openai_options.truncation(),
             );
         }
 
-        self.openai_options
+        self.provider_runtime.openai_options
     }
 
     pub fn tick_count(&self) -> usize {
@@ -2562,16 +2572,26 @@ impl App {
                 budget.as_u32().hash(&mut hasher);
             }
         }
-        self.openai_options
+        self.provider_runtime
+            .openai_options
             .reasoning_effort()
             .as_str()
             .hash(&mut hasher);
-        self.openai_options
+        self.provider_runtime
+            .openai_options
             .reasoning_summary()
             .as_str()
             .hash(&mut hasher);
-        self.openai_options.verbosity().as_str().hash(&mut hasher);
-        self.openai_options.truncation().as_str().hash(&mut hasher);
+        self.provider_runtime
+            .openai_options
+            .verbosity()
+            .as_str()
+            .hash(&mut hasher);
+        self.provider_runtime
+            .openai_options
+            .truncation()
+            .as_str()
+            .hash(&mut hasher);
         for provider in Provider::all() {
             provider.as_str().hash(&mut hasher);
             self.has_api_key(*provider).hash(&mut hasher);
