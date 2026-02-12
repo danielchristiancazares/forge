@@ -537,6 +537,32 @@ fn settings_open_resolve_surface_blocks_when_detail_has_unsaved_edits() {
 }
 
 #[test]
+fn settings_resolve_activate_selected_jumps_to_target_detail() {
+    let mut app = test_app();
+    app.enter_resolve_mode();
+    for _ in 0..4 {
+        app.settings_resolve_move_down();
+    }
+
+    app.settings_resolve_activate_selected();
+
+    assert_eq!(app.settings_surface(), Some(SettingsSurface::Root));
+    assert_eq!(app.settings_detail_view(), Some(SettingsCategory::Tools));
+}
+
+#[test]
+fn settings_resolve_move_down_clamps_to_last_setting() {
+    let mut app = test_app();
+    app.enter_resolve_mode();
+    for _ in 0..20 {
+        app.settings_resolve_move_down();
+    }
+
+    let last_index = app.resolve_cascade().settings.len().saturating_sub(1);
+    assert_eq!(app.settings_selected_index(), Some(last_index));
+}
+
+#[test]
 fn runtime_snapshot_lists_pending_next_turn_settings() {
     let mut app = test_app();
     app.pending_turn_model = Some(ModelName::from_predefined(PredefinedModel::Gpt52Pro));

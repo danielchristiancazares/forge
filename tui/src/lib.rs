@@ -1799,31 +1799,85 @@ fn runtime_detail_lines(
     lines
 }
 
-fn resolve_detail_lines(app: &App, palette: &Palette, content_width: usize) -> Vec<Line<'static>> {
+fn resolve_detail_lines(
+    app: &App,
+    palette: &Palette,
+    glyphs: &Glyphs,
+    content_width: usize,
+) -> Vec<Line<'static>> {
     let cascade = app.resolve_cascade();
     let mut lines = Vec::new();
+    let selected_index = app.settings_selected_index().unwrap_or(0);
 
-    for setting in cascade.settings {
+    for (index, setting) in cascade.settings.into_iter().enumerate() {
+        let is_selected = index == selected_index;
+        let marker = if is_selected { glyphs.selected } else { " " };
         lines.push(Line::from(Span::styled(
-            format!(" {}", setting.setting),
-            Style::default()
-                .fg(palette.text_primary)
-                .add_modifier(Modifier::BOLD),
+            format!(" {marker} {}", setting.setting),
+            if is_selected {
+                Style::default()
+                    .fg(palette.text_primary)
+                    .bg(palette.bg_highlight)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(palette.text_primary)
+                    .add_modifier(Modifier::BOLD)
+            },
         )));
         lines.push(Line::from(Span::styled(
             " ───────────────────────────────────────────────────────────",
-            Style::default().fg(palette.primary_dim),
+            if is_selected {
+                Style::default()
+                    .fg(palette.primary_dim)
+                    .bg(palette.bg_highlight)
+            } else {
+                Style::default().fg(palette.primary_dim)
+            },
         )));
         for layer in setting.layers {
             let winner = if layer.is_winner { "  <- winner" } else { "" };
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("  {:<8}", layer.layer),
-                    Style::default().fg(palette.text_muted),
+                    if is_selected {
+                        Style::default()
+                            .fg(palette.text_muted)
+                            .bg(palette.bg_highlight)
+                    } else {
+                        Style::default().fg(palette.text_muted)
+                    },
                 ),
-                Span::styled("  ", Style::default().fg(palette.text_muted)),
-                Span::styled(layer.value, Style::default().fg(palette.text_secondary)),
-                Span::styled(winner, Style::default().fg(palette.success)),
+                Span::styled(
+                    "  ",
+                    if is_selected {
+                        Style::default()
+                            .fg(palette.text_muted)
+                            .bg(palette.bg_highlight)
+                    } else {
+                        Style::default().fg(palette.text_muted)
+                    },
+                ),
+                Span::styled(
+                    layer.value,
+                    if is_selected {
+                        Style::default()
+                            .fg(palette.text_secondary)
+                            .bg(palette.bg_highlight)
+                    } else {
+                        Style::default().fg(palette.text_secondary)
+                    },
+                ),
+                Span::styled(
+                    winner,
+                    if is_selected {
+                        Style::default()
+                            .fg(palette.success)
+                            .bg(palette.bg_highlight)
+                    } else {
+                        Style::default().fg(palette.success)
+                    },
+                ),
             ]));
         }
         lines.push(Line::from(""));
@@ -1839,6 +1893,10 @@ fn resolve_detail_lines(app: &App, palette: &Palette, content_width: usize) -> V
         Style::default().fg(palette.primary_dim),
     )));
     lines.push(Line::from(vec![
+        Span::styled("↑↓/j/k", styles::key_highlight(palette)),
+        Span::styled(" move  ", styles::key_hint(palette)),
+        Span::styled("Enter", styles::key_highlight(palette)),
+        Span::styled(" jump to setting  ", styles::key_hint(palette)),
         Span::styled("Esc/q", styles::key_highlight(palette)),
         Span::styled(" close", styles::key_hint(palette)),
     ]));
@@ -2535,7 +2593,7 @@ fn draw_settings_modal(
             lines.extend(runtime_detail_lines(app, palette, content_width));
         }
         SettingsSurface::Resolve => {
-            lines.extend(resolve_detail_lines(app, palette, content_width));
+            lines.extend(resolve_detail_lines(app, palette, glyphs, content_width));
         }
         SettingsSurface::Validate => {
             lines.extend(validation_detail_lines(app, palette, glyphs, content_width));

@@ -1580,6 +1580,79 @@ impl App {
         self.enter_resolve_mode();
     }
 
+    fn settings_category_for_resolve_setting(setting: &str) -> Option<SettingsCategory> {
+        match setting {
+            "Chat Model" | "Code Model" | "Temperature" => Some(SettingsCategory::ModelOverrides),
+            "Context Limit" | "Context Memory" => Some(SettingsCategory::Context),
+            "Tool Approval Mode" => Some(SettingsCategory::Tools),
+            "UI Defaults" => Some(SettingsCategory::Appearance),
+            _ => None,
+        }
+    }
+
+    pub fn settings_resolve_move_up(&mut self) {
+        if self.settings_surface() != Some(SettingsSurface::Resolve) {
+            return;
+        }
+        if let Some(modal) = self.input.settings_modal_mut()
+            && modal.selected > 0
+        {
+            modal.selected -= 1;
+        }
+    }
+
+    pub fn settings_resolve_move_down(&mut self) {
+        if self.settings_surface() != Some(SettingsSurface::Resolve) {
+            return;
+        }
+        let len = self.resolve_cascade().settings.len();
+        if len == 0 {
+            return;
+        }
+        if let Some(modal) = self.input.settings_modal_mut()
+            && modal.selected + 1 < len
+        {
+            modal.selected += 1;
+        }
+    }
+
+    pub fn settings_resolve_activate_selected(&mut self) {
+        if self.settings_surface() != Some(SettingsSurface::Resolve) {
+            return;
+        }
+        if self.settings_has_unsaved_edits() {
+            self.push_settings_unsaved_edits_notification();
+            return;
+        }
+        let Some(selected) = self.settings_selected_index() else {
+            return;
+        };
+        let Some(setting) = self
+            .resolve_cascade()
+            .settings
+            .get(selected)
+            .map(|setting| setting.setting)
+        else {
+            return;
+        };
+        let Some(category) = Self::settings_category_for_resolve_setting(setting) else {
+            return;
+        };
+        if let Some(modal) = self.input.settings_modal_mut() {
+            modal.surface = SettingsSurface::Root;
+            modal.filter = DraftInput::default();
+            modal.filter_active = false;
+            modal.detail_view = None;
+            if let Some(index) = SettingsCategory::ALL
+                .iter()
+                .position(|candidate| *candidate == category)
+            {
+                modal.selected = index;
+            }
+        }
+        self.open_settings_detail(category);
+    }
+
     /// If present, tools are disabled for safety due to a tool journal error.
     pub fn tool_journal_disabled_reason(&self) -> Option<&str> {
         self.tool_journal_disabled_reason.as_deref()

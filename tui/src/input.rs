@@ -12,7 +12,7 @@ use std::{
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use forge_engine::{App, InputMode, SettingsCategory};
+use forge_engine::{App, InputMode, SettingsCategory, SettingsSurface};
 
 const INPUT_POLL_TIMEOUT: Duration = Duration::from_millis(25); // shutdown responsiveness
 const INPUT_CHANNEL_CAPACITY: usize = 1024; // bounded: no OOM
@@ -802,11 +802,28 @@ fn handle_file_select_mode(app: &mut App, key: KeyEvent) {
 
 fn handle_settings_mode(app: &mut App, key: KeyEvent) {
     if !app.settings_is_root_surface() {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
-                app.settings_close_or_exit();
-            }
-            _ => {}
+        match app.settings_surface() {
+            Some(SettingsSurface::Resolve) => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    app.settings_close_or_exit();
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    app.settings_resolve_move_up();
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.settings_resolve_move_down();
+                }
+                KeyCode::Enter => {
+                    app.settings_resolve_activate_selected();
+                }
+                _ => {}
+            },
+            _ => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+                    app.settings_close_or_exit();
+                }
+                _ => {}
+            },
         }
         return;
     }
