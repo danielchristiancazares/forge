@@ -1,0 +1,26 @@
+[package]
+name = "forge-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Configuration loading, parsing, and persistence for Forge"
+
+[lints]
+workspace = true
+
+[dependencies]
+forge-types.workspace = true
+forge-lsp.workspace = true
+forge-tools.workspace = true
+forge-context.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+dirs.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

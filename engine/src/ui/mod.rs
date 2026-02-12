@@ -15,7 +15,7 @@ pub use display::DisplayItem;
 pub use file_picker::{FileEntry, FilePickerState, find_match_positions};
 pub use forge_types::PredefinedModel;
 pub use history::InputHistory;
-pub use input::{DraftInput, InputMode, InputState};
+pub use input::{DraftInput, InputMode, InputState, SettingsCategory, SettingsModalState};
 pub use modal::{ModalEffect, ModalEffectKind};
 pub use panel::{PanelEffect, PanelEffectKind};
 pub use scroll::ScrollState;

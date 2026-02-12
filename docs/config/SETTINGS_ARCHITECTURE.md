@@ -537,9 +537,9 @@ impl ResolvedConfig {
     fn hash(&self) -> ConfigHash { ... }
 }
 
-// Runtime (read-only view)
+// Runtime (read-only view for the active turn)
 struct RuntimeState {
-    config: ResolvedConfigSnapshot,  // immutable for session lifetime
+    config: ResolvedConfigSnapshot,  // immutable for active turn; edits apply next turn
     context_used: usize,
     rate_limit_state: RateLimitState,
     last_error: Option<Error>,
@@ -580,7 +580,7 @@ fn validate(
 2. **Usable ≠ Listed** — Glyph shows what you can actually use right now
 3. **Effective Resolution Visible** — Show what won and which layer
 4. **Validation First-Class** — All errors in one place, with fix paths
-5. **Immutable Session Snapshots** — Runtime reads frozen config
+5. **Immutable Turn Snapshots** — Runtime reads frozen config per active turn
 6. **Explicit Elevated Permissions** — Ritual required for dangerous profiles
 7. **Footer Compass** — Always know scope, layer, dirty state
 8. **Esc = back, q = quit** — Consistent navigation

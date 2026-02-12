@@ -13,6 +13,7 @@ workspace = true
 forge-types.workspace = true
 forge-providers.workspace = true
 forge-context.workspace = true
+forge-config.workspace = true
 forge-lsp.workspace = true
 forge-tools.workspace = true
 

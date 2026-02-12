@@ -42,6 +42,11 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         description: "Change the model",
     },
     CommandSpec {
+        palette_label: "settings, config",
+        help_label: "settings",
+        description: "Open the settings modal",
+    },
+    CommandSpec {
         palette_label: "ctx",
         help_label: "ctx",
         description: "Show context usage",
@@ -88,6 +93,7 @@ pub(crate) enum CommandKind {
     Quit,
     Clear,
     Model,
+    Settings,
     Context,
     Journal,
     Distill,
@@ -126,6 +132,14 @@ const COMMAND_ALIASES: &[CommandAlias] = &[
     CommandAlias {
         name: "model",
         kind: CommandKind::Model,
+    },
+    CommandAlias {
+        name: "settings",
+        kind: CommandKind::Settings,
+    },
+    CommandAlias {
+        name: "config",
+        kind: CommandKind::Settings,
     },
     CommandAlias {
         name: "ctx",
@@ -197,6 +211,7 @@ pub(crate) enum Command<'a> {
     Quit,
     Clear,
     Model(Option<&'a str>),
+    Settings,
     Context,
     Journal,
     Distill,
@@ -236,6 +251,7 @@ impl<'a> Command<'a> {
             CommandKind::Quit => Command::Quit,
             CommandKind::Clear => Command::Clear,
             CommandKind::Model => Command::Model(parts.get(1).copied()),
+            CommandKind::Settings => Command::Settings,
             CommandKind::Context => Command::Context,
             CommandKind::Journal => Command::Journal,
             CommandKind::Distill => Command::Distill,
@@ -415,6 +431,9 @@ impl super::App {
                 } else {
                     self.enter_model_select_mode();
                 }
+            }
+            Command::Settings => {
+                self.enter_settings_mode();
             }
             Command::Context => {
                 let usage_status = self.context_usage_status();
@@ -639,6 +658,12 @@ mod tests {
     }
 
     #[test]
+    fn parse_settings_commands() {
+        assert_eq!(Command::parse("settings"), Command::Settings);
+        assert_eq!(Command::parse("config"), Command::Settings);
+    }
+
+    #[test]
     fn parse_context_commands() {
         assert_eq!(Command::parse("context"), Command::Context);
         assert_eq!(Command::parse("ctx"), Command::Context);
@@ -677,9 +702,11 @@ mod tests {
         assert_eq!(Command::parse("QUIT"), Command::Quit);
         assert_eq!(Command::parse("Clear"), Command::Clear);
         assert_eq!(Command::parse("MODEL"), Command::Model(None));
+        assert_eq!(Command::parse("Settings"), Command::Settings);
 
         assert_eq!(Command::parse("/quit"), Command::Quit);
         assert_eq!(Command::parse("/clear"), Command::Clear);
+        assert_eq!(Command::parse("/config"), Command::Settings);
         assert_eq!(
             Command::parse("/model gpt-5"),
             Command::Model(Some("gpt-5"))

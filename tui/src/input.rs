@@ -367,6 +367,7 @@ fn apply_event(app: &mut App, event: Event, paste_active: bool) -> bool {
                 InputMode::Command => handle_command_mode(app, key),
                 InputMode::ModelSelect => handle_model_select_mode(app, key),
                 InputMode::FileSelect => handle_file_select_mode(app, key),
+                InputMode::Settings => handle_settings_mode(app, key),
             }
         }
         Event::Paste(text) => {
@@ -809,6 +810,41 @@ fn handle_file_select_mode(app: &mut App, key: KeyEvent) {
         // Type character to filter
         KeyCode::Char(c) if c != '\r' => {
             app.file_select_push_char(c);
+        }
+        _ => {}
+    }
+}
+
+fn handle_settings_mode(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.settings_close_or_exit();
+        }
+        KeyCode::Enter => {
+            app.settings_activate();
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if !app.settings_filter_active() && app.settings_detail_view().is_none() {
+                app.settings_move_up();
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if !app.settings_filter_active() && app.settings_detail_view().is_none() {
+                app.settings_move_down();
+            }
+        }
+        KeyCode::Char('/') => {
+            if app.settings_detail_view().is_none() {
+                app.settings_start_filter();
+            }
+        }
+        KeyCode::Backspace => {
+            if app.settings_filter_active() {
+                app.settings_filter_backspace();
+            }
+        }
+        KeyCode::Char(c) if c != '\r' && app.settings_filter_active() => {
+            app.settings_filter_push_char(c);
         }
         _ => {}
     }

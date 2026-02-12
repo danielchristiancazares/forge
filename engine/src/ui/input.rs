@@ -12,6 +12,7 @@ pub enum InputMode {
     Command,
     ModelSelect,
     FileSelect,
+    Settings,
 }
 
 /// Draft input buffer with cursor tracking.
@@ -21,6 +22,107 @@ pub enum InputMode {
 pub struct DraftInput {
     pub(crate) text: String,
     pub(crate) cursor: usize,
+}
+
+/// Top-level settings categories for the read-only settings modal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SettingsCategory {
+    Providers,
+    Models,
+    ModelOverrides,
+    Context,
+    Tools,
+    Keybindings,
+    Profiles,
+    History,
+    Appearance,
+}
+
+impl SettingsCategory {
+    pub const ALL: [Self; 9] = [
+        Self::Providers,
+        Self::Models,
+        Self::ModelOverrides,
+        Self::Context,
+        Self::Tools,
+        Self::Keybindings,
+        Self::Profiles,
+        Self::History,
+        Self::Appearance,
+    ];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Providers => "Providers",
+            Self::Models => "Models",
+            Self::ModelOverrides => "Model Overrides",
+            Self::Context => "Context",
+            Self::Tools => "Tools",
+            Self::Keybindings => "Keybindings",
+            Self::Profiles => "Profiles",
+            Self::History => "History",
+            Self::Appearance => "Appearance",
+        }
+    }
+
+    #[must_use]
+    pub const fn detail_title(self) -> &'static str {
+        match self {
+            Self::Providers => "Settings > Providers",
+            Self::Models => "Settings > Models",
+            Self::ModelOverrides => "Settings > Model Overrides",
+            Self::Context => "Settings > Context",
+            Self::Tools => "Settings > Tools",
+            Self::Keybindings => "Settings > Keybindings",
+            Self::Profiles => "Settings > Profiles",
+            Self::History => "Settings > History",
+            Self::Appearance => "Settings > Appearance",
+        }
+    }
+
+    #[must_use]
+    pub fn filtered(filter: &str) -> Vec<Self> {
+        let needle = filter.trim().to_ascii_lowercase();
+        if needle.is_empty() {
+            return Self::ALL.to_vec();
+        }
+
+        Self::ALL
+            .into_iter()
+            .filter(|category| {
+                let label = category.label().to_ascii_lowercase();
+                label.contains(&needle)
+                    || category
+                        .keywords()
+                        .iter()
+                        .any(|keyword| keyword.contains(&needle))
+            })
+            .collect()
+    }
+
+    const fn keywords(self) -> &'static [&'static str] {
+        match self {
+            Self::Providers => &["provider", "api", "keys", "auth"],
+            Self::Models => &["model", "chat", "code"],
+            Self::ModelOverrides => &["override", "temperature", "tokens"],
+            Self::Context => &["context", "memory", "distill"],
+            Self::Tools => &["tools", "sandbox", "permissions"],
+            Self::Keybindings => &["keys", "bindings", "vim"],
+            Self::Profiles => &["profile", "preset", "switch"],
+            Self::History => &["history", "retention", "privacy"],
+            Self::Appearance => &["theme", "appearance", "display"],
+        }
+    }
+}
+
+/// Read-only settings modal state for Phase 1.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SettingsModalState {
+    pub selected: usize,
+    pub filter: DraftInput,
+    pub filter_active: bool,
+    pub detail_view: Option<SettingsCategory>,
 }
 
 impl DraftInput {
@@ -178,6 +280,10 @@ pub enum InputState {
         filter: DraftInput,
         selected: usize,
     },
+    Settings {
+        draft: DraftInput,
+        modal: SettingsModalState,
+    },
 }
 
 impl Default for InputState {
@@ -194,6 +300,7 @@ impl InputState {
             InputState::Command { .. } => InputMode::Command,
             InputState::ModelSelect { .. } => InputMode::ModelSelect,
             InputState::FileSelect { .. } => InputMode::FileSelect,
+            InputState::Settings { .. } => InputMode::Settings,
         }
     }
 
@@ -203,7 +310,8 @@ impl InputState {
             | InputState::Insert(draft)
             | InputState::Command { draft, .. }
             | InputState::ModelSelect { draft, .. }
-            | InputState::FileSelect { draft, .. } => draft,
+            | InputState::FileSelect { draft, .. }
+            | InputState::Settings { draft, .. } => draft,
         }
     }
 
@@ -213,7 +321,8 @@ impl InputState {
             | InputState::Insert(draft)
             | InputState::Command { draft, .. }
             | InputState::ModelSelect { draft, .. }
-            | InputState::FileSelect { draft, .. } => draft,
+            | InputState::FileSelect { draft, .. }
+            | InputState::Settings { draft, .. } => draft,
         }
     }
 
@@ -258,7 +367,8 @@ impl InputState {
             | InputState::Insert(draft)
             | InputState::Command { draft, .. }
             | InputState::ModelSelect { draft, .. }
-            | InputState::FileSelect { draft, .. } => InputState::Normal(draft),
+            | InputState::FileSelect { draft, .. }
+            | InputState::Settings { draft, .. } => InputState::Normal(draft),
         }
     }
 
@@ -268,7 +378,8 @@ impl InputState {
             | InputState::Insert(draft)
             | InputState::Command { draft, .. }
             | InputState::ModelSelect { draft, .. }
-            | InputState::FileSelect { draft, .. } => InputState::Insert(draft),
+            | InputState::FileSelect { draft, .. }
+            | InputState::Settings { draft, .. } => InputState::Insert(draft),
         }
     }
 
@@ -278,7 +389,8 @@ impl InputState {
             | InputState::Insert(draft)
             | InputState::Command { draft, .. }
             | InputState::ModelSelect { draft, .. }
-            | InputState::FileSelect { draft, .. } => InputState::Command {
+            | InputState::FileSelect { draft, .. }
+            | InputState::Settings { draft, .. } => InputState::Command {
                 draft,
                 command: DraftInput::default(),
             },
@@ -291,7 +403,8 @@ impl InputState {
             | InputState::Insert(draft)
             | InputState::Command { draft, .. }
             | InputState::ModelSelect { draft, .. }
-            | InputState::FileSelect { draft, .. } => InputState::ModelSelect { draft, selected },
+            | InputState::FileSelect { draft, .. }
+            | InputState::Settings { draft, .. } => InputState::ModelSelect { draft, selected },
         }
     }
 
@@ -301,10 +414,25 @@ impl InputState {
             | InputState::Insert(draft)
             | InputState::Command { draft, .. }
             | InputState::ModelSelect { draft, .. }
-            | InputState::FileSelect { draft, .. } => InputState::FileSelect {
+            | InputState::FileSelect { draft, .. }
+            | InputState::Settings { draft, .. } => InputState::FileSelect {
                 draft,
                 filter: DraftInput::default(),
                 selected: 0,
+            },
+        }
+    }
+
+    pub fn into_settings(self) -> InputState {
+        match self {
+            InputState::Normal(draft)
+            | InputState::Insert(draft)
+            | InputState::Command { draft, .. }
+            | InputState::ModelSelect { draft, .. }
+            | InputState::FileSelect { draft, .. }
+            | InputState::Settings { draft, .. } => InputState::Settings {
+                draft,
+                modal: SettingsModalState::default(),
             },
         }
     }
@@ -326,6 +454,20 @@ impl InputState {
     pub fn file_select_index(&self) -> Option<usize> {
         match self {
             InputState::FileSelect { selected, .. } => Some(*selected),
+            _ => None,
+        }
+    }
+
+    pub fn settings_modal(&self) -> Option<&SettingsModalState> {
+        match self {
+            InputState::Settings { modal, .. } => Some(modal),
+            _ => None,
+        }
+    }
+
+    pub fn settings_modal_mut(&mut self) -> Option<&mut SettingsModalState> {
+        match self {
+            InputState::Settings { modal, .. } => Some(modal),
             _ => None,
         }
     }
@@ -372,8 +514,17 @@ mod tests {
         let state = state.into_model_select(0);
         assert_eq!(state.mode(), InputMode::ModelSelect);
 
+        let state = state.into_settings();
+        assert_eq!(state.mode(), InputMode::Settings);
+
         let state = state.into_normal();
         assert_eq!(state.mode(), InputMode::Normal);
+    }
+
+    #[test]
+    fn settings_category_filter_matches_keywords() {
+        let matches = SettingsCategory::filtered("perm");
+        assert_eq!(matches, vec![SettingsCategory::Tools]);
     }
 
     #[test]

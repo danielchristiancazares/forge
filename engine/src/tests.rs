@@ -359,6 +359,29 @@ fn process_command_clear_requests_transcript_clear() {
 }
 
 #[test]
+fn process_command_settings_opens_settings_modal() {
+    let mut app = test_app();
+    app.enter_command_mode();
+
+    let command = {
+        let token = app.command_token().expect("command mode");
+        let mut command_mode = app.command_mode(token);
+        for c in "settings".chars() {
+            command_mode.push_char(c);
+        }
+        command_mode.take_command().expect("take command")
+    };
+
+    app.process_command(command);
+
+    assert_eq!(app.input_mode(), InputMode::Settings);
+    assert_eq!(app.settings_filter_text(), Some(""));
+    assert!(!app.settings_filter_active());
+    assert_eq!(app.settings_selected_index(), Some(0));
+    assert_eq!(app.settings_detail_view(), None);
+}
+
+#[test]
 fn process_stream_events_applies_deltas_and_done() {
     let mut app = test_app();
 
