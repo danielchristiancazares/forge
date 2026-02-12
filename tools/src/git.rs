@@ -99,14 +99,14 @@ impl GitToolKind {
             | GitToolKind::Commit
             | GitToolKind::Branch
             | GitToolKind::Checkout
-            | GitToolKind::Stash => RiskLevel::Medium,
+            | GitToolKind::Stash
+            | GitToolKind::Push
+            | GitToolKind::Pull => RiskLevel::Medium,
             GitToolKind::Status
             | GitToolKind::Diff
             | GitToolKind::Log
             | GitToolKind::Show
             | GitToolKind::Blame => RiskLevel::Low,
-            GitToolKind::Push => RiskLevel::Medium,
-            GitToolKind::Pull => RiskLevel::Medium,
         }
     }
 }
@@ -1995,7 +1995,6 @@ async fn handle_git_blame(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError
     Ok(build_git_response(&exec, text, Some(extra_fields)))
 }
 
-
 async fn handle_git_push(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError> {
     let req: GitPushArgs = parse_args(&args)?;
 
@@ -2236,52 +2235,52 @@ mod tests {
     }
 }
 
-    #[test]
-    fn push_is_side_effecting_medium_risk() {
-        let tool = GitTool;
-        let args = json!({"command": "push"});
-        assert!(tool.is_side_effecting(&args));
-        assert_eq!(tool.risk_level(&args), RiskLevel::Medium);
-        assert!(!tool.reads_user_data(&args));
-    }
+#[test]
+fn push_is_side_effecting_medium_risk() {
+    let tool = GitTool;
+    let args = json!({"command": "push"});
+    assert!(tool.is_side_effecting(&args));
+    assert_eq!(tool.risk_level(&args), RiskLevel::Medium);
+    assert!(!tool.reads_user_data(&args));
+}
 
-    #[test]
-    fn pull_is_side_effecting_medium_risk() {
-        let tool = GitTool;
-        let args = json!({"command": "pull"});
-        assert!(tool.is_side_effecting(&args));
-        assert_eq!(tool.risk_level(&args), RiskLevel::Medium);
-        assert!(!tool.reads_user_data(&args));
-    }
+#[test]
+fn pull_is_side_effecting_medium_risk() {
+    let tool = GitTool;
+    let args = json!({"command": "pull"});
+    assert!(tool.is_side_effecting(&args));
+    assert_eq!(tool.risk_level(&args), RiskLevel::Medium);
+    assert!(!tool.reads_user_data(&args));
+}
 
-    #[test]
-    fn push_approval_summary_with_remote_and_ref() {
-        let tool = GitTool;
-        let args = json!({"command": "push", "remote": "origin", "ref_spec": "main"});
-        let summary = tool.approval_summary(&args).unwrap();
-        assert_eq!(summary, "Git push origin main");
-    }
+#[test]
+fn push_approval_summary_with_remote_and_ref() {
+    let tool = GitTool;
+    let args = json!({"command": "push", "remote": "origin", "ref_spec": "main"});
+    let summary = tool.approval_summary(&args).unwrap();
+    assert_eq!(summary, "Git push origin main");
+}
 
-    #[test]
-    fn push_approval_summary_defaults_to_origin() {
-        let tool = GitTool;
-        let args = json!({"command": "push"});
-        let summary = tool.approval_summary(&args).unwrap();
-        assert_eq!(summary, "Git push origin");
-    }
+#[test]
+fn push_approval_summary_defaults_to_origin() {
+    let tool = GitTool;
+    let args = json!({"command": "push"});
+    let summary = tool.approval_summary(&args).unwrap();
+    assert_eq!(summary, "Git push origin");
+}
 
-    #[test]
-    fn pull_approval_summary_with_remote_and_ref() {
-        let tool = GitTool;
-        let args = json!({"command": "pull", "remote": "upstream", "ref_spec": "develop"});
-        let summary = tool.approval_summary(&args).unwrap();
-        assert_eq!(summary, "Git pull upstream develop");
-    }
+#[test]
+fn pull_approval_summary_with_remote_and_ref() {
+    let tool = GitTool;
+    let args = json!({"command": "pull", "remote": "upstream", "ref_spec": "develop"});
+    let summary = tool.approval_summary(&args).unwrap();
+    assert_eq!(summary, "Git pull upstream develop");
+}
 
-    #[test]
-    fn pull_approval_summary_defaults_to_origin() {
-        let tool = GitTool;
-        let args = json!({"command": "pull"});
-        let summary = tool.approval_summary(&args).unwrap();
-        assert_eq!(summary, "Git pull origin");
-    }
+#[test]
+fn pull_approval_summary_defaults_to_origin() {
+    let tool = GitTool;
+    let args = json!({"command": "pull"});
+    let summary = tool.approval_summary(&args).unwrap();
+    assert_eq!(summary, "Git pull origin");
+}
