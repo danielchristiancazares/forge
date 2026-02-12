@@ -7,21 +7,36 @@ default:
     @just --list
 
 # Fast type-check (use during development)
+[windows]
+check:
+    @& { $r = cargo check 2>&1; $ec = $LASTEXITCODE; if ($ec -eq 0) { $r | ForEach-Object { "$_" } } else { $r | pwsh -NoProfile -File scripts/minify-rust-errors.ps1; if ($LASTEXITCODE -ne 0) { $r | ForEach-Object { "$_" } }; exit $ec } }
+
+[unix]
 check:
     cargo check
 
 # Debug build
+[windows]
+build:
+    @& { $r = cargo build 2>&1; $ec = $LASTEXITCODE; if ($ec -eq 0) { $r | ForEach-Object { "$_" } } else { $r | pwsh -NoProfile -File scripts/minify-rust-errors.ps1; if ($LASTEXITCODE -ne 0) { $r | ForEach-Object { "$_" } }; exit $ec } }
+
+[unix]
 build:
     cargo build
 
 # Release build
+[windows]
+release:
+    @& { $r = cargo build --release 2>&1; $ec = $LASTEXITCODE; if ($ec -eq 0) { $r | ForEach-Object { "$_" } } else { $r | pwsh -NoProfile -File scripts/minify-rust-errors.ps1; if ($LASTEXITCODE -ne 0) { $r | ForEach-Object { "$_" } }; exit $ec } }
+
+[unix]
 release:
     cargo build --release
 
 # Run tests (concise: one-line summary on pass, full output on fail)
 [windows]
 test:
-    @& { $r = cargo test 2>&1; if ($LASTEXITCODE -eq 0) { $p=0; $f=0; $i=0; $r | Select-String 'test result:' | ForEach-Object { if ($_ -match '(\d+) passed; (\d+) failed; (\d+) ignored') { $p+=[int]$Matches[1]; $f+=[int]$Matches[2]; $i+=[int]$Matches[3] } }; "ok: $p passed, $f failed, $i ignored" } else { $r | ForEach-Object { "$_" }; exit $LASTEXITCODE } }
+    @& { $r = cargo test 2>&1; $ec = $LASTEXITCODE; if ($ec -eq 0) { $p=0; $f=0; $i=0; $r | Select-String 'test result:' | ForEach-Object { if ($_ -match '(\d+) passed; (\d+) failed; (\d+) ignored') { $p+=[int]$Matches[1]; $f+=[int]$Matches[2]; $i+=[int]$Matches[3] } }; "ok: $p passed, $f failed, $i ignored" } else { if ($r | Select-String '^\s*error(?:\[[A-Z]\d+\])?:\s+' -Quiet) { $r | pwsh -NoProfile -File scripts/minify-rust-errors.ps1; if ($LASTEXITCODE -ne 0) { $r | ForEach-Object { "$_" } } } else { $r | ForEach-Object { "$_" } }; exit $ec } }
 
 [unix]
 test:
@@ -30,11 +45,16 @@ test:
 # Run clippy lints (silent on pass, errors only on fail)
 [windows]
 lint:
-    @& { $r = cargo clippy --workspace --all-targets -- -D warnings 2>&1; $ec = $LASTEXITCODE; if ($ec -ne 0) { $r | Where-Object { $_ -notmatch '^\s*(Checking|Compiling|Finished|Downloading|Downloaded|warning: build failed)' } | ForEach-Object { "$_" }; exit $ec } }
+    @& { $r = cargo clippy --workspace --all-targets -- -D warnings 2>&1; $ec = $LASTEXITCODE; if ($ec -ne 0) { $r | pwsh -NoProfile -File scripts/minify-rust-errors.ps1; if ($LASTEXITCODE -ne 0) { $r | Where-Object { $_ -notmatch '^\s*(Checking|Compiling|Finished|Downloading|Downloaded|warning: build failed)' } | ForEach-Object { "$_" } }; exit $ec } }
 
 [unix]
 lint:
     @r=$(cargo clippy --workspace --all-targets -- -D warnings 2>&1); rc=$?; if [ $rc -ne 0 ]; then echo "$r" | grep -Ev '^\s*(Checking|Compiling|Finished|Downloading|Downloaded|warning: build failed)'; exit $rc; fi
+
+# Minify Rust compiler errors for LLM consumption (optional: path, keep_help=true, keep_notes=true)
+[windows]
+minify-rust-errors path="" keep_help="false" keep_notes="false":
+    @& { $ErrorActionPreference = 'Stop'; $args = @(); if ("{{path}}" -ne "") { $args += @('-Path', "{{path}}") }; if ("{{keep_help}}" -eq "true") { $args += '-KeepHelp' }; if ("{{keep_notes}}" -eq "true") { $args += '-KeepNotes' }; pwsh -NoProfile -File scripts/minify-rust-errors.ps1 @args }
 
 # Format code
 fmt:
