@@ -64,6 +64,33 @@ const DEFAULT_SANDBOX_DENIES: [&str; 27] = [
     "**/*.stackdump",
 ];
 
+fn insert_resolved_key(
+    api_keys: &mut HashMap<Provider, SecretString>,
+    provider: Provider,
+    raw: Option<&str>,
+) {
+    if let Some(raw) = raw {
+        let resolved = config::expand_env_vars(raw);
+        let trimmed = resolved.trim();
+        if !trimmed.is_empty() {
+            api_keys.insert(provider, SecretString::new(trimmed.to_string()));
+        }
+    }
+}
+
+fn insert_env_key_if_missing(api_keys: &mut HashMap<Provider, SecretString>, provider: Provider) {
+    use std::collections::hash_map::Entry;
+
+    if let Entry::Vacant(e) = api_keys.entry(provider)
+        && let Ok(key) = std::env::var(provider.env_var())
+    {
+        let trimmed = key.trim();
+        if !trimmed.is_empty() {
+            e.insert(SecretString::new(trimmed.to_string()));
+        }
+    }
+}
+
 impl App {
     pub fn new(system_prompts: SystemPrompts) -> anyhow::Result<Self> {
         let (config, config_error) = match ForgeConfig::load() {
@@ -74,52 +101,17 @@ impl App {
         // Load API keys from config, then fall back to environment.
         let mut api_keys = HashMap::new();
         if let Some(keys) = config.as_ref().and_then(|cfg| cfg.api_keys.as_ref()) {
-            if let Some(key) = keys.anthropic.as_ref() {
-                let resolved = config::expand_env_vars(key);
-                let trimmed = resolved.trim();
-                if !trimmed.is_empty() {
-                    api_keys.insert(Provider::Claude, SecretString::new(trimmed.to_string()));
-                }
-            }
-            if let Some(key) = keys.openai.as_ref() {
-                let resolved = config::expand_env_vars(key);
-                let trimmed = resolved.trim();
-                if !trimmed.is_empty() {
-                    api_keys.insert(Provider::OpenAI, SecretString::new(trimmed.to_string()));
-                }
-            }
-            if let Some(key) = keys.google.as_ref() {
-                let resolved = config::expand_env_vars(key);
-                let trimmed = resolved.trim();
-                if !trimmed.is_empty() {
-                    api_keys.insert(Provider::Gemini, SecretString::new(trimmed.to_string()));
-                }
+            for (provider, key) in [
+                (Provider::Claude, keys.anthropic.as_deref()),
+                (Provider::OpenAI, keys.openai.as_deref()),
+                (Provider::Gemini, keys.google.as_deref()),
+            ] {
+                insert_resolved_key(&mut api_keys, provider, key);
             }
         }
 
-        if let std::collections::hash_map::Entry::Vacant(e) = api_keys.entry(Provider::Claude)
-            && let Ok(key) = std::env::var("ANTHROPIC_API_KEY")
-        {
-            let key = key.trim().to_string();
-            if !key.is_empty() {
-                e.insert(SecretString::new(key));
-            }
-        }
-        if let std::collections::hash_map::Entry::Vacant(e) = api_keys.entry(Provider::OpenAI)
-            && let Ok(key) = std::env::var("OPENAI_API_KEY")
-        {
-            let key = key.trim().to_string();
-            if !key.is_empty() {
-                e.insert(SecretString::new(key));
-            }
-        }
-        if let std::collections::hash_map::Entry::Vacant(e) = api_keys.entry(Provider::Gemini)
-            && let Ok(key) = std::env::var("GEMINI_API_KEY")
-        {
-            let key = key.trim().to_string();
-            if !key.is_empty() {
-                e.insert(SecretString::new(key));
-            }
+        for &provider in Provider::all() {
+            insert_env_key_if_missing(&mut api_keys, provider);
         }
 
         // Infer provider from model name, or fall back to API key detection
@@ -131,15 +123,10 @@ impl App {
         let provider = model_raw
             .and_then(|m| Provider::from_model_name(m).ok())
             .or_else(|| {
-                if api_keys.contains_key(&Provider::Claude) {
-                    Some(Provider::Claude)
-                } else if api_keys.contains_key(&Provider::OpenAI) {
-                    Some(Provider::OpenAI)
-                } else if api_keys.contains_key(&Provider::Gemini) {
-                    Some(Provider::Gemini)
-                } else {
-                    None
-                }
+                Provider::all()
+                    .iter()
+                    .copied()
+                    .find(|p| api_keys.contains_key(p))
             })
             .unwrap_or(Provider::Claude);
 

@@ -815,6 +815,36 @@ const OPENAI_TEXT_VERBOSITY_VALUES: &[&str] = &["low", "medium", "high"];
 
 const OPENAI_TRUNCATION_VALUES: &[&str] = &["auto", "disabled"];
 
+macro_rules! impl_str_parse_enum {
+    (
+        $ty:ident,
+        $kind:expr,
+        $expected:ident,
+        { $( $($pat:literal)|+ => $variant:ident ),+ $(,)? },
+        { $( $variant_out:ident => $out:literal ),+ $(,)? }
+    ) => {
+        impl $ty {
+            pub fn parse(value: &str) -> Result<Self, EnumParseError> {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    return Err(EnumParseError::new($kind, trimmed, $expected));
+                }
+                match trimmed.to_ascii_lowercase().as_str() {
+                    $( $($pat)|+ => Ok(Self::$variant), )+
+                    _ => Err(EnumParseError::new($kind, trimmed, $expected)),
+                }
+            }
+
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $( Self::$variant_out => $out, )+
+                }
+            }
+        }
+    };
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OpenAIReasoningEffort {
     Disabled,
@@ -825,41 +855,25 @@ pub enum OpenAIReasoningEffort {
     XHigh,
 }
 
-impl OpenAIReasoningEffort {
-    pub fn parse(value: &str) -> Result<Self, EnumParseError> {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return Err(EnumParseError::new(
-                EnumKind::OpenAIReasoningEffort,
-                trimmed,
-                OPENAI_REASONING_EFFORT_VALUES,
-            ));
-        }
-        match trimmed.to_ascii_lowercase().as_str() {
-            "none" => Ok(Self::Disabled),
-            "low" => Ok(Self::Low),
-            "medium" => Ok(Self::Medium),
-            "high" => Ok(Self::High),
-            "xhigh" | "x-high" => Ok(Self::XHigh),
-            _ => Err(EnumParseError::new(
-                EnumKind::OpenAIReasoningEffort,
-                trimmed,
-                OPENAI_REASONING_EFFORT_VALUES,
-            )),
-        }
+impl_str_parse_enum!(
+    OpenAIReasoningEffort,
+    EnumKind::OpenAIReasoningEffort,
+    OPENAI_REASONING_EFFORT_VALUES,
+    {
+        "none" => Disabled,
+        "low" => Low,
+        "medium" => Medium,
+        "high" => High,
+        "xhigh" | "x-high" => XHigh,
+    },
+    {
+        Disabled => "none",
+        Low => "low",
+        Medium => "medium",
+        High => "high",
+        XHigh => "xhigh",
     }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Disabled => "none",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::XHigh => "xhigh",
-        }
-    }
-}
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OpenAIReasoningSummary {
@@ -870,39 +884,23 @@ pub enum OpenAIReasoningSummary {
     Detailed,
 }
 
-impl OpenAIReasoningSummary {
-    pub fn parse(value: &str) -> Result<Self, EnumParseError> {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return Err(EnumParseError::new(
-                EnumKind::OpenAIReasoningSummary,
-                trimmed,
-                OPENAI_REASONING_SUMMARY_VALUES,
-            ));
-        }
-        match trimmed.to_ascii_lowercase().as_str() {
-            "none" => Ok(Self::Disabled),
-            "auto" => Ok(Self::Auto),
-            "concise" => Ok(Self::Concise),
-            "detailed" => Ok(Self::Detailed),
-            _ => Err(EnumParseError::new(
-                EnumKind::OpenAIReasoningSummary,
-                trimmed,
-                OPENAI_REASONING_SUMMARY_VALUES,
-            )),
-        }
+impl_str_parse_enum!(
+    OpenAIReasoningSummary,
+    EnumKind::OpenAIReasoningSummary,
+    OPENAI_REASONING_SUMMARY_VALUES,
+    {
+        "none" => Disabled,
+        "auto" => Auto,
+        "concise" => Concise,
+        "detailed" => Detailed,
+    },
+    {
+        Disabled => "none",
+        Auto => "auto",
+        Concise => "concise",
+        Detailed => "detailed",
     }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Disabled => "none",
-            Self::Auto => "auto",
-            Self::Concise => "concise",
-            Self::Detailed => "detailed",
-        }
-    }
-}
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OpenAITextVerbosity {
@@ -912,37 +910,21 @@ pub enum OpenAITextVerbosity {
     High,
 }
 
-impl OpenAITextVerbosity {
-    pub fn parse(value: &str) -> Result<Self, EnumParseError> {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return Err(EnumParseError::new(
-                EnumKind::OpenAITextVerbosity,
-                trimmed,
-                OPENAI_TEXT_VERBOSITY_VALUES,
-            ));
-        }
-        match trimmed.to_ascii_lowercase().as_str() {
-            "low" => Ok(Self::Low),
-            "medium" => Ok(Self::Medium),
-            "high" => Ok(Self::High),
-            _ => Err(EnumParseError::new(
-                EnumKind::OpenAITextVerbosity,
-                trimmed,
-                OPENAI_TEXT_VERBOSITY_VALUES,
-            )),
-        }
+impl_str_parse_enum!(
+    OpenAITextVerbosity,
+    EnumKind::OpenAITextVerbosity,
+    OPENAI_TEXT_VERBOSITY_VALUES,
+    {
+        "low" => Low,
+        "medium" => Medium,
+        "high" => High,
+    },
+    {
+        Low => "low",
+        Medium => "medium",
+        High => "high",
     }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-        }
-    }
-}
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OpenAITruncation {
@@ -951,35 +933,19 @@ pub enum OpenAITruncation {
     Disabled,
 }
 
-impl OpenAITruncation {
-    pub fn parse(value: &str) -> Result<Self, EnumParseError> {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return Err(EnumParseError::new(
-                EnumKind::OpenAITruncation,
-                trimmed,
-                OPENAI_TRUNCATION_VALUES,
-            ));
-        }
-        match trimmed.to_ascii_lowercase().as_str() {
-            "auto" => Ok(Self::Auto),
-            "disabled" => Ok(Self::Disabled),
-            _ => Err(EnumParseError::new(
-                EnumKind::OpenAITruncation,
-                trimmed,
-                OPENAI_TRUNCATION_VALUES,
-            )),
-        }
+impl_str_parse_enum!(
+    OpenAITruncation,
+    EnumKind::OpenAITruncation,
+    OPENAI_TRUNCATION_VALUES,
+    {
+        "auto" => Auto,
+        "disabled" => Disabled,
+    },
+    {
+        Auto => "auto",
+        Disabled => "disabled",
     }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Disabled => "disabled",
-        }
-    }
-}
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpenAIRequestOptions {

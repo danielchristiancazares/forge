@@ -232,12 +232,18 @@ fn normalize_untrusted(input: &str) -> std::borrow::Cow<'_, str> {
     use std::borrow::Cow;
 
     let terminal_safe = sanitize_terminal_text(input);
-    match terminal_safe {
-        Cow::Borrowed(b) => strip_steganographic_chars(b),
-        Cow::Owned(s) => match strip_steganographic_chars(&s) {
-            Cow::Borrowed(_) => Cow::Owned(s),
-            Cow::Owned(stripped) => Cow::Owned(stripped),
-        },
+    match strip_steganographic_chars(terminal_safe.as_ref()) {
+        Cow::Borrowed(_) => terminal_safe,
+        Cow::Owned(stripped) => Cow::Owned(stripped),
+    }
+}
+
+fn sanitize_impl(raw: &str) -> String {
+    let normalized = normalize_untrusted(raw);
+    let pattern_redacted = redact_api_keys(normalized.as_ref());
+    match secret_redactor().redact(&pattern_redacted) {
+        std::borrow::Cow::Borrowed(_) => pattern_redacted,
+        std::borrow::Cow::Owned(v) => v,
     }
 }
 
@@ -257,13 +263,7 @@ fn normalize_untrusted(input: &str) -> std::borrow::Cow<'_, str> {
 #[allow(dead_code)] // Public API, currently unused by dependents in this workspace.
 #[must_use]
 pub fn sanitize_display_text(input: &str) -> String {
-    let normalized = normalize_untrusted(input);
-    let pattern_redacted = redact_api_keys(normalized.as_ref());
-    let value_redacted = secret_redactor().redact(&pattern_redacted);
-    match value_redacted {
-        std::borrow::Cow::Borrowed(_) => pattern_redacted,
-        std::borrow::Cow::Owned(v) => v,
-    }
+    sanitize_impl(input)
 }
 
 static SECRET_REDACTOR: OnceLock<SecretRedactor> = OnceLock::new();
@@ -284,14 +284,7 @@ pub fn secret_redactor() -> &'static SecretRedactor {
 /// 4. Redact value-based secrets from environment variables
 #[must_use]
 pub fn sanitize_stream_error(raw: &str) -> String {
-    let trimmed = raw.trim();
-    let normalized = normalize_untrusted(trimmed);
-    let pattern_redacted = redact_api_keys(normalized.as_ref());
-    let value_redacted = secret_redactor().redact(&pattern_redacted);
-    match value_redacted {
-        std::borrow::Cow::Borrowed(_) => pattern_redacted,
-        std::borrow::Cow::Owned(v) => v,
-    }
+    sanitize_impl(raw.trim())
 }
 
 /// Redact sensitive tokens from a string.
