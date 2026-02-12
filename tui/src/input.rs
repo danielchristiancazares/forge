@@ -12,7 +12,7 @@ use std::{
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use forge_engine::{App, InputMode};
+use forge_engine::{App, InputMode, SettingsCategory};
 
 const INPUT_POLL_TIMEOUT: Duration = Duration::from_millis(25); // shutdown responsiveness
 const INPUT_CHANNEL_CAPACITY: usize = 1024; // bounded: no OOM
@@ -830,6 +830,11 @@ fn handle_settings_mode(app: &mut App, key: KeyEvent) {
             }
             KeyCode::Char('r') => {
                 app.settings_revert_edits();
+            }
+            KeyCode::Char('D') => {
+                if app.settings_detail_view() == Some(SettingsCategory::ModelOverrides) {
+                    app.settings_open_resolve_surface();
+                }
             }
             _ => {}
         }

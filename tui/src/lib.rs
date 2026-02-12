@@ -2460,6 +2460,12 @@ fn settings_detail_lines(
             Span::styled("r", styles::key_highlight(palette)),
             Span::styled(" revert", styles::key_hint(palette)),
         ]));
+        if category == SettingsCategory::ModelOverrides {
+            lines.push(Line::from(vec![
+                Span::styled("D", styles::key_highlight(palette)),
+                Span::styled(" resolve cascade", styles::key_hint(palette)),
+            ]));
+        }
         lines.push(Line::from(vec![
             Span::styled("Esc/q", styles::key_highlight(palette)),
             Span::styled(" back", styles::key_hint(palette)),

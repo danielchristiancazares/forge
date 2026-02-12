@@ -1566,6 +1566,20 @@ impl App {
         }
     }
 
+    fn push_settings_unsaved_edits_notification(&mut self) {
+        self.push_notification(
+            "Unsaved settings changes. Press s to save or r to revert before leaving.",
+        );
+    }
+
+    pub fn settings_open_resolve_surface(&mut self) {
+        if self.settings_has_unsaved_edits() {
+            self.push_settings_unsaved_edits_notification();
+            return;
+        }
+        self.enter_resolve_mode();
+    }
+
     /// If present, tools are disabled for safety due to a tool journal error.
     pub fn tool_journal_disabled_reason(&self) -> Option<&str> {
         self.tool_journal_disabled_reason.as_deref()
@@ -2425,9 +2439,7 @@ impl App {
 
         if detail_view.is_some() {
             if self.settings_has_unsaved_edits() {
-                self.push_notification(
-                    "Unsaved settings changes. Press s to save or r to revert before leaving.",
-                );
+                self.push_settings_unsaved_edits_notification();
                 return;
             }
             if let Some(modal) = self.input.settings_modal_mut() {

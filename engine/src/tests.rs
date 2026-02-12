@@ -507,6 +507,36 @@ fn process_command_validate_opens_validation_panel() {
 }
 
 #[test]
+fn settings_open_resolve_surface_from_model_overrides_detail() {
+    let mut app = test_app();
+    open_model_overrides_settings(&mut app);
+
+    app.settings_open_resolve_surface();
+
+    assert_eq!(app.settings_surface(), Some(SettingsSurface::Resolve));
+    assert_eq!(app.settings_detail_view(), None);
+}
+
+#[test]
+fn settings_open_resolve_surface_blocks_when_detail_has_unsaved_edits() {
+    let mut app = test_app();
+    open_model_overrides_settings(&mut app);
+    app.settings_detail_toggle_selected();
+
+    app.settings_open_resolve_surface();
+
+    assert_eq!(app.settings_surface(), Some(SettingsSurface::Root));
+    assert_eq!(
+        app.settings_detail_view(),
+        Some(SettingsCategory::ModelOverrides)
+    );
+    assert_eq!(
+        last_notification(&app),
+        Some("Unsaved settings changes. Press s to save or r to revert before leaving.")
+    );
+}
+
+#[test]
 fn runtime_snapshot_lists_pending_next_turn_settings() {
     let mut app = test_app();
     app.pending_turn_model = Some(ModelName::from_predefined(PredefinedModel::Gpt52Pro));
