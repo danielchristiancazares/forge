@@ -8,9 +8,9 @@ During rollout, keep `/config` as a compatibility alias to `/settings`.
 
 | Phase | Scope | Status |
 |-------|-------|--------|
-| [Phase 1](phase1-foundation.md) | `/settings` modal shell + read-only categories | Planned |
-| [Phase 2](phase2-observability.md) | Read-only `/runtime`, `/resolve`, `/validate` | Planned |
-| [Phase 3](phase3-editing.md) | Editable settings + persistence with next-turn application | Planned |
+| [Phase 1](phase1-foundation.md) | `/settings` modal shell + read-only categories | Completed |
+| [Phase 2](phase2-observability.md) | Read-only `/runtime`, `/resolve`, `/validate` | Completed |
+| [Phase 3](phase3-editing.md) | Editable settings + persistence with next-turn application | In Progress |
 | [Phase 4](phase4-profiles.md) | Profiles, quick-switcher, elevated-permission ritual | Planned |
 | [Phase 5](phase5-full.md) | Full architecture polish and advanced UX | Planned |
 
@@ -23,4 +23,3 @@ During rollout, keep `/config` as a compatibility alias to `/settings`.
 ## Architecture Reference
 
 See [SETTINGS_ARCHITECTURE.md](SETTINGS_ARCHITECTURE.md) for the full vision document.
-
