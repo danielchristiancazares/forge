@@ -22,7 +22,7 @@
 //! | Category | Types |
 //! |----------|-------|
 //! | String validation | [`NonEmptyString`], [`NonEmptyStaticStr`], [`PersistableContent`], [`EmptyStringError`] |
-//! | Provider/model | [`Provider`], [`PredefinedModel`], [`ModelName`], [`ModelParseError`], [`EnumParseError`], [`ApiKey`] |
+//! | Provider/model | [`Provider`], [`PredefinedModel`], [`InternalModel`], [`ModelName`], [`ModelParseError`], [`EnumParseError`], [`ApiKey`] |
 //! | OpenAI options | [`OpenAIReasoningEffort`], [`OpenAIReasoningSummary`], [`OpenAITextVerbosity`], [`OpenAITruncation`], [`OpenAIRequestOptions`] |
 //! | Output config | [`OutputLimits`], [`OutputLimitsError`], [`ThinkingBudget`], [`ThinkingState`], [`CacheHint`] |
 //! | Streaming | [`StreamEvent`], [`StreamFinishReason`], [`ApiUsage`] |
@@ -650,6 +650,39 @@ impl PredefinedModel {
                     expected_model_ids(provider),
                 )
             })
+    }
+}
+
+/// Internal, system-owned model IDs used by background workflows.
+///
+/// Unlike [`PredefinedModel`], these are not user-selectable UI models. They
+/// represent bounded internal choices used by distillation and librarian tasks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum InternalModel {
+    ClaudeDistiller,
+    OpenAIDistiller,
+    GeminiDistiller,
+    GeminiLibrarian,
+}
+
+impl InternalModel {
+    #[must_use]
+    pub const fn model_id(self) -> &'static str {
+        match self {
+            InternalModel::ClaudeDistiller => "claude-haiku-4-5",
+            InternalModel::OpenAIDistiller => "gpt-5-nano",
+            InternalModel::GeminiDistiller => "gemini-3-pro-preview",
+            InternalModel::GeminiLibrarian => "gemini-3-flash-preview",
+        }
+    }
+
+    #[must_use]
+    pub const fn provider(self) -> Provider {
+        match self {
+            InternalModel::ClaudeDistiller => Provider::Claude,
+            InternalModel::OpenAIDistiller => Provider::OpenAI,
+            InternalModel::GeminiDistiller | InternalModel::GeminiLibrarian => Provider::Gemini,
+        }
     }
 }
 
@@ -1952,6 +1985,30 @@ mod tests {
         assert!(provider.parse_model("gpt-5.2").is_err());
         assert!(provider.parse_model("claude-opus-4-6").is_err());
         assert!(provider.parse_model("gemini-3-pro-preview").is_ok());
+    }
+
+    #[test]
+    fn internal_models_have_expected_ids_and_providers() {
+        assert_eq!(
+            InternalModel::ClaudeDistiller.model_id(),
+            "claude-haiku-4-5"
+        );
+        assert_eq!(InternalModel::ClaudeDistiller.provider(), Provider::Claude);
+
+        assert_eq!(InternalModel::OpenAIDistiller.model_id(), "gpt-5-nano");
+        assert_eq!(InternalModel::OpenAIDistiller.provider(), Provider::OpenAI);
+
+        assert_eq!(
+            InternalModel::GeminiDistiller.model_id(),
+            "gemini-3-pro-preview"
+        );
+        assert_eq!(InternalModel::GeminiDistiller.provider(), Provider::Gemini);
+
+        assert_eq!(
+            InternalModel::GeminiLibrarian.model_id(),
+            "gemini-3-flash-preview"
+        );
+        assert_eq!(InternalModel::GeminiLibrarian.provider(), Provider::Gemini);
     }
 
     #[test]

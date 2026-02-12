@@ -391,7 +391,7 @@ Distillation uses cheaper/faster models:
 - **OpenAI**: `gpt-5-nano` (400k context, 380k input limit)
 - **Gemini**: `gemini-3-pro-preview` (1M context, 950k input limit)
 
-The prompt is loaded from `cli/assets/distillation.md` and instructs the model to:
+The prompt is loaded from `context/assets/distillation.md` and instructs the model to:
 
 - Preserve key facts, decisions, and important context
 - Maintain chronological flow

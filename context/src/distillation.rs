@@ -12,18 +12,19 @@ use anyhow::{Result, anyhow};
 use serde_json::json;
 
 use forge_providers::{
-    ApiConfig, http_client_with_timeout, read_capped_error_body,
+    ApiConfig, CLAUDE_MESSAGES_API_URL, GEMINI_API_BASE_URL, OPENAI_RESPONSES_API_URL,
+    http_client_with_timeout, read_capped_error_body,
     retry::{RetryConfig, RetryOutcome, send_with_retry},
 };
-use forge_types::{Message, Provider};
+use forge_types::{InternalModel, Message, Provider};
 
 use super::token_counter::TokenCounter;
 
 /// Models used for distillation (cheaper/faster than main models).
-const CLAUDE_DISTILLATION_MODEL: &str = "claude-haiku-4-5";
-const OPENAI_DISTILLATION_MODEL: &str = "gpt-5-nano";
+const CLAUDE_DISTILLATION_MODEL: InternalModel = InternalModel::ClaudeDistiller;
+const OPENAI_DISTILLATION_MODEL: InternalModel = InternalModel::OpenAIDistiller;
 /// Gemini 3 Pro Preview - use the same model for now (no cheaper variant available yet).
-const GEMINI_DISTILLATION_MODEL: &str = "gemini-3-pro-preview";
+const GEMINI_DISTILLATION_MODEL: InternalModel = InternalModel::GeminiDistiller;
 
 /// Context limits for distiller models (conservative to leave room for output + overhead).
 /// Claude Haiku 4.5 has 200k context, we use 190k to leave room for output and system prompt.
@@ -44,15 +45,8 @@ fn max_distillation_tokens(provider: Provider) -> u32 {
 }
 const DISTILLATION_TIMEOUT_SECS: u64 = 600;
 
-/// API endpoints.
-const CLAUDE_API_URL: &str = "https://api.anthropic.com/v1/messages";
-/// Using Responses API for consistency with main provider (providers/src/lib.rs).
-const OPENAI_API_URL: &str = "https://api.openai.com/v1/responses";
-/// Gemini API endpoint (non-streaming).
-const GEMINI_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
-
-/// Distillation prompt template loaded from cli/assets/distillation.md
-const DISTILLATION_PROMPT_TEMPLATE: &str = include_str!("../../cli/assets/distillation.md");
+/// Distillation prompt template loaded from context/assets/distillation.md
+const DISTILLATION_PROMPT_TEMPLATE: &str = include_str!("../assets/distillation.md");
 
 /// Build a distillation prompt for a slice of messages.
 ///
@@ -221,7 +215,7 @@ async fn generate_distillation_claude(
     let timeout = Duration::from_secs(DISTILLATION_TIMEOUT_SECS);
 
     let body = json!({
-        "model": CLAUDE_DISTILLATION_MODEL,
+        "model": CLAUDE_DISTILLATION_MODEL.model_id(),
         "max_tokens": max_tokens,
         "stream": false,
         "system": system_instruction,
@@ -240,7 +234,7 @@ async fn generate_distillation_claude(
     let outcome = send_with_retry(
         || {
             client
-                .post(CLAUDE_API_URL)
+                .post(CLAUDE_MESSAGES_API_URL)
                 .header("x-api-key", &api_key_str)
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json")
@@ -296,7 +290,7 @@ async fn generate_distillation_openai(
 
     // Responses API uses `input` array and `instructions` for system prompt
     let body = json!({
-        "model": OPENAI_DISTILLATION_MODEL,
+        "model": OPENAI_DISTILLATION_MODEL.model_id(),
         "stream": false,
         "max_output_tokens": max_tokens,
         "instructions": system_instruction,
@@ -315,7 +309,7 @@ async fn generate_distillation_openai(
     let outcome = send_with_retry(
         || {
             client
-                .post(OPENAI_API_URL)
+                .post(OPENAI_RESPONSES_API_URL)
                 .header("Authorization", &auth_header)
                 .header("content-type", "application/json")
                 .json(&body_json)
@@ -391,7 +385,10 @@ async fn generate_distillation_gemini(
         }
     });
 
-    let url = format!("{GEMINI_API_BASE}/models/{GEMINI_DISTILLATION_MODEL}:generateContent");
+    let url = format!(
+        "{GEMINI_API_BASE_URL}/models/{}:generateContent",
+        GEMINI_DISTILLATION_MODEL.model_id()
+    );
 
     let api_key_str = api_key.to_string();
     let body_json = body.clone();
@@ -445,6 +442,10 @@ async fn generate_distillation_gemini(
 /// Get the distillation model name for a given provider.
 #[must_use]
 pub fn distillation_model(provider: Provider) -> &'static str {
+    distillation_internal_model(provider).model_id()
+}
+
+const fn distillation_internal_model(provider: Provider) -> InternalModel {
     match provider {
         Provider::Claude => CLAUDE_DISTILLATION_MODEL,
         Provider::OpenAI => OPENAI_DISTILLATION_MODEL,
@@ -460,11 +461,11 @@ mod tests {
     fn test_distillation_model_selection() {
         assert_eq!(
             distillation_model(Provider::Claude),
-            CLAUDE_DISTILLATION_MODEL
+            CLAUDE_DISTILLATION_MODEL.model_id()
         );
         assert_eq!(
             distillation_model(Provider::OpenAI),
-            OPENAI_DISTILLATION_MODEL
+            OPENAI_DISTILLATION_MODEL.model_id()
         );
     }
 

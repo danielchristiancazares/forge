@@ -55,6 +55,13 @@ pub(crate) use tokio::sync::mpsc;
 
 pub use forge_types;
 
+/// Canonical Anthropic Messages API endpoint.
+pub const CLAUDE_MESSAGES_API_URL: &str = "https://api.anthropic.com/v1/messages";
+/// Canonical OpenAI Responses API endpoint.
+pub const OPENAI_RESPONSES_API_URL: &str = "https://api.openai.com/v1/responses";
+/// Canonical Gemini API base URL.
+pub const GEMINI_API_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
+
 const CONNECT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 60;
 

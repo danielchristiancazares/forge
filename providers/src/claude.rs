@@ -7,7 +7,7 @@ use crate::{
 use forge_types::ThinkingState;
 use serde_json::json;
 
-const API_URL: &str = "https://api.anthropic.com/v1/messages";
+const API_URL: &str = crate::CLAUDE_MESSAGES_API_URL;
 
 fn is_opus_4_6_model(model: &str) -> bool {
     model.to_ascii_lowercase().starts_with("claude-opus-4-6")

@@ -11,7 +11,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use uuid::Uuid;
 
-const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
+const API_BASE: &str = crate::GEMINI_API_BASE_URL;
 
 // ============================================================================
 // Context Caching Types

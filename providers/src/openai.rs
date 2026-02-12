@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const API_URL: &str = "https://api.openai.com/v1/responses";
+const API_URL: &str = crate::OPENAI_RESPONSES_API_URL;
 
 fn is_pro_model(model: &forge_types::ModelName) -> bool {
     model

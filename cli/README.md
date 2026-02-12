@@ -57,10 +57,7 @@ cli/
 ├── Cargo.toml                              # Binary manifest (package name: "forge")
 ├── assets/
 │   ├── base_prompt.md                      # Base system prompt (Claude, OpenAI)
-│   ├── base_prompt_gemini.md               # Gemini-specific system prompt
-│   ├── distillation.md                     # Distillation prompt template
-│   ├── contextinfinity_extraction.md       # Context Infinity fact extraction prompt
-│   └── contextinfinity_retrieval.md        # Context Infinity fact retrieval prompt
+│   └── base_prompt_gemini.md               # Gemini-specific system prompt
 └── src/
     ├── main.rs                             # Entry point, event loop, terminal session
     └── assets.rs                           # Compile-time asset embedding
@@ -369,17 +366,11 @@ pub fn system_prompts() -> SystemPrompts {
 | `openai` | `assets/base_prompt.md` | OpenAI models (same base prompt) |
 | `gemini` | `assets/base_prompt_gemini.md` | Gemini models |
 
-### Additional Assets
+### Prompt Ownership
 
-The `assets/` directory contains additional prompts used by the `context` crate (not loaded by `assets.rs`):
-
-| File | Loaded By | Purpose |
-|------|-----------|---------|
-| `distillation.md` | `context::distillation` | Template for generating conversation distillates |
-| `contextinfinity_extraction.md` | `context::librarian` | Prompt for extracting key facts during memory operations |
-| `contextinfinity_retrieval.md` | `context::librarian` | Prompt for retrieving relevant facts from memory |
-
-These files live in `cli/assets/` but are referenced via relative `include_str!` paths from the `context` crate.
+Context distillation and librarian prompts live in `context/assets/` and are
+owned by the `forge-context` crate. The CLI crate only embeds provider system
+prompts from `cli/assets/`.
 
 ### Lazy Initialization Pattern
 

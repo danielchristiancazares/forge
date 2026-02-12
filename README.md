@@ -16,12 +16,12 @@ Forge brings the efficiency of vim-style modal editing to AI conversation, letti
 | 149-289 | Configuration: Full Reference |
 | 290-382 | Keyboard Shortcuts: All Modes |
 | 383-400 | Commands Reference |
-| 401-435 | Workspace Structure |
-| 436-470 | Development |
-| 471-540 | Troubleshooting |
-| 541-576 | Documentation Index |
-| 577-586 | Contributing and License |
-| 587-589 | License |
+| 401-433 | Workspace Structure |
+| 434-468 | Development |
+| 469-538 | Troubleshooting |
+| 539-574 | Documentation Index |
+| 575-584 | Contributing and License |
+| 585-587 | License |
 <!-- toc:end -->
 
 ## Features

@@ -17,15 +17,14 @@
 use std::fmt::Write;
 
 use anyhow::{Result, anyhow};
-use forge_types::SecretString;
+use forge_types::{InternalModel, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use forge_providers::http_client_with_timeout;
+use forge_providers::{GEMINI_API_BASE_URL, http_client_with_timeout};
 
 /// Gemini Flash for cheap, fast Librarian operations.
-const LIBRARIAN_MODEL: &str = "gemini-3-flash-preview";
-const LIBRARIAN_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
+const LIBRARIAN_MODEL: InternalModel = InternalModel::GeminiLibrarian;
 const LIBRARIAN_TIMEOUT_SECS: u64 = 30;
 
 /// Types of facts the Librarian can extract.
@@ -83,8 +82,8 @@ pub struct RetrievalResult {
     pub token_estimate: u32,
 }
 
-/// Extraction prompt loaded from cli/assets/contextinfinity_extraction.md
-const EXTRACTION_PROMPT: &str = include_str!("../../cli/assets/contextinfinity_extraction.md");
+/// Extraction prompt loaded from context/assets/contextinfinity_extraction.md
+const EXTRACTION_PROMPT: &str = include_str!("../assets/contextinfinity_extraction.md");
 
 /// Build the extraction prompt for post-turn fact distillation.
 fn build_extraction_prompt(user_message: &str, assistant_message: &str) -> (String, String) {
@@ -94,8 +93,8 @@ fn build_extraction_prompt(user_message: &str, assistant_message: &str) -> (Stri
     (EXTRACTION_PROMPT.to_string(), user_input)
 }
 
-/// Retrieval prompt loaded from cli/assets/contextinfinity_retrieval.md
-const RETRIEVAL_PROMPT: &str = include_str!("../../cli/assets/contextinfinity_retrieval.md");
+/// Retrieval prompt loaded from context/assets/contextinfinity_retrieval.md
+const RETRIEVAL_PROMPT: &str = include_str!("../assets/contextinfinity_retrieval.md");
 
 /// Build the retrieval prompt for pre-flight relevance scoring.
 fn build_retrieval_prompt(user_query: &str, available_facts: &[Fact]) -> (String, String) {
@@ -214,7 +213,10 @@ async fn call_librarian(
         }
     });
 
-    let url = format!("{LIBRARIAN_API_BASE}/models/{LIBRARIAN_MODEL}:generateContent");
+    let url = format!(
+        "{GEMINI_API_BASE_URL}/models/{}:generateContent",
+        LIBRARIAN_MODEL.model_id()
+    );
 
     let response = client
         .post(&url)
