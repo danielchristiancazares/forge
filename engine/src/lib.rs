@@ -444,6 +444,30 @@ fn next_approval_mode(mode: tools::ApprovalMode) -> tools::ApprovalMode {
     }
 }
 
+fn on_off(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
+}
+
+fn ui_options_display(options: UiOptions) -> String {
+    let mut flags = Vec::new();
+    if options.ascii_only {
+        flags.push("ascii_only");
+    }
+    if options.high_contrast {
+        flags.push("high_contrast");
+    }
+    if options.reduced_motion {
+        flags.push("reduced_motion");
+    }
+    if options.show_thinking {
+        flags.push("show_thinking");
+    }
+    if flags.is_empty() {
+        return "default".to_string();
+    }
+    flags.join(", ")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ContextSettingsEditor {
     baseline_memory_enabled: bool,
@@ -2538,6 +2562,9 @@ impl App {
         if self.settings_pending_model_overrides_apply_next_turn() {
             session_overrides.push("pending model overrides: next turn".to_string());
         }
+        if let Some(model) = self.pending_turn_model.as_ref() {
+            session_overrides.push(format!("pending default model: {model} (next turn)"));
+        }
         if self.settings_configured_tool_approval_mode() != tools::ApprovalMode::Default {
             session_overrides.push(format!(
                 "tool approval mode: {}",
@@ -2546,6 +2573,27 @@ impl App {
         }
         if self.settings_pending_tools_apply_next_turn() {
             session_overrides.push("pending tool defaults: next turn".to_string());
+        }
+        if !self.settings_configured_context_memory_enabled() {
+            session_overrides.push("context memory default: off".to_string());
+        }
+        if let Some(memory_enabled) = self.pending_turn_context_memory_enabled {
+            session_overrides.push(format!(
+                "pending context memory: {} (next turn)",
+                on_off(memory_enabled)
+            ));
+        }
+        if self.settings_configured_ui_options() != UiOptions::default() {
+            session_overrides.push(format!(
+                "ui defaults: {}",
+                ui_options_display(self.settings_configured_ui_options())
+            ));
+        }
+        if let Some(pending_ui) = self.pending_turn_ui_options {
+            session_overrides.push(format!(
+                "pending ui defaults: {} (next turn)",
+                ui_options_display(pending_ui)
+            ));
         }
 
         RuntimeSnapshot {
@@ -2705,6 +2753,62 @@ impl App {
                         |mode| approval_mode_display(mode).to_string(),
                     ),
                     is_winner: pending_approval_mode.is_some(),
+                },
+            ],
+        });
+
+        let pending_context_memory = self.pending_turn_context_memory_enabled;
+        settings.push(ResolveSetting {
+            setting: "Context Memory",
+            layers: vec![
+                ResolveLayerValue {
+                    layer: "Global",
+                    value: on_off(self.settings_configured_context_memory_enabled()).to_string(),
+                    is_winner: pending_context_memory.is_none(),
+                },
+                ResolveLayerValue {
+                    layer: "Project",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Profile",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Session",
+                    value: pending_context_memory
+                        .map_or_else(|| "unset".to_string(), |value| on_off(value).to_string()),
+                    is_winner: pending_context_memory.is_some(),
+                },
+            ],
+        });
+
+        let pending_ui_options = self.pending_turn_ui_options;
+        settings.push(ResolveSetting {
+            setting: "UI Defaults",
+            layers: vec![
+                ResolveLayerValue {
+                    layer: "Global",
+                    value: ui_options_display(self.settings_configured_ui_options()),
+                    is_winner: pending_ui_options.is_none(),
+                },
+                ResolveLayerValue {
+                    layer: "Project",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Profile",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Session",
+                    value: pending_ui_options
+                        .map_or_else(|| "unset".to_string(), ui_options_display),
+                    is_winner: pending_ui_options.is_some(),
                 },
             ],
         });

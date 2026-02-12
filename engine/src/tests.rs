@@ -506,6 +506,80 @@ fn process_command_validate_opens_validation_panel() {
     assert_eq!(app.settings_surface(), Some(SettingsSurface::Validate));
 }
 
+#[test]
+fn runtime_snapshot_lists_pending_next_turn_settings() {
+    let mut app = test_app();
+    app.pending_turn_model = Some(ModelName::from_predefined(PredefinedModel::Gpt52Pro));
+    app.pending_turn_context_memory_enabled = Some(false);
+    app.pending_turn_ui_options = Some(UiOptions {
+        ascii_only: true,
+        high_contrast: true,
+        reduced_motion: false,
+        show_thinking: false,
+    });
+
+    let snapshot = app.runtime_snapshot();
+
+    assert!(
+        snapshot
+            .session_overrides
+            .iter()
+            .any(|item| item == "pending default model: gpt-5.2-pro (next turn)")
+    );
+    assert!(
+        snapshot
+            .session_overrides
+            .iter()
+            .any(|item| item == "pending context memory: off (next turn)")
+    );
+    assert!(
+        snapshot
+            .session_overrides
+            .iter()
+            .any(|item| item == "pending ui defaults: ascii_only, high_contrast (next turn)")
+    );
+}
+
+#[test]
+fn resolve_cascade_includes_context_memory_and_ui_defaults_layers() {
+    let mut app = test_app();
+    app.pending_turn_context_memory_enabled = Some(false);
+    app.pending_turn_ui_options = Some(UiOptions {
+        ascii_only: false,
+        high_contrast: true,
+        reduced_motion: true,
+        show_thinking: false,
+    });
+
+    let cascade = app.resolve_cascade();
+
+    let context_memory = cascade
+        .settings
+        .iter()
+        .find(|setting| setting.setting == "Context Memory")
+        .expect("context memory setting");
+    let context_session_layer = context_memory
+        .layers
+        .iter()
+        .find(|layer| layer.layer == "Session")
+        .expect("session context layer");
+    assert_eq!(context_session_layer.value, "off");
+    assert!(context_session_layer.is_winner);
+
+    let ui_defaults = cascade
+        .settings
+        .iter()
+        .find(|setting| setting.setting == "UI Defaults")
+        .expect("ui defaults setting");
+    let ui_session_layer = ui_defaults
+        .layers
+        .iter()
+        .find(|layer| layer.layer == "Session")
+        .expect("session ui layer");
+    assert_eq!(ui_session_layer.value, "high_contrast, reduced_motion");
+    assert!(ui_session_layer.is_winner);
+}
+
 fn open_appearance_settings(app: &mut App) {
     app.enter_settings_mode();
     for _ in 0..SettingsCategory::ALL.len().saturating_sub(1) {
