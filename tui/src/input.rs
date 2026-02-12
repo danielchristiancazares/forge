@@ -827,7 +827,10 @@ fn handle_settings_mode(app: &mut App, key: KeyEvent) {
     }
 
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => {
+        KeyCode::Esc => {
+            app.settings_close_or_exit();
+        }
+        KeyCode::Char('q') if !app.settings_filter_active() => {
             app.settings_close_or_exit();
         }
         KeyCode::Enter => {
