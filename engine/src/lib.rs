@@ -38,7 +38,7 @@ use ui::InputState;
 pub use ui::{
     ChangeKind, DisplayItem, DraftInput, FileEntry, FilePickerState, FilesPanelState, InputHistory,
     InputMode, ModalEffect, ModalEffectKind, PanelEffect, PanelEffectKind, PredefinedModel,
-    ScrollState, UiOptions, ViewState, find_match_positions,
+    ScrollState, SettingsCategory, SettingsModalState, UiOptions, ViewState, find_match_positions,
 };
 
 pub use forge_context::{
@@ -1288,6 +1288,165 @@ impl App {
 
     pub fn enter_command_mode(&mut self) {
         self.input = std::mem::take(&mut self.input).into_command();
+    }
+
+    pub fn enter_settings_mode(&mut self) {
+        self.input = std::mem::take(&mut self.input).into_settings();
+        if self.view.ui_options.reduced_motion {
+            self.view.modal_effect = None;
+        } else {
+            self.view.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
+            self.view.last_frame = Instant::now();
+        }
+    }
+
+    #[must_use]
+    pub fn settings_filter_text(&self) -> Option<&str> {
+        self.input.settings_modal().map(|modal| modal.filter.text())
+    }
+
+    #[must_use]
+    pub fn settings_filter_active(&self) -> bool {
+        self.input
+            .settings_modal()
+            .is_some_and(|modal| modal.filter_active)
+    }
+
+    #[must_use]
+    pub fn settings_detail_view(&self) -> Option<SettingsCategory> {
+        self.input
+            .settings_modal()
+            .and_then(|modal| modal.detail_view)
+    }
+
+    #[must_use]
+    pub fn settings_selected_index(&self) -> Option<usize> {
+        self.input.settings_modal().map(|modal| modal.selected)
+    }
+
+    #[must_use]
+    pub fn settings_categories(&self) -> Vec<SettingsCategory> {
+        let filter = self.settings_filter_text().unwrap_or_default();
+        SettingsCategory::filtered(filter)
+    }
+
+    #[must_use]
+    pub fn tool_definition_count(&self) -> usize {
+        self.tool_definitions.len()
+    }
+
+    pub fn settings_move_up(&mut self) {
+        let Some(selected) = self.settings_selected_index() else {
+            return;
+        };
+        if selected == 0 {
+            return;
+        }
+        if let Some(modal) = self.input.settings_modal_mut() {
+            modal.selected -= 1;
+        }
+    }
+
+    pub fn settings_move_down(&mut self) {
+        let Some(selected) = self.settings_selected_index() else {
+            return;
+        };
+        let len = self.settings_categories().len();
+        if len == 0 || selected + 1 >= len {
+            return;
+        }
+        if let Some(modal) = self.input.settings_modal_mut() {
+            modal.selected += 1;
+        }
+    }
+
+    pub fn settings_start_filter(&mut self) {
+        if let Some(modal) = self.input.settings_modal_mut() {
+            modal.filter_active = true;
+        }
+    }
+
+    pub fn settings_stop_filter(&mut self) {
+        if let Some(modal) = self.input.settings_modal_mut() {
+            modal.filter_active = false;
+        }
+    }
+
+    pub fn settings_filter_push_char(&mut self, c: char) {
+        if let Some(modal) = self.input.settings_modal_mut() {
+            modal.filter.enter_char(c);
+        }
+        self.settings_clamp_selection();
+    }
+
+    pub fn settings_filter_backspace(&mut self) {
+        if let Some(modal) = self.input.settings_modal_mut() {
+            modal.filter.delete_char();
+        }
+        self.settings_clamp_selection();
+    }
+
+    pub fn settings_activate(&mut self) {
+        let Some((filter_active, detail_view, selected)) = self
+            .input
+            .settings_modal()
+            .map(|modal| (modal.filter_active, modal.detail_view, modal.selected))
+        else {
+            return;
+        };
+
+        if filter_active {
+            self.settings_stop_filter();
+            return;
+        }
+
+        if detail_view.is_some() {
+            return;
+        }
+
+        let categories = self.settings_categories();
+        let Some(category) = categories.get(selected).copied() else {
+            return;
+        };
+
+        if let Some(modal) = self.input.settings_modal_mut() {
+            modal.detail_view = Some(category);
+        }
+    }
+
+    pub fn settings_close_or_exit(&mut self) {
+        let Some((filter_active, detail_view)) = self
+            .input
+            .settings_modal()
+            .map(|modal| (modal.filter_active, modal.detail_view))
+        else {
+            return;
+        };
+
+        if filter_active {
+            self.settings_stop_filter();
+            return;
+        }
+
+        if detail_view.is_some() {
+            if let Some(modal) = self.input.settings_modal_mut() {
+                modal.detail_view = None;
+            }
+            return;
+        }
+
+        self.enter_normal_mode();
+    }
+
+    fn settings_clamp_selection(&mut self) {
+        let len = self.settings_categories().len();
+        if let Some(modal) = self.input.settings_modal_mut() {
+            if len == 0 {
+                modal.selected = 0;
+            } else if modal.selected >= len {
+                modal.selected = len - 1;
+            }
+        }
     }
 
     pub fn enter_model_select_mode(&mut self) {

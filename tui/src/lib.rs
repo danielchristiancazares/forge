@@ -32,8 +32,8 @@ use unicode_width::UnicodeWidthStr;
 
 use forge_engine::{
     App, ChangeKind, ContextUsageStatus, DisplayItem, FileDiff, InputMode, Message,
-    PredefinedModel, Provider, TurnUsage, UiOptions, command_specs, find_match_positions,
-    sanitize_display_text, sanitize_terminal_text,
+    PredefinedModel, Provider, SettingsCategory, TurnUsage, UiOptions, command_specs,
+    find_match_positions, sanitize_display_text, sanitize_terminal_text,
 };
 use forge_types::{ToolResult, sanitize_path_display};
 
@@ -107,7 +107,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(bg_block, frame.area());
 
     let input_height = match app.input_mode() {
-        InputMode::Normal | InputMode::ModelSelect => 3,
+        InputMode::Normal | InputMode::ModelSelect | InputMode::Settings => 3,
         _ => 5,
     };
 
@@ -175,6 +175,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if app.input_mode() == InputMode::FileSelect {
         draw_file_selector(frame, app, &palette, &glyphs, elapsed);
+    }
+
+    if app.input_mode() == InputMode::Settings {
+        draw_settings_modal(frame, app, &palette, &glyphs, elapsed);
     }
 
     if app.tool_approval_requests().is_some() {
@@ -955,6 +959,11 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
             styles::mode_normal(palette),
             Style::default().fg(palette.text_muted),
         ),
+        InputMode::Settings => (
+            "SETTINGS",
+            styles::mode_command(palette),
+            Style::default().fg(palette.primary),
+        ),
         InputMode::Insert => (
             "INSERT",
             styles::mode_insert(palette),
@@ -1012,6 +1021,16 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
             Span::styled("Esc", styles::key_highlight(palette)),
             Span::styled(" cancel ", styles::key_hint(palette)),
         ],
+        InputMode::Settings => vec![
+            Span::styled("↑↓/jk", styles::key_highlight(palette)),
+            Span::styled(" navigate  ", styles::key_hint(palette)),
+            Span::styled("/", styles::key_highlight(palette)),
+            Span::styled(" filter  ", styles::key_hint(palette)),
+            Span::styled("Enter", styles::key_highlight(palette)),
+            Span::styled(" select  ", styles::key_hint(palette)),
+            Span::styled("Esc/q", styles::key_highlight(palette)),
+            Span::styled(" back/close ", styles::key_hint(palette)),
+        ],
     };
 
     let usage_status = app.context_usage_status();
@@ -1057,7 +1076,7 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
     };
 
     let padding_v: u16 = match mode {
-        InputMode::Normal | InputMode::ModelSelect => 0,
+        InputMode::Normal | InputMode::ModelSelect | InputMode::Settings => 0,
         InputMode::Insert if multiline => 0,
         _ => 1,
     };
@@ -1193,7 +1212,8 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
                     InputMode::Insert
                     | InputMode::Normal
                     | InputMode::ModelSelect
-                    | InputMode::FileSelect => app.draft_text().to_string(),
+                    | InputMode::FileSelect
+                    | InputMode::Settings => app.draft_text().to_string(),
                     InputMode::Command => command_line.clone().unwrap_or_default(),
                 },
                 0u16,
@@ -1572,6 +1592,373 @@ fn truncate_path_display(path: &std::path::Path, max_width: usize) -> String {
         return format!("{truncated}...");
     }
     display
+}
+
+fn settings_category_summary(app: &App, category: SettingsCategory) -> String {
+    match category {
+        SettingsCategory::Providers => {
+            let configured = Provider::all()
+                .iter()
+                .filter(|provider| app.has_api_key(**provider))
+                .count();
+            format!("{configured} configured")
+        }
+        SettingsCategory::Models => app.model().to_string(),
+        SettingsCategory::ModelOverrides | SettingsCategory::Profiles => "planned".to_string(),
+        SettingsCategory::Context => {
+            if app.memory_enabled() {
+                "memory on".to_string()
+            } else {
+                "memory off".to_string()
+            }
+        }
+        SettingsCategory::Tools => format!("{} loaded", app.tool_definition_count()),
+        SettingsCategory::Keybindings => "vim".to_string(),
+        SettingsCategory::History => "available".to_string(),
+        SettingsCategory::Appearance => {
+            let options = app.ui_options();
+            if options.high_contrast {
+                "high-contrast".to_string()
+            } else if options.ascii_only {
+                "ascii".to_string()
+            } else {
+                "default".to_string()
+            }
+        }
+    }
+}
+
+fn settings_detail_lines(
+    app: &App,
+    category: SettingsCategory,
+    palette: &Palette,
+    glyphs: &Glyphs,
+    content_width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!(" {} ", category.detail_title()),
+        Style::default()
+            .fg(palette.text_primary)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " Read-only preview (Phase 1)",
+        Style::default().fg(palette.text_muted),
+    )));
+    lines.push(Line::from(""));
+
+    match category {
+        SettingsCategory::Providers => {
+            for provider in Provider::all() {
+                let configured = app.has_api_key(*provider);
+                let icon = if configured {
+                    glyphs.status_ready
+                } else {
+                    glyphs.status_missing
+                };
+                let status = if configured { "configured" } else { "not set" };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {icon} "),
+                        Style::default().fg(if configured {
+                            palette.success
+                        } else {
+                            palette.text_muted
+                        }),
+                    ),
+                    Span::styled(
+                        provider.display_name().to_string(),
+                        Style::default().fg(palette.text_secondary),
+                    ),
+                    Span::styled(
+                        format!("  {status}"),
+                        Style::default().fg(palette.text_muted),
+                    ),
+                ]));
+            }
+        }
+        SettingsCategory::Models => {
+            lines.push(Line::from(vec![
+                Span::styled("  Active model: ", Style::default().fg(palette.text_muted)),
+                Span::styled(
+                    app.model().to_string(),
+                    Style::default()
+                        .fg(palette.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  Provider: ", Style::default().fg(palette.text_muted)),
+                Span::styled(
+                    app.provider().display_name().to_string(),
+                    Style::default().fg(palette.text_secondary),
+                ),
+            ]));
+        }
+        SettingsCategory::ModelOverrides => {
+            lines.push(Line::from(Span::styled(
+                "  Chat/code split and overrides arrive in later phases.",
+                Style::default().fg(palette.text_muted),
+            )));
+        }
+        SettingsCategory::Context => {
+            let memory = if app.memory_enabled() { "on" } else { "off" };
+            lines.push(Line::from(vec![
+                Span::styled("  Memory: ", Style::default().fg(palette.text_muted)),
+                Span::styled(memory, Style::default().fg(palette.text_secondary)),
+            ]));
+            lines.push(Line::from(Span::styled(
+                "  Context controls are read-only in Phase 1.",
+                Style::default().fg(palette.text_muted),
+            )));
+        }
+        SettingsCategory::Tools => {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "  Registered tools: ",
+                    Style::default().fg(palette.text_muted),
+                ),
+                Span::styled(
+                    app.tool_definition_count().to_string(),
+                    Style::default().fg(palette.text_secondary),
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                "  Tool permissions editor arrives in later phases.",
+                Style::default().fg(palette.text_muted),
+            )));
+        }
+        SettingsCategory::Keybindings => {
+            lines.push(Line::from(Span::styled(
+                "  Preset: vim",
+                Style::default().fg(palette.text_secondary),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  Rebinding UI arrives in later phases.",
+                Style::default().fg(palette.text_muted),
+            )));
+        }
+        SettingsCategory::Profiles => {
+            lines.push(Line::from(Span::styled(
+                "  Profile management arrives in Phase 4.",
+                Style::default().fg(palette.text_muted),
+            )));
+        }
+        SettingsCategory::History => {
+            lines.push(Line::from(Span::styled(
+                "  History/privacy controls are planned.",
+                Style::default().fg(palette.text_muted),
+            )));
+        }
+        SettingsCategory::Appearance => {
+            let options = app.ui_options();
+            lines.push(Line::from(vec![
+                Span::styled("  ASCII only: ", Style::default().fg(palette.text_muted)),
+                Span::styled(
+                    if options.ascii_only { "on" } else { "off" },
+                    Style::default().fg(palette.text_secondary),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  High contrast: ", Style::default().fg(palette.text_muted)),
+                Span::styled(
+                    if options.high_contrast { "on" } else { "off" },
+                    Style::default().fg(palette.text_secondary),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "  Reduced motion: ",
+                    Style::default().fg(palette.text_muted),
+                ),
+                Span::styled(
+                    if options.reduced_motion { "on" } else { "off" },
+                    Style::default().fg(palette.text_secondary),
+                ),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "─".repeat(content_width),
+        Style::default().fg(palette.primary_dim),
+    )));
+    lines.push(Line::from(vec![
+        Span::styled("Esc/q", styles::key_highlight(palette)),
+        Span::styled(" back  ", styles::key_hint(palette)),
+        Span::styled("Enter", styles::key_highlight(palette)),
+        Span::styled(" select", styles::key_hint(palette)),
+    ]));
+    lines
+}
+
+fn draw_settings_modal(
+    frame: &mut Frame,
+    app: &mut App,
+    palette: &Palette,
+    glyphs: &Glyphs,
+    elapsed: Duration,
+) {
+    let area = frame.area();
+    let selector_width = 76.min(area.width.saturating_sub(4)).max(52);
+    let content_width = selector_width.saturating_sub(4).max(1) as usize;
+
+    let filter = app.settings_filter_text().unwrap_or_default().to_string();
+    let filter_active = app.settings_filter_active();
+    let detail_view = app.settings_detail_view();
+    let categories = app.settings_categories();
+    let selected_index = app
+        .settings_selected_index()
+        .unwrap_or(0)
+        .min(categories.len().saturating_sub(1));
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    if let Some(category) = detail_view {
+        lines.extend(settings_detail_lines(
+            app,
+            category,
+            palette,
+            glyphs,
+            content_width,
+        ));
+    } else {
+        let filter_style = if filter_active {
+            Style::default()
+                .fg(palette.yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(palette.primary)
+        };
+        let filter_text = if filter.is_empty() {
+            "Type to filter...".to_string()
+        } else {
+            filter.clone()
+        };
+        let value_style = if filter.is_empty() {
+            Style::default().fg(palette.text_muted)
+        } else {
+            Style::default().fg(palette.text_primary)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(" / ", filter_style),
+            Span::styled(filter_text, value_style),
+        ]));
+        lines.push(Line::from(""));
+
+        if categories.is_empty() {
+            lines.push(Line::from(Span::styled(
+                " No matching categories",
+                Style::default().fg(palette.warning),
+            )));
+        } else {
+            for (idx, category) in categories.iter().enumerate() {
+                let is_selected = idx == selected_index;
+                let marker = if is_selected { glyphs.selected } else { " " };
+                let label = category.label();
+                let summary = settings_category_summary(app, *category);
+                let left = format!(" {marker} {label}");
+                let left_width = left.width();
+                let right_width = summary.width();
+                let filler = content_width.saturating_sub(left_width + right_width + 2);
+                let bg = is_selected.then_some(palette.bg_highlight);
+                let mut left_style = if is_selected {
+                    Style::default()
+                        .fg(palette.text_primary)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(palette.text_secondary)
+                };
+                let mut fill_style = Style::default();
+                let mut right_style = Style::default().fg(palette.text_muted);
+                if let Some(bg) = bg {
+                    left_style = left_style.bg(bg);
+                    fill_style = fill_style.bg(bg);
+                    right_style = right_style.bg(bg);
+                }
+
+                lines.push(Line::from(vec![
+                    Span::styled(left, left_style),
+                    Span::styled(" ".repeat(filler), fill_style),
+                    Span::styled("  ", fill_style),
+                    Span::styled(summary, right_style),
+                ]));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "─".repeat(content_width),
+            Style::default().fg(palette.primary_dim),
+        )));
+        if filter_active {
+            lines.push(Line::from(vec![
+                Span::styled("Type", styles::key_highlight(palette)),
+                Span::styled(" filter  ", styles::key_hint(palette)),
+                Span::styled("Backspace", styles::key_highlight(palette)),
+                Span::styled(" delete  ", styles::key_hint(palette)),
+                Span::styled("Enter", styles::key_highlight(palette)),
+                Span::styled(" done  ", styles::key_hint(palette)),
+                Span::styled("Esc", styles::key_highlight(palette)),
+                Span::styled(" stop", styles::key_hint(palette)),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled("Enter", styles::key_highlight(palette)),
+                Span::styled(" select  ", styles::key_hint(palette)),
+                Span::styled("/", styles::key_highlight(palette)),
+                Span::styled(" filter  ", styles::key_hint(palette)),
+                Span::styled("q", styles::key_highlight(palette)),
+                Span::styled(" quit", styles::key_hint(palette)),
+            ]));
+        }
+    }
+
+    let inner_height = lines.len() as u16;
+    let selector_height = inner_height
+        .saturating_add(4)
+        .min(area.height.saturating_sub(2));
+    let base_area = Rect {
+        x: area.x + (area.width.saturating_sub(selector_width) / 2),
+        y: area.y + (area.height.saturating_sub(selector_height) / 2),
+        width: selector_width,
+        height: selector_height,
+    };
+
+    let (selector_area, effect_done) = if let Some(effect) = app.modal_effect_mut() {
+        effect.advance(elapsed);
+        (
+            apply_modal_effect(effect, base_area, area),
+            effect.is_finished(),
+        )
+    } else {
+        (base_area, false)
+    };
+
+    if effect_done {
+        app.clear_modal_effect();
+    }
+
+    frame.render_widget(Clear, selector_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette.primary))
+        .style(Style::default().bg(palette.bg_panel))
+        .padding(Padding::uniform(1))
+        .title(Line::from(vec![Span::styled(
+            " Settings ",
+            Style::default()
+                .fg(palette.text_primary)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .title_alignment(Alignment::Center);
+
+    frame.render_widget(Paragraph::new(lines).block(block), selector_area);
 }
 
 pub fn draw_model_selector(
