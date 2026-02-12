@@ -25,7 +25,6 @@ pub(crate) fn canonical_tool_name(name: &str) -> std::borrow::Cow<'static, str> 
     use std::borrow::Cow;
 
     match name {
-        // File tools
         "Read" => Cow::Borrowed("Read"),
         "Write" => Cow::Borrowed("Write"),
         "Edit" => Cow::Borrowed("Edit"),
@@ -35,24 +34,18 @@ pub(crate) fn canonical_tool_name(name: &str) -> std::borrow::Cow<'static, str> 
         "ListDir" => Cow::Borrowed("ListDir"),
         "Outline" => Cow::Borrowed("Outline"),
 
-        // Search tools
         "Glob" => Cow::Borrowed("Glob"),
         "Search" => Cow::Borrowed("Search"),
 
-        // Git tool
         "Git" => Cow::Borrowed("Git"),
 
-        // Shell/command tools
         "Pwsh" => Cow::Borrowed("Pwsh"),
         "Run" => Cow::Borrowed("Run"),
 
-        // Web tools
         "WebFetch" => Cow::Borrowed("WebFetch"),
 
-        // Memory tools
         "Recall" => Cow::Borrowed("Recall"),
 
-        // Build tools
         "Build" => Cow::Borrowed("Build"),
         "Test" => Cow::Borrowed("Test"),
 
@@ -169,7 +162,6 @@ fn format_git_branch(obj: &serde_json::Map<String, Value>) -> Option<String> {
     {
         return Some(format!("{old} -> {new}"));
     }
-    // List mode
     if obj.get("list_all").and_then(serde_json::Value::as_bool) == Some(true) {
         return Some("-a".to_string());
     }
