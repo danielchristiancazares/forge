@@ -29,6 +29,7 @@
 //! - [`PreparedContext`]: Proof that context was built within token budget
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
@@ -38,7 +39,8 @@ use ui::InputState;
 pub use ui::{
     ChangeKind, DisplayItem, DraftInput, FileEntry, FilePickerState, FilesPanelState, InputHistory,
     InputMode, ModalEffect, ModalEffectKind, PanelEffect, PanelEffectKind, PredefinedModel,
-    ScrollState, SettingsCategory, SettingsModalState, UiOptions, ViewState, find_match_positions,
+    ScrollState, SettingsCategory, SettingsModalState, SettingsSurface, UiOptions, ViewState,
+    find_match_positions,
 };
 
 pub use forge_context::{
@@ -133,6 +135,57 @@ impl TurnUsage {
         self.total.merge(&usage);
         self.last_call = usage;
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeSnapshot {
+    pub active_profile: String,
+    pub session_config_hash: String,
+    pub mode: String,
+    pub active_model: String,
+    pub provider: Provider,
+    pub provider_status: String,
+    pub context_used_tokens: u32,
+    pub context_budget_tokens: u32,
+    pub distill_threshold_tokens: u32,
+    pub auto_attached: Vec<String>,
+    pub rate_limit_state: String,
+    pub last_api_call: String,
+    pub last_error: Option<String>,
+    pub session_overrides: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolveLayerValue {
+    pub layer: &'static str,
+    pub value: String,
+    pub is_winner: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolveSetting {
+    pub setting: &'static str,
+    pub layers: Vec<ResolveLayerValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolveCascade {
+    pub settings: Vec<ResolveSetting>,
+    pub session_config_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationFinding {
+    pub title: String,
+    pub detail: String,
+    pub fix_path: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ValidationReport {
+    pub errors: Vec<ValidationFinding>,
+    pub warnings: Vec<ValidationFinding>,
+    pub healthy: Vec<ValidationFinding>,
 }
 
 pub use state::DistillationTask;
@@ -1290,14 +1343,46 @@ impl App {
         self.input = std::mem::take(&mut self.input).into_command();
     }
 
-    pub fn enter_settings_mode(&mut self) {
-        self.input = std::mem::take(&mut self.input).into_settings();
+    fn enter_settings_surface(&mut self, surface: SettingsSurface) {
+        let current = std::mem::take(&mut self.input);
+        self.input = if surface == SettingsSurface::Root {
+            current.into_settings()
+        } else {
+            current.into_settings_surface(surface)
+        };
         if self.view.ui_options.reduced_motion {
             self.view.modal_effect = None;
         } else {
             self.view.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
             self.view.last_frame = Instant::now();
         }
+    }
+
+    pub fn enter_settings_mode(&mut self) {
+        self.enter_settings_surface(SettingsSurface::Root);
+    }
+
+    pub fn enter_runtime_mode(&mut self) {
+        self.enter_settings_surface(SettingsSurface::Runtime);
+    }
+
+    pub fn enter_resolve_mode(&mut self) {
+        self.enter_settings_surface(SettingsSurface::Resolve);
+    }
+
+    pub fn enter_validate_mode(&mut self) {
+        self.enter_settings_surface(SettingsSurface::Validate);
+    }
+
+    #[must_use]
+    pub fn settings_surface(&self) -> Option<SettingsSurface> {
+        self.input.settings_modal().map(|modal| modal.surface)
+    }
+
+    #[must_use]
+    pub fn settings_is_root_surface(&self) -> bool {
+        self.settings_surface()
+            .is_some_and(|surface| surface == SettingsSurface::Root)
     }
 
     #[must_use]
@@ -1326,6 +1411,9 @@ impl App {
 
     #[must_use]
     pub fn settings_categories(&self) -> Vec<SettingsCategory> {
+        if !self.settings_is_root_surface() {
+            return Vec::new();
+        }
         let filter = self.settings_filter_text().unwrap_or_default();
         SettingsCategory::filtered(filter)
     }
@@ -1336,6 +1424,9 @@ impl App {
     }
 
     pub fn settings_move_up(&mut self) {
+        if !self.settings_is_root_surface() {
+            return;
+        }
         let Some(selected) = self.settings_selected_index() else {
             return;
         };
@@ -1348,6 +1439,9 @@ impl App {
     }
 
     pub fn settings_move_down(&mut self) {
+        if !self.settings_is_root_surface() {
+            return;
+        }
         let Some(selected) = self.settings_selected_index() else {
             return;
         };
@@ -1361,6 +1455,9 @@ impl App {
     }
 
     pub fn settings_start_filter(&mut self) {
+        if !self.settings_is_root_surface() {
+            return;
+        }
         if let Some(modal) = self.input.settings_modal_mut() {
             modal.filter_active = true;
         }
@@ -1373,6 +1470,9 @@ impl App {
     }
 
     pub fn settings_filter_push_char(&mut self, c: char) {
+        if !self.settings_is_root_surface() {
+            return;
+        }
         if let Some(modal) = self.input.settings_modal_mut() {
             modal.filter.enter_char(c);
         }
@@ -1380,6 +1480,9 @@ impl App {
     }
 
     pub fn settings_filter_backspace(&mut self) {
+        if !self.settings_is_root_surface() {
+            return;
+        }
         if let Some(modal) = self.input.settings_modal_mut() {
             modal.filter.delete_char();
         }
@@ -1387,6 +1490,9 @@ impl App {
     }
 
     pub fn settings_activate(&mut self) {
+        if !self.settings_is_root_surface() {
+            return;
+        }
         let Some((filter_active, detail_view, selected)) = self
             .input
             .settings_modal()
@@ -1446,6 +1552,304 @@ impl App {
             } else if modal.selected >= len {
                 modal.selected = len - 1;
             }
+        }
+    }
+
+    #[must_use]
+    pub fn session_config_hash(&self) -> String {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.model.as_str().hash(&mut hasher);
+        self.provider().as_str().hash(&mut hasher);
+        self.memory_enabled.hash(&mut hasher);
+        self.cache_enabled.hash(&mut hasher);
+        self.output_limits.max_output_tokens().hash(&mut hasher);
+        match self.output_limits.thinking() {
+            ThinkingState::Disabled => {
+                0u32.hash(&mut hasher);
+            }
+            ThinkingState::Enabled(budget) => {
+                budget.as_u32().hash(&mut hasher);
+            }
+        }
+        self.openai_options
+            .reasoning_effort()
+            .as_str()
+            .hash(&mut hasher);
+        self.openai_options
+            .reasoning_summary()
+            .as_str()
+            .hash(&mut hasher);
+        self.openai_options.verbosity().as_str().hash(&mut hasher);
+        self.openai_options.truncation().as_str().hash(&mut hasher);
+        for provider in Provider::all() {
+            provider.as_str().hash(&mut hasher);
+            self.has_api_key(*provider).hash(&mut hasher);
+        }
+        self.tool_settings
+            .limits
+            .max_tool_calls_per_batch
+            .hash(&mut hasher);
+        self.tool_settings
+            .limits
+            .max_tool_iterations_per_user_turn
+            .hash(&mut hasher);
+        self.tool_settings
+            .limits
+            .max_tool_args_bytes
+            .hash(&mut hasher);
+        self.tool_settings.max_output_bytes.hash(&mut hasher);
+        self.tool_settings.policy.allowlist.len().hash(&mut hasher);
+        self.tool_settings.policy.denylist.len().hash(&mut hasher);
+        match self.tool_settings.policy.mode {
+            tools::ApprovalMode::Permissive => "permissive",
+            tools::ApprovalMode::Default => "default",
+            tools::ApprovalMode::Strict => "strict",
+        }
+        .hash(&mut hasher);
+        let hash = hasher.finish();
+        format!("{hash:07x}")
+    }
+
+    pub fn runtime_snapshot(&mut self) -> RuntimeSnapshot {
+        let usage_status = self.context_usage_status();
+        let usage = match usage_status {
+            ContextUsageStatus::Ready(usage)
+            | ContextUsageStatus::NeedsDistillation { usage, .. }
+            | ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => usage,
+        };
+        let distill_threshold_tokens = usage.budget_tokens.saturating_mul(8) / 10;
+        let provider = self.provider();
+        let provider_status = if self.has_api_key(provider) {
+            "configured".to_string()
+        } else {
+            "missing_api_key".to_string()
+        };
+        let mode = if matches!(self.input_mode(), InputMode::Insert) {
+            "chat".to_string()
+        } else {
+            "code".to_string()
+        };
+        let last_error = self
+            .tool_journal_disabled_reason()
+            .map(ToString::to_string)
+            .or_else(|| self.recovery_blocked_reason());
+        let rate_limit_state = if self.is_loading() {
+            "busy".to_string()
+        } else {
+            "healthy".to_string()
+        };
+        let last_api_call = if self.last_turn_usage().is_some() {
+            "recent_success".to_string()
+        } else if self.is_loading() {
+            "in_progress".to_string()
+        } else {
+            "none".to_string()
+        };
+
+        RuntimeSnapshot {
+            active_profile: "default".to_string(),
+            session_config_hash: self.session_config_hash(),
+            mode,
+            active_model: self.model().to_string(),
+            provider,
+            provider_status,
+            context_used_tokens: usage.used_tokens,
+            context_budget_tokens: usage.budget_tokens,
+            distill_threshold_tokens,
+            auto_attached: vec!["AGENTS.md".to_string()],
+            rate_limit_state,
+            last_api_call,
+            last_error,
+            session_overrides: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn resolve_cascade(&self) -> ResolveCascade {
+        let mut settings = Vec::new();
+        settings.push(ResolveSetting {
+            setting: "Model",
+            layers: vec![
+                ResolveLayerValue {
+                    layer: "Global",
+                    value: self.model().to_string(),
+                    is_winner: true,
+                },
+                ResolveLayerValue {
+                    layer: "Project",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Profile",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Session",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+            ],
+        });
+
+        settings.push(ResolveSetting {
+            setting: "Temperature",
+            layers: vec![
+                ResolveLayerValue {
+                    layer: "Global",
+                    value: "provider-default".to_string(),
+                    is_winner: true,
+                },
+                ResolveLayerValue {
+                    layer: "Project",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Profile",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Session",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+            ],
+        });
+
+        let context_limit = self
+            .context_manager
+            .current_limits()
+            .effective_input_budget();
+        settings.push(ResolveSetting {
+            setting: "Context Limit",
+            layers: vec![
+                ResolveLayerValue {
+                    layer: "Global",
+                    value: context_limit.to_string(),
+                    is_winner: true,
+                },
+                ResolveLayerValue {
+                    layer: "Project",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Profile",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Session",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+            ],
+        });
+
+        let approval_mode = match self.tool_settings.policy.mode {
+            tools::ApprovalMode::Permissive => "permissive",
+            tools::ApprovalMode::Default => "default",
+            tools::ApprovalMode::Strict => "strict",
+        };
+        settings.push(ResolveSetting {
+            setting: "Tool Approval Mode",
+            layers: vec![
+                ResolveLayerValue {
+                    layer: "Global",
+                    value: approval_mode.to_string(),
+                    is_winner: true,
+                },
+                ResolveLayerValue {
+                    layer: "Project",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Profile",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Session",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+            ],
+        });
+
+        ResolveCascade {
+            settings,
+            session_config_hash: self.session_config_hash(),
+        }
+    }
+
+    #[must_use]
+    pub fn validate_config(&self) -> ValidationReport {
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        let mut healthy = Vec::new();
+
+        for provider in Provider::all() {
+            if self.has_api_key(*provider) {
+                healthy.push(ValidationFinding {
+                    title: format!("{} API key configured", provider.display_name()),
+                    detail: format!(
+                        "{} is available for model selection.",
+                        provider.display_name()
+                    ),
+                    fix_path: "Settings > Providers".to_string(),
+                });
+            } else {
+                warnings.push(ValidationFinding {
+                    title: format!("{} API key missing", provider.display_name()),
+                    detail: format!(
+                        "{} models will be blocked until a key is configured.",
+                        provider.display_name()
+                    ),
+                    fix_path: format!("Settings > Providers > {}", provider.display_name()),
+                });
+            }
+        }
+
+        if self.current_api_key().is_some() {
+            healthy.push(ValidationFinding {
+                title: "Active model provider is configured".to_string(),
+                detail: format!("{} can run immediately.", self.model()),
+                fix_path: "Settings > Models".to_string(),
+            });
+        } else {
+            errors.push(ValidationFinding {
+                title: "Active model provider is not configured".to_string(),
+                detail: format!(
+                    "Model '{}' requires {} API key.",
+                    self.model(),
+                    self.provider().env_var()
+                ),
+                fix_path: "Settings > Providers".to_string(),
+            });
+        }
+
+        if self.tool_journal_disabled_reason().is_some() {
+            warnings.push(ValidationFinding {
+                title: "Tool journal safety latch is active".to_string(),
+                detail: "Tool execution is disabled for crash-consistency safety.".to_string(),
+                fix_path: "Run /clear to reset journal state".to_string(),
+            });
+        } else {
+            healthy.push(ValidationFinding {
+                title: "Tool journal safety latch is clear".to_string(),
+                detail: "Tool execution is available.".to_string(),
+                fix_path: "Settings > Tools".to_string(),
+            });
+        }
+
+        ValidationReport {
+            errors,
+            warnings,
+            healthy,
         }
     }
 

@@ -116,9 +116,32 @@ impl SettingsCategory {
     }
 }
 
+/// Settings modal surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SettingsSurface {
+    #[default]
+    Root,
+    Runtime,
+    Resolve,
+    Validate,
+}
+
+impl SettingsSurface {
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Root => "Settings",
+            Self::Runtime => "Runtime",
+            Self::Resolve => "Resolution Cascade",
+            Self::Validate => "Validation",
+        }
+    }
+}
+
 /// Read-only settings modal state for Phase 1.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SettingsModalState {
+    pub surface: SettingsSurface,
     pub selected: usize,
     pub filter: DraftInput,
     pub filter_active: bool,
@@ -424,6 +447,10 @@ impl InputState {
     }
 
     pub fn into_settings(self) -> InputState {
+        self.into_settings_surface(SettingsSurface::Root)
+    }
+
+    pub fn into_settings_surface(self, surface: SettingsSurface) -> InputState {
         match self {
             InputState::Normal(draft)
             | InputState::Insert(draft)
@@ -432,7 +459,10 @@ impl InputState {
             | InputState::FileSelect { draft, .. }
             | InputState::Settings { draft, .. } => InputState::Settings {
                 draft,
-                modal: SettingsModalState::default(),
+                modal: SettingsModalState {
+                    surface,
+                    ..SettingsModalState::default()
+                },
             },
         }
     }
@@ -525,6 +555,18 @@ mod tests {
     fn settings_category_filter_matches_keywords() {
         let matches = SettingsCategory::filtered("perm");
         assert_eq!(matches, vec![SettingsCategory::Tools]);
+    }
+
+    #[test]
+    fn into_settings_surface_sets_requested_surface() {
+        let state = InputState::default().into_settings_surface(SettingsSurface::Resolve);
+        if let InputState::Settings { modal, .. } = state {
+            assert_eq!(modal.surface, SettingsSurface::Resolve);
+            assert!(!modal.filter_active);
+            assert_eq!(modal.detail_view, None);
+        } else {
+            panic!("Expected Settings state");
+        }
     }
 
     #[test]

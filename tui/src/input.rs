@@ -816,6 +816,16 @@ fn handle_file_select_mode(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_settings_mode(app: &mut App, key: KeyEvent) {
+    if !app.settings_is_root_surface() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+                app.settings_close_or_exit();
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => {
             app.settings_close_or_exit();

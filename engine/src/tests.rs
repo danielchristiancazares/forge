@@ -379,6 +379,89 @@ fn process_command_settings_opens_settings_modal() {
     assert!(!app.settings_filter_active());
     assert_eq!(app.settings_selected_index(), Some(0));
     assert_eq!(app.settings_detail_view(), None);
+    assert_eq!(app.settings_surface(), Some(SettingsSurface::Root));
+}
+
+#[test]
+fn process_command_runtime_opens_runtime_panel() {
+    let mut app = test_app();
+    app.enter_command_mode();
+
+    let command = {
+        let token = app.command_token().expect("command mode");
+        let mut command_mode = app.command_mode(token);
+        for c in "runtime".chars() {
+            command_mode.push_char(c);
+        }
+        command_mode.take_command().expect("take command")
+    };
+
+    app.process_command(command);
+
+    assert_eq!(app.input_mode(), InputMode::Settings);
+    assert_eq!(app.settings_surface(), Some(SettingsSurface::Runtime));
+}
+
+#[test]
+fn process_command_resolve_opens_resolve_panel() {
+    let mut app = test_app();
+    app.enter_command_mode();
+
+    let command = {
+        let token = app.command_token().expect("command mode");
+        let mut command_mode = app.command_mode(token);
+        for c in "resolve".chars() {
+            command_mode.push_char(c);
+        }
+        command_mode.take_command().expect("take command")
+    };
+
+    app.process_command(command);
+
+    assert_eq!(app.input_mode(), InputMode::Settings);
+    assert_eq!(app.settings_surface(), Some(SettingsSurface::Resolve));
+}
+
+#[test]
+fn process_command_validate_opens_validation_panel() {
+    let mut app = test_app();
+    app.enter_command_mode();
+
+    let command = {
+        let token = app.command_token().expect("command mode");
+        let mut command_mode = app.command_mode(token);
+        for c in "validate".chars() {
+            command_mode.push_char(c);
+        }
+        command_mode.take_command().expect("take command")
+    };
+
+    app.process_command(command);
+
+    assert_eq!(app.input_mode(), InputMode::Settings);
+    assert_eq!(app.settings_surface(), Some(SettingsSurface::Validate));
+}
+
+#[test]
+fn session_config_hash_is_stable_without_changes() {
+    let app = test_app();
+    let first = app.session_config_hash();
+    let second = app.session_config_hash();
+    assert_eq!(first, second);
+}
+
+#[test]
+fn validation_findings_include_fix_paths() {
+    let app = test_app();
+    let report = app.validate_config();
+    for finding in report
+        .errors
+        .iter()
+        .chain(report.warnings.iter())
+        .chain(report.healthy.iter())
+    {
+        assert!(!finding.fix_path.trim().is_empty());
+    }
 }
 
 #[test]
