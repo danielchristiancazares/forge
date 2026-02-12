@@ -2449,6 +2449,38 @@ fn settings_detail_lines(
     lines
 }
 
+fn settings_scope(surface: SettingsSurface) -> &'static str {
+    match surface {
+        SettingsSurface::Root | SettingsSurface::Validate => "Global",
+        SettingsSurface::Runtime | SettingsSurface::Resolve => "Session",
+    }
+}
+
+fn settings_layer(surface: SettingsSurface) -> &'static str {
+    match surface {
+        SettingsSurface::Root => "Settings",
+        SettingsSurface::Runtime => "Runtime",
+        SettingsSurface::Resolve => "Resolve",
+        SettingsSurface::Validate => "Validation",
+    }
+}
+
+fn settings_compass_line(app: &App, surface: SettingsSurface, palette: &Palette) -> Line<'static> {
+    Line::from(Span::styled(
+        format!(
+            " Scope: {}   Layer: {}   Dirty: {}",
+            settings_scope(surface),
+            settings_layer(surface),
+            if app.settings_has_unsaved_edits() {
+                "yes"
+            } else {
+                "no"
+            }
+        ),
+        Style::default().fg(palette.text_muted),
+    ))
+}
+
 fn draw_settings_modal(
     frame: &mut Frame,
     app: &mut App,
@@ -2589,6 +2621,8 @@ fn draw_settings_modal(
             }
         }
     }
+    lines.push(Line::from(""));
+    lines.push(settings_compass_line(app, surface, palette));
 
     let inner_height = lines.len() as u16;
     let selector_height = inner_height
