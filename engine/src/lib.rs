@@ -44,10 +44,9 @@ pub use ui::{
 };
 
 pub use forge_context::{
-    ActiveJournal, BeginSessionError, ContextAdaptation, ContextBuildError, ContextManager,
-    ContextUsageStatus, DistillationNeeded, DistillationPlanError, DistillationScope,
-    ExtractionResult, Fact, FactType, FullHistory, Librarian, MessageId, ModelLimits,
-    ModelLimitsSource, ModelRegistry, PendingDistillation, PreparedContext, RecoveredStream,
+    ActiveJournal, BeginSessionError, CompactionPlan, ContextAdaptation, ContextBuildError,
+    ContextManager, ContextUsageStatus, ExtractionResult, Fact, FactType, FullHistory, Librarian,
+    MessageId, ModelLimits, ModelLimitsSource, ModelRegistry, PreparedContext, RecoveredStream,
     RecoveredToolBatch, RetrievalResult, StreamJournal, TokenCounter, ToolBatchId, ToolJournal,
     distillation_model, generate_distillation, retrieve_relevant,
 };
@@ -1790,16 +1789,16 @@ impl App {
         match adaptation {
             ContextAdaptation::NoChange
             | ContextAdaptation::Shrinking {
-                needs_distillation: false,
+                needs_compaction: false,
                 ..
             } => {}
             ContextAdaptation::Shrinking {
                 old_budget,
                 new_budget,
-                needs_distillation: true,
+                needs_compaction: true,
             } => {
                 self.push_notification(format!(
-                    "Context budget shrank {}k → {}k; distilling...",
+                    "Context budget shrank {}k → {}k; compacting...",
                     old_budget / 1000,
                     new_budget / 1000
                 ));
@@ -1808,19 +1807,12 @@ impl App {
             ContextAdaptation::Expanding {
                 old_budget,
                 new_budget,
-                can_restore,
             } => {
-                if can_restore > 0 {
-                    let restored = self.context_manager.try_restore_messages();
-                    if restored > 0 {
-                        self.push_notification(format!(
-                            "Context budget expanded {}k → {}k; restored {} messages",
-                            old_budget / 1000,
-                            new_budget / 1000,
-                            restored
-                        ));
-                    }
-                }
+                self.push_notification(format!(
+                    "Context budget expanded {}k → {}k",
+                    old_budget / 1000,
+                    new_budget / 1000
+                ));
             }
         }
     }
@@ -2527,7 +2519,7 @@ impl App {
         let usage_status = self.context_usage_status();
         let usage = match usage_status {
             ContextUsageStatus::Ready(usage)
-            | ContextUsageStatus::NeedsDistillation { usage, .. }
+            | ContextUsageStatus::NeedsCompaction { usage, .. }
             | ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => usage,
         };
         let distill_threshold_tokens = usage.budget_tokens.saturating_mul(8) / 10;
@@ -2624,13 +2616,23 @@ impl App {
     pub fn resolve_cascade(&self) -> ResolveCascade {
         let mut settings = Vec::new();
         let chat_override = self.settings_configured_chat_model_override();
+        let pending_default_model = self.pending_turn_model.as_ref();
+        let chat_session_is_winner =
+            chat_override.is_some() || (chat_override.is_none() && pending_default_model.is_some());
+        let chat_session_value = if let Some(model) = chat_override {
+            model.to_string()
+        } else if let Some(model) = pending_default_model {
+            model.to_string()
+        } else {
+            "unset".to_string()
+        };
         settings.push(ResolveSetting {
             setting: "Chat Model",
             layers: vec![
                 ResolveLayerValue {
                     layer: "Global",
                     value: self.settings_configured_model().to_string(),
-                    is_winner: chat_override.is_none(),
+                    is_winner: !chat_session_is_winner,
                 },
                 ResolveLayerValue {
                     layer: "Project",
@@ -2644,19 +2646,28 @@ impl App {
                 },
                 ResolveLayerValue {
                     layer: "Session",
-                    value: chat_override.map_or_else(|| "unset".to_string(), ToString::to_string),
-                    is_winner: chat_override.is_some(),
+                    value: chat_session_value,
+                    is_winner: chat_session_is_winner,
                 },
             ],
         });
         let code_override = self.settings_configured_code_model_override();
+        let code_session_is_winner =
+            code_override.is_some() || (code_override.is_none() && pending_default_model.is_some());
+        let code_session_value = if let Some(model) = code_override {
+            model.to_string()
+        } else if let Some(model) = pending_default_model {
+            model.to_string()
+        } else {
+            "unset".to_string()
+        };
         settings.push(ResolveSetting {
             setting: "Code Model",
             layers: vec![
                 ResolveLayerValue {
                     layer: "Global",
                     value: self.settings_configured_model().to_string(),
-                    is_winner: code_override.is_none(),
+                    is_winner: !code_session_is_winner,
                 },
                 ResolveLayerValue {
                     layer: "Project",
@@ -2670,8 +2681,8 @@ impl App {
                 },
                 ResolveLayerValue {
                     layer: "Session",
-                    value: code_override.map_or_else(|| "unset".to_string(), ToString::to_string),
-                    is_winner: code_override.is_some(),
+                    value: code_session_value,
+                    is_winner: code_session_is_winner,
                 },
             ],
         });

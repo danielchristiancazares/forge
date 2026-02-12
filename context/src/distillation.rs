@@ -17,7 +17,6 @@ use forge_providers::{
 };
 use forge_types::{Message, Provider};
 
-use super::MessageId;
 use super::token_counter::TokenCounter;
 
 /// Models used for distillation (cheaper/faster than main models).
@@ -57,24 +56,16 @@ const DISTILLATION_PROMPT_TEMPLATE: &str = include_str!("../../cli/assets/distil
 
 /// Build a distillation prompt for a slice of messages.
 ///
-/// # Arguments
-/// * `messages` - Slice of (`MessageId`, Message) tuples to distill
-/// * `target_tokens` - Target token count for the distillation
-///
 /// # Returns
 /// A tuple of (`system_instruction`, `user_prompt`) for the API call.
 /// The user prompt contains the full template with conversation log and file list inlined.
-pub fn build_distillation_prompt(
-    messages: &[(MessageId, Message)],
-    target_tokens: u32,
-) -> (String, String) {
-    let system_instruction =
-        DISTILLATION_PROMPT_TEMPLATE.replace("{target_tokens}", &target_tokens.to_string());
+pub fn build_distillation_prompt(messages: &[Message]) -> (String, String) {
+    let system_instruction = DISTILLATION_PROMPT_TEMPLATE.to_string();
 
     let mut conversation_log = String::new();
     let mut file_paths = std::collections::BTreeSet::new();
 
-    for (id, message) in messages {
+    for (i, message) in messages.iter().enumerate() {
         let role = match message {
             Message::System(_) => "System",
             Message::User(_) => "User",
@@ -84,8 +75,7 @@ pub fn build_distillation_prompt(
                 extract_file_paths(&call.arguments, &mut file_paths);
                 let _ = write!(
                     conversation_log,
-                    "[Message {}] Assistant (Tool Call: {}): {}\n\n",
-                    id.as_u64(),
+                    "[{i}] Assistant (Tool Call: {}): {}\n\n",
                     call.name,
                     serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string())
                 );
@@ -95,21 +85,13 @@ pub fn build_distillation_prompt(
                 let status = if result.is_error { "Error" } else { "Result" };
                 let _ = write!(
                     conversation_log,
-                    "[Message {}] Tool {}: {}\n\n",
-                    id.as_u64(),
-                    status,
+                    "[{i}] Tool {status}: {}\n\n",
                     result.content
                 );
                 continue;
             }
         };
-        let _ = write!(
-            conversation_log,
-            "[Message {}] {}: {}\n\n",
-            id.as_u64(),
-            role,
-            message.content()
-        );
+        let _ = write!(conversation_log, "[{i}] {role}: {}\n\n", message.content());
     }
 
     let file_list = if file_paths.is_empty() {
@@ -158,19 +140,10 @@ fn count_tokens(counter: &TokenCounter, text: &str) -> u32 {
     counter.count_str(text)
 }
 
-/// Distill conversation messages into a compact Distillate using an LLM.
+/// Distill conversation messages into a compact summary using an LLM.
 ///
 /// This function calls a cheaper/faster model to generate the distillation,
 /// using the API key from the provided config but overriding the model.
-///
-/// # Arguments
-/// * `config` - API configuration (provides the API key and determines provider)
-/// * `counter` - Token counter for accurate token estimation
-/// * `messages` - Slice of (`MessageId`, Message) tuples to distill
-/// * `target_tokens` - Target token count for the distillation
-///
-/// # Returns
-/// The generated distillation text.
 ///
 /// # Errors
 /// Returns an error if:
@@ -180,15 +153,13 @@ fn count_tokens(counter: &TokenCounter, text: &str) -> u32 {
 pub async fn generate_distillation(
     config: &ApiConfig,
     counter: &TokenCounter,
-    messages: &[(MessageId, Message)],
-    target_tokens: u32,
+    messages: &[Message],
 ) -> Result<String> {
     if messages.is_empty() {
         return Ok(String::new());
     }
 
-    let (system_instruction, conversation_text) =
-        build_distillation_prompt(messages, target_tokens);
+    let (system_instruction, conversation_text) = build_distillation_prompt(messages);
 
     // Validate that input doesn't exceed distiller model's context limit
     let estimated_input =
@@ -500,21 +471,12 @@ mod tests {
     #[test]
     fn test_build_prompt_preserves_message_order() {
         let messages = vec![
-            (
-                MessageId::new_for_test(5),
-                Message::try_user("First message").expect("non-empty test message"),
-            ),
-            (
-                MessageId::new_for_test(10),
-                Message::try_user("Second message").expect("non-empty test message"),
-            ),
-            (
-                MessageId::new_for_test(15),
-                Message::try_user("Third message").expect("non-empty test message"),
-            ),
+            Message::try_user("First message").expect("non-empty test message"),
+            Message::try_user("Second message").expect("non-empty test message"),
+            Message::try_user("Third message").expect("non-empty test message"),
         ];
 
-        let (_, prompt) = build_distillation_prompt(&messages, 500);
+        let (_, prompt) = build_distillation_prompt(&messages);
 
         let first_pos = prompt.find("First message").unwrap();
         let second_pos = prompt.find("Second message").unwrap();
@@ -534,8 +496,8 @@ mod tests {
         let config = ApiConfig::new(ApiKey::claude("fake-key"), model).expect("config");
         let counter = TokenCounter::new();
 
-        let messages: Vec<(MessageId, Message)> = vec![];
-        let result = generate_distillation(&config, &counter, &messages, 500).await;
+        let messages: Vec<Message> = vec![];
+        let result = generate_distillation(&config, &counter, &messages).await;
 
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
@@ -559,30 +521,25 @@ mod tests {
     fn test_build_prompt_with_system_message() {
         use forge_types::NonEmptyString;
 
-        let messages = vec![(
-            MessageId::new_for_test(0),
-            Message::system(NonEmptyString::new("You are a helpful assistant.").expect("msg")),
+        let messages = vec![Message::system(
+            NonEmptyString::new("You are a helpful assistant.").expect("msg"),
         )];
 
-        let (_, prompt) = build_distillation_prompt(&messages, 500);
+        let (_, prompt) = build_distillation_prompt(&messages);
         assert!(prompt.contains("System:"));
         assert!(prompt.contains("You are a helpful assistant."));
-        assert!(prompt.contains("[Message 0]"));
     }
 
     #[test]
     fn test_build_prompt_with_assistant_message() {
         use forge_types::NonEmptyString;
 
-        let messages = vec![(
-            MessageId::new_for_test(0),
-            Message::assistant(
-                Provider::Claude.default_model(),
-                NonEmptyString::new("Hello! How can I help?").expect("msg"),
-            ),
+        let messages = vec![Message::assistant(
+            Provider::Claude.default_model(),
+            NonEmptyString::new("Hello! How can I help?").expect("msg"),
         )];
 
-        let (_, prompt) = build_distillation_prompt(&messages, 500);
+        let (_, prompt) = build_distillation_prompt(&messages);
         assert!(prompt.contains("Assistant:"));
         assert!(prompt.contains("Hello! How can I help?"));
     }
@@ -593,13 +550,11 @@ mod tests {
         use serde_json::json;
 
         let tool_call = ToolCall::new("call_123", "Read", json!({"path": "/tmp/test.txt"}));
+        let messages = vec![Message::ToolUse(tool_call)];
 
-        let messages = vec![(MessageId::new_for_test(0), Message::ToolUse(tool_call))];
-
-        let (_, prompt) = build_distillation_prompt(&messages, 500);
+        let (_, prompt) = build_distillation_prompt(&messages);
         assert!(prompt.contains("Tool Call: Read"));
         assert!(prompt.contains("/tmp/test.txt"));
-        assert!(prompt.contains("[Message 0]"));
     }
 
     #[test]
@@ -608,22 +563,15 @@ mod tests {
         use serde_json::json;
 
         let messages = vec![
-            (
-                MessageId::new_for_test(0),
-                Message::ToolUse(ToolCall::new("c1", "Read", json!({"path": "src/main.rs"}))),
-            ),
-            (
-                MessageId::new_for_test(1),
-                Message::ToolUse(ToolCall::new(
-                    "c2",
-                    "Edit",
-                    json!({"file_path": "src/lib.rs"}),
-                )),
-            ),
+            Message::ToolUse(ToolCall::new("c1", "Read", json!({"path": "src/main.rs"}))),
+            Message::ToolUse(ToolCall::new(
+                "c2",
+                "Edit",
+                json!({"file_path": "src/lib.rs"}),
+            )),
         ];
 
-        let (_, prompt) = build_distillation_prompt(&messages, 500);
-        // File list should contain both extracted paths
+        let (_, prompt) = build_distillation_prompt(&messages);
         assert!(prompt.contains("src/lib.rs"));
         assert!(prompt.contains("src/main.rs"));
         assert!(!prompt.contains("(none detected)"));
@@ -639,10 +587,9 @@ mod tests {
             content: "File contents here".to_string(),
             is_error: false,
         };
+        let messages = vec![Message::ToolResult(result)];
 
-        let messages = vec![(MessageId::new_for_test(0), Message::ToolResult(result))];
-
-        let (_, prompt) = build_distillation_prompt(&messages, 500);
+        let (_, prompt) = build_distillation_prompt(&messages);
         assert!(prompt.contains("Tool Result:"));
         assert!(prompt.contains("File contents here"));
     }
@@ -657,14 +604,10 @@ mod tests {
             content: "File not found".to_string(),
             is_error: true,
         };
+        let messages = vec![Message::ToolResult(result)];
 
-        let messages = vec![(MessageId::new_for_test(0), Message::ToolResult(result))];
-
-        let (_, prompt) = build_distillation_prompt(&messages, 500);
+        let (_, prompt) = build_distillation_prompt(&messages);
         assert!(prompt.contains("Tool Error:"));
         assert!(prompt.contains("File not found"));
     }
-
-    // Note: Integration tests that actually call the API would go in tests/
-    // and would be marked with #[ignore] to avoid running in CI without keys.
 }

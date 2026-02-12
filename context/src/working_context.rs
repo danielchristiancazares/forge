@@ -3,66 +3,31 @@
 //! The working context is rebuilt when:
 //! - The model changes (different budget)
 //! - Messages are added
-//! - distillates are created or restored
+//! - Compaction occurs
 //!
-//! It represents what will actually be sent to the LLM API,
-//! mixing original messages and distillates to fit within the token budget.
+//! It represents what will actually be sent to the LLM API:
+//! either all messages (pre-compaction) or compaction summary + post-compaction messages.
 
-use forge_types::{Message, NonEmptyStaticStr, NonEmptyString};
+use forge_types::Message;
 
-use super::history::{DistillateId, FullHistory, MessageId};
+use super::history::{FullHistory, MessageId};
 
-pub(crate) const DISTILLATE_PREFIX: NonEmptyStaticStr =
-    NonEmptyStaticStr::new("[Earlier conversation Distillate]");
-
-/// Represents a segment of the working context.
+/// A message selected for inclusion in the API context.
 #[derive(Debug, Clone)]
-pub enum ContextSegment {
-    Original {
-        id: MessageId,
-        tokens: u32,
-    },
-    Distilled {
-        distillate_id: DistillateId,
-        /// Original message IDs that this replaces.
-        replaces: Vec<MessageId>,
-        tokens: u32,
-    },
+pub struct ContextSegment {
+    id: MessageId,
+    tokens: u32,
 }
 
 impl ContextSegment {
     #[must_use]
-    pub fn original(id: MessageId, tokens: u32) -> Self {
-        Self::Original { id, tokens }
-    }
-
-    #[must_use]
-    pub fn distilled(distillate_id: DistillateId, replaces: Vec<MessageId>, tokens: u32) -> Self {
-        Self::Distilled {
-            distillate_id,
-            replaces,
-            tokens,
-        }
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub fn is_original(&self) -> bool {
-        matches!(self, Self::Original { .. })
-    }
-
-    #[must_use]
-    pub fn is_distilled(&self) -> bool {
-        matches!(self, Self::Distilled { .. })
+    pub fn new(id: MessageId, tokens: u32) -> Self {
+        Self { id, tokens }
     }
 
     #[must_use]
     pub fn tokens(&self) -> u32 {
-        match self {
-            ContextSegment::Original { tokens, .. } | ContextSegment::Distilled { tokens, .. } => {
-                *tokens
-            }
-        }
+        self.tokens
     }
 }
 
@@ -84,19 +49,8 @@ impl WorkingContext {
         }
     }
 
-    pub fn push_original(&mut self, id: MessageId, tokens: u32) {
-        self.segments.push(ContextSegment::original(id, tokens));
-    }
-
-    /// Add a Distillate segment.
-    pub fn push_distillate(
-        &mut self,
-        distillate_id: DistillateId,
-        replaces: Vec<MessageId>,
-        tokens: u32,
-    ) {
-        self.segments
-            .push(ContextSegment::distilled(distillate_id, replaces, tokens));
+    pub fn push(&mut self, id: MessageId, tokens: u32) {
+        self.segments.push(ContextSegment::new(id, tokens));
     }
 
     #[must_use]
@@ -104,6 +58,7 @@ impl WorkingContext {
         &self.segments
     }
 
+    #[must_use]
     pub fn total_tokens(&self) -> u32 {
         self.segments.iter().map(ContextSegment::tokens).sum()
     }
@@ -125,42 +80,21 @@ impl WorkingContext {
         self.total_tokens() <= self.token_budget
     }
 
-    #[cfg(test)]
-    #[must_use]
-    pub fn original_count(&self) -> usize {
-        self.segments.iter().filter(|s| s.is_original()).count()
-    }
-
-    #[must_use]
-    pub fn distillate_count(&self) -> usize {
-        self.segments.iter().filter(|s| s.is_distilled()).count()
-    }
-
     /// Materialize into actual messages for API call.
     ///
-    /// distillates are injected as system messages with a prefix.
+    /// If the history is compacted, prepends the compaction summary as a
+    /// system message. Then adds all selected entries in order.
     /// Empty assistant messages are filtered out (API rejects them).
     #[must_use]
     pub fn materialize(&self, history: &FullHistory) -> Vec<Message> {
-        let mut messages = Vec::new();
+        let mut messages = Vec::with_capacity(self.segments.len() + 1);
+
+        if let Some(summary) = history.compaction_summary() {
+            messages.push(Message::system(summary.content_non_empty().clone()));
+        }
 
         for segment in &self.segments {
-            match segment {
-                ContextSegment::Original { id, .. } => {
-                    let entry = history.get_entry(*id);
-                    messages.push(entry.message().clone());
-                }
-                ContextSegment::Distilled { distillate_id, .. } => {
-                    let distillate = history.distillate(*distillate_id);
-                    // Inject Distillate as a system message.
-                    let content = NonEmptyString::prefixed(
-                        DISTILLATE_PREFIX,
-                        "\n",
-                        distillate.content_non_empty(),
-                    );
-                    messages.push(Message::system(content));
-                }
-            }
+            messages.push(history.get_entry(segment.id).message().clone());
         }
 
         messages
@@ -174,17 +108,17 @@ pub struct ContextUsage {
     pub used_tokens: u32,
     /// Token budget for current model.
     pub budget_tokens: u32,
-    /// Count of distillates in context.
-    pub distilled_segments: usize,
+    /// Whether the context has been compacted.
+    pub compacted: bool,
 }
 
 impl ContextUsage {
     #[must_use]
-    pub fn from_context(ctx: &WorkingContext) -> Self {
+    pub fn from_context(ctx: &WorkingContext, compacted: bool) -> Self {
         Self {
             used_tokens: ctx.total_tokens(),
             budget_tokens: ctx.token_budget(),
-            distilled_segments: ctx.distillate_count(),
+            compacted,
         }
     }
 
@@ -197,7 +131,7 @@ impl ContextUsage {
         }
     }
 
-    /// Format for status bar: "2.1k / 200k (1%)"
+    /// Format for status bar: "2.1k / 200k (1%)" or "2.1k / 200k (1%) [C]"
     #[must_use]
     pub fn format_compact(&self) -> String {
         fn format_k(n: u32) -> String {
@@ -212,13 +146,12 @@ impl ContextUsage {
 
         let pct = self.percentage();
 
-        if self.distilled_segments > 0 {
+        if self.compacted {
             format!(
-                "{} / {} ({:.0}%) [{}S]",
+                "{} / {} ({:.0}%) [C]",
                 format_k(self.used_tokens),
                 format_k(self.budget_tokens),
                 pct,
-                self.distilled_segments
             )
         } else {
             format!(
@@ -254,18 +187,13 @@ mod tests {
     fn test_push_segments() {
         let mut ctx = WorkingContext::new(1000);
 
-        ctx.push_original(MessageId::new_for_test(0), 100);
-        ctx.push_original(MessageId::new_for_test(1), 150);
-        ctx.push_distillate(
-            super::super::history::DistillateId::new_for_test(0),
-            vec![MessageId::new_for_test(2), MessageId::new_for_test(3)],
-            50,
-        );
+        ctx.push(MessageId::new_for_test(0), 100);
+        ctx.push(MessageId::new_for_test(1), 150);
+        ctx.push(MessageId::new_for_test(2), 50);
 
         assert_eq!(ctx.total_tokens(), 300);
         assert_eq!(ctx.remaining_budget(), 700);
-        assert_eq!(ctx.original_count(), 2);
-        assert_eq!(ctx.distillate_count(), 1);
+        assert_eq!(ctx.segments().len(), 3);
     }
 
     #[test]
@@ -273,25 +201,26 @@ mod tests {
         let usage = ContextUsage {
             used_tokens: 2100,
             budget_tokens: 200_000,
-            distilled_segments: 0,
+            compacted: false,
         };
 
         let formatted = usage.format_compact();
         assert!(formatted.contains("2.1k"));
         assert!(formatted.contains("200.0k"));
         assert!(formatted.contains("1%"));
+        assert!(!formatted.contains("[C]"));
     }
 
     #[test]
-    fn test_context_usage_with_distillates() {
+    fn test_context_usage_compacted() {
         let usage = ContextUsage {
             used_tokens: 50_000,
             budget_tokens: 200_000,
-            distilled_segments: 2,
+            compacted: true,
         };
 
         let formatted = usage.format_compact();
-        assert!(formatted.contains("[2S]"));
+        assert!(formatted.contains("[C]"));
     }
 
     #[test]
@@ -299,21 +228,21 @@ mod tests {
         let low = ContextUsage {
             used_tokens: 10_000,
             budget_tokens: 200_000,
-            distilled_segments: 0,
+            compacted: false,
         };
         assert_eq!(low.severity(), 0);
 
         let medium = ContextUsage {
             used_tokens: 160_000,
             budget_tokens: 200_000,
-            distilled_segments: 0,
+            compacted: false,
         };
         assert_eq!(medium.severity(), 1);
 
         let high = ContextUsage {
             used_tokens: 190_000,
             budget_tokens: 200_000,
-            distilled_segments: 0,
+            compacted: false,
         };
         assert_eq!(high.severity(), 2);
     }
@@ -323,7 +252,7 @@ mod tests {
         let usage = ContextUsage {
             used_tokens: 1000,
             budget_tokens: 0,
-            distilled_segments: 0,
+            compacted: false,
         };
         assert!(usage.percentage().abs() < 0.01);
     }
@@ -333,7 +262,7 @@ mod tests {
         let usage = ContextUsage {
             used_tokens: 100_000,
             budget_tokens: 100_000,
-            distilled_segments: 0,
+            compacted: false,
         };
         assert!((usage.percentage() - 100.0).abs() < 0.01);
     }
@@ -343,7 +272,7 @@ mod tests {
         let usage = ContextUsage {
             used_tokens: 500,
             budget_tokens: 900,
-            distilled_segments: 0,
+            compacted: false,
         };
         let formatted = usage.format_compact();
         assert!(formatted.contains("500"));
@@ -355,7 +284,7 @@ mod tests {
         let usage = ContextUsage {
             used_tokens: 1_500_000,
             budget_tokens: 2_000_000,
-            distilled_segments: 0,
+            compacted: false,
         };
         let formatted = usage.format_compact();
         assert!(formatted.contains("1.5M"));
@@ -364,30 +293,8 @@ mod tests {
 
     #[test]
     fn test_context_segment_tokens() {
-        let original = ContextSegment::original(MessageId::new_for_test(0), 150);
-        assert_eq!(original.tokens(), 150);
-
-        let distilled = ContextSegment::distilled(
-            super::super::history::DistillateId::new_for_test(0),
-            vec![MessageId::new_for_test(1)],
-            200,
-        );
-        assert_eq!(distilled.tokens(), 200);
-    }
-
-    #[test]
-    fn test_context_segment_type_checks() {
-        let original = ContextSegment::original(MessageId::new_for_test(0), 100);
-        assert!(original.is_original());
-        assert!(!original.is_distilled());
-
-        let distilled = ContextSegment::distilled(
-            super::super::history::DistillateId::new_for_test(0),
-            vec![],
-            50,
-        );
-        assert!(!distilled.is_original());
-        assert!(distilled.is_distilled());
+        let segment = ContextSegment::new(MessageId::new_for_test(0), 150);
+        assert_eq!(segment.tokens(), 150);
     }
 
     #[test]
@@ -395,7 +302,7 @@ mod tests {
         let usage = ContextUsage {
             used_tokens: 70_000,
             budget_tokens: 100_000,
-            distilled_segments: 0,
+            compacted: false,
         };
         assert_eq!(usage.severity(), 0);
     }
@@ -405,7 +312,7 @@ mod tests {
         let usage = ContextUsage {
             used_tokens: 70_001,
             budget_tokens: 100_000,
-            distilled_segments: 0,
+            compacted: false,
         };
         assert_eq!(usage.severity(), 1);
     }
@@ -415,7 +322,7 @@ mod tests {
         let usage = ContextUsage {
             used_tokens: 90_000,
             budget_tokens: 100_000,
-            distilled_segments: 0,
+            compacted: false,
         };
         assert_eq!(usage.severity(), 1);
     }
@@ -425,7 +332,7 @@ mod tests {
         let usage = ContextUsage {
             used_tokens: 90_001,
             budget_tokens: 100_000,
-            distilled_segments: 0,
+            compacted: false,
         };
         assert_eq!(usage.severity(), 2);
     }

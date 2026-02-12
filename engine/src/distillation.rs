@@ -1,30 +1,27 @@
-//! Distillation handling for the App.
+//! Compaction (distillation) handling for the App.
 //!
 //! Engine-level retries were removed in favor of transport-layer retries.
 //! See `providers/src/retry.rs` for HTTP retry policy.
 
 use super::{
     ApiConfig, ContextBuildError, DistillationStart, DistillationState, DistillationTask,
-    NonEmptyString, OperationState, PendingDistillation, QueuedUserMessage, TokenCounter,
-    distillation_model, generate_distillation,
+    NonEmptyString, OperationState, QueuedUserMessage, TokenCounter, distillation_model,
+    generate_distillation,
 };
 
 impl super::App {
-    /// Trigger distillation of older messages when context is near capacity.
+    /// Trigger compaction when context is near capacity.
     ///
-    /// This prepares a distillation request from the context manager and spawns
-    /// an async task to generate the distillation. The result is polled via `poll_distillation()`.
+    /// Spawns an async task to generate the compaction summary.
+    /// The result is polled via `poll_distillation()`.
     pub fn start_distillation(&mut self) {
         let _ = self.try_start_distillation(None);
     }
 
-    /// Try to start distillation with an optional queued request.
+    /// Try to start compaction with an optional queued request.
     ///
-    /// If context fits, queued request is immediately streamed. If distillation
+    /// If context fits, queued request is immediately streamed. If compaction
     /// is needed, it's started and the queued request waits for completion.
-    ///
-    /// Returns the start result indicating whether distillation started,
-    /// was not needed, or failed.
     pub(crate) fn try_start_distillation(
         &mut self,
         queued_request: Option<QueuedUserMessage>,
@@ -42,7 +39,7 @@ impl super::App {
         }
 
         // Use the same overhead that start_streaming will use, so both agree on
-        // whether context fits. Without this, distillation can loop: prepare(0)
+        // whether context fits. Without this, compaction can loop: prepare(0)
         // says "fits" → start_streaming with real overhead says "doesn't fit" → repeat.
         let overhead = {
             let provider = queued_request
@@ -52,14 +49,14 @@ impl super::App {
             self.streaming_overhead(provider)
         };
 
-        let needed = match self.context_manager.prepare(overhead) {
+        match self.context_manager.prepare(overhead) {
             Ok(_) => {
                 if let Some(queued) = queued_request {
                     self.start_streaming(queued);
                 }
                 return DistillationStart::NotNeeded;
             }
-            Err(ContextBuildError::DistillationNeeded(needed)) => needed,
+            Err(ContextBuildError::CompactionNeeded) => {}
             Err(ContextBuildError::RecentMessagesTooLarge {
                 required_tokens,
                 budget_tokens,
@@ -70,37 +67,23 @@ impl super::App {
                 ));
                 return fail_with_rollback(self, queued_request);
             }
-        };
+        }
 
-        let pending = match self.context_manager.prepare_distillation(&needed) {
-            Ok(pending) => pending,
-            Err(e) => {
-                self.push_notification(format!("Cannot distill: {e}"));
-                return fail_with_rollback(self, queued_request);
-            }
-        };
+        let plan = self.context_manager.prepare_compaction();
+        let original_tokens = plan.original_tokens;
 
-        let PendingDistillation {
-            scope,
-            messages,
-            original_tokens,
-            target_tokens,
-        } = pending;
-
-        self.push_notification(format!(
-            "Distilling ~{original_tokens} tokens → ~{target_tokens} tokens..."
-        ));
+        self.push_notification(format!("Compacting ~{original_tokens} tokens..."));
 
         // Build API config for distillation.
         // When a request is queued, use its config (key + model) to ensure provider
-        // consistency even if the user switches providers during distillation.
+        // consistency even if the user switches providers during compaction.
         let (api_key, model) = if let Some(queued) = queued_request.as_ref() {
             (queued.config.api_key_owned(), queued.config.model().clone())
         } else {
             let key = if let Some(key) = self.current_api_key().cloned() {
                 crate::util::wrap_api_key(self.model.provider(), key)
             } else {
-                self.push_notification("Cannot distill: no API key configured");
+                self.push_notification("Cannot compact: no API key configured");
                 return DistillationStart::Failed;
             };
             (key, self.model.clone())
@@ -109,9 +92,7 @@ impl super::App {
         let config = match ApiConfig::new(api_key, model.clone()) {
             Ok(config) => config.with_openai_options(self.openai_options_for_model(&model)),
             Err(e) => {
-                self.push_notification(format!("Cannot distill: {e}"));
-                // Rollback if we have a queued request (shouldn't happen in practice
-                // since queued request already has a valid config, but be defensive)
+                self.push_notification(format!("Cannot compact: {e}"));
                 if let Some(queued) = queued_request {
                     self.rollback_pending_user_message();
                     self.finish_turn(queued.turn);
@@ -121,14 +102,13 @@ impl super::App {
         };
 
         let generated_by = distillation_model(config.provider()).to_string();
+        let messages = plan.messages;
 
         let counter = TokenCounter::new();
-        let handle = tokio::spawn(async move {
-            generate_distillation(&config, &counter, &messages, target_tokens).await
-        });
+        let handle =
+            tokio::spawn(async move { generate_distillation(&config, &counter, &messages).await });
 
         let task = DistillationTask {
-            scope,
             generated_by,
             handle,
         };
@@ -140,11 +120,11 @@ impl super::App {
         DistillationStart::Started
     }
 
-    /// Poll for completed distillation task and apply the result.
+    /// Poll for completed compaction task and apply the result.
     ///
     /// This should be called in the main `tick()` loop. It checks if the background
     /// distillation task has completed, and if so, applies the result via
-    /// `context_manager.complete_distillation()`.
+    /// `context_manager.complete_compaction()`.
     pub fn poll_distillation(&mut self) {
         use futures_util::future::FutureExt;
 
@@ -170,7 +150,6 @@ impl super::App {
         };
 
         let DistillationTask {
-            scope,
             generated_by,
             mut handle,
         } = task;
@@ -179,33 +158,24 @@ impl super::App {
 
         match result {
             Some(Ok(Ok(distillation_text))) => {
-                // Sanitize distillation output before storing — distillates are
-                // injected as system messages and must not contain escape sequences,
-                // bidi controls, or leaked API keys from summarized conversation.
+                // Sanitize output before storing — summaries are injected as system
+                // messages and must not contain escape sequences, bidi controls, or
+                // leaked API keys from the summarized conversation.
                 let distillation_text = crate::security::sanitize_display_text(&distillation_text);
                 let distillation_text = if let Ok(text) = NonEmptyString::new(distillation_text) {
                     text
                 } else {
                     self.handle_distillation_failure(
-                        "distillation was empty".to_string(),
+                        "compaction produced empty output".to_string(),
                         queued_request,
                     );
                     return;
                 };
 
-                if let Err(e) = self.context_manager.complete_distillation(
-                    scope,
-                    distillation_text,
-                    generated_by,
-                ) {
-                    self.handle_distillation_failure(
-                        format!("failed to apply distillation: {e}"),
-                        queued_request,
-                    );
-                    return;
-                }
+                self.context_manager
+                    .complete_compaction(distillation_text, generated_by);
                 self.invalidate_usage_cache();
-                self.push_notification("Distillation complete");
+                self.push_notification("Compaction complete");
                 self.autosave_history();
 
                 if let Some(queued) = queued_request {
@@ -220,9 +190,8 @@ impl super::App {
             }
             None => {
                 // Edge-case: is_finished() was true but join handle isn't ready yet.
-                // Restore state and retry next tick rather than failing the distillation.
+                // Restore state and retry next tick rather than failing.
                 let task = DistillationTask {
-                    scope,
                     generated_by,
                     handle,
                 };
@@ -234,7 +203,7 @@ impl super::App {
         }
     }
 
-    /// Handle distillation failure.
+    /// Handle compaction failure.
     ///
     /// Transport-layer retries handle transient HTTP failures, so this function
     /// only sees errors after those retries are exhausted. We rollback any queued
@@ -256,6 +225,6 @@ impl super::App {
         } else {
             ""
         };
-        self.push_notification(format!("Distillation failed: {error}.{suffix}"));
+        self.push_notification(format!("Compaction failed: {error}.{suffix}"));
     }
 }

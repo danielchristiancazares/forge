@@ -239,17 +239,11 @@ impl super::App {
         let api_messages = if memory_enabled {
             match self.context_manager.prepare(overhead) {
                 Ok(prepared) => prepared.api_messages(),
-                Err(ContextBuildError::DistillationNeeded(needed)) => {
-                    self.push_notification(format!(
-                        "{} (excess ~{} tokens)",
-                        needed.suggestion, needed.excess_tokens
-                    ));
+                Err(ContextBuildError::CompactionNeeded) => {
                     let queued = QueuedUserMessage { config, turn };
                     let start_result = self.try_start_distillation(Some(queued));
                     if !matches!(start_result, DistillationStart::Started) {
-                        self.push_notification("Cannot start: distillation did not start");
-                        // Note: rollback is handled inside try_start_distillation
-                        // when it fails with a queued request
+                        self.push_notification("Cannot start: compaction did not start");
                     }
                     return;
                 }

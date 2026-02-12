@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use futures_util::future::AbortHandle;
 
-use forge_context::{DistillationScope, RecoveredToolBatch, StepId, ToolBatchId};
+use forge_context::{RecoveredToolBatch, StepId, ToolBatchId};
 use forge_types::{Message, ModelName, ToolCall, ToolResult};
 
 use crate::StreamingMessage;
@@ -307,7 +307,6 @@ impl ActiveStream {
 
 #[derive(Debug)]
 pub struct DistillationTask {
-    pub(crate) scope: DistillationScope,
     pub(crate) generated_by: String,
     pub(crate) handle: tokio::task::JoinHandle<anyhow::Result<String>>,
 }

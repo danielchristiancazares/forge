@@ -2,49 +2,22 @@
 
 use anyhow::Result;
 use std::path::Path;
-use thiserror::Error;
 
 #[cfg(test)]
 use forge_types::PredefinedModel;
 use forge_types::{Message, ModelName, NonEmptyString};
 
 use super::StepId;
-use super::history::{Distillate, DistillateId, FullHistory, MessageId};
+use super::history::{CompactionSummary, FullHistory, MessageId};
 use super::model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry};
 use super::token_counter::TokenCounter;
-use super::working_context::{ContextSegment, ContextUsage, DISTILLATE_PREFIX, WorkingContext};
-
-const MIN_DISTILLATION_RATIO: f32 = 0.01;
-const MAX_DISTILLATION_RATIO: f32 = 0.95;
-const MIN_DISTILLATION_TOKENS: u32 = 64;
-/// Upper bound for target_tokens computed here. The actual per-provider max
-/// output limit is enforced in distillation.rs (which knows the distiller model).
-/// This value is deliberately generous so the manager doesn't silently truncate
-/// a target that the distiller model could handle.
-const MAX_DISTILLATION_TOKENS: u32 = 128_000;
-
-#[derive(Debug, Clone)]
-pub struct DistillationConfig {
-    /// Target compression ratio (e.g., 0.15 = 15% of original size).
-    pub target_ratio: f32,
-    /// Don't distill the N most recent messages.
-    pub preserve_recent: usize,
-}
-
-impl Default for DistillationConfig {
-    fn default() -> Self {
-        Self {
-            target_ratio: 0.15,
-            preserve_recent: 4,
-        }
-    }
-}
+use super::working_context::{ContextUsage, WorkingContext};
 
 #[derive(Debug)]
 pub enum ContextBuildError {
-    /// Older messages need distillation to fit within budget.
-    DistillationNeeded(DistillationNeeded),
-    /// The most recent N messages alone exceed the budget.
+    /// Context exceeds budget; compaction is needed.
+    CompactionNeeded,
+    /// The most recent messages alone exceed the budget.
     /// This is unrecoverable - user must reduce input or switch to larger model.
     RecentMessagesTooLarge {
         required_tokens: u32,
@@ -54,38 +27,6 @@ pub enum ContextBuildError {
 }
 
 #[derive(Debug, Clone)]
-pub struct DistillationNeeded {
-    pub tokens_to_distill: u32,
-    pub available_tokens: u32,
-    pub excess_tokens: u32,
-    pub messages_to_distill: Vec<MessageId>,
-    pub suggestion: String,
-}
-
-#[derive(Debug, Clone, Error)]
-pub enum DistillationPlanError {
-    #[error("no messages selected for distillation")]
-    EmptyScope,
-    #[error(
-        "no room to insert distillate: available {available_tokens} tokens, need at least {required_tokens} tokens"
-    )]
-    BudgetTooTight {
-        available_tokens: u32,
-        required_tokens: u32,
-    },
-}
-
-/// Contiguous range of message IDs selected for distillation.
-///
-/// Distillations must cover contiguous message ranges to maintain
-/// chronological coherence. This type ensures that constraint.
-#[derive(Debug, Clone)]
-pub struct DistillationScope {
-    ids: Vec<MessageId>,
-    range: std::ops::Range<MessageId>,
-}
-
-#[derive(Debug)]
 pub enum ContextAdaptation {
     /// No change in effective budget.
     NoChange,
@@ -93,31 +34,19 @@ pub enum ContextAdaptation {
     Shrinking {
         old_budget: u32,
         new_budget: u32,
-        needs_distillation: bool,
+        needs_compaction: bool,
     },
     /// Switched to a model with larger context.
-    Expanding {
-        old_budget: u32,
-        new_budget: u32,
-        /// Number of messages that could potentially be restored.
-        can_restore: usize,
-    },
+    Expanding { old_budget: u32, new_budget: u32 },
 }
 
-/// Request for async distillation, created by [`ContextManager::prepare_distillation`].
-///
-/// Contains everything needed to generate a distillation via an LLM call.
-/// After generation, pass the result to [`ContextManager::complete_distillation`].
+/// Plan for compaction: messages to compress and metadata.
 #[derive(Debug)]
-pub struct PendingDistillation {
-    /// The scope defining which messages to distill.
-    pub scope: DistillationScope,
-    /// The actual messages to distill, in order.
-    pub messages: Vec<(MessageId, Message)>,
+pub struct CompactionPlan {
+    /// The actual messages to compact (summary + API entries), in order.
+    pub messages: Vec<Message>,
     /// Total tokens in the original messages.
     pub original_tokens: u32,
-    /// Target token count for the generated distillation.
-    pub target_tokens: u32,
 }
 
 /// Proof that working context was successfully built within the token budget.
@@ -139,11 +68,11 @@ impl PreparedContext<'_> {
 
     #[must_use]
     pub fn usage(&self) -> ContextUsage {
-        ContextUsage::from_context(&self.working_context)
+        ContextUsage::from_context(&self.working_context, self.manager.history.is_compacted())
     }
 }
 
-/// Current context usage state with explicit distillation status.
+/// Current context usage state.
 ///
 /// Returned by [`ContextManager::usage_status`] to provide UI-friendly
 /// information about the current context state.
@@ -151,12 +80,10 @@ impl PreparedContext<'_> {
 pub enum ContextUsageStatus {
     /// Context fits within budget and is ready for use.
     Ready(ContextUsage),
-    /// Context exceeds budget; distillation is needed before API call.
-    NeedsDistillation {
+    /// Context exceeds budget; compaction is needed before API call.
+    NeedsCompaction {
         /// Current usage statistics.
         usage: ContextUsage,
-        /// Details about what needs distillation.
-        needed: DistillationNeeded,
     },
     /// Recent messages alone exceed budget; unrecoverable without user action.
     RecentMessagesTooLarge {
@@ -177,7 +104,6 @@ pub struct ContextManager {
     current_model: ModelName,
     current_limits: ModelLimits,
     current_limits_source: ModelLimitsSource,
-    distillation_config: DistillationConfig,
     /// Configured output limit (if set, allows more input context).
     configured_output_limit: Option<u32>,
 }
@@ -197,7 +123,6 @@ impl ContextManager {
             current_model: initial_model,
             current_limits: limits,
             current_limits_source: limits_source,
-            distillation_config: DistillationConfig::default(),
             configured_output_limit: None,
         }
     }
@@ -259,18 +184,17 @@ impl ContextManager {
             std::cmp::Ordering::Less => ContextAdaptation::Shrinking {
                 old_budget,
                 new_budget,
-                needs_distillation: self.build_working_context(0).is_err(),
+                needs_compaction: self.build_working_context(0).is_err(),
             },
             std::cmp::Ordering::Greater => ContextAdaptation::Expanding {
                 old_budget,
                 new_budget,
-                can_restore: self.history.distilled_count(),
             },
             std::cmp::Ordering::Equal => ContextAdaptation::NoChange,
         }
     }
 
-    /// Update model limits without triggering distillation behavior.
+    /// Update model limits without triggering adaptation behavior.
     pub fn set_model_without_adaptation(&mut self, new_model: ModelName) {
         let resolved = self.registry.get(&new_model);
         self.current_model = new_model;
@@ -278,338 +202,71 @@ impl ContextManager {
         self.current_limits_source = resolved.source();
     }
 
+    /// Build the working context from API-visible entries.
+    ///
+    /// If the history is compacted, only entries after the compaction point
+    /// are included. The compaction summary tokens count against the budget
+    /// but are not segments — they're injected during materialization.
     fn build_working_context(&self, overhead: u32) -> Result<WorkingContext, ContextBuildError> {
-        #[derive(Debug)]
-        enum Block {
-            Undistilled(Vec<(MessageId, u32)>),
-            Distilled {
-                distillate_id: DistillateId,
-                messages: Vec<(MessageId, u32)>,
-                distillate_tokens: u32,
-            },
-        }
-
         let budget = self.effective_budget().saturating_sub(overhead);
-        let mut ctx = WorkingContext::new(budget);
+        let api_entries = self.history.api_entries();
 
-        let entries = self.history.entries();
-        let max_preserve = self.distillation_config.preserve_recent.min(entries.len());
-        let mut preserve_count = 0usize;
-        let mut tokens_for_recent = 0u32;
+        let summary_tokens = self
+            .history
+            .compaction_summary()
+            .map_or(0, CompactionSummary::token_count);
+        let api_tokens: u32 = api_entries
+            .iter()
+            .map(super::history::HistoryEntry::token_count)
+            .sum();
+        let total = summary_tokens.saturating_add(api_tokens);
 
-        // Phase 1: The N most recent messages are always preserved and never distilled.
-        // Count them unconditionally - if they exceed budget, that's an unrecoverable error.
-        for entry in entries.iter().rev().take(max_preserve) {
-            tokens_for_recent = tokens_for_recent.saturating_add(entry.token_count());
-            preserve_count += 1;
-        }
-
-        if tokens_for_recent > budget {
-            return Err(ContextBuildError::RecentMessagesTooLarge {
-                required_tokens: tokens_for_recent,
+        if total <= budget {
+            let mut ctx = WorkingContext::new(budget);
+            for entry in api_entries {
+                ctx.push(entry.id(), entry.token_count());
+            }
+            Ok(ctx)
+        } else if api_entries.len() <= 1 && self.history.is_compacted() {
+            Err(ContextBuildError::RecentMessagesTooLarge {
+                required_tokens: total,
                 budget_tokens: budget,
-                message_count: preserve_count,
-            });
-        }
-
-        let recent_start = entries.len().saturating_sub(preserve_count);
-        let remaining_budget = budget.saturating_sub(tokens_for_recent);
-
-        // Phase 2: Partition older messages into contiguous blocks.
-        let older_entries = &entries[..recent_start];
-        let mut blocks: Vec<Block> = Vec::new();
-        let mut undistilled: Vec<(MessageId, u32)> = Vec::new();
-        let mut distillate_block: Option<(DistillateId, u32)> = None;
-        let mut distilled_messages: Vec<(MessageId, u32)> = Vec::new();
-
-        for entry in older_entries {
-            let distilled_here = entry
-                .distillate_id()
-                .map(|sid| (sid, self.history.distillate(sid).token_count()));
-
-            if let Some((distillate_id, distillate_tokens)) = distilled_here {
-                if !undistilled.is_empty() {
-                    blocks.push(Block::Undistilled(std::mem::take(&mut undistilled)));
-                }
-
-                match distillate_block {
-                    Some((current_id, _)) if current_id == distillate_id => {}
-                    Some((current_id, current_tokens)) => {
-                        blocks.push(Block::Distilled {
-                            distillate_id: current_id,
-                            messages: std::mem::take(&mut distilled_messages),
-                            distillate_tokens: current_tokens,
-                        });
-                        distillate_block = Some((distillate_id, distillate_tokens));
-                    }
-                    None => {
-                        distillate_block = Some((distillate_id, distillate_tokens));
-                    }
-                }
-
-                distilled_messages.push((entry.id(), entry.token_count()));
-            } else {
-                if let Some((distillate_id, distillate_tokens)) = distillate_block.take() {
-                    blocks.push(Block::Distilled {
-                        distillate_id,
-                        messages: std::mem::take(&mut distilled_messages),
-                        distillate_tokens,
-                    });
-                }
-
-                undistilled.push((entry.id(), entry.token_count()));
-            }
-        }
-
-        if let Some((distillate_id, distillate_tokens)) = distillate_block.take() {
-            blocks.push(Block::Distilled {
-                distillate_id,
-                messages: distilled_messages,
-                distillate_tokens,
-            });
-        } else if !undistilled.is_empty() {
-            blocks.push(Block::Undistilled(undistilled));
-        }
-
-        // Phase 3: Select older content from newest to oldest within remaining budget.
-        let mut selected_rev: Vec<ContextSegment> = Vec::new();
-        let mut need_distillation_rev: Vec<MessageId> = Vec::new();
-        let mut tokens_used: u32 = 0;
-        let mut exhausted = false;
-
-        for block in blocks.iter().rev() {
-            if exhausted {
-                // Collect all older content (Distilled or not) for re-distillation.
-                match block {
-                    Block::Undistilled(messages) | Block::Distilled { messages, .. } => {
-                        for (id, _) in messages.iter().rev() {
-                            need_distillation_rev.push(*id);
-                        }
-                    }
-                }
-                continue;
-            }
-
-            match block {
-                Block::Distilled {
-                    distillate_id,
-                    messages,
-                    distillate_tokens,
-                } => {
-                    // Once distilled, always use the distillate. Originals are only for TUI display.
-                    if tokens_used + *distillate_tokens <= remaining_budget {
-                        let replaces: Vec<MessageId> = messages.iter().map(|(id, _)| *id).collect();
-                        selected_rev.push(ContextSegment::distilled(
-                            *distillate_id,
-                            replaces,
-                            *distillate_tokens,
-                        ));
-                        tokens_used += *distillate_tokens;
-                    } else {
-                        // Distillate doesn't fit. Mark underlying messages for
-                        // hierarchical re-distillation (combined with other old content
-                        // into a more compact distillation). The old distillate becomes orphaned.
-                        exhausted = true;
-                        for (id, _) in messages.iter().rev() {
-                            need_distillation_rev.push(*id);
-                        }
-                        // Don't break - continue to collect more content for distillation.
-                    }
-                }
-                Block::Undistilled(messages) => {
-                    // Include as many of the most recent messages as we can.
-                    for i in (0..messages.len()).rev() {
-                        let (id, tokens) = messages[i];
-                        if tokens_used + tokens <= remaining_budget {
-                            selected_rev.push(ContextSegment::original(id, tokens));
-                            tokens_used += tokens;
-                        } else {
-                            // Everything older than this point should be distilled.
-                            exhausted = true;
-                            for (id, _) in messages[..=i].iter().rev() {
-                                need_distillation_rev.push(*id);
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut need_distillation: Vec<MessageId> =
-            need_distillation_rev.into_iter().rev().collect();
-
-        if !need_distillation.is_empty() {
-            need_distillation.sort_by_key(super::history::MessageId::as_u64);
-            need_distillation.dedup();
-
-            let tokens_to_distill: u32 = need_distillation
-                .iter()
-                .map(|id| self.history.get_entry(*id).token_count())
-                .sum();
-            let available_left = remaining_budget.saturating_sub(tokens_used);
-            let excess_tokens = tokens_to_distill.saturating_sub(available_left);
-
-            let msg_count = need_distillation.len();
-            return Err(ContextBuildError::DistillationNeeded(DistillationNeeded {
-                tokens_to_distill,
-                available_tokens: available_left,
-                excess_tokens,
-                messages_to_distill: need_distillation,
-                suggestion: format!("{msg_count} older messages need distillation"),
-            }));
-        }
-
-        // Phase 4: Materialize selected older segments in chronological order.
-        for segment in selected_rev.into_iter().rev() {
-            match segment {
-                ContextSegment::Original { id, tokens } => ctx.push_original(id, tokens),
-                ContextSegment::Distilled {
-                    distillate_id,
-                    replaces,
-                    tokens,
-                } => ctx.push_distillate(distillate_id, replaces, tokens),
-            }
-        }
-
-        // Phase 5: Always include the N most recent messages.
-        for entry in &entries[recent_start..] {
-            ctx.push_original(entry.id(), entry.token_count());
-        }
-
-        Ok(ctx)
-    }
-
-    fn distillate_prefix_message_tokens(&self) -> u32 {
-        let content = NonEmptyString::new(format!("{}\n", DISTILLATE_PREFIX.as_str()))
-            .expect("DISTILLATE_PREFIX is non-empty");
-        self.counter.count_message(&Message::system(content))
-    }
-
-    pub fn prepare_distillation(
-        &mut self,
-        needed: &DistillationNeeded,
-    ) -> std::result::Result<PendingDistillation, DistillationPlanError> {
-        let mut ids: Vec<MessageId> = needed.messages_to_distill.clone();
-        ids.sort_by_key(super::history::MessageId::as_u64);
-        ids.dedup();
-
-        if ids.is_empty() {
-            return Err(DistillationPlanError::EmptyScope);
-        }
-
-        // Keep only the first contiguous run - distillations must represent a contiguous slice of history.
-        let mut end = 1usize;
-        while end < ids.len() {
-            if ids[end].as_u64() == ids[end - 1].as_u64() + 1 {
-                end += 1;
-            } else {
-                break;
-            }
-        }
-        ids.truncate(end);
-
-        let messages: Vec<_> = ids
-            .iter()
-            .map(|id| (*id, self.history.get_entry(*id).message().clone()))
-            .collect();
-
-        let original_tokens: u32 = ids
-            .iter()
-            .map(|id| self.history.get_entry(*id).token_count())
-            .sum();
-
-        let ratio = self
-            .distillation_config
-            .target_ratio
-            .clamp(MIN_DISTILLATION_RATIO, MAX_DISTILLATION_RATIO);
-        let ratio_target = (f64::from(original_tokens) * f64::from(ratio)).round() as u32;
-
-        let prefix_msg_tokens = self.distillate_prefix_message_tokens();
-        let max_target_tokens = needed
-            .available_tokens
-            .saturating_sub(prefix_msg_tokens)
-            .min(MAX_DISTILLATION_TOKENS);
-
-        if max_target_tokens == 0 {
-            return Err(DistillationPlanError::BudgetTooTight {
-                available_tokens: needed.available_tokens,
-                required_tokens: prefix_msg_tokens.saturating_add(1),
-            });
-        }
-
-        let min_target_tokens = MIN_DISTILLATION_TOKENS.min(max_target_tokens);
-        let target_tokens = ratio_target.clamp(min_target_tokens, max_target_tokens);
-
-        let first = ids
-            .first()
-            .copied()
-            .ok_or(DistillationPlanError::EmptyScope)?;
-        let last = ids
-            .last()
-            .copied()
-            .ok_or(DistillationPlanError::EmptyScope)?;
-        let end_exclusive = last.next();
-        let scope = DistillationScope {
-            ids,
-            range: first..end_exclusive,
-        };
-
-        Ok(PendingDistillation {
-            scope,
-            messages,
-            original_tokens,
-            target_tokens,
-        })
-    }
-
-    pub fn complete_distillation(
-        &mut self,
-        scope: DistillationScope,
-        content: NonEmptyString,
-        generated_by: String,
-    ) -> Result<DistillateId> {
-        let injected = NonEmptyString::prefixed(DISTILLATE_PREFIX, "\n", &content);
-        let token_count = self.counter.count_message(&Message::system(injected));
-
-        let DistillationScope { ids, range } = scope;
-
-        let original_tokens: u32 = ids
-            .iter()
-            .map(|id| self.history.get_entry(*id).token_count())
-            .sum();
-
-        let distillate_id = self.history.next_distillate_id();
-        let distillate = Distillate::new(
-            distillate_id,
-            range,
-            content,
-            token_count,
-            original_tokens,
-            generated_by,
-        );
-
-        self.history.add_distillate(distillate)?;
-        Ok(distillate_id)
-    }
-
-    /// This does not mutate history. If the current model's budget can fit original messages...
-    #[must_use]
-    pub fn try_restore_messages(&self) -> usize {
-        let Ok(ctx) = self.build_working_context(0) else {
-            return 0;
-        };
-
-        ctx.segments()
-            .iter()
-            .filter(|segment| {
-                matches!(
-                    segment,
-                    ContextSegment::Original { id, .. }
-                        if self.history.get_entry(*id).distillate_id().is_some()
-                )
+                message_count: api_entries.len(),
             })
-            .count()
+        } else {
+            Err(ContextBuildError::CompactionNeeded)
+        }
+    }
+
+    /// Prepare for compaction: collect all API-visible messages.
+    #[must_use]
+    pub fn prepare_compaction(&self) -> CompactionPlan {
+        let mut messages = Vec::new();
+        let mut total_tokens = 0u32;
+
+        if let Some(summary) = self.history.compaction_summary() {
+            messages.push(Message::system(summary.content_non_empty().clone()));
+            total_tokens += summary.token_count();
+        }
+
+        for entry in self.history.api_entries() {
+            messages.push(entry.message().clone());
+            total_tokens += entry.token_count();
+        }
+
+        CompactionPlan {
+            messages,
+            original_tokens: total_tokens,
+        }
+    }
+
+    /// Apply completed compaction.
+    pub fn complete_compaction(&mut self, content: NonEmptyString, generated_by: String) {
+        let token_count = self
+            .counter
+            .count_message(&Message::system(content.clone()));
+        let summary = CompactionSummary::new(content, token_count, generated_by);
+        self.history.compact(summary);
     }
 
     pub fn prepare(&self, overhead: u32) -> Result<PreparedContext<'_>, ContextBuildError> {
@@ -620,9 +277,9 @@ impl ContextManager {
         })
     }
 
-    /// Get only the N most recent messages, bypassing distillation.
+    /// Get only the N most recent messages, bypassing compaction.
     ///
-    /// This is used when the Librarian is active - instead of distilling
+    /// This is used when the Librarian is active - instead of compacting
     /// old messages, we rely on the Librarian's distilled facts for context.
     /// This mode sends: system prompt + Librarian facts + recent N messages.
     ///
@@ -637,29 +294,20 @@ impl ContextManager {
             .collect()
     }
 
-    /// Get the configured preserve_recent count.
-    #[must_use]
-    pub fn preserve_recent_count(&self) -> usize {
-        self.distillation_config.preserve_recent
-    }
-
-    /// Get current usage statistics with explicit distillation status.
+    /// Get current usage statistics.
     #[must_use]
     pub fn usage_status(&self) -> ContextUsageStatus {
         let fallback_usage = || ContextUsage {
             used_tokens: self.history.total_tokens(),
             budget_tokens: self.effective_budget(),
-            distilled_segments: 0,
+            compacted: self.history.is_compacted(),
         };
 
         match self.prepare(0) {
             Ok(prepared) => ContextUsageStatus::Ready(prepared.usage()),
-            Err(ContextBuildError::DistillationNeeded(needed)) => {
-                ContextUsageStatus::NeedsDistillation {
-                    usage: fallback_usage(),
-                    needed,
-                }
-            }
+            Err(ContextBuildError::CompactionNeeded) => ContextUsageStatus::NeedsCompaction {
+                usage: fallback_usage(),
+            },
             Err(ContextBuildError::RecentMessagesTooLarge {
                 required_tokens,
                 budget_tokens,
@@ -731,8 +379,7 @@ impl ContextManager {
             current_model: model,
             current_limits: limits,
             current_limits_source: limits_source,
-            distillation_config: DistillationConfig::default(),
-            configured_output_limit: None, // Will be set by engine after load
+            configured_output_limit: None,
         })
     }
 }
@@ -740,8 +387,6 @@ impl ContextManager {
 #[cfg(test)]
 impl ContextManager {
     /// Set a registry override for testing purposes.
-    ///
-    /// This allows tests to simulate models with custom context limits.
     pub fn set_registry_override(&mut self, model: PredefinedModel, limits: ModelLimits) {
         self.registry.set_override(model, limits);
     }
@@ -819,21 +464,13 @@ mod tests {
     }
 
     #[test]
-    fn test_hierarchical_distillation_collects_distilled_messages() {
-        use crate::history::{Distillate, MessageId};
-        use crate::model_limits::ModelLimits;
-        use forge_types::NonEmptyString;
-
-        // Create manager with a real model, then override to simulate small context
+    fn test_compaction_needed_when_over_budget() {
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
-        // Override to a very small context (2k) to force tight budget
-        let small_limits = ModelLimits::new(2_000, 500);
+        let small_limits = ModelLimits::new(200, 50);
         manager.set_registry_override(PredefinedModel::ClaudeOpus, small_limits);
-        // Re-apply the limits after override
         manager.set_model_without_adaptation(model(PredefinedModel::ClaudeOpus));
 
-        // Add many messages to exceed budget
         for i in 0..20 {
             manager.push_message(
                 Message::try_user(format!("Message {i} with some content to use tokens"))
@@ -841,50 +478,28 @@ mod tests {
             );
         }
 
-        // Create a Distillate covering messages 0-10
-        let distillate_id = manager.history.next_distillate_id();
-        let distillate = Distillate::new(
-            distillate_id,
-            MessageId::new_for_test(0)..MessageId::new_for_test(10),
-            NonEmptyString::new("Distillate of first 10 messages").expect("non-empty"),
-            100, // 100 tokens for the Distillate
-            500, // Original was 500 tokens
-            PredefinedModel::ClaudeOpus.model_id().to_string(),
-        );
-        manager
-            .history
-            .add_distillate(distillate)
-            .expect("add Distillate");
-
-        // Now try to build context - should need hierarchical distillation
         let result = manager.build_working_context(0);
+        assert!(matches!(result, Err(ContextBuildError::CompactionNeeded)));
+    }
 
-        // If distillation is needed, verify Distilled messages are included
-        if let Err(ContextBuildError::DistillationNeeded(needed)) = result {
-            // The messages_to_distill should include the already-Distilled messages 0-9
-            // if they were collected for hierarchical re-distillation
-            let has_distilled = needed.messages_to_distill.iter().any(|id| id.as_u64() < 10);
+    #[test]
+    fn test_prepare_and_complete_compaction() {
+        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
-            // This test verifies the mechanism exists - the exact behavior depends on
-            // budget calculations. The key assertion is that we don't panic or break.
-            assert!(
-                !needed.messages_to_distill.is_empty(),
-                "Should have messages to distill"
-            );
+        manager.push_message(Message::try_user("Hello").expect("non-empty"));
+        manager.push_message(Message::try_user("World").expect("non-empty"));
 
-            // If Distilled messages are included, verify they form a contiguous range
-            // from the start (hierarchical distillation collects from oldest)
-            if has_distilled {
-                let min_id = needed
-                    .messages_to_distill
-                    .iter()
-                    .map(MessageId::as_u64)
-                    .min()
-                    .unwrap();
-                assert_eq!(min_id, 0, "Should include oldest messages first");
-            }
-        }
-        // If Ok, the context fit - which is also valid
+        let plan = manager.prepare_compaction();
+        assert_eq!(plan.messages.len(), 2);
+        assert!(plan.original_tokens > 0);
+
+        manager.complete_compaction(
+            NonEmptyString::new("Summary of conversation").expect("non-empty"),
+            "test-model".to_string(),
+        );
+
+        assert!(manager.history().is_compacted());
+        assert_eq!(manager.history().api_entries().len(), 0);
     }
 
     #[test]
@@ -1069,46 +684,5 @@ mod tests {
 
         assert!(entries[0].message().content().contains("get_weather"));
         assert!(entries[1].message().content().contains("72°F"));
-    }
-
-    #[test]
-    fn test_prepare_distillation_clamps_to_available_budget() {
-        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
-
-        let limits = ModelLimits::new(2_000, 500);
-        manager.set_registry_override(PredefinedModel::ClaudeOpus, limits);
-        manager.set_model_without_adaptation(model(PredefinedModel::ClaudeOpus));
-
-        for i in 0..30 {
-            manager.push_message(
-                Message::try_user(format!("Message {i}: {}", "word ".repeat(40)))
-                    .expect("non-empty"),
-            );
-        }
-
-        let ids: Vec<MessageId> = (0..20).map(MessageId::new_for_test).collect();
-
-        let tokens_to_distill: u32 = ids
-            .iter()
-            .map(|id| manager.history.get_entry(*id).token_count())
-            .sum();
-
-        let prefix_msg_tokens = manager.distillate_prefix_message_tokens();
-        let available_tokens = prefix_msg_tokens + 20;
-
-        let needed = DistillationNeeded {
-            tokens_to_distill,
-            available_tokens,
-            excess_tokens: tokens_to_distill.saturating_sub(available_tokens),
-            messages_to_distill: ids,
-            suggestion: "test".to_string(),
-        };
-
-        let pending = manager
-            .prepare_distillation(&needed)
-            .expect("pending distillation");
-
-        assert_eq!(pending.target_tokens, 20);
-        assert!(pending.target_tokens < MIN_DISTILLATION_TOKENS);
     }
 }

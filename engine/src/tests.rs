@@ -580,6 +580,75 @@ fn resolve_cascade_includes_context_memory_and_ui_defaults_layers() {
     assert!(ui_session_layer.is_winner);
 }
 
+#[test]
+fn resolve_cascade_uses_pending_default_model_for_session_layer() {
+    let mut app = test_app();
+    app.pending_turn_model = Some(ModelName::from_predefined(PredefinedModel::Gpt52Pro));
+
+    let cascade = app.resolve_cascade();
+
+    let chat_model = cascade
+        .settings
+        .iter()
+        .find(|setting| setting.setting == "Chat Model")
+        .expect("chat model setting");
+    let chat_global = chat_model
+        .layers
+        .iter()
+        .find(|layer| layer.layer == "Global")
+        .expect("chat global layer");
+    let chat_session = chat_model
+        .layers
+        .iter()
+        .find(|layer| layer.layer == "Session")
+        .expect("chat session layer");
+    assert_eq!(chat_session.value, "gpt-5.2-pro");
+    assert!(chat_session.is_winner);
+    assert!(!chat_global.is_winner);
+
+    let code_model = cascade
+        .settings
+        .iter()
+        .find(|setting| setting.setting == "Code Model")
+        .expect("code model setting");
+    let code_global = code_model
+        .layers
+        .iter()
+        .find(|layer| layer.layer == "Global")
+        .expect("code global layer");
+    let code_session = code_model
+        .layers
+        .iter()
+        .find(|layer| layer.layer == "Session")
+        .expect("code session layer");
+    assert_eq!(code_session.value, "gpt-5.2-pro");
+    assert!(code_session.is_winner);
+    assert!(!code_global.is_winner);
+}
+
+#[test]
+fn resolve_cascade_preserves_model_override_winner_over_pending_default() {
+    let mut app = test_app();
+    app.pending_turn_model = Some(ModelName::from_predefined(PredefinedModel::Gpt52Pro));
+    app.configured_chat_model_override =
+        Some(ModelName::from_predefined(PredefinedModel::ClaudeHaiku));
+
+    let cascade = app.resolve_cascade();
+
+    let chat_model = cascade
+        .settings
+        .iter()
+        .find(|setting| setting.setting == "Chat Model")
+        .expect("chat model setting");
+    let chat_session = chat_model
+        .layers
+        .iter()
+        .find(|layer| layer.layer == "Session")
+        .expect("chat session layer");
+    assert!(chat_session.value.starts_with("claude-haiku-4-5"));
+    assert!(chat_session.is_winner);
+}
+
 fn open_appearance_settings(app: &mut App) {
     app.enter_settings_mode();
     for _ in 0..SettingsCategory::ALL.len().saturating_sub(1) {
@@ -1712,33 +1781,13 @@ async fn tool_loop_write_then_read_same_batch() {
 }
 
 #[tokio::test]
-async fn distillation_failure_goes_to_idle_no_retry() {
+async fn compaction_failure_goes_to_idle_no_retry() {
     let mut app = test_app();
-
-    let content = NonEmptyString::new("alpha").expect("non-empty");
-    let msg_id = app.push_history_message(Message::user(content));
-    let tokens = app
-        .context_manager
-        .history()
-        .get_entry(msg_id)
-        .token_count();
-    let needed = DistillationNeeded {
-        tokens_to_distill: tokens,
-        available_tokens: 10_000,
-        excess_tokens: 0,
-        messages_to_distill: vec![msg_id],
-        suggestion: "test".to_string(),
-    };
-    let pending = app
-        .context_manager
-        .prepare_distillation(&needed)
-        .expect("pending distillation");
 
     let config = ApiConfig::new(ApiKey::claude("test"), app.model.clone()).expect("api config");
     let handle = tokio::spawn(async { Err(anyhow!("boom")) });
 
     let task = DistillationTask {
-        scope: pending.scope,
         generated_by: "test".to_string(),
         handle,
     };
@@ -1753,7 +1802,7 @@ async fn distillation_failure_goes_to_idle_no_retry() {
     tokio::task::yield_now().await;
     app.poll_distillation();
 
-    // With transport-layer retries handling transient failures, distillation errors
+    // With transport-layer retries handling transient failures, compaction errors
     // go directly to Idle state (no engine-level retry).
     assert!(matches!(app.state, OperationState::Idle));
 }

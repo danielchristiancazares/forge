@@ -355,7 +355,7 @@ impl super::App {
                 if state.has_queued_message() {
                     self.rollback_pending_user_message();
                 }
-                self.push_notification("Distillation cancelled");
+                self.push_notification("Compaction cancelled");
                 true
             }
             OperationState::ToolsDisabled(state) => {
@@ -483,16 +483,14 @@ impl super::App {
             }
             Command::Context => {
                 let usage_status = self.context_usage_status();
-                let (usage, needs_distillation, recent_too_large) = match &usage_status {
-                    ContextUsageStatus::Ready(usage) => (usage, None, None),
-                    ContextUsageStatus::NeedsDistillation { usage, needed } => {
-                        (usage, Some(needed), None)
-                    }
+                let (usage, needs_compaction, recent_too_large) = match &usage_status {
+                    ContextUsageStatus::Ready(usage) => (usage, false, None),
+                    ContextUsageStatus::NeedsCompaction { usage } => (usage, true, None),
                     ContextUsageStatus::RecentMessagesTooLarge {
                         usage,
                         required_tokens,
                         budget_tokens,
-                    } => (usage, None, Some((*required_tokens, *budget_tokens))),
+                    } => (usage, false, Some((*required_tokens, *budget_tokens))),
                 };
                 let format_k = |n: u32| -> String {
                     if n >= 1_000_000 {
@@ -513,14 +511,10 @@ impl super::App {
                 let remaining = (100.0_f32 - pct).clamp(0.0, 100.0);
                 let status_suffix = if let Some((required, budget)) = recent_too_large {
                     format!(" │ ERROR: recent msgs ({required} tokens) > budget ({budget} tokens)")
+                } else if needs_compaction {
+                    " │ Compaction needed".to_string()
                 } else {
-                    needs_distillation.map_or(String::new(), |needed| {
-                        format!(
-                            " │ Distill: {} msgs (~{} tokens)",
-                            needed.messages_to_distill.len(),
-                            needed.excess_tokens
-                        )
-                    })
+                    String::new()
                 };
                 self.push_notification(format!(
                     "Memory: {} │ Context: {remaining:.0}% left │ Used: {} │ Budget(effective): {} │ Window(raw): {} │ Output(reserved): {} │ Model: {} │ Limits: {}{}",
@@ -561,7 +555,7 @@ impl super::App {
                 self.push_notification("Distilling older messages...");
                 let result = self.try_start_distillation(None);
                 if matches!(result, DistillationStart::NotNeeded) {
-                    self.push_notification("No messages need distillation");
+                    self.push_notification("Context fits — no compaction needed");
                 }
             }
             Command::Cancel => {

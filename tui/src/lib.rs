@@ -1045,10 +1045,10 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
     };
 
     let usage_status = app.context_usage_status();
-    // 0 = ready, 1 = needs distillation, 2 = recent messages too large (unrecoverable)
+    // 0 = ready, 1 = needs compaction, 2 = recent messages too large (unrecoverable)
     let (usage, severity_override) = match &usage_status {
         ContextUsageStatus::Ready(usage) => (usage, 0),
-        ContextUsageStatus::NeedsDistillation { usage, .. } => (usage, 1),
+        ContextUsageStatus::NeedsCompaction { usage, .. } => (usage, 1),
         ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => (usage, 2),
     };
     let pct = usage.percentage();

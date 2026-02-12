@@ -791,16 +791,14 @@ impl crate::App {
             return Ok(());
         }
 
-        // `ContextManager::rollback_last_message` refuses to remove Distilled entries.
-        // Preflight ensures we won't partially truncate and then fail.
-        let blocked = entries[target_len..]
-            .iter()
-            .any(|e| e.distillate_id().is_some());
-        if blocked {
-            return Err(
-                "Cannot rewind conversation past Distilled messages (possible future enhancement)"
-                    .to_string(),
-            );
+        // Cannot rewind past a compaction point — the pre-compaction messages
+        // are display-only and no longer part of the API view.
+        let history = self.context_manager.history();
+        if history.is_compacted() {
+            let api_len = history.api_entries().len();
+            if target_len < entries.len().saturating_sub(api_len) {
+                return Err("Cannot rewind conversation past the compaction point".to_string());
+            }
         }
         Ok(())
     }

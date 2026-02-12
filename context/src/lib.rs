@@ -36,14 +36,14 @@ pub use atomic_write::atomic_write_new_with_options;
 pub use atomic_write::{AtomicWriteOptions, atomic_write, atomic_write_with_options};
 pub use distillation::{distillation_model, generate_distillation};
 pub use fact_store::{FactId, FactStore, FactWithStaleness, StoredFact};
-pub use history::{Distillate, DistillateId, FullHistory, HistoryEntry, MessageId};
+pub use history::{CompactionSummary, FullHistory, HistoryEntry, MessageId};
 pub use librarian::{
     ExtractionResult, Fact, FactType, Librarian, RetrievalResult, extract_facts,
     format_facts_for_context, retrieve_relevant,
 };
 pub use manager::{
-    ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus, DistillationNeeded,
-    DistillationPlanError, DistillationScope, PendingDistillation, PreparedContext,
+    CompactionPlan, ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus,
+    PreparedContext,
 };
 pub use model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry, ResolvedModelLimits};
 pub use stream_journal::{
