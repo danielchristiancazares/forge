@@ -39,7 +39,7 @@ fn content_block(text: &str, cache_hint: CacheHint) -> serde_json::Value {
         CacheHint::Ephemeral => json!({
             "type": "text",
             "text": text,
-            "cache_control": { "type": "ephemeral", "ttl": 3600 }
+            "cache_control": { "type": "ephemeral", "ttl": "1h" }
         }),
     }
 }
@@ -91,7 +91,7 @@ fn build_request_body(input: ClaudeRequestBodyInput<'_>) -> serde_json::Value {
                            messages: &mut Vec<serde_json::Value>| {
         if !content.is_empty() {
             if *cached && let Some(last) = content.last_mut() {
-                last["cache_control"] = json!({"type": "ephemeral", "ttl": 3600});
+                last["cache_control"] = json!({"type": "ephemeral", "ttl": "1h"});
             }
             messages.push(json!({
                 "role": "assistant",
@@ -157,7 +157,7 @@ fn build_request_body(input: ClaudeRequestBodyInput<'_>) -> serde_json::Value {
                     "is_error": result.is_error
                 });
                 if matches!(hint, CacheHint::Ephemeral) {
-                    block["cache_control"] = json!({"type": "ephemeral", "ttl": 3600});
+                    block["cache_control"] = json!({"type": "ephemeral", "ttl": "1h"});
                 }
                 api_messages.push(json!({
                     "role": "user",
@@ -222,7 +222,7 @@ fn build_request_body(input: ClaudeRequestBodyInput<'_>) -> serde_json::Value {
             })
             .collect();
         if cache_last_tool && let Some(last) = tool_schemas.last_mut() {
-            last["cache_control"] = json!({"type": "ephemeral", "ttl": 3600});
+            last["cache_control"] = json!({"type": "ephemeral", "ttl": "1h"});
         }
         body.insert("tools".into(), json!(tool_schemas));
     }
@@ -556,7 +556,7 @@ mod tests {
             system[0]["cache_control"]["type"].as_str(),
             Some("ephemeral")
         );
-        assert_eq!(system[0]["cache_control"]["ttl"].as_u64(), Some(3600));
+        assert_eq!(system[0]["cache_control"]["ttl"].as_str(), Some("1h"));
     }
 
     #[test]
@@ -589,7 +589,7 @@ mod tests {
             api_tools[1]["cache_control"]["type"].as_str(),
             Some("ephemeral")
         );
-        assert_eq!(api_tools[1]["cache_control"]["ttl"].as_u64(), Some(3600));
+        assert_eq!(api_tools[1]["cache_control"]["ttl"].as_str(), Some("1h"));
     }
 
     #[test]
@@ -619,7 +619,7 @@ mod tests {
             cached_content["cache_control"]["type"].as_str(),
             Some("ephemeral")
         );
-        assert_eq!(cached_content["cache_control"]["ttl"].as_u64(), Some(3600));
+        assert_eq!(cached_content["cache_control"]["ttl"].as_str(), Some("1h"));
 
         let plain_content = api_messages[1]["content"][0].clone();
         assert!(plain_content.get("cache_control").is_none());
