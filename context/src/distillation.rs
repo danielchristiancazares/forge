@@ -34,7 +34,7 @@ const OPENAI_DISTILLER_INPUT_LIMIT: u32 = 380_000;
 /// Gemini 3 Pro has 1M context, we use 950k to leave room for output and system prompt.
 const GEMINI_DISTILLER_INPUT_LIMIT: u32 = 950_000;
 
-const MIN_DISTILLATION_TOKENS: u32 = 64;
+const MIN_DISTILLATION_TOKENS: u32 = 512;
 
 /// Per-provider max output tokens for distillation.
 /// Each value reflects the model's actual max output token limit.
