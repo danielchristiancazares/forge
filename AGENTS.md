@@ -106,11 +106,12 @@ thinking_enabled = true      # thinkingLevel="high" for Gemini 3 Pro
 
 Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_CONTEXT_INFINITY=0`
 
-## Crates (8)
+## Crates (9)
 
 | Crate | Purpose |
 |-------|---------|
 | `cli` | Binary entry point, terminal session, event loop |
+| `config` | Config schemas, parsing, resolution helpers, and persistence |
 | `types` | Core domain types (no IO, no async) |
 | `providers` | LLM API clients: Claude, OpenAI, Gemini |
 | `context` | Context window management, SQLite persistence, journaling |
@@ -124,9 +125,10 @@ Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_C
 | Crate | File | Purpose |
 |-------|------|---------|
 | `cli` | `main.rs` | Entry point, terminal session, event loop |
+| `config` | `lib.rs` | Config parsing and persistence (`ForgeConfig`) |
 | `engine` | `lib.rs` | App state machine, orchestration |
 | `engine` | `commands.rs` | Slash command parsing and dispatch |
-| `engine` | `config.rs` | Config parsing (`ForgeConfig`) |
+| `engine` | `config.rs` | Compatibility shim re-exporting `forge-config` |
 | `engine` | `tool_loop.rs` | Tool executor orchestration, approval flow |
 | `engine` | `state.rs` | `ToolBatch`, `ApprovalState`, operation states |
 | `engine` | `streaming.rs` | Stream event handling, `StreamingMessage` |

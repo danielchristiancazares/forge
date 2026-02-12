@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "cli",
+    "config",
     "context",
     "engine",
     "lsp",
@@ -23,6 +24,7 @@ publish = false
 forge-types = { path = "types" }
 forge-providers = { path = "providers" }
 forge-context = { path = "context" }
+forge-config = { path = "config" }
 forge-engine = { path = "engine" }
 forge-tui = { path = "tui" }
 forge-lsp = { path = "lsp" }

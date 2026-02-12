@@ -1,6 +1,6 @@
 # Phase 5: Full Architecture
 
-**Goal**: Complete implementation of the settings architecture.
+**Goal**: Complete implementation of the settings architecture after Phases 1-4 land.
 
 ## Remaining Categories
 
@@ -95,4 +95,5 @@
 2. **Explicit Provider Binding** — Model always belongs to a provider.
 3. **Validation First-Class** — Config panels show validation status inline.
 4. **Effective Resolution Visible** — Show what resolved and why.
-5. **Observable** — Config hash, runtime panel, clear state display.
+5. **Turn Snapshot Immutability** — Edits apply to next turn, never mid-turn.
+6. **Observable** — Config hash, runtime panel, clear state display.

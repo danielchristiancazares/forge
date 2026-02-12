@@ -962,6 +962,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-config"
+version = "0.0.0"
+dependencies = [
+ "dirs",
+ "forge-context",
+ "forge-lsp",
+ "forge-tools",
+ "forge-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "toml_edit",
+ "tracing",
+]
+
+[[package]]
 name = "forge-context"
 version = "0.0.0"
 dependencies = [
@@ -988,6 +1005,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dirs",
+ "forge-config",
  "forge-context",
  "forge-lsp",
  "forge-providers",
