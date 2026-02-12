@@ -474,6 +474,20 @@ fn open_context_settings(app: &mut App) {
 }
 
 #[test]
+fn settings_usable_model_count_reflects_configured_providers() {
+    let mut app = test_app();
+    assert_eq!(app.settings_usable_model_count(), 2);
+
+    app.api_keys
+        .insert(Provider::OpenAI, SecretString::new("openai".to_string()));
+    assert_eq!(app.settings_usable_model_count(), 4);
+
+    app.api_keys
+        .insert(Provider::Gemini, SecretString::new("gemini".to_string()));
+    assert_eq!(app.settings_usable_model_count(), 6);
+}
+
+#[test]
 fn settings_activate_models_initializes_editor_snapshot() {
     let mut app = test_app();
 
@@ -516,6 +530,27 @@ fn settings_models_select_and_revert_updates_dirty_state() {
             selected: 0,
             dirty: false,
         })
+    );
+}
+
+#[test]
+fn settings_models_save_warns_when_provider_key_is_missing() {
+    let mut app = test_app();
+    open_models_settings(&mut app);
+
+    app.settings_detail_move_down();
+    app.settings_detail_move_down();
+    app.settings_detail_toggle_selected();
+    app.settings_save_edits();
+
+    assert_eq!(
+        app.settings_configured_model(),
+        &ModelName::from_predefined(PredefinedModel::Gpt52Pro)
+    );
+    assert!(app.settings_pending_model_apply_next_turn());
+    assert_eq!(
+        last_notification(&app),
+        Some("GPT API key is missing. Set OPENAI_API_KEY before the next turn.")
     );
 }
 

@@ -1929,7 +1929,7 @@ fn settings_category_summary(app: &App, category: SettingsCategory) -> String {
                 .count();
             format!("{configured} configured")
         }
-        SettingsCategory::Models => app.settings_configured_model().to_string(),
+        SettingsCategory::Models => format!("{} usable", app.settings_usable_model_count()),
         SettingsCategory::ModelOverrides | SettingsCategory::Profiles => "planned".to_string(),
         SettingsCategory::Context => {
             if app.settings_configured_context_memory_enabled() {
@@ -2070,6 +2070,15 @@ fn settings_detail_lines(
             }
 
             lines.push(Line::from(""));
+            let usable_models = app.settings_usable_model_count();
+            let total_models = PredefinedModel::all().len();
+            lines.push(Line::from(vec![
+                Span::styled("  Usable now: ", Style::default().fg(palette.text_muted)),
+                Span::styled(
+                    format!("{usable_models}/{total_models}"),
+                    Style::default().fg(palette.text_secondary),
+                ),
+            ]));
             let dirty = editor.as_ref().is_some_and(|state| state.dirty);
             let dirty_value = if dirty { "yes" } else { "no" };
             lines.push(Line::from(vec![

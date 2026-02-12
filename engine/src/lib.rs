@@ -755,6 +755,14 @@ impl App {
     }
 
     #[must_use]
+    pub fn settings_usable_model_count(&self) -> usize {
+        PredefinedModel::all()
+            .iter()
+            .filter(|model| self.has_api_key(model.provider()))
+            .count()
+    }
+
+    #[must_use]
     pub fn settings_configured_context_memory_enabled(&self) -> bool {
         self.configured_context_memory_enabled
     }
@@ -1865,6 +1873,7 @@ impl App {
                 return;
             }
             let draft = editor.draft.clone();
+            let draft_provider = draft.provider();
             if let Err(err) = config::ForgeConfig::persist_model(draft.as_str()) {
                 tracing::warn!("Failed to persist model setting: {err}");
                 self.push_notification(format!("Failed to save settings: {err}"));
@@ -1877,6 +1886,13 @@ impl App {
                 editor.sync_selected_to_draft();
             }
             self.push_notification("Model default saved. Changes apply on the next turn.");
+            if !self.has_api_key(draft_provider) {
+                self.push_notification(format!(
+                    "{} API key is missing. Set {} before the next turn.",
+                    draft_provider.display_name(),
+                    draft_provider.env_var()
+                ));
+            }
             return;
         }
 
