@@ -1929,39 +1929,63 @@ fn settings_category_summary(app: &App, category: SettingsCategory) -> String {
                 .count();
             format!("{configured} configured")
         }
-        SettingsCategory::Models => format!("{} usable", app.settings_usable_model_count()),
+        SettingsCategory::Models => {
+            let mut summary = format!("{} usable", app.settings_usable_model_count());
+            if app.settings_pending_model_apply_next_turn() {
+                summary.push_str(" (next turn)");
+            }
+            summary
+        }
         SettingsCategory::ModelOverrides => {
             let chat = app.settings_effective_chat_model();
             let code = app.settings_effective_code_model();
-            if chat == code {
+            let mut summary = if chat == code {
                 "inherit default".to_string()
             } else {
                 "chat/code split".to_string()
+            };
+            if app.settings_pending_model_overrides_apply_next_turn() {
+                summary.push_str(" (next turn)");
             }
+            summary
         }
         SettingsCategory::Profiles => "planned".to_string(),
         SettingsCategory::Context => {
-            if app.settings_configured_context_memory_enabled() {
+            let mut summary = if app.settings_configured_context_memory_enabled() {
                 "memory on".to_string()
             } else {
                 "memory off".to_string()
+            };
+            if app.settings_pending_context_apply_next_turn() {
+                summary.push_str(" (next turn)");
             }
+            summary
         }
-        SettingsCategory::Tools => format!(
-            "{} mode",
-            app.settings_configured_tool_approval_mode_label()
-        ),
+        SettingsCategory::Tools => {
+            let mut summary = format!(
+                "{} mode",
+                app.settings_configured_tool_approval_mode_label()
+            );
+            if app.settings_pending_tools_apply_next_turn() {
+                summary.push_str(" (next turn)");
+            }
+            summary
+        }
         SettingsCategory::Keybindings => "vim".to_string(),
         SettingsCategory::History => "available".to_string(),
         SettingsCategory::Appearance => {
             let options = app.settings_configured_ui_options();
-            if options.high_contrast {
+            let mut summary = if options.high_contrast {
                 "high-contrast".to_string()
             } else if options.ascii_only {
                 "ascii".to_string()
             } else {
                 "default".to_string()
+            };
+            if app.settings_pending_ui_apply_next_turn() {
+                summary.push_str(" (next turn)");
             }
+            summary
         }
     }
 }
