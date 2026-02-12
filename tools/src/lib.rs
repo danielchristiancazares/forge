@@ -338,10 +338,33 @@ impl ToolRegistry {
     }
 }
 
-/// File SHA cache entry for stale file detection.
+/// Proof object: grants permission to edit lines within [start_line, end_line].
+///
+/// IFA §10 (Capability Tokens): This is a capability token for editing a region.
+/// An edit to line N is only permitted if start_line <= N <= end_line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedRegion {
+    /// First line of observed region (1-indexed, inclusive)
+    pub start_line: u32,
+    /// Last line of observed region (1-indexed, inclusive)
+    pub end_line: u32,
+    /// Hash of lines 1..start_line-1 (all zeros if start_line == 1).
+    /// Detects insertions/deletions above the region that would shift line numbers.
+    pub prefix_hash: [u8; 32],
+    /// Hash of lines start_line..=end_line.
+    /// Detects modifications within the observed region.
+    pub region_hash: [u8; 32],
+}
+
+impl ObservedRegion {
+    pub const EMPTY_HASH: [u8; 32] = [0u8; 32];
+}
+
+/// File cache entry for stale file detection using surgical region hashing.
 #[derive(Debug, Clone)]
 pub struct FileCacheEntry {
-    pub sha256: [u8; 32],
+    /// Observed region covering all reads. Merged on each read.
+    pub observed: ObservedRegion,
     #[allow(dead_code)]
     pub read_at: SystemTime,
 }

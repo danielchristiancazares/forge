@@ -10,18 +10,204 @@ use globset::GlobBuilder;
 use ignore::WalkBuilder;
 use serde::Deserialize;
 use serde_json::json;
-use sha2::{Digest, Sha256};
+
 use similar::{ChangeTag, TextDiff};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use super::{
-    FileCacheEntry, PatchLimits, ReadFileLimits, RiskLevel, RunSandboxPolicy, SearchToolConfig,
-    ToolCtx, ToolError, ToolExecutor, ToolFut, ToolRegistry, WebFetchToolConfig, parse_args,
-    redact_distillate, sanitize_output,
+    FileCacheEntry, ObservedRegion, PatchLimits, ReadFileLimits, RiskLevel, RunSandboxPolicy,
+    SearchToolConfig, ToolCtx, ToolError, ToolExecutor, ToolFut, ToolRegistry, WebFetchToolConfig,
+    parse_args, redact_distillate, sanitize_output,
 };
 use crate::config::default_true;
 use crate::git;
+
+mod region_hash {
+    use sha2::{Digest, Sha256};
+    use std::io::{self, BufRead};
+    use std::path::Path;
+
+    use super::ObservedRegion;
+
+    /// Hash lines [start, end] inclusive (1-indexed).
+    pub fn hash_line_range(path: &Path, start: u32, end: u32) -> io::Result<[u8; 32]> {
+        if start > end {
+            return Ok(ObservedRegion::EMPTY_HASH);
+        }
+
+        let file = std::fs::File::open(path)?;
+        let reader = io::BufReader::new(file);
+        let mut hasher = Sha256::new();
+
+        for (idx, line_result) in reader.lines().enumerate() {
+            let line_num = (idx + 1) as u32;
+            if line_num > end {
+                break;
+            }
+            if line_num >= start {
+                hasher.update(line_result?.as_bytes());
+                hasher.update(b"\n");
+            }
+        }
+
+        Ok(hasher.finalize().into())
+    }
+
+    /// Hash lines from already-read bytes [start, end] inclusive (1-indexed).
+    pub fn hash_line_range_bytes(bytes: &[u8], start: u32, end: u32) -> [u8; 32] {
+        if start > end {
+            return ObservedRegion::EMPTY_HASH;
+        }
+
+        let reader = io::BufReader::new(bytes);
+        let mut hasher = Sha256::new();
+
+        for (idx, line_result) in reader.lines().enumerate() {
+            let line_num = (idx + 1) as u32;
+            if line_num > end {
+                break;
+            }
+            if line_num >= start
+                && let Ok(line) = line_result
+            {
+                hasher.update(line.as_bytes());
+                hasher.update(b"\n");
+            }
+        }
+
+        hasher.finalize().into()
+    }
+
+    /// Create an observed region for a read operation.
+    pub fn create_region(
+        path: &Path,
+        start_line: u32,
+        end_line: u32,
+    ) -> io::Result<ObservedRegion> {
+        let prefix_hash = if start_line > 1 {
+            hash_line_range(path, 1, start_line - 1)?
+        } else {
+            ObservedRegion::EMPTY_HASH
+        };
+        let region_hash = hash_line_range(path, start_line, end_line)?;
+
+        Ok(ObservedRegion {
+            start_line,
+            end_line,
+            prefix_hash,
+            region_hash,
+        })
+    }
+
+    /// Merge two regions into one that covers both.
+    /// LLMs read files in chunks. This merges aggressively:
+    /// - Read 1-50, then 40-100 → merged region 1-100
+    /// - Read 100-150, then 1-50 → merged region 1-150
+    /// - Read 10-20, then 80-90 → merged region 10-90 (covers gap)
+    pub fn merge_regions(
+        path: &Path,
+        existing: &ObservedRegion,
+        new_start: u32,
+        new_end: u32,
+    ) -> io::Result<ObservedRegion> {
+        let merged_start = existing.start_line.min(new_start);
+        let merged_end = existing.end_line.max(new_end);
+        create_region(path, merged_start, merged_end)
+    }
+
+    #[derive(Debug, Clone)]
+    pub enum ValidationError {
+        OutsideObservedRegion {
+            target: u32,
+            observed_start: u32,
+            observed_end: u32,
+        },
+        PrefixChanged {
+            above_line: u32,
+        },
+        RegionChanged,
+    }
+
+    impl std::fmt::Display for ValidationError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::OutsideObservedRegion {
+                    target,
+                    observed_start,
+                    observed_end,
+                } => {
+                    write!(
+                        f,
+                        "Edit targets line {target} but only lines {observed_start}-{observed_end} were read"
+                    )
+                }
+                Self::PrefixChanged { above_line } => {
+                    write!(
+                        f,
+                        "Content above line {above_line} changed since last read (lines may have shifted)"
+                    )
+                }
+                Self::RegionChanged => {
+                    write!(f, "File content changed since last read")
+                }
+            }
+        }
+    }
+
+    /// Validate that an edit is permitted given the observed region.
+    /// Uses already-read bytes to avoid TOCTOU race.
+    pub fn validate_edit(
+        original_bytes: &[u8],
+        target_line: u32,
+        region: &ObservedRegion,
+    ) -> Result<(), ValidationError> {
+        // Check edit is within observed bounds
+        if target_line < region.start_line || target_line > region.end_line {
+            return Err(ValidationError::OutsideObservedRegion {
+                target: target_line,
+                observed_start: region.start_line,
+                observed_end: region.end_line,
+            });
+        }
+
+        // Check prefix unchanged (detects insertions/deletions above)
+        if region.start_line > 1 {
+            let current_prefix = hash_line_range_bytes(original_bytes, 1, region.start_line - 1);
+            if current_prefix != region.prefix_hash {
+                return Err(ValidationError::PrefixChanged {
+                    above_line: region.start_line,
+                });
+            }
+        }
+
+        // Check region content unchanged
+        let current_region =
+            hash_line_range_bytes(original_bytes, region.start_line, region.end_line);
+        if current_region != region.region_hash {
+            return Err(ValidationError::RegionChanged);
+        }
+
+        Ok(())
+    }
+
+    /// Rehash a region after an edit (content changed, bounds same).
+    pub fn rehash_region_bytes(new_bytes: &[u8], region: &ObservedRegion) -> ObservedRegion {
+        let prefix_hash = if region.start_line > 1 {
+            hash_line_range_bytes(new_bytes, 1, region.start_line - 1)
+        } else {
+            ObservedRegion::EMPTY_HASH
+        };
+        let region_hash = hash_line_range_bytes(new_bytes, region.start_line, region.end_line);
+
+        ObservedRegion {
+            start_line: region.start_line,
+            end_line: region.end_line,
+            prefix_hash,
+            region_hash,
+        }
+    }
+}
 
 /// Display a path without the Windows extended-length prefix (`\\?\`).
 fn display_path(path: &Path) -> String {
@@ -614,14 +800,15 @@ impl ToolExecutor for ReadFileTool {
 
             let show_line_numbers = typed.line_numbers;
 
-            let output = if is_binary {
+            // Track the observed line range for surgical hashing
+            let (output, observed_range): (String, Option<(u32, u32)>) = if is_binary {
                 if typed.start_line.is_some() || typed.end_line.is_some() {
                     return Err(ToolError::BadArgs {
                         message: "Line ranges are not supported for binary files".to_string(),
                     });
                 }
                 ctx.allow_truncation = false;
-                read_binary(&resolved, output_limit)?
+                (read_binary(&resolved, output_limit)?, None)
             } else if typed.start_line.is_none() && typed.end_line.is_none() {
                 if meta.len() as usize > read_limit {
                     return Err(ToolError::ExecutionFailed {
@@ -630,37 +817,81 @@ impl ToolExecutor for ReadFileTool {
                     });
                 }
                 let content = read_text_lossy(&resolved)?;
-                if show_line_numbers {
+                let line_count = content.lines().count().max(1) as u32;
+                let formatted = if show_line_numbers {
                     format_with_line_numbers(&content, 1)
                 } else {
                     content
-                }
+                };
+                (formatted, Some((1, line_count)))
             } else {
                 let start = typed.start_line.unwrap_or(1) as usize;
                 let end = typed.end_line.unwrap_or(u32::MAX) as usize;
                 let content = read_text_range(&resolved, start, end, self.limits.max_scan_bytes)?;
-                if show_line_numbers {
+                let lines_read = content.lines().count().max(1) as u32;
+                let actual_end = (start as u32).saturating_add(lines_read).saturating_sub(1);
+                let formatted = if show_line_numbers {
                     format_with_line_numbers(&content, start)
                 } else {
                     content
-                }
+                };
+                (formatted, Some((start as u32, actual_end)))
             };
 
-            // Update file cache with SHA-256 for stale-file protection in apply_patch.
-            // Optimization: skip hashing for range reads on large files (> 10MB) to avoid
-            // expensive O(file_size) work. Full-file reads and smaller files are always hashed.
-            let is_range_read = typed.start_line.is_some() || typed.end_line.is_some();
-            let should_hash = !is_range_read || meta.len() <= HASH_THRESHOLD_BYTES;
+            // Update file cache with observed region for stale-file protection.
+            // Skip for binary files (no line-based region concept).
+            // Skip for range reads on large files (> 10MB) to avoid expensive hashing.
+            if let Some((start_line, end_line)) = observed_range {
+                let is_range_read = typed.start_line.is_some() || typed.end_line.is_some();
+                let should_hash = !is_range_read || meta.len() <= HASH_THRESHOLD_BYTES;
 
-            if should_hash && let Ok(sha) = compute_sha256(&resolved) {
-                let mut cache = ctx.file_cache.lock().await;
-                cache.insert(
-                    normalize_cache_key(&resolved),
-                    FileCacheEntry {
-                        sha256: sha,
-                        read_at: SystemTime::now(),
-                    },
-                );
+                if should_hash {
+                    let mut cache = ctx.file_cache.lock().await;
+                    let key = normalize_cache_key(&resolved);
+
+                    let new_entry = match cache.get(&key) {
+                        Some(existing) => {
+                            // Merge with existing observed region
+                            if let Ok(merged) = region_hash::merge_regions(
+                                &resolved,
+                                &existing.observed,
+                                start_line,
+                                end_line,
+                            ) {
+                                FileCacheEntry {
+                                    observed: merged,
+                                    read_at: SystemTime::now(),
+                                }
+                            } else {
+                                // If merge fails (IO error), create fresh region
+                                if let Ok(region) =
+                                    region_hash::create_region(&resolved, start_line, end_line)
+                                {
+                                    FileCacheEntry {
+                                        observed: region,
+                                        read_at: SystemTime::now(),
+                                    }
+                                } else {
+                                    return Ok(sanitize_output(&output));
+                                }
+                            }
+                        }
+                        None => {
+                            // First read: create initial region
+                            if let Ok(region) =
+                                region_hash::create_region(&resolved, start_line, end_line)
+                            {
+                                FileCacheEntry {
+                                    observed: region,
+                                    read_at: SystemTime::now(),
+                                }
+                            } else {
+                                return Ok(sanitize_output(&output));
+                            }
+                        }
+                    };
+                    cache.insert(key, new_entry);
+                }
             }
 
             Ok(sanitize_output(&output))
@@ -773,13 +1004,54 @@ impl ToolExecutor for ApplyPatchTool {
                         });
                     };
 
-                    // Hash the already-read bytes to avoid TOCTOU race
-                    let current_sha = compute_sha256_bytes(&original_bytes);
-                    if current_sha != entry.sha256 {
-                        return Err(ToolError::StaleFile {
+                    // Validate using surgical region hashing.
+                    // Find the minimum line targeted by any operation for the range check.
+                    // Operations without explicit targets (Append, Prepend, SetFinalNewline)
+                    // use sentinel values that make sense for their behavior.
+                    let parsed_for_check =
+                        lp1::parse_file(&original_bytes).map_err(|e| ToolError::PatchFailed {
                             file: resolved.clone(),
-                            reason: "File content changed since last read".to_string(),
-                        });
+                            message: e.to_string(),
+                        })?;
+                    let min_target_line = file_patch
+                        .ops
+                        .iter()
+                        .filter_map(|op| {
+                            match op {
+                                lp1::Op::Replace { find, occ, .. }
+                                | lp1::Op::InsertAfter { find, occ, .. }
+                                | lp1::Op::InsertBefore { find, occ, .. }
+                                | lp1::Op::Erase { find, occ } => {
+                                    // Try to find the match line (0-indexed from find_match)
+                                    lp1::find_match_line(&parsed_for_check.lines, find, *occ)
+                                        .ok()
+                                        .map(|idx| (idx + 1) as u32) // Convert to 1-indexed
+                                }
+                                lp1::Op::Prepend { .. } => Some(1), // Prepend targets line 1
+                                lp1::Op::Append { .. } | lp1::Op::SetFinalNewline(_) => None,
+                            }
+                        })
+                        .min();
+
+                    // Validate the edit against the observed region
+                    if let Some(target_line) = min_target_line {
+                        region_hash::validate_edit(&original_bytes, target_line, &entry.observed)
+                            .map_err(|e| ToolError::StaleFile {
+                            file: resolved.clone(),
+                            reason: e.to_string(),
+                        })?;
+                    } else {
+                        // No line-targeted ops (only Append/SetFinalNewline) - still validate hashes
+                        // to ensure the observed content hasn't changed
+                        region_hash::validate_edit(
+                            &original_bytes,
+                            entry.observed.start_line, // Use start of observed region
+                            &entry.observed,
+                        )
+                        .map_err(|e| ToolError::StaleFile {
+                            file: resolved.clone(),
+                            reason: e.to_string(),
+                        })?;
                     }
                 }
 
@@ -892,15 +1164,38 @@ impl ToolExecutor for ApplyPatchTool {
                     ctx.turn_changes
                         .record_stats(file.path.clone(), additions, deletions);
 
-                    let sha = compute_sha256_bytes(&file.bytes);
+                    // Update cache with rehashed region
                     let mut cache = ctx.file_cache.lock().await;
-                    cache.insert(
-                        normalize_cache_key(&file.path),
+                    let key = normalize_cache_key(&file.path);
+                    let new_entry = if let Some(existing) = cache.get(&key) {
+                        // Existing file: rehash the same region bounds
                         FileCacheEntry {
-                            sha256: sha,
+                            observed: region_hash::rehash_region_bytes(
+                                &file.bytes,
+                                &existing.observed,
+                            ),
                             read_at: SystemTime::now(),
-                        },
-                    );
+                        }
+                    } else {
+                        // New file: create region covering entire file
+                        let line_count = std::io::BufRead::lines(file.bytes.as_slice())
+                            .count()
+                            .max(1) as u32;
+                        FileCacheEntry {
+                            observed: ObservedRegion {
+                                start_line: 1,
+                                end_line: line_count,
+                                prefix_hash: ObservedRegion::EMPTY_HASH,
+                                region_hash: region_hash::hash_line_range_bytes(
+                                    &file.bytes,
+                                    1,
+                                    line_count,
+                                ),
+                            },
+                            read_at: SystemTime::now(),
+                        }
+                    };
+                    cache.insert(key, new_entry);
                 }
             }
 
@@ -1046,12 +1341,13 @@ impl ToolExecutor for WriteFileTool {
                 }
             }
 
-            if let Ok(sha) = compute_sha256(&resolved) {
+            // Create observed region covering entire new file
+            if let Ok(region) = region_hash::create_region(&resolved, 1, line_count as u32) {
                 let mut cache = ctx.file_cache.lock().await;
                 cache.insert(
                     normalize_cache_key(&resolved),
                     FileCacheEntry {
-                        sha256: sha,
+                        observed: region,
                         read_at: SystemTime::now(),
                     },
                 );
@@ -1498,32 +1794,6 @@ fn read_text_lossy(path: &Path) -> Result<String, ToolError> {
         message: e.to_string(),
     })?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
-}
-
-fn compute_sha256(path: &Path) -> Result<[u8; 32], std::io::Error> {
-    let mut file = std::fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let digest = hasher.finalize();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest[..]);
-    Ok(out)
-}
-
-fn compute_sha256_bytes(bytes: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest[..]);
-    out
 }
 
 struct StagedFile {

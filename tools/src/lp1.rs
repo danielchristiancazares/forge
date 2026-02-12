@@ -435,6 +435,16 @@ fn find_match(lines: &[String], block: &[String], occ: Option<usize>) -> Result<
     Ok(matches[0])
 }
 
+/// Public wrapper for find_match, used for validation before applying patches.
+/// Returns the 0-indexed line number where the match starts.
+pub fn find_match_line(
+    lines: &[String],
+    block: &[String],
+    occ: Option<usize>,
+) -> Result<usize, PatchError> {
+    find_match(lines, block, occ)
+}
+
 fn replace_range(lines: &mut Vec<String>, start: usize, len: usize, replace: Vec<String>) {
     lines.splice(start..start + len, replace);
 }
