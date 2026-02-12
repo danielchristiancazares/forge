@@ -20,6 +20,7 @@ use super::{
     ToolCtx, ToolError, ToolExecutor, ToolFut, ToolRegistry, WebFetchToolConfig, parse_args,
     redact_distillate, sanitize_output,
 };
+use crate::config::default_true;
 use crate::git;
 
 /// Display a path without the Windows extended-length prefix (`\\?\`).
@@ -109,10 +110,6 @@ impl ApplyPatchTool {
     }
 }
 
-fn default_true() -> bool {
-    true
-}
-
 #[derive(Debug, Deserialize)]
 struct ReadFileArgs {
     path: String,
@@ -193,13 +190,11 @@ pub fn format_unified_diff_width(
 
     let mut out = String::new();
 
-    // Collect all changes with their line indices
     let changes: Vec<_> = diff.iter_all_changes().collect();
     if changes.is_empty() {
         return String::new();
     }
 
-    // Determine the width needed for line numbers (based on max line count)
     let max_line = old_text.lines().count().max(new_text.lines().count());
     let auto_width = if max_line == 0 {
         1
@@ -208,10 +203,8 @@ pub fn format_unified_diff_width(
     };
     let line_num_width = auto_width.max(min_line_num_width);
 
-    // Gap marker, right-aligned to the line-number column
     let gap_marker = format!("{:>line_num_width$}\n", "...");
 
-    // Group changes into hunks with 1 line of context, collapsing gaps >3 lines
     let mut i = 0;
     let mut last_output_idx: Option<usize> = None;
 
@@ -220,14 +213,12 @@ pub fn format_unified_diff_width(
 
         match change.tag() {
             ChangeTag::Equal => {
-                // Check if this context line is near a change
                 let near_prev_change = i > 0 && changes[i - 1].tag() != ChangeTag::Equal;
                 let near_next_change = changes
                     .get(i + 1)
                     .is_some_and(|c| c.tag() != ChangeTag::Equal);
 
                 if near_prev_change || near_next_change {
-                    // Check if we need a gap marker
                     if let Some(last_idx) = last_output_idx {
                         let gap = i - last_idx - 1;
                         if gap > 3 {
@@ -368,7 +359,6 @@ impl ToolExecutor for GlobTool {
                 .unwrap_or(DEFAULT_GLOB_LIMIT)
                 .clamp(1, MAX_GLOB_LIMIT);
 
-            // Resolve base path through sandbox
             let base = ctx.sandbox.resolve_path(base_path, &ctx.working_dir)?;
 
             if !base.exists() {
@@ -384,7 +374,6 @@ impl ToolExecutor for GlobTool {
                 });
             }
 
-            // Build glob matcher - expand braces and compile patterns
             let expanded = expand_braces(&typed.pattern);
             let mut builder = globset::GlobSetBuilder::new();
             for pat in &expanded {
@@ -400,7 +389,6 @@ impl ToolExecutor for GlobTool {
                 message: format!("failed to compile glob patterns: {e}"),
             })?;
 
-            // Walk directory tree, respecting .gitignore
             let walker = WalkBuilder::new(&base)
                 .hidden(!include_hidden)
                 .git_ignore(true)
@@ -418,7 +406,6 @@ impl ToolExecutor for GlobTool {
                     Err(_) => continue, // Skip unreadable entries
                 };
 
-                // Skip directories
                 if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                     continue;
                 }
@@ -426,7 +413,6 @@ impl ToolExecutor for GlobTool {
                 let path = entry.path();
                 let rel_path = path.strip_prefix(&base).unwrap_or(path);
 
-                // Check if path matches any pattern
                 if !glob_set.is_match(rel_path) {
                     continue;
                 }
@@ -439,7 +425,6 @@ impl ToolExecutor for GlobTool {
                 }
             }
 
-            // Sort for consistent output
             files.sort();
 
             let output = if files.is_empty() {
@@ -902,13 +887,11 @@ impl ToolExecutor for ApplyPatchTool {
                     } else {
                         ctx.turn_changes.record_created(file.path.clone());
                     }
-                    // Record diff stats for the turn Distillate
                     let (additions, deletions) =
                         compute_diff_stats(&file.original_bytes, &file.bytes);
                     ctx.turn_changes
                         .record_stats(file.path.clone(), additions, deletions);
 
-                    // Update file cache so subsequent edits don't fail staleness check
                     let sha = compute_sha256_bytes(&file.bytes);
                     let mut cache = ctx.file_cache.lock().await;
                     cache.insert(
@@ -921,14 +904,11 @@ impl ToolExecutor for ApplyPatchTool {
                 }
             }
 
-            // Build output: skip Distillate for single-file edits (redundant with tool header)
             let output = if !any_changed {
                 "No changes applied.".to_string()
             } else if changed_count == 1 && !diff_sections.is_empty() {
-                // Single file: just show the diff
                 diff_sections.join("\n\n")
             } else {
-                // Multiple files: show Distillate then diffs
                 let mut distillate_lines: Vec<String> = Vec::new();
                 for file in &staged {
                     if !file.changed {
@@ -999,7 +979,6 @@ impl ToolExecutor for WriteFileTool {
                 });
             }
 
-            // Use resolve_path_for_create to allow creating files in new directories
             let resolved = ctx
                 .sandbox
                 .resolve_path_for_create(&typed.path, &ctx.working_dir)?;

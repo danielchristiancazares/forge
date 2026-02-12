@@ -413,35 +413,27 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
     }
 
     match key.code {
-        // Quit
         KeyCode::Char('q') => {
             app.request_quit();
         }
-        // Enter insert mode
         KeyCode::Char('i') => {
             app.enter_insert_mode();
         }
-        // Enter insert mode at end
         KeyCode::Char('a') => {
             app.enter_insert_mode_at_end();
         }
-        // Toggle thinking visibility
         KeyCode::Char('o') => {
             app.toggle_thinking();
         }
-        // Enter command mode
         KeyCode::Char(':' | '/') => {
             app.enter_command_mode();
         }
-        // Scroll up
         KeyCode::Char('k') | KeyCode::Up => {
             app.scroll_up();
         }
-        // Page up
         KeyCode::PageUp => {
             app.scroll_page_up();
         }
-        // Page down
         KeyCode::PageDown => {
             app.scroll_page_down();
         }

@@ -92,7 +92,6 @@ impl NotificationQueue {
         std::mem::take(&mut self.pending)
     }
 
-    /// Check if the queue is empty.
     #[must_use]
     #[allow(dead_code)] // Public API for future use
     pub fn is_empty(&self) -> bool {

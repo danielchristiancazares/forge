@@ -228,7 +228,6 @@ impl DraftInput {
         self.cursor = 0;
     }
 
-    /// Set the draft text and move cursor to end.
     pub fn set_text(&mut self, text: String) {
         self.text = text;
         self.cursor = self.grapheme_count();

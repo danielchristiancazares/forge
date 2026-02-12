@@ -613,7 +613,6 @@ impl App {
         self.should_quit = true;
     }
 
-    /// Check if a transcript clear was requested and clear the flag.
     pub fn take_clear_transcript(&mut self) -> bool {
         std::mem::take(&mut self.view.clear_transcript)
     }
@@ -1039,12 +1038,10 @@ impl App {
         self.api_keys.contains_key(&provider)
     }
 
-    /// Get the current API key for the selected provider.
     pub fn current_api_key(&self) -> Option<&SecretString> {
         self.api_keys.get(&self.model.provider())
     }
 
-    /// Whether we're currently streaming a response.
     pub fn is_loading(&self) -> bool {
         self.busy_reason().is_some()
     }
@@ -1211,8 +1208,6 @@ impl App {
             .set_output_limit(clamped.max_output_tokens());
     }
 
-    /// Set a specific model (called from :model command).
-    ///
     /// Persists the model to `~/.forge/config.toml` for future sessions.
     pub fn set_model(&mut self, model: ModelName) {
         self.model = model.clone();
@@ -1945,22 +1940,18 @@ impl App {
         self.input.file_select_filter()
     }
 
-    /// Get the current file select index.
     pub fn file_select_index(&self) -> Option<usize> {
         self.input.file_select_index()
     }
 
-    /// Get filtered files for display.
     pub fn file_select_files(&self) -> Vec<&ui::FileEntry> {
         self.file_picker.filtered_files()
     }
 
-    /// Get the file picker state for rendering.
     pub fn file_picker(&self) -> &ui::FilePickerState {
         &self.file_picker
     }
 
-    /// Move file selection up.
     pub fn file_select_move_up(&mut self) {
         if let InputState::FileSelect { selected, .. } = &mut self.input
             && *selected > 0
@@ -1969,7 +1960,6 @@ impl App {
         }
     }
 
-    /// Move file selection down.
     pub fn file_select_move_down(&mut self) {
         if let InputState::FileSelect { selected, .. } = &mut self.input {
             let max_index = self.file_picker.filtered_count().saturating_sub(1);

@@ -40,6 +40,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use thiserror::Error;
 
 /// Unique identifier for a streaming step/session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -92,37 +93,17 @@ impl FromSql for StepId {
 ///
 /// Each variant encodes a distinct precondition failure so callers can
 /// match on the cause instead of inspecting error strings (IFA §2.1, §9).
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum BeginSessionError {
     /// A previous stream is still active in this process.
+    #[error("Cannot begin session: already streaming step {0}")]
     AlreadyStreaming(StepId),
     /// An unsealed or uncommitted step exists and must be recovered first.
+    #[error("Cannot begin session: recoverable step {0} exists")]
     RecoverableStepExists(StepId),
     /// Database or I/O error during the begin operation.
-    Db(anyhow::Error),
-}
-
-impl std::fmt::Display for BeginSessionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::AlreadyStreaming(id) => {
-                write!(f, "Cannot begin session: already streaming step {id}")
-            }
-            Self::RecoverableStepExists(id) => {
-                write!(f, "Cannot begin session: recoverable step {id} exists")
-            }
-            Self::Db(e) => write!(f, "Cannot begin session: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for BeginSessionError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Db(e) => Some(e.as_ref()),
-            _ => None,
-        }
-    }
+    #[error("Cannot begin session: {0}")]
+    Db(#[source] anyhow::Error),
 }
 
 /// A single delta event in a streaming response.

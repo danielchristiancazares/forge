@@ -570,13 +570,11 @@ fn convert_ordered_list(output: &mut String, element: ElementRef<'_>, ctx: &mut 
 }
 
 fn convert_list_item_content(output: &mut String, li: ElementRef<'_>, ctx: &mut ConversionContext) {
-    // Check if the item contains nested lists
     let has_nested_list = li
         .children()
         .any(|c| ElementRef::wrap(c).is_some_and(|e| matches!(e.value().name(), "ul" | "ol")));
 
     if has_nested_list {
-        // Handle mixed content with nested lists
         let mut first_text = true;
         for child in li.children() {
             if let Some(el) = ElementRef::wrap(child) {

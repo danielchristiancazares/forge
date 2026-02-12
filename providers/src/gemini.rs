@@ -1,10 +1,11 @@
 use crate::{
-    ApiConfig, ApiResponse, CacheableMessage, Message, OutputLimits, Result, SseParseAction,
-    SseParser, StreamEvent, ThoughtSignature, ThoughtSignatureState, ToolDefinition,
-    handle_response, http_client, http_client_with_timeout, mpsc, process_sse_stream,
+    ApiResponse, CacheableMessage, Message, OutputLimits, Result, SendMessageRequest,
+    SseParseAction, SseParser, StreamEvent, ThoughtSignature, ThoughtSignatureState,
+    ToolDefinition, handle_response, http_client, http_client_with_timeout, process_sse_stream,
     read_capped_error_body,
     retry::{RetryConfig, send_with_retry},
 };
+
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use std::collections::hash_map::DefaultHasher;
@@ -34,7 +35,6 @@ pub struct GeminiCache {
 }
 
 impl GeminiCache {
-    /// Check if this cache has expired.
     #[must_use]
     pub fn is_expired(&self) -> bool {
         Utc::now() >= self.expire_time
@@ -106,7 +106,6 @@ pub async fn create_cache(
     tools: Option<&[ToolDefinition]>,
     ttl_seconds: u32,
 ) -> Result<GeminiCache> {
-    // Check if prompt meets minimum token threshold
     if !should_cache_prompt(system_prompt, model) {
         anyhow::bail!("System prompt too short for caching (minimum ~4096 tokens for Pro models)");
     }
@@ -506,15 +505,9 @@ impl SseParser for GeminiParser {
     }
 }
 
-pub async fn send_message(
-    config: &ApiConfig,
-    messages: &[CacheableMessage],
-    limits: OutputLimits,
-    system_prompt: Option<&str>,
-    tools: Option<&[ToolDefinition]>,
-    cache: Option<&GeminiCache>,
-    tx: mpsc::Sender<StreamEvent>,
-) -> Result<()> {
+pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
+    let config = request.config;
+    let tx = &request.tx;
     let client = http_client();
     let retry_config = RetryConfig::default();
     let model = config.model().as_str();
@@ -523,19 +516,17 @@ pub async fn send_message(
     let thinking_enabled = config.gemini_thinking_enabled();
 
     let body = build_request_body(
-        messages,
-        limits,
-        system_prompt,
-        tools,
+        request.messages,
+        request.limits,
+        request.system_prompt,
+        request.tools,
         thinking_enabled,
-        cache,
+        request.gemini_cache,
     );
 
     let api_key = config.api_key().to_string();
     let body_json = body.clone();
 
-    // Wrap request with retry logic (REQ-4)
-    // Streaming requests omit X-Stainless-Timeout (no total timeout)
     let outcome = send_with_retry(
         || {
             client
@@ -544,24 +535,33 @@ pub async fn send_message(
                 .header("content-type", "application/json")
                 .json(&body_json)
         },
-        None, // No timeout header for streaming
+        None,
         &retry_config,
     )
     .await;
 
-    let response = match handle_response(outcome, &tx).await? {
+    let response = match handle_response(outcome, tx).await? {
         ApiResponse::Success(resp) => resp,
         ApiResponse::StreamTerminated => return Ok(()),
     };
 
     let mut parser = GeminiParser;
-    process_sse_stream(response, &mut parser, &tx, crate::stream_idle_timeout()).await
+    process_sse_stream(response, &mut parser, tx, crate::stream_idle_timeout()).await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        GeminiCache, GeminiParser, build_request_body, hash_prompt, hash_tools,
+        should_cache_prompt, typed,
+    };
+    use crate::{
+        ApiConfig, CacheableMessage, Message, OutputLimits, SseParseAction, SseParser, StreamEvent,
+        ThoughtSignatureState,
+    };
+    use chrono::Utc;
     use forge_types::{ApiKey, Provider};
+    use serde_json::{Value, json};
 
     fn contains_additional_properties(value: &Value) -> bool {
         match value {

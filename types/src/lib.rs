@@ -947,7 +947,7 @@ impl_str_parse_enum!(
     }
 );
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OpenAIRequestOptions {
     reasoning_effort: OpenAIReasoningEffort,
     reasoning_summary: OpenAIReasoningSummary,
@@ -989,17 +989,6 @@ impl OpenAIRequestOptions {
     #[must_use]
     pub fn truncation(self) -> OpenAITruncation {
         self.truncation
-    }
-}
-
-impl Default for OpenAIRequestOptions {
-    fn default() -> Self {
-        Self::new(
-            OpenAIReasoningEffort::default(),
-            OpenAIReasoningSummary::default(),
-            OpenAITextVerbosity::default(),
-            OpenAITruncation::default(),
-        )
     }
 }
 
@@ -1323,12 +1312,13 @@ pub enum StreamEvent {
         thought_signature: ThoughtSignatureState,
     },
     /// Tool call arguments delta - emitted as JSON arguments stream in.
-    ToolCallDelta { id: String, arguments: String },
+    ToolCallDelta {
+        id: String,
+        arguments: String,
+    },
     /// API-reported token usage (from `message_start` or `message_delta` events).
     Usage(ApiUsage),
-    /// Stream completed.
     Done,
-    /// Error occurred.
     Error(String),
 }
 
@@ -1875,7 +1865,6 @@ mod tests {
     #[test]
     fn persistable_content_deref_works() {
         let safe = PersistableContent::new("hello");
-        // Test Deref to &str
         assert!(safe.starts_with("hel"));
     }
 

@@ -368,9 +368,7 @@ pub fn chunk(markdown: &str, max_tokens: u32) -> Vec<FetchChunk> {
             Block::Paragraph(text) => {
                 let block_tokens = counter.count_str(&text);
 
-                // Check if block fits
                 if current_tokens + block_tokens > max_tokens && has_content(&current_text) {
-                    // Flush current chunk
                     chunks.push(FetchChunk {
                         heading: current_heading.clone(),
                         text: trim_block_separators(&current_text),
@@ -412,9 +410,7 @@ pub fn chunk(markdown: &str, max_tokens: u32) -> Vec<FetchChunk> {
                 let block_text = content.join("\n");
                 let block_tokens = counter.count_str(&block_text);
 
-                // Check if block fits
                 if current_tokens + block_tokens > max_tokens && has_content(&current_text) {
-                    // Flush current chunk
                     chunks.push(FetchChunk {
                         heading: current_heading.clone(),
                         text: trim_block_separators(&current_text),
@@ -457,9 +453,7 @@ pub fn chunk(markdown: &str, max_tokens: u32) -> Vec<FetchChunk> {
             Block::List(text) => {
                 let block_tokens = counter.count_str(&text);
 
-                // Check if block fits
                 if current_tokens + block_tokens > max_tokens && has_content(&current_text) {
-                    // Flush current chunk
                     chunks.push(FetchChunk {
                         heading: current_heading.clone(),
                         text: trim_block_separators(&current_text),

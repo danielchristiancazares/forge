@@ -130,24 +130,12 @@ impl GitTool {
 fn git_tool_schema() -> Value {
     let mut props = serde_json::Map::new();
 
-    props.insert("command".into(), json!({
-        "type": "string",
-        "enum": ["status", "diff", "restore", "add", "commit", "log", "branch", "checkout", "stash", "show", "blame", "push", "pull"],
-        "description": "Git subcommand to run"
-    }));
-    props.insert(
-        "timeout_ms".into(),
-        json!({
-            "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100
-        }),
-    );
-
-    // status
+    let command = json!({ "type": "string", "enum": ["status", "diff", "restore", "add", "commit", "log", "branch", "checkout", "stash", "show", "blame", "push", "pull"], "description": "Git subcommand to run" });
+    props.insert("command".into(), command);
+    props.insert("timeout_ms".into(), json!({ "type": "integer", "description": "Timeout in ms (default 30000)", "minimum": 100 }));
     props.insert("porcelain".into(), json!({ "type": "boolean", "default": true, "description": "[status] Use porcelain output (--porcelain=1)" }));
     props.insert("branch".into(), json!({ "type": "boolean", "default": true, "description": "[status] Include branch info (-b) in porcelain mode" }));
     props.insert("untracked".into(), json!({ "type": "boolean", "default": true, "description": "[status] Include untracked files (false uses -uno)" }));
-
-    // diff
     props.insert("cached".into(), json!({ "type": "boolean", "default": false, "description": "[diff] Diff staged changes (--cached)" }));
     props.insert("stat".into(), json!({ "type": "boolean", "default": false, "description": "[diff/show] Show diffstat only (--stat)" }));
     props.insert("name_only".into(), json!({ "type": "boolean", "default": false, "description": "[diff/show] Show only changed file names" }));
@@ -164,16 +152,10 @@ fn git_tool_schema() -> Value {
         json!({ "type": "string", "description": "[diff] Ending ref for ref-to-ref comparison" }),
     );
     props.insert("output_dir".into(), json!({ "type": "string", "description": "[diff] Directory to write per-file patches (requires from_ref+to_ref)" }));
-
-    // restore
     props.insert("staged".into(), json!({ "type": "boolean", "default": false, "description": "[restore] Restore the index/staging area (--staged)" }));
     props.insert("worktree".into(), json!({ "type": "boolean", "default": true, "description": "[restore] Restore the working tree (--worktree)" }));
-
-    // add
     props.insert("all".into(), json!({ "type": "boolean", "default": false, "description": "[add] Stage all changes (-A)" }));
     props.insert("update".into(), json!({ "type": "boolean", "default": false, "description": "[add] Stage modified/deleted only (-u)" }));
-
-    // commit
     props.insert("type".into(), json!({ "type": "string", "description": "[commit] Commit type: feat, fix, docs, style, refactor, test, chore" }));
     props.insert(
         "scope".into(),
@@ -183,8 +165,6 @@ fn git_tool_schema() -> Value {
         "message".into(),
         json!({ "type": "string", "description": "[commit/stash] Message text" }),
     );
-
-    // log
     props.insert(
         "max_count".into(),
         json!({ "type": "integer", "minimum": 1, "description": "[log] Limit number of commits" }),
@@ -209,8 +189,6 @@ fn git_tool_schema() -> Value {
         "grep".into(),
         json!({ "type": "string", "description": "[log] Filter by message pattern" }),
     );
-
-    // branch
     props.insert("list_all".into(), json!({ "type": "boolean", "default": false, "description": "[branch] List local and remote branches (-a)" }));
     props.insert("list_remote".into(), json!({ "type": "boolean", "default": false, "description": "[branch] List only remote branches (-r)" }));
     props.insert(
@@ -227,16 +205,10 @@ fn git_tool_schema() -> Value {
         "new_name".into(),
         json!({ "type": "string", "description": "[branch] New name when renaming" }),
     );
-
-    // checkout
     props.insert("create_branch".into(), json!({ "type": "string", "description": "[checkout] Create and switch to new branch (-b)" }));
-
-    // stash
     props.insert("action".into(), json!({ "type": "string", "enum": ["push", "pop", "apply", "drop", "list", "show", "clear"], "default": "push", "description": "[stash] Stash action" }));
     props.insert("index".into(), json!({ "type": "integer", "minimum": 0, "description": "[stash] Stash index for pop/apply/drop/show" }));
     props.insert("include_untracked".into(), json!({ "type": "boolean", "default": false, "description": "[stash] Include untracked files (with push)" }));
-
-    // push
     props.insert(
         "remote".into(),
         json!({ "type": "string", "description": "[push/pull] Remote name (default: origin)" }),
@@ -251,13 +223,10 @@ fn git_tool_schema() -> Value {
         "tags".into(),
         json!({ "type": "boolean", "default": false, "description": "[push] Push tags (--tags)" }),
     );
-
-    // pull
     props.insert("rebase".into(), json!({ "type": "boolean", "default": false, "description": "[pull] Rebase instead of merge (--rebase)" }));
     props.insert("ff_only".into(), json!({ "type": "boolean", "default": false, "description": "[pull] Fast-forward only (--ff-only)" }));
-
-    // shared
     props.insert("paths".into(), json!({ "type": "array", "items": { "type": "string" }, "description": "[diff/restore/add/checkout] File paths" }));
+
     props.insert(
         "path".into(),
         json!({ "type": "string", "description": "[log/blame] File path" }),
@@ -784,8 +753,6 @@ fn trim_output(output: &str) -> String {
     output.trim_end_matches(&['\r', '\n'][..]).to_string()
 }
 
-// ===== Git diff patch Distillate helpers =====
-
 fn sanitize_path_for_filename(path: &str) -> String {
     path.replace(['/', '\\'], "__")
 }
@@ -993,8 +960,6 @@ async fn write_patches_to_dir(
     Ok(json!(summary))
 }
 
-// ===== Argument types =====
-
 #[derive(Deserialize)]
 struct GitStatusArgs {
     #[serde(default)]
@@ -1197,8 +1162,6 @@ struct GitPullArgs {
     #[serde(default)]
     ff_only: bool,
 }
-
-// ===== Handlers =====
 
 fn resolved_remote_or_default(remote: Option<&str>) -> Result<String, ToolError> {
     let remote = remote.unwrap_or("origin").trim();
@@ -1668,20 +1631,21 @@ async fn handle_git_branch(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErro
 
     let mut cmd_args: Vec<String> = vec!["branch".into()];
 
+    // Insert `--` before branch names to avoid flag injection.
     if let Some(name) = &req.create {
-        cmd_args.push("--".into()); // Prevent flag injection
+        cmd_args.push("--".into());
         cmd_args.push(name.clone());
     } else if let Some(name) = &req.delete {
         cmd_args.push("-d".into());
-        cmd_args.push("--".into()); // Prevent flag injection
+        cmd_args.push("--".into());
         cmd_args.push(name.clone());
     } else if let Some(name) = &req.force_delete {
         cmd_args.push("-D".into());
-        cmd_args.push("--".into()); // Prevent flag injection
+        cmd_args.push("--".into());
         cmd_args.push(name.clone());
     } else if let Some(old_name) = &req.rename {
         cmd_args.push("-m".into());
-        cmd_args.push("--".into()); // Prevent flag injection
+        cmd_args.push("--".into());
         cmd_args.push(old_name.clone());
         if let Some(new_name) = &req.new_name {
             cmd_args.push(new_name.clone());

@@ -164,12 +164,12 @@ fn skip_escape_sequence<I: Iterator<Item = char>>(chars: &mut std::iter::Peekabl
     match next {
         // CSI sequence: ESC [ ... <final byte>
         '[' => {
-            chars.next(); // consume '['
+            chars.next();
             skip_csi_params(chars);
         }
         // OSC sequence: ESC ] ... (BEL | ESC \)
         ']' => {
-            chars.next(); // consume ']'
+            chars.next();
             skip_osc_sequence(chars);
         }
         // DCS, PM, APC sequences: ESC P/^/_ ... (ST)
@@ -180,8 +180,8 @@ fn skip_escape_sequence<I: Iterator<Item = char>>(chars: &mut std::iter::Peekabl
         // Two-character sequences: ESC <char>
         // Includes: ESC ( for G0, ESC ) for G1, ESC # for line attrs, etc.
         '(' | ')' | '*' | '+' | '#' | ' ' => {
-            chars.next(); // consume the character
-            chars.next(); // consume the following character
+            chars.next();
+            chars.next();
         }
         // Single-character commands: ESC 7, ESC 8, ESC c, etc.
         '7' | '8' | 'c' | 'D' | 'E' | 'H' | 'M' | 'N' | 'O' | 'Z' | '=' | '>' | '<' => {
@@ -198,14 +198,11 @@ fn skip_csi_params<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>)
     // We skip until we see a final byte or run out of valid sequence chars
     while let Some(&c) = chars.peek() {
         if ('\x40'..='\x7e').contains(&c) {
-            // Final byte - consume it and we're done
             chars.next();
             return;
         } else if ('\x20'..='\x3f').contains(&c) {
-            // Parameter or intermediate byte - continue
             chars.next();
         } else {
-            // Invalid sequence or end - stop
             return;
         }
     }
@@ -217,12 +214,9 @@ fn skip_osc_sequence<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I
         if c == BEL {
             return;
         }
-        if c == ESC {
-            // Check for ST (string terminator: ESC \)
-            if chars.peek() == Some(&'\\') {
-                chars.next();
-                return;
-            }
+        if c == ESC && chars.peek() == Some(&'\\') {
+            chars.next();
+            return;
         }
     }
 }

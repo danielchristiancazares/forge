@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use thiserror::Error;
 use url::Url;
 
+use crate::config::default_true;
+
 /// Input parameters for a `WebFetch` request.
 ///
 /// Per FR-WF-02, the request schema includes:
@@ -271,10 +273,6 @@ pub struct WebFetchConfig {
 
     /// robots.txt-specific configuration.
     pub robots: Option<RobotsConfig>,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 impl WebFetchConfig {

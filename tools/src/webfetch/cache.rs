@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use thiserror::Error;
 use url::Url;
 
 use forge_context::{AtomicWriteOptions, atomic_write_with_options};
@@ -42,10 +43,8 @@ pub struct CacheEntry {
     /// Final URL after redirects.
     pub final_url: String,
 
-    /// Page title.
     pub title: Option<String>,
 
-    /// Page language.
     pub language: Option<String>,
 
     /// Canonical extracted document (Markdown).
@@ -166,7 +165,6 @@ impl Cache {
             lru: HashMap::new(),
         };
 
-        // Initialize LRU from existing files
         cache.scan_entries();
 
         Ok(cache)
@@ -179,12 +177,10 @@ impl Cache {
         let key = cache_key(url);
         let path = self.entry_path(&key);
 
-        // Check if file exists
         if !path.exists() {
             return CacheResult::Miss;
         }
 
-        // Read and parse entry
         let content = match fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => {
@@ -202,21 +198,18 @@ impl Cache {
             return CacheResult::Miss;
         };
 
-        // FR-WF-CCH-VER-01: Version mismatch
         if entry.version != CACHE_VERSION {
             let _ = fs::remove_file(&path);
             self.lru.remove(&key);
             return CacheResult::VersionMismatch;
         }
 
-        // Check expiration
         if entry.is_expired() {
             let _ = fs::remove_file(&path);
             self.lru.remove(&key);
             return CacheResult::Miss;
         }
 
-        // Update last accessed time
         entry.touch();
 
         // Write back with updated timestamp (non-fatal if fails)
@@ -224,7 +217,6 @@ impl Cache {
             let _ = fs::write(&path, &updated_content);
         }
 
-        // Update LRU tracking
         let size = entry.estimated_size();
         self.lru.insert(key, (SystemTime::now(), size));
 
@@ -247,14 +239,11 @@ impl Cache {
 
         let key = cache_key(url);
 
-        // Evict if necessary per FR-WF-CCH-EVICT-01
         self.evict_if_needed(size)?;
 
-        // Serialize entry
         let content = serde_json::to_string_pretty(entry)
             .map_err(|e| CacheWriteError::SerializationFailed(e.to_string()))?;
 
-        // Ensure subdirectory exists
         let path = self.entry_path(&key);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -270,7 +259,6 @@ impl Cache {
             },
         )?;
 
-        // Update LRU
         self.lru.insert(key, (SystemTime::now(), size));
 
         Ok(())
@@ -352,7 +340,6 @@ impl Cache {
                 removed_entries += 1;
                 removed_bytes += size;
 
-                // Check if we've freed enough
                 let new_entries = current_entries.saturating_sub(removed_entries);
                 let new_bytes = current_bytes.saturating_sub(removed_bytes);
 
@@ -372,7 +359,6 @@ impl Cache {
         (entries, bytes)
     }
 
-    ///
     /// Layout: `{cache_dir}/{first2}/{keyhex}.json`
     fn entry_path(&self, key: &str) -> PathBuf {
         let prefix = if key.len() >= 2 { &key[..2] } else { "00" };
@@ -381,34 +367,17 @@ impl Cache {
 }
 
 /// Errors that can occur during cache write.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum CacheWriteError {
     /// Entry exceeds maximum size.
+    #[error("entry too large: {size} bytes (max {max})")]
     EntryTooLarge { size: u64, max: u64 },
     /// Serialization failed.
+    #[error("serialization failed: {0}")]
     SerializationFailed(String),
     /// IO error.
-    Io(std::io::Error),
-}
-
-impl std::fmt::Display for CacheWriteError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CacheWriteError::EntryTooLarge { size, max } => {
-                write!(f, "entry too large: {size} bytes (max {max})")
-            }
-            CacheWriteError::SerializationFailed(e) => write!(f, "serialization failed: {e}"),
-            CacheWriteError::Io(e) => write!(f, "IO error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for CacheWriteError {}
-
-impl From<std::io::Error> for CacheWriteError {
-    fn from(e: std::io::Error) -> Self {
-        CacheWriteError::Io(e)
-    }
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// Derive cache key from URL.
@@ -430,8 +399,6 @@ pub fn format_rfc3339(time: SystemTime) -> String {
     let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
     let secs = duration.as_secs();
 
-    // Calculate date/time components
-    // Days since epoch
     let days = secs / 86400;
     let remaining = secs % 86400;
     let hours = remaining / 3600;
@@ -445,7 +412,6 @@ pub fn format_rfc3339(time: SystemTime) -> String {
 
 /// Parse RFC3339 timestamp to `SystemTime`.
 pub fn parse_rfc3339(s: &str) -> Option<SystemTime> {
-    // Expected format: YYYY-MM-DDTHH:MM:SSZ
     if s.len() < 20 {
         return None;
     }
@@ -465,7 +431,6 @@ pub fn parse_rfc3339(s: &str) -> Option<SystemTime> {
 
 /// Convert days since epoch to year/month/day.
 fn days_to_ymd(days: u64) -> (u64, u64, u64) {
-    // Simplified calculation - accurate for dates after 1970
     let mut remaining = days;
     let mut year = 1970;
 
@@ -505,12 +470,10 @@ fn ymd_to_days(year: u64, month: u64, day: u64) -> Option<u64> {
 
     let mut days = 0u64;
 
-    // Years
     for y in 1970..year {
         days += if is_leap_year(y) { 366 } else { 365 };
     }
 
-    // Months
     let leap = is_leap_year(year);
     let month_days = if leap {
         [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
@@ -522,7 +485,6 @@ fn ymd_to_days(year: u64, month: u64, day: u64) -> Option<u64> {
         days += month_days[(m - 1) as usize];
     }
 
-    // Days
     days += day - 1;
 
     Some(days)
@@ -532,7 +494,6 @@ fn is_leap_year(year: u64) -> bool {
     (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
-/// Hex encoding helper.
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

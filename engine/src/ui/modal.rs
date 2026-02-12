@@ -46,12 +46,10 @@ impl ModalEffect {
         }
     }
 
-    /// Advance the animation by the given delta time.
     pub fn advance(&mut self, delta: Duration) {
         self.elapsed = self.elapsed.saturating_add(delta);
     }
 
-    /// Get the animation progress (0.0 to 1.0).
     #[must_use]
     pub fn progress(&self) -> f32 {
         if self.duration.is_zero() {
@@ -62,7 +60,6 @@ impl ModalEffect {
         (elapsed / total).clamp(0.0, 1.0)
     }
 
-    /// Check if the animation is finished.
     #[must_use]
     pub fn is_finished(&self) -> bool {
         self.elapsed >= self.duration
