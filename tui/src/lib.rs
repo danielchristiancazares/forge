@@ -1947,7 +1947,10 @@ fn settings_category_summary(app: &App, category: SettingsCategory) -> String {
                 "memory off".to_string()
             }
         }
-        SettingsCategory::Tools => format!("{} loaded", app.tool_definition_count()),
+        SettingsCategory::Tools => format!(
+            "{} mode",
+            app.settings_configured_tool_approval_mode_label()
+        ),
         SettingsCategory::Keybindings => "vim".to_string(),
         SettingsCategory::History => "available".to_string(),
         SettingsCategory::Appearance => {
@@ -1981,6 +1984,7 @@ fn settings_detail_lines(
     let phase_label = if category == SettingsCategory::Appearance
         || category == SettingsCategory::Models
         || category == SettingsCategory::ModelOverrides
+        || category == SettingsCategory::Tools
         || category == SettingsCategory::Context
     {
         " Editable defaults (Phase 3)"
@@ -2257,6 +2261,38 @@ fn settings_detail_lines(
             ]));
         }
         SettingsCategory::Tools => {
+            let editor = app.settings_tools_editor_snapshot();
+            let selected = editor.map(|state| state.selected);
+            let draft_mode = editor
+                .map(|state| state.draft_approval_mode)
+                .unwrap_or_else(|| app.settings_configured_tool_approval_mode_label());
+            let is_selected = selected == Some(0);
+            let marker = if is_selected { glyphs.selected } else { " " };
+            let label = format!(" {marker} Approval mode");
+            let filler = content_width.saturating_sub(label.width() + draft_mode.width() + 2);
+            let bg = is_selected.then_some(palette.bg_highlight);
+            let mut left_style = if is_selected {
+                Style::default()
+                    .fg(palette.text_primary)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette.text_secondary)
+            };
+            let mut fill_style = Style::default();
+            let mut right_style = Style::default().fg(palette.text_muted);
+            if let Some(bg) = bg {
+                left_style = left_style.bg(bg);
+                fill_style = fill_style.bg(bg);
+                right_style = right_style.bg(bg);
+            }
+            lines.push(Line::from(vec![
+                Span::styled(label, left_style),
+                Span::styled(" ".repeat(filler), fill_style),
+                Span::styled("  ", fill_style),
+                Span::styled(draft_mode, right_style),
+            ]));
+
+            lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled(
                     "  Registered tools: ",
@@ -2267,10 +2303,24 @@ fn settings_detail_lines(
                     Style::default().fg(palette.text_secondary),
                 ),
             ]));
-            lines.push(Line::from(Span::styled(
-                "  Tool permissions editor arrives in later phases.",
-                Style::default().fg(palette.text_muted),
-            )));
+            lines.push(Line::from(""));
+            let dirty = editor.is_some_and(|state| state.dirty);
+            lines.push(Line::from(vec![
+                Span::styled("  Dirty: ", Style::default().fg(palette.text_muted)),
+                Span::styled(
+                    if dirty { "yes" } else { "no" },
+                    Style::default().fg(palette.text_secondary),
+                ),
+            ]));
+            let apply_value = if app.settings_pending_tools_apply_next_turn() {
+                "next turn"
+            } else {
+                "none"
+            };
+            lines.push(Line::from(vec![
+                Span::styled("  Pending apply: ", Style::default().fg(palette.text_muted)),
+                Span::styled(apply_value, Style::default().fg(palette.text_secondary)),
+            ]));
         }
         SettingsCategory::Keybindings => {
             lines.push(Line::from(Span::styled(
@@ -2364,11 +2414,14 @@ fn settings_detail_lines(
     if category == SettingsCategory::Appearance
         || category == SettingsCategory::Models
         || category == SettingsCategory::ModelOverrides
+        || category == SettingsCategory::Tools
         || category == SettingsCategory::Context
     {
         let action_label = if category == SettingsCategory::Models {
             " select  "
-        } else if category == SettingsCategory::ModelOverrides {
+        } else if category == SettingsCategory::ModelOverrides
+            || category == SettingsCategory::Tools
+        {
             " cycle  "
         } else {
             " toggle  "

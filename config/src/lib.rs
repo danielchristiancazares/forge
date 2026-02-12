@@ -83,6 +83,11 @@ pub struct ModelOverrideSettings {
     pub code_model: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolApprovalSettings {
+    pub mode: String,
+}
+
 #[derive(Default, Deserialize)]
 pub struct ApiKeys {
     pub anthropic: Option<String>,
@@ -567,6 +572,22 @@ impl ForgeConfig {
             Ok(())
         })
     }
+
+    pub fn persist_tool_approval_settings(settings: &ToolApprovalSettings) -> std::io::Result<()> {
+        update_tools_section(|tools| {
+            if !tools.contains_key("approval") {
+                tools["approval"] = toml_edit::Item::Table(toml_edit::Table::new());
+            }
+            let Some(approval) = tools["approval"].as_table_mut() else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "[tools.approval] must be a table",
+                ));
+            };
+            approval["mode"] = toml_edit::value(settings.mode.as_str());
+            Ok(())
+        })
+    }
 }
 
 fn update_app_section<F>(mut update: F) -> std::io::Result<()>
@@ -581,6 +602,13 @@ where
     F: FnMut(&mut toml_edit::Table) -> std::io::Result<()>,
 {
     update_named_section("context", &mut update)
+}
+
+fn update_tools_section<F>(mut update: F) -> std::io::Result<()>
+where
+    F: FnMut(&mut toml_edit::Table) -> std::io::Result<()>,
+{
+    update_named_section("tools", &mut update)
 }
 
 fn update_named_section<F>(section: &str, mut update: F) -> std::io::Result<()>

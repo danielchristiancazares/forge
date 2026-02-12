@@ -217,6 +217,13 @@ pub struct ModelOverridesEditorSnapshot {
     pub dirty: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolsEditorSnapshot {
+    pub draft_approval_mode: &'static str,
+    pub selected: usize,
+    pub dirty: bool,
+}
+
 pub use state::DistillationTask;
 
 use state::{
@@ -242,6 +249,7 @@ struct ParsedToolCalls {
 const APPEARANCE_SETTINGS_COUNT: usize = 4;
 const CONTEXT_SETTINGS_COUNT: usize = 1;
 const MODEL_OVERRIDES_SETTINGS_COUNT: usize = 2;
+const TOOLS_SETTINGS_COUNT: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AppearanceSettingsEditor {
@@ -382,6 +390,57 @@ impl PendingModelOverride {
             Self::UseGlobalDefault => None,
             Self::Explicit(model) => Some(model),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ToolsSettingsEditor {
+    baseline_approval_mode: tools::ApprovalMode,
+    draft_approval_mode: tools::ApprovalMode,
+    selected: usize,
+}
+
+impl ToolsSettingsEditor {
+    fn new(initial_approval_mode: tools::ApprovalMode) -> Self {
+        Self {
+            baseline_approval_mode: initial_approval_mode,
+            draft_approval_mode: initial_approval_mode,
+            selected: 0,
+        }
+    }
+
+    fn is_dirty(self) -> bool {
+        self.draft_approval_mode != self.baseline_approval_mode
+    }
+
+    fn cycle_selected(&mut self) {
+        if self.selected == 0 {
+            self.draft_approval_mode = next_approval_mode(self.draft_approval_mode);
+        }
+    }
+}
+
+fn approval_mode_config_value(mode: tools::ApprovalMode) -> &'static str {
+    match mode {
+        tools::ApprovalMode::Permissive => "permissive",
+        tools::ApprovalMode::Default => "default",
+        tools::ApprovalMode::Strict => "strict",
+    }
+}
+
+fn approval_mode_display(mode: tools::ApprovalMode) -> &'static str {
+    match mode {
+        tools::ApprovalMode::Permissive => "permissive",
+        tools::ApprovalMode::Default => "default",
+        tools::ApprovalMode::Strict => "strict",
+    }
+}
+
+fn next_approval_mode(mode: tools::ApprovalMode) -> tools::ApprovalMode {
+    match mode {
+        tools::ApprovalMode::Permissive => tools::ApprovalMode::Default,
+        tools::ApprovalMode::Default => tools::ApprovalMode::Strict,
+        tools::ApprovalMode::Strict => tools::ApprovalMode::Permissive,
     }
 }
 
@@ -693,6 +752,8 @@ pub struct App {
     configured_chat_model_override: Option<ModelName>,
     /// Optional code-model override loaded from config and edited in `/settings`.
     configured_code_model_override: Option<ModelName>,
+    /// Persisted tool approval mode loaded from config and edited in `/settings`.
+    configured_tool_approval_mode: tools::ApprovalMode,
     /// Persisted context defaults loaded from config and edited in `/settings`.
     configured_context_memory_enabled: bool,
     /// Persisted UI defaults loaded from config and edited in `/settings`.
@@ -703,6 +764,8 @@ pub struct App {
     pending_turn_chat_model_override: Option<PendingModelOverride>,
     /// Saved code-model override staged to take effect at the start of the next turn.
     pending_turn_code_model_override: Option<PendingModelOverride>,
+    /// Saved tool approval mode staged to take effect at the start of the next turn.
+    pending_turn_tool_approval_mode: Option<tools::ApprovalMode>,
     /// Saved context defaults staged to take effect at the start of the next turn.
     pending_turn_context_memory_enabled: Option<bool>,
     /// Saved UI defaults staged to take effect at the start of the next turn.
@@ -711,6 +774,8 @@ pub struct App {
     settings_model_editor: Option<ModelSettingsEditor>,
     /// Model overrides detail editor state for `/settings`.
     settings_model_overrides_editor: Option<ModelOverridesSettingsEditor>,
+    /// Tools detail editor state for `/settings`.
+    settings_tools_editor: Option<ToolsSettingsEditor>,
     /// Context detail editor state for `/settings`.
     settings_context_editor: Option<ContextSettingsEditor>,
     /// Appearance detail editor state for `/settings`.
@@ -883,6 +948,16 @@ impl App {
     }
 
     #[must_use]
+    pub fn settings_configured_tool_approval_mode(&self) -> tools::ApprovalMode {
+        self.configured_tool_approval_mode
+    }
+
+    #[must_use]
+    pub fn settings_configured_tool_approval_mode_label(&self) -> &'static str {
+        approval_mode_display(self.configured_tool_approval_mode)
+    }
+
+    #[must_use]
     pub fn settings_configured_context_memory_enabled(&self) -> bool {
         self.configured_context_memory_enabled
     }
@@ -904,6 +979,11 @@ impl App {
     }
 
     #[must_use]
+    pub fn settings_pending_tools_apply_next_turn(&self) -> bool {
+        self.pending_turn_tool_approval_mode.is_some()
+    }
+
+    #[must_use]
     pub fn settings_pending_ui_apply_next_turn(&self) -> bool {
         self.pending_turn_ui_options.is_some()
     }
@@ -917,6 +997,7 @@ impl App {
     pub fn settings_pending_apply_next_turn(&self) -> bool {
         self.settings_pending_model_apply_next_turn()
             || self.settings_pending_model_overrides_apply_next_turn()
+            || self.settings_pending_tools_apply_next_turn()
             || self.settings_pending_context_apply_next_turn()
             || self.settings_pending_ui_apply_next_turn()
     }
@@ -955,6 +1036,16 @@ impl App {
     }
 
     #[must_use]
+    pub fn settings_tools_editor_snapshot(&self) -> Option<ToolsEditorSnapshot> {
+        self.settings_tools_editor
+            .map(|editor| ToolsEditorSnapshot {
+                draft_approval_mode: approval_mode_display(editor.draft_approval_mode),
+                selected: editor.selected,
+                dirty: editor.is_dirty(),
+            })
+    }
+
+    #[must_use]
     pub fn settings_appearance_editor_snapshot(&self) -> Option<AppearanceEditorSnapshot> {
         self.settings_appearance_editor
             .map(|editor| AppearanceEditorSnapshot {
@@ -974,6 +1065,9 @@ impl App {
                 .as_ref()
                 .is_some_and(ModelOverridesSettingsEditor::is_dirty)
             || self
+                .settings_tools_editor
+                .is_some_and(ToolsSettingsEditor::is_dirty)
+            || self
                 .settings_context_editor
                 .is_some_and(ContextSettingsEditor::is_dirty)
             || self
@@ -982,6 +1076,10 @@ impl App {
     }
 
     pub(crate) fn apply_pending_turn_settings(&mut self) {
+        if let Some(approval_mode) = self.pending_turn_tool_approval_mode.take() {
+            self.configured_tool_approval_mode = approval_mode;
+            self.tool_settings.policy.mode = approval_mode;
+        }
         if let Some(memory_enabled) = self.pending_turn_context_memory_enabled.take() {
             self.set_context_memory_enabled_internal(memory_enabled, false);
         }
@@ -1847,6 +1945,7 @@ impl App {
                 self.settings_model_editor =
                     Some(ModelSettingsEditor::new(self.configured_model.clone()));
                 self.settings_model_overrides_editor = None;
+                self.settings_tools_editor = None;
                 self.settings_context_editor = None;
                 self.settings_appearance_editor = None;
             }
@@ -1856,6 +1955,15 @@ impl App {
                     self.configured_code_model_override.clone(),
                 ));
                 self.settings_model_editor = None;
+                self.settings_tools_editor = None;
+                self.settings_context_editor = None;
+                self.settings_appearance_editor = None;
+            }
+            SettingsCategory::Tools => {
+                self.settings_tools_editor =
+                    Some(ToolsSettingsEditor::new(self.configured_tool_approval_mode));
+                self.settings_model_editor = None;
+                self.settings_model_overrides_editor = None;
                 self.settings_context_editor = None;
                 self.settings_appearance_editor = None;
             }
@@ -1865,6 +1973,7 @@ impl App {
                 ));
                 self.settings_model_editor = None;
                 self.settings_model_overrides_editor = None;
+                self.settings_tools_editor = None;
                 self.settings_appearance_editor = None;
             }
             SettingsCategory::Appearance => {
@@ -1872,11 +1981,13 @@ impl App {
                     Some(AppearanceSettingsEditor::new(self.configured_ui_options));
                 self.settings_model_editor = None;
                 self.settings_model_overrides_editor = None;
+                self.settings_tools_editor = None;
                 self.settings_context_editor = None;
             }
             _ => {
                 self.settings_model_editor = None;
                 self.settings_model_overrides_editor = None;
+                self.settings_tools_editor = None;
                 self.settings_context_editor = None;
                 self.settings_appearance_editor = None;
             }
@@ -1886,6 +1997,7 @@ impl App {
     fn reset_settings_detail_editor(&mut self) {
         self.settings_model_editor = None;
         self.settings_model_overrides_editor = None;
+        self.settings_tools_editor = None;
         self.settings_context_editor = None;
         self.settings_appearance_editor = None;
     }
@@ -1974,6 +2086,12 @@ impl App {
             }
             return;
         }
+        if let Some(editor) = self.settings_tools_editor.as_mut() {
+            if editor.selected > 0 {
+                editor.selected -= 1;
+            }
+            return;
+        }
         if let Some(editor) = self.settings_context_editor.as_mut() {
             if editor.selected > 0 {
                 editor.selected -= 1;
@@ -2001,6 +2119,12 @@ impl App {
             }
             return;
         }
+        if let Some(editor) = self.settings_tools_editor.as_mut() {
+            if editor.selected + 1 < TOOLS_SETTINGS_COUNT {
+                editor.selected += 1;
+            }
+            return;
+        }
         if let Some(editor) = self.settings_context_editor.as_mut() {
             if editor.selected + 1 < CONTEXT_SETTINGS_COUNT {
                 editor.selected += 1;
@@ -2021,6 +2145,10 @@ impl App {
         }
         if let Some(editor) = self.settings_model_overrides_editor.as_mut() {
             editor.cycle_selected_model();
+            return;
+        }
+        if let Some(editor) = self.settings_tools_editor.as_mut() {
+            editor.cycle_selected();
             return;
         }
         if let Some(editor) = self.settings_context_editor.as_mut() {
@@ -2058,6 +2186,10 @@ impl App {
         if let Some(editor) = self.settings_model_overrides_editor.as_mut() {
             editor.draft_chat_model = editor.baseline_chat_model.clone();
             editor.draft_code_model = editor.baseline_code_model.clone();
+            return;
+        }
+        if let Some(editor) = self.settings_tools_editor.as_mut() {
+            editor.draft_approval_mode = editor.baseline_approval_mode;
             return;
         }
         if let Some(editor) = self.settings_context_editor.as_mut() {
@@ -2141,6 +2273,28 @@ impl App {
                     next_chat_model.provider().env_var()
                 ));
             }
+            return;
+        }
+
+        if let Some(editor) = self.settings_tools_editor {
+            if !editor.is_dirty() {
+                self.push_notification("No settings changes to save.");
+                return;
+            }
+            let settings = config::ToolApprovalSettings {
+                mode: approval_mode_config_value(editor.draft_approval_mode).to_string(),
+            };
+            if let Err(err) = config::ForgeConfig::persist_tool_approval_settings(&settings) {
+                tracing::warn!("Failed to persist tool approval setting: {err}");
+                self.push_notification(format!("Failed to save settings: {err}"));
+                return;
+            }
+            self.configured_tool_approval_mode = editor.draft_approval_mode;
+            self.pending_turn_tool_approval_mode = Some(editor.draft_approval_mode);
+            if let Some(editor) = self.settings_tools_editor.as_mut() {
+                editor.baseline_approval_mode = editor.draft_approval_mode;
+            }
+            self.push_notification("Tool defaults saved. Changes apply on the next turn.");
             return;
         }
 
@@ -2371,6 +2525,15 @@ impl App {
         if self.settings_pending_model_overrides_apply_next_turn() {
             session_overrides.push("pending model overrides: next turn".to_string());
         }
+        if self.settings_configured_tool_approval_mode() != tools::ApprovalMode::Default {
+            session_overrides.push(format!(
+                "tool approval mode: {}",
+                approval_mode_display(self.settings_configured_tool_approval_mode())
+            ));
+        }
+        if self.settings_pending_tools_apply_next_turn() {
+            session_overrides.push("pending tool defaults: next turn".to_string());
+        }
 
         RuntimeSnapshot {
             active_profile: "default".to_string(),
@@ -2502,18 +2665,15 @@ impl App {
             ],
         });
 
-        let approval_mode = match self.tool_settings.policy.mode {
-            tools::ApprovalMode::Permissive => "permissive",
-            tools::ApprovalMode::Default => "default",
-            tools::ApprovalMode::Strict => "strict",
-        };
+        let pending_approval_mode = self.pending_turn_tool_approval_mode;
         settings.push(ResolveSetting {
             setting: "Tool Approval Mode",
             layers: vec![
                 ResolveLayerValue {
                     layer: "Global",
-                    value: approval_mode.to_string(),
-                    is_winner: true,
+                    value: approval_mode_display(self.settings_configured_tool_approval_mode())
+                        .to_string(),
+                    is_winner: pending_approval_mode.is_none(),
                 },
                 ResolveLayerValue {
                     layer: "Project",
@@ -2527,8 +2687,11 @@ impl App {
                 },
                 ResolveLayerValue {
                     layer: "Session",
-                    value: "unset".to_string(),
-                    is_winner: false,
+                    value: pending_approval_mode.map_or_else(
+                        || "unset".to_string(),
+                        |mode| approval_mode_display(mode).to_string(),
+                    ),
+                    is_winner: pending_approval_mode.is_some(),
                 },
             ],
         });

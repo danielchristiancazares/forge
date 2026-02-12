@@ -333,6 +333,7 @@ impl App {
             ui_options,
             ..ViewState::default()
         };
+        let configured_tool_approval_mode = tool_settings.policy.mode;
 
         let mut app = Self {
             input: InputState::default(),
@@ -343,15 +344,18 @@ impl App {
             configured_model: configured_model.clone(),
             configured_chat_model_override: configured_chat_model_override.clone(),
             configured_code_model_override: configured_code_model_override.clone(),
+            configured_tool_approval_mode,
             configured_context_memory_enabled: memory_enabled,
             configured_ui_options: ui_options,
             pending_turn_model: None,
             pending_turn_chat_model_override: None,
             pending_turn_code_model_override: None,
+            pending_turn_tool_approval_mode: None,
             pending_turn_context_memory_enabled: None,
             pending_turn_ui_options: None,
             settings_model_editor: None,
             settings_model_overrides_editor: None,
+            settings_tools_editor: None,
             settings_context_editor: None,
             settings_appearance_editor: None,
             api_keys,

@@ -396,15 +396,8 @@ impl ContextManager {
                     messages,
                     distillate_tokens,
                 } => {
-                    let original_tokens: u32 = messages.iter().map(|(_, t)| *t).sum();
-
-                    // Prefer full originals when budget allows; otherwise fall back to the distillate.
-                    if tokens_used + original_tokens <= remaining_budget {
-                        for (id, tokens) in messages.iter().rev() {
-                            selected_rev.push(ContextSegment::original(*id, *tokens));
-                        }
-                        tokens_used += original_tokens;
-                    } else if tokens_used + *distillate_tokens <= remaining_budget {
+                    // Once distilled, always use the distillate. Originals are only for TUI display.
+                    if tokens_used + *distillate_tokens <= remaining_budget {
                         let replaces: Vec<MessageId> = messages.iter().map(|(id, _)| *id).collect();
                         selected_rev.push(ContextSegment::distilled(
                             *distillate_id,
@@ -413,7 +406,7 @@ impl ContextManager {
                         ));
                         tokens_used += *distillate_tokens;
                     } else {
-                        // Even the distillate doesn't fit. Mark underlying messages for
+                        // Distillate doesn't fit. Mark underlying messages for
                         // hierarchical re-distillation (combined with other old content
                         // into a more compact distillation). The old distillate becomes orphaned.
                         exhausted = true;

@@ -64,15 +64,18 @@ fn test_app() -> App {
         configured_model: model.clone(),
         configured_chat_model_override: None,
         configured_code_model_override: None,
+        configured_tool_approval_mode: tools::ApprovalMode::Default,
         configured_context_memory_enabled: true,
         configured_ui_options: UiOptions::default(),
         pending_turn_model: None,
         pending_turn_chat_model_override: None,
         pending_turn_code_model_override: None,
+        pending_turn_tool_approval_mode: None,
         pending_turn_context_memory_enabled: None,
         pending_turn_ui_options: None,
         settings_model_editor: None,
         settings_model_overrides_editor: None,
+        settings_tools_editor: None,
         settings_context_editor: None,
         settings_appearance_editor: None,
         api_keys,
@@ -485,6 +488,14 @@ fn open_context_settings(app: &mut App) {
     app.settings_activate();
 }
 
+fn open_tools_settings(app: &mut App) {
+    app.enter_settings_mode();
+    for _ in 0..4 {
+        app.settings_move_down();
+    }
+    app.settings_activate();
+}
+
 #[test]
 fn settings_usable_model_count_reflects_configured_providers() {
     let mut app = test_app();
@@ -612,6 +623,49 @@ fn settings_model_overrides_cycle_and_revert_updates_dirty_state() {
             draft_chat_model: None,
             draft_code_model: None,
             selected: 1,
+            dirty: false,
+        })
+    );
+}
+
+#[test]
+fn settings_activate_tools_initializes_editor_snapshot() {
+    let mut app = test_app();
+
+    open_tools_settings(&mut app);
+
+    assert_eq!(app.settings_detail_view(), Some(SettingsCategory::Tools));
+    assert_eq!(
+        app.settings_tools_editor_snapshot(),
+        Some(ToolsEditorSnapshot {
+            draft_approval_mode: "default",
+            selected: 0,
+            dirty: false,
+        })
+    );
+}
+
+#[test]
+fn settings_tools_cycle_and_revert_updates_dirty_state() {
+    let mut app = test_app();
+    open_tools_settings(&mut app);
+
+    app.settings_detail_toggle_selected();
+    assert_eq!(
+        app.settings_tools_editor_snapshot(),
+        Some(ToolsEditorSnapshot {
+            draft_approval_mode: "strict",
+            selected: 0,
+            dirty: true,
+        })
+    );
+
+    app.settings_revert_edits();
+    assert_eq!(
+        app.settings_tools_editor_snapshot(),
+        Some(ToolsEditorSnapshot {
+            draft_approval_mode: "default",
+            selected: 0,
             dirty: false,
         })
     );
@@ -786,6 +840,25 @@ fn queue_message_applies_pending_model_override_before_request_config() {
     assert_eq!(queued.config.model(), &pending_model);
     assert_eq!(app.model(), pending_model.as_str());
     assert!(!app.settings_pending_model_overrides_apply_next_turn());
+}
+
+#[test]
+fn queue_message_applies_pending_tools_before_request_config() {
+    let mut app = test_app();
+    app.pending_turn_tool_approval_mode = Some(tools::ApprovalMode::Strict);
+    app.input = InputState::Insert(DraftInput {
+        text: "pending tools".to_string(),
+        cursor: 13,
+    });
+
+    let token = app.insert_token().expect("insert mode");
+    let _queued = app
+        .insert_mode(token)
+        .queue_message()
+        .expect("queued message");
+
+    assert_eq!(app.tool_settings.policy.mode, tools::ApprovalMode::Strict);
+    assert!(!app.settings_pending_tools_apply_next_turn());
 }
 
 #[test]
