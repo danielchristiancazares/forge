@@ -30,20 +30,6 @@ When writing instructions or scripts, avoid assuming a single shell. If you need
 - Inline `format!` args (`clippy::uninlined_format_args`)
 - Test assertions: compare whole objects, not field-by-field
 
-## Branching and Worktrees
-
-When working on a feature or fix, create a git worktree to isolate from other agents:
-
-```
-git worktree add ../forge-<branch> -b <branch>
-# All file operations use absolute paths under ../forge-<branch>/
-# Run cargo/just commands from the worktree root
-# When done: commit, push, open PR, then clean up
-git worktree remove ../forge-<branch>
-```
-
-This prevents uncommitted changes from one session bleeding into another's builds and commits. The main checkout stays clean.
-
 ## Shell Pitfalls (Windows)
 
 These are **PowerShell-specific** pitfalls (and/or apply when running commands in a tool runner that does not preserve a working directory):
@@ -62,11 +48,11 @@ These are **PowerShell-specific** pitfalls (and/or apply when running commands i
 ```
 just verify                             # fmt + clippy + test (always run before commit)
 just fix                                # CRLF → LF normalization
-cargo check                             # Fast type-check
+just check                             # Fast type-check
 cargo test test_name                    # Single test
 cargo test -- --nocapture               # With stdout
 cargo test --test integration_test      # Integration tests only
-cargo cov                               # Coverage report
+just cov                               # Coverage report
 ```
 
 ## Commit Workflow
