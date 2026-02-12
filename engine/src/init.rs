@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use forge_types::{OutputLimits, Provider, SecretString};
+use forge_types::{OutputLimits, Provider, SecretString, ToolDefinition};
 
 use crate::config::{self, ForgeConfig, OpenAIConfig};
 use crate::state::{DataDir, DataDirSource, OperationState};
@@ -63,6 +63,20 @@ const DEFAULT_SANDBOX_DENIES: [&str; 27] = [
     "**/*.mdmp",
     "**/*.stackdump",
 ];
+
+fn default_env_denylist_patterns() -> Vec<String> {
+    DEFAULT_ENV_DENYLIST
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect()
+}
+
+fn default_sandbox_deny_patterns() -> Vec<String> {
+    DEFAULT_SANDBOX_DENIES
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect()
+}
 
 fn insert_resolved_key(
     api_keys: &mut HashMap<Provider, SecretString>,
@@ -295,25 +309,8 @@ impl App {
 
         // Tool settings and registry.
         let tool_settings = Self::tool_settings_from_config(config.as_ref());
-        let mut tool_registry = tools::ToolRegistry::default();
-        if let Err(e) = builtins::register_builtins(
-            &mut tool_registry,
-            tool_settings.read_limits,
-            tool_settings.patch_limits,
-            tool_settings.search.clone(),
-            tool_settings.webfetch.clone(),
-            tool_settings.shell.clone(),
-            tool_settings.run_policy,
-        ) {
-            tracing::warn!("Failed to register built-in tools: {e}");
-        }
-        let tool_registry = std::sync::Arc::new(tool_registry);
-        let tool_definitions = tool_registry.definitions();
-        let hidden_tools: std::collections::HashSet<String> = tool_definitions
-            .iter()
-            .filter(|d| d.hidden)
-            .map(|d| d.name.clone())
-            .collect();
+        let (tool_registry, tool_definitions, hidden_tools) =
+            Self::build_tool_registry(&tool_settings);
 
         let tool_journal_path = data_dir.join("tool_journal.db");
         let tool_journal = ToolJournal::open(&tool_journal_path)?;
@@ -522,45 +519,29 @@ impl App {
     }
 
     fn openai_request_options_from_config(config: Option<&OpenAIConfig>) -> OpenAIRequestOptions {
-        let reasoning_effort = config
-            .and_then(|cfg| cfg.reasoning_effort.as_deref())
-            .map(|raw| {
-                OpenAIReasoningEffort::parse(raw).unwrap_or_else(|_| {
-                    tracing::warn!("Unknown OpenAI reasoning_effort in config: {raw}");
-                    OpenAIReasoningEffort::default()
-                })
-            })
-            .unwrap_or_default();
+        let reasoning_effort = parse_config_enum_or_default(
+            config.and_then(|cfg| cfg.reasoning_effort.as_deref()),
+            "OpenAI reasoning_effort",
+            OpenAIReasoningEffort::parse,
+        );
 
-        let reasoning_summary = config
-            .and_then(|cfg| cfg.reasoning_summary.as_deref())
-            .map(|raw| {
-                OpenAIReasoningSummary::parse(raw).unwrap_or_else(|_| {
-                    tracing::warn!("Unknown OpenAI reasoning_summary in config: {raw}");
-                    OpenAIReasoningSummary::default()
-                })
-            })
-            .unwrap_or_default();
+        let reasoning_summary = parse_config_enum_or_default(
+            config.and_then(|cfg| cfg.reasoning_summary.as_deref()),
+            "OpenAI reasoning_summary",
+            OpenAIReasoningSummary::parse,
+        );
 
-        let verbosity = config
-            .and_then(|cfg| cfg.verbosity.as_deref())
-            .map(|raw| {
-                OpenAITextVerbosity::parse(raw).unwrap_or_else(|_| {
-                    tracing::warn!("Unknown OpenAI verbosity in config: {raw}");
-                    OpenAITextVerbosity::default()
-                })
-            })
-            .unwrap_or_default();
+        let verbosity = parse_config_enum_or_default(
+            config.and_then(|cfg| cfg.verbosity.as_deref()),
+            "OpenAI verbosity",
+            OpenAITextVerbosity::parse,
+        );
 
-        let truncation = config
-            .and_then(|cfg| cfg.truncation.as_deref())
-            .map(|raw| {
-                OpenAITruncation::parse(raw).unwrap_or_else(|_| {
-                    tracing::warn!("Unknown OpenAI truncation in config: {raw}");
-                    OpenAITruncation::default()
-                })
-            })
-            .unwrap_or_default();
+        let truncation = parse_config_enum_or_default(
+            config.and_then(|cfg| cfg.truncation.as_deref()),
+            "OpenAI truncation",
+            OpenAITruncation::parse,
+        );
 
         OpenAIRequestOptions::new(reasoning_effort, reasoning_summary, verbosity, truncation)
     }
@@ -714,21 +695,11 @@ impl App {
             .and_then(|cfg| cfg.environment.as_ref())
             .map(|cfg| cfg.denylist.clone())
             .filter(|list| !list.is_empty())
-            .unwrap_or_else(|| {
-                DEFAULT_ENV_DENYLIST
-                    .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect()
-            });
+            .unwrap_or_else(default_env_denylist_patterns);
         let env_sanitizer = tools::EnvSanitizer::new(&env_patterns).unwrap_or_else(|e| {
             tracing::warn!("Invalid env denylist: {e}. Using defaults.");
-            tools::EnvSanitizer::new(
-                &DEFAULT_ENV_DENYLIST
-                    .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect::<Vec<_>>(),
-            )
-            .expect("default env sanitizer")
+            tools::EnvSanitizer::new(&default_env_denylist_patterns())
+                .expect("default env sanitizer")
         });
 
         let sandbox_cfg = tools_cfg.and_then(|cfg| cfg.sandbox.as_ref());
@@ -739,11 +710,7 @@ impl App {
             .map(|cfg| cfg.denied_patterns.clone())
             .unwrap_or_default();
         if include_default_denies {
-            denied_patterns.extend(
-                DEFAULT_SANDBOX_DENIES
-                    .iter()
-                    .map(std::string::ToString::to_string),
-            );
+            denied_patterns.extend(default_sandbox_deny_patterns());
         }
 
         let mut allowed_roots: Vec<PathBuf> = sandbox_cfg
@@ -766,10 +733,7 @@ impl App {
             tracing::warn!("Invalid sandbox config: {e}. Using defaults.");
             tools::sandbox::Sandbox::new(
                 vec![PathBuf::from(".")],
-                DEFAULT_SANDBOX_DENIES
-                    .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect(),
+                default_sandbox_deny_patterns(),
                 false,
             )
             .expect("default sandbox")
@@ -797,6 +761,35 @@ impl App {
             run_policy,
         }
     }
+
+    pub(crate) fn build_tool_registry(
+        tool_settings: &tools::ToolSettings,
+    ) -> (
+        std::sync::Arc<tools::ToolRegistry>,
+        Vec<ToolDefinition>,
+        std::collections::HashSet<String>,
+    ) {
+        let mut tool_registry = tools::ToolRegistry::default();
+        if let Err(e) = builtins::register_builtins(
+            &mut tool_registry,
+            tool_settings.read_limits,
+            tool_settings.patch_limits,
+            tool_settings.search.clone(),
+            tool_settings.webfetch.clone(),
+            tool_settings.shell.clone(),
+            tool_settings.run_policy,
+        ) {
+            tracing::warn!("Failed to register built-in tools: {e}");
+        }
+        let tool_registry = std::sync::Arc::new(tool_registry);
+        let tool_definitions = tool_registry.definitions();
+        let hidden_tools = tool_definitions
+            .iter()
+            .filter(|d| d.hidden)
+            .map(|d| d.name.clone())
+            .collect();
+        (tool_registry, tool_definitions, hidden_tools)
+    }
 }
 
 fn parse_approval_mode(raw: Option<&str>) -> tools::ApprovalMode {
@@ -806,6 +799,21 @@ fn parse_approval_mode(raw: Option<&str>) -> tools::ApprovalMode {
         // "default", "prompt", or anything else
         _ => tools::ApprovalMode::Default,
     }
+}
+
+fn parse_config_enum_or_default<T, E, F>(raw: Option<&str>, field: &str, parse: F) -> T
+where
+    T: Default,
+    E: std::fmt::Display,
+    F: Fn(&str) -> Result<T, E>,
+{
+    raw.map(|value| {
+        parse(value).unwrap_or_else(|_| {
+            tracing::warn!("Unknown {field} in config: {value}");
+            T::default()
+        })
+    })
+    .unwrap_or_default()
 }
 
 fn parse_run_fallback_mode(mode: Option<config::RunFallbackMode>) -> tools::RunSandboxFallbackMode {

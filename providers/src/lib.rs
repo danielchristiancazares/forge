@@ -202,6 +202,30 @@ pub(crate) async fn send_event(tx: &mpsc::Sender<StreamEvent>, event: StreamEven
     tx.send(event).await.is_ok()
 }
 
+pub(crate) fn parse_sse_payload<T>(
+    json: &serde_json::Value,
+    provider_name: &'static str,
+) -> Option<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    match serde_json::from_value(json.clone()) {
+        Ok(event) => Some(event),
+        Err(e) => {
+            tracing::warn!(%e, provider = provider_name, "Failed to parse SSE event");
+            None
+        }
+    }
+}
+
+pub(crate) fn emit_or_continue(events: Vec<StreamEvent>) -> SseParseAction {
+    if events.is_empty() {
+        SseParseAction::Continue
+    } else {
+        SseParseAction::Emit(events)
+    }
+}
+
 pub(crate) async fn process_sse_stream<P: SseParser>(
     response: reqwest::Response,
     parser: &mut P,
@@ -370,6 +394,37 @@ pub(crate) async fn handle_response(
     }
 
     Ok(ApiResponse::Success(response))
+}
+
+pub(crate) async fn send_retried_sse_request<P, F>(
+    build_request: F,
+    retry_config: &retry::RetryConfig,
+    tx: &mpsc::Sender<StreamEvent>,
+    parser: &mut P,
+    idle_timeout: Duration,
+) -> Result<()>
+where
+    P: SseParser,
+    F: Fn() -> reqwest::RequestBuilder,
+{
+    let response = match send_retried_request(build_request, retry_config, tx).await? {
+        ApiResponse::Success(resp) => resp,
+        ApiResponse::StreamTerminated => return Ok(()),
+    };
+
+    process_sse_stream(response, parser, tx, idle_timeout).await
+}
+
+pub(crate) async fn send_retried_request<F>(
+    build_request: F,
+    retry_config: &retry::RetryConfig,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> Result<ApiResponse>
+where
+    F: Fn() -> reqwest::RequestBuilder,
+{
+    let outcome = retry::send_with_retry(build_request, None, retry_config).await;
+    handle_response(outcome, tx).await
 }
 
 /// Provider + model configuration with provider-specific tuning knobs.

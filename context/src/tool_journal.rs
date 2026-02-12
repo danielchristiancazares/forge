@@ -29,11 +29,12 @@
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
-use std::fs::OpenOptions;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use crate::StepId;
+use crate::sqlite_security::prepare_db_path;
+use crate::time_utils::system_time_to_iso8601_millis;
 use forge_types::{
     ThinkingReplayState, ThoughtSignature, ThoughtSignatureState, ToolCall, ToolResult,
 };
@@ -138,16 +139,7 @@ impl ToolJournal {
     /// Open or create tool journal database at the given path.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        if let Some(parent) = path.parent()
-            && !parent.exists()
-        {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
-        }
-        if let Some(parent) = path.parent() {
-            ensure_secure_dir(parent)?;
-        }
-        ensure_secure_db_files(path)?;
+        prepare_db_path(path)?;
 
         let db = Connection::open(path)
             .with_context(|| format!("Failed to open tool journal at {}", path.display()))?;
@@ -188,7 +180,7 @@ impl ToolJournal {
             bail!("Cannot begin tool batch: pending batch {existing} exists");
         }
 
-        let created_at = system_time_to_iso8601(SystemTime::now());
+        let created_at = system_time_to_iso8601_millis(SystemTime::now());
         let thinking_replay_json = serialize_replay_if_persistent(thinking_replay);
         let tx = self
             .db
@@ -246,7 +238,7 @@ impl ToolJournal {
             bail!("Cannot begin tool batch: pending batch {existing} exists");
         }
 
-        let created_at = system_time_to_iso8601(SystemTime::now());
+        let created_at = system_time_to_iso8601_millis(SystemTime::now());
         let tx = self
             .db
             .transaction()
@@ -496,7 +488,7 @@ impl ToolJournal {
 
     /// Record a tool result for a batch.
     pub fn record_result(&mut self, batch_id: ToolBatchId, result: &ToolResult) -> Result<()> {
-        let created_at = system_time_to_iso8601(SystemTime::now());
+        let created_at = system_time_to_iso8601_millis(SystemTime::now());
         let inserted = self
             .db
             .execute(
@@ -1012,127 +1004,6 @@ fn deserialize_replay(json: Option<&str>) -> ThinkingReplayState {
     }
 }
 
-fn system_time_to_iso8601(time: SystemTime) -> String {
-    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
-    let secs = duration.as_secs();
-    let millis = duration.subsec_millis();
-
-    chrono_lite_format(secs, millis)
-}
-
-fn chrono_lite_format(secs: u64, millis: u32) -> String {
-    const SECS_PER_DAY: u64 = 86400;
-    const SECS_PER_HOUR: u64 = 3600;
-    const SECS_PER_MINUTE: u64 = 60;
-
-    let days = secs / SECS_PER_DAY;
-    let remaining = secs % SECS_PER_DAY;
-
-    let hours = remaining / SECS_PER_HOUR;
-    let remaining = remaining % SECS_PER_HOUR;
-
-    let minutes = remaining / SECS_PER_MINUTE;
-    let seconds = remaining % SECS_PER_MINUTE;
-
-    let (year, month, day) = days_to_ymd(days);
-
-    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z")
-}
-
-fn ensure_secure_dir(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path)
-        .with_context(|| format!("Failed to create directory: {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let metadata = std::fs::metadata(path)
-            .with_context(|| format!("Failed to read directory metadata: {}", path.display()))?;
-
-        // Only modify permissions if we own the directory
-        let our_uid = unsafe { libc::getuid() };
-        if metadata.uid() != our_uid {
-            // Not our directory - skip silently (e.g., /tmp)
-            return Ok(());
-        }
-
-        // Check if permissions are already secure (0o700 or stricter)
-        let current_mode = metadata.permissions().mode() & 0o777;
-        if current_mode & 0o077 != 0 {
-            // Group or other has some access - tighten to 0o700
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).with_context(
-                || format!("Failed to set directory permissions: {}", path.display()),
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn ensure_secure_db_files(path: &Path) -> Result<()> {
-    if !path.exists() {
-        // Use atomic mode setting on Unix to avoid TOCTOU race between create and chmod
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            let _file = OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .read(true)
-                .write(true)
-                .mode(0o600)
-                .open(path)
-                .with_context(|| format!("Failed to create database file: {}", path.display()))?;
-        }
-        #[cfg(not(unix))]
-        {
-            let _file = OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .read(true)
-                .write(true)
-                .open(path)
-                .with_context(|| format!("Failed to create database file: {}", path.display()))?;
-        }
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Ensure permissions are correct even for pre-existing files
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("Failed to set database permissions: {}", path.display()))?;
-        for suffix in ["-wal", "-shm"] {
-            let sidecar = sqlite_sidecar_path(path, suffix);
-            if sidecar.exists() {
-                let _ = std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o600));
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn sqlite_sidecar_path(path: &Path, suffix: &str) -> std::path::PathBuf {
-    let file_name = path.file_name().map(|name| name.to_string_lossy());
-    match file_name {
-        Some(name) => path.with_file_name(format!("{name}{suffix}")),
-        None => std::path::PathBuf::from(format!("{}{suffix}", path.display())),
-    }
-}
-
-fn days_to_ymd(days: u64) -> (i32, u32, u32) {
-    let z = days as i64 + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = i64::from(yoe) + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if m <= 2 { y + 1 } else { y };
-
-    (year as i32, m, d)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1646,7 +1517,7 @@ mod tests {
         let journal = ToolJournal::open_in_memory().unwrap();
 
         // Manually insert a batch with garbage thinking_replay_json
-        let created_at = system_time_to_iso8601(SystemTime::now());
+        let created_at = system_time_to_iso8601_millis(SystemTime::now());
         journal
             .db
             .execute(

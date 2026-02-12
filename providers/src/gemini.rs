@@ -1,9 +1,8 @@
 use crate::{
-    ApiResponse, CacheableMessage, Message, OutputLimits, Result, SendMessageRequest,
-    SseParseAction, SseParser, StreamEvent, ThoughtSignature, ThoughtSignatureState,
-    ToolDefinition, handle_response, http_client, http_client_with_timeout, process_sse_stream,
-    read_capped_error_body,
-    retry::{RetryConfig, send_with_retry},
+    CacheableMessage, Message, OutputLimits, Result, SendMessageRequest, SseParseAction, SseParser,
+    StreamEvent, ThoughtSignature, ThoughtSignatureState, ToolDefinition, emit_or_continue,
+    http_client, http_client_with_timeout, parse_sse_payload, read_capped_error_body,
+    retry::RetryConfig, send_retried_sse_request,
 };
 
 use chrono::{DateTime, Utc};
@@ -125,21 +124,7 @@ pub async fn create_cache(
     if let Some(tools) = tools
         && !tools.is_empty()
     {
-        let function_declarations: Vec<Value> = tools
-            .iter()
-            .map(|t| {
-                let mut parameters = t.parameters.clone();
-                remove_additional_properties(&mut parameters);
-                json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": parameters
-                })
-            })
-            .collect();
-        body["tools"] = json!([{
-            "functionDeclarations": function_declarations
-        }]);
+        body["tools"] = gemini_tools_payload(tools);
     }
 
     let client = http_client_with_timeout(120).map_err(|e| anyhow::anyhow!("HTTP client: {e}"))?;
@@ -188,6 +173,13 @@ fn text_part(text: &str) -> Value {
     json!({ "text": text })
 }
 
+fn push_text_content(contents: &mut Vec<Value>, role: &str, text: &str) {
+    contents.push(json!({
+        "role": role,
+        "parts": [text_part(text)]
+    }));
+}
+
 fn remove_additional_properties(value: &mut Value) {
     match value {
         Value::Object(map) => {
@@ -203,6 +195,27 @@ fn remove_additional_properties(value: &mut Value) {
         }
         _ => {}
     }
+}
+
+fn gemini_function_declarations(tools: &[ToolDefinition]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|t| {
+            let mut parameters = t.parameters.clone();
+            remove_additional_properties(&mut parameters);
+            json!({
+                "name": t.name,
+                "description": t.description,
+                "parameters": parameters
+            })
+        })
+        .collect()
+}
+
+fn gemini_tools_payload(tools: &[ToolDefinition]) -> Value {
+    json!([{
+        "functionDeclarations": gemini_function_declarations(tools)
+    }])
 }
 
 /// Build the request body for Gemini API.
@@ -229,24 +242,15 @@ fn build_request_body(
             Message::System(_) => {
                 // System messages go into contents as user messages for Gemini
                 // (main system prompt uses top-level system_instruction)
-                contents.push(json!({
-                    "role": "user",
-                    "parts": [text_part(msg.content())]
-                }));
+                push_text_content(&mut contents, "user", msg.content());
                 index += 1;
             }
             Message::User(_) => {
-                contents.push(json!({
-                    "role": "user",
-                    "parts": [text_part(msg.content())]
-                }));
+                push_text_content(&mut contents, "user", msg.content());
                 index += 1;
             }
             Message::Assistant(_) => {
-                contents.push(json!({
-                    "role": "model",
-                    "parts": [text_part(msg.content())]
-                }));
+                push_text_content(&mut contents, "model", msg.content());
                 index += 1;
             }
             Message::ToolUse(_) => {
@@ -353,24 +357,7 @@ fn build_request_body(
         && let Some(tools) = tools
         && !tools.is_empty()
     {
-        let function_declarations: Vec<Value> = tools
-            .iter()
-            .map(|t| {
-                let mut parameters = t.parameters.clone();
-                remove_additional_properties(&mut parameters);
-                json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": parameters
-                })
-            })
-            .collect();
-        body.insert(
-            "tools".into(),
-            json!([{
-                "functionDeclarations": function_declarations
-            }]),
-        );
+        body.insert("tools".into(), gemini_tools_payload(tools));
     }
 
     Value::Object(body)
@@ -389,12 +376,8 @@ struct GeminiParser;
 impl SseParser for GeminiParser {
     fn parse(&mut self, json: &Value) -> SseParseAction {
         // Deserialize into typed response
-        let response: typed::Response = match serde_json::from_value(json.clone()) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(%e, "Failed to parse Gemini SSE event");
-                return SseParseAction::Continue;
-            }
+        let Some(response) = parse_sse_payload::<typed::Response>(json, "Gemini") else {
+            return SseParseAction::Continue;
         };
 
         // Check for error response
@@ -493,11 +476,7 @@ impl SseParser for GeminiParser {
             return SseParseAction::Emit(events);
         }
 
-        if events.is_empty() {
-            SseParseAction::Continue
-        } else {
-            SseParseAction::Emit(events)
-        }
+        emit_or_continue(events)
     }
 
     fn provider_name(&self) -> &'static str {
@@ -525,9 +504,10 @@ pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
     );
 
     let api_key = config.api_key().to_string();
-    let body_json = body.clone();
+    let body_json = body;
 
-    let outcome = send_with_retry(
+    let mut parser = GeminiParser;
+    send_retried_sse_request(
         || {
             client
                 .post(&url)
@@ -535,18 +515,12 @@ pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
                 .header("content-type", "application/json")
                 .json(&body_json)
         },
-        None,
         &retry_config,
+        tx,
+        &mut parser,
+        crate::stream_idle_timeout(),
     )
-    .await;
-
-    let response = match handle_response(outcome, tx).await? {
-        ApiResponse::Success(resp) => resp,
-        ApiResponse::StreamTerminated => return Ok(()),
-    };
-
-    let mut parser = GeminiParser;
-    process_sse_stream(response, &mut parser, tx, crate::stream_idle_timeout()).await
+    .await
 }
 
 #[cfg(test)]

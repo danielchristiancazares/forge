@@ -1460,10 +1460,7 @@ impl ToolExecutor for RunCommandTool {
                 .stderr(std::process::Stdio::piped())
                 .current_dir(&ctx.working_dir);
 
-            let env: Vec<(String, String)> = std::env::vars().collect();
-            let sanitized = ctx.env_sanitizer.sanitize_env(&env);
-            command.env_clear();
-            command.envs(sanitized);
+            super::process::apply_sanitized_env(&mut command, &ctx.env_sanitizer);
 
             let requires_host_sandbox = prepared.requires_host_sandbox();
 

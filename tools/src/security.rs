@@ -16,32 +16,13 @@
 use std::sync::OnceLock;
 
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
-use forge_types::{sanitize_terminal_text, strip_steganographic_chars};
+use forge_types::{ENV_SECRET_DENYLIST, sanitize_terminal_text, strip_steganographic_chars};
 use globset::{GlobBuilder, GlobSetBuilder};
 use regex::Regex;
 
 /// Minimum length for env var values to be considered secrets.
 /// Avoids false positives on short values ("true", "1", "yes").
 const MIN_SECRET_LENGTH: usize = 16;
-
-/// Variable name patterns indicating sensitive values.
-const SENSITIVE_VAR_PATTERNS: &[&str] = &[
-    "*_KEY",
-    "*_TOKEN",
-    "*_SECRET",
-    "*_PASSWORD",
-    "*_CREDENTIAL*",
-    "*_API_*",
-    "AWS_*",
-    "ANTHROPIC_*",
-    "OPENAI_*",
-    "GEMINI_*",
-    "GOOGLE_*",
-    "AZURE_*",
-    "GH_*",
-    "GITHUB_*",
-    "NPM_*",
-];
 
 /// Runtime secret redactor built from environment variables.
 ///
@@ -154,7 +135,7 @@ impl SecretRedactor {
 
 fn build_var_name_matcher() -> globset::GlobSet {
     let mut builder = GlobSetBuilder::new();
-    for pattern in SENSITIVE_VAR_PATTERNS {
+    for pattern in ENV_SECRET_DENYLIST {
         if let Ok(glob) = GlobBuilder::new(pattern).case_insensitive(true).build() {
             builder.add(glob);
         }

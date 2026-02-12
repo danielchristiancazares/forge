@@ -35,12 +35,14 @@ use rusqlite::{
     types::{FromSql, FromSqlResult, ToSql, ToSqlOutput, ValueRef},
 };
 use serde::{Deserialize, Serialize};
-use std::fs::OpenOptions;
 use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+
+use crate::sqlite_security::prepare_db_path;
+use crate::time_utils::system_time_to_iso8601_millis;
 
 /// Unique identifier for a streaming step/session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -413,17 +415,7 @@ impl StreamJournal {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
 
-        // Ensure parent directory exists
-        if let Some(parent) = path.parent()
-            && !parent.exists()
-        {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
-        }
-        if let Some(parent) = path.parent() {
-            ensure_secure_dir(parent)?;
-        }
-        ensure_secure_db_files(path)?;
+        prepare_db_path(path)?;
 
         let db = Connection::open(path)
             .with_context(|| format!("Failed to open database at {}", path.display()))?;
@@ -481,7 +473,7 @@ impl StreamJournal {
         let model_name = model_name.into();
 
         // Record step metadata for crash recovery
-        let created_at = system_time_to_iso8601(SystemTime::now());
+        let created_at = system_time_to_iso8601_millis(SystemTime::now());
         self.db
             .execute(
                 "INSERT INTO step_metadata (step_id, model_name, committed, created_at)
@@ -683,7 +675,7 @@ impl StreamJournal {
             .transaction()
             .context("Failed to begin flush transaction")?;
         for delta in deltas {
-            let created_at = system_time_to_iso8601(delta.timestamp);
+            let created_at = system_time_to_iso8601_millis(delta.timestamp);
             let seq_i64 = i64::try_from(delta.seq).context("seq overflow")?;
 
             tx.execute(
@@ -833,7 +825,7 @@ impl StreamJournal {
             .checked_sub(older_than)
             .ok_or_else(|| anyhow!("Duration overflow calculating cutoff time"))?;
 
-        let cutoff_str = system_time_to_iso8601(cutoff);
+        let cutoff_str = system_time_to_iso8601_millis(cutoff);
 
         let deleted = self
             .db
@@ -849,7 +841,7 @@ impl StreamJournal {
 }
 
 fn append_delta(db: &Connection, delta: &StreamDelta) -> Result<()> {
-    let created_at = system_time_to_iso8601(delta.timestamp);
+    let created_at = system_time_to_iso8601_millis(delta.timestamp);
     let seq_i64 = i64::try_from(delta.seq).context("seq overflow")?;
 
     db.execute(
@@ -985,135 +977,6 @@ pub struct JournalStats {
     pub unsealed_entries: u64,
     /// Current (last allocated) step ID
     pub current_step_id: StepId,
-}
-
-/// Convert a `SystemTime` to ISO 8601 string
-fn system_time_to_iso8601(time: SystemTime) -> String {
-    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
-    let secs = duration.as_secs();
-    let millis = duration.subsec_millis();
-
-    chrono_lite_format(secs, millis)
-}
-
-/// Minimal ISO 8601 formatting without external dependencies
-fn chrono_lite_format(secs: u64, millis: u32) -> String {
-    // Calculate date/time components from unix timestamp
-    const SECS_PER_DAY: u64 = 86400;
-    const SECS_PER_HOUR: u64 = 3600;
-    const SECS_PER_MINUTE: u64 = 60;
-
-    let days = secs / SECS_PER_DAY;
-    let remaining = secs % SECS_PER_DAY;
-
-    let hours = remaining / SECS_PER_HOUR;
-    let remaining = remaining % SECS_PER_HOUR;
-
-    let minutes = remaining / SECS_PER_MINUTE;
-    let seconds = remaining % SECS_PER_MINUTE;
-
-    // Calculate year, month, day from days since epoch (1970-01-01)
-    let (year, month, day) = days_to_ymd(days);
-
-    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z")
-}
-
-fn ensure_secure_dir(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path)
-        .with_context(|| format!("Failed to create directory: {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let metadata = std::fs::metadata(path)
-            .with_context(|| format!("Failed to read directory metadata: {}", path.display()))?;
-
-        // Only modify permissions if we own the directory
-        let our_uid = unsafe { libc::getuid() };
-        if metadata.uid() != our_uid {
-            // Not our directory - skip silently (e.g., /tmp)
-            return Ok(());
-        }
-
-        // Check if permissions are already secure (0o700 or stricter)
-        let current_mode = metadata.permissions().mode() & 0o777;
-        if current_mode & 0o077 != 0 {
-            // Group or other has some access - tighten to 0o700
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).with_context(
-                || format!("Failed to set directory permissions: {}", path.display()),
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn ensure_secure_db_files(path: &Path) -> Result<()> {
-    if !path.exists() {
-        // Use atomic mode setting on Unix to avoid TOCTOU race between create and chmod
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            let _file = OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .read(true)
-                .write(true)
-                .mode(0o600)
-                .open(path)
-                .with_context(|| format!("Failed to create database file: {}", path.display()))?;
-        }
-        #[cfg(not(unix))]
-        {
-            let _file = OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .read(true)
-                .write(true)
-                .open(path)
-                .with_context(|| format!("Failed to create database file: {}", path.display()))?;
-        }
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Ensure permissions are correct even for pre-existing files
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("Failed to set database permissions: {}", path.display()))?;
-        // Secure WAL/SHM sidecars unconditionally — they may be created after
-        // WAL mode is enabled, so always attempt to fix permissions.
-        for suffix in ["-wal", "-shm"] {
-            let sidecar = sqlite_sidecar_path(path, suffix);
-            if sidecar.exists() {
-                let _ = std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o600));
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn sqlite_sidecar_path(path: &Path, suffix: &str) -> std::path::PathBuf {
-    let file_name = path.file_name().map(|name| name.to_string_lossy());
-    match file_name {
-        Some(name) => path.with_file_name(format!("{name}{suffix}")),
-        None => std::path::PathBuf::from(format!("{}{suffix}", path.display())),
-    }
-}
-
-/// Convert days since Unix epoch to (year, month, day)
-fn days_to_ymd(days: u64) -> (i32, u32, u32) {
-    // Algorithm from Howard Hinnant's date algorithms
-    let z = days as i64 + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = i64::from(yoe) + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if m <= 2 { y + 1 } else { y };
-
-    (year as i32, m, d)
 }
 
 /// Parse ISO 8601 string to `SystemTime` (for internal use)
@@ -1452,7 +1315,7 @@ mod tests {
     #[test]
     fn test_date_conversion_roundtrip() {
         let original = SystemTime::now();
-        let iso = system_time_to_iso8601(original);
+        let iso = system_time_to_iso8601_millis(original);
         let parsed = iso8601_to_system_time(&iso).unwrap();
 
         let diff = if original > parsed {
