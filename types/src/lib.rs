@@ -37,30 +37,61 @@ pub use confusables::{HomoglyphWarning, detect_mixed_script};
 pub use sanitize::{sanitize_path_display, sanitize_terminal_text, strip_steganographic_chars};
 pub use text::truncate_with_ellipsis;
 
-/// Canonical environment variable denylist patterns (glob syntax, case-insensitive).
+/// Single point of encoding for sensitive environment variable patterns (IFA-7).
 ///
-/// Used by both the tool executor (`EnvSanitizer`) and LSP server child process
-/// sanitization. Single source of truth — do not duplicate.
-pub const ENV_SECRET_DENYLIST: [&str; 18] = [
-    "*_KEY",
-    "*_TOKEN",
-    "*_SECRET",
-    "*_PASSWORD",
-    "*_CREDENTIAL*",
-    "*_API_*",
-    "AWS_*",
-    "ANTHROPIC_*",
-    "OPENAI_*",
-    "GEMINI_*",
-    "GOOGLE_*",
-    "AZURE_*",
-    "GH_*",
-    "GITHUB_*",
-    "NPM_*",
-    "DYLD_*",
-    "LD_PRELOAD",
-    "LD_LIBRARY_PATH",
-];
+/// Two distinct policies share a common credential subset:
+/// - **Credential patterns**: env vars whose *values* are likely secrets (used by
+///   `SecretRedactor` for output redaction).
+/// - **Process injection patterns**: env vars that control dynamic linker behavior
+///   (dangerous in child processes, but not credential-bearing).
+///
+/// `ENV_SECRET_DENYLIST` is the composed union of both — used by `EnvSanitizer`
+/// and LSP child process sanitization to strip vars from subprocesses.
+///
+/// All three constants are generated from one macro invocation so the lists
+/// cannot drift independently (IFA-7.5: compose, not copy).
+macro_rules! env_denylist {
+    (
+        credential: [$($cred:expr),* $(,)?],
+        injection: [$($inj:expr),* $(,)?],
+    ) => {
+        /// Credential-bearing env var patterns (glob, case-insensitive).
+        /// Used by `SecretRedactor` to identify values worth redacting.
+        pub const ENV_CREDENTIAL_PATTERNS: &[&str] = &[$($cred),*];
+
+        /// Process integrity patterns — not secrets, but dangerous in child envs.
+        pub const ENV_INJECTION_PATTERNS: &[&str] = &[$($inj),*];
+
+        /// Full child-process denylist: credentials ∪ injection vectors.
+        /// Used by `EnvSanitizer` and LSP server child process sanitization.
+        pub const ENV_SECRET_DENYLIST: &[&str] = &[$($cred,)* $($inj),*];
+    };
+}
+
+env_denylist! {
+    credential: [
+        "*_KEY",
+        "*_TOKEN",
+        "*_SECRET",
+        "*_PASSWORD",
+        "*_CREDENTIAL*",
+        "*_API_*",
+        "AWS_*",
+        "ANTHROPIC_*",
+        "OPENAI_*",
+        "GEMINI_*",
+        "GOOGLE_*",
+        "AZURE_*",
+        "GH_*",
+        "GITHUB_*",
+        "NPM_*",
+    ],
+    injection: [
+        "DYLD_*",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+    ],
+}
 
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -2392,5 +2423,30 @@ mod tests {
 
         let b = CacheBudget::new(1).take_one().unwrap();
         assert!(b.take_one().is_none());
+    }
+
+    #[test]
+    fn env_denylist_is_union_of_credential_and_injection() {
+        let mut composed: Vec<&str> = ENV_CREDENTIAL_PATTERNS
+            .iter()
+            .chain(ENV_INJECTION_PATTERNS.iter())
+            .copied()
+            .collect();
+        composed.sort_unstable();
+
+        let mut denylist: Vec<&str> = ENV_SECRET_DENYLIST.to_vec();
+        denylist.sort_unstable();
+
+        assert_eq!(composed, denylist);
+    }
+
+    #[test]
+    fn env_credential_patterns_excludes_injection_vectors() {
+        for pat in ENV_CREDENTIAL_PATTERNS {
+            assert!(
+                !pat.starts_with("DYLD") && *pat != "LD_PRELOAD" && *pat != "LD_LIBRARY_PATH",
+                "credential pattern {pat} looks like an injection vector"
+            );
+        }
     }
 }

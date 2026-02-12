@@ -691,11 +691,29 @@ impl App {
             },
         };
 
-        let env_patterns: Vec<String> = tools_cfg
-            .and_then(|cfg| cfg.environment.as_ref())
-            .map(|cfg| cfg.denylist.clone())
-            .filter(|list| !list.is_empty())
-            .unwrap_or_else(default_env_denylist_patterns);
+        let env_cfg = tools_cfg.and_then(|cfg| cfg.environment.as_ref());
+        let include_default_env = env_cfg
+            .map(|cfg| cfg.include_default_denies)
+            .unwrap_or(true);
+        let env_patterns: Vec<String> = {
+            let mut patterns = if include_default_env {
+                default_env_denylist_patterns()
+            } else {
+                Vec::new()
+            };
+            if let Some(cfg) = env_cfg {
+                for p in &cfg.denylist {
+                    if !patterns.iter().any(|existing| existing == p) {
+                        patterns.push(p.clone());
+                    }
+                }
+            }
+            if patterns.is_empty() {
+                default_env_denylist_patterns()
+            } else {
+                patterns
+            }
+        };
         let env_sanitizer = tools::EnvSanitizer::new(&env_patterns).unwrap_or_else(|e| {
             tracing::warn!("Invalid env denylist: {e}. Using defaults.");
             tools::EnvSanitizer::new(&default_env_denylist_patterns())

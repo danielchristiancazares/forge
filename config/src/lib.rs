@@ -325,6 +325,8 @@ pub struct ToolOutputConfig {
 pub struct ToolEnvironmentConfig {
     #[serde(default)]
     pub denylist: Vec<String>,
+    #[serde(default = "default_true")]
+    pub include_default_denies: bool,
 }
 
 /// Approval policy configuration for tools.
@@ -1075,6 +1077,30 @@ include_default_denies = true
         assert_eq!(sandbox.denied_patterns, vec!["*.secret", "**/.env"]);
         assert!(!sandbox.allow_absolute);
         assert!(sandbox.include_default_denies);
+    }
+
+    #[test]
+    fn parse_tool_environment_config() {
+        let toml_str = r#"
+[tools.environment]
+denylist = ["CUSTOM_*"]
+include_default_denies = true
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let env = config.tools.unwrap().environment.unwrap();
+        assert_eq!(env.denylist, vec!["CUSTOM_*"]);
+        assert!(env.include_default_denies);
+    }
+
+    #[test]
+    fn parse_tool_environment_defaults_include_true() {
+        let toml_str = r#"
+[tools.environment]
+denylist = ["CUSTOM_*"]
+"#;
+        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
+        let env = config.tools.unwrap().environment.unwrap();
+        assert!(env.include_default_denies);
     }
 
     #[test]

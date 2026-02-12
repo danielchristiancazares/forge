@@ -213,7 +213,8 @@ allowlist = ["Read", "GitStatus", "GitDiff", "GitLog", "GitShow", "GitBlame"]  #
 denylist = ["Run"]                     # Always deny these tools
 
 [tools.environment]
-denylist = ["*_KEY", "*_TOKEN", "*_SECRET", "*_PASSWORD", "*_CREDENTIAL*", "*_API_*", "AWS_*", "ANTHROPIC_*", "OPENAI_*", "GEMINI_*", "GOOGLE_*", "AZURE_*", "GH_*", "GITHUB_*", "NPM_*"]  # Case-insensitive patterns
+include_default_denies = true            # Merge with built-in denylist (default: true)
+denylist = ["CUSTOM_*"]                  # Additional patterns (additive when include_default_denies = true)
 
 [tools.sandbox]
 allowed_roots = ["."]                  # Allowed base directories

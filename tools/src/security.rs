@@ -11,12 +11,13 @@
 //! an Aho-Corasick automaton for O(n) multi-pattern matching.
 //!
 //! The redactor is constructed via a single Authority Boundary ([`SecretRedactor::from_env`])
-//! and cached in a `OnceLock` per IFA-7.
+//! and cached in a `OnceLock`. Pattern ownership lives in `forge_types::ENV_CREDENTIAL_PATTERNS`
+//! per IFA-7 (single point of encoding).
 
 use std::sync::OnceLock;
 
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
-use forge_types::{ENV_SECRET_DENYLIST, sanitize_terminal_text, strip_steganographic_chars};
+use forge_types::{ENV_CREDENTIAL_PATTERNS, sanitize_terminal_text, strip_steganographic_chars};
 use globset::{GlobBuilder, GlobSetBuilder};
 use regex::Regex;
 
@@ -135,7 +136,7 @@ impl SecretRedactor {
 
 fn build_var_name_matcher() -> globset::GlobSet {
     let mut builder = GlobSetBuilder::new();
-    for pattern in ENV_SECRET_DENYLIST {
+    for pattern in ENV_CREDENTIAL_PATTERNS {
         if let Ok(glob) = GlobBuilder::new(pattern).case_insensitive(true).build() {
             builder.add(glob);
         }
