@@ -34,8 +34,6 @@ const OPENAI_DISTILLER_INPUT_LIMIT: u32 = 380_000;
 /// Gemini 3 Pro has 1M context, we use 950k to leave room for output and system prompt.
 const GEMINI_DISTILLER_INPUT_LIMIT: u32 = 950_000;
 
-const MIN_DISTILLATION_TOKENS: u32 = 512;
-
 /// Per-provider max output tokens for distillation.
 /// Each value reflects the model's actual max output token limit.
 fn max_distillation_tokens(provider: Provider) -> u32 {
@@ -207,10 +205,7 @@ pub async fn generate_distillation(
         ));
     }
 
-    let max_tokens = target_tokens.clamp(
-        MIN_DISTILLATION_TOKENS,
-        max_distillation_tokens(config.provider()),
-    );
+    let max_tokens = max_distillation_tokens(config.provider());
 
     match config.provider() {
         Provider::Claude => {
