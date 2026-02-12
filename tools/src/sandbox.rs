@@ -105,87 +105,9 @@ impl Sandbox {
 
     /// Validate and resolve a path within the sandbox.
     pub fn resolve_path(&self, path: &str, working_dir: &Path) -> Result<PathBuf, ToolError> {
-        if contains_unsafe_path_chars(path) {
-            return Err(ToolError::BadArgs {
-                message: "path contains invalid control characters".to_string(),
-            });
-        }
-        if contains_ntfs_ads(path) {
-            return Err(ToolError::BadArgs {
-                message: "path contains NTFS alternate data stream syntax".to_string(),
-            });
-        }
-        let input = PathBuf::from(path);
-        if input
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
-            return Err(ToolError::SandboxViolation(
-                DenialReason::PathOutsideSandbox {
-                    attempted: input.clone(),
-                    resolved: input.clone(),
-                },
-            ));
-        }
-        let resolved = if input.is_absolute() {
-            if self.allow_absolute {
-                input
-            } else if let Some(truncated) = self.truncate_to_allowed_root(&input) {
-                truncated
-            } else {
-                return Err(ToolError::SandboxViolation(
-                    DenialReason::PathOutsideSandbox {
-                        attempted: input.clone(),
-                        resolved: input.clone(),
-                    },
-                ));
-            }
-        } else {
-            working_dir.join(input)
-        };
-
-        let canonical = if resolved.exists() {
-            std::fs::canonicalize(&resolved).map_err(|_| {
-                ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
-                    attempted: resolved.clone(),
-                    resolved: resolved.clone(),
-                })
-            })?
-        } else {
-            let parent = resolved.parent().ok_or_else(|| {
-                ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
-                    attempted: resolved.clone(),
-                    resolved: resolved.clone(),
-                })
-            })?;
-            let parent_canon = std::fs::canonicalize(parent).map_err(|_| {
-                ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
-                    attempted: resolved.clone(),
-                    resolved: resolved.clone(),
-                })
-            })?;
-            parent_canon.join(resolved.file_name().unwrap_or_default())
-        };
-
-        if !self.is_within_allowed_roots(&canonical) {
-            return Err(ToolError::SandboxViolation(
-                DenialReason::PathOutsideSandbox {
-                    attempted: resolved,
-                    resolved: canonical,
-                },
-            ));
-        }
-
-        if let Some(pat) = self.matches_denied_pattern(&canonical) {
-            return Err(ToolError::SandboxViolation(
-                DenialReason::DeniedPatternMatched {
-                    attempted: canonical,
-                    pattern: pat,
-                },
-            ));
-        }
-
-        Ok(canonical)
+        let resolved = self.validate_and_resolve(path, working_dir)?;
+        let canonical = canonicalize_existing(&resolved)?;
+        self.check_allowed(&resolved, canonical)
     }
 
     /// Validate and resolve a path for file creation, allowing non-existent directories.
@@ -198,6 +120,25 @@ impl Sandbox {
         path: &str,
         working_dir: &Path,
     ) -> Result<PathBuf, ToolError> {
+        let resolved = self.validate_and_resolve(path, working_dir)?;
+        let canonical = canonicalize_for_create(&resolved)?;
+        self.check_allowed(&resolved, canonical)
+    }
+
+    /// Validate a resolved path (absolute) against sandbox rules.
+    pub fn ensure_path_allowed(&self, path: &Path) -> Result<PathBuf, ToolError> {
+        let canonical = std::fs::canonicalize(path).map_err(|_| {
+            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                attempted: path.to_path_buf(),
+                resolved: path.to_path_buf(),
+            })
+        })?;
+        self.check_allowed(path, canonical)
+    }
+
+    /// Shared validation prefix: unsafe chars, NTFS ADS, `..` rejection, absolute
+    /// path handling. Returns the resolved-but-not-yet-canonicalized path.
+    fn validate_and_resolve(&self, path: &str, working_dir: &Path) -> Result<PathBuf, ToolError> {
         if contains_unsafe_path_chars(path) {
             return Err(ToolError::BadArgs {
                 message: "path contains invalid control characters".to_string(),
@@ -220,113 +161,34 @@ impl Sandbox {
                 },
             ));
         }
-        let resolved = if input.is_absolute() {
+        if input.is_absolute() {
             if self.allow_absolute {
-                input
+                Ok(input)
             } else if let Some(truncated) = self.truncate_to_allowed_root(&input) {
-                truncated
+                Ok(truncated)
             } else {
-                return Err(ToolError::SandboxViolation(
+                Err(ToolError::SandboxViolation(
                     DenialReason::PathOutsideSandbox {
                         attempted: input.clone(),
                         resolved: input.clone(),
                     },
-                ));
+                ))
             }
         } else {
-            working_dir.join(input)
-        };
-
-        // Find the nearest existing ancestor and canonicalize it
-        let canonical = if resolved.exists() {
-            std::fs::canonicalize(&resolved).map_err(|_| {
-                ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
-                    attempted: resolved.clone(),
-                    resolved: resolved.clone(),
-                })
-            })?
-        } else {
-            // Walk up to find the nearest existing ancestor
-            let mut existing_ancestor = resolved.parent();
-            let mut non_existent_parts: Vec<&std::ffi::OsStr> = Vec::new();
-
-            // Collect the file name first
-            if let Some(file_name) = resolved.file_name() {
-                non_existent_parts.push(file_name);
-            }
-
-            // Find existing ancestor
-            while let Some(ancestor) = existing_ancestor {
-                if ancestor.exists() {
-                    break;
-                }
-                if let Some(dir_name) = ancestor.file_name() {
-                    non_existent_parts.push(dir_name);
-                }
-                existing_ancestor = ancestor.parent();
-            }
-
-            let existing = existing_ancestor.ok_or_else(|| {
-                ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
-                    attempted: resolved.clone(),
-                    resolved: resolved.clone(),
-                })
-            })?;
-
-            let canon_existing = std::fs::canonicalize(existing).map_err(|_| {
-                ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
-                    attempted: resolved.clone(),
-                    resolved: resolved.clone(),
-                })
-            })?;
-
-            // Rejoin non-existent parts in reverse order (they were collected bottom-up)
-            let mut result = canon_existing;
-            for part in non_existent_parts.into_iter().rev() {
-                result = result.join(part);
-            }
-            result
-        };
-
-        if !self.is_within_allowed_roots(&canonical) {
-            return Err(ToolError::SandboxViolation(
-                DenialReason::PathOutsideSandbox {
-                    attempted: resolved,
-                    resolved: canonical,
-                },
-            ));
+            Ok(working_dir.join(input))
         }
-
-        if let Some(pat) = self.matches_denied_pattern(&canonical) {
-            return Err(ToolError::SandboxViolation(
-                DenialReason::DeniedPatternMatched {
-                    attempted: canonical,
-                    pattern: pat,
-                },
-            ));
-        }
-
-        Ok(canonical)
     }
 
-    /// Validate a resolved path (absolute) against sandbox rules.
-    pub fn ensure_path_allowed(&self, path: &Path) -> Result<PathBuf, ToolError> {
-        let canonical = std::fs::canonicalize(path).map_err(|_| {
-            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
-                attempted: path.to_path_buf(),
-                resolved: path.to_path_buf(),
-            })
-        })?;
-
+    /// Shared post-canonicalize suffix: allowed-root check + deny-pattern check.
+    fn check_allowed(&self, resolved: &Path, canonical: PathBuf) -> Result<PathBuf, ToolError> {
         if !self.is_within_allowed_roots(&canonical) {
             return Err(ToolError::SandboxViolation(
                 DenialReason::PathOutsideSandbox {
-                    attempted: path.to_path_buf(),
+                    attempted: resolved.to_path_buf(),
                     resolved: canonical,
                 },
             ));
         }
-
         if let Some(pat) = self.matches_denied_pattern(&canonical) {
             return Err(ToolError::SandboxViolation(
                 DenialReason::DeniedPatternMatched {
@@ -335,7 +197,6 @@ impl Sandbox {
                 },
             ));
         }
-
         Ok(canonical)
     }
 
@@ -401,6 +262,82 @@ impl Sandbox {
         }
         None
     }
+}
+
+/// Canonicalize a path that should exist, or whose parent must exist.
+fn canonicalize_existing(resolved: &Path) -> Result<PathBuf, ToolError> {
+    if resolved.exists() {
+        std::fs::canonicalize(resolved).map_err(|_| {
+            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                attempted: resolved.to_path_buf(),
+                resolved: resolved.to_path_buf(),
+            })
+        })
+    } else {
+        let parent = resolved.parent().ok_or_else(|| {
+            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                attempted: resolved.to_path_buf(),
+                resolved: resolved.to_path_buf(),
+            })
+        })?;
+        let parent_canon = std::fs::canonicalize(parent).map_err(|_| {
+            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                attempted: resolved.to_path_buf(),
+                resolved: resolved.to_path_buf(),
+            })
+        })?;
+        Ok(parent_canon.join(resolved.file_name().unwrap_or_default()))
+    }
+}
+
+/// Canonicalize for creation: walk up to the nearest existing ancestor.
+fn canonicalize_for_create(resolved: &Path) -> Result<PathBuf, ToolError> {
+    if resolved.exists() {
+        return std::fs::canonicalize(resolved).map_err(|_| {
+            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                attempted: resolved.to_path_buf(),
+                resolved: resolved.to_path_buf(),
+            })
+        });
+    }
+
+    let mut existing_ancestor = resolved.parent();
+    let mut non_existent_parts: Vec<&std::ffi::OsStr> = Vec::new();
+
+    if let Some(file_name) = resolved.file_name() {
+        non_existent_parts.push(file_name);
+    }
+
+    while let Some(ancestor) = existing_ancestor {
+        if ancestor.exists() {
+            break;
+        }
+        if let Some(dir_name) = ancestor.file_name() {
+            non_existent_parts.push(dir_name);
+        }
+        existing_ancestor = ancestor.parent();
+    }
+
+    let existing = existing_ancestor.ok_or_else(|| {
+        ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+            attempted: resolved.to_path_buf(),
+            resolved: resolved.to_path_buf(),
+        })
+    })?;
+
+    let canon_existing = std::fs::canonicalize(existing).map_err(|_| {
+        ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+            attempted: resolved.to_path_buf(),
+            resolved: resolved.to_path_buf(),
+        })
+    })?;
+
+    // Rejoin non-existent parts in reverse order (they were collected bottom-up)
+    let mut result = canon_existing;
+    for part in non_existent_parts.into_iter().rev() {
+        result = result.join(part);
+    }
+    Ok(result)
 }
 
 fn normalize_path(path: &Path) -> String {
