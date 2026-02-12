@@ -1535,6 +1535,14 @@ impl App {
         self.busy_reason().is_some()
     }
 
+    fn push_settings_next_turn_guardrail(&mut self) {
+        if let Some(reason) = self.busy_reason() {
+            self.push_notification(format!(
+                "Settings edits apply on the next turn. Active turn remains unchanged while {reason}."
+            ));
+        }
+    }
+
     /// If present, tools are disabled for safety due to a tool journal error.
     pub fn tool_journal_disabled_reason(&self) -> Option<&str> {
         self.tool_journal_disabled_reason.as_deref()
@@ -2229,6 +2237,7 @@ impl App {
                     draft_provider.env_var()
                 ));
             }
+            self.push_settings_next_turn_guardrail();
             return;
         }
 
@@ -2273,6 +2282,7 @@ impl App {
                     next_chat_model.provider().env_var()
                 ));
             }
+            self.push_settings_next_turn_guardrail();
             return;
         }
 
@@ -2295,6 +2305,7 @@ impl App {
                 editor.baseline_approval_mode = editor.draft_approval_mode;
             }
             self.push_notification("Tool defaults saved. Changes apply on the next turn.");
+            self.push_settings_next_turn_guardrail();
             return;
         }
 
@@ -2319,6 +2330,7 @@ impl App {
                 editor.baseline_memory_enabled = draft;
             }
             self.push_notification("Context defaults saved. Changes apply on the next turn.");
+            self.push_settings_next_turn_guardrail();
             return;
         }
 
@@ -2349,6 +2361,7 @@ impl App {
             editor.baseline = draft;
         }
         self.push_notification("Settings saved. Changes apply on the next turn.");
+        self.push_settings_next_turn_guardrail();
     }
 
     pub fn settings_activate(&mut self) {

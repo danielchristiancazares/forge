@@ -719,6 +719,24 @@ fn settings_tools_cycle_and_revert_updates_dirty_state() {
 }
 
 #[test]
+fn settings_tools_save_shows_guardrail_when_busy() {
+    let mut app = test_app();
+    set_streaming_state(&mut app);
+    open_tools_settings(&mut app);
+
+    app.settings_detail_toggle_selected();
+    app.settings_save_edits();
+
+    assert!(app.settings_pending_tools_apply_next_turn());
+    assert_eq!(
+        last_notification(&app),
+        Some(
+            "Settings edits apply on the next turn. Active turn remains unchanged while streaming a response."
+        )
+    );
+}
+
+#[test]
 fn settings_activate_context_initializes_editor_snapshot() {
     let mut app = test_app();
 

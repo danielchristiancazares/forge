@@ -470,11 +470,7 @@ impl super::App {
             }
             Command::Settings => {
                 self.enter_settings_mode();
-                if let Some(reason) = self.busy_reason() {
-                    self.push_notification(format!(
-                        "Settings edits apply on the next turn. Active turn remains unchanged while {reason}."
-                    ));
-                }
+                self.push_settings_next_turn_guardrail();
             }
             Command::Runtime => {
                 self.enter_runtime_mode();
