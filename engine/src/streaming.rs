@@ -215,6 +215,7 @@ impl super::App {
         if self.busy_reason().is_some() {
             return;
         }
+        self.apply_pending_turn_settings();
 
         let QueuedUserMessage { config, turn } = queued;
         let memory_enabled = self.memory_enabled();

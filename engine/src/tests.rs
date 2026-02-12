@@ -61,6 +61,9 @@ fn test_app() -> App {
         display_version: 0,
         should_quit: false,
         view: ViewState::default(),
+        configured_ui_options: UiOptions::default(),
+        pending_turn_ui_options: None,
+        settings_appearance_editor: None,
         api_keys,
         model: model.clone(),
         tick: 0,
@@ -440,6 +443,80 @@ fn process_command_validate_opens_validation_panel() {
 
     assert_eq!(app.input_mode(), InputMode::Settings);
     assert_eq!(app.settings_surface(), Some(SettingsSurface::Validate));
+}
+
+fn open_appearance_settings(app: &mut App) {
+    app.enter_settings_mode();
+    for _ in 0..SettingsCategory::ALL.len().saturating_sub(1) {
+        app.settings_move_down();
+    }
+    app.settings_activate();
+}
+
+#[test]
+fn settings_activate_appearance_initializes_editor_snapshot() {
+    let mut app = test_app();
+
+    open_appearance_settings(&mut app);
+
+    assert_eq!(
+        app.settings_detail_view(),
+        Some(SettingsCategory::Appearance)
+    );
+    assert_eq!(
+        app.settings_appearance_editor_snapshot(),
+        Some(AppearanceEditorSnapshot {
+            draft: UiOptions::default(),
+            selected: 0,
+            dirty: false,
+        })
+    );
+}
+
+#[test]
+fn settings_appearance_toggle_and_revert_updates_dirty_state() {
+    let mut app = test_app();
+    open_appearance_settings(&mut app);
+
+    app.settings_detail_toggle_selected();
+    assert_eq!(
+        app.settings_appearance_editor_snapshot(),
+        Some(AppearanceEditorSnapshot {
+            draft: UiOptions {
+                ascii_only: true,
+                ..UiOptions::default()
+            },
+            selected: 0,
+            dirty: true,
+        })
+    );
+
+    app.settings_revert_edits();
+    assert_eq!(
+        app.settings_appearance_editor_snapshot(),
+        Some(AppearanceEditorSnapshot {
+            draft: UiOptions::default(),
+            selected: 0,
+            dirty: false,
+        })
+    );
+}
+
+#[test]
+fn apply_pending_turn_settings_consumes_staged_defaults() {
+    let mut app = test_app();
+    let pending = UiOptions {
+        ascii_only: true,
+        high_contrast: true,
+        reduced_motion: true,
+        show_thinking: true,
+    };
+    app.pending_turn_ui_options = Some(pending);
+
+    app.apply_pending_turn_settings();
+
+    assert_eq!(app.ui_options(), pending);
+    assert!(!app.settings_pending_apply_next_turn());
 }
 
 #[test]

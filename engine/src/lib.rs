@@ -188,6 +188,13 @@ pub struct ValidationReport {
     pub healthy: Vec<ValidationFinding>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppearanceEditorSnapshot {
+    pub draft: UiOptions,
+    pub selected: usize,
+    pub dirty: bool,
+}
+
 pub use state::DistillationTask;
 
 use state::{
@@ -208,6 +215,29 @@ struct ToolCallAccumulator {
 struct ParsedToolCalls {
     calls: Vec<ToolCall>,
     pre_resolved: Vec<ToolResult>,
+}
+
+const APPEARANCE_SETTINGS_COUNT: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AppearanceSettingsEditor {
+    baseline: UiOptions,
+    draft: UiOptions,
+    selected: usize,
+}
+
+impl AppearanceSettingsEditor {
+    fn new(initial: UiOptions) -> Self {
+        Self {
+            baseline: initial,
+            draft: initial,
+            selected: 0,
+        }
+    }
+
+    fn is_dirty(self) -> bool {
+        self.draft != self.baseline
+    }
 }
 
 /// An in-flight streaming response from an LLM.
@@ -491,6 +521,12 @@ pub struct App {
     should_quit: bool,
     /// View state for rendering (scroll, status, modal effects).
     view: ViewState,
+    /// Persisted UI defaults loaded from config and edited in `/settings`.
+    configured_ui_options: UiOptions,
+    /// Saved UI defaults staged to take effect at the start of the next turn.
+    pending_turn_ui_options: Option<UiOptions>,
+    /// Appearance detail editor state for `/settings`.
+    settings_appearance_editor: Option<AppearanceSettingsEditor>,
     api_keys: HashMap<Provider, SecretString>,
     model: ModelName,
     tick: usize,
@@ -619,6 +655,43 @@ impl App {
 
     pub fn ui_options(&self) -> UiOptions {
         self.view.ui_options
+    }
+
+    #[must_use]
+    pub fn settings_configured_ui_options(&self) -> UiOptions {
+        self.configured_ui_options
+    }
+
+    #[must_use]
+    pub fn settings_pending_apply_next_turn(&self) -> bool {
+        self.pending_turn_ui_options.is_some()
+    }
+
+    #[must_use]
+    pub fn settings_appearance_editor_snapshot(&self) -> Option<AppearanceEditorSnapshot> {
+        self.settings_appearance_editor
+            .map(|editor| AppearanceEditorSnapshot {
+                draft: editor.draft,
+                selected: editor.selected,
+                dirty: editor.is_dirty(),
+            })
+    }
+
+    #[must_use]
+    pub fn settings_has_unsaved_edits(&self) -> bool {
+        self.settings_appearance_editor
+            .is_some_and(AppearanceSettingsEditor::is_dirty)
+    }
+
+    pub(crate) fn apply_pending_turn_settings(&mut self) {
+        let Some(pending) = self.pending_turn_ui_options.take() else {
+            return;
+        };
+        self.view.ui_options = pending;
+        if pending.reduced_motion {
+            self.view.modal_effect = None;
+            self.view.files_panel_effect = None;
+        }
     }
 
     /// Toggle visibility of thinking/reasoning content in the UI.
@@ -1327,6 +1400,7 @@ impl App {
 
     pub fn enter_normal_mode(&mut self) {
         self.input = std::mem::take(&mut self.input).into_normal();
+        self.reset_settings_detail_editor();
         self.view.modal_effect = None;
     }
 
@@ -1345,6 +1419,7 @@ impl App {
         } else {
             current.into_settings_surface(surface)
         };
+        self.reset_settings_detail_editor();
         if self.view.ui_options.reduced_motion {
             self.view.modal_effect = None;
         } else {
@@ -1411,6 +1486,21 @@ impl App {
         }
         let filter = self.settings_filter_text().unwrap_or_default();
         SettingsCategory::filtered(filter)
+    }
+
+    fn open_settings_detail(&mut self, category: SettingsCategory) {
+        if let Some(modal) = self.input.settings_modal_mut() {
+            modal.detail_view = Some(category);
+        }
+        self.settings_appearance_editor = if category == SettingsCategory::Appearance {
+            Some(AppearanceSettingsEditor::new(self.configured_ui_options))
+        } else {
+            None
+        };
+    }
+
+    fn reset_settings_detail_editor(&mut self) {
+        self.settings_appearance_editor = None;
     }
 
     #[must_use]
@@ -1484,6 +1574,80 @@ impl App {
         self.settings_clamp_selection();
     }
 
+    pub fn settings_detail_move_up(&mut self) {
+        if let Some(editor) = self.settings_appearance_editor.as_mut()
+            && editor.selected > 0
+        {
+            editor.selected -= 1;
+        }
+    }
+
+    pub fn settings_detail_move_down(&mut self) {
+        if let Some(editor) = self.settings_appearance_editor.as_mut()
+            && editor.selected + 1 < APPEARANCE_SETTINGS_COUNT
+        {
+            editor.selected += 1;
+        }
+    }
+
+    pub fn settings_detail_toggle_selected(&mut self) {
+        let Some(editor) = self.settings_appearance_editor.as_mut() else {
+            return;
+        };
+        match editor.selected {
+            0 => {
+                editor.draft.ascii_only = !editor.draft.ascii_only;
+            }
+            1 => {
+                editor.draft.high_contrast = !editor.draft.high_contrast;
+            }
+            2 => {
+                editor.draft.reduced_motion = !editor.draft.reduced_motion;
+            }
+            3 => {
+                editor.draft.show_thinking = !editor.draft.show_thinking;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn settings_revert_edits(&mut self) {
+        let defaults = self.configured_ui_options;
+        if let Some(editor) = self.settings_appearance_editor.as_mut() {
+            editor.draft = defaults;
+        }
+    }
+
+    pub fn settings_save_edits(&mut self) {
+        let Some(editor) = self.settings_appearance_editor else {
+            return;
+        };
+        if !editor.is_dirty() {
+            self.push_notification("No settings changes to save.");
+            return;
+        }
+
+        let draft = editor.draft;
+        let persist = config::AppUiSettings {
+            ascii_only: draft.ascii_only,
+            high_contrast: draft.high_contrast,
+            reduced_motion: draft.reduced_motion,
+            show_thinking: draft.show_thinking,
+        };
+        if let Err(err) = config::ForgeConfig::persist_ui_settings(persist) {
+            tracing::warn!("Failed to persist UI settings: {err}");
+            self.push_notification(format!("Failed to save settings: {err}"));
+            return;
+        }
+
+        self.configured_ui_options = draft;
+        self.pending_turn_ui_options = Some(draft);
+        if let Some(editor) = self.settings_appearance_editor.as_mut() {
+            editor.baseline = draft;
+        }
+        self.push_notification("Settings saved. Changes apply on the next turn.");
+    }
+
     pub fn settings_activate(&mut self) {
         if !self.settings_is_root_surface() {
             return;
@@ -1510,9 +1674,7 @@ impl App {
             return;
         };
 
-        if let Some(modal) = self.input.settings_modal_mut() {
-            modal.detail_view = Some(category);
-        }
+        self.open_settings_detail(category);
     }
 
     pub fn settings_close_or_exit(&mut self) {
@@ -1533,6 +1695,7 @@ impl App {
             if let Some(modal) = self.input.settings_modal_mut() {
                 modal.detail_view = None;
             }
+            self.reset_settings_detail_editor();
             return;
         }
 

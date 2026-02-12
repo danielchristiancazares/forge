@@ -1942,7 +1942,7 @@ fn settings_category_summary(app: &App, category: SettingsCategory) -> String {
         SettingsCategory::Keybindings => "vim".to_string(),
         SettingsCategory::History => "available".to_string(),
         SettingsCategory::Appearance => {
-            let options = app.ui_options();
+            let options = app.settings_configured_ui_options();
             if options.high_contrast {
                 "high-contrast".to_string()
             } else if options.ascii_only {
@@ -1969,8 +1969,13 @@ fn settings_detail_lines(
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(""));
+    let phase_label = if category == SettingsCategory::Appearance {
+        " Editable defaults (Phase 3)"
+    } else {
+        " Read-only preview"
+    };
     lines.push(Line::from(Span::styled(
-        " Read-only preview (Phase 1)",
+        phase_label,
         Style::default().fg(palette.text_muted),
     )));
     lines.push(Line::from(""));
@@ -2079,30 +2084,63 @@ fn settings_detail_lines(
             )));
         }
         SettingsCategory::Appearance => {
-            let options = app.ui_options();
+            let editor = app.settings_appearance_editor_snapshot();
+            let defaults = app.settings_configured_ui_options();
+            let draft = editor.map_or(defaults, |state| state.draft);
+            let selected = editor.map(|state| state.selected);
+            let items = [
+                ("ASCII only", draft.ascii_only),
+                ("High contrast", draft.high_contrast),
+                ("Reduced motion", draft.reduced_motion),
+                ("Show thinking blocks", draft.show_thinking),
+            ];
+
+            for (index, (label, enabled)) in items.into_iter().enumerate() {
+                let is_selected = selected == Some(index);
+                let marker = if is_selected { glyphs.selected } else { " " };
+                let value = if enabled { "on" } else { "off" };
+                let left = format!(" {marker} {label}");
+                let filler = content_width.saturating_sub(left.width() + value.width() + 2);
+                let bg = is_selected.then_some(palette.bg_highlight);
+
+                let mut left_style = if is_selected {
+                    Style::default()
+                        .fg(palette.text_primary)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(palette.text_secondary)
+                };
+                let mut fill_style = Style::default();
+                let mut right_style = Style::default().fg(palette.text_muted);
+                if let Some(bg) = bg {
+                    left_style = left_style.bg(bg);
+                    fill_style = fill_style.bg(bg);
+                    right_style = right_style.bg(bg);
+                }
+
+                lines.push(Line::from(vec![
+                    Span::styled(left, left_style),
+                    Span::styled(" ".repeat(filler), fill_style),
+                    Span::styled("  ", fill_style),
+                    Span::styled(value, right_style),
+                ]));
+            }
+
+            lines.push(Line::from(""));
+            let dirty = editor.is_some_and(|state| state.dirty);
+            let dirty_value = if dirty { "yes" } else { "no" };
             lines.push(Line::from(vec![
-                Span::styled("  ASCII only: ", Style::default().fg(palette.text_muted)),
-                Span::styled(
-                    if options.ascii_only { "on" } else { "off" },
-                    Style::default().fg(palette.text_secondary),
-                ),
+                Span::styled("  Dirty: ", Style::default().fg(palette.text_muted)),
+                Span::styled(dirty_value, Style::default().fg(palette.text_secondary)),
             ]));
+            let apply_value = if app.settings_pending_apply_next_turn() {
+                "next turn"
+            } else {
+                "none"
+            };
             lines.push(Line::from(vec![
-                Span::styled("  High contrast: ", Style::default().fg(palette.text_muted)),
-                Span::styled(
-                    if options.high_contrast { "on" } else { "off" },
-                    Style::default().fg(palette.text_secondary),
-                ),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled(
-                    "  Reduced motion: ",
-                    Style::default().fg(palette.text_muted),
-                ),
-                Span::styled(
-                    if options.reduced_motion { "on" } else { "off" },
-                    Style::default().fg(palette.text_secondary),
-                ),
+                Span::styled("  Pending apply: ", Style::default().fg(palette.text_muted)),
+                Span::styled(apply_value, Style::default().fg(palette.text_secondary)),
             ]));
         }
     }
@@ -2112,12 +2150,27 @@ fn settings_detail_lines(
         "─".repeat(content_width),
         Style::default().fg(palette.primary_dim),
     )));
-    lines.push(Line::from(vec![
-        Span::styled("Esc/q", styles::key_highlight(palette)),
-        Span::styled(" back  ", styles::key_hint(palette)),
-        Span::styled("Enter", styles::key_highlight(palette)),
-        Span::styled(" select", styles::key_hint(palette)),
-    ]));
+    if category == SettingsCategory::Appearance {
+        lines.push(Line::from(vec![
+            Span::styled("↑↓", styles::key_highlight(palette)),
+            Span::styled(" move  ", styles::key_hint(palette)),
+            Span::styled("Space/Enter", styles::key_highlight(palette)),
+            Span::styled(" toggle  ", styles::key_hint(palette)),
+            Span::styled("s", styles::key_highlight(palette)),
+            Span::styled(" save  ", styles::key_hint(palette)),
+            Span::styled("r", styles::key_highlight(palette)),
+            Span::styled(" revert", styles::key_hint(palette)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Esc/q", styles::key_highlight(palette)),
+            Span::styled(" back", styles::key_hint(palette)),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("Esc/q", styles::key_highlight(palette)),
+            Span::styled(" back", styles::key_hint(palette)),
+        ]));
+    }
     lines
 }
 
@@ -2296,7 +2349,11 @@ fn draw_settings_modal(
         .style(Style::default().bg(palette.bg_panel))
         .padding(Padding::uniform(1))
         .title(Line::from(vec![Span::styled(
-            format!(" {} ", surface.title()),
+            if app.settings_has_unsaved_edits() {
+                format!(" {} * ", surface.title())
+            } else {
+                format!(" {} ", surface.title())
+            },
             Style::default()
                 .fg(palette.text_primary)
                 .add_modifier(Modifier::BOLD),

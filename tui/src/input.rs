@@ -818,6 +818,31 @@ fn handle_settings_mode(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    if app.settings_detail_view().is_some() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                app.settings_close_or_exit();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.settings_detail_move_up();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.settings_detail_move_down();
+            }
+            KeyCode::Enter | KeyCode::Char(' ' | 'e') => {
+                app.settings_detail_toggle_selected();
+            }
+            KeyCode::Char('s') => {
+                app.settings_save_edits();
+            }
+            KeyCode::Char('r') => {
+                app.settings_revert_edits();
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match key.code {
         KeyCode::Esc => {
             app.settings_close_or_exit();
@@ -829,19 +854,17 @@ fn handle_settings_mode(app: &mut App, key: KeyEvent) {
             app.settings_activate();
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            if !app.settings_filter_active() && app.settings_detail_view().is_none() {
+            if !app.settings_filter_active() {
                 app.settings_move_up();
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if !app.settings_filter_active() && app.settings_detail_view().is_none() {
+            if !app.settings_filter_active() {
                 app.settings_move_down();
             }
         }
         KeyCode::Char('/') => {
-            if app.settings_detail_view().is_none() {
-                app.settings_start_filter();
-            }
+            app.settings_start_filter();
         }
         KeyCode::Backspace => {
             if app.settings_filter_active() {

@@ -31,7 +31,7 @@ pub struct FilesPanelState {
 }
 
 /// UI configuration options derived from config/environment.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UiOptions {
     pub ascii_only: bool,
     pub high_contrast: bool,
