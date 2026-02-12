@@ -1920,8 +1920,8 @@ mod tests {
 
     #[test]
     fn output_limits_validates_thinking_budget() {
-        assert!(OutputLimits::with_thinking(4096, 512).is_err()); // too small
-        assert!(OutputLimits::with_thinking(4096, 5000).is_err()); // too large
+        assert!(OutputLimits::with_thinking(4096, 512).is_err());
+        assert!(OutputLimits::with_thinking(4096, 5000).is_err());
         assert!(OutputLimits::with_thinking(8192, 4096).is_ok());
     }
 

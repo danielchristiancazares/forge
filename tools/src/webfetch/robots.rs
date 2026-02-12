@@ -668,7 +668,6 @@ pub fn parse(content: &str) -> Result<Robots, WebFetchError> {
             continue;
         }
 
-        // Parse directive
         if let Some((directive, value)) = line.split_once(':') {
             let directive = directive.trim().to_lowercase();
             let value = value.trim();
