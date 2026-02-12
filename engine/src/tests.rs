@@ -62,12 +62,17 @@ fn test_app() -> App {
         should_quit: false,
         view: ViewState::default(),
         configured_model: model.clone(),
+        configured_chat_model_override: None,
+        configured_code_model_override: None,
         configured_context_memory_enabled: true,
         configured_ui_options: UiOptions::default(),
         pending_turn_model: None,
+        pending_turn_chat_model_override: None,
+        pending_turn_code_model_override: None,
         pending_turn_context_memory_enabled: None,
         pending_turn_ui_options: None,
         settings_model_editor: None,
+        settings_model_overrides_editor: None,
         settings_context_editor: None,
         settings_appearance_editor: None,
         api_keys,
@@ -465,6 +470,13 @@ fn open_models_settings(app: &mut App) {
     app.settings_activate();
 }
 
+fn open_model_overrides_settings(app: &mut App) {
+    app.enter_settings_mode();
+    app.settings_move_down();
+    app.settings_move_down();
+    app.settings_activate();
+}
+
 fn open_context_settings(app: &mut App) {
     app.enter_settings_mode();
     for _ in 0..3 {
@@ -551,6 +563,57 @@ fn settings_models_save_warns_when_provider_key_is_missing() {
     assert_eq!(
         last_notification(&app),
         Some("GPT API key is missing. Set OPENAI_API_KEY before the next turn.")
+    );
+}
+
+#[test]
+fn settings_activate_model_overrides_initializes_editor_snapshot() {
+    let mut app = test_app();
+
+    open_model_overrides_settings(&mut app);
+
+    assert_eq!(
+        app.settings_detail_view(),
+        Some(SettingsCategory::ModelOverrides)
+    );
+    assert_eq!(
+        app.settings_model_overrides_editor_snapshot(),
+        Some(ModelOverridesEditorSnapshot {
+            draft_chat_model: None,
+            draft_code_model: None,
+            selected: 0,
+            dirty: false,
+        })
+    );
+}
+
+#[test]
+fn settings_model_overrides_cycle_and_revert_updates_dirty_state() {
+    let mut app = test_app();
+    open_model_overrides_settings(&mut app);
+
+    app.settings_detail_toggle_selected();
+    app.settings_detail_move_down();
+    app.settings_detail_toggle_selected();
+    assert_eq!(
+        app.settings_model_overrides_editor_snapshot(),
+        Some(ModelOverridesEditorSnapshot {
+            draft_chat_model: Some(ModelName::from_predefined(PredefinedModel::ClaudeOpus)),
+            draft_code_model: Some(ModelName::from_predefined(PredefinedModel::ClaudeOpus)),
+            selected: 1,
+            dirty: true,
+        })
+    );
+
+    app.settings_revert_edits();
+    assert_eq!(
+        app.settings_model_overrides_editor_snapshot(),
+        Some(ModelOverridesEditorSnapshot {
+            draft_chat_model: None,
+            draft_code_model: None,
+            selected: 1,
+            dirty: false,
+        })
     );
 }
 
@@ -701,6 +764,28 @@ fn queue_message_applies_pending_context_before_request_config() {
 
     assert!(!app.memory_enabled());
     assert!(!app.settings_pending_context_apply_next_turn());
+}
+
+#[test]
+fn queue_message_applies_pending_model_override_before_request_config() {
+    let mut app = test_app();
+    let pending_model = ModelName::from_predefined(PredefinedModel::ClaudeHaiku);
+    app.pending_turn_chat_model_override =
+        Some(PendingModelOverride::Explicit(pending_model.clone()));
+    app.input = InputState::Insert(DraftInput {
+        text: "pending override".to_string(),
+        cursor: 16,
+    });
+
+    let token = app.insert_token().expect("insert mode");
+    let queued = app
+        .insert_mode(token)
+        .queue_message()
+        .expect("queued message");
+
+    assert_eq!(queued.config.model(), &pending_model);
+    assert_eq!(app.model(), pending_model.as_str());
+    assert!(!app.settings_pending_model_overrides_apply_next_turn());
 }
 
 #[test]

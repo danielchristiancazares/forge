@@ -47,6 +47,8 @@ impl ConfigError {
 #[derive(Debug, Default, Deserialize)]
 pub struct AppConfig {
     pub model: Option<String>,
+    pub chat_model: Option<String>,
+    pub code_model: Option<String>,
     pub tui: Option<String>,
     /// Use ASCII-only glyphs for icons and spinners.
     #[serde(default)]
@@ -73,6 +75,12 @@ pub struct AppUiSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContextSettings {
     pub memory: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelOverrideSettings {
+    pub chat_model: Option<String>,
+    pub code_model: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -540,6 +548,22 @@ impl ForgeConfig {
     pub fn persist_context_settings(settings: ContextSettings) -> std::io::Result<()> {
         update_context_section(|context| {
             context["memory"] = toml_edit::value(settings.memory);
+            Ok(())
+        })
+    }
+
+    pub fn persist_model_overrides(settings: &ModelOverrideSettings) -> std::io::Result<()> {
+        update_app_section(|app| {
+            if let Some(chat_model) = &settings.chat_model {
+                app["chat_model"] = toml_edit::value(chat_model.as_str());
+            } else {
+                app.remove("chat_model");
+            }
+            if let Some(code_model) = &settings.code_model {
+                app["code_model"] = toml_edit::value(code_model.as_str());
+            } else {
+                app.remove("code_model");
+            }
             Ok(())
         })
     }

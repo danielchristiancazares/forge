@@ -209,6 +209,14 @@ pub struct ContextEditorSnapshot {
     pub dirty: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelOverridesEditorSnapshot {
+    pub draft_chat_model: Option<ModelName>,
+    pub draft_code_model: Option<ModelName>,
+    pub selected: usize,
+    pub dirty: bool,
+}
+
 pub use state::DistillationTask;
 
 use state::{
@@ -233,6 +241,7 @@ struct ParsedToolCalls {
 
 const APPEARANCE_SETTINGS_COUNT: usize = 4;
 const CONTEXT_SETTINGS_COUNT: usize = 1;
+const MODEL_OVERRIDES_SETTINGS_COUNT: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AppearanceSettingsEditor {
@@ -296,6 +305,83 @@ impl ModelSettingsEditor {
         PredefinedModel::all()
             .iter()
             .position(|predefined| predefined.to_model_name() == *model)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModelOverridesSettingsEditor {
+    baseline_chat_model: Option<ModelName>,
+    baseline_code_model: Option<ModelName>,
+    draft_chat_model: Option<ModelName>,
+    draft_code_model: Option<ModelName>,
+    selected: usize,
+}
+
+impl ModelOverridesSettingsEditor {
+    fn new(initial_chat_model: Option<ModelName>, initial_code_model: Option<ModelName>) -> Self {
+        Self {
+            baseline_chat_model: initial_chat_model.clone(),
+            baseline_code_model: initial_code_model.clone(),
+            draft_chat_model: initial_chat_model,
+            draft_code_model: initial_code_model,
+            selected: 0,
+        }
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.draft_chat_model != self.baseline_chat_model
+            || self.draft_code_model != self.baseline_code_model
+    }
+
+    fn cycle_selected_model(&mut self) {
+        let current = if self.selected == 0 {
+            self.draft_chat_model.as_ref()
+        } else {
+            self.draft_code_model.as_ref()
+        };
+        let next = Self::next_model_option(current);
+        if self.selected == 0 {
+            self.draft_chat_model = next;
+        } else {
+            self.draft_code_model = next;
+        }
+    }
+
+    fn next_model_option(current: Option<&ModelName>) -> Option<ModelName> {
+        let all_models = PredefinedModel::all();
+        if let Some(current) = current
+            && let Some(current_index) = all_models
+                .iter()
+                .position(|model| model.to_model_name() == *current)
+        {
+            if current_index + 1 < all_models.len() {
+                return Some(all_models[current_index + 1].to_model_name());
+            }
+            return None;
+        }
+        all_models.first().map(|model| model.to_model_name())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PendingModelOverride {
+    UseGlobalDefault,
+    Explicit(ModelName),
+}
+
+impl PendingModelOverride {
+    fn from_option(model: Option<ModelName>) -> Self {
+        match model {
+            Some(model) => Self::Explicit(model),
+            None => Self::UseGlobalDefault,
+        }
+    }
+
+    fn into_option(self) -> Option<ModelName> {
+        match self {
+            Self::UseGlobalDefault => None,
+            Self::Explicit(model) => Some(model),
+        }
     }
 }
 
@@ -603,18 +689,28 @@ pub struct App {
     view: ViewState,
     /// Persisted model default loaded from config and edited in `/settings`.
     configured_model: ModelName,
+    /// Optional chat-model override loaded from config and edited in `/settings`.
+    configured_chat_model_override: Option<ModelName>,
+    /// Optional code-model override loaded from config and edited in `/settings`.
+    configured_code_model_override: Option<ModelName>,
     /// Persisted context defaults loaded from config and edited in `/settings`.
     configured_context_memory_enabled: bool,
     /// Persisted UI defaults loaded from config and edited in `/settings`.
     configured_ui_options: UiOptions,
     /// Saved model default staged to take effect at the start of the next turn.
     pending_turn_model: Option<ModelName>,
+    /// Saved chat-model override staged to take effect at the start of the next turn.
+    pending_turn_chat_model_override: Option<PendingModelOverride>,
+    /// Saved code-model override staged to take effect at the start of the next turn.
+    pending_turn_code_model_override: Option<PendingModelOverride>,
     /// Saved context defaults staged to take effect at the start of the next turn.
     pending_turn_context_memory_enabled: Option<bool>,
     /// Saved UI defaults staged to take effect at the start of the next turn.
     pending_turn_ui_options: Option<UiOptions>,
     /// Models detail editor state for `/settings`.
     settings_model_editor: Option<ModelSettingsEditor>,
+    /// Model overrides detail editor state for `/settings`.
+    settings_model_overrides_editor: Option<ModelOverridesSettingsEditor>,
     /// Context detail editor state for `/settings`.
     settings_context_editor: Option<ContextSettingsEditor>,
     /// Appearance detail editor state for `/settings`.
@@ -763,6 +859,30 @@ impl App {
     }
 
     #[must_use]
+    pub fn settings_configured_chat_model_override(&self) -> Option<&ModelName> {
+        self.configured_chat_model_override.as_ref()
+    }
+
+    #[must_use]
+    pub fn settings_configured_code_model_override(&self) -> Option<&ModelName> {
+        self.configured_code_model_override.as_ref()
+    }
+
+    #[must_use]
+    pub fn settings_effective_chat_model(&self) -> ModelName {
+        self.configured_chat_model_override
+            .clone()
+            .unwrap_or_else(|| self.configured_model.clone())
+    }
+
+    #[must_use]
+    pub fn settings_effective_code_model(&self) -> ModelName {
+        self.configured_code_model_override
+            .clone()
+            .unwrap_or_else(|| self.configured_model.clone())
+    }
+
+    #[must_use]
     pub fn settings_configured_context_memory_enabled(&self) -> bool {
         self.configured_context_memory_enabled
     }
@@ -778,6 +898,12 @@ impl App {
     }
 
     #[must_use]
+    pub fn settings_pending_model_overrides_apply_next_turn(&self) -> bool {
+        self.pending_turn_chat_model_override.is_some()
+            || self.pending_turn_code_model_override.is_some()
+    }
+
+    #[must_use]
     pub fn settings_pending_ui_apply_next_turn(&self) -> bool {
         self.pending_turn_ui_options.is_some()
     }
@@ -790,6 +916,7 @@ impl App {
     #[must_use]
     pub fn settings_pending_apply_next_turn(&self) -> bool {
         self.settings_pending_model_apply_next_turn()
+            || self.settings_pending_model_overrides_apply_next_turn()
             || self.settings_pending_context_apply_next_turn()
             || self.settings_pending_ui_apply_next_turn()
     }
@@ -816,6 +943,18 @@ impl App {
     }
 
     #[must_use]
+    pub fn settings_model_overrides_editor_snapshot(&self) -> Option<ModelOverridesEditorSnapshot> {
+        self.settings_model_overrides_editor
+            .as_ref()
+            .map(|editor| ModelOverridesEditorSnapshot {
+                draft_chat_model: editor.draft_chat_model.clone(),
+                draft_code_model: editor.draft_code_model.clone(),
+                selected: editor.selected,
+                dirty: editor.is_dirty(),
+            })
+    }
+
+    #[must_use]
     pub fn settings_appearance_editor_snapshot(&self) -> Option<AppearanceEditorSnapshot> {
         self.settings_appearance_editor
             .map(|editor| AppearanceEditorSnapshot {
@@ -831,6 +970,10 @@ impl App {
             .as_ref()
             .is_some_and(ModelSettingsEditor::is_dirty)
             || self
+                .settings_model_overrides_editor
+                .as_ref()
+                .is_some_and(ModelOverridesSettingsEditor::is_dirty)
+            || self
                 .settings_context_editor
                 .is_some_and(ContextSettingsEditor::is_dirty)
             || self
@@ -844,6 +987,21 @@ impl App {
         }
         if let Some(model) = self.pending_turn_model.take() {
             self.set_model_internal(model, false);
+        }
+        let mut applied_model_override = false;
+        if let Some(chat_model_override) = self.pending_turn_chat_model_override.take() {
+            self.configured_chat_model_override = chat_model_override.into_option();
+            applied_model_override = true;
+        }
+        if let Some(code_model_override) = self.pending_turn_code_model_override.take() {
+            self.configured_code_model_override = code_model_override.into_option();
+            applied_model_override = true;
+        }
+        if applied_model_override {
+            let next_model = self.effective_model_for_input_mode(self.input_mode());
+            if self.model != next_model {
+                self.set_active_model(next_model);
+            }
         }
         if let Some(pending) = self.pending_turn_ui_options.take() {
             self.view.ui_options = pending;
@@ -1441,19 +1599,30 @@ impl App {
             .set_output_limit(clamped.max_output_tokens());
     }
 
-    fn set_model_internal(&mut self, model: ModelName, persist: bool) {
-        self.model = model.clone();
-        self.configured_model = model.clone();
-        self.pending_turn_model = None;
+    fn effective_model_for_input_mode(&self, input_mode: InputMode) -> ModelName {
+        if input_mode == InputMode::Insert {
+            self.settings_effective_chat_model()
+        } else {
+            self.settings_effective_code_model()
+        }
+    }
+
+    fn set_active_model(&mut self, model: ModelName) {
+        self.model = model;
         if self.memory_enabled() {
             self.handle_context_adaptation();
         } else {
             self.context_manager
                 .set_model_without_adaptation(self.model.clone());
+            self.invalidate_usage_cache();
         }
-
         self.clamp_output_limits_to_model();
+    }
 
+    fn set_model_internal(&mut self, model: ModelName, persist: bool) {
+        self.set_active_model(model.clone());
+        self.configured_model = model.clone();
+        self.pending_turn_model = None;
         if persist && let Err(e) = config::ForgeConfig::persist_model(model.as_str()) {
             tracing::warn!("Failed to persist model to config: {e}");
         }
@@ -1677,6 +1846,16 @@ impl App {
             SettingsCategory::Models => {
                 self.settings_model_editor =
                     Some(ModelSettingsEditor::new(self.configured_model.clone()));
+                self.settings_model_overrides_editor = None;
+                self.settings_context_editor = None;
+                self.settings_appearance_editor = None;
+            }
+            SettingsCategory::ModelOverrides => {
+                self.settings_model_overrides_editor = Some(ModelOverridesSettingsEditor::new(
+                    self.configured_chat_model_override.clone(),
+                    self.configured_code_model_override.clone(),
+                ));
+                self.settings_model_editor = None;
                 self.settings_context_editor = None;
                 self.settings_appearance_editor = None;
             }
@@ -1685,16 +1864,19 @@ impl App {
                     self.configured_context_memory_enabled,
                 ));
                 self.settings_model_editor = None;
+                self.settings_model_overrides_editor = None;
                 self.settings_appearance_editor = None;
             }
             SettingsCategory::Appearance => {
                 self.settings_appearance_editor =
                     Some(AppearanceSettingsEditor::new(self.configured_ui_options));
                 self.settings_model_editor = None;
+                self.settings_model_overrides_editor = None;
                 self.settings_context_editor = None;
             }
             _ => {
                 self.settings_model_editor = None;
+                self.settings_model_overrides_editor = None;
                 self.settings_context_editor = None;
                 self.settings_appearance_editor = None;
             }
@@ -1703,6 +1885,7 @@ impl App {
 
     fn reset_settings_detail_editor(&mut self) {
         self.settings_model_editor = None;
+        self.settings_model_overrides_editor = None;
         self.settings_context_editor = None;
         self.settings_appearance_editor = None;
     }
@@ -1785,6 +1968,12 @@ impl App {
             }
             return;
         }
+        if let Some(editor) = self.settings_model_overrides_editor.as_mut() {
+            if editor.selected > 0 {
+                editor.selected -= 1;
+            }
+            return;
+        }
         if let Some(editor) = self.settings_context_editor.as_mut() {
             if editor.selected > 0 {
                 editor.selected -= 1;
@@ -1806,6 +1995,12 @@ impl App {
             }
             return;
         }
+        if let Some(editor) = self.settings_model_overrides_editor.as_mut() {
+            if editor.selected + 1 < MODEL_OVERRIDES_SETTINGS_COUNT {
+                editor.selected += 1;
+            }
+            return;
+        }
         if let Some(editor) = self.settings_context_editor.as_mut() {
             if editor.selected + 1 < CONTEXT_SETTINGS_COUNT {
                 editor.selected += 1;
@@ -1822,6 +2017,10 @@ impl App {
     pub fn settings_detail_toggle_selected(&mut self) {
         if let Some(editor) = self.settings_model_editor.as_mut() {
             editor.update_draft_from_selected();
+            return;
+        }
+        if let Some(editor) = self.settings_model_overrides_editor.as_mut() {
+            editor.cycle_selected_model();
             return;
         }
         if let Some(editor) = self.settings_context_editor.as_mut() {
@@ -1854,6 +2053,11 @@ impl App {
         if let Some(editor) = self.settings_model_editor.as_mut() {
             editor.draft = editor.baseline.clone();
             editor.sync_selected_to_draft();
+            return;
+        }
+        if let Some(editor) = self.settings_model_overrides_editor.as_mut() {
+            editor.draft_chat_model = editor.baseline_chat_model.clone();
+            editor.draft_code_model = editor.baseline_code_model.clone();
             return;
         }
         if let Some(editor) = self.settings_context_editor.as_mut() {
@@ -1891,6 +2095,50 @@ impl App {
                     "{} API key is missing. Set {} before the next turn.",
                     draft_provider.display_name(),
                     draft_provider.env_var()
+                ));
+            }
+            return;
+        }
+
+        if let Some(editor) = self.settings_model_overrides_editor.as_ref() {
+            if !editor.is_dirty() {
+                self.push_notification("No settings changes to save.");
+                return;
+            }
+            let settings = config::ModelOverrideSettings {
+                chat_model: editor
+                    .draft_chat_model
+                    .as_ref()
+                    .map(|model| model.as_str().to_string()),
+                code_model: editor
+                    .draft_code_model
+                    .as_ref()
+                    .map(|model| model.as_str().to_string()),
+            };
+            if let Err(err) = config::ForgeConfig::persist_model_overrides(&settings) {
+                tracing::warn!("Failed to persist model overrides: {err}");
+                self.push_notification(format!("Failed to save settings: {err}"));
+                return;
+            }
+            self.configured_chat_model_override = editor.draft_chat_model.clone();
+            self.configured_code_model_override = editor.draft_code_model.clone();
+            self.pending_turn_chat_model_override = Some(PendingModelOverride::from_option(
+                editor.draft_chat_model.clone(),
+            ));
+            self.pending_turn_code_model_override = Some(PendingModelOverride::from_option(
+                editor.draft_code_model.clone(),
+            ));
+            if let Some(editor) = self.settings_model_overrides_editor.as_mut() {
+                editor.baseline_chat_model = editor.draft_chat_model.clone();
+                editor.baseline_code_model = editor.draft_code_model.clone();
+            }
+            self.push_notification("Model overrides saved. Changes apply on the next turn.");
+            let next_chat_model = self.settings_effective_chat_model();
+            if !self.has_api_key(next_chat_model.provider()) {
+                self.push_notification(format!(
+                    "{} API key is missing. Set {} before the next turn.",
+                    next_chat_model.provider().display_name(),
+                    next_chat_model.provider().env_var()
                 ));
             }
             return;
@@ -2018,6 +2266,15 @@ impl App {
     pub fn session_config_hash(&self) -> String {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.model.as_str().hash(&mut hasher);
+        self.configured_model.as_str().hash(&mut hasher);
+        self.configured_chat_model_override
+            .as_ref()
+            .map(ModelName::as_str)
+            .hash(&mut hasher);
+        self.configured_code_model_override
+            .as_ref()
+            .map(ModelName::as_str)
+            .hash(&mut hasher);
         self.provider().as_str().hash(&mut hasher);
         self.memory_enabled.hash(&mut hasher);
         self.cache_enabled.hash(&mut hasher);
@@ -2104,6 +2361,16 @@ impl App {
         } else {
             "none".to_string()
         };
+        let mut session_overrides = Vec::new();
+        if let Some(chat_model) = self.settings_configured_chat_model_override() {
+            session_overrides.push(format!("chat model: {chat_model}"));
+        }
+        if let Some(code_model) = self.settings_configured_code_model_override() {
+            session_overrides.push(format!("code model: {code_model}"));
+        }
+        if self.settings_pending_model_overrides_apply_next_turn() {
+            session_overrides.push("pending model overrides: next turn".to_string());
+        }
 
         RuntimeSnapshot {
             active_profile: "default".to_string(),
@@ -2119,20 +2386,21 @@ impl App {
             rate_limit_state,
             last_api_call,
             last_error,
-            session_overrides: Vec::new(),
+            session_overrides,
         }
     }
 
     #[must_use]
     pub fn resolve_cascade(&self) -> ResolveCascade {
         let mut settings = Vec::new();
+        let chat_override = self.settings_configured_chat_model_override();
         settings.push(ResolveSetting {
-            setting: "Model",
+            setting: "Chat Model",
             layers: vec![
                 ResolveLayerValue {
                     layer: "Global",
-                    value: self.model().to_string(),
-                    is_winner: true,
+                    value: self.settings_configured_model().to_string(),
+                    is_winner: chat_override.is_none(),
                 },
                 ResolveLayerValue {
                     layer: "Project",
@@ -2146,8 +2414,34 @@ impl App {
                 },
                 ResolveLayerValue {
                     layer: "Session",
+                    value: chat_override.map_or_else(|| "unset".to_string(), ToString::to_string),
+                    is_winner: chat_override.is_some(),
+                },
+            ],
+        });
+        let code_override = self.settings_configured_code_model_override();
+        settings.push(ResolveSetting {
+            setting: "Code Model",
+            layers: vec![
+                ResolveLayerValue {
+                    layer: "Global",
+                    value: self.settings_configured_model().to_string(),
+                    is_winner: code_override.is_none(),
+                },
+                ResolveLayerValue {
+                    layer: "Project",
                     value: "unset".to_string(),
                     is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Profile",
+                    value: "unset".to_string(),
+                    is_winner: false,
+                },
+                ResolveLayerValue {
+                    layer: "Session",
+                    value: code_override.map_or_else(|| "unset".to_string(), ToString::to_string),
+                    is_winner: code_override.is_some(),
                 },
             ],
         });

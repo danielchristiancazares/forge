@@ -114,11 +114,10 @@ impl App {
             insert_env_key_if_missing(&mut api_keys, provider);
         }
 
+        let app_config = config.as_ref().and_then(|cfg| cfg.app.as_ref());
+
         // Infer provider from model name, or fall back to API key detection
-        let model_raw = config
-            .as_ref()
-            .and_then(|cfg| cfg.app.as_ref())
-            .and_then(|app| app.model.as_ref());
+        let model_raw = app_config.and_then(|app| app.model.as_ref());
 
         let provider = model_raw
             .and_then(|m| Provider::from_model_name(m).ok())
@@ -130,7 +129,7 @@ impl App {
             })
             .unwrap_or(Provider::Claude);
 
-        let model = model_raw
+        let configured_model = model_raw
             .map(|raw| match provider.parse_model(raw) {
                 Ok(model) => model,
                 Err(err) => {
@@ -139,6 +138,35 @@ impl App {
                 }
             })
             .unwrap_or_else(|| provider.default_model());
+        let parse_override_model = |field: &'static str, raw: Option<&String>| {
+            raw.and_then(|candidate| {
+                let provider = match Provider::from_model_name(candidate) {
+                    Ok(provider) => provider,
+                    Err(err) => {
+                        tracing::warn!("Invalid {field} in config: {err}");
+                        return None;
+                    }
+                };
+                match provider.parse_model(candidate) {
+                    Ok(model) => Some(model),
+                    Err(err) => {
+                        tracing::warn!("Invalid {field} in config: {err}");
+                        None
+                    }
+                }
+            })
+        };
+        let configured_chat_model_override = parse_override_model(
+            "app.chat_model",
+            app_config.and_then(|app| app.chat_model.as_ref()),
+        );
+        let configured_code_model_override = parse_override_model(
+            "app.code_model",
+            app_config.and_then(|app| app.code_model.as_ref()),
+        );
+        let model = configured_chat_model_override
+            .clone()
+            .unwrap_or_else(|| configured_model.clone());
 
         let context_manager = ContextManager::new(model.clone());
         let memory_enabled = config
@@ -312,13 +340,18 @@ impl App {
             display_version: 0,
             should_quit: false,
             view,
-            configured_model: model.clone(),
+            configured_model: configured_model.clone(),
+            configured_chat_model_override: configured_chat_model_override.clone(),
+            configured_code_model_override: configured_code_model_override.clone(),
             configured_context_memory_enabled: memory_enabled,
             configured_ui_options: ui_options,
             pending_turn_model: None,
+            pending_turn_chat_model_override: None,
+            pending_turn_code_model_override: None,
             pending_turn_context_memory_enabled: None,
             pending_turn_ui_options: None,
             settings_model_editor: None,
+            settings_model_overrides_editor: None,
             settings_context_editor: None,
             settings_appearance_editor: None,
             api_keys,

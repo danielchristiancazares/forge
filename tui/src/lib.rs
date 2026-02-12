@@ -1930,7 +1930,16 @@ fn settings_category_summary(app: &App, category: SettingsCategory) -> String {
             format!("{configured} configured")
         }
         SettingsCategory::Models => format!("{} usable", app.settings_usable_model_count()),
-        SettingsCategory::ModelOverrides | SettingsCategory::Profiles => "planned".to_string(),
+        SettingsCategory::ModelOverrides => {
+            let chat = app.settings_effective_chat_model();
+            let code = app.settings_effective_code_model();
+            if chat == code {
+                "inherit default".to_string()
+            } else {
+                "chat/code split".to_string()
+            }
+        }
+        SettingsCategory::Profiles => "planned".to_string(),
         SettingsCategory::Context => {
             if app.settings_configured_context_memory_enabled() {
                 "memory on".to_string()
@@ -1971,6 +1980,7 @@ fn settings_detail_lines(
     lines.push(Line::from(""));
     let phase_label = if category == SettingsCategory::Appearance
         || category == SettingsCategory::Models
+        || category == SettingsCategory::ModelOverrides
         || category == SettingsCategory::Context
     {
         " Editable defaults (Phase 3)"
@@ -2096,10 +2106,91 @@ fn settings_detail_lines(
             ]));
         }
         SettingsCategory::ModelOverrides => {
-            lines.push(Line::from(Span::styled(
-                "  Chat/code split and overrides arrive in later phases.",
-                Style::default().fg(palette.text_muted),
-            )));
+            let editor = app.settings_model_overrides_editor_snapshot();
+            let selected = editor.as_ref().map(|state| state.selected);
+            let configured_default = app.settings_configured_model();
+            let draft_chat_model = editor
+                .as_ref()
+                .and_then(|state| state.draft_chat_model.clone())
+                .or_else(|| app.settings_configured_chat_model_override().cloned());
+            let draft_code_model = editor
+                .as_ref()
+                .and_then(|state| state.draft_code_model.clone())
+                .or_else(|| app.settings_configured_code_model_override().cloned());
+            let rows = [
+                ("Chat model override", draft_chat_model),
+                ("Code model override", draft_code_model),
+            ];
+            for (index, (label, model)) in rows.into_iter().enumerate() {
+                let is_selected = selected == Some(index);
+                let marker = if is_selected { glyphs.selected } else { " " };
+                let value = model.as_ref().map_or_else(
+                    || format!("global ({configured_default})"),
+                    ToString::to_string,
+                );
+                let left = format!(" {marker} {label}");
+                let filler = content_width.saturating_sub(left.width() + value.width() + 2);
+                let bg = is_selected.then_some(palette.bg_highlight);
+                let mut left_style = if is_selected {
+                    Style::default()
+                        .fg(palette.text_primary)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(palette.text_secondary)
+                };
+                let mut fill_style = Style::default();
+                let mut right_style = Style::default().fg(palette.text_muted);
+                if let Some(bg) = bg {
+                    left_style = left_style.bg(bg);
+                    fill_style = fill_style.bg(bg);
+                    right_style = right_style.bg(bg);
+                }
+                lines.push(Line::from(vec![
+                    Span::styled(left, left_style),
+                    Span::styled(" ".repeat(filler), fill_style),
+                    Span::styled("  ", fill_style),
+                    Span::styled(value, right_style),
+                ]));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "  Effective chat: ",
+                    Style::default().fg(palette.text_muted),
+                ),
+                Span::styled(
+                    app.settings_effective_chat_model().to_string(),
+                    Style::default().fg(palette.text_secondary),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "  Effective code: ",
+                    Style::default().fg(palette.text_muted),
+                ),
+                Span::styled(
+                    app.settings_effective_code_model().to_string(),
+                    Style::default().fg(palette.text_secondary),
+                ),
+            ]));
+            lines.push(Line::from(""));
+            let dirty = editor.as_ref().is_some_and(|state| state.dirty);
+            lines.push(Line::from(vec![
+                Span::styled("  Dirty: ", Style::default().fg(palette.text_muted)),
+                Span::styled(
+                    if dirty { "yes" } else { "no" },
+                    Style::default().fg(palette.text_secondary),
+                ),
+            ]));
+            let apply_value = if app.settings_pending_model_overrides_apply_next_turn() {
+                "next turn"
+            } else {
+                "none"
+            };
+            lines.push(Line::from(vec![
+                Span::styled("  Pending apply: ", Style::default().fg(palette.text_muted)),
+                Span::styled(apply_value, Style::default().fg(palette.text_secondary)),
+            ]));
         }
         SettingsCategory::Context => {
             let editor = app.settings_context_editor_snapshot();
@@ -2272,10 +2363,13 @@ fn settings_detail_lines(
     )));
     if category == SettingsCategory::Appearance
         || category == SettingsCategory::Models
+        || category == SettingsCategory::ModelOverrides
         || category == SettingsCategory::Context
     {
         let action_label = if category == SettingsCategory::Models {
             " select  "
+        } else if category == SettingsCategory::ModelOverrides {
+            " cycle  "
         } else {
             " toggle  "
         };
