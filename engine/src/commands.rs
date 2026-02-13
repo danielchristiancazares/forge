@@ -726,6 +726,10 @@ impl super::App {
                 Some("clear") => {
                     self.plan_state = PlanState::Inactive;
                     self.save_plan();
+                    self.tools_disabled_state = None;
+                    if matches!(self.state, OperationState::ToolsDisabled(_)) {
+                        self.state = OperationState::Idle;
+                    }
                     self.push_notification("Plan cleared.");
                 }
                 Some(other) => {
