@@ -7,6 +7,7 @@ use futures_util::future::{AbortHandle, Abortable};
 use tokio::sync::mpsc;
 
 const STREAM_EVENT_CHANNEL_CAPACITY: usize = 1024;
+const STREAM_EVENT_FRAME_BUDGET: usize = 64;
 const REDACTED_THINKING_PLACEHOLDER: &str = "[Thinking hidden]";
 
 const DEFAULT_TOOL_ARGS_JOURNAL_FLUSH_BYTES: usize = 8_192;
@@ -440,7 +441,10 @@ impl super::App {
             return;
         }
 
-        let max_events = DEFAULT_STREAM_EVENT_BUDGET;
+        // Keep this deterministic (count-based), not clock-based.
+        // This preserves input responsiveness under large stream backlogs
+        // while avoiding time-coupled behavior in core flow control.
+        let max_events = DEFAULT_STREAM_EVENT_BUDGET.min(STREAM_EVENT_FRAME_BUDGET);
         if max_events == 0 {
             return;
         }

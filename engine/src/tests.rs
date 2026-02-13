@@ -82,7 +82,7 @@ fn test_app() -> App {
             openai_previous_response_id: None,
         },
         system_prompts: TEST_SYSTEM_PROMPTS,
-        environment: EnvironmentContext::gather(),
+        environment: EnvironmentContext::gather_without_agents_md(),
         cached_usage_status: None,
         pending_user_message: None,
         tool_definitions,
@@ -1132,7 +1132,7 @@ fn process_stream_events_respects_budget() {
     app.process_stream_events();
 
     let content_len = app.streaming().expect("still streaming").content().len();
-    assert_eq!(content_len, DEFAULT_STREAM_EVENT_BUDGET);
+    assert_eq!(content_len, 64);
     assert!(content_len < 10_000);
 }
 

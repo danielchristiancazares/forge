@@ -17,6 +17,9 @@ pub struct EnvironmentContext {
     cwd: String,
     /// Whether the working directory is inside a git repository.
     is_git_repo: bool,
+    /// Concatenated content from discovered AGENTS.md files.
+    /// Consumed (taken) on first user message; empty string means nothing to inject.
+    agents_md: String,
 }
 
 impl EnvironmentContext {
@@ -33,6 +36,7 @@ impl EnvironmentContext {
         let cwd_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let is_git_repo = has_git_ancestor(&cwd_path);
         let cwd = cwd_path.display().to_string();
+        let agents_md = discover_agents_md(&cwd_path);
 
         Self {
             date,
@@ -40,7 +44,24 @@ impl EnvironmentContext {
             arch: std::env::consts::ARCH,
             cwd,
             is_git_repo,
+            agents_md,
         }
+    }
+
+    /// Takes the AGENTS.md content, leaving an empty string behind.
+    /// Empty after first call — the content is consumed on first user message.
+    pub fn take_agents_md(&mut self) -> String {
+        std::mem::take(&mut self.agents_md)
+    }
+
+    /// Creates an `EnvironmentContext` with no AGENTS.md content.
+    /// Used by tests to avoid picking up real filesystem state.
+    #[cfg(test)]
+    #[must_use]
+    pub fn gather_without_agents_md() -> Self {
+        let mut ctx = Self::gather();
+        ctx.agents_md = String::new();
+        ctx
     }
 
     /// Renders the environment block as markdown for system prompt injection.
@@ -61,6 +82,54 @@ impl EnvironmentContext {
         );
         let _ = writeln!(buf, "- Model: {model}");
         buf
+    }
+}
+
+/// Discovers and concatenates AGENTS.md files from the user's environment.
+///
+/// Search order (all concatenated, global first, most-specific last):
+/// 1. `~/.forge/AGENTS.md` — global user-level instructions
+/// 2. Ancestor directories from root down to `cwd`, each `<dir>/AGENTS.md`
+///
+/// This is boundary code: filesystem I/O happens here, the result is a plain String.
+fn discover_agents_md(cwd: &std::path::Path) -> String {
+    let mut sections = Vec::new();
+
+    // Global: ~/.forge/AGENTS.md
+    if let Some(home) = dirs::home_dir() {
+        let global_path = home.join(".forge").join("AGENTS.md");
+        if let Ok(content) = std::fs::read_to_string(&global_path) {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                sections.push(trimmed.to_string());
+            }
+        }
+    }
+
+    // Ancestor walk: collect from cwd upward, then reverse for root-first order
+    let mut ancestors = Vec::new();
+    let mut dir = cwd.to_path_buf();
+    loop {
+        let agents_path = dir.join("AGENTS.md");
+        if agents_path.is_file()
+            && let Ok(content) = std::fs::read_to_string(&agents_path)
+        {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                ancestors.push(trimmed.to_string());
+            }
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    ancestors.reverse();
+    sections.extend(ancestors);
+
+    if sections.is_empty() {
+        String::new()
+    } else {
+        sections.join("\n\n")
     }
 }
 
@@ -111,6 +180,65 @@ mod tests {
     }
 
     #[test]
+    fn discover_agents_md_reads_from_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents_path = dir.path().join("AGENTS.md");
+        std::fs::write(&agents_path, "project rules here").unwrap();
+
+        let result = discover_agents_md(dir.path());
+        assert!(result.contains("project rules here"));
+    }
+
+    #[test]
+    fn discover_agents_md_walks_ancestors() {
+        let parent = tempfile::tempdir().unwrap();
+        let child = parent.path().join("subdir");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(parent.path().join("AGENTS.md"), "parent rules").unwrap();
+        std::fs::write(child.join("AGENTS.md"), "child rules").unwrap();
+
+        let result = discover_agents_md(&child);
+        assert!(result.contains("parent rules"));
+        assert!(result.contains("child rules"));
+        // Parent comes before child (general-to-specific)
+        let parent_pos = result.find("parent rules").unwrap();
+        let child_pos = result.find("child rules").unwrap();
+        assert!(parent_pos < child_pos);
+    }
+
+    #[test]
+    fn discover_agents_md_empty_when_none_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = discover_agents_md(dir.path());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn discover_agents_md_skips_empty_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "   \n  \n  ").unwrap();
+
+        let result = discover_agents_md(dir.path());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn take_agents_md_consumes_content() {
+        let mut ctx = EnvironmentContext {
+            date: String::new(),
+            platform: "test",
+            arch: "test",
+            cwd: String::new(),
+            is_git_repo: false,
+            agents_md: "some rules".to_string(),
+        };
+        let first = ctx.take_agents_md();
+        assert_eq!(first, "some rules");
+        let second = ctx.take_agents_md();
+        assert!(second.is_empty());
+    }
+
+    #[test]
     fn render_contains_all_fields() {
         let ctx = EnvironmentContext {
             date: "2026-02-11".to_string(),
@@ -118,6 +246,7 @@ mod tests {
             arch: "aarch64",
             cwd: "/home/user/project".to_string(),
             is_git_repo: true,
+            agents_md: String::new(),
         };
         let rendered = ctx.render("claude-opus-4-6");
         assert!(rendered.contains("2026-02-11"));
@@ -137,6 +266,7 @@ mod tests {
             arch: "x86_64",
             cwd: "/tmp".to_string(),
             is_git_repo: false,
+            agents_md: String::new(),
         };
         let assembled = assemble_prompt(base, &ctx, "gpt-5.2");
         assert!(!assembled.contains("{environment_context}"));
@@ -154,6 +284,7 @@ mod tests {
             arch: "x86_64",
             cwd: "/tmp".to_string(),
             is_git_repo: false,
+            agents_md: String::new(),
         };
         let assembled = assemble_prompt(base, &ctx, "gpt-5.2");
         assert!(assembled.starts_with("Rules here."));

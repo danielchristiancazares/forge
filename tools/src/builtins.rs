@@ -703,9 +703,9 @@ impl ToolExecutor for ReadFileTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string" },
-                "start_line": { "type": "integer", "minimum": 1 },
-                "end_line": { "type": "integer", "minimum": 1 },
+                "path": { "type": "string", "description": "Absolute or relative file path to read" },
+                "start_line": { "type": "integer", "minimum": 1, "description": "First line to read (1-indexed). Omit to start from the beginning." },
+                "end_line": { "type": "integer", "minimum": 1, "description": "Last line to read, inclusive (1-indexed). Omit to read to end of file." },
                 "line_numbers": { "type": "boolean", "default": true, "description": "Show line numbers (default: true)" }
             },
             "required": ["path"]
@@ -912,7 +912,7 @@ impl ToolExecutor for ApplyPatchTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "patch": { "type": "string" }
+                "patch": { "type": "string", "description": "An LP1-format patch string." }
             },
             "required": ["patch"]
         })
@@ -1242,8 +1242,8 @@ impl ToolExecutor for WriteFileTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string" },
-                "content": { "type": "string" }
+                "path": { "type": "string", "description": "File path to create. Parent directories are created automatically." },
+                "content": { "type": "string", "description": "Full file content to write." }
             },
             "required": ["path", "content"],
             "additionalProperties": false
@@ -1377,9 +1377,9 @@ impl ToolExecutor for RunCommandTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "command": { "type": "string" },
-                "reason": { "type": "string" },
-                "unsafe_allow_unsandboxed": { "type": "boolean" }
+                "command": { "type": "string", "description": "Shell command to execute." },
+                "reason": { "type": "string", "description": "Brief explanation of why this command needs to run." },
+                "unsafe_allow_unsandboxed": { "type": "boolean", "description": "If true, allow unsandboxed execution when the sandbox is unavailable." }
             },
             "required": ["command"]
         })

@@ -159,6 +159,15 @@ impl InsertMode<'_> {
         // Record prompt to history for Up/Down navigation
         self.app.record_prompt(&raw_content);
 
+        // Prepend AGENTS.md content to the first user message.
+        // take_agents_md() consumes the content — subsequent messages get an empty string.
+        let agents_md = self.app.environment.take_agents_md();
+        let raw_content = if agents_md.is_empty() {
+            raw_content
+        } else {
+            format!("<project-instructions>\n{agents_md}\n</project-instructions>\n\n{raw_content}")
+        };
+
         let content = if let Ok(content) = NonEmptyString::new(raw_content.clone()) {
             content
         } else {

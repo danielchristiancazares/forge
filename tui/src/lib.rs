@@ -2625,7 +2625,11 @@ fn draw_settings_modal(
     let title = match surface {
         SettingsSurface::Root => {
             if let Some(category) = app.settings_detail_view() {
-                let separator = if app.ui_options().ascii_only { ">" } else { "›" };
+                let separator = if app.ui_options().ascii_only {
+                    ">"
+                } else {
+                    "›"
+                };
                 format!("{} {separator} {}", surface.title(), category.label())
             } else {
                 surface.title().to_string()
