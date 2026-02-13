@@ -106,8 +106,11 @@ impl Drop for BackgroundCancelGuard {
 struct OpenAIParser {
     /// Track which item_ids have received text deltas (for fallback on .done)
     text_delta_seen: HashSet<String>,
-    /// Track which item_ids have received reasoning summary deltas
+    /// Track which item_ids have had reasoning text emitted (by any event type)
     reasoning_delta_seen: HashSet<String>,
+    /// Track which item_ids received character-level reasoning deltas specifically
+    /// (separate from part events, so multi-part items aren't self-suppressed)
+    reasoning_text_streamed: HashSet<String>,
     /// Track whether the last reasoning summary part for an item ended with a newline
     reasoning_part_last_newline: HashMap<String, bool>,
     /// Map item_id -> call_id for tool calls
@@ -276,7 +279,8 @@ impl SseParser for OpenAIParser {
             typed::Event::ReasoningSummaryDelta { item_id, delta } => {
                 if let Some(delta) = delta {
                     if let Some(item_id) = item_id {
-                        self.reasoning_delta_seen.insert(item_id);
+                        self.reasoning_delta_seen.insert(item_id.clone());
+                        self.reasoning_text_streamed.insert(item_id);
                     }
                     events.push(StreamEvent::ThinkingDelta(delta));
                 }
@@ -292,9 +296,13 @@ impl SseParser for OpenAIParser {
                 }
             }
 
-            typed::Event::ReasoningSummaryPartAdded { item_id, part }
-            | typed::Event::ReasoningSummaryPartDone { item_id, part } => {
-                if let Some(part) = part
+            typed::Event::ReasoningSummaryPartAdded { item_id, part } => {
+                // Skip if character-level deltas already streamed this item's text
+                let text_streamed = item_id
+                    .as_ref()
+                    .is_some_and(|id| self.reasoning_text_streamed.contains(id));
+                if !text_streamed
+                    && let Some(part) = part
                     && let Some(text) = part.text
                 {
                     if let Some(ref item_id) = item_id {
@@ -313,6 +321,24 @@ impl SseParser for OpenAIParser {
                         self.reasoning_part_last_newline
                             .insert(item_id.clone(), ends_with_newline);
                         events.push(StreamEvent::ThinkingDelta(summary));
+                    } else {
+                        events.push(StreamEvent::ThinkingDelta(text));
+                    }
+                }
+            }
+
+            typed::Event::ReasoningSummaryPartDone { item_id, part } => {
+                // Only emit if no prior event (delta or part.added) handled this item
+                let saw_earlier = item_id
+                    .as_ref()
+                    .is_some_and(|id| self.reasoning_delta_seen.contains(id));
+                if !saw_earlier
+                    && let Some(part) = part
+                    && let Some(text) = part.text
+                {
+                    if let Some(ref item_id) = item_id {
+                        self.reasoning_delta_seen.insert(item_id.clone());
+                        events.push(StreamEvent::ThinkingDelta(text));
                     } else {
                         events.push(StreamEvent::ThinkingDelta(text));
                     }
@@ -948,11 +974,12 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_summary_part_done_emits_thinking_delta() {
+    fn reasoning_summary_part_done_emits_when_no_prior_event() {
         let mut state = OpenAIParser::default();
         let events = collect_events(
             json!({
                 "type": "response.reasoning_summary_part.done",
+                "item_id": "item_1",
                 "part": { "text": "Final section." }
             }),
             &mut state,
@@ -962,6 +989,28 @@ mod tests {
             &events[0],
             StreamEvent::ThinkingDelta(text) if text == "Final section."
         ));
+    }
+
+    #[test]
+    fn reasoning_summary_part_done_skips_after_part_added() {
+        let mut state = OpenAIParser::default();
+        let _ = collect_events(
+            json!({
+                "type": "response.reasoning_summary_part.added",
+                "item_id": "item_1",
+                "part": { "text": "Same text." }
+            }),
+            &mut state,
+        );
+        let events = collect_events(
+            json!({
+                "type": "response.reasoning_summary_part.done",
+                "item_id": "item_1",
+                "part": { "text": "Same text." }
+            }),
+            &mut state,
+        );
+        assert!(events.is_empty(), "part.done must not duplicate part.added");
     }
 
     #[test]

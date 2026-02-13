@@ -2043,13 +2043,6 @@ fn settings_detail_lines(
     content_width: usize,
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    lines.push(Line::from(Span::styled(
-        format!(" {} ", category.detail_title()),
-        Style::default()
-            .fg(palette.text_primary)
-            .add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::from(""));
     let phase_label = if category == SettingsCategory::Appearance
         || category == SettingsCategory::Models
         || category == SettingsCategory::Tools
@@ -2629,6 +2622,23 @@ fn draw_settings_modal(
 
     frame.render_widget(Clear, selector_area);
 
+    let title = match surface {
+        SettingsSurface::Root => {
+            if let Some(category) = app.settings_detail_view() {
+                let separator = if app.ui_options().ascii_only { ">" } else { "›" };
+                format!("{} {separator} {}", surface.title(), category.label())
+            } else {
+                surface.title().to_string()
+            }
+        }
+        _ => surface.title().to_string(),
+    };
+    let title_text = if app.settings_has_unsaved_edits() {
+        format!(" {title} * ")
+    } else {
+        format!(" {title} ")
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -2636,11 +2646,7 @@ fn draw_settings_modal(
         .style(Style::default().bg(palette.bg_panel))
         .padding(Padding::uniform(1))
         .title(Line::from(vec![Span::styled(
-            if app.settings_has_unsaved_edits() {
-                format!(" {} * ", surface.title())
-            } else {
-                format!(" {} ", surface.title())
-            },
+            title_text,
             Style::default()
                 .fg(palette.text_primary)
                 .add_modifier(Modifier::BOLD),

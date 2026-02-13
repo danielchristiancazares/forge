@@ -132,7 +132,7 @@ impl ToolExecutor for SearchTool {
                 "pattern": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Regex pattern to search for inside file contents. This does not match filenames; use Glob to find files by path/name."
+                    "description": "Pattern to search for inside file contents (regex by default; set fixed_strings=true for literal matching). Does not match filenames; use Glob to find files by path/name."
                 },
                 "path": {
                     "type": "string",
