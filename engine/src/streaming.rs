@@ -44,11 +44,34 @@ use forge_types::{CacheBudget, CacheHint, ModelName, Provider, ToolDefinition};
 use super::{
     ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError,
     DEFAULT_STREAM_EVENT_BUDGET, DistillationStart, EMPTY_RESPONSE_BADGE, GeminiCache,
-    GeminiCacheConfig, Message, NonEmptyString, OperationState, QueuedUserMessage, StreamEvent,
-    StreamFinishReason, StreamingMessage, ThinkingReplayState, notifications,
+    GeminiCacheConfig, Message, NonEmptyString, OperationState, PlanState, QueuedUserMessage,
+    StreamEvent, StreamFinishReason, StreamingMessage, ThinkingReplayState, notifications,
     sanitize_terminal_text, security,
 };
 use crate::errors::format_stream_error;
+
+/// Prepend a rendered plan block to the last user message in the API payload.
+///
+/// Called only when history has been compacted (distilled) and the plan is
+/// active — restores plan awareness that would otherwise be lost when the
+/// original tool-call history is summarised.
+fn inject_plan_context(mut messages: Vec<Message>, plan_state: &PlanState) -> Vec<Message> {
+    let Some(plan) = plan_state.plan() else {
+        return messages;
+    };
+    let plan_block = format!("<plan>\n{}</plan>", plan.render());
+    if let Some(user_msg) = messages
+        .iter_mut()
+        .rev()
+        .find(|m| matches!(m, Message::User(_)))
+    {
+        let original = user_msg.content().to_string();
+        if let Ok(content) = NonEmptyString::new(format!("{plan_block}\n\n{original}")) {
+            *user_msg = Message::user(content);
+        }
+    }
+    messages
+}
 
 pub(crate) fn build_thinking_message(
     model: ModelName,
@@ -267,6 +290,16 @@ impl super::App {
         } else {
             self.build_basic_api_messages(overhead)
         };
+
+        // Inject plan state into API payload after compaction so the LLM
+        // retains plan awareness even when earlier tool-call history has been
+        // distilled away. Transient — never persisted, no cache slot consumed.
+        let api_messages =
+            if self.context_manager.history().is_compacted() && self.plan_state.is_active() {
+                inject_plan_context(api_messages, &self.plan_state)
+            } else {
+                api_messages
+            };
 
         let journal = match self.stream_journal.begin_session(config.model().as_str()) {
             Ok(session) => session,
@@ -1117,5 +1150,100 @@ mod token_cache_planner_tests {
         let total =
             plan.cache_system as u8 + plan.cache_tools as u8 + plan.message_breakpoints.len() as u8;
         assert!(total <= CacheBudget::MAX);
+    }
+}
+
+#[cfg(test)]
+mod plan_context_injection_tests {
+    use super::*;
+    use forge_types::{PhaseInput, Plan, PlanState, StepInput};
+
+    fn active_plan_state() -> PlanState {
+        let plan = Plan::from_input(vec![PhaseInput {
+            name: "Setup".to_owned(),
+            steps: vec![StepInput {
+                description: "Do the thing".to_owned(),
+                depends_on: vec![],
+            }],
+        }])
+        .unwrap();
+        PlanState::Active(plan)
+    }
+
+    fn messages_with_user(text: &str) -> Vec<Message> {
+        vec![Message::try_user(text).unwrap()]
+    }
+
+    #[test]
+    fn injects_plan_when_active() {
+        let state = active_plan_state();
+        let msgs = messages_with_user("do something");
+        let result = inject_plan_context(msgs, &state);
+        assert_eq!(result.len(), 1);
+        let content = result[0].content();
+        assert!(content.starts_with("<plan>"), "should start with plan tag");
+        assert!(content.contains("</plan>"), "should close plan tag");
+        assert!(
+            content.contains("do something"),
+            "original message preserved"
+        );
+        assert!(content.contains("Do the thing"), "plan step present");
+    }
+
+    #[test]
+    fn no_injection_when_inactive() {
+        let state = PlanState::Inactive;
+        let msgs = messages_with_user("hello");
+        let result = inject_plan_context(msgs, &state);
+        assert_eq!(result[0].content(), "hello");
+    }
+
+    #[test]
+    fn no_injection_when_proposed() {
+        let plan = Plan::from_input(vec![PhaseInput {
+            name: "P1".to_owned(),
+            steps: vec![StepInput {
+                description: "s1".to_owned(),
+                depends_on: vec![],
+            }],
+        }])
+        .unwrap();
+        let state = PlanState::Proposed(plan);
+        // inject_plan_context is only called when is_active(), but let's verify
+        // the function itself is safe with Proposed (plan() returns Some but
+        // the guard in start_streaming would skip it).
+        let msgs = messages_with_user("hello");
+        let result = inject_plan_context(msgs, &state);
+        // Proposed still has a plan, so inject_plan_context itself will inject.
+        // The start_streaming guard (is_active()) prevents this path.
+        assert!(result[0].content().contains("<plan>"));
+    }
+
+    #[test]
+    fn injects_into_last_user_message() {
+        let state = active_plan_state();
+        let msgs = vec![
+            Message::try_user("first").unwrap(),
+            Message::try_user("second").unwrap(),
+        ];
+        let result = inject_plan_context(msgs, &state);
+        // First message untouched.
+        assert_eq!(result[0].content(), "first");
+        // Second (last) message gets the plan prepended.
+        assert!(result[1].content().starts_with("<plan>"));
+        assert!(result[1].content().contains("second"));
+    }
+
+    #[test]
+    fn no_user_messages_returns_unchanged() {
+        let state = active_plan_state();
+        let model = Provider::Claude.default_model();
+        let msgs = vec![Message::assistant(
+            model,
+            NonEmptyString::new("assistant text").unwrap(),
+        )];
+        let result = inject_plan_context(msgs, &state);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content(), "assistant text");
     }
 }

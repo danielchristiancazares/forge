@@ -13,8 +13,8 @@ use forge_types::{ToolCall, ToolResult};
 
 use crate::input_modes::{ChangeRecorder, TurnChangeReport, TurnContext};
 use crate::state::{
-    ApprovalState, JournalStatus, OperationState, ToolBatch, ToolCommitPayload, ToolLoopInput,
-    ToolLoopPhase, ToolLoopState, ToolPlan, ToolRecoveryDecision, ToolRecoveryState,
+    ApprovalState, JournalStatus, OperationState, PlanApprovalState, ToolBatch, ToolCommitPayload,
+    ToolLoopInput, ToolLoopPhase, ToolLoopState, ToolPlan, ToolRecoveryDecision, ToolRecoveryState,
 };
 use crate::tools::{self, ConfirmationRequest, analyze_tool_arguments};
 use crate::util;
@@ -197,7 +197,7 @@ impl App {
         }
     }
 
-    fn record_tool_result_or_disable(
+    pub(crate) fn record_tool_result_or_disable(
         &mut self,
         batch_id: ToolBatchId,
         result: &ToolResult,
@@ -483,10 +483,25 @@ impl App {
         }
         self.tool_iterations = next_iteration;
 
+        // Intercept schema-only tools (Plan) before executor dispatch.
+        let resolution = self.resolve_plan_tool_calls(&tool_calls, pre_resolved);
+        let pre_resolved = resolution.pre_resolved;
+        let pending_plan_approval = resolution.pending_approval;
+
         let plan = self.plan_tool_calls(&tool_calls, pre_resolved);
         {
             let id = journal_status.batch_id();
+            // Skip journaling for the pending plan approval call — its result
+            // will be recorded after user approval/rejection. Recording a stale
+            // placeholder here would cause a content-mismatch conflict that
+            // disables tools for the session.
+            let pending_id = pending_plan_approval
+                .as_ref()
+                .map(|p| p.tool_call_id.as_str());
             for result in &plan.pre_resolved {
+                if pending_id == Some(result.tool_call_id.as_str()) {
+                    continue;
+                }
                 if !self.record_tool_result_or_disable(id, result, "pre-resolved tool result") {
                     let mut results = plan.pre_resolved.clone();
                     let existing: HashSet<String> =
@@ -538,6 +553,20 @@ impl App {
             turn,
         };
         let remaining_capacity_bytes = self.remaining_tool_capacity(&batch);
+
+        if let Some(pending) = pending_plan_approval {
+            let mut batch = batch;
+            batch
+                .results
+                .retain(|r| r.tool_call_id != pending.tool_call_id);
+            self.state = OperationState::PlanApproval(Box::new(PlanApprovalState {
+                tool_call_id: pending.tool_call_id,
+                kind: pending.kind,
+                batch,
+                pending_tool_approvals: plan.approval_requests,
+            }));
+            return;
+        }
 
         if !plan.approval_requests.is_empty() {
             let approval = ApprovalState::new(plan.approval_requests);
@@ -775,7 +804,7 @@ impl App {
         (available_tokens as usize).saturating_mul(4)
     }
 
-    fn remaining_tool_capacity(&mut self, batch: &ToolBatch) -> usize {
+    pub(crate) fn remaining_tool_capacity(&mut self, batch: &ToolBatch) -> usize {
         let mut remaining = self.tool_capacity_bytes();
         for result in &batch.results {
             remaining = remaining.saturating_sub(result.content.len());
@@ -785,7 +814,7 @@ impl App {
 
     /// Create a tool queue and immediately try to spawn the first tool.
     /// Returns the appropriate phase (Processing if queue empty, Executing otherwise).
-    fn start_tool_execution(
+    pub(crate) fn start_tool_execution(
         &mut self,
         batch_id: ToolBatchId,
         calls: Vec<ToolCall>,

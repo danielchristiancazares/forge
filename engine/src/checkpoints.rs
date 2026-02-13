@@ -46,6 +46,8 @@ pub(crate) enum CheckpointKind {
     Turn,
     /// Automatic checkpoint taken before tool-driven workspace edits.
     ToolEdit,
+    /// Checkpoint taken when a plan step completes (advance/skip).
+    PlanStep(forge_types::PlanStepId),
 }
 
 impl CheckpointKind {
@@ -53,6 +55,7 @@ impl CheckpointKind {
         match self {
             Self::Turn => "turn",
             Self::ToolEdit => "tool",
+            Self::PlanStep(_) => "plan",
         }
     }
 }
@@ -586,6 +589,16 @@ impl crate::App {
         let conversation_len = self.context_manager.history().len();
         let _ = self.checkpoints.create_for_files(
             CheckpointKind::Turn,
+            conversation_len,
+            Vec::<PathBuf>::new(),
+        );
+    }
+
+    /// Create a conversation-only checkpoint when a plan step completes (advance/skip).
+    pub(crate) fn create_plan_step_checkpoint(&mut self, step_id: forge_types::PlanStepId) {
+        let conversation_len = self.context_manager.history().len();
+        let _ = self.checkpoints.create_for_files(
+            CheckpointKind::PlanStep(step_id),
             conversation_len,
             Vec::<PathBuf>::new(),
         );

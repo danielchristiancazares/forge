@@ -248,7 +248,7 @@ fn path_string_without_verbatim_prefix(path: &Path) -> String {
 }
 use crate::lp1::{self, FileContent};
 use crate::memory::MemoryTool;
-use crate::phase_gate::PhaseGateTool;
+use crate::phase_gate::GeminiGateTool;
 use crate::recall::RecallTool;
 use crate::search::SearchTool;
 use crate::webfetch::WebFetchTool;
@@ -1613,6 +1613,144 @@ impl ToolExecutor for RunCommandTool {
 }
 
 /// Register built-in tools into the registry.
+/// Schema-only tool definition for the Plan tool.
+///
+/// The Plan tool is intercepted by the engine before executor dispatch.
+/// This definition exists solely for LLM visibility in the tool manifest.
+fn plan_tool_definition() -> forge_types::ToolDefinition {
+    forge_types::ToolDefinition::new(
+        "Plan",
+        "Create and manage a phased execution plan. The plan organizes work into phases \
+         with steps, enforces ordering constraints, and tracks progress. Use 'create' at \
+         the start of complex tasks, then 'advance'/'skip'/'fail' as you complete steps.",
+        json!({
+            "type": "object",
+            "properties": {
+                "subcommand": {
+                    "type": "string",
+                    "enum": ["create", "advance", "skip", "fail", "edit", "status"],
+                    "description": "The plan operation to perform."
+                },
+                "phases": {
+                    "type": "array",
+                    "description": "Required for 'create'. Ordered list of phases.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Phase name."
+                            },
+                            "steps": {
+                                "type": "array",
+                                "description": "Steps in this phase.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "description": {
+                                            "type": "string",
+                                            "description": "What this step accomplishes."
+                                        },
+                                        "depends_on": {
+                                            "type": "array",
+                                            "items": { "type": "integer" },
+                                            "description": "Step IDs from earlier phases that must complete first."
+                                        }
+                                    },
+                                    "required": ["description"]
+                                }
+                            }
+                        },
+                        "required": ["name", "steps"]
+                    }
+                },
+                "step_id": {
+                    "type": "integer",
+                    "description": "Required for 'advance', 'skip', 'fail'. The step ID to operate on."
+                },
+                "outcome": {
+                    "type": "string",
+                    "description": "Required for 'advance'. What was accomplished."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Required for 'skip' and 'fail'. Why the step was skipped or failed."
+                },
+                "edit_op": {
+                    "type": "object",
+                    "description": "Required for 'edit'. The edit operation to apply.",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": [
+                                "add_step", "remove_step", "reorder_step",
+                                "update_description", "add_phase", "remove_phase"
+                            ],
+                            "description": "The type of edit."
+                        },
+                        "phase_index": {
+                            "type": "integer",
+                            "description": "Target phase index (for add_step, add_phase, remove_phase)."
+                        },
+                        "step_id": {
+                            "type": "integer",
+                            "description": "Target step ID (for remove_step, reorder_step, update_description)."
+                        },
+                        "new_phase": {
+                            "type": "integer",
+                            "description": "Destination phase index (for reorder_step)."
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "New description (for update_description)."
+                        },
+                        "step": {
+                            "type": "object",
+                            "description": "Step to add (for add_step).",
+                            "properties": {
+                                "description": { "type": "string" },
+                                "depends_on": {
+                                    "type": "array",
+                                    "items": { "type": "integer" }
+                                }
+                            },
+                            "required": ["description"]
+                        },
+                        "phase": {
+                            "type": "object",
+                            "description": "Phase to add (for add_phase).",
+                            "properties": {
+                                "name": { "type": "string" },
+                                "steps": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "description": { "type": "string" },
+                                            "depends_on": {
+                                                "type": "array",
+                                                "items": { "type": "integer" }
+                                            }
+                                        },
+                                        "required": ["description"]
+                                    }
+                                }
+                            },
+                            "required": ["name", "steps"]
+                        }
+                    },
+                    "required": ["type"]
+                },
+                "justification": {
+                    "type": "string",
+                    "description": "Required for 'edit'. Why this edit is needed."
+                }
+            },
+            "required": ["subcommand"]
+        }),
+    )
+}
+
 pub fn register_builtins(
     registry: &mut ToolRegistry,
     read_limits: ReadFileLimits,
@@ -1632,7 +1770,8 @@ pub fn register_builtins(
     registry.register(Box::new(WebFetchTool::new(webfetch_config)))?;
     registry.register(Box::new(RecallTool))?;
     registry.register(Box::new(MemoryTool))?;
-    registry.register(Box::new(PhaseGateTool))?;
+    registry.register(Box::new(GeminiGateTool))?;
+    registry.register_schema(plan_tool_definition())?;
     Ok(())
 }
 

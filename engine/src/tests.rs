@@ -70,6 +70,7 @@ fn test_app() -> App {
         state: OperationState::Idle,
         memory_enabled: true,
         output_limits,
+        configured_output_limits: output_limits,
         cache_enabled: false,
         provider_runtime: crate::ProviderRuntimeState {
             openai_options: OpenAIRequestOptions::default(),
@@ -116,6 +117,7 @@ fn test_app() -> App {
             snapshot: forge_lsp::DiagnosticsSnapshot::default(),
             pending_diag_check: None,
         },
+        plan_state: crate::PlanState::Inactive,
     }
 }
 
@@ -1229,7 +1231,7 @@ fn queue_message_sets_pending_user_message() {
         .expect("queued message");
 
     assert!(app.pending_user_message.is_some());
-    let (msg_id, original_text) = app.pending_user_message.as_ref().unwrap();
+    let (msg_id, original_text, _agents_md) = app.pending_user_message.as_ref().unwrap();
     assert_eq!(msg_id.as_u64(), 0);
     assert_eq!(original_text, "test message");
 }
@@ -1260,7 +1262,7 @@ fn rollback_pending_user_message_restores_input() {
 
     let content = NonEmptyString::new("my message").expect("non-empty");
     let msg_id = app.push_history_message(Message::user(content));
-    app.pending_user_message = Some((msg_id, "my message".to_string()));
+    app.pending_user_message = Some((msg_id, "my message".to_string(), String::new()));
 
     assert_eq!(app.history().len(), 1);
     assert_eq!(app.display.len(), 1);
@@ -1725,4 +1727,279 @@ fn tool_loop_max_iterations_short_circuits() {
     let last = app.history().entries().last().expect("tool result");
     assert!(matches!(last.message(), Message::ToolResult(_)));
     assert_eq!(last.message().content(), "Max tool iterations reached");
+}
+
+// ── Plan approval tests ─────────────────────────────────────
+
+fn plan_create_call() -> ToolCall {
+    ToolCall::new(
+        "call-plan-1",
+        "Plan",
+        json!({
+            "subcommand": "create",
+            "phases": [
+                {
+                    "name": "Phase 1",
+                    "steps": [
+                        { "description": "Step A" },
+                        { "description": "Step B" }
+                    ]
+                }
+            ]
+        }),
+    )
+}
+
+fn plan_edit_call() -> ToolCall {
+    ToolCall::new(
+        "call-plan-edit",
+        "Plan",
+        json!({
+            "subcommand": "edit",
+            "justification": "Adding a step",
+            "edit_op": {
+                "type": "add_step",
+                "phase_index": 0,
+                "step": { "description": "Step C" }
+            }
+        }),
+    )
+}
+
+fn submit_plan_call(app: &mut App, call: ToolCall) {
+    app.handle_tool_calls(crate::state::ToolLoopInput {
+        assistant_text: "assistant".to_string(),
+        thinking_message: None,
+        calls: vec![call],
+        pre_resolved: Vec::new(),
+        model: app.model.clone(),
+        step_id: StepId::new(1),
+        tool_batch_id: None,
+        turn: crate::input_modes::TurnContext::new_for_tests(),
+    });
+}
+
+#[test]
+fn plan_create_enters_plan_approval_state() {
+    let mut app = test_app();
+    submit_plan_call(&mut app, plan_create_call());
+
+    assert!(matches!(app.state, OperationState::PlanApproval(_)));
+    assert!(matches!(app.plan_state, PlanState::Proposed(_)));
+    assert_eq!(app.plan_approval_kind(), Some("create"));
+    assert!(app.plan_approval_rendered().is_some());
+}
+
+#[test]
+fn plan_create_approve_activates_plan() {
+    let mut app = test_app();
+    app.api_keys.clear();
+    submit_plan_call(&mut app, plan_create_call());
+    assert!(matches!(app.state, OperationState::PlanApproval(_)));
+
+    app.plan_approval_approve();
+
+    assert!(matches!(app.plan_state, PlanState::Active(_)));
+    let plan = app.plan_state.plan().unwrap();
+    assert!(plan.active_step().is_some());
+}
+
+#[test]
+fn plan_create_reject_returns_inactive() {
+    let mut app = test_app();
+    app.api_keys.clear();
+    submit_plan_call(&mut app, plan_create_call());
+    assert!(matches!(app.state, OperationState::PlanApproval(_)));
+
+    app.plan_approval_reject();
+
+    assert!(matches!(app.plan_state, PlanState::Inactive));
+}
+
+#[test]
+fn plan_edit_approve_keeps_edit() {
+    let mut app = test_app();
+    app.api_keys.clear();
+
+    let plan = forge_types::Plan::from_input(vec![forge_types::PhaseInput {
+        name: "Phase 1".to_string(),
+        steps: vec![
+            forge_types::StepInput {
+                description: "Step A".to_string(),
+                depends_on: vec![],
+            },
+            forge_types::StepInput {
+                description: "Step B".to_string(),
+                depends_on: vec![],
+            },
+        ],
+    }])
+    .unwrap();
+    let mut plan = plan;
+    plan.step_mut(forge_types::PlanStepId::new(1))
+        .unwrap()
+        .transition(forge_types::StepStatus::Active)
+        .unwrap();
+    app.plan_state = PlanState::Active(plan);
+
+    submit_plan_call(&mut app, plan_edit_call());
+    assert!(matches!(app.state, OperationState::PlanApproval(_)));
+    assert_eq!(app.plan_approval_kind(), Some("edit"));
+
+    let step_count_before_approve = app.plan_state.plan().unwrap().step_count();
+    app.plan_approval_approve();
+
+    assert!(matches!(app.plan_state, PlanState::Active(_)));
+    assert_eq!(
+        app.plan_state.plan().unwrap().step_count(),
+        step_count_before_approve
+    );
+}
+
+#[test]
+fn plan_edit_reject_reverts() {
+    let mut app = test_app();
+    app.api_keys.clear();
+
+    let plan = forge_types::Plan::from_input(vec![forge_types::PhaseInput {
+        name: "Phase 1".to_string(),
+        steps: vec![
+            forge_types::StepInput {
+                description: "Step A".to_string(),
+                depends_on: vec![],
+            },
+            forge_types::StepInput {
+                description: "Step B".to_string(),
+                depends_on: vec![],
+            },
+        ],
+    }])
+    .unwrap();
+    let mut plan = plan;
+    plan.step_mut(forge_types::PlanStepId::new(1))
+        .unwrap()
+        .transition(forge_types::StepStatus::Active)
+        .unwrap();
+    let original_step_count = plan.step_count();
+    app.plan_state = PlanState::Active(plan);
+
+    submit_plan_call(&mut app, plan_edit_call());
+    assert!(matches!(app.state, OperationState::PlanApproval(_)));
+
+    app.plan_approval_reject();
+
+    assert!(matches!(app.plan_state, PlanState::Active(_)));
+    assert_eq!(
+        app.plan_state.plan().unwrap().step_count(),
+        original_step_count
+    );
+}
+
+#[test]
+fn plan_approval_cancel_reverts() {
+    let mut app = test_app();
+    submit_plan_call(&mut app, plan_create_call());
+    assert!(matches!(app.state, OperationState::PlanApproval(_)));
+
+    app.cancel_active_operation();
+
+    assert!(matches!(app.plan_state, PlanState::Inactive));
+}
+
+#[test]
+fn plan_advance_creates_checkpoint() {
+    let mut app = test_app();
+
+    // Set up an active plan with step 1 Active.
+    let mut plan = forge_types::Plan::from_input(vec![forge_types::PhaseInput {
+        name: "Phase 1".to_string(),
+        steps: vec![
+            forge_types::StepInput {
+                description: "Step A".to_string(),
+                depends_on: vec![],
+            },
+            forge_types::StepInput {
+                description: "Step B".to_string(),
+                depends_on: vec![],
+            },
+        ],
+    }])
+    .unwrap();
+    plan.step_mut(forge_types::PlanStepId::new(1))
+        .unwrap()
+        .transition(forge_types::StepStatus::Active)
+        .unwrap();
+    app.plan_state = PlanState::Active(plan);
+
+    let step_id = forge_types::PlanStepId::new(1);
+    let advance_call = ToolCall::new(
+        "call-advance",
+        "Plan",
+        json!({
+            "subcommand": "advance",
+            "step_id": 1,
+            "outcome": "Done"
+        }),
+    );
+
+    let resolution = app.resolve_plan_tool_calls(&[advance_call], Vec::new());
+    assert_eq!(resolution.pre_resolved.len(), 1);
+    assert!(!resolution.pre_resolved[0].is_error);
+
+    let summaries = app.checkpoints.summaries();
+    assert!(
+        summaries
+            .iter()
+            .any(|s| s.kind == crate::checkpoints::CheckpointKind::PlanStep(step_id)),
+        "Expected a PlanStep checkpoint for step {step_id:?}"
+    );
+}
+
+#[test]
+fn plan_skip_creates_checkpoint() {
+    let mut app = test_app();
+
+    // Set up an active plan with step 1 Active.
+    let mut plan = forge_types::Plan::from_input(vec![forge_types::PhaseInput {
+        name: "Phase 1".to_string(),
+        steps: vec![
+            forge_types::StepInput {
+                description: "Step A".to_string(),
+                depends_on: vec![],
+            },
+            forge_types::StepInput {
+                description: "Step B".to_string(),
+                depends_on: vec![],
+            },
+        ],
+    }])
+    .unwrap();
+    plan.step_mut(forge_types::PlanStepId::new(1))
+        .unwrap()
+        .transition(forge_types::StepStatus::Active)
+        .unwrap();
+    app.plan_state = PlanState::Active(plan);
+
+    let step_id = forge_types::PlanStepId::new(1);
+    let skip_call = ToolCall::new(
+        "call-skip",
+        "Plan",
+        json!({
+            "subcommand": "skip",
+            "step_id": 1,
+            "reason": "Not needed"
+        }),
+    );
+
+    let resolution = app.resolve_plan_tool_calls(&[skip_call], Vec::new());
+    assert_eq!(resolution.pre_resolved.len(), 1);
+    assert!(!resolution.pre_resolved[0].is_error);
+
+    let summaries = app.checkpoints.summaries();
+    assert!(
+        summaries
+            .iter()
+            .any(|s| s.kind == crate::checkpoints::CheckpointKind::PlanStep(step_id)),
+        "Expected a PlanStep checkpoint for step {step_id:?}"
+    );
 }

@@ -1149,7 +1149,7 @@ pub trait ToolExecutor: Send + Sync + std::panic::UnwindSafe {
 | `WebFetch` | Fetch and parse web page content | No |
 | `Recall` | Query Librarian fact store for past context (Context Infinity) | No |
 | `Memory` | Store facts in the Librarian's memory (Context Infinity) | Yes |
-| `PhaseGate` | Force generation boundaries in Gemini (hidden, Gemini-only) | No |
+| `GeminiGate` | Force generation boundaries in Gemini (hidden, Gemini-only) | No |
 
 #### Git Tools
 

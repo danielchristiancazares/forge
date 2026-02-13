@@ -317,6 +317,7 @@ impl App {
             state: OperationState::Idle,
             memory_enabled,
             output_limits,
+            configured_output_limits: output_limits,
             cache_enabled,
             provider_runtime: crate::ProviderRuntimeState {
                 openai_options,
@@ -363,9 +364,10 @@ impl App {
                 snapshot: forge_lsp::DiagnosticsSnapshot::default(),
                 pending_diag_check: None,
             },
+            plan_state: crate::PlanState::Inactive,
         };
 
-        app.clamp_output_limits_to_model();
+        app.reconcile_output_limits_with_model();
         // Sync output limit to context manager for accurate budget calculation
         app.context_manager
             .set_output_limit(app.output_limits.max_output_tokens());
@@ -464,6 +466,11 @@ impl App {
     pub(crate) fn session_path(&self) -> std::path::PathBuf {
         self.data_dir
             .join(crate::session_state::SessionState::FILENAME)
+    }
+
+    /// Get the path to the plan state file.
+    pub(crate) fn plan_path(&self) -> PathBuf {
+        self.data_dir.join("plan.json")
     }
 
     pub(crate) fn context_infinity_enabled_from_env() -> bool {

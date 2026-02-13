@@ -356,6 +356,7 @@ fn apply_event(app: &mut App, event: Event, paste_active: bool) -> bool {
                 && !app.files_panel_expanded()
                 && app.tool_approval_requests().is_none()
                 && app.tool_recovery_calls().is_none()
+                && app.plan_approval_kind().is_none()
             {
                 app.cancel_active_operation();
                 return app.should_quit();
@@ -372,7 +373,10 @@ fn apply_event(app: &mut App, event: Event, paste_active: bool) -> bool {
         }
         Event::Paste(text) => {
             // Preserve existing paste gating + insert-token flow exactly
-            if app.tool_approval_requests().is_some() || app.tool_recovery_calls().is_some() {
+            if app.tool_approval_requests().is_some()
+                || app.tool_recovery_calls().is_some()
+                || app.plan_approval_kind().is_some()
+            {
                 return app.should_quit();
             }
             if app.input_mode() == InputMode::Insert {
@@ -389,6 +393,17 @@ fn apply_event(app: &mut App, event: Event, paste_active: bool) -> bool {
 }
 
 fn handle_normal_mode(app: &mut App, key: KeyEvent) {
+    if app.plan_approval_kind().is_some() {
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('a') => app.plan_approval_approve(),
+            KeyCode::Char('d') | KeyCode::Esc => app.plan_approval_reject(),
+            KeyCode::Char('k') | KeyCode::Up => app.scroll_up(),
+            KeyCode::Char('j') | KeyCode::Down => app.scroll_down(),
+            _ => {}
+        }
+        return;
+    }
+
     if app.tool_approval_requests().is_some() {
         match key.code {
             KeyCode::Char('k') | KeyCode::Up => app.tool_approval_move_up(),
@@ -507,6 +522,18 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
+    // Plan approval modal takes priority over insert mode
+    if app.plan_approval_kind().is_some() {
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('a') => app.plan_approval_approve(),
+            KeyCode::Char('d') | KeyCode::Esc => app.plan_approval_reject(),
+            KeyCode::Char('k') | KeyCode::Up => app.scroll_up(),
+            KeyCode::Char('j') | KeyCode::Down => app.scroll_down(),
+            _ => {}
+        }
+        return;
+    }
+
     // Tool approval modal takes priority over insert mode
     if app.tool_approval_requests().is_some() {
         match key.code {

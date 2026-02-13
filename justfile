@@ -73,7 +73,7 @@ deny:
     cargo deny check
 
 # Run all checks before committing (includes auto-formatting)
-verify: fmt fmt-check lint test deny
+verify: fix fmt fmt-check lint test deny
 
 # Generate CONTEXT.md (file tree, state transitions, cargo metadata, features)
 [windows]
@@ -164,8 +164,9 @@ toc-all:
 # Normalize line endings to LF for source and doc files
 [windows]
 fix:
-    @& { $ErrorActionPreference = 'Stop'; try { Get-ChildItem -Path . -Include *.rs,*.md -Recurse -ErrorAction Stop | Where-Object { $_.FullName -notmatch '[\\/]target[\\/]' -and $_.FullName -notmatch '[\\/]gemini-review[\\/]' } | ForEach-Object { $c = [System.IO.File]::ReadAllText($_.FullName); if ($c -match "`r`n") { [System.IO.File]::WriteAllText($_.FullName, ($c -replace "`r`n", "`n")); Write-Host "fixed: $($_.FullName)" } } } catch { Write-Error $_; exit 1 } }
+    @& { $ErrorActionPreference = 'Stop'; try { cargo clippy --fix --workspace --all-targets --allow-dirty --allow-staged -- -W 'clippy::collapsible_if'; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Get-ChildItem -Path . -Include *.rs,*.md -Recurse -ErrorAction Stop | Where-Object { $_.FullName -notmatch '[\\/]target[\\/]' -and $_.FullName -notmatch '[\\/]gemini-review[\\/]' } | ForEach-Object { $c = [System.IO.File]::ReadAllText($_.FullName); if ($c -match "`r`n") { [System.IO.File]::WriteAllText($_.FullName, ($c -replace "`r`n", "`n")); Write-Host "fixed: $($_.FullName)" } } } catch { Write-Error $_; exit 1 } }
 
 [unix]
 fix:
+    cargo clippy --fix --workspace --all-targets --allow-dirty --allow-staged -- -W 'clippy::collapsible_if'
     find . \( -name '*.rs' -o -name '*.md' \) -not -path './target/*' -not -path './gemini-review/*' -exec perl -pi -e 's/\r$//' {} +

@@ -84,6 +84,8 @@ impl App {
                 }
             }
         }
+
+        self.load_plan_if_exists();
     }
 
     pub(crate) fn rebuild_display_from_history(&mut self) {
@@ -124,7 +126,10 @@ impl App {
     /// Called after user messages and assistant completions for crash durability.
     pub(crate) fn autosave_history(&mut self) -> bool {
         match self.save_history() {
-            Ok(()) => true,
+            Ok(()) => {
+                self.save_plan();
+                true
+            }
             Err(e) => {
                 tracing::warn!("Autosave failed: {e}");
                 if !self.autosave_warning_shown {
@@ -132,6 +137,70 @@ impl App {
                     self.autosave_warning_shown = true;
                 }
                 false
+            }
+        }
+    }
+
+    /// Save plan state to disk alongside history.
+    ///
+    /// Writes `plan.json` when a plan exists (Proposed or Active).
+    /// Removes the file when Inactive.
+    pub(crate) fn save_plan(&self) {
+        use forge_types::PlanState;
+
+        let path = self.plan_path();
+        match &self.plan_state {
+            PlanState::Inactive => {
+                if path.exists()
+                    && let Err(e) = std::fs::remove_file(&path)
+                {
+                    tracing::warn!("Failed to remove plan.json: {e}");
+                }
+            }
+            PlanState::Proposed(_) | PlanState::Active(_) => {
+                match serde_json::to_string_pretty(&self.plan_state) {
+                    Ok(json) => {
+                        if let Err(e) = forge_context::atomic_write_with_options(
+                            &path,
+                            json.as_bytes(),
+                            forge_context::AtomicWriteOptions {
+                                sync_all: true,
+                                dir_sync: true,
+                                unix_mode: None,
+                            },
+                        ) {
+                            tracing::warn!("Failed to save plan.json: {e}");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to serialize plan state: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Load plan state from disk (called during init alongside history).
+    pub(crate) fn load_plan_if_exists(&mut self) {
+        let path = self.plan_path();
+        if !path.exists() {
+            return;
+        }
+
+        match std::fs::read_to_string(&path) {
+            Ok(data) => match serde_json::from_str::<forge_types::PlanState>(&data) {
+                Ok(state) => {
+                    self.plan_state = state;
+                    if self.plan_state.is_active() {
+                        tracing::debug!("Loaded active plan from {}", path.display());
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to parse plan.json: {e}");
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Failed to read plan.json: {e}");
             }
         }
     }
@@ -754,7 +823,7 @@ impl App {
     /// This removes the user message from history and display, then restores
     /// the original text to the input box for easy retry.
     pub(crate) fn rollback_pending_user_message(&mut self) {
-        let Some((msg_id, original_text)) = self.pending_user_message.take() else {
+        let Some((msg_id, original_text, agents_md)) = self.pending_user_message.take() else {
             return;
         };
 
@@ -769,6 +838,9 @@ impl App {
             // Restore to input box and enter insert mode for easy retry
             self.input.draft_mut().set_text(original_text);
             self.input = std::mem::take(&mut self.input).into_insert();
+
+            // Restore consumed AGENTS.md so the next message gets it
+            self.environment.restore_agents_md(agents_md);
 
             // Invalidate usage cache since we modified history
             self.invalidate_usage_cache();

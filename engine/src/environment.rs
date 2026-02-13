@@ -54,6 +54,13 @@ impl EnvironmentContext {
         std::mem::take(&mut self.agents_md)
     }
 
+    /// Restores AGENTS.md content after a rollback (e.g. stream cancel on first message).
+    pub fn restore_agents_md(&mut self, content: String) {
+        if self.agents_md.is_empty() && !content.is_empty() {
+            self.agents_md = content;
+        }
+    }
+
     /// Creates an `EnvironmentContext` with no AGENTS.md content.
     /// Used by tests to avoid picking up real filesystem state.
     #[cfg(test)]

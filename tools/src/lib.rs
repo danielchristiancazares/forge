@@ -290,10 +290,14 @@ pub(crate) fn parse_args<T: serde::de::DeserializeOwned>(args: &Value) -> Result
     })
 }
 
-/// Tool registry for executors.
+/// Tool registry for executors and schema-only tools.
+///
+/// Schema-only tools are visible to the LLM (included in tool definitions)
+/// but their execution is intercepted by the engine before reaching an executor.
 #[derive(Default)]
 pub struct ToolRegistry {
     executors: HashMap<String, Box<dyn ToolExecutor>>,
+    schema_only: Vec<ToolDefinition>,
 }
 
 impl ToolRegistry {
@@ -306,6 +310,19 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Register a schema-only tool definition (no executor).
+    ///
+    /// The tool appears in the LLM's tool manifest but the engine must
+    /// intercept calls before they reach the executor dispatch path.
+    pub fn register_schema(&mut self, def: ToolDefinition) -> Result<(), ToolError> {
+        let name = &def.name;
+        if self.executors.contains_key(name) || self.schema_only.iter().any(|d| d.name == *name) {
+            return Err(ToolError::DuplicateTool { name: name.clone() });
+        }
+        self.schema_only.push(def);
+        Ok(())
+    }
+
     pub fn lookup(&self, name: &str) -> Result<&dyn ToolExecutor, ToolError> {
         self.executors
             .get(name)
@@ -313,6 +330,12 @@ impl ToolRegistry {
             .ok_or_else(|| ToolError::UnknownTool {
                 name: name.to_string(),
             })
+    }
+
+    /// Whether the given tool name is registered as schema-only (engine-intercepted).
+    #[must_use]
+    pub fn is_schema_only(&self, name: &str) -> bool {
+        self.schema_only.iter().any(|d| d.name == name)
     }
 
     #[must_use]
@@ -326,6 +349,7 @@ impl ToolRegistry {
                 def.provider = exec.target_provider();
                 def
             })
+            .chain(self.schema_only.iter().cloned())
             .collect();
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs
@@ -334,7 +358,7 @@ impl ToolRegistry {
     #[allow(dead_code)]
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.executors.is_empty()
+        self.executors.is_empty() && self.schema_only.is_empty()
     }
 }
 

@@ -181,6 +181,20 @@ new_b
 END
 ```
 
+### Plan tool
+
+When using the `Plan` tool, treat it as a stateful tool API, not as a runtime mode toggle.
+
+- `Plan.create` creates or replaces the active plan with ordered steps and statuses.
+- `Plan.edit` updates an existing active plan.
+- A plan step status must be one of `pending`, `in_progress`, or `completed`.
+- At most one step can be `in_progress` at a time.
+- Use `Plan` only when planning adds value (for multi-step work, explicit user planning requests, or when asked to keep a visible execution plan).
+- Do not claim the session is "in plan mode" unless environment metadata explicitly says so.
+- If `Plan` calls fail with tool-journal errors (for example, "tool journal unavailable" or "already recorded with different content"), treat this as a tool execution failure and report it directly. Do not infer user intent/state from that error.
+- Do not speculate about internal causes (for example, phase gates, approval gates, or idempotency internals) unless explicit evidence is present in tool output.
+- If the same tool-journal error repeats for the same attempted action, stop retrying the same command and provide a concise recovery step.
+
 ## Agentic operations
 
 - For content search, use the Search tool. For filename lookups, use Glob; Glob matches paths, not file contents.
@@ -201,6 +215,7 @@ END
   - Do not run commands that change the working directory (`cd`, `pushd`, `Set-Location`). The cwd resets every invocation; these commands have no lasting effect and indicate a misunderstanding of the execution model.
   - Use absolute or relative paths from the project root instead of changing directories.
 - Use the `Run` tool only for operations unsupported by built-in tools or when no built-in tool exists.
+- If any tool reports `tool journal unavailable` or `already recorded with different content`, surface the exact error text, avoid repeated retries, and ask for a fresh session before continuing tool-based edits.
 
 {environment_context}
 
@@ -235,4 +250,3 @@ The following rules may be overriden by user preferences. The rules apply when g
 - Catch bad input and data at boundary layers. Parse at boundaries, operate on strict types internally. The boundary layer converts messy external input into strict types; the core must never handle optionals, non-representable data, or contain checks and guards when the boundary layers should have caught it.
 - Assertions indicate type-system failure. If you are writing a guard, the types have already permitted an invalid state to exist. Remodel your domain to fix this.
 - Flags that determine field validity indicate a disguised sum type. If changing an enum value invalidates member data, the structure must change, not the flag.
-

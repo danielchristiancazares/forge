@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use futures_util::future::AbortHandle;
 
 use forge_context::{RecoveredToolBatch, StepId, ToolBatchId};
-use forge_types::{Message, ModelName, ToolCall, ToolResult};
+use forge_types::{Message, ModelName, Plan, ToolCall, ToolResult};
 
 use crate::StreamingMessage;
 use crate::input_modes::TurnContext;
@@ -579,12 +579,27 @@ pub(crate) struct ToolPlan {
 }
 
 #[derive(Debug)]
+pub(crate) enum PlanApprovalKind {
+    Create,
+    Edit { pre_edit_plan: Plan },
+}
+
+#[derive(Debug)]
+pub(crate) struct PlanApprovalState {
+    pub(crate) tool_call_id: String,
+    pub(crate) kind: PlanApprovalKind,
+    pub(crate) batch: ToolBatch,
+    pub(crate) pending_tool_approvals: Vec<ConfirmationRequest>,
+}
+
+#[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum OperationState {
     Idle,
     ToolsDisabled(ToolsDisabledState),
     Streaming(ActiveStream),
     ToolLoop(Box<ToolLoopState>),
+    PlanApproval(Box<PlanApprovalState>),
     ToolRecovery(ToolRecoveryState),
     RecoveryBlocked(RecoveryBlockedState),
     Distilling(DistillationState),

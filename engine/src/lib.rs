@@ -55,9 +55,9 @@ pub use forge_types::{
     ApiKey, ApiUsage, CacheHint, CacheableMessage, EmptyStringError, Message, ModelName,
     NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort, OpenAIReasoningItem,
     OpenAIReasoningSummary, OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation,
-    OutputLimits, Provider, SecretString, StreamEvent, StreamFinishReason, ThinkingReplayState,
-    ThinkingState, ThoughtSignature, ThoughtSignatureState, ToolCall, ToolDefinition, ToolResult,
-    sanitize_terminal_text,
+    OutputLimits, PlanState, Provider, SecretString, StreamEvent, StreamFinishReason,
+    ThinkingReplayState, ThinkingState, ThoughtSignature, ThoughtSignatureState, ToolCall,
+    ToolDefinition, ToolResult, sanitize_terminal_text,
 };
 
 mod config;
@@ -80,6 +80,7 @@ pub use session_state::SessionChangeLog;
 mod distillation;
 mod environment;
 mod lsp_integration;
+mod plan;
 mod state;
 mod streaming;
 mod tool_loop;
@@ -765,7 +766,11 @@ pub struct App {
     memory_enabled: bool,
     /// Validated output limits (max tokens + explicit thinking state).
     /// Invariant: if thinking is enabled, budget < `max_tokens`.
+    /// May be clamped below `configured_output_limits` for smaller models.
     output_limits: OutputLimits,
+    /// Output limits as configured at init time (before model-specific clamping).
+    /// Used to restore thinking budget when switching back to a larger model.
+    configured_output_limits: OutputLimits,
     /// Whether prompt caching is enabled (for Claude).
     cache_enabled: bool,
     provider_runtime: ProviderRuntimeState,
@@ -782,7 +787,8 @@ pub struct App {
     /// When a user message is queued, we store its ID and original text here.
     /// If the stream fails with no content, we rollback the message from history
     /// and restore this text to the input box for easy retry.
-    pending_user_message: Option<(MessageId, String)>,
+    /// Fields: (message_id, original_draft_text, consumed_agents_md).
+    pending_user_message: Option<(MessageId, String, String)>,
     /// Tool definitions to send with each request.
     tool_definitions: Vec<ToolDefinition>,
     /// Tool names hidden from UI rendering (source-of-truth: `ToolExecutor::is_hidden()`).
@@ -843,6 +849,8 @@ pub struct App {
     /// Queue of pending system notifications to inject into next API request.
     notification_queue: notifications::NotificationQueue,
     lsp_runtime: LspRuntimeState,
+    /// Plan lifecycle state (Inactive / Proposed / Active).
+    plan_state: PlanState,
 }
 
 impl App {
@@ -1371,6 +1379,48 @@ impl App {
             .is_some_and(state::ApprovalState::is_confirming_deny)
     }
 
+    // Plan approval accessors
+
+    pub fn plan_approval_kind(&self) -> Option<&'static str> {
+        match &self.state {
+            OperationState::PlanApproval(state) => match &state.kind {
+                state::PlanApprovalKind::Create => Some("create"),
+                state::PlanApprovalKind::Edit { .. } => Some("edit"),
+            },
+            _ => None,
+        }
+    }
+
+    pub fn plan_approval_rendered(&self) -> Option<String> {
+        if !matches!(self.state, OperationState::PlanApproval(_)) {
+            return None;
+        }
+        self.plan_state.plan().map(forge_types::Plan::render)
+    }
+
+    pub fn plan_status_line(&self) -> Option<String> {
+        match &self.plan_state {
+            PlanState::Active(plan) => {
+                if let Some(step) = plan.active_step() {
+                    let phase_idx = plan.phase_of(step.id).unwrap_or(0);
+                    let phase_name = &plan.phases()[phase_idx].name;
+                    Some(format!("Plan: {phase_name} — {}", step.description))
+                } else {
+                    Some("Plan: Active (no current step)".to_string())
+                }
+            }
+            _ => None,
+        }
+    }
+
+    pub fn plan_approval_approve(&mut self) {
+        self.resolve_plan_approval(true);
+    }
+
+    pub fn plan_approval_reject(&mut self) {
+        self.resolve_plan_approval(false);
+    }
+
     pub fn tool_recovery_calls(&self) -> Option<&[ToolCall]> {
         match &self.state {
             OperationState::ToolRecovery(state) => Some(&state.batch.calls),
@@ -1396,6 +1446,7 @@ impl App {
                 self.state,
                 OperationState::Streaming(_)
                     | OperationState::ToolLoop(_)
+                    | OperationState::PlanApproval(_)
                     | OperationState::ToolRecovery(_)
                     | OperationState::RecoveryBlocked(_)
             )
@@ -1546,6 +1597,7 @@ impl App {
             OperationState::Idle | OperationState::ToolsDisabled(_) => None,
             OperationState::Streaming(_) => Some("streaming a response"),
             OperationState::ToolLoop(_) => Some("tool execution in progress"),
+            OperationState::PlanApproval(_) => Some("plan approval pending"),
             OperationState::ToolRecovery(_) => Some("tool recovery pending"),
             OperationState::RecoveryBlocked(_) => Some("recovery blocked"),
             OperationState::Distilling(_) => Some("distillation in progress"),
@@ -1642,48 +1694,69 @@ impl App {
         selected_rev
     }
 
-    fn clamp_output_limits_to_model(&mut self) {
+    fn reconcile_output_limits_with_model(&mut self) {
         let model_max_output = self.context_manager.current_limits().max_output();
         let current = self.output_limits;
 
-        if current.max_output_tokens() <= model_max_output {
-            return;
-        }
-
-        let clamped = match current.thinking() {
-            ThinkingState::Enabled(budget) => {
-                let budget_tokens = budget.as_u32();
-                if budget_tokens < model_max_output {
-                    OutputLimits::with_thinking(model_max_output, budget_tokens)
-                        .unwrap_or(OutputLimits::new(model_max_output))
-                } else {
-                    OutputLimits::new(model_max_output)
+        // Try to restore configured limits if the new model has enough headroom.
+        // This handles the case where thinking was dropped for a smaller model
+        // and needs to be restored when switching back to a larger one.
+        let target = if current.max_output_tokens() <= model_max_output {
+            let configured = self.configured_output_limits;
+            match configured.thinking() {
+                ThinkingState::Enabled(budget) if !current.has_thinking() => {
+                    let budget_tokens = budget.as_u32();
+                    if budget_tokens < model_max_output {
+                        let restored = OutputLimits::with_thinking(model_max_output, budget_tokens)
+                            .unwrap_or(OutputLimits::new(model_max_output));
+                        tracing::info!(
+                            "Restored thinking budget ({budget_tokens}) for {}",
+                            self.model
+                        );
+                        restored
+                    } else {
+                        return;
+                    }
                 }
+                _ => return,
             }
-            ThinkingState::Disabled => OutputLimits::new(model_max_output),
-        };
-
-        let warning = if current.has_thinking() && !clamped.has_thinking() {
-            format!(
-                "Clamped max_output_tokens {} → {} for {}; disabled thinking budget",
-                current.max_output_tokens(),
-                clamped.max_output_tokens(),
-                self.model
-            )
         } else {
-            format!(
-                "Clamped max_output_tokens {} → {} for {}",
-                current.max_output_tokens(),
-                clamped.max_output_tokens(),
-                self.model
-            )
+            // Model is smaller — clamp down.
+            match current.thinking() {
+                ThinkingState::Enabled(budget) => {
+                    let budget_tokens = budget.as_u32();
+                    if budget_tokens < model_max_output {
+                        OutputLimits::with_thinking(model_max_output, budget_tokens)
+                            .unwrap_or(OutputLimits::new(model_max_output))
+                    } else {
+                        OutputLimits::new(model_max_output)
+                    }
+                }
+                ThinkingState::Disabled => OutputLimits::new(model_max_output),
+            }
         };
-        tracing::warn!("{warning}");
 
-        self.output_limits = clamped;
-        // Sync to context manager for accurate budget calculation
-        self.context_manager
-            .set_output_limit(clamped.max_output_tokens());
+        if target != current {
+            if current.has_thinking() && !target.has_thinking() {
+                tracing::warn!(
+                    "Clamped max_output_tokens {} → {} for {}; disabled thinking budget",
+                    current.max_output_tokens(),
+                    target.max_output_tokens(),
+                    self.model
+                );
+            } else if current.max_output_tokens() != target.max_output_tokens() {
+                tracing::warn!(
+                    "Adjusted max_output_tokens {} → {} for {}",
+                    current.max_output_tokens(),
+                    target.max_output_tokens(),
+                    self.model
+                );
+            }
+
+            self.output_limits = target;
+            self.context_manager
+                .set_output_limit(target.max_output_tokens());
+        }
     }
 
     fn set_active_model(&mut self, model: ModelName) {
@@ -1695,7 +1768,7 @@ impl App {
                 .set_model_without_adaptation(self.model.clone());
             self.invalidate_usage_cache();
         }
-        self.clamp_output_limits_to_model();
+        self.reconcile_output_limits_with_model();
     }
 
     fn set_model_internal(&mut self, model: ModelName, persist: bool) {

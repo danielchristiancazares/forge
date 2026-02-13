@@ -181,6 +181,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_settings_modal(frame, app, &palette, &glyphs, elapsed);
     }
 
+    if app.plan_approval_kind().is_some() {
+        draw_plan_approval_prompt(frame, app, &palette);
+    }
+
     if app.tool_approval_requests().is_some() {
         draw_tool_approval_prompt(frame, app, &palette);
     }
@@ -1297,7 +1301,15 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
             .title_top(Line::from(hints).alignment(Alignment::Right))
             .title_bottom(Line::from(vec![Span::styled(model_text, model_style)]))
             .title_bottom({
-                let mut spans = vec![Span::styled(usage_str, Style::default().fg(usage_color))];
+                let mut spans = Vec::new();
+                if let Some(plan_line) = app.plan_status_line() {
+                    spans.push(Span::styled(
+                        plan_line,
+                        Style::default().fg(palette.primary),
+                    ));
+                    spans.push(Span::styled("  ", Style::default()));
+                }
+                spans.push(Span::styled(usage_str, Style::default().fg(usage_color)));
                 if let Some(color) = diag_color {
                     spans.push(Span::styled(
                         format!("  {diag_str}"),
@@ -2812,6 +2824,83 @@ pub fn draw_model_selector(
     let selector = Paragraph::new(lines).block(block);
 
     frame.render_widget(selector, selector_area);
+}
+
+fn draw_plan_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
+    let Some(kind_label) = app.plan_approval_kind() else {
+        return;
+    };
+    let rendered = app.plan_approval_rendered().unwrap_or_default();
+
+    let title = if kind_label == "create" {
+        " Plan approval required "
+    } else {
+        " Plan edit approval required "
+    };
+
+    let max_content_width = frame.area().width.saturating_sub(8).max(20) as usize;
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            title,
+            Style::default()
+                .fg(palette.text_primary)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+
+    for text_line in rendered.lines() {
+        let display_line = if text_line.len() > max_content_width {
+            &text_line[..text_line.floor_char_boundary(max_content_width)]
+        } else {
+            text_line
+        };
+        lines.push(Line::from(Span::styled(
+            format!(" {display_line}"),
+            Style::default().fg(palette.text_secondary),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Enter/a", styles::key_highlight(palette)),
+        Span::styled(" approve  ", styles::key_hint(palette)),
+        Span::styled("d/Esc", styles::key_highlight(palette)),
+        Span::styled(" reject  ", styles::key_hint(palette)),
+        Span::styled("↑↓", styles::key_highlight(palette)),
+        Span::styled(" scroll", styles::key_hint(palette)),
+    ]));
+
+    let content_width = lines
+        .iter()
+        .map(ratatui::prelude::Line::width)
+        .max()
+        .unwrap_or(10) as u16;
+    let content_width = content_width.min(frame.area().width.saturating_sub(4));
+
+    let max_height = frame.area().height.saturating_sub(4);
+    let content_height = (lines.len() as u16).min(max_height);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette.primary))
+        .style(Style::default().bg(palette.bg_panel))
+        .padding(Padding::uniform(1));
+
+    let height = content_height.saturating_add(4);
+    let width = content_width.saturating_add(4);
+    let area = frame.area();
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(width) / 2),
+        y: area.y + (area.height.saturating_sub(height) / 2),
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
 fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {

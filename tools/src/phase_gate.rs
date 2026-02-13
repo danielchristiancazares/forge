@@ -1,4 +1,4 @@
-//! PhaseGate tool — forces generation boundaries between Gemini execution phases.
+//! GeminiGate tool — forces generation boundaries between Gemini execution phases.
 //!
 //! Gemini 3 Pro collapses multi-phase execution into a single generation pass.
 //! This no-op tool forces the model to stop generating and re-enter inference
@@ -12,11 +12,11 @@ use serde_json::{Value, json};
 use super::{RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut};
 
 #[derive(Debug)]
-pub struct PhaseGateTool;
+pub struct GeminiGateTool;
 
-impl ToolExecutor for PhaseGateTool {
+impl ToolExecutor for GeminiGateTool {
     fn name(&self) -> &'static str {
-        "PhaseGate"
+        "GeminiGate"
     }
 
     fn description(&self) -> &'static str {
@@ -58,7 +58,7 @@ impl ToolExecutor for PhaseGateTool {
 
     fn approval_summary(&self, args: &Value) -> Result<String, ToolError> {
         let phase = args.get("phase").and_then(Value::as_i64).unwrap_or(0);
-        Ok(format!("PhaseGate({phase})"))
+        Ok(format!("GeminiGate({phase})"))
     }
 
     fn execute<'a>(&'a self, args: Value, _ctx: &'a mut ToolCtx) -> ToolFut<'a> {
@@ -79,32 +79,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn phase_gate_is_hidden() {
-        let tool = PhaseGateTool;
+    fn gemini_gate_is_hidden() {
+        let tool = GeminiGateTool;
         assert!(tool.is_hidden());
     }
 
     #[test]
-    fn phase_gate_targets_gemini() {
-        let tool = PhaseGateTool;
+    fn gemini_gate_targets_gemini() {
+        let tool = GeminiGateTool;
         assert_eq!(tool.target_provider(), Some(Provider::Gemini));
     }
 
     #[test]
-    fn phase_gate_is_not_side_effecting() {
-        let tool = PhaseGateTool;
+    fn gemini_gate_is_not_side_effecting() {
+        let tool = GeminiGateTool;
         assert!(!tool.is_side_effecting(&serde_json::json!({})));
     }
 
     #[test]
-    fn phase_gate_does_not_require_approval() {
-        let tool = PhaseGateTool;
+    fn gemini_gate_does_not_require_approval() {
+        let tool = GeminiGateTool;
         assert!(!tool.requires_approval());
     }
 
     #[test]
-    fn phase_gate_risk_level_is_low() {
-        let tool = PhaseGateTool;
+    fn gemini_gate_risk_level_is_low() {
+        let tool = GeminiGateTool;
         assert_eq!(tool.risk_level(&serde_json::json!({})), RiskLevel::Low);
     }
 }

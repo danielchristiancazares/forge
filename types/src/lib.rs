@@ -28,12 +28,18 @@
 //! | Streaming | [`StreamEvent`], [`StreamFinishReason`], [`ApiUsage`] |
 //! | Tool calling | [`ToolDefinition`], [`ToolCall`], [`ToolResult`] |
 //! | Messages | [`SystemMessage`], [`UserMessage`], [`AssistantMessage`], [`Message`], [`CacheableMessage`] |
+//! | Plan | [`Plan`], [`Phase`], [`PlanStep`], [`PlanStepId`], [`StepStatus`], [`PlanState`], [`CompletedPlan`], [`EditOp`] |
 //! | Security | [`sanitize_terminal_text`], [`strip_steganographic_chars`], [`detect_mixed_script`], [`HomoglyphWarning`] |
 
 mod confusables;
+pub mod plan;
 mod sanitize;
 mod text;
 pub use confusables::{HomoglyphWarning, detect_mixed_script};
+pub use plan::{
+    CompletedPlan, EditOp, EditValidationError, Phase, PhaseInput, Plan, PlanState, PlanStep,
+    PlanStepId, PlanTransitionError, PlanValidationError, StepInput, StepStatus,
+};
 pub use sanitize::{sanitize_path_display, sanitize_terminal_text, strip_steganographic_chars};
 pub use text::truncate_with_ellipsis;
 

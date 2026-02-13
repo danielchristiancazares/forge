@@ -155,23 +155,23 @@ impl InsertMode<'_> {
             return None;
         };
 
-        let raw_content = self.app.input.draft_mut().take_text();
+        let draft_text = self.app.input.draft_mut().take_text();
         // Record prompt to history for Up/Down navigation
-        self.app.record_prompt(&raw_content);
+        self.app.record_prompt(&draft_text);
 
         // Prepend AGENTS.md content to the first user message.
         // take_agents_md() consumes the content — subsequent messages get an empty string.
         let agents_md = self.app.environment.take_agents_md();
-        let raw_content = if agents_md.is_empty() {
-            raw_content
+        let expanded = if agents_md.is_empty() {
+            draft_text.clone()
         } else {
-            format!("## AGENTS.md\n\n{agents_md}\n\n---\n\n{raw_content}")
+            format!("## AGENTS.md\n\n{agents_md}\n\n---\n\n{draft_text}")
         };
 
         // Expand @path file references: read file contents and prepend them.
-        let raw_content = expand_file_references(raw_content);
+        let expanded = expand_file_references(expanded);
 
-        let content = if let Ok(content) = NonEmptyString::new(raw_content.clone()) {
+        let content = if let Ok(content) = NonEmptyString::new(expanded) {
             content
         } else {
             return None;
@@ -184,8 +184,9 @@ impl InsertMode<'_> {
         // Track user message in context manager (also adds to display)
         let msg_id = self.app.push_history_message(Message::user(content));
 
-        // Store pending message for potential rollback if autosave or stream fails
-        self.app.pending_user_message = Some((msg_id, raw_content));
+        // Store original draft text (not expanded) for rollback on cancel.
+        // Also stash consumed agents_md so it can be restored on rollback.
+        self.app.pending_user_message = Some((msg_id, draft_text, agents_md));
 
         // Persist user message immediately for crash durability.
         // If persistence fails, rollback — streaming without a durable user
@@ -505,9 +506,13 @@ fn expand_file_references(text: String) -> String {
         {
             seen.insert(path_str.to_string());
             let content = if content.len() > MAX_FILE_REF_BYTES {
+                let mut end = MAX_FILE_REF_BYTES;
+                while end > 0 && !content.is_char_boundary(end) {
+                    end -= 1;
+                }
                 format!(
                     "{}...\n[truncated at {}KB]",
-                    &content[..MAX_FILE_REF_BYTES],
+                    &content[..end],
                     MAX_FILE_REF_BYTES / 1024
                 )
             } else {

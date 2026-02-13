@@ -1,7 +1,8 @@
 //! Command processing for the App.
 
 use super::{
-    ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, SessionChangeLog,
+    ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, PlanState,
+    SessionChangeLog,
     state::{
         ActiveStream, DistillationStart, OperationState, ToolLoopPhase, ToolLoopState,
         ToolRecoveryDecision,
@@ -96,6 +97,11 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         help_label: "problems",
         description: "Show LSP diagnostics (compiler errors/warnings)",
     },
+    CommandSpec {
+        palette_label: "plan [clear]",
+        help_label: "plan",
+        description: "Show plan status or clear active plan",
+    },
 ];
 
 #[must_use]
@@ -120,6 +126,7 @@ pub(crate) enum CommandKind {
     Undo,
     Retry,
     Problems,
+    Plan,
 }
 
 impl CommandKind {
@@ -219,6 +226,10 @@ const COMMAND_ALIASES: &[CommandAlias] = &[
         name: "diag",
         kind: CommandKind::Problems,
     },
+    CommandAlias {
+        name: "plan",
+        kind: CommandKind::Plan,
+    },
 ];
 
 pub(crate) fn command_aliases() -> &'static [CommandAlias] {
@@ -256,6 +267,9 @@ pub(crate) enum Command<'a> {
     Undo,
     Retry,
     Problems,
+    Plan {
+        subcommand: Option<&'a str>,
+    },
     Unknown(&'a str),
     Empty,
 }
@@ -299,6 +313,9 @@ impl<'a> Command<'a> {
             CommandKind::Undo => Command::Undo,
             CommandKind::Retry => Command::Retry,
             CommandKind::Problems => Command::Problems,
+            CommandKind::Plan => Command::Plan {
+                subcommand: parts.get(1).copied(),
+            },
         }
     }
 }
@@ -336,6 +353,21 @@ impl super::App {
                 }
                 self.cancel_tool_batch(batch);
                 self.push_notification("Tool execution cancelled");
+                true
+            }
+            OperationState::PlanApproval(state) => {
+                match &state.kind {
+                    crate::state::PlanApprovalKind::Create => {
+                        self.plan_state = PlanState::Inactive;
+                    }
+                    crate::state::PlanApprovalKind::Edit { pre_edit_plan } => {
+                        if let PlanState::Active(plan) = &mut self.plan_state {
+                            *plan = pre_edit_plan.clone();
+                        }
+                    }
+                }
+                self.cancel_tool_batch(state.batch);
+                self.push_notification("Plan approval cancelled");
                 true
             }
             OperationState::ToolRecovery(state) => {
@@ -404,6 +436,25 @@ impl super::App {
                             tracing::warn!("Failed to discard tool batch on clear: {e}");
                         }
                         self.discard_journal_step(batch.step_id);
+                    }
+                    OperationState::PlanApproval(state) => {
+                        match &state.kind {
+                            crate::state::PlanApprovalKind::Create => {
+                                self.plan_state = PlanState::Inactive;
+                            }
+                            crate::state::PlanApprovalKind::Edit { pre_edit_plan } => {
+                                if let PlanState::Active(plan) = &mut self.plan_state {
+                                    *plan = pre_edit_plan.clone();
+                                }
+                            }
+                        }
+                        if let Err(e) = self
+                            .tool_journal
+                            .discard_batch(state.batch.journal_status.batch_id())
+                        {
+                            tracing::warn!("Failed to discard tool batch on clear: {e}");
+                        }
+                        self.discard_journal_step(state.batch.step_id);
                     }
                     OperationState::ToolRecovery(state) => {
                         // RecoveredToolBatch always has a valid batch_id from the journal
@@ -661,6 +712,28 @@ impl super::App {
                     self.push_notification(lines.join("\n"));
                 }
             }
+            Command::Plan { subcommand } => match subcommand {
+                None => {
+                    let msg = match &self.plan_state {
+                        PlanState::Inactive => "No active plan.".to_string(),
+                        PlanState::Proposed(plan) => {
+                            format!("[Proposed — awaiting approval]\n\n{}", plan.render())
+                        }
+                        PlanState::Active(plan) => plan.render(),
+                    };
+                    self.push_notification(msg);
+                }
+                Some("clear") => {
+                    self.plan_state = PlanState::Inactive;
+                    self.save_plan();
+                    self.push_notification("Plan cleared.");
+                }
+                Some(other) => {
+                    self.push_notification(format!(
+                        "Unknown /plan subcommand: {other}. Usage: /plan [clear]"
+                    ));
+                }
+            },
             Command::Unknown(cmd) => {
                 self.push_notification(format!("Unknown command: {cmd}"));
             }
@@ -794,6 +867,30 @@ mod tests {
             Command::Rewind {
                 target: Some("list"),
                 scope: None
+            }
+        );
+    }
+
+    #[test]
+    fn parse_plan_commands() {
+        assert_eq!(Command::parse("plan"), Command::Plan { subcommand: None });
+        assert_eq!(Command::parse("/plan"), Command::Plan { subcommand: None });
+        assert_eq!(
+            Command::parse("plan clear"),
+            Command::Plan {
+                subcommand: Some("clear")
+            }
+        );
+        assert_eq!(
+            Command::parse("/plan clear"),
+            Command::Plan {
+                subcommand: Some("clear")
+            }
+        );
+        assert_eq!(
+            Command::parse("plan bogus"),
+            Command::Plan {
+                subcommand: Some("bogus")
             }
         );
     }
