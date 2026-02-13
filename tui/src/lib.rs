@@ -1236,10 +1236,8 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
         } else {
             Style::default().fg(palette.primary)
         };
-        let spans = vec![
-            Span::styled(prefix, prefix_style),
-            Span::styled(display_text, Style::default().fg(palette.text_primary)),
-        ];
+        let mut spans = vec![Span::styled(prefix, prefix_style)];
+        spans.extend(highlight_file_refs(&display_text, palette));
 
         if mode == InputMode::Insert {
             let cursor_index = app.draft_cursor_byte_index();
@@ -3339,6 +3337,42 @@ fn draw_file_selector(
     let selector = Paragraph::new(lines).block(block);
 
     frame.render_widget(selector, selector_area);
+}
+
+/// Split text into styled spans, highlighting `@path` file references in crystalBlue.
+fn highlight_file_refs<'a>(text: &str, palette: &Palette) -> Vec<Span<'a>> {
+    let normal = Style::default().fg(palette.text_primary);
+    let file_ref = Style::default().fg(palette.blue);
+
+    let mut spans = Vec::new();
+    let mut rest = text;
+
+    while let Some(at_pos) = rest.find('@') {
+        if at_pos > 0 {
+            spans.push(Span::styled(rest[..at_pos].to_string(), normal));
+        }
+
+        let after_at = &rest[at_pos + 1..];
+        let end = after_at
+            .find(|c: char| c.is_whitespace())
+            .unwrap_or(after_at.len());
+
+        if end == 0 {
+            spans.push(Span::styled("@".to_string(), normal));
+            rest = after_at;
+            continue;
+        }
+
+        let token = &rest[at_pos..at_pos + 1 + end];
+        spans.push(Span::styled(token.to_string(), file_ref));
+        rest = &after_at[end..];
+    }
+
+    if !rest.is_empty() {
+        spans.push(Span::styled(rest.to_string(), normal));
+    }
+
+    spans
 }
 
 fn create_welcome_screen(app: &App, palette: &Palette, glyphs: &Glyphs) -> Paragraph<'static> {

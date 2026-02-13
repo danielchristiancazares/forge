@@ -28,6 +28,7 @@ mod colors {
     pub const PRIMARY_DIM: Color = Color::Rgb(147, 138, 169); // springViolet1
 
     // === Accent Colors ===
+    pub const BLUE: Color = Color::Rgb(126, 156, 216); // crystalBlue
     pub const CYAN: Color = Color::Rgb(127, 180, 202); // springBlue
     pub const GREEN: Color = Color::Rgb(152, 187, 108); // springGreen
     pub const YELLOW: Color = Color::Rgb(230, 195, 132); // carpYellow
@@ -69,6 +70,7 @@ pub struct Palette {
     pub green: Color,
     pub yellow: Color,
     pub red: Color,
+    pub blue: Color,
     pub provider_claude: Color,
     pub provider_openai: Color,
     pub provider_gemini: Color,
@@ -90,6 +92,7 @@ impl Palette {
             primary: colors::PRIMARY,
             primary_dim: colors::PRIMARY_DIM,
             accent: colors::ACCENT,
+            blue: colors::BLUE,
             success: colors::SUCCESS,
             warning: colors::WARNING,
             error: colors::ERROR,
@@ -125,6 +128,7 @@ impl Palette {
             green: Color::Green,
             yellow: Color::Yellow,
             red: Color::Red,
+            blue: Color::Blue,
             provider_claude: Color::Yellow,
             provider_openai: Color::White,
             provider_gemini: Color::Cyan,

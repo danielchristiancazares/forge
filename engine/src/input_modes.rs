@@ -168,6 +168,9 @@ impl InsertMode<'_> {
             format!("## AGENTS.md\n\n{agents_md}\n\n---\n\n{raw_content}")
         };
 
+        // Expand @path file references: read file contents and prepend them.
+        let raw_content = expand_file_references(raw_content);
+
         let content = if let Ok(content) = NonEmptyString::new(raw_content.clone()) {
             content
         } else {
@@ -474,6 +477,52 @@ fn complete_command_arg(
     }
 
     Some(lcp.chars().skip(core_chars).collect())
+}
+
+const MAX_FILE_REF_BYTES: usize = 200 * 1024;
+
+/// Expand `@path` file references in user message text.
+///
+/// Scans for `@` followed by non-whitespace, checks if the path exists as a file,
+/// and prepends file contents to the message. The `@path` tokens remain in the
+/// user's text as anchors.
+fn expand_file_references(text: String) -> String {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut file_sections = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for word in text.split_whitespace() {
+        let Some(path_str) = word.strip_prefix('@') else {
+            continue;
+        };
+        if path_str.is_empty() || seen.contains(path_str) {
+            continue;
+        }
+
+        let path = cwd.join(path_str);
+        if path.is_file()
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            seen.insert(path_str.to_string());
+            let content = if content.len() > MAX_FILE_REF_BYTES {
+                format!(
+                    "{}...\n[truncated at {}KB]",
+                    &content[..MAX_FILE_REF_BYTES],
+                    MAX_FILE_REF_BYTES / 1024
+                )
+            } else {
+                content
+            };
+            file_sections.push(format!("`{path_str}`:\n```\n{content}\n```"));
+        }
+    }
+
+    if file_sections.is_empty() {
+        text
+    } else {
+        let files_block = file_sections.join("\n\n");
+        format!("{files_block}\n\n---\n\n{text}")
+    }
 }
 
 fn longest_common_prefix(strings: &[&str]) -> String {
