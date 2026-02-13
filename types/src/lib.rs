@@ -1684,6 +1684,8 @@ impl SystemMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMessage {
     content: NonEmptyString,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    display_content: Option<NonEmptyString>,
     timestamp: SystemTime,
 }
 
@@ -1692,6 +1694,16 @@ impl UserMessage {
     pub fn new(content: NonEmptyString) -> Self {
         Self {
             content,
+            display_content: None,
+            timestamp: SystemTime::now(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_display(content: NonEmptyString, display_content: NonEmptyString) -> Self {
+        Self {
+            content,
+            display_content: Some(display_content),
             timestamp: SystemTime::now(),
         }
     }
@@ -1699,6 +1711,13 @@ impl UserMessage {
     #[must_use]
     pub fn content(&self) -> &str {
         self.content.as_str()
+    }
+
+    #[must_use]
+    pub fn display_content(&self) -> &str {
+        self.display_content
+            .as_ref()
+            .map_or_else(|| self.content.as_str(), NonEmptyString::as_str)
     }
 }
 
@@ -1850,6 +1869,11 @@ impl Message {
         Self::User(UserMessage::new(content))
     }
 
+    #[must_use]
+    pub fn user_with_display(content: NonEmptyString, display_content: NonEmptyString) -> Self {
+        Self::User(UserMessage::with_display(content, display_content))
+    }
+
     pub fn try_user(content: impl Into<String>) -> Result<Self, EmptyStringError> {
         Ok(Self::user(NonEmptyString::new(content)?))
     }
@@ -1913,6 +1937,14 @@ impl Message {
             Message::Thinking(m) => m.content(),
             Message::ToolUse(call) => &call.name,
             Message::ToolResult(result) => &result.content,
+        }
+    }
+
+    #[must_use]
+    pub fn display_content(&self) -> &str {
+        match self {
+            Message::User(m) => m.display_content(),
+            other => other.content(),
         }
     }
 }

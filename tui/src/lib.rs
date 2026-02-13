@@ -801,7 +801,7 @@ fn render_message_static(msg: &Message, ctx: RenderMessageStaticCtx<'_>) {
         Message::User(_) => {
             let content_style = Style::default().fg(palette.text_primary);
             // User-authored text: strip terminal controls, but preserve emoji ZWJ composition.
-            let content = sanitize_terminal_text(msg.content()).into_owned();
+            let content = sanitize_terminal_text(msg.display_content()).into_owned();
             let mut rendered = render_markdown(&content, content_style, palette, max_width);
 
             if rendered.is_empty() {

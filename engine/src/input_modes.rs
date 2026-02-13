@@ -181,8 +181,16 @@ impl InsertMode<'_> {
         // Must happen before we append the user message to history.
         self.app.create_turn_checkpoint();
 
-        // Track user message in context manager (also adds to display)
-        let msg_id = self.app.push_history_message(Message::user(content));
+        // Track user message in context manager (also adds to display).
+        // When AGENTS.md or @file refs were prepended, store the original draft as
+        // display_content so the TUI shows only what the user typed.
+        let message = match NonEmptyString::new(draft_text.clone()) {
+            Ok(display) if display.as_str() != content.as_str() => {
+                Message::user_with_display(content, display)
+            }
+            _ => Message::user(content),
+        };
+        let msg_id = self.app.push_history_message(message);
 
         // Store original draft text (not expanded) for rollback on cancel.
         // Also stash consumed agents_md so it can be restored on rollback.

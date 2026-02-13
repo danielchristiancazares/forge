@@ -175,6 +175,10 @@ Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_C
 - **Journal atomicity**: commit+prune must be one transaction. Only commit journal if history save succeeds. Always discard or commit steps in error paths (prevents session brick).
 - **Platform paths**: Use `dirs::home_dir()`, not hardcoded `~/.forge/`.
 
+## Known Bugs
+
+- **Test suite failure**: `attach_process_to_sandbox_succeeds_for_running_child` is a known failing test when invoking `cargo test`/`just verify` from within the Forge app flow; running the same commands outside of Forge succeeds.
+
 ## Testing
 
 Integration tests live in `tests/`. Uses wiremock for HTTP mocking, insta for snapshots, tempfile for isolation.
