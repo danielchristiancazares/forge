@@ -22,11 +22,14 @@
 | IFA-9 | State as Location |
 | IFA-10 | Capability Tokens |
 | IFA-11 | Boundary and Core Separation |
+| IFA-11.3 | Failure Surfaces |
 | IFA-12 | Assertions |
 | IFA-13 | Non-Conforming Patterns |
 | IFA-14 | Litmus Tests |
 | IFA-15 | Implementation Notes |
 | IFA-16 | Known Limitations |
+| IFA-16.3 | Security Considerations |
+| IFA-16.4 | Substrate Disclosure on Termination |
 | IFA-17 | Operational Definitions Checklist |
 | IFA-18 | Non-Acceptable Objections |
 | IFA-19 | Closing Statement |
@@ -59,7 +62,7 @@
 
 ## 0. Status and Scope
 
-This document defines **Invariant-First Architecture (IFA)** as an architectural pattern. IFA is a set of design constraints whose purpose is to ensure that **core logic is only callable with values that satisfy explicitly stated invariants**, by construction, and without reliance on programmer discipline, runtime guard code inside the core, or informal documentation.
+This document defines **Invariant-First Architecture (IFA)** as an architectural pattern. IFA is a set of design constraints whose purpose is to ensure that **core logic is only callable with values that satisfy explicitly stated invariants**, by construction, and without reliance on informal documentation, runtime guard code inside the core, or programmer discipline.
 
 This document is normative where it uses "MUST" and "MUST NOT." Examples are illustrative and are not normative unless the requirement is stated independently of the example.
 
@@ -78,7 +81,7 @@ Any value or system state for which at least one required invariant does not hol
 **Representable**
 An invalid state is representable if there exists any program expression—available to code outside the Authority Boundary—that can construct or obtain a value or state that violates an invariant and still type-checks against an interface intended for core use.
 
-**Unrepresentable (for the core)**
+**Unrepresentable**
 An invalid state is unrepresentable for the core if no code outside the Authority Boundary can produce a value that violates the invariant and still satisfy the types (or equivalent interface constraints) required to invoke core operations.
 
 **Safe surface**
@@ -98,7 +101,9 @@ The smallest encapsulation boundary that can actually enforce construction contr
 *Operationalization:* The Authority Boundary for a type is the set of code that can call its constructors or factory functions that are otherwise inaccessible (e.g., via `private` constructors and `friend` access in C++, `pub(crate)` in Rust). "Same repository," "same namespace," and "same header" are not Authority Boundaries unless they coincide with actual access control.
 
 **Boundary**
-The set of components that interact with non-IFA-controlled inputs or effects, including but not limited to: user input, network I/O, filesystem, external services, clocks/time, random sources, concurrency primitives, and foreign-function interfaces.
+The set of components that interact with non-IFA-controlled inputs or effects, including but not limited to: user input, network I/O, filesystem, external services, clocks/time, random sources, concurrency primitives, foreign-function interfaces, and execution-substrate diagnostics (panic reporting, exception reporting, stack traces, crash reporters).
+
+Boundary is defined by control, not by dataflow direction. Any channel that is not governed by code within the Authority Boundary or core and that can produce externally observable effects MUST be treated as boundary.
 
 **Core**
 The set of components whose correctness depends on the assumption that all invariants are satisfied. Core code MUST treat invariants as already established and MUST NOT accept "maybe-valid" representations of required invariants.
@@ -138,8 +143,6 @@ Consequences:
 
 IFA requires that invariants be declared and encoded in interfaces. When this is done correctly, successful compilation demonstrates that encoded invariants are satisfied at every call site.
 
-IFA does not claim that compilation implies absence of runtime defects, undefined behavior, or external failures. It claims only that invariants which are declared and encoded in interfaces are not optional at runtime.
-
 If invalid behavior is still possible after successful type-checking, then either:
 
 - the invariant was not encoded in the interface, or
@@ -170,8 +173,6 @@ Operationalization options include:
 - ownership transfer via unique handles,
 - explicit consumption APIs that invalidate the prior handle.
 
-**C++ note:** In standard C++, "move" alone does not guarantee destructive consumption (moved-from objects remain valid but unspecified). "Non-forking" MUST be enforced by ensuring that the moved-from object cannot perform meaningful actions (e.g., resource in `unique_ptr` where moved-from becomes null, or methods are rvalue-qualified consumption-only).
-
 ---
 
 ## 4. Parametricity
@@ -188,8 +189,10 @@ A function that is declared generic over `T` and is not explicitly constrained t
 
 - reading fields,
 - invoking domain-specific methods,
-- logging/serializing values for debugging,
+- logging/serializing values,
 - branching based on value properties.
+
+Inspection through a declared bound is conforming. A function constrained with `T: Debug` that logs `T` has declared its inspection capability at the interface. Inspection through implicit mechanisms (reflection, downcasting, specialization) is not conforming, because the interface did not declare it.
 
 Any capability to inspect `T` MUST be made explicit at the interface boundary as a declared constraint (concept/trait/interface) that grants specific operations. Inspection MUST NOT be introduced implicitly inside the implementation.
 
@@ -240,7 +243,7 @@ A constructor/factory boundary MUST return either:
 
 ### 6.3 Compensatory retries inside the core are prohibited
 
-A loop inside the core is a prohibited **compensatory retry** if it re-attempts an operation whose success you could have ensured but didn't.
+A loop inside the core is a prohibited **compensatory retry** if it re-attempts an operation whose success you failed to ensure.
 
 If you can manage it, you own it. Anything you can prevent but don't is a design failure, not an external event.
 
@@ -285,7 +288,7 @@ If a value is computable from existing state, storing it as a separate field cre
 
 **Non-conforming:** A struct storing both `items: Vec<T>` and `count: usize` where `count` must equal `items.len()`. The type permits `count = 5` with three items.
 
-**Conforming:** Compute on access (`fn count(&self) -> usize { self.items.len() }`). If caching is required for performance, encapsulate behind an Authority Boundary that maintains the invariant internally and does not expose independent mutation of both fields.
+**Conforming:** Compute on access (`fn count(&self) -> usize { self.items.len() }`).
 
 ### 7.7 Non-conforming patterns
 
@@ -398,6 +401,10 @@ IFA replaces "validate everywhere" with a strict conversion discipline:
 - The core MUST accept only strict representations.
 - The boundary MUST express conversion failure explicitly (error return, result type, etc.).
 
+This conversion discipline applies to all boundary crossings. Boundary code MUST convert inbound data into strict core representations and MUST convert outbound data and recoverable failures into boundary-appropriate representations.
+
+*Non-normative note:* IFA's rejection discipline aligns with the direction articulated in RFC 9413, which argues that tolerant acceptance of non-conforming inputs causes protocol decay. IFA applies the same principle at the architectural boundary level: the boundary rejects; it does not normalize.
+
 ### 11.2 Optionality is a representable invalid state
 
 Core interfaces MUST NOT accept:
@@ -411,6 +418,22 @@ If a field can be absent, the type is wrong. Restructure until absence is not re
 
 If you can encode the invariant — if the language permits a representation where the absent state does not exist — and you choose `Option` instead, you have chosen non-conformance. §19 applies: ignorance is permissible; knowing and refusing is not.
 
+### 11.3 Requirement: Failure surfaces MUST be boundary-owned
+
+If a failure is observable outside the boundary (API response, UI message, logs, telemetry), that observation MUST be produced by boundary code as a boundary-defined representation.
+
+The execution substrate default diagnostic reporters MUST NOT define the failure surface for any recoverable path.
+
+Requirements:
+
+- Recoverable failures from dependencies and the execution substrate MUST be surfaced as explicit error values at the boundary (error return, result type, tagged union, etc.).
+- Boundary code MUST NOT expose stack traces, internal type names, file paths, module structure, memory addresses, or other internal representations as part of a recoverable failure surface.
+- Core code MUST NOT parse, pattern-match on, or otherwise treat diagnostic strings or stack traces as domain data.
+
+Abnormal termination and the disclosure surface of termination diagnostics are governed by §16.4.
+
+*Non-normative note:* For HTTP boundaries, RFC 9457 (Problem Details for HTTP APIs) provides a structured representation for failure responses that satisfies this requirement.
+
 ---
 
 ## 12. Assertions
@@ -418,6 +441,8 @@ If you can encode the invariant — if the language permits a representation whe
 ### 12.1 Requirement: Assertions MUST NOT enforce representationally expressible invariants
 
 If an assertion exists in core code to prevent a state that is representable by the types/interfaces, the design is non-conforming. The invariant MUST be encoded such that the asserted condition is not representable as an input to the core operation.
+
+If core code reaches a state that contradicts invariants required by its interfaces, the design is non-conforming. Upon detection of such a state, the implementation MUST terminate (fail-stop). The implementation MUST NOT continue executing core logic after such detection. Recovery, fallback, and retry inside the core are non-conforming.
 
 ### 12.2 Language limitations
 
@@ -551,6 +576,29 @@ No mainstream language fully enforces IFA. The architecture MUST:
 - make violation require explicit circumvention,
 - recognize that unencodable invariants are not IFA-conformant.
 
+### 16.3 Security Considerations
+
+IFA reduces attack surface by making invalid states unrepresentable to core logic (§2.1). In systems with adversarial inputs or adversarial observers, any forgeable invalid state is a potential input validation bypass.
+
+Security-relevant implications include:
+
+- **Attack surface:** Any invariant that contributes to authorization, resource accounting, protocol correctness, or data integrity becomes an attack surface when it is representable to code outside the Authority Boundary.
+- **Information disclosure:** Failure surfaces and diagnostics are outputs. If logs, telemetry, UI messages, or API errors are observable by an adversary, they are boundary outputs and are governed by §11.3. Termination diagnostics are discussed in §16.4.
+- **Denial of service:** IFA requires fail-stop when the core reaches a state that contradicts required invariants (§12.1). A system is susceptible to denial of service if an adversary can drive invalid external inputs into core logic or can induce unmodeled external failures at a high rate. Boundary conversion is the primary control for preventing invalid external inputs from reaching the core.
+- **Privilege and circumvention:** IFA assumes that the Authority Boundary is a meaningful encapsulation boundary. If untrusted code can execute with the same privileges as boundary or core code, IFA conformance does not imply security.
+
+This section introduces no additional conformance rules beyond those stated elsewhere. It clarifies that conformance requirements often carry direct security consequences.
+
+### 16.4 Substrate Disclosure on Termination
+
+The execution substrate (language runtime, standard library, OS, frameworks) can emit diagnostics on abnormal termination (panic, abort, unhandled exception) that bypass boundary conversion.
+
+IFA does not specify or constrain the contents of termination diagnostics emitted by the substrate. These diagnostics can disclose internal representations (type names, file paths, module structure, line numbers, and similar).
+
+If a deployment requires restricting or sanitizing termination diagnostics, that requirement MUST be enforced by configuration and integration at the boundary and substrate level (panic hooks, top-level exception handlers, crash reporters, log and telemetry pipelines). The core MUST NOT add recovery logic to satisfy this requirement.
+
+If termination diagnostics are observable by untrusted observers, they MUST be treated as an information disclosure channel. Boundary integration MUST ensure that termination diagnostics are not exposed to untrusted observers.
+
 ---
 
 ## 17. Operational Definitions Checklist
@@ -598,7 +646,7 @@ The domain is wrong. Restructure (§11.2).
 
 ## 19. Closing Statement
 
-A system must encode all invariants.
+A system MUST encode all invariants.
 
 "All" means all. Not "the ones we got to." Not "the important ones." All.
 
