@@ -165,7 +165,7 @@ impl InsertMode<'_> {
         let raw_content = if agents_md.is_empty() {
             raw_content
         } else {
-            format!("<project-instructions>\n{agents_md}\n</project-instructions>\n\n{raw_content}")
+            format!("## AGENTS.md\n\n{agents_md}\n\n---\n\n{raw_content}")
         };
 
         let content = if let Ok(content) = NonEmptyString::new(raw_content.clone()) {
