@@ -3297,9 +3297,7 @@ fn draw_file_selector(
 
     let inner_height = lines.len() as u16;
     let selector_height = inner_height.saturating_add(4);
-    let desired_y = area.y + area.height.saturating_sub(12);
-    let max_y = area.y + area.height.saturating_sub(selector_height);
-    let y = desired_y.min(max_y);
+    let y = area.y + (area.height.saturating_sub(selector_height)) / 2;
 
     let base_area = Rect {
         x: area.x + (area.width.saturating_sub(selector_width) / 2),

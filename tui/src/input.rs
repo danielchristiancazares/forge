@@ -580,8 +580,10 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
                 app.insert_mode(token).delete_char();
             }
         }
-        // '@' triggers file select mode (check before acquiring insert token)
         KeyCode::Char('@') => {
+            if let Some(token) = app.insert_token() {
+                app.insert_mode(token).enter_char('@');
+            }
             app.enter_file_select_mode();
         }
         _ => {
