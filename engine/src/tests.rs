@@ -46,23 +46,22 @@ fn test_app() -> App {
         should_quit: false,
         view: ViewState::default(),
         configured_model: model.clone(),
-        configured_chat_model_override: None,
-        configured_code_model_override: None,
         configured_tool_approval_mode: tools::ApprovalMode::Default,
         configured_context_memory_enabled: true,
         configured_ui_options: UiOptions::default(),
         pending_turn_model: None,
-        pending_turn_chat_model_override: None,
-        pending_turn_code_model_override: None,
         pending_turn_tool_approval_mode: None,
         pending_turn_context_memory_enabled: None,
         pending_turn_ui_options: None,
         settings_model_editor: None,
-        settings_model_overrides_editor: None,
         settings_tools_editor: None,
         settings_context_editor: None,
         settings_appearance_editor: None,
         api_keys,
+        config_path: tempdir()
+            .expect("temp config dir for tests")
+            .keep()
+            .join("config.toml"),
         model: model.clone(),
         tick: 0,
         data_dir,
@@ -80,6 +79,7 @@ fn test_app() -> App {
             anthropic_thinking_mode: crate::config::AnthropicThinkingMode::default(),
             anthropic_thinking_effort: crate::config::AnthropicEffort::default(),
             gemini_cache_config: crate::GeminiCacheConfig::default(),
+            openai_previous_response_id: None,
         },
         system_prompts: TEST_SYSTEM_PROMPTS,
         environment: EnvironmentContext::gather(),
@@ -495,40 +495,10 @@ fn process_command_validate_opens_validation_panel() {
 }
 
 #[test]
-fn settings_open_resolve_surface_from_model_overrides_detail() {
-    let mut app = test_app();
-    open_model_overrides_settings(&mut app);
-
-    app.settings_open_resolve_surface();
-
-    assert_eq!(app.settings_surface(), Some(SettingsSurface::Resolve));
-    assert_eq!(app.settings_detail_view(), None);
-}
-
-#[test]
-fn settings_open_resolve_surface_blocks_when_detail_has_unsaved_edits() {
-    let mut app = test_app();
-    open_model_overrides_settings(&mut app);
-    app.settings_detail_toggle_selected();
-
-    app.settings_open_resolve_surface();
-
-    assert_eq!(app.settings_surface(), Some(SettingsSurface::Root));
-    assert_eq!(
-        app.settings_detail_view(),
-        Some(SettingsCategory::ModelOverrides)
-    );
-    assert_eq!(
-        last_notification(&app),
-        Some("Unsaved settings changes. Press s to save or r to revert before leaving.")
-    );
-}
-
-#[test]
 fn settings_resolve_activate_selected_jumps_to_target_detail() {
     let mut app = test_app();
     app.enter_resolve_mode();
-    for _ in 0..4 {
+    for _ in 0..3 {
         app.settings_resolve_move_down();
     }
 
@@ -568,7 +538,7 @@ fn runtime_snapshot_lists_pending_next_turn_settings() {
         snapshot
             .session_overrides
             .iter()
-            .any(|item| item == "pending default model: gpt-5.2-pro (next turn)")
+            .any(|item| item == "pending model change: next turn")
     );
     assert!(
         snapshot
@@ -625,72 +595,30 @@ fn resolve_cascade_includes_context_memory_and_ui_defaults_layers() {
 }
 
 #[test]
-fn resolve_cascade_uses_pending_default_model_for_session_layer() {
+fn resolve_cascade_uses_pending_model_for_session_layer() {
     let mut app = test_app();
     app.pending_turn_model = Some(ModelName::from_predefined(PredefinedModel::Gpt52Pro));
 
     let cascade = app.resolve_cascade();
 
-    let chat_model = cascade
+    let model = cascade
         .settings
         .iter()
-        .find(|setting| setting.setting == "Chat Model")
-        .expect("chat model setting");
-    let chat_global = chat_model
+        .find(|setting| setting.setting == "Model")
+        .expect("model setting");
+    let global = model
         .layers
         .iter()
         .find(|layer| layer.layer == "Global")
-        .expect("chat global layer");
-    let chat_session = chat_model
+        .expect("global layer");
+    let session = model
         .layers
         .iter()
         .find(|layer| layer.layer == "Session")
-        .expect("chat session layer");
-    assert_eq!(chat_session.value, "gpt-5.2-pro");
-    assert!(chat_session.is_winner);
-    assert!(!chat_global.is_winner);
-
-    let code_model = cascade
-        .settings
-        .iter()
-        .find(|setting| setting.setting == "Code Model")
-        .expect("code model setting");
-    let code_global = code_model
-        .layers
-        .iter()
-        .find(|layer| layer.layer == "Global")
-        .expect("code global layer");
-    let code_session = code_model
-        .layers
-        .iter()
-        .find(|layer| layer.layer == "Session")
-        .expect("code session layer");
-    assert_eq!(code_session.value, "gpt-5.2-pro");
-    assert!(code_session.is_winner);
-    assert!(!code_global.is_winner);
-}
-
-#[test]
-fn resolve_cascade_preserves_model_override_winner_over_pending_default() {
-    let mut app = test_app();
-    app.pending_turn_model = Some(ModelName::from_predefined(PredefinedModel::Gpt52Pro));
-    app.configured_chat_model_override =
-        Some(ModelName::from_predefined(PredefinedModel::ClaudeHaiku));
-
-    let cascade = app.resolve_cascade();
-
-    let chat_model = cascade
-        .settings
-        .iter()
-        .find(|setting| setting.setting == "Chat Model")
-        .expect("chat model setting");
-    let chat_session = chat_model
-        .layers
-        .iter()
-        .find(|layer| layer.layer == "Session")
-        .expect("chat session layer");
-    assert!(chat_session.value.starts_with("claude-haiku-4-5"));
-    assert!(chat_session.is_winner);
+        .expect("session layer");
+    assert_eq!(session.value, "gpt-5.2-pro");
+    assert!(session.is_winner);
+    assert!(!global.is_winner);
 }
 
 fn open_appearance_settings(app: &mut App) {
@@ -707,16 +635,9 @@ fn open_models_settings(app: &mut App) {
     app.settings_activate();
 }
 
-fn open_model_overrides_settings(app: &mut App) {
-    app.enter_settings_mode();
-    app.settings_move_down();
-    app.settings_move_down();
-    app.settings_activate();
-}
-
 fn open_context_settings(app: &mut App) {
     app.enter_settings_mode();
-    for _ in 0..3 {
+    for _ in 0..2 {
         app.settings_move_down();
     }
     app.settings_activate();
@@ -724,7 +645,7 @@ fn open_context_settings(app: &mut App) {
 
 fn open_tools_settings(app: &mut App) {
     app.enter_settings_mode();
-    for _ in 0..4 {
+    for _ in 0..3 {
         app.settings_move_down();
     }
     app.settings_activate();
@@ -838,57 +759,6 @@ fn settings_models_save_warns_when_provider_key_is_missing() {
     assert_eq!(
         last_notification(&app),
         Some("GPT API key is missing. Set OPENAI_API_KEY before the next turn.")
-    );
-}
-
-#[test]
-fn settings_activate_model_overrides_initializes_editor_snapshot() {
-    let mut app = test_app();
-
-    open_model_overrides_settings(&mut app);
-
-    assert_eq!(
-        app.settings_detail_view(),
-        Some(SettingsCategory::ModelOverrides)
-    );
-    assert_eq!(
-        app.settings_model_overrides_editor_snapshot(),
-        Some(ModelOverridesEditorSnapshot {
-            draft_chat_model: None,
-            draft_code_model: None,
-            selected: 0,
-            dirty: false,
-        })
-    );
-}
-
-#[test]
-fn settings_model_overrides_cycle_and_revert_updates_dirty_state() {
-    let mut app = test_app();
-    open_model_overrides_settings(&mut app);
-
-    app.settings_detail_toggle_selected();
-    app.settings_detail_move_down();
-    app.settings_detail_toggle_selected();
-    assert_eq!(
-        app.settings_model_overrides_editor_snapshot(),
-        Some(ModelOverridesEditorSnapshot {
-            draft_chat_model: Some(ModelName::from_predefined(PredefinedModel::ClaudeOpus)),
-            draft_code_model: Some(ModelName::from_predefined(PredefinedModel::ClaudeOpus)),
-            selected: 1,
-            dirty: true,
-        })
-    );
-
-    app.settings_revert_edits();
-    assert_eq!(
-        app.settings_model_overrides_editor_snapshot(),
-        Some(ModelOverridesEditorSnapshot {
-            draft_chat_model: None,
-            draft_code_model: None,
-            selected: 1,
-            dirty: false,
-        })
     );
 }
 
@@ -1100,28 +970,6 @@ fn queue_message_applies_pending_context_before_request_config() {
 
     assert!(!app.memory_enabled());
     assert!(!app.settings_pending_context_apply_next_turn());
-}
-
-#[test]
-fn queue_message_applies_pending_model_override_before_request_config() {
-    let mut app = test_app();
-    let pending_model = ModelName::from_predefined(PredefinedModel::ClaudeHaiku);
-    app.pending_turn_chat_model_override =
-        Some(PendingModelOverride::Explicit(pending_model.clone()));
-    app.input = InputState::Insert(DraftInput {
-        text: "pending override".to_string(),
-        cursor: 16,
-    });
-
-    let token = app.insert_token().expect("insert mode");
-    let queued = app
-        .insert_mode(token)
-        .queue_message()
-        .expect("queued message");
-
-    assert_eq!(queued.config.model(), &pending_model);
-    assert_eq!(app.model(), pending_model.as_str());
-    assert!(!app.settings_pending_model_overrides_apply_next_turn());
 }
 
 #[test]

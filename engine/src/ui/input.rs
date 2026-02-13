@@ -29,7 +29,6 @@ pub struct DraftInput {
 pub enum SettingsCategory {
     Providers,
     Models,
-    ModelOverrides,
     Context,
     Tools,
     Keybindings,
@@ -39,10 +38,9 @@ pub enum SettingsCategory {
 }
 
 impl SettingsCategory {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 8] = [
         Self::Providers,
         Self::Models,
-        Self::ModelOverrides,
         Self::Context,
         Self::Tools,
         Self::Keybindings,
@@ -56,7 +54,6 @@ impl SettingsCategory {
         match self {
             Self::Providers => "Providers",
             Self::Models => "Models",
-            Self::ModelOverrides => "Model Overrides",
             Self::Context => "Context",
             Self::Tools => "Tools",
             Self::Keybindings => "Keybindings",
@@ -71,7 +68,6 @@ impl SettingsCategory {
         match self {
             Self::Providers => "Settings > Providers",
             Self::Models => "Settings > Models",
-            Self::ModelOverrides => "Settings > Model Overrides",
             Self::Context => "Settings > Context",
             Self::Tools => "Settings > Tools",
             Self::Keybindings => "Settings > Keybindings",
@@ -105,7 +101,6 @@ impl SettingsCategory {
         match self {
             Self::Providers => &["provider", "api", "keys", "auth"],
             Self::Models => &["model", "chat", "code"],
-            Self::ModelOverrides => &["override", "temperature", "tokens"],
             Self::Context => &["context", "memory", "distill"],
             Self::Tools => &["tools", "sandbox", "permissions"],
             Self::Keybindings => &["keys", "bindings", "vim"],

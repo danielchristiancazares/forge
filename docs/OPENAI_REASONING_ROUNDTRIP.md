@@ -33,7 +33,12 @@ If we don’t replay them, the model can lose the prior tool-context / intermedi
 Replay the reasoning item as an input item:
 
 ```json
-{ "type": "reasoning", "id": "rs_...", "encrypted_content": "gAAAA..." }
+{
+  "type": "reasoning",
+  "id": "rs_...",
+  "summary": [{ "type": "summary_text", "text": "..." }],
+  "encrypted_content": "gAAAA..."
+}
 ```
 
 ## Design In Forge

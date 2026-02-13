@@ -384,6 +384,7 @@ impl super::App {
         let gemini_cache_arc = self.provider_runtime.gemini_cache.clone();
         let gemini_cache_config = self.provider_runtime.gemini_cache_config.clone();
         let is_gemini = config.provider() == Provider::Gemini;
+        let previous_response_id = self.provider_runtime.openai_previous_response_id.clone();
 
         let task = async move {
             // Convert tools to Option<&[ToolDefinition]>
@@ -418,6 +419,7 @@ impl super::App {
                 cache_last_tool,
                 gemini_cache: gemini_cache.as_ref(),
                 tx: tx.clone(),
+                previous_response_id: previous_response_id.as_deref(),
             })
             .await;
 
@@ -554,6 +556,7 @@ impl super::App {
                     .append_text(&mut self.stream_journal, text.clone()),
                 StreamEvent::ThinkingDelta(_)
                 | StreamEvent::ThinkingSignature(_)
+                | StreamEvent::ResponseId(_)
                 | StreamEvent::OpenAIReasoningDone { .. }
                 | StreamEvent::Usage(_)
                 | StreamEvent::ToolCallStart { .. }
@@ -780,6 +783,11 @@ impl super::App {
         // Capture metadata before consuming the streaming message.
         let model = message.model_name().clone();
         let stream_usage = message.usage();
+
+        // Capture OpenAI response ID for Pro model `previous_response_id` chaining.
+        if let Some(resp_id) = message.openai_response_id() {
+            self.provider_runtime.openai_previous_response_id = Some(resp_id.to_string());
+        }
 
         // Aggregate API usage for this turn
         if stream_usage.has_data() {

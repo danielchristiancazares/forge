@@ -452,6 +452,11 @@ pub mod openai {
             item_id: Option<String>,
             part: Option<ReasoningPart>,
         },
+        #[serde(rename = "response.reasoning_summary_part.done")]
+        ReasoningSummaryPartDone {
+            item_id: Option<String>,
+            part: Option<ReasoningPart>,
+        },
         #[serde(rename = "response.function_call_arguments.delta")]
         FunctionCallArgumentsDelta {
             item_id: Option<String>,
@@ -495,6 +500,8 @@ pub mod openai {
         #[serde(rename = "reasoning")]
         Reasoning {
             id: Option<String>,
+            #[serde(default)]
+            summary: Vec<ReasoningPart>,
             encrypted_content: Option<String>,
         },
         #[serde(other)]
@@ -510,6 +517,8 @@ pub mod openai {
 
     #[derive(Debug, Deserialize)]
     pub struct ReasoningPart {
+        #[serde(rename = "type")]
+        pub part_type: Option<String>,
         pub text: Option<String>,
     }
 
@@ -678,6 +687,12 @@ pub mod openai {
                 "item": {
                     "type": "reasoning",
                     "id": "rs_abc",
+                    "summary": [
+                        {
+                            "type": "summary_text",
+                            "text": "reasoning summary"
+                        }
+                    ],
                     "encrypted_content": "encrypted_data_here"
                 }
             }"#;
@@ -686,13 +701,39 @@ pub mod openai {
                 Event::OutputItemDone { item } => match item.unwrap() {
                     OutputItem::Reasoning {
                         id,
+                        summary,
                         encrypted_content,
                     } => {
                         assert_eq!(id.unwrap(), "rs_abc");
+                        assert_eq!(summary.len(), 1);
+                        assert_eq!(summary[0].part_type.as_deref(), Some("summary_text"));
+                        assert_eq!(summary[0].text.as_deref(), Some("reasoning summary"));
                         assert_eq!(encrypted_content.unwrap(), "encrypted_data_here");
                     }
                     _ => panic!("wrong item type"),
                 },
+                _ => panic!("wrong event type"),
+            }
+        }
+
+        #[test]
+        fn deserialize_reasoning_summary_part_done() {
+            let json = r#"{
+                "type": "response.reasoning_summary_part.done",
+                "item_id": "item_1",
+                "part": {
+                    "type": "summary_text",
+                    "text": "final summary part"
+                }
+            }"#;
+            let event: Event = serde_json::from_str(json).unwrap();
+            match event {
+                Event::ReasoningSummaryPartDone { item_id, part } => {
+                    assert_eq!(item_id.as_deref(), Some("item_1"));
+                    let part = part.expect("part");
+                    assert_eq!(part.part_type.as_deref(), Some("summary_text"));
+                    assert_eq!(part.text.as_deref(), Some("final summary part"));
+                }
                 _ => panic!("wrong event type"),
             }
         }

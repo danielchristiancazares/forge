@@ -1268,12 +1268,93 @@ impl ThoughtSignatureState {
     }
 }
 
+/// A single OpenAI reasoning summary entry.
+///
+/// OpenAI requires each replayed `input` reasoning item to include `summary`
+/// as an array of these objects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenAIReasoningSummaryPart {
+    #[serde(rename = "type")]
+    part_type: NonEmptyString,
+    text: NonEmptyString,
+}
+
+impl OpenAIReasoningSummaryPart {
+    pub fn try_new(
+        part_type: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Result<Self, EmptyStringError> {
+        let part_type = part_type.into();
+        Ok(Self {
+            part_type: NonEmptyString::new(part_type.trim().to_string())?,
+            text: NonEmptyString::new(text)?,
+        })
+    }
+
+    pub fn summary_text(text: impl Into<String>) -> Result<Self, EmptyStringError> {
+        Self::try_new("summary_text", text)
+    }
+
+    #[must_use]
+    pub fn part_type(&self) -> &str {
+        self.part_type.as_str()
+    }
+
+    #[must_use]
+    pub fn text(&self) -> &str {
+        self.text.as_str()
+    }
+}
+
 /// An OpenAI reasoning output item captured for stateless replay.
+///
+/// Invariant: `id` is non-empty (after trim) and `summary` is always present
+/// in serialized replay payloads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenAIReasoningItem {
-    pub id: String,
+    id: NonEmptyString,
+    #[serde(default)]
+    summary: Vec<OpenAIReasoningSummaryPart>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub encrypted_content: Option<String>,
+    encrypted_content: Option<String>,
+}
+
+impl OpenAIReasoningItem {
+    pub fn try_new(
+        id: impl Into<String>,
+        summary: Vec<OpenAIReasoningSummaryPart>,
+        encrypted_content: Option<String>,
+    ) -> Result<Self, EmptyStringError> {
+        let id = id.into();
+        let encrypted_content = encrypted_content.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+        Ok(Self {
+            id: NonEmptyString::new(id.trim().to_string())?,
+            summary,
+            encrypted_content,
+        })
+    }
+
+    #[must_use]
+    pub fn id(&self) -> &str {
+        self.id.as_str()
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> &[OpenAIReasoningSummaryPart] {
+        &self.summary
+    }
+
+    #[must_use]
+    pub fn encrypted_content(&self) -> Option<&str> {
+        self.encrypted_content.as_deref()
+    }
 }
 
 /// Provider-specific replay state for thinking blocks.
@@ -1369,9 +1450,12 @@ pub enum StreamEvent {
     ThinkingDelta(String),
     /// Encrypted thinking signature for API replay (Claude extended thinking).
     ThinkingSignature(String),
+    /// OpenAI response ID for stateful `previous_response_id` chaining.
+    ResponseId(String),
     /// Completed OpenAI reasoning output item for stateless replay.
     OpenAIReasoningDone {
         id: String,
+        summary: Vec<OpenAIReasoningSummaryPart>,
         encrypted_content: Option<String>,
     },
     /// Tool call started - emitted when a `tool_use` content block begins.
@@ -2354,6 +2438,25 @@ mod tests {
     }
 
     #[test]
+    fn openai_reasoning_summary_part_rejects_empty_fields() {
+        assert!(OpenAIReasoningSummaryPart::try_new(" ", "text").is_err());
+        assert!(OpenAIReasoningSummaryPart::summary_text("   ").is_err());
+    }
+
+    #[test]
+    fn openai_reasoning_item_normalizes_boundary_values() {
+        let item = OpenAIReasoningItem::try_new(
+            "  r_1  ",
+            vec![OpenAIReasoningSummaryPart::summary_text("line 1").unwrap()],
+            Some("  enc_data  ".to_string()),
+        )
+        .unwrap();
+        assert_eq!(item.id(), "r_1");
+        assert_eq!(item.encrypted_content(), Some("enc_data"));
+        assert_eq!(item.summary()[0].part_type(), "summary_text");
+    }
+
+    #[test]
     fn thinking_replay_state_deserializes_new_format() {
         let json = r#"{"kind":"claude_signed","signature":"abc"}"#;
         let state: ThinkingReplayState = serde_json::from_str(json).unwrap();
@@ -2368,8 +2471,9 @@ mod tests {
         match state {
             ThinkingReplayState::OpenAIReasoning { items } => {
                 assert_eq!(items.len(), 1);
-                assert_eq!(items[0].id, "r_1");
-                assert_eq!(items[0].encrypted_content.as_deref(), Some("enc"));
+                assert_eq!(items[0].id(), "r_1");
+                assert_eq!(items[0].encrypted_content(), Some("enc"));
+                assert!(items[0].summary().is_empty());
             }
             _ => panic!("expected OpenAIReasoning"),
         }
@@ -2429,10 +2533,7 @@ mod tests {
         );
         assert!(
             ThinkingReplayState::OpenAIReasoning {
-                items: vec![OpenAIReasoningItem {
-                    id: "r_1".to_string(),
-                    encrypted_content: None,
-                }]
+                items: vec![OpenAIReasoningItem::try_new("r_1", vec![], None).unwrap()]
             }
             .requires_persistence()
         );
@@ -2450,10 +2551,14 @@ mod tests {
         assert_eq!(state, back);
 
         let state = ThinkingReplayState::OpenAIReasoning {
-            items: vec![OpenAIReasoningItem {
-                id: "r_1".to_string(),
-                encrypted_content: Some("enc".to_string()),
-            }],
+            items: vec![
+                OpenAIReasoningItem::try_new(
+                    "r_1",
+                    vec![OpenAIReasoningSummaryPart::summary_text("summary line").unwrap()],
+                    Some("enc".to_string()),
+                )
+                .unwrap(),
+            ],
         };
         let json = serde_json::to_string(&state).unwrap();
         let back: ThinkingReplayState = serde_json::from_str(&json).unwrap();

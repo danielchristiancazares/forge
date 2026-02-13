@@ -109,7 +109,7 @@ impl App {
             })
             .unwrap_or(Provider::Claude);
 
-        let configured_model = model_raw
+        let base_model = model_raw
             .map(|raw| match provider.parse_model(raw) {
                 Ok(model) => model,
                 Err(err) => {
@@ -118,35 +118,26 @@ impl App {
                 }
             })
             .unwrap_or_else(|| provider.default_model());
-        let parse_override_model = |field: &'static str, raw: Option<&String>| {
-            raw.and_then(|candidate| {
-                let provider = match Provider::from_model_name(candidate) {
-                    Ok(provider) => provider,
-                    Err(err) => {
-                        tracing::warn!("Invalid {field} in config: {err}");
-                        return None;
-                    }
-                };
-                match provider.parse_model(candidate) {
-                    Ok(model) => Some(model),
-                    Err(err) => {
-                        tracing::warn!("Invalid {field} in config: {err}");
-                        None
-                    }
-                }
-            })
+        // Backwards compat: if no `model` key but `chat_model` exists, use it (boundary migration).
+        let configured_model = if model_raw.is_some() {
+            base_model.clone()
+        } else if let Some(chat_model_raw) = app_config.and_then(|app| app.chat_model.as_ref()) {
+            if let Some(model) = Provider::from_model_name(chat_model_raw)
+                .ok()
+                .and_then(|p| p.parse_model(chat_model_raw).ok())
+            {
+                tracing::warn!(
+                    "Config uses legacy chat_model key; migrating to model = \"{chat_model_raw}\""
+                );
+                model
+            } else {
+                tracing::warn!("Invalid app.chat_model in config: \"{chat_model_raw}\"");
+                base_model.clone()
+            }
+        } else {
+            base_model.clone()
         };
-        let configured_chat_model_override = parse_override_model(
-            "app.chat_model",
-            app_config.and_then(|app| app.chat_model.as_ref()),
-        );
-        let configured_code_model_override = parse_override_model(
-            "app.code_model",
-            app_config.and_then(|app| app.code_model.as_ref()),
-        );
-        let model = configured_chat_model_override
-            .clone()
-            .unwrap_or_else(|| configured_model.clone());
+        let model = configured_model.clone();
 
         let context_manager = ContextManager::new(model.clone());
         let memory_enabled = config
@@ -305,23 +296,19 @@ impl App {
             should_quit: false,
             view,
             configured_model: configured_model.clone(),
-            configured_chat_model_override: configured_chat_model_override.clone(),
-            configured_code_model_override: configured_code_model_override.clone(),
             configured_tool_approval_mode,
             configured_context_memory_enabled: memory_enabled,
             configured_ui_options: ui_options,
             pending_turn_model: None,
-            pending_turn_chat_model_override: None,
-            pending_turn_code_model_override: None,
             pending_turn_tool_approval_mode: None,
             pending_turn_context_memory_enabled: None,
             pending_turn_ui_options: None,
             settings_model_editor: None,
-            settings_model_overrides_editor: None,
             settings_tools_editor: None,
             settings_context_editor: None,
             settings_appearance_editor: None,
             api_keys,
+            config_path: config::config_path().unwrap_or_default(),
             model,
             tick: 0,
             data_dir,
@@ -339,6 +326,7 @@ impl App {
                 anthropic_thinking_mode,
                 anthropic_thinking_effort,
                 gemini_cache_config,
+                openai_previous_response_id: None,
             },
             system_prompts,
             environment,

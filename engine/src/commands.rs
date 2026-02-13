@@ -440,6 +440,7 @@ impl super::App {
                 }
                 self.pending_tool_cleanup_failures = 0;
                 self.tools_disabled_state = None;
+                self.provider_runtime.openai_previous_response_id = None;
                 self.invalidate_usage_cache();
                 self.autosave_history();
                 self.push_notification("Conversation cleared");

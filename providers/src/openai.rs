@@ -5,7 +5,7 @@ use crate::{
     process_sse_stream, retry::RetryConfig, send_event, send_retried_request,
 };
 
-use forge_types::{OpenAIReasoningEffort, OpenAIReasoningSummary};
+use forge_types::{OpenAIReasoningEffort, OpenAIReasoningSummary, OpenAIReasoningSummaryPart};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -14,11 +14,7 @@ use std::time::Duration;
 const API_URL: &str = crate::OPENAI_RESPONSES_API_URL;
 
 fn is_pro_model(model: &forge_types::ModelName) -> bool {
-    model
-        .as_str()
-        .trim()
-        .to_ascii_lowercase()
-        .starts_with("gpt-5.2-pro")
+    model.as_str() == "gpt-5.2-pro"
 }
 
 // ========================================================================
@@ -28,6 +24,24 @@ fn is_pro_model(model: &forge_types::ModelName) -> bool {
 use crate::sse_types::openai as typed;
 
 const PRO_IDLE_TIMEOUT_SECS: u64 = 300;
+
+fn normalize_reasoning_summary(
+    parts: Vec<typed::ReasoningPart>,
+) -> Vec<OpenAIReasoningSummaryPart> {
+    parts
+        .into_iter()
+        .filter_map(|part| {
+            let text = part.text?;
+            let part_type = part.part_type.unwrap_or_else(|| "summary_text".to_string());
+            if let Ok(summary_part) = OpenAIReasoningSummaryPart::try_new(part_type, text) {
+                Some(summary_part)
+            } else {
+                tracing::warn!("Skipping invalid OpenAI reasoning summary part");
+                None
+            }
+        })
+        .collect()
+}
 
 #[derive(Debug, Default)]
 struct BackgroundStreamState {
@@ -158,6 +172,12 @@ impl SseParser for OpenAIParser {
         match event {
             typed::Event::Created { response, .. } | typed::Event::InProgress { response, .. } => {
                 self.capture_response_id(response.as_ref());
+                if let Some(resp) = response.as_ref()
+                    && let Some(id) = &resp.id
+                    && !id.is_empty()
+                {
+                    events.push(StreamEvent::ResponseId(id.clone()));
+                }
             }
 
             typed::Event::OutputItemAdded { item_id, item } => {
@@ -205,13 +225,25 @@ impl SseParser for OpenAIParser {
             typed::Event::OutputItemDone { item } => {
                 if let Some(typed::OutputItem::Reasoning {
                     id,
+                    summary,
                     encrypted_content,
                 }) = item
                 {
-                    if let Some(id) = id.filter(|s| !s.trim().is_empty()) {
+                    if let Some(id) = id
+                        .map(|id| id.trim().to_string())
+                        .filter(|id| !id.is_empty())
+                    {
                         events.push(StreamEvent::OpenAIReasoningDone {
                             id,
-                            encrypted_content,
+                            summary: normalize_reasoning_summary(summary),
+                            encrypted_content: encrypted_content.and_then(|value| {
+                                let trimmed = value.trim();
+                                if trimmed.is_empty() {
+                                    None
+                                } else {
+                                    Some(trimmed.to_string())
+                                }
+                            }),
                         });
                     } else {
                         tracing::warn!(
@@ -260,7 +292,8 @@ impl SseParser for OpenAIParser {
                 }
             }
 
-            typed::Event::ReasoningSummaryPartAdded { item_id, part } => {
+            typed::Event::ReasoningSummaryPartAdded { item_id, part }
+            | typed::Event::ReasoningSummaryPartDone { item_id, part } => {
                 if let Some(part) = part
                     && let Some(text) = part.text
                 {
@@ -405,6 +438,7 @@ fn build_request_body(
     limits: OutputLimits,
     system_prompt: Option<&str>,
     tools: Option<&[ToolDefinition]>,
+    previous_response_id: Option<&str>,
 ) -> Value {
     let mut input_items: Vec<Value> = Vec::new();
     for cacheable in messages {
@@ -430,18 +464,19 @@ fn build_request_body(
             Message::Thinking(thinking) => {
                 if let ThinkingReplayState::OpenAIReasoning { items } = thinking.replay_state() {
                     for item in items {
-                        let id = item.id.trim();
-                        if id.is_empty() {
-                            tracing::warn!("Skipping OpenAI reasoning replay item with empty id");
-                            continue;
-                        }
-                        let mut val = json!({ "type": "reasoning", "id": id, "summary": [] });
-                        if let Some(enc) = item
-                            .encrypted_content
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                        {
+                        let mut val = json!({
+                            "type": "reasoning",
+                            "id": item.id(),
+                            "summary": item
+                                .summary()
+                                .iter()
+                                .map(|part| json!({
+                                    "type": part.part_type(),
+                                    "text": part.text(),
+                                }))
+                                .collect::<Vec<_>>(),
+                        });
+                        if let Some(enc) = item.encrypted_content() {
                             val["encrypted_content"] = json!(enc);
                         }
                         input_items.push(val);
@@ -469,16 +504,17 @@ fn build_request_body(
     if is_pro_model(config.model()) {
         body.insert("background".to_string(), json!(true));
         body.insert("store".to_string(), json!(true));
+        if let Some(prev_id) = previous_response_id.filter(|s| !s.is_empty()) {
+            body.insert("previous_response_id".to_string(), json!(prev_id));
+        }
     } else {
         body.insert("store".to_string(), json!(false));
-    }
-
-    let model = config.model().as_str();
-    if model.starts_with("gpt-5") && !is_pro_model(config.model()) {
-        body.insert(
-            "include".to_string(),
-            json!(["reasoning.encrypted_content"]),
-        );
+        if config.model().provider() == forge_types::Provider::OpenAI {
+            body.insert(
+                "include".to_string(),
+                json!(["reasoning.encrypted_content"]),
+            );
+        }
     }
 
     if let Some(prompt) = system_prompt
@@ -510,8 +546,7 @@ fn build_request_body(
         json!(options.truncation().as_str()),
     );
 
-    let model = config.model().as_str();
-    if model.starts_with("gpt-5") {
+    if config.model().provider() == forge_types::Provider::OpenAI {
         let mut reasoning = serde_json::Map::new();
         reasoning.insert(
             "effort".to_string(),
@@ -565,6 +600,7 @@ pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
         request.limits,
         request.system_prompt,
         request.tools,
+        request.previous_response_id,
     );
 
     let auth_header = format!("Bearer {}", config.api_key());
@@ -652,7 +688,14 @@ mod tests {
             CacheableMessage::plain(Message::try_user("hi").unwrap()),
         ];
 
-        let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
+        let body = build_request_body(
+            &config,
+            &messages,
+            OutputLimits::new(1024),
+            None,
+            None,
+            None,
+        );
 
         let input = body.get("input").unwrap().as_array().unwrap();
         assert_eq!(input.len(), 2);
@@ -678,6 +721,7 @@ mod tests {
             OutputLimits::new(1024),
             Some("prompt"),
             None,
+            None,
         );
 
         assert_eq!(body.get("instructions").unwrap().as_str(), Some("prompt"));
@@ -699,7 +743,14 @@ mod tests {
 
         let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
 
-        let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
+        let body = build_request_body(
+            &config,
+            &messages,
+            OutputLimits::new(1024),
+            None,
+            None,
+            None,
+        );
 
         let reasoning = body.get("reasoning").unwrap();
         assert_eq!(reasoning["summary"].as_str(), Some("auto"));
@@ -713,7 +764,14 @@ mod tests {
 
         let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
 
-        let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
+        let body = build_request_body(
+            &config,
+            &messages,
+            OutputLimits::new(1024),
+            None,
+            None,
+            None,
+        );
 
         let reasoning = body.get("reasoning").unwrap();
         assert!(reasoning.get("summary").is_none());
@@ -890,6 +948,23 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_summary_part_done_emits_thinking_delta() {
+        let mut state = OpenAIParser::default();
+        let events = collect_events(
+            json!({
+                "type": "response.reasoning_summary_part.done",
+                "part": { "text": "Final section." }
+            }),
+            &mut state,
+        );
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            StreamEvent::ThinkingDelta(text) if text == "Final section."
+        ));
+    }
+
+    #[test]
     fn emits_reasoning_summary_done_when_no_delta() {
         let mut state = OpenAIParser::default();
         let events = collect_events(
@@ -965,7 +1040,14 @@ mod tests {
         let config = ApiConfig::new(key, model).unwrap();
 
         let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
-        let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
+        let body = build_request_body(
+            &config,
+            &messages,
+            OutputLimits::new(1024),
+            None,
+            None,
+            None,
+        );
 
         assert_eq!(body.get("background").and_then(Value::as_bool), Some(true));
         assert_eq!(body.get("store").and_then(Value::as_bool), Some(true));
@@ -979,7 +1061,14 @@ mod tests {
         let config = ApiConfig::new(key, model).unwrap();
 
         let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
-        let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
+        let body = build_request_body(
+            &config,
+            &messages,
+            OutputLimits::new(1024),
+            None,
+            None,
+            None,
+        );
 
         assert!(body.get("background").is_none());
         assert_eq!(body.get("store").and_then(Value::as_bool), Some(false));
@@ -995,7 +1084,11 @@ mod tests {
             "response": { "id": "resp_abc123" },
             "sequence_number": 0
         }));
-        assert!(matches!(action, super::SseParseAction::Continue));
+        let events = match action {
+            super::SseParseAction::Emit(events) => events,
+            other => panic!("Expected Emit with ResponseId, got {other:?}"),
+        };
+        assert!(matches!(&events[0], StreamEvent::ResponseId(id) if id == "resp_abc123"));
 
         let lock = state.lock().unwrap();
         assert_eq!(lock.response_id.as_deref(), Some("resp_abc123"));
@@ -1018,6 +1111,8 @@ mod tests {
 
     #[test]
     fn output_item_done_reasoning_emits_event() {
+        use forge_types::OpenAIReasoningSummaryPart;
+
         let mut state = OpenAIParser::default();
         let events = collect_events(
             json!({
@@ -1025,6 +1120,9 @@ mod tests {
                 "item": {
                     "type": "reasoning",
                     "id": "rs_abc",
+                    "summary": [
+                        { "type": "summary_text", "text": "step one" }
+                    ],
                     "encrypted_content": "enc_data"
                 }
             }),
@@ -1034,8 +1132,10 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(matches!(
             &events[0],
-            StreamEvent::OpenAIReasoningDone { id, encrypted_content }
-                if id == "rs_abc" && encrypted_content.as_deref() == Some("enc_data")
+            StreamEvent::OpenAIReasoningDone { id, summary, encrypted_content }
+                if id == "rs_abc"
+                    && summary == &vec![OpenAIReasoningSummaryPart::summary_text("step one").unwrap()]
+                    && encrypted_content.as_deref() == Some("enc_data")
         ));
     }
 
@@ -1058,7 +1158,7 @@ mod tests {
 
     #[test]
     fn request_body_replays_openai_reasoning_items() {
-        use forge_types::OpenAIReasoningItem;
+        use forge_types::{OpenAIReasoningItem, OpenAIReasoningSummaryPart};
 
         let key = ApiKey::openai("test");
         let model = Provider::OpenAI.default_model();
@@ -1068,14 +1168,13 @@ mod tests {
             Provider::OpenAI.default_model(),
             NonEmptyString::new("reasoning summary").unwrap(),
             vec![
-                OpenAIReasoningItem {
-                    id: "r_1".to_string(),
-                    encrypted_content: Some("enc1".to_string()),
-                },
-                OpenAIReasoningItem {
-                    id: "r_2".to_string(),
-                    encrypted_content: None,
-                },
+                OpenAIReasoningItem::try_new(
+                    "r_1",
+                    vec![OpenAIReasoningSummaryPart::summary_text("summary one").unwrap()],
+                    Some("enc1".to_string()),
+                )
+                .unwrap(),
+                OpenAIReasoningItem::try_new("r_2", vec![], None).unwrap(),
             ],
         );
 
@@ -1088,7 +1187,14 @@ mod tests {
             )),
         ];
 
-        let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
+        let body = build_request_body(
+            &config,
+            &messages,
+            OutputLimits::new(1024),
+            None,
+            None,
+            None,
+        );
         let input = body.get("input").unwrap().as_array().unwrap();
 
         // user message + 2 reasoning items + assistant message = 4
@@ -1096,7 +1202,10 @@ mod tests {
         assert_eq!(input[1]["type"], "reasoning");
         assert_eq!(input[1]["id"], "r_1");
         assert_eq!(input[1]["encrypted_content"], "enc1");
-        assert_eq!(input[1]["summary"], json!([]));
+        assert_eq!(
+            input[1]["summary"],
+            json!([{ "type": "summary_text", "text": "summary one" }])
+        );
         assert_eq!(input[2]["type"], "reasoning");
         assert_eq!(input[2]["id"], "r_2");
         assert!(input[2].get("encrypted_content").is_none());
@@ -1110,7 +1219,14 @@ mod tests {
         let config = ApiConfig::new(key, model).unwrap();
 
         let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
-        let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
+        let body = build_request_body(
+            &config,
+            &messages,
+            OutputLimits::new(1024),
+            None,
+            None,
+            None,
+        );
 
         let include = body.get("include").unwrap().as_array().unwrap();
         assert_eq!(include.len(), 1);
@@ -1126,7 +1242,14 @@ mod tests {
         let config = ApiConfig::new(key, model).unwrap();
 
         let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
-        let body = build_request_body(&config, &messages, OutputLimits::new(1024), None, None);
+        let body = build_request_body(
+            &config,
+            &messages,
+            OutputLimits::new(1024),
+            None,
+            None,
+            None,
+        );
 
         assert!(body.get("include").is_none());
     }

@@ -208,14 +208,6 @@ pub struct ContextEditorSnapshot {
     pub dirty: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelOverridesEditorSnapshot {
-    pub draft_chat_model: Option<ModelName>,
-    pub draft_code_model: Option<ModelName>,
-    pub selected: usize,
-    pub dirty: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolsEditorSnapshot {
     pub draft_approval_mode: &'static str,
@@ -247,7 +239,6 @@ struct ParsedToolCalls {
 
 const APPEARANCE_SETTINGS_COUNT: usize = 4;
 const CONTEXT_SETTINGS_COUNT: usize = 1;
-const MODEL_OVERRIDES_SETTINGS_COUNT: usize = 2;
 const TOOLS_SETTINGS_COUNT: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,83 +303,6 @@ impl ModelSettingsEditor {
         PredefinedModel::all()
             .iter()
             .position(|predefined| predefined.to_model_name() == *model)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ModelOverridesSettingsEditor {
-    baseline_chat_model: Option<ModelName>,
-    baseline_code_model: Option<ModelName>,
-    draft_chat_model: Option<ModelName>,
-    draft_code_model: Option<ModelName>,
-    selected: usize,
-}
-
-impl ModelOverridesSettingsEditor {
-    fn new(initial_chat_model: Option<ModelName>, initial_code_model: Option<ModelName>) -> Self {
-        Self {
-            baseline_chat_model: initial_chat_model.clone(),
-            baseline_code_model: initial_code_model.clone(),
-            draft_chat_model: initial_chat_model,
-            draft_code_model: initial_code_model,
-            selected: 0,
-        }
-    }
-
-    fn is_dirty(&self) -> bool {
-        self.draft_chat_model != self.baseline_chat_model
-            || self.draft_code_model != self.baseline_code_model
-    }
-
-    fn cycle_selected_model(&mut self) {
-        let current = if self.selected == 0 {
-            self.draft_chat_model.as_ref()
-        } else {
-            self.draft_code_model.as_ref()
-        };
-        let next = Self::next_model_option(current);
-        if self.selected == 0 {
-            self.draft_chat_model = next;
-        } else {
-            self.draft_code_model = next;
-        }
-    }
-
-    fn next_model_option(current: Option<&ModelName>) -> Option<ModelName> {
-        let all_models = PredefinedModel::all();
-        if let Some(current) = current
-            && let Some(current_index) = all_models
-                .iter()
-                .position(|model| model.to_model_name() == *current)
-        {
-            if current_index + 1 < all_models.len() {
-                return Some(all_models[current_index + 1].to_model_name());
-            }
-            return None;
-        }
-        all_models.first().map(|model| model.to_model_name())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PendingModelOverride {
-    UseGlobalDefault,
-    Explicit(ModelName),
-}
-
-impl PendingModelOverride {
-    fn from_option(model: Option<ModelName>) -> Self {
-        match model {
-            Some(model) => Self::Explicit(model),
-            None => Self::UseGlobalDefault,
-        }
-    }
-
-    fn into_option(self) -> Option<ModelName> {
-        match self {
-            Self::UseGlobalDefault => None,
-            Self::Explicit(model) => Some(model),
-        }
     }
 }
 
@@ -514,6 +428,8 @@ pub struct StreamingMessage {
     max_tool_args_bytes: usize,
     /// API-reported token usage accumulated during streaming.
     usage: ApiUsage,
+    /// OpenAI response ID for `previous_response_id` chaining (Pro models).
+    openai_response_id: Option<String>,
 }
 
 impl StreamingMessage {
@@ -532,6 +448,7 @@ impl StreamingMessage {
             tool_calls: Vec::new(),
             max_tool_args_bytes,
             usage: ApiUsage::default(),
+            openai_response_id: None,
         }
     }
 
@@ -566,6 +483,11 @@ impl StreamingMessage {
         self.usage
     }
 
+    #[must_use]
+    pub fn openai_response_id(&self) -> Option<&str> {
+        self.openai_response_id.as_deref()
+    }
+
     pub fn try_recv_event(&mut self) -> Result<StreamEvent, mpsc::error::TryRecvError> {
         self.receiver.try_recv()
     }
@@ -578,6 +500,10 @@ impl StreamingMessage {
             }
             StreamEvent::ThinkingDelta(thinking) => {
                 self.thinking.push_str(&thinking);
+                None
+            }
+            StreamEvent::ResponseId(id) => {
+                self.openai_response_id = Some(id);
                 None
             }
             StreamEvent::ThinkingSignature(signature_delta) => {
@@ -596,18 +522,19 @@ impl StreamingMessage {
             }
             StreamEvent::OpenAIReasoningDone {
                 id,
+                summary,
                 encrypted_content,
             } => {
-                let item = OpenAIReasoningItem {
-                    id,
-                    encrypted_content,
-                };
-                match &mut self.thinking_replay {
-                    ThinkingReplayState::OpenAIReasoning { items } => items.push(item),
-                    _ => {
-                        self.thinking_replay =
-                            ThinkingReplayState::OpenAIReasoning { items: vec![item] };
+                if let Ok(item) = OpenAIReasoningItem::try_new(id, summary, encrypted_content) {
+                    match &mut self.thinking_replay {
+                        ThinkingReplayState::OpenAIReasoning { items } => items.push(item),
+                        _ => {
+                            self.thinking_replay =
+                                ThinkingReplayState::OpenAIReasoning { items: vec![item] };
+                        }
                     }
+                } else {
+                    tracing::warn!("Skipping invalid OpenAI reasoning replay item");
                 }
                 None
             }
@@ -775,6 +702,8 @@ struct ProviderRuntimeState {
     anthropic_thinking_effort: config::AnthropicEffort,
     /// Gemini cache configuration.
     gemini_cache_config: GeminiCacheConfig,
+    /// Last OpenAI response ID for Pro model `previous_response_id` chaining.
+    openai_previous_response_id: Option<String>,
 }
 
 struct LspRuntimeState {
@@ -798,24 +727,16 @@ pub struct App {
     should_quit: bool,
     /// View state for rendering (scroll, status, modal effects).
     view: ViewState,
-    /// Persisted model default loaded from config and edited in `/settings`.
+    /// Configured model (resolved from config at init).
     configured_model: ModelName,
-    /// Optional chat-model override loaded from config and edited in `/settings`.
-    configured_chat_model_override: Option<ModelName>,
-    /// Optional code-model override loaded from config and edited in `/settings`.
-    configured_code_model_override: Option<ModelName>,
     /// Persisted tool approval mode loaded from config and edited in `/settings`.
     configured_tool_approval_mode: tools::ApprovalMode,
     /// Persisted context defaults loaded from config and edited in `/settings`.
     configured_context_memory_enabled: bool,
     /// Persisted UI defaults loaded from config and edited in `/settings`.
     configured_ui_options: UiOptions,
-    /// Saved model default staged to take effect at the start of the next turn.
+    /// Saved model staged to take effect at the start of the next turn.
     pending_turn_model: Option<ModelName>,
-    /// Saved chat-model override staged to take effect at the start of the next turn.
-    pending_turn_chat_model_override: Option<PendingModelOverride>,
-    /// Saved code-model override staged to take effect at the start of the next turn.
-    pending_turn_code_model_override: Option<PendingModelOverride>,
     /// Saved tool approval mode staged to take effect at the start of the next turn.
     pending_turn_tool_approval_mode: Option<tools::ApprovalMode>,
     /// Saved context defaults staged to take effect at the start of the next turn.
@@ -824,8 +745,6 @@ pub struct App {
     pending_turn_ui_options: Option<UiOptions>,
     /// Models detail editor state for `/settings`.
     settings_model_editor: Option<ModelSettingsEditor>,
-    /// Model overrides detail editor state for `/settings`.
-    settings_model_overrides_editor: Option<ModelOverridesSettingsEditor>,
     /// Tools detail editor state for `/settings`.
     settings_tools_editor: Option<ToolsSettingsEditor>,
     /// Context detail editor state for `/settings`.
@@ -833,6 +752,8 @@ pub struct App {
     /// Appearance detail editor state for `/settings`.
     settings_appearance_editor: Option<AppearanceSettingsEditor>,
     api_keys: HashMap<Provider, SecretString>,
+    /// Path to the config file for persist operations.
+    config_path: std::path::PathBuf,
     model: ModelName,
     tick: usize,
     data_dir: DataDir,
@@ -942,11 +863,6 @@ impl App {
     }
 
     #[must_use]
-    pub fn settings_configured_model(&self) -> &ModelName {
-        &self.configured_model
-    }
-
-    #[must_use]
     pub fn settings_usable_model_count(&self) -> usize {
         PredefinedModel::all()
             .iter()
@@ -955,27 +871,8 @@ impl App {
     }
 
     #[must_use]
-    pub fn settings_configured_chat_model_override(&self) -> Option<&ModelName> {
-        self.configured_chat_model_override.as_ref()
-    }
-
-    #[must_use]
-    pub fn settings_configured_code_model_override(&self) -> Option<&ModelName> {
-        self.configured_code_model_override.as_ref()
-    }
-
-    #[must_use]
-    pub fn settings_effective_chat_model(&self) -> ModelName {
-        self.configured_chat_model_override
-            .clone()
-            .unwrap_or_else(|| self.configured_model.clone())
-    }
-
-    #[must_use]
-    pub fn settings_effective_code_model(&self) -> ModelName {
-        self.configured_code_model_override
-            .clone()
-            .unwrap_or_else(|| self.configured_model.clone())
+    pub fn settings_configured_model(&self) -> &ModelName {
+        &self.configured_model
     }
 
     #[must_use]
@@ -1004,12 +901,6 @@ impl App {
     }
 
     #[must_use]
-    pub fn settings_pending_model_overrides_apply_next_turn(&self) -> bool {
-        self.pending_turn_chat_model_override.is_some()
-            || self.pending_turn_code_model_override.is_some()
-    }
-
-    #[must_use]
     pub fn settings_pending_tools_apply_next_turn(&self) -> bool {
         self.pending_turn_tool_approval_mode.is_some()
     }
@@ -1027,7 +918,6 @@ impl App {
     #[must_use]
     pub fn settings_pending_apply_next_turn(&self) -> bool {
         self.settings_pending_model_apply_next_turn()
-            || self.settings_pending_model_overrides_apply_next_turn()
             || self.settings_pending_tools_apply_next_turn()
             || self.settings_pending_context_apply_next_turn()
             || self.settings_pending_ui_apply_next_turn()
@@ -1049,18 +939,6 @@ impl App {
         self.settings_context_editor
             .map(|editor| ContextEditorSnapshot {
                 draft_memory_enabled: editor.draft_memory_enabled,
-                selected: editor.selected,
-                dirty: editor.is_dirty(),
-            })
-    }
-
-    #[must_use]
-    pub fn settings_model_overrides_editor_snapshot(&self) -> Option<ModelOverridesEditorSnapshot> {
-        self.settings_model_overrides_editor
-            .as_ref()
-            .map(|editor| ModelOverridesEditorSnapshot {
-                draft_chat_model: editor.draft_chat_model.clone(),
-                draft_code_model: editor.draft_code_model.clone(),
                 selected: editor.selected,
                 dirty: editor.is_dirty(),
             })
@@ -1092,10 +970,6 @@ impl App {
             .as_ref()
             .is_some_and(ModelSettingsEditor::is_dirty)
             || self
-                .settings_model_overrides_editor
-                .as_ref()
-                .is_some_and(ModelOverridesSettingsEditor::is_dirty)
-            || self
                 .settings_tools_editor
                 .is_some_and(ToolsSettingsEditor::is_dirty)
             || self
@@ -1115,19 +989,9 @@ impl App {
             self.set_context_memory_enabled_internal(memory_enabled, false);
         }
         if let Some(model) = self.pending_turn_model.take() {
-            self.set_model_internal(model, false);
-        }
-        let mut applied_model_override = false;
-        if let Some(chat_model_override) = self.pending_turn_chat_model_override.take() {
-            self.configured_chat_model_override = chat_model_override.into_option();
-            applied_model_override = true;
-        }
-        if let Some(code_model_override) = self.pending_turn_code_model_override.take() {
-            self.configured_code_model_override = code_model_override.into_option();
-            applied_model_override = true;
-        }
-        if applied_model_override {
-            let next_model = self.effective_model_for_input_mode(self.input_mode());
+            self.configured_model = model;
+            self.provider_runtime.openai_previous_response_id = None;
+            let next_model = self.configured_model.clone();
             if self.model != next_model {
                 self.set_active_model(next_model);
             }
@@ -1376,11 +1240,7 @@ impl App {
             return self.provider_runtime.openai_options;
         }
 
-        if model
-            .as_str()
-            .trim()
-            .to_ascii_lowercase()
-            .starts_with("gpt-5.2-pro")
+        if model.as_str() == "gpt-5.2-pro"
             && !self.provider_runtime.openai_reasoning_effort_explicit
             && self.provider_runtime.openai_options.reasoning_effort()
                 != OpenAIReasoningEffort::XHigh
@@ -1591,7 +1451,7 @@ impl App {
 
     fn settings_category_for_resolve_setting(setting: &str) -> Option<SettingsCategory> {
         match setting {
-            "Chat Model" | "Code Model" | "Temperature" => Some(SettingsCategory::ModelOverrides),
+            "Model" => Some(SettingsCategory::Models),
             "Context Limit" | "Context Memory" => Some(SettingsCategory::Context),
             "Tool Approval Mode" => Some(SettingsCategory::Tools),
             "UI Defaults" => Some(SettingsCategory::Appearance),
@@ -1826,14 +1686,6 @@ impl App {
             .set_output_limit(clamped.max_output_tokens());
     }
 
-    fn effective_model_for_input_mode(&self, input_mode: InputMode) -> ModelName {
-        if input_mode == InputMode::Insert {
-            self.settings_effective_chat_model()
-        } else {
-            self.settings_effective_code_model()
-        }
-    }
-
     fn set_active_model(&mut self, model: ModelName) {
         self.model = model;
         if self.memory_enabled() {
@@ -1847,10 +1699,13 @@ impl App {
     }
 
     fn set_model_internal(&mut self, model: ModelName, persist: bool) {
+        self.provider_runtime.openai_previous_response_id = None;
         self.set_active_model(model.clone());
         self.configured_model = model.clone();
         self.pending_turn_model = None;
-        if persist && let Err(e) = config::ForgeConfig::persist_model(model.as_str()) {
+        if persist
+            && let Err(e) = config::ForgeConfig::persist_model(&self.config_path, model.as_str())
+        {
             tracing::warn!("Failed to persist model to config: {e}");
         }
     }
@@ -1866,10 +1721,10 @@ impl App {
         self.pending_turn_context_memory_enabled = None;
         self.invalidate_usage_cache();
         if persist
-            && let Err(err) =
-                config::ForgeConfig::persist_context_settings(config::ContextSettings {
-                    memory: enabled,
-                })
+            && let Err(err) = config::ForgeConfig::persist_context_settings(
+                &self.config_path,
+                config::ContextSettings { memory: enabled },
+            )
         {
             tracing::warn!("Failed to persist context settings: {err}");
         }
@@ -2062,63 +1917,31 @@ impl App {
         if let Some(modal) = self.input.settings_modal_mut() {
             modal.detail_view = Some(category);
         }
+        self.reset_settings_detail_editor();
         match category {
             SettingsCategory::Models => {
                 self.settings_model_editor =
                     Some(ModelSettingsEditor::new(self.configured_model.clone()));
-                self.settings_model_overrides_editor = None;
-                self.settings_tools_editor = None;
-                self.settings_context_editor = None;
-                self.settings_appearance_editor = None;
-            }
-            SettingsCategory::ModelOverrides => {
-                self.settings_model_overrides_editor = Some(ModelOverridesSettingsEditor::new(
-                    self.configured_chat_model_override.clone(),
-                    self.configured_code_model_override.clone(),
-                ));
-                self.settings_model_editor = None;
-                self.settings_tools_editor = None;
-                self.settings_context_editor = None;
-                self.settings_appearance_editor = None;
             }
             SettingsCategory::Tools => {
                 self.settings_tools_editor =
                     Some(ToolsSettingsEditor::new(self.configured_tool_approval_mode));
-                self.settings_model_editor = None;
-                self.settings_model_overrides_editor = None;
-                self.settings_context_editor = None;
-                self.settings_appearance_editor = None;
             }
             SettingsCategory::Context => {
                 self.settings_context_editor = Some(ContextSettingsEditor::new(
                     self.configured_context_memory_enabled,
                 ));
-                self.settings_model_editor = None;
-                self.settings_model_overrides_editor = None;
-                self.settings_tools_editor = None;
-                self.settings_appearance_editor = None;
             }
             SettingsCategory::Appearance => {
                 self.settings_appearance_editor =
                     Some(AppearanceSettingsEditor::new(self.configured_ui_options));
-                self.settings_model_editor = None;
-                self.settings_model_overrides_editor = None;
-                self.settings_tools_editor = None;
-                self.settings_context_editor = None;
             }
-            _ => {
-                self.settings_model_editor = None;
-                self.settings_model_overrides_editor = None;
-                self.settings_tools_editor = None;
-                self.settings_context_editor = None;
-                self.settings_appearance_editor = None;
-            }
+            _ => {}
         }
     }
 
     fn reset_settings_detail_editor(&mut self) {
         self.settings_model_editor = None;
-        self.settings_model_overrides_editor = None;
         self.settings_tools_editor = None;
         self.settings_context_editor = None;
         self.settings_appearance_editor = None;
@@ -2202,12 +2025,6 @@ impl App {
             }
             return;
         }
-        if let Some(editor) = self.settings_model_overrides_editor.as_mut() {
-            if editor.selected > 0 {
-                editor.selected -= 1;
-            }
-            return;
-        }
         if let Some(editor) = self.settings_tools_editor.as_mut() {
             if editor.selected > 0 {
                 editor.selected -= 1;
@@ -2235,12 +2052,6 @@ impl App {
             }
             return;
         }
-        if let Some(editor) = self.settings_model_overrides_editor.as_mut() {
-            if editor.selected + 1 < MODEL_OVERRIDES_SETTINGS_COUNT {
-                editor.selected += 1;
-            }
-            return;
-        }
         if let Some(editor) = self.settings_tools_editor.as_mut() {
             if editor.selected + 1 < TOOLS_SETTINGS_COUNT {
                 editor.selected += 1;
@@ -2263,10 +2074,6 @@ impl App {
     pub fn settings_detail_toggle_selected(&mut self) {
         if let Some(editor) = self.settings_model_editor.as_mut() {
             editor.update_draft_from_selected();
-            return;
-        }
-        if let Some(editor) = self.settings_model_overrides_editor.as_mut() {
-            editor.cycle_selected_model();
             return;
         }
         if let Some(editor) = self.settings_tools_editor.as_mut() {
@@ -2305,11 +2112,6 @@ impl App {
             editor.sync_selected_to_draft();
             return;
         }
-        if let Some(editor) = self.settings_model_overrides_editor.as_mut() {
-            editor.draft_chat_model = editor.baseline_chat_model.clone();
-            editor.draft_code_model = editor.baseline_code_model.clone();
-            return;
-        }
         if let Some(editor) = self.settings_tools_editor.as_mut() {
             editor.draft_approval_mode = editor.baseline_approval_mode;
             return;
@@ -2332,7 +2134,8 @@ impl App {
             }
             let draft = editor.draft.clone();
             let draft_provider = draft.provider();
-            if let Err(err) = config::ForgeConfig::persist_model(draft.as_str()) {
+            if let Err(err) = config::ForgeConfig::persist_model(&self.config_path, draft.as_str())
+            {
                 tracing::warn!("Failed to persist model setting: {err}");
                 self.push_notification(format!("Failed to save settings: {err}"));
                 return;
@@ -2343,57 +2146,12 @@ impl App {
                 editor.baseline = draft;
                 editor.sync_selected_to_draft();
             }
-            self.push_notification("Model default saved. Changes apply on the next turn.");
+            self.push_notification("Model saved. Changes apply on the next turn.");
             if !self.has_api_key(draft_provider) {
                 self.push_notification(format!(
                     "{} API key is missing. Set {} before the next turn.",
                     draft_provider.display_name(),
                     draft_provider.env_var()
-                ));
-            }
-            self.push_settings_next_turn_guardrail();
-            return;
-        }
-
-        if let Some(editor) = self.settings_model_overrides_editor.as_ref() {
-            if !editor.is_dirty() {
-                self.push_notification("No settings changes to save.");
-                return;
-            }
-            let settings = config::ModelOverrideSettings {
-                chat_model: editor
-                    .draft_chat_model
-                    .as_ref()
-                    .map(|model| model.as_str().to_string()),
-                code_model: editor
-                    .draft_code_model
-                    .as_ref()
-                    .map(|model| model.as_str().to_string()),
-            };
-            if let Err(err) = config::ForgeConfig::persist_model_overrides(&settings) {
-                tracing::warn!("Failed to persist model overrides: {err}");
-                self.push_notification(format!("Failed to save settings: {err}"));
-                return;
-            }
-            self.configured_chat_model_override = editor.draft_chat_model.clone();
-            self.configured_code_model_override = editor.draft_code_model.clone();
-            self.pending_turn_chat_model_override = Some(PendingModelOverride::from_option(
-                editor.draft_chat_model.clone(),
-            ));
-            self.pending_turn_code_model_override = Some(PendingModelOverride::from_option(
-                editor.draft_code_model.clone(),
-            ));
-            if let Some(editor) = self.settings_model_overrides_editor.as_mut() {
-                editor.baseline_chat_model = editor.draft_chat_model.clone();
-                editor.baseline_code_model = editor.draft_code_model.clone();
-            }
-            self.push_notification("Model overrides saved. Changes apply on the next turn.");
-            let next_chat_model = self.settings_effective_chat_model();
-            if !self.has_api_key(next_chat_model.provider()) {
-                self.push_notification(format!(
-                    "{} API key is missing. Set {} before the next turn.",
-                    next_chat_model.provider().display_name(),
-                    next_chat_model.provider().env_var()
                 ));
             }
             self.push_settings_next_turn_guardrail();
@@ -2408,7 +2166,9 @@ impl App {
             let settings = config::ToolApprovalSettings {
                 mode: approval_mode_config_value(editor.draft_approval_mode).to_string(),
             };
-            if let Err(err) = config::ForgeConfig::persist_tool_approval_settings(&settings) {
+            if let Err(err) =
+                config::ForgeConfig::persist_tool_approval_settings(&self.config_path, &settings)
+            {
                 tracing::warn!("Failed to persist tool approval setting: {err}");
                 self.push_notification(format!("Failed to save settings: {err}"));
                 return;
@@ -2429,11 +2189,10 @@ impl App {
                 return;
             }
             let draft = editor.draft_memory_enabled;
-            if let Err(err) =
-                config::ForgeConfig::persist_context_settings(config::ContextSettings {
-                    memory: draft,
-                })
-            {
+            if let Err(err) = config::ForgeConfig::persist_context_settings(
+                &self.config_path,
+                config::ContextSettings { memory: draft },
+            ) {
                 tracing::warn!("Failed to persist context setting: {err}");
                 self.push_notification(format!("Failed to save settings: {err}"));
                 return;
@@ -2463,7 +2222,7 @@ impl App {
             reduced_motion: draft.reduced_motion,
             show_thinking: draft.show_thinking,
         };
-        if let Err(err) = config::ForgeConfig::persist_ui_settings(persist) {
+        if let Err(err) = config::ForgeConfig::persist_ui_settings(&self.config_path, persist) {
             tracing::warn!("Failed to persist UI settings: {err}");
             self.push_notification(format!("Failed to save settings: {err}"));
             return;
@@ -2552,14 +2311,6 @@ impl App {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.model.as_str().hash(&mut hasher);
         self.configured_model.as_str().hash(&mut hasher);
-        self.configured_chat_model_override
-            .as_ref()
-            .map(ModelName::as_str)
-            .hash(&mut hasher);
-        self.configured_code_model_override
-            .as_ref()
-            .map(ModelName::as_str)
-            .hash(&mut hasher);
         self.provider().as_str().hash(&mut hasher);
         self.memory_enabled.hash(&mut hasher);
         self.cache_enabled.hash(&mut hasher);
@@ -2657,17 +2408,8 @@ impl App {
             "none".to_string()
         };
         let mut session_overrides = Vec::new();
-        if let Some(chat_model) = self.settings_configured_chat_model_override() {
-            session_overrides.push(format!("chat model: {chat_model}"));
-        }
-        if let Some(code_model) = self.settings_configured_code_model_override() {
-            session_overrides.push(format!("code model: {code_model}"));
-        }
-        if self.settings_pending_model_overrides_apply_next_turn() {
-            session_overrides.push("pending model overrides: next turn".to_string());
-        }
-        if let Some(model) = self.pending_turn_model.as_ref() {
-            session_overrides.push(format!("pending default model: {model} (next turn)"));
+        if self.settings_pending_model_apply_next_turn() {
+            session_overrides.push("pending model change: next turn".to_string());
         }
         if self.settings_configured_tool_approval_mode() != tools::ApprovalMode::Default {
             session_overrides.push(format!(
@@ -2721,24 +2463,18 @@ impl App {
     #[must_use]
     pub fn resolve_cascade(&self) -> ResolveCascade {
         let mut settings = Vec::new();
-        let chat_override = self.settings_configured_chat_model_override();
-        let pending_default_model = self.pending_turn_model.as_ref();
-        let chat_session_is_winner =
-            chat_override.is_some() || (chat_override.is_none() && pending_default_model.is_some());
-        let chat_session_value = if let Some(model) = chat_override {
-            model.to_string()
-        } else if let Some(model) = pending_default_model {
-            model.to_string()
-        } else {
-            "unset".to_string()
-        };
+        let model_pending = self.pending_turn_model.as_ref();
+        let model_session_is_winner = model_pending.is_some();
+        let model_session_value = model_pending
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "unset".to_string());
         settings.push(ResolveSetting {
-            setting: "Chat Model",
+            setting: "Model",
             layers: vec![
                 ResolveLayerValue {
                     layer: "Global",
-                    value: self.settings_configured_model().to_string(),
-                    is_winner: !chat_session_is_winner,
+                    value: self.configured_model.to_string(),
+                    is_winner: !model_session_is_winner,
                 },
                 ResolveLayerValue {
                     layer: "Project",
@@ -2752,43 +2488,8 @@ impl App {
                 },
                 ResolveLayerValue {
                     layer: "Session",
-                    value: chat_session_value,
-                    is_winner: chat_session_is_winner,
-                },
-            ],
-        });
-        let code_override = self.settings_configured_code_model_override();
-        let code_session_is_winner =
-            code_override.is_some() || (code_override.is_none() && pending_default_model.is_some());
-        let code_session_value = if let Some(model) = code_override {
-            model.to_string()
-        } else if let Some(model) = pending_default_model {
-            model.to_string()
-        } else {
-            "unset".to_string()
-        };
-        settings.push(ResolveSetting {
-            setting: "Code Model",
-            layers: vec![
-                ResolveLayerValue {
-                    layer: "Global",
-                    value: self.settings_configured_model().to_string(),
-                    is_winner: !code_session_is_winner,
-                },
-                ResolveLayerValue {
-                    layer: "Project",
-                    value: "unset".to_string(),
-                    is_winner: false,
-                },
-                ResolveLayerValue {
-                    layer: "Profile",
-                    value: "unset".to_string(),
-                    is_winner: false,
-                },
-                ResolveLayerValue {
-                    layer: "Session",
-                    value: code_session_value,
-                    is_winner: code_session_is_winner,
+                    value: model_session_value,
+                    is_winner: model_session_is_winner,
                 },
             ],
         });

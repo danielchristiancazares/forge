@@ -555,6 +555,8 @@ pub struct SendMessageRequest<'a> {
     pub cache_last_tool: bool,
     pub gemini_cache: Option<&'a gemini::GeminiCache>,
     pub tx: mpsc::Sender<StreamEvent>,
+    /// OpenAI `previous_response_id` for stateful Pro model chaining.
+    pub previous_response_id: Option<&'a str>,
 }
 
 pub async fn send_message(request: SendMessageRequest<'_>) -> Result<()> {

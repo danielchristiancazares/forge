@@ -1479,10 +1479,9 @@ mod tests {
             .unwrap();
 
         let replay = ThinkingReplayState::OpenAIReasoning {
-            items: vec![OpenAIReasoningItem {
-                id: "r_1".to_string(),
-                encrypted_content: Some("enc_data".to_string()),
-            }],
+            items: vec![
+                OpenAIReasoningItem::try_new("r_1", vec![], Some("enc_data".to_string())).unwrap(),
+            ],
         };
         journal.update_thinking_replay(batch_id, &replay).unwrap();
 

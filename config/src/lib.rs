@@ -78,12 +78,6 @@ pub struct ContextSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelOverrideSettings {
-    pub chat_model: Option<String>,
-    pub code_model: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolApprovalSettings {
     pub mode: String,
 }
@@ -535,15 +529,17 @@ impl ForgeConfig {
         config_path()
     }
 
-    pub fn persist_model(model: &str) -> std::io::Result<()> {
-        update_app_section(|app| {
+    pub fn persist_model(path: &Path, model: &str) -> std::io::Result<()> {
+        update_app_section(path, |app| {
             app["model"] = toml_edit::value(model);
+            app.remove("chat_model");
+            app.remove("code_model");
             Ok(())
         })
     }
 
-    pub fn persist_ui_settings(settings: AppUiSettings) -> std::io::Result<()> {
-        update_app_section(|app| {
+    pub fn persist_ui_settings(path: &Path, settings: AppUiSettings) -> std::io::Result<()> {
+        update_app_section(path, |app| {
             app["ascii_only"] = toml_edit::value(settings.ascii_only);
             app["high_contrast"] = toml_edit::value(settings.high_contrast);
             app["reduced_motion"] = toml_edit::value(settings.reduced_motion);
@@ -552,31 +548,18 @@ impl ForgeConfig {
         })
     }
 
-    pub fn persist_context_settings(settings: ContextSettings) -> std::io::Result<()> {
-        update_context_section(|context| {
+    pub fn persist_context_settings(path: &Path, settings: ContextSettings) -> std::io::Result<()> {
+        update_context_section(path, |context| {
             context["memory"] = toml_edit::value(settings.memory);
             Ok(())
         })
     }
 
-    pub fn persist_model_overrides(settings: &ModelOverrideSettings) -> std::io::Result<()> {
-        update_app_section(|app| {
-            if let Some(chat_model) = &settings.chat_model {
-                app["chat_model"] = toml_edit::value(chat_model.as_str());
-            } else {
-                app.remove("chat_model");
-            }
-            if let Some(code_model) = &settings.code_model {
-                app["code_model"] = toml_edit::value(code_model.as_str());
-            } else {
-                app.remove("code_model");
-            }
-            Ok(())
-        })
-    }
-
-    pub fn persist_tool_approval_settings(settings: &ToolApprovalSettings) -> std::io::Result<()> {
-        update_tools_section(|tools| {
+    pub fn persist_tool_approval_settings(
+        path: &Path,
+        settings: &ToolApprovalSettings,
+    ) -> std::io::Result<()> {
+        update_tools_section(path, |tools| {
             if !tools.contains_key("approval") {
                 tools["approval"] = toml_edit::Item::Table(toml_edit::Table::new());
             }
@@ -592,45 +575,35 @@ impl ForgeConfig {
     }
 }
 
-fn update_app_section<F>(mut update: F) -> std::io::Result<()>
+fn update_app_section<F>(path: &Path, mut update: F) -> std::io::Result<()>
 where
     F: FnMut(&mut toml_edit::Table) -> std::io::Result<()>,
 {
-    update_named_section("app", &mut update)
+    update_named_section(path, "app", &mut update)
 }
 
-fn update_context_section<F>(mut update: F) -> std::io::Result<()>
+fn update_context_section<F>(path: &Path, mut update: F) -> std::io::Result<()>
 where
     F: FnMut(&mut toml_edit::Table) -> std::io::Result<()>,
 {
-    update_named_section("context", &mut update)
+    update_named_section(path, "context", &mut update)
 }
 
-fn update_tools_section<F>(mut update: F) -> std::io::Result<()>
+fn update_tools_section<F>(path: &Path, mut update: F) -> std::io::Result<()>
 where
     F: FnMut(&mut toml_edit::Table) -> std::io::Result<()>,
 {
-    update_named_section("tools", &mut update)
+    update_named_section(path, "tools", &mut update)
 }
 
-fn update_named_section<F>(section: &str, mut update: F) -> std::io::Result<()>
+fn update_named_section<F>(path: &Path, section: &str, mut update: F) -> std::io::Result<()>
 where
     F: FnMut(&mut toml_edit::Table) -> std::io::Result<()>,
 {
-    let path = match config_path() {
-        Some(path) => path,
-        None => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Could not determine config path",
-            ));
-        }
-    };
-
-    ensure_config_parent_secure(&path)?;
+    ensure_config_parent_secure(path)?;
 
     let content = if path.exists() {
-        fs::read_to_string(&path)?
+        fs::read_to_string(path)?
     } else {
         String::new()
     };
@@ -651,7 +624,7 @@ where
     };
     update(section_table)?;
 
-    persist_config_doc(&path, &doc)
+    persist_config_doc(path, &doc)
 }
 
 fn ensure_config_parent_secure(path: &Path) -> std::io::Result<()> {

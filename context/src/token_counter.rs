@@ -140,11 +140,16 @@ impl TokenCounter {
                     ThinkingReplayState::OpenAIReasoning { items } => items
                         .iter()
                         .map(|item| {
-                            self.count_str(&item.id)
-                                + item
-                                    .encrypted_content
-                                    .as_deref()
-                                    .map_or(0, |e| self.count_str(e))
+                            let summary_tokens = item
+                                .summary()
+                                .iter()
+                                .map(|part| {
+                                    self.count_str(part.part_type()) + self.count_str(part.text())
+                                })
+                                .sum::<u32>();
+                            self.count_str(item.id())
+                                + summary_tokens
+                                + item.encrypted_content().map_or(0, |e| self.count_str(e))
                         })
                         .sum(),
                     ThinkingReplayState::Unsigned | ThinkingReplayState::Unknown => 0,
