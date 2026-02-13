@@ -1505,16 +1505,18 @@ async fn handle_git_commit(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErro
         });
     }
 
+    let raw_message = req.message.replace("\\n", "\n");
+
     let commit_msg = match &req.scope {
         Some(scope) if !scope.trim().is_empty() => {
             format!(
                 "{}({}): {}",
                 req.commit_type.trim(),
                 scope.trim(),
-                req.message.trim()
+                raw_message.trim()
             )
         }
-        _ => format!("{}: {}", req.commit_type.trim(), req.message.trim()),
+        _ => format!("{}: {}", req.commit_type.trim(), raw_message.trim()),
     };
 
     let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_GIT_TIMEOUT_MS);
