@@ -206,7 +206,27 @@ pub(crate) fn prepare_run_command(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (policy, unsafe_allow_unsandboxed, working_dir);
+        // On Linux/BSD, use the "Windows" policy (token blocking + optional PowerShell enforcement)
+        // as a baseline for "Basic" sandboxing, since we don't have a specific Linux sandbox implementation yet.
+        // This closes the "passthrough" gap.
+        if !cfg!(windows) {
+            let mut linux_policy = policy.windows;
+            linux_policy.enforce_powershell_only = false;
+            return prepare_windows_run_command_with_host_probe(
+                command,
+                shell,
+                linux_policy,
+                unsafe_allow_unsandboxed,
+                false,     // Not Windows host (skip job object checks)
+                || Ok(()), // Host probe always succeeds
+            );
+        }
+        // This part is unreachable if cfg!(windows) is true because of the early return at the top of the function,
+        // but the compiler needs a path for the `if cfg!(windows)` check above to logically flow if the cfg was different.
+        // Actually, since we have an early return for `if cfg!(windows)` at line 188, this block is only reached
+        // if !windows. So the check `if !cfg!(windows)` above is redundant but safe.
+        // Let's Just Return the shared logic.
+
         Ok(PreparedRunCommand::passthrough(shell, command.raw()))
     }
 }

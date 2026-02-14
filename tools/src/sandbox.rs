@@ -89,9 +89,9 @@ impl Sandbox {
         let mut deny_patterns = Vec::new();
         for pat in denied_patterns {
             let mut builder = globset::GlobBuilder::new(&pat);
-            if cfg!(windows) {
-                builder.case_insensitive(true);
-            }
+            // Always use case-insensitive matching for deny patterns to prevent bypasses
+            // (e.g. "Secret.PEM" bypassing "*.pem" rule)
+            builder.case_insensitive(true);
             let glob = builder.build().map_err(|e| ToolError::BadArgs {
                 message: format!("Invalid denied pattern '{pat}': {e}"),
             })?;

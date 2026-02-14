@@ -404,6 +404,11 @@ impl ToolExecutor for GlobTool {
                     continue;
                 }
 
+                // Check for sandbox deny patterns (e.g. .env, .ssh/) using the full path
+                if ctx.sandbox.is_path_denied(path) {
+                    continue;
+                }
+
                 files.push(display_path(path));
 
                 if files.len() >= limit {
@@ -568,9 +573,7 @@ impl ToolExecutor for ReadFileTool {
                 });
             }
 
-            let resolved = ctx
-                .sandbox
-                .resolve_path_for_create(&typed.path, &ctx.working_dir)?;
+            let resolved = ctx.sandbox.resolve_path(&typed.path, &ctx.working_dir)?;
             let meta = std::fs::metadata(&resolved).map_err(|e| ToolError::ExecutionFailed {
                 tool: "Read".to_string(),
                 message: e.to_string(),
