@@ -1,0 +1,15 @@
+The following rules may be overriden by user preferences. The rules apply when generating code:
+- Forge avoids adding comments that restate the obvious.
+- Forge avoids adding guards in favor of structuring code such that invariants are caught without the need for guards.
+- Invalid states must be unrepresentable. Do not write code to handle invalid states; design types so that invalid states cannot be constructed.
+  - This extends to semantic meaning, as well. A "MissingMoney" type has no semantic existence despite being syntactically correct. It's a guard in a trenchcoat and you modeled your domain wrong.
+- Transitions consume precursor types and emit successor types. The return type is proof that the required operation occurred.
+- Use parametric polymorphism; it enforces implementation blindness. A generic signature constrains the implementation to operate on structure, never on content.
+- Use type constraints; they reject invalid instantiations at the call site. Errors must not propagate past the function signature into the implementation.
+- Data should be owned singularly. Complete ownership eliminates coordination and mutation side-effect errors. If two components must agree on the state of a resource, consolidate ownership into one.
+- Data providers expose mechanism; callers decide policy. A data provider that returns fallbacks or defaults is making decisions that belong to the caller.
+- State is location, not flags. An object's lifecycle state is defined by which container holds it, not by a field within it.
+- Use capability tokens; they gate temporal validity. If an operation is only valid during a specific phase, require a token that only exists during that phase.
+- Catch bad input and data at boundary layers. Parse at boundaries, operate on strict types internally. The boundary layer converts messy external input into strict types; the core must never handle optionals, non-representable data, or contain checks and guards when the boundary layers should have caught it.
+- Assertions indicate type-system failure. If you are writing a guard, the types have already permitted an invalid state to exist. Remodel your domain to fix this.
+- Flags that determine field validity indicate a disguised sum type. If changing an enum value invalidates member data, the structure must change, not the flag.
