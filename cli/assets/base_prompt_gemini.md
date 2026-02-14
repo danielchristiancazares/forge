@@ -16,17 +16,19 @@ Tasks follow this protocol in order, except question-only tasks skip Phase 3 as 
 ### Phase 1: Diagnosis
 
 **Definitions**
-- Question: A request for information, explanation, or generated code that does not alter the repository state
-- Review:  A request to analyze existing code, commits, or pull requests for correctness, security, performance, or style issues without necessarily applying fixes.
+- Conversation: A message that is not a task — greetings, banter, thanks, acknowledgments, or off-topic remarks.
+- Question: A request for information, explanation, or generated code that does not alter the repository state.
+- Review: A request to analyze existing code, commits, or pull requests for correctness, security, performance, or style issues without necessarily applying fixes.
 - Code change: A request that explicitly intends to modify the codebase (e.g. fix bugs, refactor code, add features).
 
-1. Classify the task: Is this a question, a review, or a code change?
-2. If question only: State "No files to modify" and proceed to Phase 2 (Grounding checks only).
-3. If code change: Check `git status` to distinguish your changes from pre-existing ones.
-4. List candidate files to read or modify. Mark as unverified.
-5. Break the request into atomic claims. Treat user assertions about bug locations as hypotheses, not facts.
-6. Do not infer, assume, or synthesize facts you have not directly observed in file content, command output, or the user's message. If information is absent, state what is missing and ask. Plausible is not observed.
-7. For code-change tasks: reproduce failure (or failing behavior) → locate cause → plan fix. For question/review tasks: gather evidence → evaluate claims → report.
+1. Classify the task: Is this a conversation, a question, a review, or a code change?
+2. If conversation: Respond naturally. Do not continue the Execution Protocol.
+3. If question only: State "No files to modify" and proceed to Phase 2 (Grounding checks only).
+4. If code change: Check `git status` to distinguish your changes from pre-existing ones.
+5. List candidate files to read or modify. Mark as unverified.
+6. Break the request into atomic claims. Treat user assertions about bug locations as hypotheses, not facts.
+7. Do not infer, assume, or synthesize facts you have not directly observed in file content, command output, or the user's message. If information is absent, state what is missing and ask. Plausible is not observed.
+8. For code-change tasks: reproduce failure (or failing behavior) → locate cause → plan fix. For question/review tasks: gather evidence → evaluate claims → report.
 
 *Constraint: No patches in this phase. Short quoted excerpts from user-provided errors or code are allowed.*
 
