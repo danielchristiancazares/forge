@@ -11,6 +11,7 @@ pub mod phase_gate;
 pub mod powershell_ast;
 pub mod process;
 pub mod recall;
+pub(crate) mod region_hash;
 pub mod sandbox;
 pub mod search;
 pub mod security;
@@ -394,6 +395,53 @@ pub struct FileCacheEntry {
 }
 
 pub type ToolFileCache = HashMap<PathBuf, FileCacheEntry>;
+
+/// Normalize a path for use as a cache key.
+///
+/// On Windows, paths are case-insensitive but HashMap keys are case-sensitive.
+/// This normalizes to lowercase to prevent cache misses due to casing differences
+/// in canonicalized paths (e.g., `C:\Users\Danie` vs `C:\Users\danie`).
+#[cfg(windows)]
+pub(crate) fn normalize_cache_key(path: &std::path::Path) -> PathBuf {
+    PathBuf::from(path.to_string_lossy().to_lowercase())
+}
+
+#[cfg(not(windows))]
+pub(crate) fn normalize_cache_key(path: &std::path::Path) -> PathBuf {
+    path.to_path_buf()
+}
+
+/// Record a file read in the tool file cache.
+///
+/// Creates or merges an `ObservedRegion` covering lines `1..=line_count`,
+/// enabling stale-edit protection for files read via `@path` expansion.
+pub fn record_file_read(
+    cache: &mut ToolFileCache,
+    path: &std::path::Path,
+    line_count: u32,
+) -> std::io::Result<()> {
+    let key = normalize_cache_key(path);
+    if let Some(entry) = cache.get(&key) {
+        if let Ok(merged) = region_hash::merge_regions(path, &entry.observed, 1, line_count) {
+            cache.insert(
+                key,
+                FileCacheEntry {
+                    observed: merged,
+                    read_at: SystemTime::now(),
+                },
+            );
+        }
+    } else if let Ok(region) = region_hash::create_region(path, 1, line_count) {
+        cache.insert(
+            key,
+            FileCacheEntry {
+                observed: region,
+                read_at: SystemTime::now(),
+            },
+        );
+    }
+    Ok(())
+}
 
 /// Per-call tool context.
 #[derive(Debug)]
