@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use forge_context::{ContextUsageStatus, ToolBatchId};
-use forge_types::{ToolCall, ToolResult};
+use forge_types::{ToolCall, ToolResult, sanitize_path_for_display};
 
 use crate::input_modes::{ChangeRecorder, TurnChangeReport, TurnContext};
 use crate::state::{
@@ -1927,12 +1927,6 @@ fn preflight_sandbox(
     Ok(())
 }
 
-/// Strip Windows extended path prefix (`\\?\`) for cleaner display.
-fn strip_windows_prefix(path: &std::path::Path) -> String {
-    let s = path.display().to_string();
-    s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
-}
-
 pub(crate) fn tool_error_result(call: &ToolCall, err: tools::ToolError) -> ToolResult {
     let message = match err {
         tools::ToolError::BadArgs { message } => format!("Bad args: {message}"),
@@ -1951,11 +1945,11 @@ pub(crate) fn tool_error_result(call: &ToolCall, err: tools::ToolError) -> ToolR
         tools::ToolError::PatchFailed { file, message } => {
             format!(
                 "Patch failed for {}: {message}",
-                strip_windows_prefix(&file)
+                sanitize_path_for_display(&file)
             )
         }
         tools::ToolError::StaleFile { file, reason } => {
-            format!("{}: {reason}", strip_windows_prefix(&file))
+            format!("{}: {reason}", sanitize_path_for_display(&file))
         }
     };
 

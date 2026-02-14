@@ -35,7 +35,7 @@ use forge_engine::{
     PredefinedModel, Provider, SettingsCategory, SettingsSurface, TurnUsage, UiOptions,
     command_specs, find_match_positions, sanitize_display_text, sanitize_terminal_text,
 };
-use forge_types::{ToolResult, sanitize_path_display};
+use forge_types::{ToolResult, sanitize_path_for_display};
 
 use self::diff_render::render_tool_result_lines;
 pub use self::markdown::clear_render_cache;
@@ -1576,15 +1576,9 @@ fn draw_diff_view(
     }
 }
 
-/// Strip the Windows extended-length path prefix (`\\?\`) for display.
-fn strip_windows_prefix(path: &str) -> String {
-    path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
-}
-
 /// Truncate a path for display, keeping the filename and as much of the parent as fits.
 fn truncate_path_display(path: &std::path::Path, max_width: usize) -> String {
-    let display =
-        sanitize_path_display(&strip_windows_prefix(&path.display().to_string())).into_owned();
+    let display = sanitize_path_for_display(path);
     if display.width() <= max_width {
         return display;
     }

@@ -15,6 +15,7 @@
 //! history) MUST be sanitized before display.
 
 use std::borrow::Cow;
+use std::path::Path;
 
 /// ASCII escape character that starts ANSI sequences.
 const ESC: char = '\x1b';
@@ -106,6 +107,26 @@ pub fn sanitize_path_display(input: &str) -> Cow<'_, str> {
     } else {
         base
     }
+}
+
+/// Strip the Windows extended-length path prefix (`\\?\`) from a string.
+///
+/// Returns the input unchanged when the prefix is absent.
+/// Zero-allocation: returns a sub-slice of the input.
+#[inline]
+#[must_use]
+pub fn strip_windows_extended_prefix(s: &str) -> &str {
+    s.strip_prefix(r"\\?\").unwrap_or(s)
+}
+
+/// Sanitize a filesystem path for terminal display.
+///
+/// Combines Windows extended-prefix stripping with [`sanitize_path_display`],
+/// performing a single `path.display().to_string()` allocation.
+#[must_use]
+pub fn sanitize_path_for_display(path: &Path) -> String {
+    let raw = path.display().to_string();
+    sanitize_path_display(strip_windows_extended_prefix(&raw)).into_owned()
 }
 
 /// Check if text contains any characters that need sanitization.
@@ -314,7 +335,7 @@ pub fn strip_steganographic_chars(input: &str) -> Cow<'_, str> {
     // Slow path: build stripped string
     let mut result = String::with_capacity(input.len());
     for c in input.chars() {
-        if !is_steganographic(c) {
+        if !is_steganographic_char(c) {
             result.push(c);
         }
     }
@@ -323,7 +344,7 @@ pub fn strip_steganographic_chars(input: &str) -> Cow<'_, str> {
 
 /// Check if text contains any steganographic characters.
 fn has_steganographic_chars(input: &str) -> bool {
-    input.chars().any(is_steganographic)
+    input.chars().any(is_steganographic_char)
 }
 
 /// Check if a character is used for Unicode steganography or visual spoofing.
@@ -333,7 +354,13 @@ fn has_steganographic_chars(input: &str) -> bool {
 /// Note: Bidi controls are also stripped by `sanitize_terminal_text`, but we
 /// include them here for defense-in-depth — if this function is called alone
 /// (not composed with terminal sanitization), we still prevent Trojan Source.
-fn is_steganographic(c: char) -> bool {
+///
+/// This is the canonical predicate for the steganographic character set.
+/// Consumers that need to reject (rather than strip) these characters should
+/// compose this predicate instead of duplicating the set.
+#[inline]
+#[must_use]
+pub fn is_steganographic_char(c: char) -> bool {
     matches!(c,
         // === HIGH SEVERITY: Direct prompt injection vectors ===
 
