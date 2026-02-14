@@ -2858,8 +2858,9 @@ impl App {
     /// Enter file select mode, scanning files from the current directory.
     pub fn enter_file_select_mode(&mut self) {
         if !self.file_picker.is_scanned() {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            self.file_picker.scan_files(&cwd);
+            let root = self.tool_settings.sandbox.working_dir();
+            self.file_picker
+                .scan_files(&root, &self.tool_settings.sandbox);
         }
         self.input = std::mem::take(&mut self.input).into_file_select();
         if self.view.ui_options.reduced_motion {

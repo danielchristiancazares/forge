@@ -37,8 +37,8 @@ impl FilePickerState {
         Self::default()
     }
 
-    /// Scan files from the given root directory, respecting .gitignore.
-    pub fn scan_files(&mut self, root: &Path) {
+    /// Scan files from the given root directory, respecting .gitignore and sandbox deny patterns.
+    pub fn scan_files(&mut self, root: &Path, sandbox: &forge_tools::sandbox::Sandbox) {
         self.all_files.clear();
         self.filtered.clear();
         self.scanned = true;
@@ -70,11 +70,12 @@ impl FilePickerState {
             }
 
             let path = entry.path().to_path_buf();
-            let raw = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = path.strip_prefix(root).unwrap_or(&path);
+            if sandbox.is_path_denied(&path) || sandbox.is_path_denied(rel) {
+                continue;
+            }
+
+            let raw = rel.to_string_lossy().replace('\\', "/");
             let display = sanitize_path_display(&raw).into_owned();
 
             if display.is_empty() || display == root_str {
