@@ -708,10 +708,10 @@ mod tests {
 
     #[test]
     fn sanitize_output_redacts_openai_keys() {
-        let input = "key=sk-proj-abc123xyz";
+        let input = "key=sk-proj-abc123def456ghi789jkl";
         let output = sanitize_output(input);
         assert!(output.contains("sk-***"));
-        assert!(!output.contains("abc123xyz"));
+        assert!(!output.contains("abc123def456ghi789jkl"));
     }
 
     #[test]

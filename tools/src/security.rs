@@ -371,10 +371,12 @@ impl PatternRedactor {
             // Provider API keys
             anthropic_key: Regex::new(r"sk-ant-[A-Za-z0-9_-]+")
                 .expect("valid Anthropic API key regex"),
-            // OpenAI keys are `sk-...`, but **do not** match the Anthropic prefix (`sk-ant-...`),
-            // otherwise we'd double-redact `sk-ant-***` into `sk-******`.
+            // OpenAI keys are `sk-...` with 40+ chars after the prefix.
+            // Excludes `sk-ant-` (Anthropic) to avoid double-redaction.
+            // Requires ≥20 chars after `sk-` to prevent false positives on
+            // natural language containing `sk-` fragments.
             openai_key: Regex::new(
-                r"sk-(?:[^a][A-Za-z0-9_-]*|a[^n][A-Za-z0-9_-]*|an[^t][A-Za-z0-9_-]*|ant[^-][A-Za-z0-9_-]*)",
+                r"sk-(?:[^a][A-Za-z0-9_-]{19,}|a[^n][A-Za-z0-9_-]{18,}|an[^t][A-Za-z0-9_-]{17,}|ant[^-][A-Za-z0-9_-]{16,})",
             )
             .expect("valid OpenAI API key regex"),
             gemini_key: Regex::new(r"AIza[0-9A-Za-z_-]+").expect("valid Gemini API key regex"),
@@ -437,23 +439,30 @@ mod tests {
 
     #[test]
     fn redact_api_keys_replaces_openai_key() {
-        let input = "Error: sk-abc123xyz key invalid";
+        let input = "Error: sk-proj-abc123def456ghi789jkl key invalid";
         let output = redact_api_keys(input);
         assert_eq!(output, "Error: sk-*** key invalid");
     }
 
     #[test]
     fn redact_api_keys_handles_quoted_key() {
-        let input = r#"{"key": "sk-secret123"}"#;
+        let input = r#"{"key": "sk-1234567890abcdefghijklmnop"}"#;
         let output = redact_api_keys(input);
         assert_eq!(output, r#"{"key": "sk-***"}"#);
     }
 
     #[test]
     fn redact_api_keys_handles_multiple_keys() {
-        let input = "key1: sk-first, key2: sk-second";
+        let input = "key1: sk-first1234567890abcdefgh, key2: sk-second1234567890abcdefg";
         let output = redact_api_keys(input);
         assert_eq!(output, "key1: sk-***, key2: sk-***");
+    }
+
+    #[test]
+    fn redact_api_keys_ignores_short_sk_prefix() {
+        let input = "non-task-skipping messages are fine";
+        let output = redact_api_keys(input);
+        assert_eq!(output, input);
     }
 
     #[test]
@@ -496,7 +505,8 @@ mod tests {
 
     #[test]
     fn redact_api_keys_handles_mixed_keys() {
-        let input = "anthropic: sk-ant-abc, openai: sk-xyz, google: AIzaSyC123";
+        let input =
+            "anthropic: sk-ant-abc, openai: sk-proj-abc123def456ghi789jkl, google: AIzaSyC123";
         let output = redact_api_keys(input);
         assert_eq!(
             output,
@@ -576,10 +586,10 @@ mod tests {
 
     #[test]
     fn sanitize_stream_error_redacts_and_strips() {
-        let input = "Error with sk-secret123 and \x1b[31mred text\x1b[0m";
+        let input = "Error with sk-proj-abc123def456ghi789jkl and \x1b[31mred text\x1b[0m";
         let output = sanitize_stream_error(input);
         assert!(output.contains("sk-***"));
-        assert!(!output.contains("sk-secret123"));
+        assert!(!output.contains("sk-proj-abc123def456ghi789jkl"));
         // Terminal controls should be stripped
         assert!(!output.contains("\x1b["));
     }
@@ -594,10 +604,10 @@ mod tests {
 
     #[test]
     fn sanitize_stream_error_redacts_openai_key_split_by_zwsp() {
-        let input = "Error: sk-ab\u{200B}c123xyz key invalid";
+        let input = "Error: sk-proj-abc123\u{200B}def456ghi789jkl key invalid";
         let output = sanitize_stream_error(input);
         assert!(output.contains("sk-***"));
-        assert!(!output.contains("sk-abc123xyz"));
+        assert!(!output.contains("sk-proj-abc123def456ghi789jkl"));
     }
 
     // SecretRedactor tests
