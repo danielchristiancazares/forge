@@ -492,40 +492,25 @@ const MAX_FILE_REF_BYTES: usize = 200 * 1024;
 
 /// Expand `@path` file references in user message text.
 ///
-/// Scans for `@` followed by non-whitespace, checks if the path exists as a file,
-/// and prepends file contents to the message. The `@path` tokens remain in the
-/// user's text as anchors.
+/// Scans for `@path` tokens (including quoted paths like `@"My File.md"` and
+/// escaped spaces like `@My\ File.md`), checks if the path exists as a file,
+/// and prepends file contents to the message. The original `@path` tokens
+/// remain in the user's text as anchors.
 fn expand_file_references(text: String) -> String {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut file_sections = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for word in text.split_whitespace() {
-        let Some(path_str) = word.strip_prefix('@') else {
-            continue;
-        };
-        if path_str.is_empty() || seen.contains(path_str) {
+    for path_str in parse_file_references(&text) {
+        if seen.contains(&path_str) {
             continue;
         }
 
-        let path = cwd.join(path_str);
+        let path = cwd.join(&path_str);
         if path.is_file()
-            && let Ok(content) = std::fs::read_to_string(&path)
+            && let Some(content) = read_file_reference_content(&path)
         {
-            seen.insert(path_str.to_string());
-            let content = if content.len() > MAX_FILE_REF_BYTES {
-                let mut end = MAX_FILE_REF_BYTES;
-                while end > 0 && !content.is_char_boundary(end) {
-                    end -= 1;
-                }
-                format!(
-                    "{}...\n[truncated at {}KB]",
-                    &content[..end],
-                    MAX_FILE_REF_BYTES / 1024
-                )
-            } else {
-                content
-            };
+            seen.insert(path_str.clone());
             file_sections.push(format!("`{path_str}`:\n```\n{content}\n```"));
         }
     }
@@ -535,6 +520,144 @@ fn expand_file_references(text: String) -> String {
     } else {
         let files_block = file_sections.join("\n\n");
         format!("{files_block}\n\n---\n\n{text}")
+    }
+}
+
+/// Parse `@path` references from text.
+///
+/// Supported forms:
+/// - `@path/to/file.rs`
+/// - `@"path with spaces/file.md"`
+/// - `@path/with\ spaces/file.md`
+fn parse_file_references(text: &str) -> Vec<String> {
+    let mut references = Vec::new();
+    let mut prev_char: Option<char> = None;
+    let mut cursor = 0usize;
+
+    while cursor < text.len() {
+        let mut chars = text[cursor..].chars();
+        let ch = chars.next().expect("cursor is always on a char boundary");
+        let ch_len = ch.len_utf8();
+
+        if ch == '@' {
+            let at_token_start = prev_char.is_none_or(char::is_whitespace);
+            if at_token_start {
+                let path_start = cursor + ch_len;
+                let (parsed, next_cursor) = parse_file_reference_path(text, path_start);
+                if let Some(path) = parsed {
+                    references.push(path);
+                }
+                if next_cursor > cursor {
+                    prev_char = text[..next_cursor].chars().next_back();
+                    cursor = next_cursor;
+                    continue;
+                }
+            }
+        }
+
+        prev_char = Some(ch);
+        cursor += ch_len;
+    }
+
+    references
+}
+
+fn parse_file_reference_path(text: &str, start: usize) -> (Option<String>, usize) {
+    if start >= text.len() {
+        return (None, start);
+    }
+
+    match text[start..].chars().next() {
+        Some('"') => parse_quoted_file_reference(text, start),
+        Some(ch) if ch.is_whitespace() => (None, start),
+        Some(_) => parse_unquoted_file_reference(text, start),
+        None => (None, start),
+    }
+}
+
+fn parse_quoted_file_reference(text: &str, quote_start: usize) -> (Option<String>, usize) {
+    let mut path = String::new();
+    let mut chars = text[quote_start + 1..].char_indices().peekable();
+
+    while let Some((offset, ch)) = chars.next() {
+        let abs_idx = quote_start + 1 + offset;
+        if ch == '"' {
+            return ((!path.is_empty()).then_some(path), abs_idx + 1);
+        }
+
+        if ch == '\\'
+            && let Some((_, next_ch)) = chars.peek()
+            && matches!(*next_ch, '"' | '\\')
+        {
+            path.push(*next_ch);
+            chars.next();
+            continue;
+        }
+
+        path.push(ch);
+    }
+
+    (None, text.len())
+}
+
+fn parse_unquoted_file_reference(text: &str, start: usize) -> (Option<String>, usize) {
+    let mut path = String::new();
+    let mut end = text.len();
+    let mut chars = text[start..].char_indices().peekable();
+
+    while let Some((offset, ch)) = chars.next() {
+        let abs_idx = start + offset;
+        if ch.is_whitespace() {
+            end = abs_idx;
+            break;
+        }
+
+        if ch == '\\'
+            && let Some((_, next_ch)) = chars.peek()
+            && next_ch.is_whitespace()
+        {
+            path.push(*next_ch);
+            chars.next();
+            continue;
+        }
+
+        path.push(ch);
+    }
+
+    ((!path.is_empty()).then_some(path), end)
+}
+
+fn read_file_reference_content(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path).ok()?;
+    let mut limited = file.take((MAX_FILE_REF_BYTES + 1) as u64);
+    let mut bytes = Vec::with_capacity(MAX_FILE_REF_BYTES + 1);
+    limited.read_to_end(&mut bytes).ok()?;
+
+    let truncated = bytes.len() > MAX_FILE_REF_BYTES;
+    let bytes = if truncated {
+        &bytes[..MAX_FILE_REF_BYTES]
+    } else {
+        bytes.as_slice()
+    };
+
+    let content = match std::str::from_utf8(bytes) {
+        Ok(content) => content.to_string(),
+        Err(err) if truncated && err.error_len().is_none() => {
+            let valid_up_to = err.valid_up_to();
+            std::str::from_utf8(&bytes[..valid_up_to]).ok()?.to_string()
+        }
+        Err(_) => return None,
+    };
+
+    if truncated {
+        Some(format!(
+            "{content}...\n[truncated at {}KB]",
+            MAX_FILE_REF_BYTES / 1024
+        ))
+    } else {
+        Some(content)
     }
 }
 
@@ -627,5 +750,58 @@ mod tests {
     fn complete_command_name_case_insensitive() {
         assert_eq!(complete_command_name("CLE", true), Some("ar".to_string()));
         assert_eq!(complete_command_name("QU", true), Some("it".to_string()));
+    }
+
+    #[test]
+    fn parse_file_references_supports_quoted_paths_with_spaces() {
+        let refs = parse_file_references(r#"read @"docs/My File.md" and @src/lib.rs"#);
+        assert_eq!(refs, vec!["docs/My File.md", "src/lib.rs"]);
+    }
+
+    #[test]
+    fn parse_file_references_supports_escaped_spaces() {
+        let refs = parse_file_references(r"read @docs/My\ File.md and @src/lib.rs");
+        assert_eq!(refs, vec!["docs/My File.md", "src/lib.rs"]);
+    }
+
+    #[test]
+    fn parse_file_references_ignores_embedded_at_signs() {
+        let refs = parse_file_references("email me at user@example.com");
+        assert_eq!(refs, Vec::<String>::new());
+    }
+
+    #[test]
+    fn read_file_reference_content_truncates_at_utf8_boundary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("utf8.txt");
+
+        let mut content = "a".repeat(MAX_FILE_REF_BYTES - 1);
+        content.push('é');
+        content.push('b');
+        std::fs::write(&path, content).expect("write file");
+
+        let loaded = read_file_reference_content(&path).expect("load content");
+        let marker = format!("...\n[truncated at {}KB]", MAX_FILE_REF_BYTES / 1024);
+
+        assert!(loaded.ends_with(&marker));
+        let prefix = loaded.strip_suffix(&marker).expect("truncate marker");
+        assert_eq!(prefix.len(), MAX_FILE_REF_BYTES - 1);
+        assert!(prefix.chars().all(|c| c == 'a'));
+    }
+
+    #[test]
+    fn expand_file_references_reads_quoted_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("My File.md");
+        std::fs::write(&path, "hello world").expect("write file");
+
+        let raw_path = path.to_string_lossy().to_string();
+        let escaped_path = raw_path.replace('\\', "\\\\").replace('"', "\\\"");
+        let input = format!(r#"inspect @"{escaped_path}""#);
+
+        let expanded = expand_file_references(input.clone());
+        assert!(expanded.contains(&format!("`{raw_path}`:")));
+        assert!(expanded.contains("hello world"));
+        assert!(expanded.ends_with(&input));
     }
 }

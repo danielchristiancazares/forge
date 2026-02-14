@@ -2938,7 +2938,12 @@ impl App {
         };
 
         if let Some(entry) = self.file_picker.get_selected(index) {
-            let path = entry.display.clone();
+            let path = if entry.display.chars().any(char::is_whitespace) {
+                let escaped = entry.display.replace('\\', "\\\\").replace('"', "\\\"");
+                format!("\"{escaped}\"")
+            } else {
+                entry.display.clone()
+            };
             // Insert the file path at cursor position in the draft
             self.input.draft_mut().enter_text(&path);
         }
