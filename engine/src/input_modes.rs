@@ -169,7 +169,27 @@ impl InsertMode<'_> {
         };
 
         // Expand @path file references: read file contents and prepend them.
-        let expanded = expand_file_references(expanded);
+        let expansion = expand_file_references(
+            &expanded,
+            &self.app.tool_settings.sandbox,
+            self.app.tool_settings.read_limits.max_file_read_bytes,
+            &self.app.tool_file_cache,
+        );
+
+        for (path, reason) in &expansion.denied {
+            self.app
+                .push_notification(format!("@{path}: denied ({reason})"));
+        }
+        for (path, error) in &expansion.failed {
+            self.app.push_notification(format!("@{path}: {error}"));
+        }
+
+        let expanded = if expansion.file_sections.is_empty() {
+            expanded
+        } else {
+            let files_block = expansion.file_sections.join("\n\n");
+            format!("{files_block}\n\n---\n\n{expanded}")
+        };
 
         let content = if let Ok(content) = NonEmptyString::new(expanded) {
             content
@@ -488,38 +508,78 @@ fn complete_command_arg(
     Some(lcp.chars().skip(core_chars).collect())
 }
 
-const MAX_FILE_REF_BYTES: usize = 200 * 1024;
+struct FileExpansionResult {
+    file_sections: Vec<String>,
+    denied: Vec<(String, String)>,
+    failed: Vec<(String, String)>,
+}
 
 /// Expand `@path` file references in user message text.
 ///
-/// Scans for `@path` tokens (including quoted paths like `@"My File.md"` and
-/// escaped spaces like `@My\ File.md`), checks if the path exists as a file,
-/// and prepends file contents to the message. The original `@path` tokens
-/// remain in the user's text as anchors.
-fn expand_file_references(text: String) -> String {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+/// Routes each path through the sandbox for policy enforcement (deny patterns,
+/// root constraints, unsafe char rejection) and populates the file cache so
+/// that subsequent edits get stale-file protection.
+fn expand_file_references(
+    text: &str,
+    sandbox: &forge_tools::sandbox::Sandbox,
+    max_read_bytes: usize,
+    file_cache: &std::sync::Arc<tokio::sync::Mutex<forge_tools::ToolFileCache>>,
+) -> FileExpansionResult {
+    let working_dir = sandbox.working_dir();
     let mut file_sections = Vec::new();
+    let mut denied = Vec::new();
+    let mut failed = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for path_str in parse_file_references(&text) {
+    for path_str in parse_file_references(text) {
         if seen.contains(&path_str) {
             continue;
         }
+        seen.insert(path_str.clone());
 
-        let path = cwd.join(&path_str);
-        if path.is_file()
-            && let Some(content) = read_file_reference_content(&path)
-        {
-            seen.insert(path_str.clone());
-            file_sections.push(format!("`{path_str}`:\n```\n{content}\n```"));
+        let resolved = match sandbox.resolve_path(&path_str, &working_dir) {
+            Ok(r) => r,
+            Err(e) => {
+                denied.push((path_str, e.to_string()));
+                continue;
+            }
+        };
+
+        let meta = match std::fs::metadata(&resolved) {
+            Ok(m) if m.is_file() => m,
+            Ok(_) => {
+                failed.push((path_str, "not a file".to_string()));
+                continue;
+            }
+            Err(e) => {
+                failed.push((path_str, e.to_string()));
+                continue;
+            }
+        };
+
+        if meta.len() > max_read_bytes as u64 {
+            failed.push((path_str, "file too large".to_string()));
+            continue;
+        }
+
+        match read_file_reference_content(&resolved, max_read_bytes) {
+            Some(content) => {
+                let line_count = content.lines().count() as u32;
+                if let Ok(mut cache) = file_cache.try_lock() {
+                    let _ = forge_tools::record_file_read(&mut cache, &resolved, line_count);
+                }
+                file_sections.push(format!("`{path_str}`:\n```\n{content}\n```"));
+            }
+            None => {
+                failed.push((path_str, "binary or non-UTF-8 file".to_string()));
+            }
         }
     }
 
-    if file_sections.is_empty() {
-        text
-    } else {
-        let files_block = file_sections.join("\n\n");
-        format!("{files_block}\n\n---\n\n{text}")
+    FileExpansionResult {
+        file_sections,
+        denied,
+        failed,
     }
 }
 
@@ -627,17 +687,17 @@ fn parse_unquoted_file_reference(text: &str, start: usize) -> (Option<String>, u
     ((!path.is_empty()).then_some(path), end)
 }
 
-fn read_file_reference_content(path: &std::path::Path) -> Option<String> {
+fn read_file_reference_content(path: &std::path::Path, max_bytes: usize) -> Option<String> {
     use std::io::Read;
 
     let file = std::fs::File::open(path).ok()?;
-    let mut limited = file.take((MAX_FILE_REF_BYTES + 1) as u64);
-    let mut bytes = Vec::with_capacity(MAX_FILE_REF_BYTES + 1);
+    let mut limited = file.take((max_bytes + 1) as u64);
+    let mut bytes = Vec::with_capacity(max_bytes + 1);
     limited.read_to_end(&mut bytes).ok()?;
 
-    let truncated = bytes.len() > MAX_FILE_REF_BYTES;
+    let truncated = bytes.len() > max_bytes;
     let bytes = if truncated {
-        &bytes[..MAX_FILE_REF_BYTES]
+        &bytes[..max_bytes]
     } else {
         bytes.as_slice()
     };
@@ -654,7 +714,7 @@ fn read_file_reference_content(path: &std::path::Path) -> Option<String> {
     if truncated {
         Some(format!(
             "{content}...\n[truncated at {}KB]",
-            MAX_FILE_REF_BYTES / 1024
+            max_bytes / 1024
         ))
     } else {
         Some(content)
@@ -770,23 +830,44 @@ mod tests {
         assert_eq!(refs, Vec::<String>::new());
     }
 
+    const TEST_MAX_BYTES: usize = 200 * 1024;
+
     #[test]
     fn read_file_reference_content_truncates_at_utf8_boundary() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("utf8.txt");
 
-        let mut content = "a".repeat(MAX_FILE_REF_BYTES - 1);
+        let mut content = "a".repeat(TEST_MAX_BYTES - 1);
         content.push('é');
         content.push('b');
         std::fs::write(&path, content).expect("write file");
 
-        let loaded = read_file_reference_content(&path).expect("load content");
-        let marker = format!("...\n[truncated at {}KB]", MAX_FILE_REF_BYTES / 1024);
+        let loaded = read_file_reference_content(&path, TEST_MAX_BYTES).expect("load content");
+        let marker = format!("...\n[truncated at {}KB]", TEST_MAX_BYTES / 1024);
 
         assert!(loaded.ends_with(&marker));
         let prefix = loaded.strip_suffix(&marker).expect("truncate marker");
-        assert_eq!(prefix.len(), MAX_FILE_REF_BYTES - 1);
+        assert_eq!(prefix.len(), TEST_MAX_BYTES - 1);
         assert!(prefix.chars().all(|c| c == 'a'));
+    }
+
+    fn test_sandbox(dir: &std::path::Path) -> forge_tools::sandbox::Sandbox {
+        forge_tools::sandbox::Sandbox::new(
+            vec![dir.to_path_buf()],
+            vec![
+                "**/.env".to_string(),
+                "**/.env.*".to_string(),
+                "**/*.pem".to_string(),
+            ],
+            false,
+        )
+        .unwrap()
+    }
+
+    fn test_file_cache() -> std::sync::Arc<tokio::sync::Mutex<forge_tools::ToolFileCache>> {
+        std::sync::Arc::new(tokio::sync::Mutex::new(
+            forge_tools::ToolFileCache::default(),
+        ))
     }
 
     #[test]
@@ -795,13 +876,69 @@ mod tests {
         let path = dir.path().join("My File.md");
         std::fs::write(&path, "hello world").expect("write file");
 
+        let sandbox = test_sandbox(dir.path());
+        let cache = test_file_cache();
+
         let raw_path = path.to_string_lossy().to_string();
         let escaped_path = raw_path.replace('\\', "\\\\").replace('"', "\\\"");
         let input = format!(r#"inspect @"{escaped_path}""#);
 
-        let expanded = expand_file_references(input.clone());
-        assert!(expanded.contains(&format!("`{raw_path}`:")));
-        assert!(expanded.contains("hello world"));
-        assert!(expanded.ends_with(&input));
+        let result = expand_file_references(&input, &sandbox, TEST_MAX_BYTES, &cache);
+        assert!(result.denied.is_empty());
+        assert!(result.failed.is_empty());
+        assert_eq!(result.file_sections.len(), 1);
+        assert!(result.file_sections[0].contains("hello world"));
+    }
+
+    #[test]
+    fn expand_file_references_denies_env_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join(".env"), "SECRET=123").expect("write file");
+
+        let sandbox = test_sandbox(dir.path());
+        let cache = test_file_cache();
+
+        let env_path = dir.path().join(".env");
+        let raw_path = env_path.to_string_lossy().to_string();
+        let escaped_path = raw_path.replace('\\', "\\\\").replace('"', "\\\"");
+        let input = format!(r#"read @"{escaped_path}""#);
+
+        let result = expand_file_references(&input, &sandbox, TEST_MAX_BYTES, &cache);
+        assert_eq!(result.denied.len(), 1);
+        assert!(result.file_sections.is_empty());
+    }
+
+    #[test]
+    fn expand_file_references_denies_parent_traversal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sandbox = test_sandbox(dir.path());
+        let cache = test_file_cache();
+
+        let input = "@../../../etc/passwd";
+        let result = expand_file_references(input, &sandbox, TEST_MAX_BYTES, &cache);
+        assert_eq!(result.denied.len(), 1);
+        assert!(result.file_sections.is_empty());
+    }
+
+    #[test]
+    fn expand_file_references_populates_file_cache() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cached.rs");
+        std::fs::write(&path, "fn main() {}\n").expect("write file");
+
+        let sandbox = test_sandbox(dir.path());
+        let cache = test_file_cache();
+
+        let raw_path = path.to_string_lossy().to_string();
+        let escaped_path = raw_path.replace('\\', "\\\\").replace('"', "\\\"");
+        let input = format!(r#"read @"{escaped_path}""#);
+
+        let result = expand_file_references(&input, &sandbox, TEST_MAX_BYTES, &cache);
+        assert!(result.denied.is_empty());
+        assert!(result.failed.is_empty());
+        assert_eq!(result.file_sections.len(), 1);
+
+        let cache_guard = cache.try_lock().unwrap();
+        assert!(!cache_guard.is_empty());
     }
 }
