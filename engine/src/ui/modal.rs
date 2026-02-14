@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use super::animation::normalized_progress;
+use super::animation::EffectTimer;
 
 /// The kind of modal animation effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,8 +16,7 @@ pub enum ModalEffectKind {
 #[derive(Debug, Clone)]
 pub struct ModalEffect {
     kind: ModalEffectKind,
-    elapsed: Duration,
-    duration: Duration,
+    timer: EffectTimer,
 }
 
 impl ModalEffect {
@@ -25,8 +24,7 @@ impl ModalEffect {
     pub fn pop_scale(duration: Duration) -> Self {
         Self {
             kind: ModalEffectKind::PopScale,
-            elapsed: Duration::ZERO,
-            duration,
+            timer: EffectTimer::new(duration),
         }
     }
 
@@ -34,8 +32,7 @@ impl ModalEffect {
     pub fn slide_up(duration: Duration) -> Self {
         Self {
             kind: ModalEffectKind::SlideUp,
-            elapsed: Duration::ZERO,
-            duration,
+            timer: EffectTimer::new(duration),
         }
     }
 
@@ -43,23 +40,22 @@ impl ModalEffect {
     pub fn shake(duration: Duration) -> Self {
         Self {
             kind: ModalEffectKind::Shake,
-            elapsed: Duration::ZERO,
-            duration,
+            timer: EffectTimer::new(duration),
         }
     }
 
     pub fn advance(&mut self, delta: Duration) {
-        self.elapsed = self.elapsed.saturating_add(delta);
+        self.timer.advance(delta);
     }
 
     #[must_use]
     pub fn progress(&self) -> f32 {
-        normalized_progress(self.elapsed, self.duration)
+        self.timer.progress()
     }
 
     #[must_use]
     pub fn is_finished(&self) -> bool {
-        self.elapsed >= self.duration
+        self.timer.is_finished()
     }
 
     #[must_use]

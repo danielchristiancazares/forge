@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use super::animation::normalized_progress;
+use super::animation::EffectTimer;
 
 /// The kind of panel animation effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,8 +15,7 @@ pub enum PanelEffectKind {
 #[derive(Debug, Clone)]
 pub struct PanelEffect {
     kind: PanelEffectKind,
-    elapsed: Duration,
-    duration: Duration,
+    timer: EffectTimer,
 }
 
 impl PanelEffect {
@@ -24,8 +23,7 @@ impl PanelEffect {
     pub fn slide_in_right(duration: Duration) -> Self {
         Self {
             kind: PanelEffectKind::SlideInRight,
-            elapsed: Duration::ZERO,
-            duration,
+            timer: EffectTimer::new(duration),
         }
     }
 
@@ -33,23 +31,22 @@ impl PanelEffect {
     pub fn slide_out_right(duration: Duration) -> Self {
         Self {
             kind: PanelEffectKind::SlideOutRight,
-            elapsed: Duration::ZERO,
-            duration,
+            timer: EffectTimer::new(duration),
         }
     }
 
     pub fn advance(&mut self, delta: Duration) {
-        self.elapsed = self.elapsed.saturating_add(delta);
+        self.timer.advance(delta);
     }
 
     #[must_use]
     pub fn progress(&self) -> f32 {
-        normalized_progress(self.elapsed, self.duration)
+        self.timer.progress()
     }
 
     #[must_use]
     pub fn is_finished(&self) -> bool {
-        self.elapsed >= self.duration
+        self.timer.is_finished()
     }
 
     #[must_use]
