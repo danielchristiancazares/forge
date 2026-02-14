@@ -29,7 +29,7 @@ impl ToolExecutor for GeminiGateTool {
             "properties": {
                 "phase": {
                     "type": "integer",
-                    "description": "The phase number to enter (2 or 3)"
+                    "description": "The phase number to enter (2, 3, or 4)"
                 }
             },
             "required": ["phase"]

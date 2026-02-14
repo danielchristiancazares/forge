@@ -39,3 +39,5 @@ DIGEST.md
 
 # Test artifacts
 /engine/forge-test/history.json
+
+forge-threat-model.md
