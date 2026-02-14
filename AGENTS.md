@@ -57,6 +57,8 @@ just cov                               # Coverage report
 
 ## Commit Workflow
 
+- Never bypass GPG signing.
+
 ```
 just verify && just fix
 git add -A
