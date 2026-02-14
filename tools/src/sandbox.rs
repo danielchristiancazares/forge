@@ -59,10 +59,11 @@ pub struct Sandbox {
 fn strip_extended_prefix(path: &Path) -> &Path {
     #[cfg(windows)]
     {
-        if let Some(s) = path.as_os_str().to_str()
-            && let Some(stripped) = s.strip_prefix(r"\\?\")
-        {
-            return Path::new(stripped);
+        if let Some(s) = path.as_os_str().to_str() {
+            let stripped = forge_types::strip_windows_extended_prefix(s);
+            if stripped.len() != s.len() {
+                return Path::new(stripped);
+            }
         }
     }
     path
@@ -301,6 +302,16 @@ impl Sandbox {
         }
         None
     }
+
+    /// Check if a path matches any deny pattern (lightweight, no canonicalization).
+    ///
+    /// Suitable for filtering large scans. Does NOT validate unsafe chars,
+    /// NTFS ADS, traversal, or allowed roots — only glob deny patterns.
+    /// For full validation, use `resolve_path()`.
+    #[must_use]
+    pub fn is_path_denied(&self, path: &Path) -> bool {
+        self.matches_denied_pattern(path).is_some()
+    }
 }
 
 /// Canonicalize a path that should exist, or whose parent must exist.
@@ -464,64 +475,17 @@ fn contains_unsafe_path_chars(input: &str) -> bool {
 
 /// Check if a character is unsafe for filesystem path use.
 ///
-/// Blocks control characters, Bidi overrides, AND the full steganographic
-/// character set. Invisible characters in paths cause platform-dependent
-/// behavior and can be used to bypass security checks or confuse users.
+/// Rejects C0/C1 control characters, DEL, and the full steganographic
+/// character set from [`forge_types::is_steganographic_char`]. Invisible
+/// characters in paths cause platform-dependent behavior and can bypass
+/// security checks or confuse users.
 ///
-/// This is intentionally a superset of the Bidi-only check that was here
-/// previously. The steganographic set mirrors `is_steganographic()` in
-/// `types/src/sanitize.rs` but is maintained separately because path
-/// validation has different semantics (reject vs strip).
+/// The steganographic predicate is composed (not copied) from `forge-types`
+/// per IFA §7.1 — single point of encoding for shared invariant logic.
 fn is_unsafe_path_char(c: char) -> bool {
-    matches!(
-        c,
-        // === C0/C1 control characters and DEL ===
-        '\u{0000}'..='\u{001f}'
-            | '\u{007f}'
-            | '\u{0080}'..='\u{009f}'
-
-        // === Bidi controls (Trojan Source) ===
-            | '\u{061c}'     // Arabic Letter Mark
-            | '\u{200e}'     // LRM
-            | '\u{200f}'     // RLM
-            | '\u{202a}'..='\u{202e}'  // LRE, RLE, PDF, LRO, RLO
-
-        // === Steganographic / invisible characters ===
-
-        // Zero-width characters — binary steganography carriers
-            | '\u{200b}'..='\u{200d}' // ZWSP, ZWNJ, ZWJ
-
-        // Word joiner, invisible math operators, Bidi isolates
-            | '\u{2060}'..='\u{2069}'
-
-        // Zero Width No-Break Space (BOM as non-leading)
-            | '\u{feff}'
-
-        // Unicode Tags block — ASCII smuggling vector
-            | '\u{e0000}'..='\u{e007f}'
-
-        // Variation selectors — steganographic encoding via glyph selection
-            | '\u{fe00}'..='\u{fe0f}'     // VS1–VS16
-            | '\u{e0100}'..='\u{e01ef}'   // VS17–VS256 (Supplementary)
-
-        // Soft hyphen — token-splitting attacks
-            | '\u{00ad}'
-
-        // Combining grapheme joiner — token boundary manipulation
-            | '\u{034f}'
-
-        // Interlinear annotation controls (hidden text layers)
-            | '\u{fff9}'..='\u{fffb}'
-
-        // Invisible filler characters
-            | '\u{115f}'  // Hangul Choseong Filler
-            | '\u{1160}'  // Hangul Jungseong Filler
-            | '\u{3164}'  // Hangul Filler
-            | '\u{ffa0}'  // Halfwidth Hangul Filler
-            | '\u{180e}'  // Mongolian Vowel Separator
-            | '\u{17b4}'  // Khmer Vowel Inherent Aq
-            | '\u{17b5}'  // Khmer Vowel Inherent Aa
-    )
+    // C0/C1 control characters and DEL (path-specific; not in the steganographic set)
+    matches!(c, '\u{0000}'..='\u{001f}' | '\u{007f}' | '\u{0080}'..='\u{009f}')
+        || forge_types::is_steganographic_char(c)
 }
 
 #[cfg(test)]
@@ -938,5 +902,19 @@ mod tests {
 
         let result = sandbox.resolve_path("sub/deep.log", temp.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn is_path_denied_matches_deny_pattern() {
+        let dir = tempdir().unwrap();
+        let sandbox = Sandbox::new(
+            vec![dir.path().to_path_buf()],
+            vec!["**/.env".to_string()],
+            false,
+        )
+        .unwrap();
+
+        assert!(sandbox.is_path_denied(Path::new("subdir/.env")));
+        assert!(!sandbox.is_path_denied(Path::new("allowed.txt")));
     }
 }
