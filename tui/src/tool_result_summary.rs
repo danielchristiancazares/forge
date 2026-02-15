@@ -86,7 +86,6 @@ impl ToolKind {
     }
 }
 
-/// Determines how to render a tool result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ToolResultRender {
     /// Show full output (never distill).
@@ -98,8 +97,6 @@ pub(crate) enum ToolResultRender {
     Summary(String),
 }
 
-/// Decide how to render a tool result based on tool type and content.
-///
 /// Write/Edit always return `Full` (never Distilled).
 /// Other tools may return `Summary` or `Full` based on content.
 pub(crate) fn tool_result_render_decision(
@@ -127,7 +124,6 @@ pub(crate) fn tool_result_render_decision(
     ToolResultRender::Summary(summary)
 }
 
-/// Check if content looks like a unified diff (Edit output, git diff, etc).
 fn looks_like_diff(content: &str) -> bool {
     content.lines().take(10).any(|line| {
         line.starts_with("diff --git")

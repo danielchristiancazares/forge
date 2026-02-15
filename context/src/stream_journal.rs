@@ -430,7 +430,6 @@ impl StreamJournal {
         Self::initialize(db)
     }
 
-    /// Initialize database with schema and determine current state
     fn initialize(db: Connection) -> Result<Self> {
         // Enable WAL mode for better concurrent performance
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
@@ -736,7 +735,6 @@ impl StreamJournal {
         Ok(())
     }
 
-    /// Check for and recover incomplete streams after a crash
     ///
     /// Looks for recoverable entries in the journal (unsealed OR sealed but uncommitted)
     /// and reconstructs the partial stream state.
@@ -970,15 +968,12 @@ fn stats_for_db(db: &Connection) -> Result<JournalStats> {
 pub struct JournalStats {
     /// Total number of entries
     pub total_entries: u64,
-    /// Number of sealed entries
     pub sealed_entries: u64,
-    /// Number of unsealed entries
     pub unsealed_entries: u64,
     /// Current (last allocated) step ID
     pub current_step_id: StepId,
 }
 
-/// Parse ISO 8601 string to `SystemTime` (for tests)
 #[cfg(test)]
 fn iso8601_to_system_time(s: &str) -> Option<SystemTime> {
     // Parse format: YYYY-MM-DDTHH:MM:SS.mmmZ

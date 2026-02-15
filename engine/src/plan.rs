@@ -98,8 +98,6 @@ impl App {
         }
     }
 
-    // ── create ──────────────────────────────────────────────────
-
     fn plan_create(&mut self, call: &ToolCall) -> PlanCallResult {
         if self.plan_state.is_active() {
             return PlanCallResult::Resolved(ToolResult::error(
@@ -147,8 +145,6 @@ impl App {
             kind: PlanApprovalKind::Create,
         }
     }
-
-    // ── advance ─────────────────────────────────────────────────
 
     fn plan_advance(&mut self, call: &ToolCall) -> ToolResult {
         let (step_id, outcome) = match parse_step_id_and_text(call, "outcome") {
@@ -245,8 +241,6 @@ impl App {
         )
     }
 
-    // ── skip ────────────────────────────────────────────────────
-
     fn plan_skip(&mut self, call: &ToolCall) -> ToolResult {
         let (step_id, reason) = match parse_step_id_and_text(call, "reason") {
             Ok(v) => v,
@@ -317,8 +311,6 @@ impl App {
         )
     }
 
-    // ── fail ────────────────────────────────────────────────────
-
     fn plan_fail(&mut self, call: &ToolCall) -> ToolResult {
         let plan = match &mut self.plan_state {
             PlanState::Active(plan) => plan,
@@ -373,8 +365,6 @@ impl App {
             format!("Step {step_id} marked as failed. Awaiting user decision.\n\n{rendered}"),
         )
     }
-
-    // ── edit ────────────────────────────────────────────────────
 
     fn plan_edit(&mut self, call: &ToolCall) -> PlanCallResult {
         let plan = match &mut self.plan_state {
@@ -437,8 +427,6 @@ impl App {
         }
     }
 
-    // ── status ──────────────────────────────────────────────────
-
     fn plan_status(&self, call: &ToolCall) -> ToolResult {
         let content = match &self.plan_state {
             PlanState::Inactive => "No active plan.".to_string(),
@@ -450,8 +438,6 @@ impl App {
 
         ToolResult::success(&call.id, PLAN_TOOL_NAME, content)
     }
-
-    // ── plan approval resolution ────────────────────────────────
 
     pub(crate) fn resolve_plan_approval(&mut self, approved: bool) {
         use crate::state::{
@@ -569,8 +555,6 @@ impl App {
         self.state = OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
     }
 }
-
-// ── Helpers ─────────────────────────────────────────────────
 
 /// Parse `step_id` and a required text field from tool call arguments.
 fn parse_step_id_and_text(

@@ -29,33 +29,27 @@ pub struct InsertToken(());
 #[derive(Debug)]
 pub struct CommandToken(());
 
-/// Mode wrapper for safe insert operations.
 pub struct InsertMode<'a> {
     pub(crate) app: &'a mut App,
 }
 
-/// Mode wrapper for safe command operations.
 pub struct CommandMode<'a> {
     pub(crate) app: &'a mut App,
 }
 
 impl App {
-    /// Get proof token if currently in Insert mode.
     pub fn insert_token(&self) -> Option<InsertToken> {
         matches!(&self.input, InputState::Insert(_)).then_some(InsertToken(()))
     }
 
-    /// Get proof token if currently in Command mode.
     pub fn command_token(&self) -> Option<CommandToken> {
         matches!(&self.input, InputState::Command { .. }).then_some(CommandToken(()))
     }
 
-    /// Get insert mode wrapper (requires proof token).
     pub fn insert_mode(&mut self, _token: InsertToken) -> InsertMode<'_> {
         InsertMode { app: self }
     }
 
-    /// Get command mode wrapper (requires proof token).
     pub fn command_mode(&mut self, _token: CommandToken) -> CommandMode<'_> {
         CommandMode { app: self }
     }

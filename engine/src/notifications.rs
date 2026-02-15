@@ -40,8 +40,6 @@ pub enum SystemNotification {
 }
 
 impl SystemNotification {
-    /// Format the notification as a human-readable string.
-    ///
     /// All notifications are prefixed with `[System: ...]` to clearly mark
     /// them as system-level messages distinct from user or model content.
     #[must_use]
@@ -60,8 +58,6 @@ impl SystemNotification {
     }
 }
 
-/// Queue for pending system notifications.
-///
 /// Notifications are accumulated here and drained at the start of each
 /// API request, then injected as an assistant message.
 #[derive(Debug, Default)]

@@ -437,7 +437,6 @@ fn contains_unsafe_path_chars(input: &str) -> bool {
     input.chars().any(is_unsafe_path_char)
 }
 
-/// Check if a character is unsafe for filesystem path use.
 ///
 /// Rejects C0/C1 control characters, DEL, and the full steganographic
 /// character set from [`forge_types::is_steganographic_char`]. Invisible

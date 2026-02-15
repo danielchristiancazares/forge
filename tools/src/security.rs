@@ -85,7 +85,6 @@ impl SecretRedactor {
         Self { secrets, automaton }
     }
 
-    /// Redact all known secret values from input.
     ///
     /// Returns the input with all detected secrets replaced by `[REDACTED]`.
     #[must_use]
@@ -119,14 +118,12 @@ impl SecretRedactor {
         )
     }
 
-    /// Returns true if any secrets were detected in the environment.
     #[cfg(test)]
     #[must_use]
     pub fn has_secrets(&self) -> bool {
         !self.secrets.is_empty()
     }
 
-    /// Returns the number of unique secrets detected.
     #[cfg(test)]
     #[must_use]
     pub fn secret_count(&self) -> usize {

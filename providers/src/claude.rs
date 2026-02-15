@@ -272,10 +272,6 @@ fn build_request_body(input: ClaudeRequestBodyInput<'_>) -> serde_json::Value {
     serde_json::Value::Object(body)
 }
 
-// ========================================================================
-// Claude SSE Parser
-// ========================================================================
-
 use crate::sse_types::claude as typed;
 
 #[derive(Default)]

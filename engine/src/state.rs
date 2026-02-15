@@ -333,7 +333,7 @@ pub(crate) enum DistillationState {
 }
 
 impl DistillationState {
-    /// Get the task reference (available in both states).
+    /// Available in both variants.
     pub(crate) fn task(&self) -> &DistillationTask {
         match self {
             DistillationState::Running(task)
@@ -442,7 +442,6 @@ impl ApprovalState {
         }
     }
 
-    /// Check if in deny confirmation phase.
     pub(crate) fn is_confirming_deny(&self) -> bool {
         matches!(self, Self::ConfirmingDeny(_))
     }

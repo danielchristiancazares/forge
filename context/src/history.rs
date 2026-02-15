@@ -372,7 +372,6 @@ impl FullHistory {
         Some(entry.message().clone())
     }
 
-    /// Set the compaction point to the current end of history and store the summary.
     /// All existing entries become display-only. New entries after this point
     /// are API-visible, prefixed by the summary.
     pub fn compact(&mut self, summary: CompactionSummary) {

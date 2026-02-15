@@ -85,7 +85,7 @@ pub struct RetrievalResult {
 /// Extraction prompt loaded from context/assets/contextinfinity_extraction.md
 const EXTRACTION_PROMPT: &str = include_str!("../assets/contextinfinity_extraction.md");
 
-/// Build the extraction prompt for post-turn fact distillation.
+/// For post-turn fact distillation.
 fn build_extraction_prompt(user_message: &str, assistant_message: &str) -> (String, String) {
     let user_input =
         format!("USER MESSAGE:\n{user_message}\n\nASSISTANT RESPONSE:\n{assistant_message}");
@@ -96,7 +96,7 @@ fn build_extraction_prompt(user_message: &str, assistant_message: &str) -> (Stri
 /// Retrieval prompt loaded from context/assets/contextinfinity_retrieval.md
 const RETRIEVAL_PROMPT: &str = include_str!("../assets/contextinfinity_retrieval.md");
 
-/// Build the retrieval prompt for pre-flight relevance scoring.
+/// For pre-flight relevance scoring.
 fn build_retrieval_prompt(user_query: &str, available_facts: &[Fact]) -> (String, String) {
     let mut facts_text = String::new();
     for (i, fact) in available_facts.iter().enumerate() {
@@ -284,7 +284,7 @@ use std::path::Path;
 
 /// The Librarian - manages fact extraction, storage, and retrieval.
 ///
-/// This struct provides the high-level API for Context Infinity's
+/// This struct provides the high-level API for Long-term Memory's
 /// intelligent context management. It should be owned by the engine
 /// and called at appropriate points in the turn lifecycle.
 pub struct Librarian {
@@ -324,9 +324,7 @@ impl Librarian {
         self.store.fact_count()
     }
 
-    /// Get the API key for direct API calls.
-    ///
-    /// This is used when callers need to make async API calls without
+    /// Used when callers need to make async API calls without
     /// holding the Librarian lock (to avoid Send/Sync issues with SQLite).
     #[must_use]
     pub fn api_key(&self) -> &str {
@@ -372,7 +370,6 @@ impl Librarian {
     /// Pre-flight: Retrieve relevant facts for a user query.
     ///
     /// Call this BEFORE building context for an API call.
-    /// Returns facts to inject into the context.
     pub async fn retrieve_context(&self, user_query: &str) -> Result<RetrievalResult> {
         let stored = self.store.get_all_facts()?;
         if stored.is_empty() {
@@ -413,7 +410,7 @@ impl Librarian {
         Ok(())
     }
 
-    /// Get all stored facts (for debugging/inspection).
+    /// For debugging/inspection.
     pub fn all_facts(&self) -> Result<Vec<Fact>> {
         let stored = self.store.get_all_facts()?;
         Ok(stored.into_iter().map(|sf| sf.fact).collect())
@@ -427,7 +424,7 @@ impl Librarian {
 
     /// Search facts by keyword with staleness information.
     ///
-    /// Returns facts along with information about which source files
+    ///
     /// have changed since the facts were extracted.
     pub fn search_with_staleness(
         &self,

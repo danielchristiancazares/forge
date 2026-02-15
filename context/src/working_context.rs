@@ -108,7 +108,6 @@ pub struct ContextUsage {
     pub used_tokens: u32,
     /// Token budget for current model.
     pub budget_tokens: u32,
-    /// Whether the context has been compacted.
     pub compacted: bool,
 }
 

@@ -121,7 +121,6 @@ fn test_app() -> App {
     }
 }
 
-/// Get the last notification text from the display (for test assertions).
 fn last_notification(app: &App) -> Option<&str> {
     for item in app.display.iter().rev() {
         if let DisplayItem::Local(msg) = item
@@ -1728,8 +1727,6 @@ fn tool_loop_max_iterations_short_circuits() {
     assert!(matches!(last.message(), Message::ToolResult(_)));
     assert_eq!(last.message().content(), "Max tool iterations reached");
 }
-
-// ── Plan approval tests ─────────────────────────────────────
 
 fn plan_create_call() -> ToolCall {
     ToolCall::new(

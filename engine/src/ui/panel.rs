@@ -4,14 +4,12 @@ use std::time::Duration;
 
 use super::animation::EffectTimer;
 
-/// The kind of panel animation effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelEffectKind {
     SlideInRight,
     SlideOutRight,
 }
 
-/// Animation state for the files panel.
 #[derive(Debug, Clone)]
 pub struct PanelEffect {
     kind: PanelEffectKind,

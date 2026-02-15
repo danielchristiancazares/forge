@@ -13,10 +13,6 @@ use uuid::Uuid;
 
 const API_BASE: &str = crate::GEMINI_API_BASE_URL;
 
-// ============================================================================
-// Context Caching Types
-// ============================================================================
-
 /// Active Gemini cache reference.
 ///
 /// Gemini uses explicit caching where a cache object is created via API
@@ -49,7 +45,6 @@ impl GeminiCache {
 /// Configuration for Gemini caching.
 #[derive(Debug, Clone, Default)]
 pub struct GeminiCacheConfig {
-    /// Whether caching is enabled
     pub enabled: bool,
     /// TTL in seconds for cached content (default: 3600 = 1 hour)
     pub ttl_seconds: u32,
@@ -76,7 +71,6 @@ fn hash_tools(tools: Option<&[ToolDefinition]>) -> u64 {
     hasher.finish()
 }
 
-/// Check if a prompt is large enough to cache.
 ///
 /// Gemini requires minimum token counts:
 /// - Gemini 3 Pro: 4,096 tokens
@@ -87,7 +81,6 @@ fn should_cache_prompt(prompt: &str, model: &str) -> bool {
     prompt.len() / 4 >= min_tokens
 }
 
-/// Create a cached content object with the system prompt and tools.
 ///
 /// This calls the Gemini cachedContents API to create a persistent cache
 /// that can be referenced in subsequent requests.
@@ -168,7 +161,6 @@ pub async fn create_cache(
     })
 }
 
-/// Build a content part for Gemini API.
 fn text_part(text: &str) -> Value {
     json!({ "text": text })
 }
@@ -218,8 +210,6 @@ fn gemini_tools_payload(tools: &[ToolDefinition]) -> Value {
     }])
 }
 
-/// Build the request body for Gemini API.
-///
 /// Note: Gemini API uses mixed casing:
 /// - `system_instruction` (snake_case)
 /// - `generationConfig` (camelCase)
@@ -362,10 +352,6 @@ fn build_request_body(
 
     Value::Object(body)
 }
-
-// ========================================================================
-// Gemini SSE Parser
-// ========================================================================
 
 use crate::sse_types::gemini as typed;
 

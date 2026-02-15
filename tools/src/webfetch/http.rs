@@ -138,7 +138,6 @@ pub async fn validate_url(
     }
 }
 
-/// Validate URL scheme is http or https.
 fn validate_scheme(url: &Url) -> Result<(), WebFetchError> {
     match url.scheme() {
         "http" | "https" => Ok(()),
@@ -151,7 +150,6 @@ fn validate_scheme(url: &Url) -> Result<(), WebFetchError> {
     }
 }
 
-/// Validate numeric host forms per FR-WF-04b.
 fn validate_numeric_host(raw_url: &str, url: &Url) -> Result<(), WebFetchError> {
     if !matches!(url.host(), Some(Host::Ipv4(_))) {
         return Ok(());
@@ -177,7 +175,6 @@ fn validate_numeric_host(raw_url: &str, url: &Url) -> Result<(), WebFetchError> 
     Ok(())
 }
 
-/// Resolve hostname and validate IPs against SSRF blocklist.
 async fn resolve_and_validate(
     host: &str,
     port: u16,
@@ -229,7 +226,6 @@ async fn resolve_and_validate(
     Ok(allowed)
 }
 
-/// Fetch a URL via HTTP.
 ///
 /// Implements FR-WF-10 through FR-WF-10h:
 /// - Redirect handling with SSRF validation at each hop
@@ -471,7 +467,6 @@ pub async fn fetch(
     }
 }
 
-/// HTTP response data.
 #[derive(Debug)]
 pub struct HttpResponse {
     /// Final URL after redirects.

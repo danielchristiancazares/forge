@@ -18,7 +18,6 @@ use ratatui::{
 
 use crate::theme::Palette;
 
-/// Render tool result content into ratatui lines, applying diff-aware coloring.
 #[must_use]
 pub fn render_tool_result_lines(
     content: &str,
@@ -95,7 +94,6 @@ fn diff_style_for_line(line: &str, base_style: Style, palette: &Palette) -> Styl
     base_style
 }
 
-/// Extract the diff marker from an LP1 line-numbered diff line.
 ///
 /// Format: `{digits...} {marker}{text}` where marker is `-` or `+`.
 /// Context lines use `{digits...}  {text}` (two spaces, no marker).

@@ -15,6 +15,7 @@ When writing instructions or scripts, avoid assuming a single shell. If you need
 
 - Run `just verify` after every code change (runs fmt + clippy -D warnings + test)
 - Run `just fix` after editing files (normalizes CRLF → LF in *.rs and *.md)
+- Avoid `cargo check` or `cargo test` since `just verify` runs them implicitly unless as a temporary workaround.
 - Never add trivial comments. Do not restate the obvious.
 - Never decrease test coverage. Check with `cargo cov`.
 - Update `docs/` when changing any public API.

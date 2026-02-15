@@ -509,7 +509,6 @@ impl Provider {
         Ok(PredefinedModel::from_model_id(model)?.provider())
     }
 
-    /// Get all available providers.
     #[must_use]
     pub fn all() -> &'static [Provider] {
         &[Provider::Claude, Provider::OpenAI, Provider::Gemini]
@@ -843,19 +842,16 @@ impl std::fmt::Debug for ApiKey {
 }
 
 impl ApiKey {
-    /// Construct a Claude API key.
     #[must_use]
     pub fn claude(key: impl Into<String>) -> Self {
         Self::Claude(SecretString::new(key.into()))
     }
 
-    /// Construct an OpenAI API key.
     #[must_use]
     pub fn openai(key: impl Into<String>) -> Self {
         Self::OpenAI(SecretString::new(key.into()))
     }
 
-    /// Construct a Gemini API key.
     #[must_use]
     pub fn gemini(key: impl Into<String>) -> Self {
         Self::Gemini(SecretString::new(key.into()))
@@ -1179,13 +1175,11 @@ pub enum OutputLimits {
 }
 
 impl OutputLimits {
-    /// Create output limits without thinking.
     #[must_use]
     pub const fn new(max_output_tokens: u32) -> Self {
         Self::Standard { max_output_tokens }
     }
 
-    /// Create output limits with thinking enabled.
     ///
     /// Returns an error if `thinking_budget >= max_output_tokens` or `thinking_budget < 1024`.
     pub fn with_thinking(
@@ -1631,7 +1625,6 @@ pub struct ToolResult {
     pub tool_name: String,
     /// The result content (typically a string or JSON).
     pub content: String,
-    /// Whether the tool execution resulted in an error.
     pub is_error: bool,
 }
 
@@ -1989,8 +1982,6 @@ mod tests {
         assert!(NonEmptyString::new("   ").is_err());
         assert!(NonEmptyString::new("hello").is_ok());
     }
-
-    // --- PersistableContent tests ---
 
     #[test]
     fn persistable_content_log_spoofing_normalized() {

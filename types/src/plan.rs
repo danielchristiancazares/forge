@@ -189,7 +189,6 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// Construct a validated plan from input phases.
     ///
     /// Step IDs are auto-assigned (monotonically increasing from 1).
     /// This is the **only** public constructor (Authority Boundary).
@@ -511,7 +510,6 @@ pub enum PlanState {
 }
 
 impl PlanState {
-    /// Get a reference to the plan, if one exists.
     #[must_use]
     pub fn plan(&self) -> Option<&Plan> {
         match self {
@@ -520,7 +518,6 @@ impl PlanState {
         }
     }
 
-    /// Get a mutable reference to the plan, if one exists.
     pub fn plan_mut(&mut self) -> Option<&mut Plan> {
         match self {
             PlanState::Inactive => None,
@@ -528,7 +525,6 @@ impl PlanState {
         }
     }
 
-    /// Whether a plan is active (user-approved and enforced).
     #[must_use]
     pub fn is_active(&self) -> bool {
         matches!(self, PlanState::Active(_))

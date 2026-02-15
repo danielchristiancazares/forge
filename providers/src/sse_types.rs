@@ -15,10 +15,6 @@
 //! - Runtime `unwrap_or()` sentinel values
 //! - Deep `if let Some(...)` chains
 
-// ============================================================================
-// Claude (Anthropic) SSE Types
-// ============================================================================
-
 pub mod claude {
     use serde::Deserialize;
 
@@ -390,10 +386,6 @@ pub mod claude {
     }
 }
 
-// ============================================================================
-// OpenAI SSE Types
-// ============================================================================
-
 pub mod openai {
     use serde::Deserialize;
 
@@ -740,10 +732,6 @@ pub mod openai {
     }
 }
 
-// ============================================================================
-// Gemini SSE Types
-// ============================================================================
-
 pub mod gemini {
     use serde::Deserialize;
 
@@ -811,7 +799,6 @@ pub mod gemini {
     }
 
     impl ErrorInfo {
-        /// Get error message with fallback.
         #[must_use]
         pub fn message_or_default(&self) -> &str {
             self.message.as_deref().unwrap_or("Unknown error")
@@ -877,7 +864,6 @@ pub mod gemini {
             }
         }
 
-        /// Returns true if this indicates successful completion.
         #[must_use]
         pub fn is_success(self) -> bool {
             matches!(self, Self::Stop | Self::MaxTokens)

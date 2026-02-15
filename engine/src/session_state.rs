@@ -42,7 +42,6 @@ impl SessionChangeLog {
         }
     }
 
-    /// Returns true if no files have been created or modified.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.created.is_empty() && self.modified.is_empty()
@@ -93,10 +92,8 @@ impl SessionState {
     /// Current schema version.
     pub const CURRENT_VERSION: u32 = 2;
 
-    /// Filename for the session state file.
     pub const FILENAME: &'static str = "session.json";
 
-    /// Create a new session state with current version.
     pub fn new(input: InputState, history: InputHistory, modified_files: SessionChangeLog) -> Self {
         Self {
             input: Some(input),
@@ -106,7 +103,6 @@ impl SessionState {
         }
     }
 
-    /// Check if this session state is compatible with the current version.
     pub fn is_compatible(&self) -> bool {
         self.version == Self::CURRENT_VERSION
     }

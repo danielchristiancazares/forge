@@ -48,7 +48,6 @@ pub struct FactWithStaleness {
 }
 
 impl FactWithStaleness {
-    /// Returns true if any source files have changed.
     #[must_use]
     pub fn is_stale(&self) -> bool {
         !self.stale_sources.is_empty()
@@ -177,7 +176,6 @@ impl FactStore {
         Ok(ids)
     }
 
-    /// Get all stored facts.
     pub fn get_all_facts(&self) -> Result<Vec<StoredFact>> {
         let mut stmt = self
             .db
@@ -230,7 +228,6 @@ impl FactStore {
         Ok(facts)
     }
 
-    /// Get entities for a specific fact.
     fn get_entities_for_fact(&self, fact_id: FactId) -> Result<Vec<String>> {
         let mut stmt = self
             .db
@@ -309,8 +306,6 @@ impl FactStore {
             .unwrap_or(0) as usize
     }
 
-    /// Query the highest turn number stored in the facts table.
-    /// Returns 0 if no facts exist.
     pub fn max_turn_number(&self) -> Result<u64> {
         let max: i64 = self
             .db
@@ -436,7 +431,6 @@ impl FactStore {
         Ok(())
     }
 
-    /// Get source files for a specific fact.
     pub fn get_sources_for_fact(&self, fact_id: FactId) -> Result<Vec<FactSource>> {
         let mut stmt = self
             .db

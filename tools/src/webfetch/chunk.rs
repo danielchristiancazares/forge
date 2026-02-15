@@ -165,7 +165,6 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
     blocks
 }
 
-/// Parse ATX heading: returns (level, `normalized_text`, `raw_line`).
 fn parse_atx_heading(line: &str) -> Option<(u8, String, String)> {
     let trimmed = line.trim_start();
 
@@ -201,7 +200,6 @@ fn parse_atx_heading(line: &str) -> Option<(u8, String, String)> {
     Some((level as u8, normalize_whitespace(text), line.to_string()))
 }
 
-/// Parse code fence start: returns (`fence_pattern`, language).
 fn parse_fence_start(line: &str) -> Option<(String, String)> {
     let trimmed = line.trim_start();
 
@@ -226,7 +224,6 @@ fn parse_fence_start(line: &str) -> Option<(String, String)> {
     Some((fence, language.to_string()))
 }
 
-/// Check if line closes a code fence.
 fn is_fence_close(line: &str, opening_fence: &str) -> bool {
     let trimmed = line.trim();
     let fence_char = opening_fence.chars().next().unwrap_or('`');
@@ -247,7 +244,7 @@ fn is_fence_close(line: &str, opening_fence: &str) -> bool {
     trimmed[fence_len..].trim().is_empty()
 }
 
-/// Check if line starts a list item.
+///
 /// Matches: `^\s{0,3}(?:[-+*]|\d+[.)])\s+`
 fn is_list_item_start(line: &str) -> bool {
     let trimmed = line.trim_start();
@@ -293,7 +290,6 @@ fn is_list_item_start(line: &str) -> bool {
     false
 }
 
-/// Check if line is a list continuation (indented content).
 fn is_list_continuation(line: &str) -> bool {
     // Not blank, not a new list item, but indented
     if line.trim().is_empty() {
@@ -307,12 +303,10 @@ fn is_list_continuation(line: &str) -> bool {
     (leading >= 2 || line.starts_with('\t')) && !is_list_item_start(line)
 }
 
-/// Normalize whitespace: trim and collapse internal whitespace.
 fn normalize_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Chunk Markdown content by token budget.
 ///
 /// Implements FR-WF-14 through FR-WF-15:
 /// - Block-based splitting
@@ -498,12 +492,10 @@ pub fn chunk(markdown: &str, max_tokens: u32) -> Vec<FetchChunk> {
     chunks
 }
 
-/// Check if text has non-whitespace content.
 fn has_content(text: &str) -> bool {
     text.chars().any(|c| !c.is_whitespace())
 }
 
-/// Append a block to current text with proper separation.
 fn append_block(current: &mut String, block: &str) {
     if !current.is_empty() && !current.ends_with('\n') {
         current.push('\n');
@@ -511,11 +503,11 @@ fn append_block(current: &mut String, block: &str) {
     current.push_str(block);
 }
 
-/// Trim trailing blank lines while preserving structure.
 fn trim_block_separators(text: &str) -> String {
     text.trim_end().to_string()
 }
 
+///
 /// Split oversized text at sentence/whitespace/char boundaries (FR-WF-15b).
 fn split_oversized_text(
     text: &str,
@@ -571,7 +563,6 @@ fn split_oversized_text(
     split_at_whitespace(text, max_tokens, counter, heading)
 }
 
-/// Split text at sentence boundaries.
 fn split_at_sentences(text: &str) -> Vec<String> {
     let mut sentences = Vec::new();
     let mut current = String::new();
@@ -601,7 +592,6 @@ fn split_at_sentences(text: &str) -> Vec<String> {
     sentences
 }
 
-/// Split text at whitespace boundaries.
 fn split_at_whitespace(
     text: &str,
     max_tokens: u32,
@@ -654,7 +644,6 @@ fn split_at_whitespace(
     chunks
 }
 
-/// Split text at character boundaries (last resort).
 fn split_at_chars(
     text: &str,
     max_tokens: u32,
@@ -691,7 +680,6 @@ fn split_at_chars(
     chunks
 }
 
-/// Split oversized code block at line boundaries (FR-WF-CHK-CODE-01).
 fn split_oversized_code(
     fence: &str,
     language: &str,
@@ -781,7 +769,6 @@ fn split_oversized_code(
     chunks
 }
 
-/// Split oversized list at item boundaries (FR-WF-CHK-LIST-02).
 fn split_oversized_list(
     text: &str,
     max_tokens: u32,
@@ -848,7 +835,6 @@ fn split_oversized_list(
     chunks
 }
 
-/// Parse list text into individual items (including continuation lines).
 fn parse_list_items(text: &str) -> Vec<String> {
     let mut items = Vec::new();
     let mut current_item = String::new();
@@ -872,7 +858,6 @@ fn parse_list_items(text: &str) -> Vec<String> {
     items
 }
 
-/// Split oversized list item at sentence/whitespace boundaries (FR-WF-CHK-LIST-03).
 fn split_oversized_list_item(
     item: &str,
     max_tokens: u32,

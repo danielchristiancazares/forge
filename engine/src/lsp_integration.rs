@@ -147,7 +147,6 @@ impl App {
         }
     }
 
-    /// Get the current diagnostics snapshot for UI display.
     #[must_use]
     pub fn lsp_snapshot(&self) -> &forge_lsp::DiagnosticsSnapshot {
         &self.lsp_runtime.snapshot

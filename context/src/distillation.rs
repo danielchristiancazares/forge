@@ -48,8 +48,6 @@ const DISTILLATION_TIMEOUT_SECS: u64 = 600;
 /// Distillation prompt template loaded from context/assets/distillation.md
 const DISTILLATION_PROMPT_TEMPLATE: &str = include_str!("../assets/distillation.md");
 
-/// Build a distillation prompt for a slice of messages.
-///
 /// # Returns
 /// A tuple of (`system_instruction`, `user_prompt`) for the API call.
 /// The user prompt contains the full template with conversation log and file list inlined.
@@ -120,7 +118,6 @@ fn extract_file_paths(args: &serde_json::Value, paths: &mut std::collections::BT
     }
 }
 
-/// Get the distiller model's input token limit for a provider.
 pub fn distiller_input_limit(provider: Provider) -> u32 {
     match provider {
         Provider::Claude => CLAUDE_DISTILLER_INPUT_LIMIT,
@@ -439,7 +436,6 @@ async fn generate_distillation_gemini(
     Ok(distillation.to_string())
 }
 
-/// Get the distillation model name for a given provider.
 #[must_use]
 pub fn distillation_model(provider: Provider) -> &'static str {
     distillation_internal_model(provider).model_id()

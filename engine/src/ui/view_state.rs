@@ -40,9 +40,33 @@ pub struct UiOptions {
     pub show_thinking: bool,
 }
 
-/// State related to rendering and UI display.
-///
-/// This separates view concerns from orchestration state, making it
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    #[default]
+    Focus,
+    Classic,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum FocusState {
+    /// No active operation. Shows "Ready".
+    #[default]
+    Idle,
+    /// Executing a plan. Vertical carousel.
+    Executing {
+        /// Visual tracking of the active step's execution time.
+        step_started_at: Option<Instant>,
+    },
+    /// Reviewing completed content. Horizontal carousel.
+    Reviewing {
+        /// Index of the active content block (Thought/Response/ToolResult).
+        active_index: usize,
+        /// Whether the carousel is auto-advancing during streaming.
+        auto_advance: bool,
+    },
+}
+
+/// Separates view concerns from orchestration state, making it
 /// clearer what state is used for rendering vs. what drives the
 /// application logic.
 #[derive(Debug)]
@@ -63,6 +87,10 @@ pub struct ViewState {
     pub last_frame: Instant,
     /// Interactive state for the files panel.
     pub files_panel: FilesPanelState,
+    /// Current view mode (Focus vs Classic).
+    pub view_mode: ViewMode,
+    /// Focus view state (only relevant when view_mode == Focus).
+    pub focus_state: FocusState,
 }
 
 impl Default for ViewState {
@@ -76,6 +104,8 @@ impl Default for ViewState {
             ui_options: UiOptions::default(),
             last_frame: Instant::now(),
             files_panel: FilesPanelState::default(),
+            view_mode: ViewMode::default(),
+            focus_state: FocusState::default(),
         }
     }
 }

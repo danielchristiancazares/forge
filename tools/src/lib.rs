@@ -263,7 +263,6 @@ pub trait ToolExecutor: Send + Sync + std::panic::UnwindSafe {
     fn timeout(&self) -> Option<Duration> {
         None
     }
-    /// Whether this tool should be hidden from UI rendering.
     /// Hidden tools still execute normally but are invisible to the user.
     fn is_hidden(&self) -> bool {
         false

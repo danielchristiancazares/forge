@@ -13,13 +13,11 @@ use url::Url;
 use super::types::{ErrorCode, WebFetchError};
 use forge_types::strip_steganographic_chars;
 
-/// Minimum extracted content length (Unicode scalar values).
 ///
 /// Per FR-WF-EXT-EMPTY-01, content < 50 scalar values after boilerplate
 /// removal is considered "empty."
 pub const MIN_EXTRACTED_CHARS: usize = 50;
 
-/// Boilerplate class/ID tokens (case-insensitive TOKEN matching, not substring).
 ///
 /// Per FR-WF-12b: "nav" matches `class="nav"` but not `class="navigate"`.
 const BOILERPLATE_TOKENS: &[&str] = &[
@@ -54,7 +52,6 @@ const BOILERPLATE_TOKENS: &[&str] = &[
     "overlay",
 ];
 
-/// Result of content extraction.
 #[derive(Debug)]
 pub struct ExtractedContent {
     /// Extracted Markdown content.
@@ -103,7 +100,6 @@ impl ConversionContext {
     }
 }
 
-/// Extract readable content from HTML.
 ///
 /// Implements FR-WF-12 through FR-WF-13e:
 /// 1. Parse HTML (lenient, handle malformed)
@@ -170,12 +166,10 @@ pub fn extract(html: &str, final_url: &Url) -> Result<ExtractedContent, WebFetch
     })
 }
 
-/// Strip UTF-8 BOM and leading whitespace per FR-WF-10h.
 fn strip_bom_and_whitespace(html: &str) -> &str {
     html.strip_prefix('\u{FEFF}').unwrap_or(html).trim_start()
 }
 
-/// Extract page title per FR-WF-13e.
 ///
 /// Priority: <title> tag, then first <h1>.
 /// Normalizes whitespace (trim + collapse).
@@ -203,7 +197,6 @@ fn extract_title(document: &Html) -> Option<String> {
     None
 }
 
-/// Extract page language from <html lang>.
 fn extract_language(document: &Html) -> Option<String> {
     let selector = Selector::parse("html").ok()?;
     document
@@ -215,7 +208,6 @@ fn extract_language(document: &Html) -> Option<String> {
         .map(String::from)
 }
 
-/// Extract base URL from <base href> tag.
 fn extract_base_url(document: &Html, final_url: &Url) -> Option<Url> {
     let selector = Selector::parse("base[href]").ok()?;
     let base_elem = document.select(&selector).next()?;
@@ -225,7 +217,6 @@ fn extract_base_url(document: &Html, final_url: &Url) -> Option<Url> {
     final_url.join(href).ok().or_else(|| Url::parse(href).ok())
 }
 
-/// Find the main content root element.
 ///
 /// Per FR-WF-EXT-ROOT-01, tries in order:
 /// 1. <main>
@@ -289,7 +280,6 @@ fn non_boilerplate_text_len(element: ElementRef<'_>) -> usize {
     count
 }
 
-/// Check if an element should be treated as boilerplate.
 fn is_boilerplate_element(element: ElementRef<'_>) -> bool {
     let tag = element.value().name();
 
@@ -329,7 +319,6 @@ fn is_boilerplate_element(element: ElementRef<'_>) -> bool {
     false
 }
 
-/// Check if a class or ID string contains a boilerplate token.
 ///
 /// TOKEN matching means space-separated, not substring:
 /// - "nav" matches in "nav sidebar" but not in "navigate"
@@ -343,14 +332,12 @@ fn has_boilerplate_token(attr: &str) -> bool {
     false
 }
 
-/// Convert an HTML element tree to Markdown.
 fn convert_element_to_markdown(root: ElementRef<'_>, mut ctx: ConversionContext) -> String {
     let mut output = String::new();
     convert_children(&mut output, root, &mut ctx);
     output
 }
 
-/// Convert children of an element to Markdown.
 fn convert_children(output: &mut String, element: ElementRef<'_>, ctx: &mut ConversionContext) {
     for child in element.children() {
         match child.value() {
@@ -375,7 +362,6 @@ fn convert_children(output: &mut String, element: ElementRef<'_>, ctx: &mut Conv
     }
 }
 
-/// Convert a single element to Markdown.
 fn convert_element(output: &mut String, element: ElementRef<'_>, ctx: &mut ConversionContext) {
     // Skip boilerplate elements
     if is_boilerplate_element(element) {
@@ -707,7 +693,6 @@ fn convert_image(output: &mut String, element: ElementRef<'_>, ctx: &ConversionC
     }
 }
 
-/// Convert an HTML table to GFM pipe table format (FR-WF-EXT-TABLE-01).
 fn convert_table(output: &mut String, element: ElementRef<'_>, ctx: &mut ConversionContext) {
     ensure_blank_line(output);
 

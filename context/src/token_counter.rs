@@ -17,7 +17,6 @@ use tiktoken_rs::{CoreBPE, o200k_base};
 
 use forge_types::{Message, ThinkingReplayState};
 
-///
 /// The tiktoken encoder is expensive to initialize (loads vocabulary data),
 /// so we create it once and reuse it across all `TokenCounter` instances.
 static ENCODER: OnceLock<Option<CoreBPE>> = OnceLock::new();
@@ -71,7 +70,6 @@ impl std::fmt::Debug for TokenCounter {
 }
 
 impl TokenCounter {
-    /// Initializes a counter using the shared singleton encoder.
     #[must_use]
     pub fn new() -> Self {
         let encoder = get_encoder();
@@ -175,7 +173,6 @@ impl TokenCounter {
         content_tokens + role_tokens + MESSAGE_OVERHEAD
     }
 
-    ///
     /// This sums the token count of each message including their overhead.
     ///
     /// # Example

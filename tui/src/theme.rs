@@ -233,8 +233,6 @@ pub fn glyphs(options: UiOptions) -> Glyphs {
     }
 }
 
-/// Get spinner frame based on tick count and UI options.
-///
 /// When `reduced_motion` is enabled, returns a static glyph instead of cycling.
 #[must_use]
 pub fn spinner_frame(tick: usize, options: UiOptions) -> &'static str {

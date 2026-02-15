@@ -111,7 +111,6 @@ impl CheckpointSummary {
     }
 }
 
-/// Internal representation of a checkpoint.
 #[derive(Debug)]
 pub(crate) struct Checkpoint {
     id: CheckpointId,
@@ -148,14 +147,12 @@ impl Checkpoint {
     }
 }
 
-/// A snapshot of a set of files.
 #[derive(Debug)]
 pub(crate) struct WorkspaceSnapshot {
     files: BTreeMap<PathBuf, FileSnapshot>,
     total_bytes: usize,
 }
 
-/// File state at checkpoint creation time.
 #[derive(Debug)]
 pub(crate) enum FileSnapshot {
     Existed {
@@ -183,7 +180,6 @@ pub(crate) struct PreparedFileBaseline {
     checkpoint_id: CheckpointId,
 }
 
-/// Checkpoint creation outcome.
 #[derive(Debug, Clone)]
 pub(crate) struct CreatedCheckpoint {
     pub id: CheckpointId,
@@ -192,9 +188,7 @@ pub(crate) struct CreatedCheckpoint {
     pub warning: Option<String>,
 }
 
-/// In-memory checkpoint store.
-///
-/// This is intentionally simple (QoL feature). If/when persistence is needed,
+/// Intentionally simple (QoL feature). If/when persistence is needed,
 /// we can add a journal without changing the public proof-oriented API.
 #[derive(Debug, Default)]
 pub(crate) struct CheckpointStore {

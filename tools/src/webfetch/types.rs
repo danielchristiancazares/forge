@@ -40,8 +40,6 @@ impl WebFetchInput {
     /// Maximum allowed value for `max_chunk_tokens` (FR-WF-02a).
     pub const MAX_CHUNK_TOKENS: u32 = 2048;
 
-    /// Create a new `WebFetchInput` from a URL string.
-    ///
     /// # Errors
     ///
     /// Returns `WebFetchError` if:
@@ -491,7 +489,6 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    /// Check if this error code is retryable by default.
     ///
     /// Note: Some codes have conditional retryability (e.g., `http_4xx` for 408/429).
     #[must_use]

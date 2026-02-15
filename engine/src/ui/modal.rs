@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use super::animation::EffectTimer;
 
-/// The kind of modal animation effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalEffectKind {
     PopScale,
@@ -12,7 +11,6 @@ pub enum ModalEffectKind {
     Shake,
 }
 
-/// Modal animation effect state.
 #[derive(Debug, Clone)]
 pub struct ModalEffect {
     kind: ModalEffectKind,

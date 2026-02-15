@@ -53,7 +53,6 @@ pub fn hash_line_range_bytes(bytes: &[u8], start: u32, end: u32) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// Create an observed region for a read operation.
 pub fn create_region(path: &Path, start_line: u32, end_line: u32) -> io::Result<ObservedRegion> {
     let prefix_hash = if start_line > 1 {
         hash_line_range(path, 1, start_line - 1)?

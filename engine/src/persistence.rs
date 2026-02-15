@@ -121,7 +121,6 @@ impl App {
         id
     }
 
-    /// Save history to disk.
     /// Returns true if successful, false if save failed (logged but not propagated).
     /// Called after user messages and assistant completions for crash durability.
     pub(crate) fn autosave_history(&mut self) -> bool {
@@ -348,9 +347,7 @@ impl App {
         self.display_version = self.display_version.wrapping_add(1);
     }
 
-    /// Push a system notification message to the display.
-    ///
-    /// This adds a system message that appears in the content pane, visible to
+    /// Adds a system message that appears in the content pane, visible to
     /// the user but not sent to the model. Used for confirmations, warnings,
     /// and transient feedback.
     pub(crate) fn push_notification(&mut self, message: impl Into<String>) {
@@ -360,8 +357,6 @@ impl App {
         }
     }
 
-    /// Check for and recover from a crashed streaming session.
-    ///
     /// Returns `Some(RecoveredStream)` if there was an incomplete stream that was recovered.
     /// The recovered partial response is added to the conversation with a warning badge.
     ///

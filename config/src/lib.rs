@@ -244,18 +244,6 @@ pub struct GeminiConfig {
     pub cache_ttl_seconds: Option<u32>,
 }
 
-/// Tool configurations for function calling.
-///
-/// ```toml
-/// [[tools.definitions]]
-/// name = "get_weather"
-/// description = "Get current weather for a location"
-/// [tools.definitions.parameters]
-/// type = "object"
-/// [tools.definitions.parameters.properties.location]
-/// type = "string"
-/// description = "City name, e.g. 'Seattle, WA'"
-/// ```
 #[derive(Debug, Default, Deserialize)]
 pub struct ToolsConfig {
     /// Maximum tool calls per batch.
@@ -432,7 +420,6 @@ impl Default for MacOsRunConfig {
 pub use forge_tools::config::ShellConfig;
 
 impl ToolDefinitionConfig {
-    /// Convert this config to a `ToolDefinition`.
     pub fn to_tool_definition(&self) -> Result<forge_types::ToolDefinition, String> {
         let params_json = toml_to_json(&self.parameters)?;
         Ok(forge_types::ToolDefinition::new(

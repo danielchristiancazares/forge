@@ -1,6 +1,5 @@
 //! Scroll state for the message view.
 
-/// Scroll position for the message view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScrollState {
     /// Always keep the newest content visible.

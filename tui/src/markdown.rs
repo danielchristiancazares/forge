@@ -11,10 +11,8 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Palette;
 
-/// Maximum number of cached renders before eviction.
 const CACHE_MAX_ENTRIES: usize = 128;
 
-/// Cache key combining content hash and style.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct CacheKey {
     content_hash: u64,
@@ -100,17 +98,14 @@ fn hash_color(color: Color, hasher: &mut impl Hasher) {
 }
 
 thread_local! {
-    /// Thread-local render cache. Stores rendered lines keyed by content+style hash.
     static RENDER_CACHE: RefCell<HashMap<CacheKey, Vec<Line<'static>>>> = RefCell::new(HashMap::new());
 }
 
-/// Clear the render cache. Call when switching themes or on memory pressure.
+/// Call when switching themes or on memory pressure.
 pub fn clear_render_cache() {
     RENDER_CACHE.with(|cache| cache.borrow_mut().clear());
 }
 
-/// Render markdown content to ratatui Lines.
-///
 /// `max_width` constrains table rendering so that tables wrap cell content
 /// instead of exceeding the viewport width.
 ///
@@ -125,7 +120,6 @@ pub fn render_markdown(
     render_markdown_with_soft_breaks(content, base_style, palette, false, max_width)
 }
 
-/// Render markdown content while preserving single newlines as hard line breaks.
 #[must_use]
 pub(crate) fn render_markdown_preserve_newlines(
     content: &str,
@@ -210,7 +204,7 @@ struct MarkdownRenderer {
 
     // Render options
     soft_breaks_as_newlines: bool,
-    /// Maximum width (in columns) available for rendering.
+    ///
     /// Used to constrain table column widths and wrap cell content.
     max_width: u16,
 }
@@ -656,7 +650,7 @@ impl MarkdownRenderer {
     }
 }
 
-/// Word-wrap `text` to fit within `max_width` display columns.
+///
 /// Breaks on word boundaries when possible, hard-breaks on character
 /// boundaries when a single word exceeds the width.
 fn wrap_text(text: &str, max_width: usize) -> Vec<String> {

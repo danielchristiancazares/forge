@@ -165,9 +165,6 @@ impl ToolJournal {
         Ok(Self { db })
     }
 
-    /// Begin a new tool batch and persist its tool calls.
-    ///
-    /// Returns the new batch ID.
     pub fn begin_batch(
         &mut self,
         stream_step_id: StepId,

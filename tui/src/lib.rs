@@ -2,6 +2,7 @@
 
 mod diff_render;
 mod effects;
+mod focus;
 mod input;
 pub mod markdown;
 mod shared;
@@ -32,7 +33,7 @@ use unicode_width::UnicodeWidthStr;
 
 use forge_engine::{
     App, ChangeKind, ContextUsageStatus, DisplayItem, FileDiff, InputMode, Message,
-    PredefinedModel, Provider, SettingsCategory, SettingsSurface, TurnUsage, UiOptions,
+    PredefinedModel, Provider, SettingsCategory, SettingsSurface, TurnUsage, UiOptions, ViewMode,
     command_specs, find_match_positions, sanitize_display_text, sanitize_terminal_text,
 };
 use forge_types::{ToolResult, sanitize_path_for_display};
@@ -158,7 +159,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(1), Constraint::Length(input_height)])
         .split(main_area);
 
-    draw_messages(frame, app, chunks[0], &palette, &glyphs);
+    match app.view_mode() {
+        ViewMode::Focus => {
+            focus::draw(frame, app, chunks[0], &palette);
+        }
+        ViewMode::Classic => {
+            draw_messages(frame, app, chunks[0], &palette, &glyphs);
+        }
+    }
     draw_input(frame, app, chunks[1], &palette, &glyphs);
 
     if let Some(panel_area) = files_panel_area {
@@ -3641,8 +3649,6 @@ fn create_welcome_screen(app: &App, palette: &Palette, glyphs: &Glyphs) -> Parag
     Paragraph::new(lines).alignment(Alignment::Left)
 }
 
-/// Format API usage for status bar display.
-///
 /// Returns a compact string like "Tokens 12.3k in / 1.2k out (85% cached)" or empty if no data.
 fn format_api_usage(usage: Option<&TurnUsage>) -> String {
     let Some(usage) = usage else {

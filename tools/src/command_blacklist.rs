@@ -115,7 +115,6 @@ pub struct CommandBlacklist {
 }
 
 impl CommandBlacklist {
-    /// Create a new blacklist from pattern-reason pairs.
     pub fn new(patterns: &[(&str, &str)]) -> Result<Self, ToolError> {
         let mut reasons = Vec::with_capacity(patterns.len());
         let mut pattern_strs = Vec::with_capacity(patterns.len());
@@ -132,7 +131,6 @@ impl CommandBlacklist {
         Ok(Self { regex_set, reasons })
     }
 
-    /// Create a blacklist with default patterns.
     pub fn with_defaults() -> Result<Self, ToolError> {
         Self::new(DEFAULT_PATTERNS)
     }

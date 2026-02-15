@@ -22,7 +22,6 @@ use super::types::{ErrorCode, WebFetchError};
 /// Maximum robots.txt file size (FR-WF-ROBOTS-SIZE-01).
 pub const MAX_ROBOTS_SIZE: usize = 512 * 1024; // 512 KiB
 
-/// Result of robots.txt checking.
 #[derive(Debug, Clone)]
 pub enum RobotsResult {
     /// Path is allowed.
@@ -33,7 +32,6 @@ pub enum RobotsResult {
     Unavailable,
 }
 
-/// Cached robots.txt entry.
 #[derive(Debug, Clone)]
 struct CacheEntry {
     entry: CachedRobots,
@@ -46,7 +44,6 @@ enum CachedRobots {
     AllowAll,
 }
 
-/// Global robots.txt cache (origin -> entry).
 static CACHE: std::sync::OnceLock<Arc<RwLock<HashMap<String, CacheEntry>>>> =
     std::sync::OnceLock::new();
 
@@ -174,7 +171,6 @@ fn compute_origin(url: &Url) -> String {
     }
 }
 
-/// Result of fetching robots.txt.
 enum FetchResult {
     /// Got content to parse.
     Content(String),
@@ -428,14 +424,12 @@ fn trim_partial_line(bytes: &mut Vec<u8>) {
     }
 }
 
-/// Parsed robots.txt file.
 #[derive(Debug, Clone, Default)]
 pub struct Robots {
     /// User-agent groups with their rules (lowercase UA → group).
     groups: HashMap<String, RobotsGroup>,
 }
 
-/// A user-agent group with Allow/Disallow rules.
 #[derive(Debug, Clone, Default)]
 pub struct RobotsGroup {
     /// Allow rules (path patterns).

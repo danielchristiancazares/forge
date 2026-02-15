@@ -17,10 +17,6 @@ fn is_pro_model(model: &forge_types::ModelName) -> bool {
     model.as_str() == "gpt-5.2-pro"
 }
 
-// ========================================================================
-// OpenAI SSE Parser
-// ========================================================================
-
 use crate::sse_types::openai as typed;
 
 const PRO_IDLE_TIMEOUT_SECS: u64 = 300;

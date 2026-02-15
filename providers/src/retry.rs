@@ -180,7 +180,6 @@ pub enum RetryOutcome {
 }
 
 impl RetryOutcome {
-    /// Returns the successful response, or an error description.
     ///
     /// Convenience method for callers that want simple error handling.
     pub fn into_response(self) -> Result<Response, String> {
@@ -194,7 +193,6 @@ impl RetryOutcome {
         }
     }
 
-    /// Returns true if this is a successful response.
     #[must_use]
     pub const fn is_success(&self) -> bool {
         matches!(self, Self::Success(_))

@@ -184,15 +184,6 @@ pub(crate) trait SseParser {
     fn provider_name(&self) -> &'static str;
 }
 
-/// Process an SSE stream using a provider-specific parser.
-///
-/// This handles the common SSE processing logic:
-/// - Timeout handling for idle streams
-/// - Buffer management with size limits
-/// - UTF-8 validation
-/// - Event boundary detection
-/// - `[DONE]` marker handling
-/// - Parse error tracking with threshold
 pub(crate) fn stream_idle_timeout() -> Duration {
     static TIMEOUT: OnceLock<Duration> = OnceLock::new();
     *TIMEOUT.get_or_init(|| {
@@ -233,6 +224,15 @@ pub(crate) fn emit_or_continue(events: Vec<StreamEvent>) -> SseParseAction {
     }
 }
 
+/// Process an SSE stream using a provider-specific parser.
+///
+/// This handles the common SSE processing logic:
+/// - Timeout handling for idle streams
+/// - Buffer management with size limits
+/// - UTF-8 validation
+/// - Event boundary detection
+/// - `[DONE]` marker handling
+/// - Parse error tracking with threshold
 pub(crate) async fn process_sse_stream<P: SseParser>(
     response: reqwest::Response,
     parser: &mut P,
@@ -638,10 +638,6 @@ mod tests {
         let result = ApiConfig::new(key, model);
         assert!(result.is_ok());
     }
-
-    // ========================================================================
-    // SSE Parsing Tests
-    // ========================================================================
 
     mod sse_boundary {
         use super::*;

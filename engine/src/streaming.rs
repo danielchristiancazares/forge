@@ -242,6 +242,12 @@ impl super::App {
             return;
         }
 
+        if self.view.view_mode == crate::ui::ViewMode::Focus {
+            self.view.focus_state = crate::ui::FocusState::Executing {
+                step_started_at: Some(std::time::Instant::now()),
+            };
+        }
+
         let QueuedUserMessage { config, turn } = queued;
         let memory_enabled = self.memory_enabled();
 
@@ -973,10 +979,8 @@ impl super::App {
     }
 }
 
-/// Get an existing valid Gemini cache or create a new one.
-///
-/// This function checks if there's a valid (non-expired, matching) cache.
-/// If not, it creates a new cache via the Gemini API and stores it.
+/// Checks if there's a valid (non-expired, matching) cache.
+/// If not, creates a new cache via the Gemini API and stores it.
 ///
 /// Note: Tools must be included in the cache because Gemini's API doesn't allow
 /// specifying `tools` in GenerateContent when using cached content.

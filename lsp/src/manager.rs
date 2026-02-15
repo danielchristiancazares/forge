@@ -163,7 +163,6 @@ impl LspManager {
         self.diagnostics.snapshot()
     }
 
-    /// Get only errors for specific files.
     #[must_use]
     pub fn errors_for_files(&self, paths: &[PathBuf]) -> Vec<(PathBuf, Vec<ForgeDiagnostic>)> {
         self.diagnostics.errors_for_files(paths)
@@ -182,7 +181,6 @@ impl LspManager {
         }
     }
 
-    /// Get a reference to the event sender (for testing).
     #[cfg(test)]
     pub(crate) fn event_tx(&self) -> &mpsc::Sender<LspEvent> {
         &self.event_tx
@@ -194,7 +192,6 @@ mod tests {
     use super::*;
     use crate::types::DiagnosticSeverity;
 
-    /// Deserialize a test config through the validated boundary.
     fn test_config() -> LspConfig {
         serde_json::from_value(serde_json::json!({
             "enabled": true,
@@ -216,7 +213,7 @@ mod tests {
         .unwrap()
     }
 
-    /// Create an `LspManager` without spawning real servers.
+    ///
     /// Uses the event channel for testing event-driven behaviour.
     fn test_manager(config: LspConfig) -> LspManager {
         let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);

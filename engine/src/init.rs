@@ -410,7 +410,6 @@ impl App {
         }
     }
 
-    /// Get the base data directory for forge.
     pub(crate) fn data_dir() -> anyhow::Result<DataDir> {
         if let Ok(custom) = std::env::var("FORGE_DATA_DIR") {
             return Ok(DataDir {
@@ -457,18 +456,15 @@ impl App {
         Ok(())
     }
 
-    /// Get the path to the history file.
     pub(crate) fn history_path(&self) -> PathBuf {
         self.data_dir.join("history.json")
     }
 
-    /// Get the path to the session state file.
     pub(crate) fn session_path(&self) -> std::path::PathBuf {
         self.data_dir
             .join(crate::session_state::SessionState::FILENAME)
     }
 
-    /// Get the path to the plan state file.
     pub(crate) fn plan_path(&self) -> PathBuf {
         self.data_dir.join("plan.json")
     }

@@ -3,7 +3,6 @@
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
-/// Input mode for the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InputMode {
     #[default]
@@ -15,8 +14,6 @@ pub enum InputMode {
     Settings,
 }
 
-/// Draft input buffer with cursor tracking.
-///
 /// Handles text editing with proper Unicode grapheme cluster support.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct DraftInput {
@@ -111,7 +108,6 @@ impl SettingsCategory {
     }
 }
 
-/// Settings modal surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SettingsSurface {
     #[default]
@@ -133,7 +129,6 @@ impl SettingsSurface {
     }
 }
 
-/// Read-only settings modal state for Phase 1.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SettingsModalState {
     pub surface: SettingsSurface,

@@ -128,7 +128,6 @@ impl FilePickerState {
             .collect();
     }
 
-    /// Get filtered file entries for display.
     #[must_use]
     pub fn filtered_files(&self) -> Vec<&FileEntry> {
         self.filtered
@@ -149,13 +148,11 @@ impl FilePickerState {
         self.filtered.len()
     }
 
-    /// Check if files have been scanned.
     #[must_use]
     pub fn is_scanned(&self) -> bool {
         self.scanned
     }
 
-    /// Get total file count (before filtering).
     #[must_use]
     pub fn total_count(&self) -> usize {
         self.all_files.len()

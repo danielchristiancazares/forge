@@ -342,12 +342,10 @@ pub fn strip_steganographic_chars(input: &str) -> Cow<'_, str> {
     Cow::Owned(result)
 }
 
-/// Check if text contains any steganographic characters.
 fn has_steganographic_chars(input: &str) -> bool {
     input.chars().any(is_steganographic_char)
 }
 
-/// Check if a character is used for Unicode steganography or visual spoofing.
 ///
 /// Categories ordered by threat severity (sharpest vectors first).
 ///
@@ -577,8 +575,6 @@ mod tests {
         assert_eq!(sanitize_terminal_text(input), "HelloWorld");
     }
 
-    // --- Steganographic sanitization tests ---
-
     #[test]
     fn steg_clean_text_no_allocation() {
         let input = "Hello, world! Normal text with unicode: 中文 العربية";
@@ -605,8 +601,6 @@ mod tests {
         assert_eq!(strip_steganographic_chars(input), input);
     }
 
-    // --- Unicode Tags block (HIGH: ASCII smuggling) ---
-
     #[test]
     fn steg_strips_tags_block_ascii_smuggling() {
         // "ignore" encoded as Tags: U+E0069 U+E0067 U+E006E U+E006F U+E0072 U+E0065
@@ -627,8 +621,6 @@ mod tests {
         let input = "\u{E0053}\u{E0054}\u{E004F}\u{E0050}visible text only";
         assert_eq!(strip_steganographic_chars(input), "visible text only");
     }
-
-    // --- Zero-width characters (HIGH: binary steganography) ---
 
     #[test]
     fn steg_strips_zwsp() {
@@ -675,8 +667,6 @@ mod tests {
         assert_eq!(strip_steganographic_chars(input), "HelloWorldTest");
     }
 
-    // --- Bidi controls (Trojan Source prevention) ---
-
     #[test]
     fn steg_strips_bidi_embedding_overrides() {
         // LRE, RLE, PDF, LRO, RLO (U+202A–U+202E)
@@ -697,8 +687,6 @@ mod tests {
         assert_eq!(strip_steganographic_chars(input), "HelloWorld");
     }
 
-    // --- Variation selectors (MEDIUM: encoding) ---
-
     #[test]
     fn steg_strips_variation_selectors_basic() {
         let input = "A\u{FE00}B\u{FE0F}C";
@@ -711,15 +699,11 @@ mod tests {
         assert_eq!(strip_steganographic_chars(input), "XYZ");
     }
 
-    // --- Invisible math operators (MEDIUM) ---
-
     #[test]
     fn steg_strips_invisible_operators() {
         let input = "A\u{2061}B\u{2062}C\u{2063}D\u{2064}E";
         assert_eq!(strip_steganographic_chars(input), "ABCDE");
     }
-
-    // --- Interlinear annotations (LOWER) ---
 
     #[test]
     fn steg_strips_interlinear_annotations() {
@@ -729,8 +713,6 @@ mod tests {
             "Texthiddenannotationmore"
         );
     }
-
-    // --- Soft hyphen (LOWER: token splitting) ---
 
     #[test]
     fn steg_strips_soft_hyphen() {
@@ -742,15 +724,11 @@ mod tests {
         );
     }
 
-    // --- Combining grapheme joiner (LOWER) ---
-
     #[test]
     fn steg_strips_combining_grapheme_joiner() {
         let input = "A\u{034F}B";
         assert_eq!(strip_steganographic_chars(input), "AB");
     }
-
-    // --- Filler characters (LOWER) ---
 
     #[test]
     fn steg_strips_hangul_fillers() {
@@ -769,8 +747,6 @@ mod tests {
         let input = "A\u{17B4}B\u{17B5}C";
         assert_eq!(strip_steganographic_chars(input), "ABC");
     }
-
-    // --- Compound attacks ---
 
     #[test]
     fn steg_strips_mixed_steganographic_vectors() {
@@ -795,8 +771,6 @@ mod tests {
         assert_eq!(strip_steganographic_chars(input), "");
     }
 
-    // --- Interaction with sanitize_terminal_text ---
-
     #[test]
     fn steg_composes_with_terminal_sanitizer() {
         // Input has both terminal escapes AND steganographic chars
@@ -805,8 +779,6 @@ mod tests {
         let fully_safe = strip_steganographic_chars(&terminal_safe);
         assert_eq!(fully_safe, "HelloWorld");
     }
-
-    // --- Path display sanitization tests ---
 
     #[test]
     fn path_display_clean_no_allocation() {

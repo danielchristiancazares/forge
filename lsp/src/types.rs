@@ -101,7 +101,6 @@ impl ServerConfig {
     }
 }
 
-/// Severity level for a diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DiagnosticSeverity {
     Error = 1,
@@ -217,7 +216,6 @@ impl ForgeDiagnostic {
     }
 }
 
-/// Reason a language server stopped running.
 #[derive(Debug, Clone)]
 pub enum ServerStopReason {
     /// Clean shutdown (EOF on stdout).
@@ -247,7 +245,6 @@ pub struct DiagnosticsSnapshot {
 }
 
 impl DiagnosticsSnapshot {
-    /// Construct a snapshot from sorted per-file diagnostics.
     pub(crate) fn new(files: Vec<(PathBuf, Vec<ForgeDiagnostic>)>) -> Self {
         Self { files }
     }
@@ -258,7 +255,6 @@ impl DiagnosticsSnapshot {
         &self.files
     }
 
-    /// Whether there are any diagnostics.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
@@ -272,31 +268,26 @@ impl DiagnosticsSnapshot {
             .count()
     }
 
-    /// Number of error-level diagnostics.
     #[must_use]
     pub fn error_count(&self) -> usize {
         self.count_by_severity(DiagnosticSeverity::Error)
     }
 
-    /// Number of warning-level diagnostics.
     #[must_use]
     pub fn warning_count(&self) -> usize {
         self.count_by_severity(DiagnosticSeverity::Warning)
     }
 
-    /// Number of info-level diagnostics.
     #[must_use]
     pub fn info_count(&self) -> usize {
         self.count_by_severity(DiagnosticSeverity::Information)
     }
 
-    /// Number of hint-level diagnostics.
     #[must_use]
     pub fn hint_count(&self) -> usize {
         self.count_by_severity(DiagnosticSeverity::Hint)
     }
 
-    /// Total diagnostic count across all files.
     #[must_use]
     pub fn total_count(&self) -> usize {
         self.files.iter().map(|(_, items)| items.len()).sum()

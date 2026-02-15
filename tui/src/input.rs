@@ -12,7 +12,7 @@ use std::{
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use forge_engine::{App, InputMode, SettingsSurface};
+use forge_engine::{App, FocusState, InputMode, SettingsSurface, ViewMode};
 
 const INPUT_POLL_TIMEOUT: Duration = Duration::from_millis(25); // shutdown responsiveness
 const INPUT_CHANNEL_CAPACITY: usize = 1024; // bounded: no OOM
@@ -427,6 +427,23 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Focus review carousel navigation (h/l/Left/Right)
+    if app.view_mode() == ViewMode::Focus
+        && matches!(app.focus_state(), FocusState::Reviewing { .. })
+    {
+        match key.code {
+            KeyCode::Char('h') | KeyCode::Left => {
+                app.focus_review_prev();
+                return;
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                app.focus_review_next();
+                return;
+            }
+            _ => {}
+        }
+    }
+
     match key.code {
         KeyCode::Char('q') => {
             app.request_quit();
@@ -491,10 +508,12 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Left => {
             app.scroll_up_chunk();
         }
-        // Files panel: Tab cycles to next file
+        // Tab: Context-sensitive toggle
         KeyCode::Tab => {
             if app.files_panel_visible() {
                 app.files_panel_next();
+            } else {
+                app.toggle_view_mode();
             }
         }
         // Files panel: Shift+Tab cycles to previous file

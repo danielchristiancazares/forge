@@ -4,8 +4,6 @@ use forge_types::{ApiKey, ModelName, PredefinedModel, Provider, SecretString};
 
 pub use forge_types::truncate_with_ellipsis;
 
-/// Wrap a `SecretString` API key in the provider-specific `ApiKey` enum variant.
-///
 /// Deliberately exposes the secret at the boundary where it enters the provider API.
 #[inline]
 pub fn wrap_api_key(provider: Provider, secret: SecretString) -> ApiKey {
@@ -17,8 +15,6 @@ pub fn wrap_api_key(provider: Provider, secret: SecretString) -> ApiKey {
     }
 }
 
-/// Parse a model name string back into a `ModelName`.
-///
 /// Used for crash recovery when we need to reconstruct the model from stored metadata.
 /// Falls back to None if the model name cannot be parsed.
 pub fn parse_model_name_from_string(name: &str) -> Option<ModelName> {

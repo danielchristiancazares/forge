@@ -132,7 +132,6 @@ impl ContextManager {
         self.configured_output_limit = Some(limit);
     }
 
-    /// Get the effective input budget, respecting configured output limit.
     fn effective_budget(&self) -> u32 {
         match self.configured_output_limit {
             Some(limit) => self
@@ -202,7 +201,6 @@ impl ContextManager {
         self.current_limits_source = resolved.source();
     }
 
-    /// Build the working context from API-visible entries.
     ///
     /// If the history is compacted, only entries after the compaction point
     /// are included. The compaction summary tokens count against the budget
@@ -294,7 +292,6 @@ impl ContextManager {
             .collect()
     }
 
-    /// Get current usage statistics.
     #[must_use]
     pub fn usage_status(&self) -> ContextUsageStatus {
         let fallback_usage = || ContextUsage {
@@ -340,8 +337,6 @@ impl ContextManager {
         self.current_limits_source
     }
 
-    // === Persistence ===
-
     /// Save history to a JSON file.
     ///
     /// Uses atomic write pattern: write to temp file, then rename.
@@ -386,7 +381,6 @@ impl ContextManager {
 
 #[cfg(test)]
 impl ContextManager {
-    /// Set a registry override for testing purposes.
     pub fn set_registry_override(&mut self, model: PredefinedModel, limits: ModelLimits) {
         self.registry.set_override(model, limits);
     }
@@ -534,10 +528,6 @@ mod tests {
         assert_eq!(manager.history().len(), 2);
     }
 
-    // ========================================================================
-    // Output Limit Tests
-    // ========================================================================
-
     #[test]
     fn test_set_output_limit() {
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
@@ -561,10 +551,6 @@ mod tests {
         let source = manager.current_limits_source();
         assert!(matches!(source, ModelLimitsSource::Catalog(_)));
     }
-
-    // ========================================================================
-    // Persistence Tests (save/load)
-    // ========================================================================
 
     #[test]
     fn test_save_load_roundtrip() {
@@ -628,10 +614,6 @@ mod tests {
         );
         assert!(result.is_err());
     }
-
-    // ========================================================================
-    // Usage Status Tests
-    // ========================================================================
 
     #[test]
     fn test_usage_status_ready_when_empty() {

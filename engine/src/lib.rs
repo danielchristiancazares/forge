@@ -37,10 +37,10 @@ use tokio::sync::mpsc;
 mod ui;
 use ui::InputState;
 pub use ui::{
-    ChangeKind, DisplayItem, DraftInput, FileEntry, FilePickerState, FilesPanelState, InputHistory,
-    InputMode, ModalEffect, ModalEffectKind, PanelEffect, PanelEffectKind, PredefinedModel,
-    ScrollState, SettingsCategory, SettingsModalState, SettingsSurface, UiOptions, ViewState,
-    find_match_positions,
+    ChangeKind, DisplayItem, DraftInput, FileEntry, FilePickerState, FilesPanelState, FocusState,
+    InputHistory, InputMode, ModalEffect, ModalEffectKind, PanelEffect, PanelEffectKind,
+    PredefinedModel, ScrollState, SettingsCategory, SettingsModalState, SettingsSurface, UiOptions,
+    ViewMode, ViewState, find_match_positions,
 };
 
 pub use forge_context::{
@@ -826,9 +826,9 @@ pub struct App {
     history_load_warning_shown: bool,
     /// Whether we've already warned about autosave failures.
     autosave_warning_shown: bool,
-    /// The Librarian for fact extraction and retrieval (Context Infinity).
+    /// The Librarian for fact extraction and retrieval (Long-term Memory).
     /// Uses `Arc<Mutex>` because it's accessed from async tasks for extraction.
-    /// None if context_infinity is disabled or no Gemini API key.
+    /// None if long-term memory is disabled or no Gemini API key.
     librarian: Option<std::sync::Arc<tokio::sync::Mutex<Librarian>>>,
     /// Input history for prompt and command recall.
     input_history: ui::InputHistory,
@@ -860,6 +860,46 @@ impl App {
 
     pub fn request_quit(&mut self) {
         self.should_quit = true;
+    }
+    pub fn view_mode(&self) -> ViewMode {
+        self.view.view_mode
+    }
+
+    pub fn focus_state(&self) -> &FocusState {
+        &self.view.focus_state
+    }
+
+    pub fn focus_state_mut(&mut self) -> &mut FocusState {
+        &mut self.view.focus_state
+    }
+
+    pub fn focus_review_next(&mut self) {
+        if let FocusState::Reviewing {
+            ref mut active_index,
+            ref mut auto_advance,
+        } = self.view.focus_state
+        {
+            *active_index = active_index.saturating_add(1);
+            *auto_advance = false;
+        }
+    }
+
+    pub fn focus_review_prev(&mut self) {
+        if let FocusState::Reviewing {
+            ref mut active_index,
+            ref mut auto_advance,
+        } = self.view.focus_state
+        {
+            *active_index = active_index.saturating_sub(1);
+            *auto_advance = false;
+        }
+    }
+
+    pub fn toggle_view_mode(&mut self) {
+        self.view.view_mode = match self.view.view_mode {
+            ViewMode::Focus => ViewMode::Classic,
+            ViewMode::Classic => ViewMode::Focus,
+        };
     }
 
     pub fn take_clear_transcript(&mut self) -> bool {
@@ -1065,7 +1105,6 @@ impl App {
         self.view.files_panel.visible
     }
 
-    /// Get mutable reference to files panel effect for UI processing.
     pub fn files_panel_effect_mut(&mut self) -> Option<&mut PanelEffect> {
         self.view.files_panel_effect.as_mut()
     }
@@ -1090,7 +1129,6 @@ impl App {
         &self.session_changes
     }
 
-    /// Get ordered list of changed files: modified first (alphabetical), then created.
     /// Filters out files that no longer exist on disk.
     pub fn ordered_files(&self) -> Vec<(std::path::PathBuf, ChangeKind)> {
         let changes = &self.session_changes;
@@ -1379,6 +1417,10 @@ impl App {
             .is_some_and(state::ApprovalState::is_confirming_deny)
     }
 
+    pub fn plan_state(&self) -> &PlanState {
+        &self.plan_state
+    }
+
     // Plan approval accessors
 
     pub fn plan_approval_kind(&self) -> Option<&'static str> {
@@ -1456,7 +1498,6 @@ impl App {
         &self.display
     }
 
-    /// Whether the named tool should be hidden from UI rendering.
     pub fn is_tool_hidden(&self, name: &str) -> bool {
         self.hidden_tools.contains(name)
     }
@@ -1588,9 +1629,7 @@ impl App {
         }
     }
 
-    /// Returns a description of why the app is busy, or None if idle.
-    ///
-    /// This centralizes busy-state checks to ensure consistency across
+    /// Centralizes busy-state checks to ensure consistency across
     /// `start_streaming`, `start_distillation`, and UI queries.
     fn busy_reason(&self) -> Option<&'static str> {
         match &self.state {
@@ -1604,7 +1643,6 @@ impl App {
         }
     }
 
-    /// Get context usage statistics for the UI.
     /// Uses cached value when available to avoid recomputing every frame.
     pub fn context_usage_status(&mut self) -> ContextUsageStatus {
         if let Some(cached) = &self.cached_usage_status {
@@ -1843,7 +1881,6 @@ impl App {
         }
     }
 
-    /// Poll background tasks and update wall-clock based timers.
     pub fn tick(&mut self) {
         self.poll_distillation();
         self.poll_tool_loop();
@@ -1865,7 +1902,6 @@ impl App {
         }
     }
 
-    /// Get elapsed time since last frame and update timing.
     pub fn frame_elapsed(&mut self) -> Duration {
         let now = Instant::now();
         let elapsed = now.duration_since(self.view.last_frame);
@@ -1873,7 +1909,6 @@ impl App {
         elapsed
     }
 
-    /// Get mutable reference to modal effect for UI processing.
     pub fn modal_effect_mut(&mut self) -> Option<&mut ModalEffect> {
         self.view.modal_effect.as_mut()
     }
@@ -2871,7 +2906,6 @@ impl App {
         }
     }
 
-    /// Get the current file select filter text.
     pub fn file_select_filter(&self) -> Option<&str> {
         self.input.file_select_filter()
     }
@@ -2915,7 +2949,6 @@ impl App {
         }
     }
 
-    /// Push a character to the file select filter.
     pub fn file_select_push_char(&mut self, c: char) {
         if let Some(filter) = self.input.file_select_filter_mut() {
             filter.enter_char(c);
@@ -2923,7 +2956,6 @@ impl App {
         self.file_select_update_filter();
     }
 
-    /// Delete a character from the file select filter (backspace).
     pub fn file_select_backspace(&mut self) {
         if let Some(filter) = self.input.file_select_filter_mut() {
             filter.delete_char();

@@ -61,7 +61,6 @@ impl EnvironmentContext {
         }
     }
 
-    /// Creates an `EnvironmentContext` with no AGENTS.md content.
     /// Used by tests to avoid picking up real filesystem state.
     #[cfg(test)]
     #[must_use]
