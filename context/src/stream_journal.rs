@@ -38,7 +38,9 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
+#[cfg(test)]
+use std::time::{Duration, UNIX_EPOCH};
 use thiserror::Error;
 
 use crate::sqlite_security::prepare_db_path;
@@ -240,7 +242,6 @@ impl ActiveJournal {
         self.step_id
     }
 
-    /// Get the model name associated with this streaming session.
     #[must_use]
     pub fn model_name(&self) -> &str {
         &self.model_name
@@ -601,7 +602,6 @@ impl StreamJournal {
         Ok(deleted as u64)
     }
 
-    /// Get the model name for a step from metadata.
     fn get_step_model_name(&self, step_id: StepId) -> Result<Option<String>> {
         let model_name: Option<String> = self
             .db
@@ -621,7 +621,6 @@ impl StreamJournal {
         discard_step(&self.db, step_id)
     }
 
-    /// Get statistics about the journal.
     pub fn stats(&self) -> Result<JournalStats> {
         stats_for_db(&self.db)
     }
@@ -979,8 +978,8 @@ pub struct JournalStats {
     pub current_step_id: StepId,
 }
 
-/// Parse ISO 8601 string to `SystemTime` (for internal use)
-#[allow(dead_code)]
+/// Parse ISO 8601 string to `SystemTime` (for tests)
+#[cfg(test)]
 fn iso8601_to_system_time(s: &str) -> Option<SystemTime> {
     // Parse format: YYYY-MM-DDTHH:MM:SS.mmmZ
     if s.len() < 19 {
@@ -1009,6 +1008,7 @@ fn iso8601_to_system_time(s: &str) -> Option<SystemTime> {
 }
 
 /// Convert (year, month, day) to days since Unix epoch
+#[cfg(test)]
 fn ymd_to_days(year: i32, month: u32, day: u32) -> Option<i64> {
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;

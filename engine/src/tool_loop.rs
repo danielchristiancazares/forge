@@ -853,7 +853,7 @@ impl App {
         let librarian = self.librarian.clone();
         let working_dir = settings.sandbox.working_dir();
 
-        let spawned = SpawnedTool::spawn(call.clone(), |event_tx, abort_handle| {
+        let spawned = SpawnedTool::spawn(call.clone(), |event_tx, _abort_handle| {
             let call = call.clone();
 
             async move {
@@ -881,7 +881,6 @@ impl App {
 
                 let mut ctx = tools::ToolCtx {
                     sandbox: settings.sandbox.clone(),
-                    abort: abort_handle,
                     output_tx: event_tx.clone(),
                     default_timeout,
                     max_output_bytes: settings.max_output_bytes,
@@ -1854,6 +1853,18 @@ impl App {
 
     /// Finish a user turn and report any file changes.
     pub(crate) fn finish_turn(&mut self, turn: TurnContext) {
+        if self.view.view_mode == crate::ui::ViewMode::Focus
+            && matches!(
+                self.view.focus_state,
+                crate::ui::FocusState::Executing { .. }
+            )
+        {
+            self.view.focus_state = crate::ui::FocusState::Reviewing {
+                active_index: 0,
+                auto_advance: true,
+            };
+        }
+
         let working_dir = self.tool_settings.sandbox.working_dir();
         let (report, created, modified) = turn.finish(&working_dir);
 

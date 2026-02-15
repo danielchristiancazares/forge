@@ -35,7 +35,7 @@ pub struct LspManager {
     servers: HashMap<String, RunningServer>,
     diagnostics: DiagnosticsStore,
     event_rx: mpsc::Receiver<LspEvent>,
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     event_tx: mpsc::Sender<LspEvent>,
     extension_map: HashMap<String, String>,
 }
@@ -73,6 +73,7 @@ impl LspManager {
             servers,
             diagnostics: DiagnosticsStore::new(),
             event_rx,
+            #[cfg(test)]
             event_tx,
             extension_map,
         }

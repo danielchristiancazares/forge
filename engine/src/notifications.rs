@@ -75,8 +75,6 @@ impl NotificationQueue {
         Self::default()
     }
 
-    /// Push a notification to the queue.
-    ///
     /// Duplicate notifications are deduplicated to avoid redundant messages.
     pub fn push(&mut self, notification: SystemNotification) {
         if !self.pending.contains(&notification) {
@@ -84,22 +82,19 @@ impl NotificationQueue {
         }
     }
 
-    /// Take all pending notifications, clearing the queue.
-    ///
     /// Returns the notifications in the order they were added.
-    #[allow(dead_code)] // Public API for future use
     pub fn take(&mut self) -> Vec<SystemNotification> {
         std::mem::take(&mut self.pending)
     }
 
+    #[cfg(test)]
     #[must_use]
-    #[allow(dead_code)] // Public API for future use
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
 
+    #[cfg(test)]
     #[must_use]
-    #[allow(dead_code)] // Public API for future use
     pub fn len(&self) -> usize {
         self.pending.len()
     }

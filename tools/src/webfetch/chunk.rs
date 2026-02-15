@@ -14,12 +14,8 @@ use super::types::FetchChunk;
 /// Block types detected during parsing.
 #[derive(Debug, Clone)]
 enum Block {
-    /// ATX heading: level (1-6) and normalized text (without # prefix).
-    Heading {
-        level: u8,
-        text: String,
-        raw: String,
-    },
+    /// ATX heading with normalized text (without # prefix).
+    Heading { text: String, raw: String },
     /// Paragraph: non-blank, non-heading, non-code, non-list content.
     Paragraph(String),
     /// Fenced code block: language hint and content lines.
@@ -58,8 +54,8 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
         }
 
         // Check for ATX heading
-        if let Some((level, text, raw)) = parse_atx_heading(line) {
-            blocks.push(Block::Heading { level, text, raw });
+        if let Some((_level, text, raw)) = parse_atx_heading(line) {
+            blocks.push(Block::Heading { text, raw });
             i += 1;
             continue;
         }
@@ -1016,7 +1012,7 @@ mod tests {
         let md = "# Heading\n\nParagraph text.\n\n- list item";
         let blocks = parse_blocks(md);
 
-        assert!(matches!(blocks[0], Block::Heading { level: 1, .. }));
+        assert!(matches!(blocks[0], Block::Heading { .. }));
         assert!(matches!(blocks[1], Block::BlankLines(_)));
         assert!(matches!(blocks[2], Block::Paragraph(_)));
         assert!(matches!(blocks[3], Block::BlankLines(_)));

@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use url::Url;
 
-use super::types::{ErrorCode, WebFetchConfig, WebFetchError, WebFetchInput};
+use super::types::{WebFetchConfig, WebFetchError, WebFetchInput};
 
 pub(crate) const DEFAULT_USER_AGENT: &str = "forge-webfetch/1.0";
 pub(crate) const DEFAULT_ALLOWED_PORTS: &[u16] = &[80, 443];
@@ -266,9 +266,4 @@ fn derive_robots_token(user_agent: &str) -> String {
     } else {
         filtered
     }
-}
-
-#[allow(dead_code)]
-fn invalid_config(message: &str) -> WebFetchError {
-    WebFetchError::new(ErrorCode::BadArgs, message, false)
 }

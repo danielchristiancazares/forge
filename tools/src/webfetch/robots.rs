@@ -30,7 +30,7 @@ pub enum RobotsResult {
     /// Path is disallowed.
     Disallowed { rule: String },
     /// robots.txt unavailable (and `fail_open` applies).
-    Unavailable { error: String },
+    Unavailable,
 }
 
 /// Cached robots.txt entry.
@@ -115,9 +115,8 @@ pub async fn check(url: &Url, config: &ResolvedConfig) -> Result<RobotsResult, W
             // 5xx or network error
             if fail_open {
                 // Don't cache fail_open outcomes
-                Ok(RobotsResult::Unavailable {
-                    error: e.message.clone(),
-                })
+                let _ = e.message;
+                Ok(RobotsResult::Unavailable)
             } else {
                 Err(e)
             }
@@ -713,12 +712,6 @@ pub fn parse(content: &str) -> Result<Robots, WebFetchError> {
     }
 
     Ok(robots)
-}
-
-#[cfg(test)]
-pub async fn clear_cache() {
-    let mut cache = cache().write().await;
-    cache.clear();
 }
 
 #[cfg(test)]

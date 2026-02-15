@@ -120,15 +120,15 @@ impl SecretRedactor {
     }
 
     /// Returns true if any secrets were detected in the environment.
+    #[cfg(test)]
     #[must_use]
-    #[allow(dead_code)]
     pub fn has_secrets(&self) -> bool {
         !self.secrets.is_empty()
     }
 
     /// Returns the number of unique secrets detected.
+    #[cfg(test)]
     #[must_use]
-    #[allow(dead_code)]
     pub fn secret_count(&self) -> usize {
         self.secrets.len()
     }
@@ -242,7 +242,6 @@ fn sanitize_impl(raw: &str) -> String {
 /// Important: normalization (1–2) MUST run before redaction. If redaction runs first,
 /// an attacker can split a secret with invisible characters so it won't match, then
 /// have normalization "snap" it back into a visible token.
-#[allow(dead_code)] // Public API, currently unused by dependents in this workspace.
 #[must_use]
 pub fn sanitize_display_text(input: &str) -> String {
     sanitize_impl(input)
@@ -250,8 +249,6 @@ pub fn sanitize_display_text(input: &str) -> String {
 
 static SECRET_REDACTOR: OnceLock<SecretRedactor> = OnceLock::new();
 
-/// Get the global secret redactor instance.
-///
 /// Initializes on first call by scanning environment variables.
 pub fn secret_redactor() -> &'static SecretRedactor {
     SECRET_REDACTOR.get_or_init(SecretRedactor::from_env)

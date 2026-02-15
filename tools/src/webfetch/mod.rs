@@ -1,16 +1,10 @@
 //! WebFetch: URL fetching, extraction, chunking, and tool executor.
 
-#[allow(dead_code)]
 mod cache;
-#[allow(dead_code)]
 mod chunk;
-#[allow(dead_code)]
 mod extract;
-#[allow(dead_code)]
 mod http;
-#[allow(dead_code)]
 mod resolved;
-#[allow(dead_code)]
 mod robots;
 pub mod types;
 
@@ -149,7 +143,7 @@ async fn check_robots(
             false,
         )
         .with_detail("rule", rule)),
-        RobotsResult::Unavailable { error: _ } => {
+        RobotsResult::Unavailable => {
             notes.push(Note::RobotsUnavailableFailOpen);
             Ok(())
         }

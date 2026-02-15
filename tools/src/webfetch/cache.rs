@@ -123,9 +123,6 @@ pub struct Cache {
     /// Maximum total bytes.
     max_bytes: u64,
 
-    /// TTL duration.
-    ttl: Duration,
-
     /// In-memory LRU tracking (key → (`last_access`, size)).
     lru: HashMap<String, (SystemTime, u64)>,
 }
@@ -161,7 +158,6 @@ impl Cache {
             dir,
             max_entries: settings.max_entries,
             max_bytes: settings.max_bytes,
-            ttl: settings.ttl,
             lru: HashMap::new(),
         };
 
@@ -262,11 +258,6 @@ impl Cache {
         self.lru.insert(key, (SystemTime::now(), size));
 
         Ok(())
-    }
-
-    /// Get TTL duration for creating entries.
-    pub fn ttl(&self) -> Duration {
-        self.ttl
     }
 
     /// Scan existing cache entries to populate LRU.

@@ -3,7 +3,6 @@
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use base64::Engine;
 use globset::GlobBuilder;
@@ -120,11 +119,6 @@ struct WriteFileArgs {
 #[derive(Debug, Deserialize)]
 struct RunCommandArgs {
     command: String,
-    // Model-provided justification shown to the user during tool approval (plumbed through
-    // the tool loop). The `Run` executor intentionally does not read this value.
-    #[allow(dead_code)]
-    #[serde(default)]
-    reason: Option<String>,
     #[serde(default)]
     unsafe_allow_unsandboxed: bool,
 }
@@ -662,19 +656,13 @@ impl ToolExecutor for ReadFileTool {
                                 start_line,
                                 end_line,
                             ) {
-                                FileCacheEntry {
-                                    observed: merged,
-                                    read_at: SystemTime::now(),
-                                }
+                                FileCacheEntry { observed: merged }
                             } else {
                                 // If merge fails (IO error), create fresh region
                                 if let Ok(region) =
                                     region_hash::create_region(&resolved, start_line, end_line)
                                 {
-                                    FileCacheEntry {
-                                        observed: region,
-                                        read_at: SystemTime::now(),
-                                    }
+                                    FileCacheEntry { observed: region }
                                 } else {
                                     return Ok(sanitize_output(&output));
                                 }
@@ -685,10 +673,7 @@ impl ToolExecutor for ReadFileTool {
                             if let Ok(region) =
                                 region_hash::create_region(&resolved, start_line, end_line)
                             {
-                                FileCacheEntry {
-                                    observed: region,
-                                    read_at: SystemTime::now(),
-                                }
+                                FileCacheEntry { observed: region }
                             } else {
                                 return Ok(sanitize_output(&output));
                             }
@@ -765,7 +750,9 @@ impl ToolExecutor for ApplyPatchTool {
                     .resolve_path(&file_patch.path, &ctx.working_dir)?;
 
                 // Check if file exists FIRST (before stale check)
-                let (existed, permissions) = match std::fs::metadata(&resolved) {
+                #[cfg(unix)]
+                let mut permissions: Option<std::fs::Permissions> = None;
+                let existed = match std::fs::metadata(&resolved) {
                     Ok(meta) => {
                         if meta.is_dir() {
                             return Err(ToolError::PatchFailed {
@@ -773,9 +760,13 @@ impl ToolExecutor for ApplyPatchTool {
                                 message: "Path is a directory".to_string(),
                             });
                         }
-                        (true, Some(meta.permissions()))
+                        #[cfg(unix)]
+                        {
+                            permissions = Some(meta.permissions());
+                        }
+                        true
                     }
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => (false, None),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
                     Err(err) => {
                         return Err(ToolError::PatchFailed {
                             file: resolved.clone(),
@@ -905,6 +896,7 @@ impl ToolExecutor for ApplyPatchTool {
                     changed,
                     bytes: new_bytes,
                     original_bytes,
+                    #[cfg(unix)]
                     permissions,
                 });
             }
@@ -978,7 +970,6 @@ impl ToolExecutor for ApplyPatchTool {
                                 &file.bytes,
                                 &existing.observed,
                             ),
-                            read_at: SystemTime::now(),
                         }
                     } else {
                         // New file: create region covering entire file
@@ -996,7 +987,6 @@ impl ToolExecutor for ApplyPatchTool {
                                     line_count,
                                 ),
                             },
-                            read_at: SystemTime::now(),
                         }
                     };
                     cache.insert(key, new_entry);
@@ -1150,10 +1140,7 @@ impl ToolExecutor for WriteFileTool {
                 let mut cache = ctx.file_cache.lock().await;
                 cache.insert(
                     normalize_cache_key(&resolved),
-                    FileCacheEntry {
-                        observed: region,
-                        read_at: SystemTime::now(),
-                    },
+                    FileCacheEntry { observed: region },
                 );
             }
 
@@ -1743,7 +1730,7 @@ struct StagedFile {
     bytes: Vec<u8>,
     original_bytes: Vec<u8>,
     /// Original file permissions, used to preserve mode on Unix after atomic write.
-    #[cfg_attr(not(unix), allow(dead_code))]
+    #[cfg(unix)]
     permissions: Option<std::fs::Permissions>,
 }
 

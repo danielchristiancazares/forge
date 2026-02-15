@@ -110,10 +110,8 @@ pub(crate) struct RunningServer {
     opened_docs: HashSet<String>,
     /// Per-document version counter for didChange.
     doc_versions: HashMap<String, i32>,
-    #[allow(dead_code)]
-    reader_handle: tokio::task::JoinHandle<()>,
-    #[allow(dead_code)]
-    writer_handle: tokio::task::JoinHandle<()>,
+    _reader_handle: tokio::task::JoinHandle<()>,
+    _writer_handle: tokio::task::JoinHandle<()>,
 }
 
 impl RunningServer {
@@ -223,8 +221,8 @@ impl RunningServer {
             pending,
             opened_docs: HashSet::new(),
             doc_versions: HashMap::new(),
-            reader_handle,
-            writer_handle,
+            _reader_handle: reader_handle,
+            _writer_handle: writer_handle,
         };
 
         handle.initialize(workspace_root).await?;

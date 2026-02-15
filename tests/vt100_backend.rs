@@ -30,12 +30,6 @@ impl VT100Backend {
         }
     }
 
-    /// Returns a reference to the underlying vt100 parser.
-    #[allow(dead_code)]
-    pub fn vt100(&self) -> &vt100::Parser {
-        &self.parser
-    }
-
     /// Returns the screen contents as a string.
     pub fn contents(&self) -> String {
         self.parser.screen().contents()

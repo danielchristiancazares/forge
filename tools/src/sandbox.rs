@@ -108,18 +108,6 @@ impl Sandbox {
         })
     }
 
-    #[allow(dead_code)]
-    #[must_use]
-    pub fn allowed_roots(&self) -> &[PathBuf] {
-        &self.allowed_roots
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
-    pub fn allow_absolute(&self) -> bool {
-        self.allow_absolute
-    }
-
     #[must_use]
     pub fn working_dir(&self) -> PathBuf {
         self.allowed_roots
@@ -443,30 +431,6 @@ fn contains_ntfs_ads(input: &str) -> bool {
     Path::new(input)
         .components()
         .any(|c| matches!(c, std::path::Component::Normal(s) if s.to_string_lossy().contains(':')))
-}
-
-#[allow(dead_code)] // Available for alternative path resolution strategy
-fn split_existing_ancestor(path: &Path) -> Result<(PathBuf, Vec<std::ffi::OsString>), ToolError> {
-    let mut current = path;
-    let mut suffix = Vec::new();
-    loop {
-        if current.exists() {
-            return Ok((current.to_path_buf(), suffix));
-        }
-        let file_name = current.file_name().ok_or_else(|| {
-            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
-                attempted: path.to_path_buf(),
-                resolved: path.to_path_buf(),
-            })
-        })?;
-        suffix.push(file_name.to_os_string());
-        current = current.parent().ok_or_else(|| {
-            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
-                attempted: path.to_path_buf(),
-                resolved: path.to_path_buf(),
-            })
-        })?;
-    }
 }
 
 fn contains_unsafe_path_chars(input: &str) -> bool {

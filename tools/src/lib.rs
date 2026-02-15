@@ -27,11 +27,11 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use change_recording::ChangeRecorder;
 use forge_context::Librarian;
-use forge_types::{HomoglyphWarning, Provider, ToolDefinition, ToolResult, detect_mixed_script};
+use forge_types::{HomoglyphWarning, Provider, ToolDefinition, detect_mixed_script};
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 
@@ -134,15 +134,6 @@ pub fn analyze_tool_arguments(tool_name: &str, args: &Value) -> Vec<HomoglyphWar
     }
 
     warnings
-}
-
-/// Planned disposition for a tool call.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub enum PlannedDisposition {
-    ExecuteNow,
-    RequiresConfirmation(ConfirmationRequest),
-    PreResolved(ToolResult),
 }
 
 /// Tool events for streaming output.
@@ -355,12 +346,6 @@ impl ToolRegistry {
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs
     }
-
-    #[allow(dead_code)]
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.executors.is_empty() && self.schema_only.is_empty()
-    }
 }
 
 /// Proof object: grants permission to edit lines within [start_line, end_line].
@@ -390,8 +375,6 @@ impl ObservedRegion {
 pub struct FileCacheEntry {
     /// Observed region covering all reads. Merged on each read.
     pub observed: ObservedRegion,
-    #[allow(dead_code)]
-    pub read_at: SystemTime,
 }
 
 pub type ToolFileCache = HashMap<PathBuf, FileCacheEntry>;
@@ -423,22 +406,10 @@ pub fn record_file_read(
     let key = normalize_cache_key(path);
     if let Some(entry) = cache.get(&key) {
         if let Ok(merged) = region_hash::merge_regions(path, &entry.observed, 1, line_count) {
-            cache.insert(
-                key,
-                FileCacheEntry {
-                    observed: merged,
-                    read_at: SystemTime::now(),
-                },
-            );
+            cache.insert(key, FileCacheEntry { observed: merged });
         }
     } else if let Ok(region) = region_hash::create_region(path, 1, line_count) {
-        cache.insert(
-            key,
-            FileCacheEntry {
-                observed: region,
-                read_at: SystemTime::now(),
-            },
-        );
+        cache.insert(key, FileCacheEntry { observed: region });
     }
     Ok(())
 }
@@ -447,8 +418,6 @@ pub fn record_file_read(
 #[derive(Debug)]
 pub struct ToolCtx {
     pub sandbox: Sandbox,
-    #[allow(dead_code)]
-    pub abort: futures_util::future::AbortHandle,
     pub output_tx: mpsc::Sender<ToolEvent>,
     pub default_timeout: Duration,
     pub max_output_bytes: usize,
@@ -463,19 +432,6 @@ pub struct ToolCtx {
     pub librarian: Option<Arc<Mutex<Librarian>>>,
     /// Command blacklist for blocking catastrophic commands.
     pub command_blacklist: CommandBlacklist,
-}
-
-/// Shared batch-level tool context.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct SharedToolCtx {
-    pub sandbox: Sandbox,
-    pub output_tx: mpsc::Sender<ToolEvent>,
-    pub default_timeout: Duration,
-    pub max_output_bytes: usize,
-    pub initial_capacity_bytes: usize,
-    pub env_sanitizer: EnvSanitizer,
-    pub file_cache: Arc<tokio::sync::Mutex<ToolFileCache>>,
 }
 
 /// Per-batch limits for tool execution.

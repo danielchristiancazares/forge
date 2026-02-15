@@ -26,11 +26,6 @@ impl CheckpointId {
     pub(crate) fn parse(raw: &str) -> Option<Self> {
         raw.parse::<u64>().ok().map(Self)
     }
-
-    #[allow(dead_code)]
-    pub(crate) fn as_u64(self) -> u64 {
-        self.0
-    }
 }
 
 impl fmt::Display for CheckpointId {
@@ -137,11 +132,6 @@ impl Checkpoint {
         self.conversation_len
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn workspace(&self) -> Option<&WorkspaceSnapshot> {
-        self.workspace.as_ref()
-    }
-
     pub(crate) fn summary(&self) -> CheckpointSummary {
         let (has_code, file_count, total_bytes) = match &self.workspace {
             Some(ws) => (true, ws.files.len(), ws.total_bytes),
@@ -165,24 +155,11 @@ pub(crate) struct WorkspaceSnapshot {
     total_bytes: usize,
 }
 
-impl WorkspaceSnapshot {
-    #[allow(dead_code)]
-    pub(crate) fn files(&self) -> &BTreeMap<PathBuf, FileSnapshot> {
-        &self.files
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn total_bytes(&self) -> usize {
-        self.total_bytes
-    }
-}
-
 /// File state at checkpoint creation time.
 #[derive(Debug)]
 pub(crate) enum FileSnapshot {
     Existed {
         bytes: Vec<u8>,
-        #[allow(dead_code)]
         permissions: Option<std::fs::Permissions>,
     },
     Missing,
@@ -209,11 +186,7 @@ pub(crate) struct PreparedFileBaseline {
 /// Checkpoint creation outcome.
 #[derive(Debug, Clone)]
 pub(crate) struct CreatedCheckpoint {
-    #[allow(dead_code)]
-    pub kind: CheckpointKind,
     pub id: CheckpointId,
-    #[allow(dead_code)]
-    pub has_code: bool,
     pub file_count: usize,
     pub total_bytes: usize,
     pub warning: Option<String>,
@@ -342,8 +315,6 @@ impl CheckpointStore {
         };
 
         let file_count = workspace.as_ref().map(|w| w.files.len()).unwrap_or(0);
-        let has_code = workspace.is_some();
-
         self.checkpoints.push(Checkpoint {
             id,
             created_at,
@@ -358,9 +329,7 @@ impl CheckpointStore {
         }
 
         CreatedCheckpoint {
-            kind,
             id,
-            has_code,
             file_count,
             total_bytes,
             warning,
@@ -857,7 +826,7 @@ mod tests {
         let created = store.create_for_files(CheckpointKind::Turn, 5, Vec::<PathBuf>::new());
         assert_eq!(created.id, CheckpointId(0));
         assert_eq!(created.file_count, 0);
-        assert!(!created.has_code);
+        assert_eq!(created.total_bytes, 0);
         assert!(!store.is_empty());
         assert_eq!(store.latest_id(), Some(CheckpointId(0)));
 

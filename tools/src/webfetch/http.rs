@@ -427,7 +427,6 @@ pub async fn fetch(
             return Ok(HttpResponse {
                 final_url: current_url,
                 body,
-                content_type: Some(final_media_type),
                 charset,
                 charset_fallback,
             });
@@ -480,9 +479,6 @@ pub struct HttpResponse {
 
     /// Response body bytes.
     pub body: Vec<u8>,
-
-    /// Content-Type header value.
-    pub content_type: Option<String>,
 
     /// Detected charset.
     pub charset: Option<String>,
