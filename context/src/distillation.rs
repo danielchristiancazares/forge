@@ -45,6 +45,32 @@ fn max_distillation_tokens(provider: Provider) -> u32 {
 }
 const DISTILLATION_TIMEOUT_SECS: u64 = 600;
 
+async fn retry_outcome_to_json(
+    outcome: RetryOutcome,
+    provider_label: &'static str,
+    action: &'static str,
+) -> Result<serde_json::Value> {
+    let response = match outcome {
+        RetryOutcome::Success(resp) => resp,
+        RetryOutcome::HttpError(resp) => {
+            let status = resp.status();
+            let error_text = read_capped_error_body(resp).await;
+            return Err(anyhow!("{provider_label} API error {status}: {error_text}"));
+        }
+        RetryOutcome::ConnectionError { attempts, source } => {
+            return Err(anyhow!(
+                "{provider_label} {action} failed after {attempts} attempts: {source}"
+            ));
+        }
+        RetryOutcome::NonRetryable(e) => {
+            return Err(anyhow!("{provider_label} {action} failed: {e}"));
+        }
+    };
+
+    let json: serde_json::Value = response.json().await?;
+    Ok(json)
+}
+
 /// Distillation prompt template loaded from context/assets/distillation.md
 const DISTILLATION_PROMPT_TEMPLATE: &str = include_str!("../assets/distillation.md");
 
@@ -242,24 +268,7 @@ async fn generate_distillation_claude(
     )
     .await;
 
-    let response = match outcome {
-        RetryOutcome::Success(resp) => resp,
-        RetryOutcome::HttpError(resp) => {
-            let status = resp.status();
-            let error_text = read_capped_error_body(resp).await;
-            return Err(anyhow!("Claude API error {status}: {error_text}"));
-        }
-        RetryOutcome::ConnectionError { attempts, source } => {
-            return Err(anyhow!(
-                "Claude distillation failed after {attempts} attempts: {source}"
-            ));
-        }
-        RetryOutcome::NonRetryable(e) => {
-            return Err(anyhow!("Claude distillation failed: {e}"));
-        }
-    };
-
-    let json: serde_json::Value = response.json().await?;
+    let json = retry_outcome_to_json(outcome, "Claude", "distillation").await?;
 
     let distillation = json["content"]
         .as_array()
@@ -316,24 +325,7 @@ async fn generate_distillation_openai(
     )
     .await;
 
-    let response = match outcome {
-        RetryOutcome::Success(resp) => resp,
-        RetryOutcome::HttpError(resp) => {
-            let status = resp.status();
-            let error_text = read_capped_error_body(resp).await;
-            return Err(anyhow!("OpenAI API error {status}: {error_text}"));
-        }
-        RetryOutcome::ConnectionError { attempts, source } => {
-            return Err(anyhow!(
-                "OpenAI distillation failed after {attempts} attempts: {source}"
-            ));
-        }
-        RetryOutcome::NonRetryable(e) => {
-            return Err(anyhow!("OpenAI distillation failed: {e}"));
-        }
-    };
-
-    let json: serde_json::Value = response.json().await?;
+    let json = retry_outcome_to_json(outcome, "OpenAI", "distillation").await?;
 
     // Extract text from OpenAI Responses API format:
     // { "output": [{ "type": "reasoning", ... }, { "type": "message", "content": [{ "type": "output_text", "text": "..." }] }] }
@@ -404,24 +396,7 @@ async fn generate_distillation_gemini(
     )
     .await;
 
-    let response = match outcome {
-        RetryOutcome::Success(resp) => resp,
-        RetryOutcome::HttpError(resp) => {
-            let status = resp.status();
-            let error_text = read_capped_error_body(resp).await;
-            return Err(anyhow!("Gemini API error {status}: {error_text}"));
-        }
-        RetryOutcome::ConnectionError { attempts, source } => {
-            return Err(anyhow!(
-                "Gemini distillation failed after {attempts} attempts: {source}"
-            ));
-        }
-        RetryOutcome::NonRetryable(e) => {
-            return Err(anyhow!("Gemini distillation failed: {e}"));
-        }
-    };
-
-    let json: serde_json::Value = response.json().await?;
+    let json = retry_outcome_to_json(outcome, "Gemini", "distillation").await?;
 
     // Extract text from Gemini's response format:
     // { "candidates": [{ "content": { "parts": [{ "text": "..." }] } }] }

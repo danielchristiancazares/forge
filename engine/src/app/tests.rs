@@ -41,35 +41,21 @@ fn test_app() -> App {
     let tool_journal = ToolJournal::open_in_memory().expect("in-memory tool journal");
     let tool_file_cache = std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
-    App {
-        input: InputState::default(),
-        display: Vec::new(),
-        display_version: 0,
-        should_quit: false,
+    super::init::build_app(super::init::AppBuildParts {
         view: ViewState::default(),
         configured_model: model.clone(),
         configured_tool_approval_mode: tools::ApprovalMode::Default,
         configured_context_memory_enabled: true,
         configured_ui_options: UiOptions::default(),
-        pending_turn_model: None,
-        pending_turn_tool_approval_mode: None,
-        pending_turn_context_memory_enabled: None,
-        pending_turn_ui_options: None,
-        settings_model_editor: None,
-        settings_tools_editor: None,
-        settings_context_editor: None,
-        settings_appearance_editor: None,
         api_keys,
         config_path: tempdir()
             .expect("temp config dir for tests")
             .keep()
             .join("config.toml"),
         model: model.clone(),
-        tick: 0,
         data_dir,
         context_manager,
         stream_journal,
-        state: OperationState::Idle,
         memory_enabled: true,
         output_limits,
         configured_output_limits: output_limits,
@@ -86,41 +72,15 @@ fn test_app() -> App {
         },
         system_prompts: TEST_SYSTEM_PROMPTS,
         environment: EnvironmentContext::gather_without_agents_md(),
-        cached_usage_status: None,
-        pending_user_message: None,
         tool_definitions,
         hidden_tools,
         tool_registry,
         tool_settings,
         tool_journal,
-        tools_disabled_state: None,
-        pending_stream_cleanup: None,
-        pending_stream_cleanup_failures: 0,
-        pending_tool_cleanup: None,
-        pending_tool_cleanup_failures: 0,
         tool_file_cache,
-        checkpoints: super::checkpoints::CheckpointStore::default(),
-        tool_iterations: 0,
-        history_load_warning_shown: false,
-        autosave_warning_shown: false,
-        librarian: None, // No Gemini API key in tests
-        input_history: crate::ui::InputHistory::default(),
-        last_ui_tick: Instant::now(),
-        last_session_autosave: Instant::now(),
-        next_journal_cleanup_attempt: Instant::now(),
-        session_changes: crate::session_state::SessionChangeLog::default(),
-        file_picker: crate::ui::FilePickerState::new(),
-        turn_usage: None,
-        last_turn_usage: None,
-        notification_queue: crate::notifications::NotificationQueue::new(),
-        lsp_runtime: LspRuntimeState {
-            config: None,
-            manager: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
-            snapshot: forge_lsp::DiagnosticsSnapshot::default(),
-            pending_diag_check: None,
-        },
-        plan_state: crate::PlanState::Inactive,
-    }
+        librarian: None,
+        lsp_config: None,
+    })
 }
 
 fn last_notification(app: &App) -> Option<&str> {

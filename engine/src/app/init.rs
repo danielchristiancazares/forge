@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use forge_types::{OutputLimits, Provider, SecretString, ToolDefinition};
+use forge_types::{ModelName, OutputLimits, Provider, SecretString, ToolDefinition};
 
 use super::{LspRuntimeState, ProviderRuntimeState, SystemPrompts};
 use crate::config::{self, ForgeConfig, OpenAIConfig};
@@ -69,6 +69,106 @@ fn insert_env_key_if_missing(api_keys: &mut HashMap<Provider, SecretString>, pro
         if !trimmed.is_empty() {
             e.insert(SecretString::new(trimmed.to_string()));
         }
+    }
+}
+
+pub(crate) struct AppBuildParts {
+    pub(crate) view: ViewState,
+    pub(crate) configured_model: ModelName,
+    pub(crate) configured_tool_approval_mode: tools::ApprovalMode,
+    pub(crate) configured_context_memory_enabled: bool,
+    pub(crate) configured_ui_options: UiOptions,
+    pub(crate) api_keys: HashMap<Provider, SecretString>,
+    pub(crate) config_path: PathBuf,
+    pub(crate) model: ModelName,
+    pub(crate) data_dir: DataDir,
+    pub(crate) context_manager: ContextManager,
+    pub(crate) stream_journal: StreamJournal,
+    pub(crate) memory_enabled: bool,
+    pub(crate) output_limits: OutputLimits,
+    pub(crate) configured_output_limits: OutputLimits,
+    pub(crate) cache_enabled: bool,
+    pub(crate) provider_runtime: ProviderRuntimeState,
+    pub(crate) system_prompts: SystemPrompts,
+    pub(crate) environment: EnvironmentContext,
+    pub(crate) tool_definitions: Vec<ToolDefinition>,
+    pub(crate) hidden_tools: std::collections::HashSet<String>,
+    pub(crate) tool_registry: std::sync::Arc<tools::ToolRegistry>,
+    pub(crate) tool_settings: tools::ToolSettings,
+    pub(crate) tool_journal: ToolJournal,
+    pub(crate) tool_file_cache: std::sync::Arc<tokio::sync::Mutex<tools::ToolFileCache>>,
+    pub(crate) librarian: Option<std::sync::Arc<tokio::sync::Mutex<Librarian>>>,
+    pub(crate) lsp_config: Option<forge_lsp::LspConfig>,
+}
+
+pub(crate) fn build_app(parts: AppBuildParts) -> App {
+    App {
+        input: InputState::default(),
+        display: Vec::new(),
+        display_version: 0,
+        should_quit: false,
+        view: parts.view,
+        configured_model: parts.configured_model,
+        configured_tool_approval_mode: parts.configured_tool_approval_mode,
+        configured_context_memory_enabled: parts.configured_context_memory_enabled,
+        configured_ui_options: parts.configured_ui_options,
+        pending_turn_model: None,
+        pending_turn_tool_approval_mode: None,
+        pending_turn_context_memory_enabled: None,
+        pending_turn_ui_options: None,
+        settings_model_editor: None,
+        settings_tools_editor: None,
+        settings_context_editor: None,
+        settings_appearance_editor: None,
+        api_keys: parts.api_keys,
+        config_path: parts.config_path,
+        model: parts.model,
+        tick: 0,
+        data_dir: parts.data_dir,
+        context_manager: parts.context_manager,
+        stream_journal: parts.stream_journal,
+        state: OperationState::Idle,
+        memory_enabled: parts.memory_enabled,
+        output_limits: parts.output_limits,
+        configured_output_limits: parts.configured_output_limits,
+        cache_enabled: parts.cache_enabled,
+        provider_runtime: parts.provider_runtime,
+        system_prompts: parts.system_prompts,
+        environment: parts.environment,
+        cached_usage_status: None,
+        pending_user_message: None,
+        tool_definitions: parts.tool_definitions,
+        hidden_tools: parts.hidden_tools,
+        tool_registry: parts.tool_registry,
+        tool_settings: parts.tool_settings,
+        tool_journal: parts.tool_journal,
+        tools_disabled_state: None,
+        pending_stream_cleanup: None,
+        pending_stream_cleanup_failures: 0,
+        pending_tool_cleanup: None,
+        pending_tool_cleanup_failures: 0,
+        tool_file_cache: parts.tool_file_cache,
+        checkpoints: super::checkpoints::CheckpointStore::default(),
+        tool_iterations: 0,
+        history_load_warning_shown: false,
+        autosave_warning_shown: false,
+        librarian: parts.librarian,
+        input_history: crate::ui::InputHistory::default(),
+        last_ui_tick: Instant::now(),
+        last_session_autosave: Instant::now(),
+        next_journal_cleanup_attempt: Instant::now(),
+        session_changes: crate::session_state::SessionChangeLog::default(),
+        file_picker: crate::ui::FilePickerState::new(),
+        turn_usage: None,
+        last_turn_usage: None,
+        notification_queue: crate::notifications::NotificationQueue::new(),
+        lsp_runtime: LspRuntimeState {
+            config: parts.lsp_config,
+            manager: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            snapshot: forge_lsp::DiagnosticsSnapshot::default(),
+            pending_diag_check: None,
+        },
+        plan_state: crate::PlanState::Inactive,
     }
 }
 
@@ -287,32 +387,18 @@ impl App {
         };
         let configured_tool_approval_mode = tool_settings.policy.mode;
 
-        let mut app = Self {
-            input: InputState::default(),
-            display: Vec::new(),
-            display_version: 0,
-            should_quit: false,
+        let mut app = build_app(AppBuildParts {
             view,
             configured_model: configured_model.clone(),
             configured_tool_approval_mode,
             configured_context_memory_enabled: memory_enabled,
             configured_ui_options: ui_options,
-            pending_turn_model: None,
-            pending_turn_tool_approval_mode: None,
-            pending_turn_context_memory_enabled: None,
-            pending_turn_ui_options: None,
-            settings_model_editor: None,
-            settings_tools_editor: None,
-            settings_context_editor: None,
-            settings_appearance_editor: None,
             api_keys,
             config_path: config::config_path().unwrap_or_default(),
             model,
-            tick: 0,
             data_dir,
             context_manager,
             stream_journal,
-            state: OperationState::Idle,
             memory_enabled,
             output_limits,
             configured_output_limits: output_limits,
@@ -329,41 +415,15 @@ impl App {
             },
             system_prompts,
             environment,
-            cached_usage_status: None,
-            pending_user_message: None,
             tool_definitions,
             hidden_tools,
             tool_registry,
             tool_settings,
             tool_journal,
-            tools_disabled_state: None,
-            pending_stream_cleanup: None,
-            pending_stream_cleanup_failures: 0,
-            pending_tool_cleanup: None,
-            pending_tool_cleanup_failures: 0,
             tool_file_cache,
-            checkpoints: super::checkpoints::CheckpointStore::default(),
-            tool_iterations: 0,
-            history_load_warning_shown: false,
-            autosave_warning_shown: false,
             librarian,
-            input_history: crate::ui::InputHistory::default(),
-            last_ui_tick: Instant::now(),
-            last_session_autosave: Instant::now(),
-            next_journal_cleanup_attempt: Instant::now(),
-            session_changes: crate::session_state::SessionChangeLog::default(),
-            file_picker: crate::ui::FilePickerState::new(),
-            turn_usage: None,
-            last_turn_usage: None,
-            notification_queue: crate::notifications::NotificationQueue::new(),
-            lsp_runtime: LspRuntimeState {
-                config: lsp_config,
-                manager: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
-                snapshot: forge_lsp::DiagnosticsSnapshot::default(),
-                pending_diag_check: None,
-            },
-            plan_state: crate::PlanState::Inactive,
-        };
+            lsp_config,
+        });
 
         app.reconcile_output_limits_with_model();
         // Sync output limit to context manager for accurate budget calculation

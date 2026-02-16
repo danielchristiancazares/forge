@@ -672,7 +672,7 @@ impl SystemPrompts {
 }
 
 #[derive(Clone)]
-struct ProviderRuntimeState {
+pub(crate) struct ProviderRuntimeState {
     /// `OpenAI` request defaults (reasoning/summary/verbosity/truncation).
     openai_options: OpenAIRequestOptions,
     openai_reasoning_effort_explicit: bool,
