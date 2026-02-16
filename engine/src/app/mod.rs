@@ -727,14 +727,8 @@ pub struct App {
     pending_turn_context_memory_enabled: Option<bool>,
     /// Saved UI defaults staged to take effect at the start of the next turn.
     pending_turn_ui_options: Option<UiOptions>,
-    /// Models detail editor state for `/settings`.
-    settings_model_editor: Option<ModelSettingsEditor>,
-    /// Tools detail editor state for `/settings`.
-    settings_tools_editor: Option<ToolsSettingsEditor>,
-    /// Context detail editor state for `/settings`.
-    settings_context_editor: Option<ContextSettingsEditor>,
-    /// Appearance detail editor state for `/settings`.
-    settings_appearance_editor: Option<AppearanceSettingsEditor>,
+    /// Mutually-exclusive settings detail editor state.
+    settings_editor: SettingsEditorState,
     api_keys: HashMap<Provider, SecretString>,
     /// Path to the config file for persist operations.
     config_path: std::path::PathBuf,
@@ -834,6 +828,18 @@ pub struct App {
     lsp_runtime: LspRuntimeState,
     /// Plan lifecycle state (Inactive / Proposed / Active).
     plan_state: PlanState,
+}
+
+/// Mutually-exclusive settings editor state (IFA §9.2).
+///
+/// Only one detail editor may be active at a time.
+#[derive(Debug, Clone)]
+enum SettingsEditorState {
+    Inactive,
+    Model(ModelSettingsEditor),
+    Tools(ToolsSettingsEditor),
+    Context(ContextSettingsEditor),
+    Appearance(AppearanceSettingsEditor),
 }
 
 impl App {
@@ -956,59 +962,61 @@ impl App {
 
     #[must_use]
     pub fn settings_model_editor_snapshot(&self) -> Option<ModelEditorSnapshot> {
-        self.settings_model_editor
-            .as_ref()
-            .map(|editor| ModelEditorSnapshot {
+        match &self.settings_editor {
+            SettingsEditorState::Model(editor) => Some(ModelEditorSnapshot {
                 draft: editor.draft.clone(),
                 selected: editor.selected,
                 dirty: editor.is_dirty(),
-            })
+            }),
+            _ => None,
+        }
     }
 
     #[must_use]
     pub fn settings_context_editor_snapshot(&self) -> Option<ContextEditorSnapshot> {
-        self.settings_context_editor
-            .map(|editor| ContextEditorSnapshot {
+        match &self.settings_editor {
+            SettingsEditorState::Context(editor) => Some(ContextEditorSnapshot {
                 draft_memory_enabled: editor.draft_memory_enabled,
                 selected: editor.selected,
                 dirty: editor.is_dirty(),
-            })
+            }),
+            _ => None,
+        }
     }
 
     #[must_use]
     pub fn settings_tools_editor_snapshot(&self) -> Option<ToolsEditorSnapshot> {
-        self.settings_tools_editor
-            .map(|editor| ToolsEditorSnapshot {
+        match &self.settings_editor {
+            SettingsEditorState::Tools(editor) => Some(ToolsEditorSnapshot {
                 draft_approval_mode: approval_mode_display(editor.draft_approval_mode),
                 selected: editor.selected,
                 dirty: editor.is_dirty(),
-            })
+            }),
+            _ => None,
+        }
     }
 
     #[must_use]
     pub fn settings_appearance_editor_snapshot(&self) -> Option<AppearanceEditorSnapshot> {
-        self.settings_appearance_editor
-            .map(|editor| AppearanceEditorSnapshot {
+        match &self.settings_editor {
+            SettingsEditorState::Appearance(editor) => Some(AppearanceEditorSnapshot {
                 draft: editor.draft,
                 selected: editor.selected,
                 dirty: editor.is_dirty(),
-            })
+            }),
+            _ => None,
+        }
     }
 
     #[must_use]
     pub fn settings_has_unsaved_edits(&self) -> bool {
-        self.settings_model_editor
-            .as_ref()
-            .is_some_and(ModelSettingsEditor::is_dirty)
-            || self
-                .settings_tools_editor
-                .is_some_and(ToolsSettingsEditor::is_dirty)
-            || self
-                .settings_context_editor
-                .is_some_and(ContextSettingsEditor::is_dirty)
-            || self
-                .settings_appearance_editor
-                .is_some_and(AppearanceSettingsEditor::is_dirty)
+        match &self.settings_editor {
+            SettingsEditorState::Model(e) => e.is_dirty(),
+            SettingsEditorState::Tools(e) => e.is_dirty(),
+            SettingsEditorState::Context(e) => e.is_dirty(),
+            SettingsEditorState::Appearance(e) => e.is_dirty(),
+            SettingsEditorState::Inactive => false,
+        }
     }
 
     pub(crate) fn apply_pending_turn_settings(&mut self) {
@@ -2244,34 +2252,34 @@ impl App {
         if let Some(modal) = self.input.settings_modal_mut() {
             modal.detail_view = Some(category);
         }
-        self.reset_settings_detail_editor();
+        self.settings_editor = SettingsEditorState::Inactive;
         match category {
             SettingsCategory::Models => {
-                self.settings_model_editor =
-                    Some(ModelSettingsEditor::new(self.configured_model.clone()));
+                self.settings_editor = SettingsEditorState::Model(ModelSettingsEditor::new(
+                    self.configured_model.clone(),
+                ));
             }
             SettingsCategory::Tools => {
-                self.settings_tools_editor =
-                    Some(ToolsSettingsEditor::new(self.configured_tool_approval_mode));
+                self.settings_editor = SettingsEditorState::Tools(ToolsSettingsEditor::new(
+                    self.configured_tool_approval_mode,
+                ));
             }
             SettingsCategory::Context => {
-                self.settings_context_editor = Some(ContextSettingsEditor::new(
+                self.settings_editor = SettingsEditorState::Context(ContextSettingsEditor::new(
                     self.configured_context_memory_enabled,
                 ));
             }
             SettingsCategory::Appearance => {
-                self.settings_appearance_editor =
-                    Some(AppearanceSettingsEditor::new(self.configured_ui_options));
+                self.settings_editor = SettingsEditorState::Appearance(
+                    AppearanceSettingsEditor::new(self.configured_ui_options),
+                );
             }
             _ => {}
         }
     }
 
     fn reset_settings_detail_editor(&mut self) {
-        self.settings_model_editor = None;
-        self.settings_tools_editor = None;
-        self.settings_context_editor = None;
-        self.settings_appearance_editor = None;
+        self.settings_editor = SettingsEditorState::Inactive;
     }
 
     #[must_use]
@@ -2346,115 +2354,96 @@ impl App {
     }
 
     pub fn settings_detail_move_up(&mut self) {
-        if let Some(editor) = self.settings_model_editor.as_mut() {
-            if editor.selected > 0 {
+        match &mut self.settings_editor {
+            SettingsEditorState::Model(editor) if editor.selected > 0 => {
                 editor.selected -= 1;
             }
-            return;
-        }
-        if let Some(editor) = self.settings_tools_editor.as_mut() {
-            if editor.selected > 0 {
+            SettingsEditorState::Tools(editor) if editor.selected > 0 => {
                 editor.selected -= 1;
             }
-            return;
-        }
-        if let Some(editor) = self.settings_context_editor.as_mut() {
-            if editor.selected > 0 {
+            SettingsEditorState::Context(editor) if editor.selected > 0 => {
                 editor.selected -= 1;
             }
-            return;
-        }
-        if let Some(editor) = self.settings_appearance_editor.as_mut()
-            && editor.selected > 0
-        {
-            editor.selected -= 1;
-        }
-    }
-
-    pub fn settings_detail_move_down(&mut self) {
-        if let Some(editor) = self.settings_model_editor.as_mut() {
-            let max_index = ModelSettingsEditor::max_index();
-            if editor.selected < max_index {
-                editor.selected += 1;
-            }
-            return;
-        }
-        if let Some(editor) = self.settings_tools_editor.as_mut() {
-            if editor.selected + 1 < TOOLS_SETTINGS_COUNT {
-                editor.selected += 1;
-            }
-            return;
-        }
-        if let Some(editor) = self.settings_context_editor.as_mut() {
-            if editor.selected + 1 < CONTEXT_SETTINGS_COUNT {
-                editor.selected += 1;
-            }
-            return;
-        }
-        if let Some(editor) = self.settings_appearance_editor.as_mut()
-            && editor.selected + 1 < APPEARANCE_SETTINGS_COUNT
-        {
-            editor.selected += 1;
-        }
-    }
-
-    pub fn settings_detail_toggle_selected(&mut self) {
-        if let Some(editor) = self.settings_model_editor.as_mut() {
-            editor.update_draft_from_selected();
-            return;
-        }
-        if let Some(editor) = self.settings_tools_editor.as_mut() {
-            editor.cycle_selected();
-            return;
-        }
-        if let Some(editor) = self.settings_context_editor.as_mut() {
-            if editor.selected == 0 {
-                editor.draft_memory_enabled = !editor.draft_memory_enabled;
-            }
-            return;
-        }
-        let Some(editor) = self.settings_appearance_editor.as_mut() else {
-            return;
-        };
-        match editor.selected {
-            0 => {
-                editor.draft.ascii_only = !editor.draft.ascii_only;
-            }
-            1 => {
-                editor.draft.high_contrast = !editor.draft.high_contrast;
-            }
-            2 => {
-                editor.draft.reduced_motion = !editor.draft.reduced_motion;
-            }
-            3 => {
-                editor.draft.show_thinking = !editor.draft.show_thinking;
+            SettingsEditorState::Appearance(editor) if editor.selected > 0 => {
+                editor.selected -= 1;
             }
             _ => {}
         }
     }
 
+    pub fn settings_detail_move_down(&mut self) {
+        match &mut self.settings_editor {
+            SettingsEditorState::Model(editor) => {
+                let max_index = ModelSettingsEditor::max_index();
+                if editor.selected < max_index {
+                    editor.selected += 1;
+                }
+            }
+            SettingsEditorState::Tools(editor) => {
+                if editor.selected + 1 < TOOLS_SETTINGS_COUNT {
+                    editor.selected += 1;
+                }
+            }
+            SettingsEditorState::Context(editor) => {
+                if editor.selected + 1 < CONTEXT_SETTINGS_COUNT {
+                    editor.selected += 1;
+                }
+            }
+            SettingsEditorState::Appearance(editor) => {
+                if editor.selected + 1 < APPEARANCE_SETTINGS_COUNT {
+                    editor.selected += 1;
+                }
+            }
+            SettingsEditorState::Inactive => {}
+        }
+    }
+
+    pub fn settings_detail_toggle_selected(&mut self) {
+        match &mut self.settings_editor {
+            SettingsEditorState::Model(editor) => {
+                editor.update_draft_from_selected();
+            }
+            SettingsEditorState::Tools(editor) => {
+                editor.cycle_selected();
+            }
+            SettingsEditorState::Context(editor) => {
+                if editor.selected == 0 {
+                    editor.draft_memory_enabled = !editor.draft_memory_enabled;
+                }
+            }
+            SettingsEditorState::Appearance(editor) => match editor.selected {
+                0 => editor.draft.ascii_only = !editor.draft.ascii_only,
+                1 => editor.draft.high_contrast = !editor.draft.high_contrast,
+                2 => editor.draft.reduced_motion = !editor.draft.reduced_motion,
+                3 => editor.draft.show_thinking = !editor.draft.show_thinking,
+                _ => {}
+            },
+            SettingsEditorState::Inactive => {}
+        }
+    }
+
     pub fn settings_revert_edits(&mut self) {
-        if let Some(editor) = self.settings_model_editor.as_mut() {
-            editor.draft = editor.baseline.clone();
-            editor.sync_selected_to_draft();
-            return;
-        }
-        if let Some(editor) = self.settings_tools_editor.as_mut() {
-            editor.draft_approval_mode = editor.baseline_approval_mode;
-            return;
-        }
-        if let Some(editor) = self.settings_context_editor.as_mut() {
-            editor.draft_memory_enabled = editor.baseline_memory_enabled;
-            return;
-        }
         let defaults = self.configured_ui_options;
-        if let Some(editor) = self.settings_appearance_editor.as_mut() {
-            editor.draft = defaults;
+        match &mut self.settings_editor {
+            SettingsEditorState::Model(editor) => {
+                editor.draft = editor.baseline.clone();
+                editor.sync_selected_to_draft();
+            }
+            SettingsEditorState::Tools(editor) => {
+                editor.draft_approval_mode = editor.baseline_approval_mode;
+            }
+            SettingsEditorState::Context(editor) => {
+                editor.draft_memory_enabled = editor.baseline_memory_enabled;
+            }
+            SettingsEditorState::Appearance(editor) => {
+                editor.draft = defaults;
+            }
+            SettingsEditorState::Inactive => {}
         }
     }
 
     pub fn settings_save_edits(&mut self) {
-        if let Some(editor) = self.settings_model_editor.as_ref() {
+        if let SettingsEditorState::Model(editor) = &self.settings_editor {
             if !editor.is_dirty() {
                 self.push_notification("No settings changes to save.");
                 return;
@@ -2469,7 +2458,7 @@ impl App {
             }
             self.configured_model = draft.clone();
             self.pending_turn_model = Some(draft.clone());
-            if let Some(editor) = self.settings_model_editor.as_mut() {
+            if let SettingsEditorState::Model(editor) = &mut self.settings_editor {
                 editor.baseline = draft;
                 editor.sync_selected_to_draft();
             }
@@ -2485,13 +2474,14 @@ impl App {
             return;
         }
 
-        if let Some(editor) = self.settings_tools_editor {
+        if let SettingsEditorState::Tools(editor) = &self.settings_editor {
             if !editor.is_dirty() {
                 self.push_notification("No settings changes to save.");
                 return;
             }
+            let draft_approval_mode = editor.draft_approval_mode;
             let settings = config::ToolApprovalSettings {
-                mode: approval_mode_config_value(editor.draft_approval_mode).to_string(),
+                mode: approval_mode_config_value(draft_approval_mode).to_string(),
             };
             if let Err(err) =
                 config::ForgeConfig::persist_tool_approval_settings(&self.config_path, &settings)
@@ -2500,9 +2490,9 @@ impl App {
                 self.push_notification(format!("Failed to save settings: {err}"));
                 return;
             }
-            self.configured_tool_approval_mode = editor.draft_approval_mode;
-            self.pending_turn_tool_approval_mode = Some(editor.draft_approval_mode);
-            if let Some(editor) = self.settings_tools_editor.as_mut() {
+            self.configured_tool_approval_mode = draft_approval_mode;
+            self.pending_turn_tool_approval_mode = Some(draft_approval_mode);
+            if let SettingsEditorState::Tools(editor) = &mut self.settings_editor {
                 editor.baseline_approval_mode = editor.draft_approval_mode;
             }
             self.push_notification("Tool defaults saved. Changes apply on the next turn.");
@@ -2510,7 +2500,7 @@ impl App {
             return;
         }
 
-        if let Some(editor) = self.settings_context_editor {
+        if let SettingsEditorState::Context(editor) = &self.settings_editor {
             if !editor.is_dirty() {
                 self.push_notification("No settings changes to save.");
                 return;
@@ -2526,7 +2516,7 @@ impl App {
             }
             self.configured_context_memory_enabled = draft;
             self.pending_turn_context_memory_enabled = Some(draft);
-            if let Some(editor) = self.settings_context_editor.as_mut() {
+            if let SettingsEditorState::Context(editor) = &mut self.settings_editor {
                 editor.baseline_memory_enabled = draft;
             }
             self.push_notification("Context defaults saved. Changes apply on the next turn.");
@@ -2534,7 +2524,7 @@ impl App {
             return;
         }
 
-        let Some(editor) = self.settings_appearance_editor else {
+        let SettingsEditorState::Appearance(editor) = &self.settings_editor else {
             return;
         };
         if !editor.is_dirty() {
@@ -2557,7 +2547,7 @@ impl App {
 
         self.configured_ui_options = draft;
         self.pending_turn_ui_options = Some(draft);
-        if let Some(editor) = self.settings_appearance_editor.as_mut() {
+        if let SettingsEditorState::Appearance(editor) = &mut self.settings_editor {
             editor.baseline = draft;
         }
         self.push_notification("Settings saved. Changes apply on the next turn.");
