@@ -16,8 +16,9 @@ use super::{
     DEFAULT_TOOL_CAPACITY_BYTES, TOOL_EVENT_CHANNEL_CAPACITY, TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
 };
 use crate::state::{
-    ApprovalState, JournalStatus, OperationState, PlanApprovalState, ToolBatch, ToolCommitPayload,
-    ToolLoopInput, ToolLoopPhase, ToolLoopState, ToolPlan, ToolRecoveryDecision, ToolRecoveryState,
+    ApprovalState, JournalStatus, OperationEdge, OperationState, PlanApprovalState, ToolBatch,
+    ToolCommitPayload, ToolLoopInput, ToolLoopPhase, ToolLoopState, ToolPlan, ToolRecoveryDecision,
+    ToolRecoveryState,
 };
 use crate::tools::{self, ConfirmationRequest, analyze_tool_arguments};
 use crate::util;
@@ -1865,7 +1866,7 @@ impl App {
 
     /// Finish a user turn and report any file changes.
     pub(crate) fn finish_turn(&mut self, turn: TurnContext) {
-        self.focus_finish_execution();
+        self.op_edge(OperationEdge::FinishTurn);
 
         let working_dir = self.tool_settings.sandbox.working_dir();
         let (report, created, modified) = turn.finish(&working_dir);

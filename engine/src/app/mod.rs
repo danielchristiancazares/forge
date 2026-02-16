@@ -202,8 +202,8 @@ pub struct ToolsEditorSnapshot {
 }
 
 use crate::state::{
-    ActiveStream, DataDir, DistillationStart, DistillationState, DistillationTask, OperationState,
-    OperationTag, ToolLoopPhase, ToolRecoveryDecision,
+    ActiveStream, DataDir, DistillationStart, DistillationState, DistillationTask, OperationEdge,
+    OperationState, OperationTag, ToolLoopPhase, ToolRecoveryDecision,
 };
 
 #[derive(Debug, Clone)]
@@ -1671,6 +1671,94 @@ impl App {
         std::mem::replace(&mut self.state, idle)
     }
 
+    /// Emit an operation edge without changing `OperationState`.
+    ///
+    /// Used for lifecycle edges that should remain centrally observable even when Rust move/borrow
+    /// rules force us into "take + restore" implementation patterns.
+    #[track_caller]
+    fn op_edge(&mut self, edge: OperationEdge) {
+        let state = self.state.tag();
+        let loc = std::panic::Location::caller();
+        let legal = Self::op_is_legal_transition(state, edge, state);
+        if !legal {
+            tracing::warn!(
+                state = ?state,
+                edge = edge.as_str(),
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                "Illegal Operation edge",
+            );
+            debug_assert!(
+                legal,
+                "Illegal Operation edge: {state:?} --{edge:?}--> {state:?} at {}:{}:{}",
+                loc.file(),
+                loc.line(),
+                loc.column()
+            );
+        }
+
+        tracing::debug!(
+            state = ?state,
+            edge = edge.as_str(),
+            file = loc.file(),
+            line = loc.line(),
+            column = loc.column(),
+            "Operation edge",
+        );
+
+        self.op_apply_edge_effects(state, edge, state);
+    }
+
+    fn op_transition_edge(from: OperationTag, to: OperationTag) -> Option<OperationEdge> {
+        use OperationEdge::{
+            EnterToolLoopAwaitingApproval, EnterToolLoopExecuting, FinishToolBatch,
+            ResolvePlanApproval, StartDistillation, StartStreaming,
+        };
+        use OperationTag::{Distilling, Idle, PlanApproval, Streaming, ToolLoop, ToolsDisabled};
+
+        match (from, to) {
+            (Idle | ToolsDisabled, Streaming) => Some(StartStreaming),
+            (Idle | ToolsDisabled, Distilling) => Some(StartDistillation),
+            (Streaming, PlanApproval) => Some(EnterToolLoopAwaitingApproval),
+            (Streaming, ToolLoop) => Some(EnterToolLoopExecuting),
+            (PlanApproval, ToolLoop) => Some(ResolvePlanApproval),
+            (ToolLoop | PlanApproval | Idle | ToolsDisabled, Idle | ToolsDisabled) => {
+                Some(FinishToolBatch)
+            }
+            _ => None,
+        }
+    }
+
+    fn op_is_legal_transition(from: OperationTag, edge: OperationEdge, to: OperationTag) -> bool {
+        use OperationEdge::{
+            EnterToolLoopAwaitingApproval, EnterToolLoopExecuting, FinishToolBatch, FinishTurn,
+            ResolvePlanApproval, StartDistillation, StartStreaming,
+        };
+        use OperationTag::{Distilling, Idle, PlanApproval, Streaming, ToolLoop, ToolsDisabled};
+
+        match edge {
+            StartStreaming => matches!(from, Idle | ToolsDisabled) && to == Streaming,
+
+            StartDistillation => matches!(from, Idle | ToolsDisabled) && to == Distilling,
+
+            EnterToolLoopAwaitingApproval => {
+                from == Streaming && matches!(to, PlanApproval | ToolLoop)
+            }
+
+            EnterToolLoopExecuting => matches!(to, ToolLoop) && matches!(from, Streaming),
+
+            ResolvePlanApproval => from == PlanApproval && matches!(to, ToolLoop),
+
+            FinishToolBatch => {
+                matches!(to, Idle | ToolsDisabled)
+                    && matches!(from, ToolLoop | PlanApproval | Idle | ToolsDisabled)
+            }
+
+            FinishTurn => from == to && matches!(from, Idle | ToolsDisabled),
+        }
+    }
+
     /// Authoritative `OperationState` transition point.
     ///
     /// Phase-0 of the OperationState/FocusState overhaul:
@@ -1681,6 +1769,29 @@ impl App {
     fn op_transition(&mut self, next: OperationState) {
         let from = self.state.tag();
         let to = next.tag();
+        let edge = Self::op_transition_edge(from, to);
+        if let Some(edge) = edge {
+            let loc = std::panic::Location::caller();
+            let legal = Self::op_is_legal_transition(from, edge, to);
+            if !legal {
+                tracing::warn!(
+                    from = ?from,
+                    to = ?to,
+                    edge = edge.as_str(),
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    "Illegal OperationState transition",
+                );
+                debug_assert!(
+                    legal,
+                    "Illegal OperationState transition: {from:?} --{edge:?}--> {to:?} at {}:{}:{}",
+                    loc.file(),
+                    loc.line(),
+                    loc.column()
+                );
+            }
+        }
         if from != to {
             let loc = std::panic::Location::caller();
             tracing::debug!(
@@ -1691,6 +1802,9 @@ impl App {
                 column = loc.column(),
                 "OperationState transition",
             );
+        }
+        if let Some(edge) = edge {
+            self.op_apply_edge_effects(from, edge, to);
         }
         self.state = next;
     }
@@ -1702,6 +1816,29 @@ impl App {
     #[track_caller]
     fn op_transition_from(&mut self, from: OperationTag, next: OperationState) {
         let to = next.tag();
+        let edge = Self::op_transition_edge(from, to);
+        if let Some(edge) = edge {
+            let loc = std::panic::Location::caller();
+            let legal = Self::op_is_legal_transition(from, edge, to);
+            if !legal {
+                tracing::warn!(
+                    from = ?from,
+                    to = ?to,
+                    edge = edge.as_str(),
+                    file = loc.file(),
+                    line = loc.line(),
+                    column = loc.column(),
+                    "Illegal OperationState transition",
+                );
+                debug_assert!(
+                    legal,
+                    "Illegal OperationState transition: {from:?} --{edge:?}--> {to:?} at {}:{}:{}",
+                    loc.file(),
+                    loc.line(),
+                    loc.column()
+                );
+            }
+        }
         if from != to {
             let loc = std::panic::Location::caller();
             tracing::debug!(
@@ -1713,6 +1850,9 @@ impl App {
                 "OperationState transition",
             );
         }
+        if let Some(edge) = edge {
+            self.op_apply_edge_effects(from, edge, to);
+        }
         self.state = next;
     }
 
@@ -1723,6 +1863,27 @@ impl App {
     /// Logging those internal hops would drown out real lifecycle edges.
     fn op_restore(&mut self, next: OperationState) {
         self.state = next;
+    }
+
+    /// Central dispatch for cross-cutting effects keyed off a named operation edge.
+    ///
+    /// This is the synchronization point between `OperationState` and UI `FocusState`
+    /// (until FocusState becomes fully derived).
+    fn op_apply_edge_effects(
+        &mut self,
+        _from: OperationTag,
+        edge: OperationEdge,
+        _to: OperationTag,
+    ) {
+        match edge {
+            OperationEdge::StartStreaming | OperationEdge::StartDistillation => {
+                self.focus_start_execution();
+            }
+            OperationEdge::FinishTurn => {
+                self.focus_finish_execution();
+            }
+            _ => {}
+        }
     }
 
     fn focus_start_execution(&mut self) {

@@ -242,8 +242,6 @@ impl super::App {
             return;
         }
 
-        self.focus_start_execution();
-
         let QueuedUserMessage { config, turn } = queued;
         let memory_enabled = self.memory_enabled();
 

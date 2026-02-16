@@ -621,6 +621,49 @@ pub(crate) enum OperationTag {
     Distilling,
 }
 
+/// Named lifecycle edges for `OperationState`.
+///
+/// These labels provide stable edge semantics even when implementation details
+/// (for example, temporary `mem::replace` shims) obscure direct state-to-state
+/// transitions at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OperationEdge {
+    /// User turn transitions from idle/tools-disabled into response streaming.
+    StartStreaming,
+
+    /// Streaming produced tool calls that require approval before execution.
+    EnterToolLoopAwaitingApproval,
+
+    /// Streaming produced tool calls that can execute immediately.
+    EnterToolLoopExecuting,
+
+    /// Plan approval was resolved and tool loop resumed.
+    ResolvePlanApproval,
+
+    /// Tool batch finalized and operation returned to idle.
+    FinishToolBatch,
+
+    /// User turn transitions from idle/tools-disabled into distillation.
+    StartDistillation,
+
+    /// User turn context finalized without changing `OperationState`.
+    FinishTurn,
+}
+
+impl OperationEdge {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::StartStreaming => "start_streaming",
+            Self::EnterToolLoopAwaitingApproval => "enter_tool_loop_awaiting_approval",
+            Self::EnterToolLoopExecuting => "enter_tool_loop_executing",
+            Self::ResolvePlanApproval => "resolve_plan_approval",
+            Self::FinishToolBatch => "finish_tool_batch",
+            Self::StartDistillation => "start_distillation",
+            Self::FinishTurn => "finish_turn",
+        }
+    }
+}
+
 impl OperationState {
     pub(crate) fn tag(&self) -> OperationTag {
         match self {
