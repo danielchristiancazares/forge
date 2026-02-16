@@ -1,7 +1,7 @@
 //! Input mode wrappers for type-safe mode-specific operations.
 //!
-//! This module provides proof-token types and mode wrappers that ensure
-//! operations are only performed when the app is in the correct mode.
+//! This module provides borrow-scoped mode guards that ensure operations
+//! are only performed when the app is in the correct mode.
 
 use super::ui::{DraftInput, InputState};
 use super::{ApiConfig, App, Message, NonEmptyString, OperationState};
@@ -21,14 +21,6 @@ pub struct EnteredCommand {
     pub(crate) raw: String,
 }
 
-/// Proof token for Insert mode operations.
-#[derive(Debug)]
-pub struct InsertToken(());
-
-/// Proof token for Command mode operations.
-#[derive(Debug)]
-pub struct CommandToken(());
-
 pub struct InsertMode<'a> {
     pub(crate) app: &'a mut App,
 }
@@ -38,20 +30,26 @@ pub struct CommandMode<'a> {
 }
 
 impl App {
-    pub fn insert_token(&self) -> Option<InsertToken> {
-        matches!(&self.input, InputState::Insert(_)).then_some(InsertToken(()))
+    /// Borrow-scoped access to Insert-mode operations.
+    ///
+    /// The returned guard holds `&mut App`, so the input mode cannot be
+    /// changed while the guard exists.
+    pub fn insert_mode_mut(&mut self) -> Option<InsertMode<'_>> {
+        match &self.input {
+            InputState::Insert(_) => Some(InsertMode { app: self }),
+            _ => None,
+        }
     }
 
-    pub fn command_token(&self) -> Option<CommandToken> {
-        matches!(&self.input, InputState::Command { .. }).then_some(CommandToken(()))
-    }
-
-    pub fn insert_mode(&mut self, _token: InsertToken) -> InsertMode<'_> {
-        InsertMode { app: self }
-    }
-
-    pub fn command_mode(&mut self, _token: CommandToken) -> CommandMode<'_> {
-        CommandMode { app: self }
+    /// Borrow-scoped access to Command-mode operations.
+    ///
+    /// The returned guard holds `&mut App`, so the input mode cannot be
+    /// changed while the guard exists.
+    pub fn command_mode_mut(&mut self) -> Option<CommandMode<'_>> {
+        match &self.input {
+            InputState::Command { .. } => Some(CommandMode { app: self }),
+            _ => None,
+        }
     }
 }
 

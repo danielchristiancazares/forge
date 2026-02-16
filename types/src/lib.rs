@@ -44,7 +44,7 @@ pub use sanitize::{
     is_steganographic_char, sanitize_path_display, sanitize_path_for_display,
     sanitize_terminal_text, strip_steganographic_chars, strip_windows_extended_prefix,
 };
-pub use text::truncate_with_ellipsis;
+pub use text::{truncate_to_fit, truncate_with_ellipsis};
 
 /// Single point of encoding for sensitive environment variable patterns (IFA-7).
 ///

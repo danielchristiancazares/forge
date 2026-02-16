@@ -21,10 +21,9 @@
 //!
 //! # Type-Driven Design
 //!
-//! Operations requiring proof of state use token types:
+//! Operations requiring proof of state use structural types and borrow-scoped guards:
 //!
-//! - [`InsertToken`]: Proof that we're in Insert mode
-//! - [`CommandToken`]: Proof that we're in Command mode
+//! - [`InsertMode`]/[`CommandMode`]: Borrow-scoped access to mode-specific operations
 //! - [`QueuedUserMessage`]: Proof that a message is validated and ready to send
 //! - [`PreparedContext`]: Proof that context was built within token budget
 
@@ -76,9 +75,7 @@ pub(crate) mod streaming;
 pub(crate) mod tool_loop;
 
 pub use commands::{CommandSpec, command_specs};
-pub use input_modes::{
-    CommandMode, CommandToken, EnteredCommand, InsertMode, InsertToken, QueuedUserMessage,
-};
+pub use input_modes::{CommandMode, EnteredCommand, InsertMode, QueuedUserMessage};
 
 pub(crate) use persistence::{ABORTED_JOURNAL_BADGE, EMPTY_RESPONSE_BADGE};
 

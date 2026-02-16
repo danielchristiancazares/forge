@@ -1,5 +1,6 @@
 //! Compact tool call display formatting.
 
+use forge_types::truncate_to_fit;
 use serde_json::Value;
 
 pub fn format_tool_call_compact(name: &str, args: &Value) -> String {
@@ -10,13 +11,13 @@ pub fn format_tool_call_compact(name: &str, args: &Value) -> String {
         if let Some(obj) = args.as_object()
             && let Some(path) = format_patch_summary(obj)
         {
-            return format!("Edit({})", truncate(&path, 60));
+            return format!("Edit({})", truncate_to_fit(&path, 60, "…"));
         }
         return "Edit".to_string();
     }
 
     match extract_primary_arg(name, args) {
-        Some(val) => format!("{}({})", display_name, truncate(&val, 60)),
+        Some(val) => format!("{}({})", display_name, truncate_to_fit(&val, 60, "…")),
         None => display_name.to_string(),
     }
 }
@@ -301,17 +302,6 @@ fn try_common_keys(obj: &serde_json::Map<String, Value>) -> Option<String> {
     None
 }
 
-fn truncate(s: &str, max_chars: usize) -> String {
-    let char_count = s.chars().count();
-    if char_count <= max_chars {
-        return s.to_string();
-    }
-
-    // Take max_chars - 1 characters, then add ellipsis
-    let truncated: String = s.chars().take(max_chars.saturating_sub(1)).collect();
-    format!("{truncated}…")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,13 +454,13 @@ mod tests {
 
     #[test]
     fn test_truncate_short() {
-        assert_eq!(truncate("hello", 10), "hello");
+        assert_eq!(truncate_to_fit("hello", 10, "…"), "hello");
     }
 
     #[test]
     fn test_truncate_long() {
         let long = "a".repeat(100);
-        let result = truncate(&long, 60);
+        let result = truncate_to_fit(&long, 60, "…");
         assert!(result.chars().count() <= 60);
         assert!(result.ends_with('…'));
     }
@@ -479,7 +469,7 @@ mod tests {
     fn test_truncate_utf8_boundary() {
         // "héllo" has multi-byte char
         let s = "héllo world this is a long string";
-        let result = truncate(s, 10);
+        let result = truncate_to_fit(s, 10, "…");
         assert!(result.is_char_boundary(result.len()));
         assert!(result.ends_with('…'));
     }

@@ -11,7 +11,7 @@ This document provides comprehensive documentation for the `forge-engine` crate 
 | 121-155 | Architecture Diagram: App structure with InputState, OperationState, components |
 | 156-330 | State Machine Design: OperationState enum, ActiveStream typestate, state transitions |
 | 331-412 | Input Mode System: InputState enum, DraftInput, mode transitions |
-| 413-525 | Type-Driven Design Patterns: proof tokens, InsertToken, CommandToken, mode wrappers |
+| 413-525 | Type-Driven Design Patterns: borrow-scoped guards, mode wrappers |
 | 526-640 | Streaming Orchestration: ActiveStream typestate, StreamingMessage, lifecycle |
 | 641-730 | Command System: built-in commands table, tab completion, Command enum |
 | 731-800 | Context Management Integration: ContextManager, distillation, model switch adaptation |
@@ -74,7 +74,7 @@ engine/
     ├── lib.rs                  # App struct, main module, re-exports
     ├── config.rs               # ForgeConfig parsing (TOML + env expansion)
     ├── state.rs                # OperationState enum and state transitions
-    ├── input_modes.rs          # Proof tokens (InsertToken, CommandToken, etc.)
+    ├── input_modes.rs          # Borrow-scoped mode guards (InsertMode, CommandMode, etc.)
     ├── commands.rs             # Command enum, CommandSpec, tab completion
     ├── checkpoints.rs          # Checkpoint management for rewind/undo
     ├── session_state.rs        # SessionChangeLog, session persistence
@@ -464,43 +464,46 @@ Key `DraftInput` methods:
 
 The engine uses Rust's type system extensively to enforce correctness at compile time.
 
-### Proof Tokens
+### Borrow-Scoped Guards
 
-Proof tokens are zero-sized types that serve as compile-time evidence that a precondition is met. They cannot be constructed arbitrarily.
+Forge uses borrow-scoped *mode guards* to make invalid mode-specific operations unrepresentable.
 
-#### InsertToken and CommandToken
+Instead of minting storable proof tokens, the API exposes accessors that
+return a guard only when the app is currently in the required mode. The
+guard holds `&mut App`, so the input mode cannot change while the guard is
+alive.
+
+#### Insert/Command mode guards
 
 ```rust
-/// Proof token for Insert mode operations.
-#[derive(Debug)]
-pub struct InsertToken(());  // Private unit field prevents external construction
+// Only returns Some when actually in Insert mode.
+pub fn insert_mode_mut(&mut self) -> Option<InsertMode<'_>> {
+    match &self.input {
+        InputState::Insert(_) => Some(InsertMode { app: self }),
+        _ => None,
+    }
+}
 
-/// Proof token for Command mode operations.
-#[derive(Debug)]
-pub struct CommandToken(());
+// Only returns Some when actually in Command mode.
+pub fn command_mode_mut(&mut self) -> Option<CommandMode<'_>> {
+    match &self.input {
+        InputState::Command { .. } => Some(CommandMode { app: self }),
+        _ => None,
+    }
+}
 ```
 
 Usage pattern:
 
 ```rust
-// Only returns Some when actually in Insert mode
-pub fn insert_token(&self) -> Option<InsertToken> {
-    matches!(&self.input, InputState::Insert(_)).then_some(InsertToken(()))
+if let Some(mut insert) = app.insert_mode_mut() {
+    insert.enter_char('x');
 }
 
-// Consuming the token proves we checked the mode
-pub fn insert_mode(&mut self, _token: InsertToken) -> InsertMode<'_> {
-    InsertMode { app: self }
-}
-```
-
-This pattern ensures that `InsertMode` methods can only be called when actually in insert mode:
-
-```rust
-// Safe usage - compiler enforces mode check
-if let Some(token) = app.insert_token() {
-    let mut insert = app.insert_mode(token);
-    insert.enter_char('x');  // Only accessible through InsertMode
+if let Some(command_mode) = app.command_mode_mut() {
+    if let Some(cmd) = command_mode.take_command() {
+        app.process_command(cmd);
+    }
 }
 ```
 
@@ -1498,14 +1501,14 @@ app.tick();                      // Advance animations, poll background tasks
 app.process_stream_events();     // Apply streaming response chunks
 ```
 
-#### Input Modes and Tokens
+#### Input Modes and Guards
 
-Mode operations require proof tokens to ensure type-safe state transitions:
+Mode operations use borrow-scoped guards to ensure type-safe state transitions:
 
 ```rust
 // Check if in insert mode and get a proof token
-if let Some(token) = app.insert_token() {
-    let mut insert = app.insert_mode(token);
+if let Some(token) = app.insert_mode_mut() {
+    let mut insert = app.insert_mode_mut();
     insert.enter_char('x');
     insert.delete_char();
 
@@ -1516,8 +1519,8 @@ if let Some(token) = app.insert_token() {
 }
 
 // Command mode works similarly
-if let Some(token) = app.command_token() {
-    let mut cmd = app.command_mode(token);
+if let Some(token) = app.command_mode_mut() {
+    let mut cmd = app.command_mode_mut();
     cmd.push_char('q');
     cmd.tab_complete();  // Shell-style tab completion
     if let Some(entered) = cmd.take_command() {
@@ -1525,12 +1528,28 @@ if let Some(token) = app.command_token() {
     }
 }
 ```
+// Insert mode (guard exists only while the borrow exists)
+if let Some(mut insert) = app.insert_mode_mut() {
+    insert.enter_char('x');
+    insert.delete_char();
 
-#### `StreamingMessage`
+    // Submit message (consumes the InsertMode guard)
+    let queued = insert.queue_message();
+    if let Some(queued) = queued {
+        app.start_streaming(queued);
+    }
+}
 
-Represents an active streaming response. Existence of this type proves streaming is in progress.
+// Command mode works similarly
+if let Some(mut cmd) = app.command_mode_mut() {
+    cmd.push_char('q');
+    cmd.tab_complete();  // Shell-style tab completion
 
-```rust
+    let entered = cmd.take_command();
+    if let Some(entered) = entered {
+        app.process_command(entered);
+    }
+}```rust
 // Access current streaming state
 if let Some(streaming) = app.streaming() {
     let content = streaming.content();      // Accumulated text so far
@@ -1553,10 +1572,8 @@ Proof token that a command was entered in command mode. Obtained from `CommandMo
 
 | Type | Purpose |
 |------|---------|
-| `InsertToken` | Proof that app is in Insert mode |
-| `CommandToken` | Proof that app is in Command mode |
-| `InsertMode<'a>` | Safe wrapper for insert operations |
-| `CommandMode<'a>` | Safe wrapper for command operations |
+| `InsertMode<'a>` | Borrow-scoped guard for insert operations |
+| `CommandMode<'a>` | Borrow-scoped guard for command operations |
 
 ### Enums
 
@@ -1694,10 +1711,8 @@ let effect = PanelEffect::slide_out_right(Duration::from_millis(180));
 | `enter_command_mode()` | Switch to Command mode |
 | `enter_model_select_mode()` | Open model picker |
 | `enter_file_select_mode()` | Open file picker |
-| `insert_token()` | Get proof token for Insert mode |
-| `command_token()` | Get proof token for Command mode |
-| `insert_mode(token)` | Get InsertMode wrapper |
-| `command_mode(token)` | Get CommandMode wrapper |
+| `insert_mode_mut()` | Borrow-scoped access to Insert mode operations |
+| `command_mode_mut()` | Borrow-scoped access to Command mode operations |
 
 ### Streaming Operations
 
@@ -2191,8 +2206,6 @@ The engine re-exports commonly needed types from its dependencies:
 | `StreamingMessage` | In-flight streaming response with accumulated content |
 | `QueuedUserMessage` | Proof token that user message is validated and ready |
 | `EnteredCommand` | Proof token that command was entered in command mode |
-| `InsertToken` | Proof token for Insert mode operations |
-| `CommandToken` | Proof token for Command mode operations |
 | `InsertMode<'a>` | Safe wrapper for insert mode operations |
 | `CommandMode<'a>` | Safe wrapper for command mode operations |
 | `TurnUsage` | Aggregated API usage for a user turn |

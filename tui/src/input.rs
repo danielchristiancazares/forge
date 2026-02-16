@@ -313,9 +313,9 @@ pub fn handle_events(app: &mut App, input: &mut InputPump) -> Result<bool> {
             if let Some(clipboard_text) = matched {
                 let remainder = &clipboard_text[received.len()..];
                 if !remainder.is_empty()
-                    && let Some(token) = app.insert_token()
+                    && let Some(mut insert) = app.insert_mode_mut()
                 {
-                    app.insert_mode(token).enter_text(remainder);
+                    insert.enter_text(remainder);
                 }
                 input.phase = PastePhase::Draining;
             } else {
@@ -372,7 +372,7 @@ fn apply_event(app: &mut App, event: Event, paste_active: bool) -> bool {
             }
         }
         Event::Paste(text) => {
-            // Preserve existing paste gating + insert-token flow exactly
+            // Preserve existing paste gating + insert-mode guard flow exactly
             if app.tool_approval_requests().is_some()
                 || app.tool_recovery_calls().is_some()
                 || app.plan_approval_kind().is_some()
@@ -380,11 +380,11 @@ fn apply_event(app: &mut App, event: Event, paste_active: bool) -> bool {
                 return app.should_quit();
             }
             if app.input_mode() == InputMode::Insert {
-                let Some(token) = app.insert_token() else {
+                let Some(mut insert) = app.insert_mode_mut() else {
                     return app.should_quit();
                 };
                 let normalized = normalize_line_endings(&text);
-                app.insert_mode(token).enter_text(&normalized);
+                insert.enter_text(&normalized);
             }
         }
         _ => {}
@@ -589,10 +589,10 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
     let is_paste_newline = paste_active && key.code == KeyCode::Enter && key.modifiers.is_empty();
 
     if is_explicit_newline || is_paste_newline {
-        let Some(token) = app.insert_token() else {
+        let Some(mut insert) = app.insert_mode_mut() else {
             return;
         };
-        app.insert_mode(token).enter_newline();
+        insert.enter_newline();
         return;
     }
 
@@ -603,10 +603,10 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
         }
         // Submit message (only when not detected as paste)
         KeyCode::Enter => {
-            let Some(token) = app.insert_token() else {
+            let Some(insert) = app.insert_mode_mut() else {
                 return;
             };
-            let queued = app.insert_mode(token).queue_message();
+            let queued = insert.queue_message();
             if let Some(queued) = queued {
                 app.start_streaming(queued);
             }
@@ -622,21 +622,20 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
         KeyCode::Backspace => {
             if app.draft_text().is_empty() {
                 app.enter_normal_mode();
-            } else if let Some(token) = app.insert_token() {
-                app.insert_mode(token).delete_char();
+            } else if let Some(mut insert) = app.insert_mode_mut() {
+                insert.delete_char();
             }
         }
         KeyCode::Char('@') => {
-            if let Some(token) = app.insert_token() {
-                app.insert_mode(token).enter_char('@');
+            if let Some(mut insert) = app.insert_mode_mut() {
+                insert.enter_char('@');
             }
             app.enter_file_select_mode();
         }
         _ => {
-            let Some(token) = app.insert_token() else {
+            let Some(mut insert) = app.insert_mode_mut() else {
                 return;
             };
-            let mut insert = app.insert_mode(token);
 
             match key.code {
                 // Delete character forward
@@ -708,10 +707,10 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
             app.enter_normal_mode();
         }
         KeyCode::Enter => {
-            let Some(token) = app.command_token() else {
-                return;
+            let command_mode = match app.command_mode_mut() {
+                Some(mode) => mode,
+                None => return,
             };
-            let command_mode = app.command_mode(token);
             let Some(command) = command_mode.take_command() else {
                 return;
             };
@@ -729,15 +728,14 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Backspace => {
             if app.command_text().is_some_and(str::is_empty) {
                 app.enter_normal_mode();
-            } else if let Some(token) = app.command_token() {
-                app.command_mode(token).backspace();
+            } else if let Some(mut command_mode) = app.command_mode_mut() {
+                command_mode.backspace();
             }
         }
         _ => {
-            let Some(token) = app.command_token() else {
+            let Some(mut command_mode) = app.command_mode_mut() else {
                 return;
             };
-            let mut command_mode = app.command_mode(token);
 
             match key.code {
                 // Move cursor left

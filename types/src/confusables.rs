@@ -15,6 +15,8 @@
 
 use unicode_script::{Script, UnicodeScript};
 
+use crate::text::truncate_preview;
+
 /// Proof that homoglyph analysis was performed and detected suspicious content.
 ///
 /// The existence of this type proves that the analysis detected a potential
@@ -120,19 +122,10 @@ pub fn detect_mixed_script(input: &str, field_name: &str) -> Option<HomoglyphWar
 
     Some(HomoglyphWarning {
         field_name: field_name.to_string(),
-        snippet: truncate_for_display(input, 40),
+        // Historical behavior: take 40 chars, then append "..." (suffix outside budget).
+        snippet: truncate_preview(input, 40, "..."),
         scripts,
     })
-}
-
-/// Truncate a string for display, adding "..." if truncated.
-fn truncate_for_display(s: &str, max_len: usize) -> String {
-    if s.chars().count() <= max_len {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_len).collect();
-        format!("{truncated}...")
-    }
 }
 
 #[cfg(test)]
