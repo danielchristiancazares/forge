@@ -19,9 +19,9 @@ Forge brings the efficiency of vim-style modal editing to AI conversation, letti
 | 401-433 | Workspace Structure |
 | 434-468 | Development |
 | 469-538 | Troubleshooting |
-| 539-574 | Documentation Index |
-| 575-584 | Contributing and License |
-| 585-587 | License |
+| 539-575 | Documentation Index |
+| 576-585 | Contributing and License |
+| 586-588 | License |
 <!-- toc:end -->
 
 ## Features
@@ -563,7 +563,8 @@ Detailed documentation is available in each crate:
 | [`docs/OPENAI_REASONING_ROUNDTRIP.md`](docs/OPENAI_REASONING_ROUNDTRIP.md) | OpenAI reasoning round-trip notes |
 | [`docs/OPENAI_RESPONSES_GPT52.md`](docs/OPENAI_RESPONSES_GPT52.md) | OpenAI Responses API integration |
 | [`docs/RUST_2024_REFERENCE.md`](docs/RUST_2024_REFERENCE.md) | Rust 2024 edition features |
-| [`docs/SECURITY.md`](docs/SECURITY.md) | Security architecture notes |
+| [`SECURITY.md`](SECURITY.md) | Vulnerability reporting and security policy |
+| [`docs/SECURITY_SANITIZATION.md`](docs/SECURITY_SANITIZATION.md) | Security sanitization architecture |
 | [`docs/CI_RUNBOOK.md`](docs/CI_RUNBOOK.md) | CI notes and troubleshooting |
 
 ### Additional Specs

@@ -14,7 +14,7 @@ When writing instructions or scripts, avoid assuming a single shell. If you need
 ## Rules
 
 - Run `just verify` after every code change (runs fmt + clippy -D warnings + test)
-- Run `just fix` after editing files (normalizes CRLF → LF in *.rs and *.md)
+- Run `just fix` after editing files (normalizes CRLF → LF in *.rs and*.md)
 - Avoid `cargo check` or `cargo test` since `just verify` runs them implicitly unless as a temporary workaround.
 - Never add trivial comments. Do not restate the obvious.
 - Never decrease test coverage. Check with `cargo cov`.
@@ -191,7 +191,7 @@ Integration tests live in `tests/`. Uses wiremock for HTTP mocking, insta for sn
 | Document | Description |
 |----------|-------------|
 | `INVARIANT_FIRST_ARCHITECTURE.md` | IFA design principles |
-| `SECURITY.md` | Security sanitization infrastructure |
+| `SECURITY.md` | Vulnerability reporting and security policy |
 | `docs/ANTHROPIC_MESSAGES_API.md` | Claude API reference |
 | `docs/OPENAI_RESPONSES_GPT52.md` | OpenAI Responses API integration |
 | `docs/OPENAI_REASONING_ROUNDTRIP.md` | OpenAI reasoning item replay notes |
@@ -200,6 +200,6 @@ Integration tests live in `tests/`. Uses wiremock for HTTP mocking, insta for sn
 | `docs/COLOR_SCHEME.md` | TUI palette reference |
 | `docs/LP1.md` | Line-oriented patch DSL |
 | `docs/RUST_2024_REFERENCE.md` | Rust 2024 edition features used |
-| `docs/SECURITY.md` | Security sanitization (detailed) |
+| `docs/SECURITY_SANITIZATION.md` | Security sanitization architecture |
 
 Each crate has its own `README.md` with detailed architecture. Read those on demand.

@@ -130,7 +130,7 @@ impl ContextUsage {
         }
     }
 
-    /// Format for status bar: "2.1k / 200k (1%)" or "2.1k / 200k (1%) [C]"
+    /// Format for status bar: "2.1k / 200k (1%)" or "2.1k / 200k (1%) \[C\]"
     #[must_use]
     pub fn format_compact(&self) -> String {
         fn format_k(n: u32) -> String {
