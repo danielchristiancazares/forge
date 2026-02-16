@@ -375,7 +375,7 @@ impl super::App {
             }
             OperationState::RecoveryBlocked(state) => {
                 // Safety state: don't allow "cancel" to silently clear recovery blocks.
-                self.state = OperationState::RecoveryBlocked(state);
+                self.op_restore(OperationState::RecoveryBlocked(state));
                 self.push_notification(
                     "Recovery is blocked due to journal errors. Run /clear to reset.",
                 );
@@ -391,7 +391,7 @@ impl super::App {
             }
             OperationState::ToolsDisabled(state) => {
                 // Not an in-flight operation.
-                self.state = OperationState::ToolsDisabled(state);
+                self.op_restore(OperationState::ToolsDisabled(state));
                 false
             }
             OperationState::Idle => false,
@@ -495,7 +495,7 @@ impl super::App {
                 self.autosave_history();
                 self.push_notification("Conversation cleared");
                 self.view.clear_transcript = true;
-                self.state = self.idle_state();
+                self.op_transition(self.idle_state());
             }
             Command::Model(model_arg) => {
                 if let Some(reason) = self.busy_reason() {
@@ -727,7 +727,7 @@ impl super::App {
                     self.save_plan();
                     self.tools_disabled_state = None;
                     if matches!(self.state, OperationState::ToolsDisabled(_)) {
-                        self.state = OperationState::Idle;
+                        self.op_transition(OperationState::Idle);
                     }
                     self.push_notification("Plan cleared.");
                 }

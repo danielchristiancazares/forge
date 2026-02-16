@@ -206,7 +206,7 @@ pub struct ToolsEditorSnapshot {
 
 use crate::state::{
     ActiveStream, DataDir, DistillationStart, DistillationState, DistillationTask, OperationState,
-    ToolLoopPhase, ToolRecoveryDecision,
+    OperationTag, ToolLoopPhase, ToolRecoveryDecision,
 };
 
 #[derive(Debug, Clone)]
@@ -1672,6 +1672,82 @@ impl App {
     fn replace_with_idle(&mut self) -> OperationState {
         let idle = self.idle_state();
         std::mem::replace(&mut self.state, idle)
+    }
+
+    /// Authoritative `OperationState` transition point.
+    ///
+    /// Phase-0 of the OperationState/FocusState overhaul:
+    /// - stop scattering `self.state = ...` across the codebase,
+    /// - log variant-level edges once,
+    /// - provide a single hook for future cross-cutting effects (metrics, UI sync, etc).
+    #[track_caller]
+    fn op_transition(&mut self, next: OperationState) {
+        let from = self.state.tag();
+        let to = next.tag();
+        if from != to {
+            let loc = std::panic::Location::caller();
+            tracing::debug!(
+                from = ?from,
+                to = ?to,
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                "OperationState transition",
+            );
+        }
+        self.state = next;
+    }
+
+    /// Like [`Self::op_transition`], but forces the `from` tag.
+    ///
+    /// Useful when a method temporarily takes `self.state` (via `mem::replace`) and
+    /// needs to emit a semantically correct edge that would otherwise read as `Idle -> X`.
+    #[track_caller]
+    fn op_transition_from(&mut self, from: OperationTag, next: OperationState) {
+        let to = next.tag();
+        if from != to {
+            let loc = std::panic::Location::caller();
+            tracing::debug!(
+                from = ?from,
+                to = ?to,
+                file = loc.file(),
+                line = loc.line(),
+                column = loc.column(),
+                "OperationState transition",
+            );
+        }
+        self.state = next;
+    }
+
+    /// Internal state write used for "take + restore" patterns.
+    ///
+    /// This intentionally does not emit a transition edge, because callers use
+    /// temporary `Idle`/`ToolsDisabled` slots to satisfy Rust move/borrow rules.
+    /// Logging those internal hops would drown out real lifecycle edges.
+    fn op_restore(&mut self, next: OperationState) {
+        self.state = next;
+    }
+
+    fn focus_start_execution(&mut self) {
+        if self.view.view_mode == crate::ui::ViewMode::Focus {
+            self.view.focus_state = crate::ui::FocusState::Executing {
+                step_started_at: Some(std::time::Instant::now()),
+            };
+        }
+    }
+
+    fn focus_finish_execution(&mut self) {
+        if self.view.view_mode == crate::ui::ViewMode::Focus
+            && matches!(
+                self.view.focus_state,
+                crate::ui::FocusState::Executing { .. }
+            )
+        {
+            self.view.focus_state = crate::ui::FocusState::Reviewing {
+                active_index: 0,
+                auto_advance: true,
+            };
+        }
     }
 
     fn build_basic_api_messages(&mut self, reserved_overhead: u32) -> Vec<Message> {

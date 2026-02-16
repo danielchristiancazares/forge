@@ -421,7 +421,7 @@ impl App {
                     "Tool journal recovery failed; tool execution disabled for safety. ({e})"
                 ));
                 if matches!(self.state, OperationState::Idle) {
-                    self.state = self.idle_state();
+                    self.op_transition(self.idle_state());
                 }
                 None
             }
@@ -431,11 +431,11 @@ impl App {
             Ok(recovered) => recovered,
             Err(e) => {
                 tracing::warn!("Stream journal recovery failed: {e}");
-                self.state = OperationState::RecoveryBlocked(RecoveryBlockedState {
+                self.op_transition(OperationState::RecoveryBlocked(RecoveryBlockedState {
                     reason: RecoveryBlockedReason::StreamJournalRecoverFailed {
                         error: e.to_string(),
                     },
-                });
+                }));
                 self.push_notification(format!(
                     "Recovery blocked: failed to read stream journal. Run /clear to reset. ({e})"
                 ));
@@ -478,13 +478,13 @@ impl App {
                 (recovered_batch.stream_step_id, stream_step_id)
                 && tool_step_id != stream_step_id
             {
-                self.state = OperationState::RecoveryBlocked(RecoveryBlockedState {
+                self.op_transition(OperationState::RecoveryBlocked(RecoveryBlockedState {
                     reason: RecoveryBlockedReason::ToolBatchStepMismatch {
                         batch_id: recovered_batch.batch_id,
                         tool_batch_step_id: tool_step_id,
                         stream_step_id,
                     },
-                });
+                }));
                 self.push_notification(
                     "Recovery blocked: tool journal and stream journal refer to different turns. Run /clear to reset.",
                 );
@@ -609,11 +609,11 @@ impl App {
                     }
                 }
 
-                self.state = OperationState::ToolRecovery(ToolRecoveryState {
+                self.op_transition(OperationState::ToolRecovery(ToolRecoveryState {
                     batch: recovered_batch,
                     step_id,
                     model,
-                });
+                }));
                 self.push_notification(
                     "Recovered tool batch. Press R to finalize or D to discard.",
                 );

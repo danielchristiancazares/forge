@@ -604,3 +604,34 @@ pub(crate) enum OperationState {
     RecoveryBlocked(RecoveryBlockedState),
     Distilling(DistillationState),
 }
+
+/// Variant-only tag for `OperationState`.
+///
+/// Payload-free so it can be logged cheaply, compared for edge detection,
+/// and used as a stable phase label for metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OperationTag {
+    Idle,
+    ToolsDisabled,
+    Streaming,
+    ToolLoop,
+    PlanApproval,
+    ToolRecovery,
+    RecoveryBlocked,
+    Distilling,
+}
+
+impl OperationState {
+    pub(crate) fn tag(&self) -> OperationTag {
+        match self {
+            Self::Idle => OperationTag::Idle,
+            Self::ToolsDisabled(_) => OperationTag::ToolsDisabled,
+            Self::Streaming(_) => OperationTag::Streaming,
+            Self::ToolLoop(_) => OperationTag::ToolLoop,
+            Self::PlanApproval(_) => OperationTag::PlanApproval,
+            Self::ToolRecovery(_) => OperationTag::ToolRecovery,
+            Self::RecoveryBlocked(_) => OperationTag::RecoveryBlocked,
+            Self::Distilling(_) => OperationTag::Distilling,
+        }
+    }
+}

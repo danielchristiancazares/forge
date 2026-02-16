@@ -242,11 +242,7 @@ impl super::App {
             return;
         }
 
-        if self.view.view_mode == crate::ui::ViewMode::Focus {
-            self.view.focus_state = crate::ui::FocusState::Executing {
-                step_started_at: Some(std::time::Instant::now()),
-            };
-        }
+        self.focus_start_execution();
 
         let QueuedUserMessage { config, turn } = queued;
         let memory_enabled = self.memory_enabled();
@@ -359,7 +355,7 @@ impl super::App {
             turn,
         };
 
-        self.state = OperationState::Streaming(active);
+        self.op_transition(OperationState::Streaming(active));
 
         // OutputLimits is pre-validated at config load time - no runtime checks needed
         // Invariant: if thinking is enabled, budget < max_tokens (guaranteed by type)
@@ -588,7 +584,7 @@ impl super::App {
             let mut active = match std::mem::replace(&mut self.state, idle) {
                 OperationState::Streaming(active) => active,
                 other => {
-                    self.state = other;
+                    self.op_restore(other);
                     return;
                 }
             };
@@ -704,14 +700,14 @@ impl super::App {
                 finish_reason = active.message_mut().apply_event(event);
             }
 
-            self.state = OperationState::Streaming(active);
+            self.op_restore(OperationState::Streaming(active));
 
             if let Some(err) = journal_error {
                 // Abort streaming without applying the unpersisted event.
                 let active = match self.replace_with_idle() {
                     OperationState::Streaming(active) => active,
                     other => {
-                        self.state = other;
+                        self.op_restore(other);
                         return;
                     }
                 };

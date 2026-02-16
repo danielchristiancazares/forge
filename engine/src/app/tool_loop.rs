@@ -559,21 +559,21 @@ impl App {
             batch
                 .results
                 .retain(|r| r.tool_call_id != pending.tool_call_id);
-            self.state = OperationState::PlanApproval(Box::new(PlanApprovalState {
+            self.op_transition(OperationState::PlanApproval(Box::new(PlanApprovalState {
                 tool_call_id: pending.tool_call_id,
                 kind: pending.kind,
                 batch,
                 pending_tool_approvals: plan.approval_requests,
-            }));
+            })));
             return;
         }
 
         if !plan.approval_requests.is_empty() {
             let approval = ApprovalState::new(plan.approval_requests);
-            self.state = OperationState::ToolLoop(Box::new(ToolLoopState {
+            self.op_transition(OperationState::ToolLoop(Box::new(ToolLoopState {
                 batch,
                 phase: ToolLoopPhase::AwaitingApproval(approval),
-            }));
+            })));
             return;
         }
 
@@ -624,7 +624,10 @@ impl App {
                 return;
             }
         };
-        self.state = OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
+        self.op_transition(OperationState::ToolLoop(Box::new(ToolLoopState {
+            batch,
+            phase,
+        })));
     }
 
     fn plan_tool_calls(&self, calls: &[ToolCall], mut pre_resolved: Vec<ToolResult>) -> ToolPlan {
@@ -953,7 +956,7 @@ impl App {
         let state = match std::mem::replace(&mut self.state, idle) {
             OperationState::ToolLoop(state) => *state,
             other => {
-                self.state = other;
+                self.op_restore(other);
                 return;
             }
         };
@@ -962,10 +965,10 @@ impl App {
         match phase {
             ToolLoopPhase::AwaitingApproval(approval) => {
                 // No polling needed - wait for user input
-                self.state = OperationState::ToolLoop(Box::new(ToolLoopState {
+                self.op_restore(OperationState::ToolLoop(Box::new(ToolLoopState {
                     batch,
                     phase: ToolLoopPhase::AwaitingApproval(approval),
-                }));
+                })));
             }
 
             ToolLoopPhase::Processing(queue) => {
@@ -1059,7 +1062,10 @@ impl App {
                                 return;
                             }
                         };
-                    self.state = OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
+                    self.op_restore(OperationState::ToolLoop(Box::new(ToolLoopState {
+                        batch,
+                        phase,
+                    })));
                 }
             }
 
@@ -1103,7 +1109,7 @@ impl App {
                         Err(spawned) => {
                             // Edge-case: is_finished() was true but join handle isn't ready yet.
                             // Keep state and retry next tick rather than aborting the turn.
-                            self.state = OperationState::ToolLoop(Box::new(ToolLoopState {
+                            self.op_restore(OperationState::ToolLoop(Box::new(ToolLoopState {
                                 batch,
                                 phase: ToolLoopPhase::Executing(ActiveExecution {
                                     spawned,
@@ -1111,7 +1117,7 @@ impl App {
                                     output_lines,
                                     turn_recorder,
                                 }),
-                            }));
+                            })));
                             return;
                         }
                     };
@@ -1297,15 +1303,17 @@ impl App {
                                 return;
                             }
                         };
-                        self.state =
-                            OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
+                        self.op_restore(OperationState::ToolLoop(Box::new(ToolLoopState {
+                            batch,
+                            phase,
+                        })));
                     }
                 } else {
                     // Still running - keep state
-                    self.state = OperationState::ToolLoop(Box::new(ToolLoopState {
+                    self.op_restore(OperationState::ToolLoop(Box::new(ToolLoopState {
                         batch,
                         phase: ToolLoopPhase::Executing(exec),
-                    }));
+                    })));
                 }
             }
         }
@@ -1405,8 +1413,7 @@ impl App {
         journal_status: JournalStatus,
         auto_resume: bool,
     ) {
-        self.state = self.idle_state();
-
+        self.op_transition(self.idle_state());
         let autosave_succeeded = self.commit_tool_batch_messages(&payload);
         let ToolCommitPayload {
             model,
@@ -1506,8 +1513,7 @@ impl App {
         payload: ToolCommitPayload,
         auto_resume: bool,
     ) {
-        self.state = self.idle_state();
-
+        self.op_transition(self.idle_state());
         let autosave_succeeded = self.commit_tool_batch_messages(&payload);
         let ToolCommitPayload {
             model,
@@ -1572,14 +1578,17 @@ impl App {
         let state = match std::mem::replace(&mut self.state, idle) {
             OperationState::ToolLoop(state) => *state,
             other => {
-                self.state = other;
+                self.op_restore(other);
                 return;
             }
         };
 
         let ToolLoopState { mut batch, phase } = state;
         let ToolLoopPhase::AwaitingApproval(_approval) = phase else {
-            self.state = OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
+            self.op_restore(OperationState::ToolLoop(Box::new(ToolLoopState {
+                batch,
+                phase,
+            })));
             return;
         };
 
@@ -1756,7 +1765,10 @@ impl App {
                 return;
             }
         };
-        self.state = OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
+        self.op_restore(OperationState::ToolLoop(Box::new(ToolLoopState {
+            batch,
+            phase,
+        })));
     }
 
     pub(crate) fn resolve_tool_recovery(&mut self, decision: ToolRecoveryDecision) {
@@ -1764,7 +1776,7 @@ impl App {
         let state = match std::mem::replace(&mut self.state, idle) {
             OperationState::ToolRecovery(state) => state,
             other => {
-                self.state = other;
+                self.op_restore(other);
                 return;
             }
         };
@@ -1853,17 +1865,7 @@ impl App {
 
     /// Finish a user turn and report any file changes.
     pub(crate) fn finish_turn(&mut self, turn: TurnContext) {
-        if self.view.view_mode == crate::ui::ViewMode::Focus
-            && matches!(
-                self.view.focus_state,
-                crate::ui::FocusState::Executing { .. }
-            )
-        {
-            self.view.focus_state = crate::ui::FocusState::Reviewing {
-                active_index: 0,
-                auto_advance: true,
-            };
-        }
+        self.focus_finish_execution();
 
         let working_dir = self.tool_settings.sandbox.working_dir();
         let (report, created, modified) = turn.finish(&working_dir);

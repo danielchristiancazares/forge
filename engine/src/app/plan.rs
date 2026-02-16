@@ -448,7 +448,7 @@ impl App {
         let state = match std::mem::replace(&mut self.state, idle) {
             OperationState::PlanApproval(state) => *state,
             other => {
-                self.state = other;
+                self.op_restore(other);
                 return;
             }
         };
@@ -524,10 +524,13 @@ impl App {
 
         if !pending_tool_approvals.is_empty() {
             let approval = ApprovalState::new(pending_tool_approvals);
-            self.state = OperationState::ToolLoop(Box::new(ToolLoopState {
-                batch,
-                phase: ToolLoopPhase::AwaitingApproval(approval),
-            }));
+            self.op_transition_from(
+                crate::state::OperationTag::PlanApproval,
+                OperationState::ToolLoop(Box::new(ToolLoopState {
+                    batch,
+                    phase: ToolLoopPhase::AwaitingApproval(approval),
+                })),
+            );
             return;
         }
 
@@ -552,7 +555,10 @@ impl App {
                 return;
             }
         };
-        self.state = OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase }));
+        self.op_transition_from(
+            crate::state::OperationTag::PlanApproval,
+            OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase })),
+        );
     }
 }
 

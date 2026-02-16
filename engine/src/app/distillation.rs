@@ -112,10 +112,10 @@ impl super::App {
             handle,
         };
 
-        self.state = OperationState::Distilling(match queued_request {
+        self.op_transition(OperationState::Distilling(match queued_request {
             Some(message) => DistillationState::CompletedWithQueued { task, message },
             None => DistillationState::Running(task),
-        });
+        }));
         DistillationStart::Started
     }
 
@@ -143,7 +143,7 @@ impl super::App {
                 DistillationState::CompletedWithQueued { task, message } => (task, Some(message)),
             },
             other => {
-                self.state = other;
+                self.op_restore(other);
                 return;
             }
         };
@@ -194,10 +194,10 @@ impl super::App {
                     generated_by,
                     handle,
                 };
-                self.state = OperationState::Distilling(match queued_request {
+                self.op_restore(OperationState::Distilling(match queued_request {
                     Some(message) => DistillationState::CompletedWithQueued { task, message },
                     None => DistillationState::Running(task),
-                });
+                }));
             }
         }
     }
@@ -212,7 +212,7 @@ impl super::App {
         error: String,
         queued_request: Option<QueuedUserMessage>,
     ) {
-        self.state = self.idle_state();
+        self.op_transition(self.idle_state());
         let had_pending = queued_request.is_some();
 
         if let Some(queued) = queued_request {
