@@ -44,8 +44,7 @@ impl super::App {
         let overhead = {
             let provider = queued_request
                 .as_ref()
-                .map(|q| q.config.provider())
-                .unwrap_or_else(|| self.model.provider());
+                .map_or_else(|| self.model.provider(), |q| q.config.provider());
             self.streaming_overhead(provider)
         };
 

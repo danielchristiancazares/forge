@@ -66,7 +66,7 @@ pub struct SessionState {
     /// Draft input state (text + cursor + mode).
     ///
     /// This captures the user's in-progress composition, including which mode
-    /// they were in (Normal, Insert, Command, ModelSelect).
+    /// they were in (Normal, Insert, Command, `ModelSelect`).
     pub input: Option<InputState>,
 
     /// Input history for prompt and command recall.

@@ -10,9 +10,9 @@ use forge_context::{RecoveredToolBatch, StepId, ToolBatchId};
 use forge_types::{Message, ModelName, Plan, ToolCall, ToolResult};
 
 use crate::StreamingMessage;
-use crate::input_modes::TurnContext;
-use crate::tool_loop::{ActiveExecution, ToolQueue};
+use crate::TurnContext;
 use crate::tools::ConfirmationRequest;
+use crate::{ActiveExecution, ToolQueue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DataDirSource {
@@ -78,7 +78,7 @@ pub(crate) struct ToolCommitPayload {
 /// Buffered tool-argument deltas for the tool journal during streaming.
 ///
 /// Providers may emit many tiny `ToolCallDelta` chunks; writing each chunk to
-/// SQLite individually can cause UI stalls. This buffer accumulates deltas in
+/// `SQLite` individually can cause UI stalls. This buffer accumulates deltas in
 /// memory and flushes them in larger batches (see `engine/src/streaming.rs`).
 #[derive(Debug)]
 pub(crate) struct ToolArgsJournalBuffer {
@@ -183,8 +183,9 @@ impl ActiveStream {
                 tool_args_buffer: ToolArgsJournalBuffer::new(),
                 turn,
             },
-            // Already journaled - this shouldn't happen, but return unchanged
-            ActiveStream::Journaled { .. } => self,
+            ActiveStream::Journaled { .. } => {
+                unreachable!("transition_to_journaled called on already journaled stream")
+            }
         }
     }
 
@@ -320,7 +321,7 @@ pub(crate) enum DistillationStart {
 
 /// Distillation state with typestate encoding for message queueing.
 ///
-/// Transitions: Running -> CompletedWithQueued (when user message arrives during distillation)
+/// Transitions: Running -> `CompletedWithQueued` (when user message arrives during distillation)
 #[derive(Debug)]
 pub(crate) enum DistillationState {
     /// Distillation in progress, no queued message.
@@ -431,7 +432,7 @@ impl ApprovalState {
     }
 
     /// Mutable access to data with automatic cancel of deny confirmation.
-    /// Any mutation cancels the ConfirmingDeny state.
+    /// Any mutation cancels the `ConfirmingDeny` state.
     pub(crate) fn data_mut(&mut self) -> &mut ApprovalData {
         *self = match std::mem::replace(self, Self::Selecting(ApprovalData::new(vec![]))) {
             Self::Selecting(d) | Self::ConfirmingDeny(d) => Self::Selecting(d),
@@ -446,7 +447,7 @@ impl ApprovalState {
         matches!(self, Self::ConfirmingDeny(_))
     }
 
-    /// Transition: enter deny confirmation (Selecting -> ConfirmingDeny).
+    /// Transition: enter deny confirmation (Selecting -> `ConfirmingDeny`).
     pub(crate) fn enter_deny_confirmation(&mut self) {
         *self = match std::mem::replace(self, Self::Selecting(ApprovalData::new(vec![]))) {
             Self::Selecting(d) | Self::ConfirmingDeny(d) => Self::ConfirmingDeny(d),
@@ -484,7 +485,7 @@ pub(crate) enum ToolLoopPhase {
     AwaitingApproval(ApprovalState),
     /// Has queue but no active execution (between tools or before first spawn).
     Processing(ToolQueue),
-    /// Has active execution (SpawnedTool is required, not optional).
+    /// Has active execution (`SpawnedTool` is required, not optional).
     Executing(ActiveExecution),
 }
 

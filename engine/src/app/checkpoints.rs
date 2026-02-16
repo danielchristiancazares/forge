@@ -188,7 +188,7 @@ pub(crate) struct CreatedCheckpoint {
     pub warning: Option<String>,
 }
 
-/// Intentionally simple (QoL feature). If/when persistence is needed,
+/// Intentionally simple (`QoL` feature). If/when persistence is needed,
 /// we can add a journal without changing the public proof-oriented API.
 #[derive(Debug, Default)]
 pub(crate) struct CheckpointStore {
@@ -308,7 +308,7 @@ impl CheckpointStore {
             None
         };
 
-        let file_count = workspace.as_ref().map(|w| w.files.len()).unwrap_or(0);
+        let file_count = workspace.as_ref().map_or(0, |w| w.files.len());
         self.checkpoints.push(Checkpoint {
             id,
             created_at,
@@ -340,7 +340,7 @@ impl CheckpointStore {
         }
     }
 
-    /// Find the most recent ToolEdit checkpoint containing a snapshot of `path`.
+    /// Find the most recent `ToolEdit` checkpoint containing a snapshot of `path`.
     pub(crate) fn find_baseline_for_file(&self, path: &Path) -> Option<PreparedFileBaseline> {
         let normalized = normalize_path(path);
 

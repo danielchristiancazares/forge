@@ -305,6 +305,7 @@ impl Default for InputState {
 }
 
 impl InputState {
+    #[must_use]
     pub fn mode(&self) -> InputMode {
         match self {
             InputState::Normal(_) => InputMode::Normal,
@@ -316,6 +317,7 @@ impl InputState {
         }
     }
 
+    #[must_use]
     pub fn draft(&self) -> &DraftInput {
         match self {
             InputState::Normal(draft)
@@ -338,6 +340,7 @@ impl InputState {
         }
     }
 
+    #[must_use]
     pub fn command(&self) -> Option<&str> {
         match self {
             InputState::Command { command, .. } => Some(command.text()),
@@ -345,6 +348,7 @@ impl InputState {
         }
     }
 
+    #[must_use]
     pub fn command_cursor(&self) -> Option<usize> {
         match self {
             InputState::Command { command, .. } => Some(command.cursor()),
@@ -352,6 +356,7 @@ impl InputState {
         }
     }
 
+    #[must_use]
     pub fn command_cursor_byte_index(&self) -> Option<usize> {
         match self {
             InputState::Command { command, .. } => Some(command.byte_index()),
@@ -366,6 +371,7 @@ impl InputState {
         }
     }
 
+    #[must_use]
     pub fn model_select_index(&self) -> Option<usize> {
         match self {
             InputState::ModelSelect { selected, .. } => Some(*selected),
@@ -373,6 +379,7 @@ impl InputState {
         }
     }
 
+    #[must_use]
     pub fn into_normal(self) -> InputState {
         match self {
             InputState::Normal(draft)
@@ -384,6 +391,7 @@ impl InputState {
         }
     }
 
+    #[must_use]
     pub fn into_insert(self) -> InputState {
         match self {
             InputState::Normal(draft)
@@ -395,6 +403,7 @@ impl InputState {
         }
     }
 
+    #[must_use]
     pub fn into_command(self) -> InputState {
         match self {
             InputState::Normal(draft)
@@ -409,6 +418,7 @@ impl InputState {
         }
     }
 
+    #[must_use]
     pub fn into_model_select(self, selected: usize) -> InputState {
         match self {
             InputState::Normal(draft)
@@ -420,6 +430,7 @@ impl InputState {
         }
     }
 
+    #[must_use]
     pub fn into_file_select(self) -> InputState {
         match self {
             InputState::Normal(draft)
@@ -435,10 +446,12 @@ impl InputState {
         }
     }
 
+    #[must_use]
     pub fn into_settings(self) -> InputState {
         self.into_settings_surface(SettingsSurface::Root)
     }
 
+    #[must_use]
     pub fn into_settings_surface(self, surface: SettingsSurface) -> InputState {
         match self {
             InputState::Normal(draft)
@@ -456,6 +469,7 @@ impl InputState {
         }
     }
 
+    #[must_use]
     pub fn file_select_filter(&self) -> Option<&str> {
         match self {
             InputState::FileSelect { filter, .. } => Some(filter.text()),
@@ -470,6 +484,7 @@ impl InputState {
         }
     }
 
+    #[must_use]
     pub fn file_select_index(&self) -> Option<usize> {
         match self {
             InputState::FileSelect { selected, .. } => Some(*selected),
@@ -477,6 +492,7 @@ impl InputState {
         }
     }
 
+    #[must_use]
     pub fn settings_modal(&self) -> Option<&SettingsModalState> {
         match self {
             InputState::Settings { modal, .. } => Some(modal),

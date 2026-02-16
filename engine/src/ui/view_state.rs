@@ -89,7 +89,7 @@ pub struct ViewState {
     pub files_panel: FilesPanelState,
     /// Current view mode (Focus vs Classic).
     pub view_mode: ViewMode,
-    /// Focus view state (only relevant when view_mode == Focus).
+    /// Focus view state (only relevant when `view_mode` == Focus).
     pub focus_state: FocusState,
 }
 

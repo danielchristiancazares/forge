@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use forge_types::{OutputLimits, Provider, SecretString, ToolDefinition};
 
+use super::{LspRuntimeState, ProviderRuntimeState, SystemPrompts};
 use crate::config::{self, ForgeConfig, OpenAIConfig};
 use crate::state::{DataDir, DataDirSource, OperationState};
 use crate::tools::{self, builtins};
@@ -13,7 +14,7 @@ use crate::ui::InputState;
 use crate::{
     App, ContextManager, EnvironmentContext, Librarian, OpenAIReasoningEffort,
     OpenAIReasoningSummary, OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation,
-    StreamJournal, SystemPrompts, ToolJournal, UiOptions, ViewState,
+    StreamJournal, ToolJournal, UiOptions, ViewState,
 };
 
 // Tool limit defaults
@@ -143,8 +144,7 @@ impl App {
         let memory_enabled = config
             .as_ref()
             .and_then(|cfg| cfg.context.as_ref())
-            .map(|ctx| ctx.memory)
-            .unwrap_or_else(Self::context_infinity_enabled_from_env);
+            .map_or_else(Self::context_infinity_enabled_from_env, |ctx| ctx.memory);
 
         let anthropic_config = config.as_ref().and_then(|cfg| cfg.anthropic.as_ref());
 
@@ -225,14 +225,12 @@ impl App {
         // Load Gemini cache config
         let gemini_config = config.as_ref().and_then(|cfg| cfg.google.as_ref());
         let gemini_cache_config = crate::GeminiCacheConfig {
-            enabled: gemini_config.map(|cfg| cfg.cache_enabled).unwrap_or(false), // Default disabled - requires explicit opt-in
+            enabled: gemini_config.is_some_and(|cfg| cfg.cache_enabled), // Default disabled - requires explicit opt-in
             ttl_seconds: gemini_config
                 .and_then(|cfg| cfg.cache_ttl_seconds)
                 .unwrap_or(3600), // Default 1 hour
         };
-        let gemini_thinking_enabled = gemini_config
-            .map(|cfg| cfg.thinking_enabled)
-            .unwrap_or(false);
+        let gemini_thinking_enabled = gemini_config.is_some_and(|cfg| cfg.thinking_enabled);
 
         let data_dir = Self::data_dir()?;
 
@@ -319,7 +317,7 @@ impl App {
             output_limits,
             configured_output_limits: output_limits,
             cache_enabled,
-            provider_runtime: crate::ProviderRuntimeState {
+            provider_runtime: ProviderRuntimeState {
                 openai_options,
                 openai_reasoning_effort_explicit,
                 gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
@@ -344,7 +342,7 @@ impl App {
             pending_tool_cleanup: None,
             pending_tool_cleanup_failures: 0,
             tool_file_cache,
-            checkpoints: crate::checkpoints::CheckpointStore::default(),
+            checkpoints: super::checkpoints::CheckpointStore::default(),
             tool_iterations: 0,
             history_load_warning_shown: false,
             autosave_warning_shown: false,
@@ -358,7 +356,7 @@ impl App {
             turn_usage: None,
             last_turn_usage: None,
             notification_queue: crate::notifications::NotificationQueue::new(),
-            lsp_runtime: crate::LspRuntimeState {
+            lsp_runtime: LspRuntimeState {
                 config: lsp_config,
                 manager: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
                 snapshot: forge_lsp::DiagnosticsSnapshot::default(),
@@ -403,10 +401,10 @@ impl App {
     fn ui_options_from_config(config: Option<&ForgeConfig>) -> UiOptions {
         let app = config.and_then(|cfg| cfg.app.as_ref());
         UiOptions {
-            ascii_only: app.map(|cfg| cfg.ascii_only).unwrap_or(false),
-            high_contrast: app.map(|cfg| cfg.high_contrast).unwrap_or(false),
-            reduced_motion: app.map(|cfg| cfg.reduced_motion).unwrap_or(false),
-            show_thinking: app.map(|cfg| cfg.show_thinking).unwrap_or(false),
+            ascii_only: app.is_some_and(|cfg| cfg.ascii_only),
+            high_contrast: app.is_some_and(|cfg| cfg.high_contrast),
+            reduced_motion: app.is_some_and(|cfg| cfg.reduced_motion),
+            show_thinking: app.is_some_and(|cfg| cfg.show_thinking),
         }
     }
 
@@ -592,7 +590,7 @@ impl App {
             .and_then(|cfg| cfg.macos.as_ref());
         let run_policy = tools::RunSandboxPolicy {
             windows: tools::WindowsRunSandboxPolicy {
-                enabled: windows_run_cfg.map(|cfg| cfg.enabled).unwrap_or(true),
+                enabled: windows_run_cfg.is_none_or(|cfg| cfg.enabled),
                 enforce_powershell_only: true,
                 block_network: true,
                 fallback_mode: parse_run_fallback_mode(
@@ -600,7 +598,7 @@ impl App {
                 ),
             },
             macos: tools::MacOsRunSandboxPolicy {
-                enabled: macos_run_cfg.map(|cfg| cfg.enabled).unwrap_or(true),
+                enabled: macos_run_cfg.is_none_or(|cfg| cfg.enabled),
                 fallback_mode: parse_run_fallback_mode(macos_run_cfg.map(|cfg| cfg.fallback_mode)),
             },
         };
@@ -636,8 +634,7 @@ impl App {
             mode: parse_approval_mode(policy_cfg.and_then(|cfg| cfg.mode.as_deref())),
             allowlist: {
                 let list = policy_cfg
-                    .map(|cfg| cfg.allowlist.clone())
-                    .unwrap_or_else(|| vec!["Read".to_string()]);
+                    .map_or_else(|| vec!["Read".to_string()], |cfg| cfg.allowlist.clone());
                 list.into_iter().collect()
             },
             denylist: {
@@ -653,9 +650,7 @@ impl App {
         };
 
         let env_cfg = tools_cfg.and_then(|cfg| cfg.environment.as_ref());
-        let include_default_env = env_cfg
-            .map(|cfg| cfg.include_default_denies)
-            .unwrap_or(true);
+        let include_default_env = env_cfg.is_none_or(|cfg| cfg.include_default_denies);
         let env_patterns: Vec<String> = {
             let mut patterns = if include_default_env {
                 default_env_denylist_patterns()
@@ -682,9 +677,7 @@ impl App {
         });
 
         let sandbox_cfg = tools_cfg.and_then(|cfg| cfg.sandbox.as_ref());
-        let include_default_denies = sandbox_cfg
-            .map(|cfg| cfg.include_default_denies)
-            .unwrap_or(true);
+        let include_default_denies = sandbox_cfg.is_none_or(|cfg| cfg.include_default_denies);
         let mut denied_patterns = sandbox_cfg
             .map(|cfg| cfg.denied_patterns.clone())
             .unwrap_or_default();
@@ -701,7 +694,7 @@ impl App {
         if allowed_roots.is_empty() {
             allowed_roots.push(PathBuf::from("."));
         }
-        let allow_absolute = sandbox_cfg.map(|cfg| cfg.allow_absolute).unwrap_or(false);
+        let allow_absolute = sandbox_cfg.is_some_and(|cfg| cfg.allow_absolute);
 
         let sandbox = tools::sandbox::Sandbox::new(
             allowed_roots.clone(),

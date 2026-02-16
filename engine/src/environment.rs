@@ -11,7 +11,7 @@ pub struct EnvironmentContext {
     date: String,
     /// Platform identifier from `std::env::consts::OS` (e.g. "macos", "linux", "windows").
     platform: &'static str,
-    /// CPU architecture from `std::env::consts::ARCH` (e.g. "aarch64", "x86_64").
+    /// CPU architecture from `std::env::consts::ARCH` (e.g. "aarch64", "`x86_64`").
     arch: &'static str,
     /// Display string for the working directory.
     cwd: String,

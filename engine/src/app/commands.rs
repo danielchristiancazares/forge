@@ -2,7 +2,6 @@
 
 use super::{
     ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, PlanState,
-    SessionChangeLog,
     state::{
         ActiveStream, DistillationStart, OperationState, ToolLoopPhase, ToolLoopState,
         ToolRecoveryDecision,
@@ -476,7 +475,7 @@ impl super::App {
                 self.display.clear();
                 self.display_version = self.display_version.wrapping_add(1);
                 self.pending_user_message = None;
-                self.session_changes = SessionChangeLog::default();
+                self.session_changes = crate::SessionChangeLog::default();
                 self.context_manager = ContextManager::new(self.model.clone());
                 self.context_manager
                     .set_output_limit(self.output_limits.max_output_tokens());
@@ -624,7 +623,7 @@ impl super::App {
                     return;
                 }
 
-                let Some(scope) = crate::checkpoints::RewindScope::parse(scope) else {
+                let Some(scope) = super::checkpoints::RewindScope::parse(scope) else {
                     self.push_notification("Invalid scope. Use: code | conversation | both");
                     return;
                 };
@@ -648,7 +647,7 @@ impl super::App {
                 };
 
                 if let Err(msg) =
-                    self.apply_rewind(proof, crate::checkpoints::RewindScope::Conversation)
+                    self.apply_rewind(proof, super::checkpoints::RewindScope::Conversation)
                 {
                     self.push_notification(msg);
                 }
@@ -683,7 +682,7 @@ impl super::App {
                     });
 
                 if let Err(msg) =
-                    self.apply_rewind(proof, crate::checkpoints::RewindScope::Conversation)
+                    self.apply_rewind(proof, super::checkpoints::RewindScope::Conversation)
                 {
                     self.push_notification(msg);
                     return;

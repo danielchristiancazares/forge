@@ -11,17 +11,17 @@ use tokio::task::JoinHandle;
 use forge_context::{ContextUsageStatus, ToolBatchId};
 use forge_types::{ToolCall, ToolResult, sanitize_path_for_display};
 
-use crate::input_modes::{ChangeRecorder, TurnChangeReport, TurnContext};
+use super::input_modes::{ChangeRecorder, TurnChangeReport, TurnContext};
+use super::{
+    DEFAULT_TOOL_CAPACITY_BYTES, TOOL_EVENT_CHANNEL_CAPACITY, TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
+};
 use crate::state::{
     ApprovalState, JournalStatus, OperationState, PlanApprovalState, ToolBatch, ToolCommitPayload,
     ToolLoopInput, ToolLoopPhase, ToolLoopState, ToolPlan, ToolRecoveryDecision, ToolRecoveryState,
 };
 use crate::tools::{self, ConfirmationRequest, analyze_tool_arguments};
 use crate::util;
-use crate::{
-    ApiConfig, App, DEFAULT_TOOL_CAPACITY_BYTES, Message, NonEmptyString, QueuedUserMessage,
-    SystemNotification, TOOL_EVENT_CHANNEL_CAPACITY, TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
-};
+use crate::{ApiConfig, App, Message, NonEmptyString, QueuedUserMessage, SystemNotification};
 
 fn run_escalation_reason(tool_name: &str, arguments: &serde_json::Value) -> Option<String> {
     if tool_name != "Run" {
@@ -1820,7 +1820,7 @@ impl App {
         }
 
         // Reconstruct thinking message from persisted replay state (IFA §7: reuse build_thinking_message).
-        let thinking_message = crate::streaming::build_thinking_message(
+        let thinking_message = super::streaming::build_thinking_message(
             model.clone(),
             String::new(),
             batch.thinking_replay.clone(),

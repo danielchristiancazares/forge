@@ -367,14 +367,13 @@ fn compute_command_tab_completion(app: &App, line: &str, cursor_byte: usize) -> 
     // Identify the current token fragment (from last whitespace to cursor).
     let token_start = before_cursor
         .rfind(|c: char| c.is_whitespace())
-        .map(|idx| {
+        .map_or(0, |idx| {
             idx + before_cursor[idx..]
                 .chars()
                 .next()
                 .unwrap_or(' ')
                 .len_utf8()
-        })
-        .unwrap_or(0);
+        });
 
     let token_index = before_cursor[..token_start].split_whitespace().count();
     let fragment = &line[token_start..cursor_byte];
@@ -385,7 +384,7 @@ fn compute_command_tab_completion(app: &App, line: &str, cursor_byte: usize) -> 
 
     // Argument completion depends on the (normalized) command name.
     let first = line.split_whitespace().next()?;
-    let kind = crate::commands::normalize_command_name(first)?;
+    let kind = super::commands::normalize_command_name(first)?;
     let arg_index = token_index.saturating_sub(1);
 
     complete_command_arg(app, kind, arg_index, fragment)
@@ -398,7 +397,7 @@ fn complete_command_name(fragment: &str, at_end_of_line: bool) -> Option<String>
     let core_lower = core.to_ascii_lowercase();
     let core_chars = core.chars().count();
 
-    let matches: Vec<&crate::commands::CommandAlias> = crate::commands::command_aliases()
+    let matches: Vec<&super::commands::CommandAlias> = super::commands::command_aliases()
         .iter()
         .filter(|alias| alias.name.starts_with(&core_lower))
         .collect();
@@ -428,11 +427,11 @@ fn complete_command_name(fragment: &str, at_end_of_line: bool) -> Option<String>
 
 fn complete_command_arg(
     app: &App,
-    kind: crate::commands::CommandKind,
+    kind: super::commands::CommandKind,
     arg_index: usize,
     fragment: &str,
 ) -> Option<String> {
-    use crate::commands::CommandKind;
+    use super::commands::CommandKind;
 
     // Rewind targets accept optional leading '#', because checkpoint lists format ids as #<id>.
     let (_prefix, core) = if matches!(kind, CommandKind::Rewind) && arg_index == 0 {

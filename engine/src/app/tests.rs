@@ -9,10 +9,12 @@ use futures_util::future::AbortHandle;
 use serde_json::json;
 use tempfile::tempdir;
 
+use super::init::DEFAULT_MAX_TOOL_ARGS_BYTES;
 use super::*;
-use crate::init::DEFAULT_MAX_TOOL_ARGS_BYTES;
+use crate::EnvironmentContext;
 use crate::state::DataDirSource;
 use crate::ui::DraftInput;
+use forge_types::ApiKey;
 
 /// Test system prompts for unit tests.
 const TEST_SYSTEM_PROMPTS: SystemPrompts = SystemPrompts {
@@ -72,7 +74,7 @@ fn test_app() -> App {
         output_limits,
         configured_output_limits: output_limits,
         cache_enabled: false,
-        provider_runtime: crate::ProviderRuntimeState {
+        provider_runtime: ProviderRuntimeState {
             openai_options: OpenAIRequestOptions::default(),
             openai_reasoning_effort_explicit: false,
             gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
@@ -97,7 +99,7 @@ fn test_app() -> App {
         pending_tool_cleanup: None,
         pending_tool_cleanup_failures: 0,
         tool_file_cache,
-        checkpoints: crate::checkpoints::CheckpointStore::default(),
+        checkpoints: super::checkpoints::CheckpointStore::default(),
         tool_iterations: 0,
         history_load_warning_shown: false,
         autosave_warning_shown: false,
@@ -111,7 +113,7 @@ fn test_app() -> App {
         turn_usage: None,
         last_turn_usage: None,
         notification_queue: crate::notifications::NotificationQueue::new(),
-        lsp_runtime: crate::LspRuntimeState {
+        lsp_runtime: LspRuntimeState {
             config: None,
             manager: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             snapshot: forge_lsp::DiagnosticsSnapshot::default(),
@@ -150,7 +152,7 @@ fn set_streaming_state(app: &mut App) {
         abort_handle,
         tool_call_seq: 0,
         tool_args_journal_bytes: std::collections::HashMap::new(),
-        turn: crate::input_modes::TurnContext::new_for_tests(),
+        turn: super::TurnContext::new_for_tests(),
     });
 }
 
@@ -1035,7 +1037,7 @@ fn process_stream_events_applies_deltas_and_done() {
         abort_handle,
         tool_call_seq: 0,
         tool_args_journal_bytes: std::collections::HashMap::new(),
-        turn: crate::input_modes::TurnContext::new_for_tests(),
+        turn: super::TurnContext::new_for_tests(),
     });
     assert!(app.is_loading());
 
@@ -1073,7 +1075,7 @@ fn process_stream_events_persists_thinking_signature_when_hidden() {
         abort_handle,
         tool_call_seq: 0,
         tool_args_journal_bytes: std::collections::HashMap::new(),
-        turn: crate::input_modes::TurnContext::new_for_tests(),
+        turn: super::TurnContext::new_for_tests(),
     });
 
     tx.try_send(StreamEvent::ThinkingSignature("sig".to_string()))
@@ -1123,7 +1125,7 @@ fn process_stream_events_respects_budget() {
         abort_handle,
         tool_call_seq: 0,
         tool_args_journal_bytes: std::collections::HashMap::new(),
-        turn: crate::input_modes::TurnContext::new_for_tests(),
+        turn: super::TurnContext::new_for_tests(),
     });
 
     for _ in 0..10_000 {
@@ -1158,7 +1160,7 @@ fn process_stream_events_starts_tool_journal_on_first_tool_call() {
         abort_handle,
         tool_call_seq: 0,
         tool_args_journal_bytes: std::collections::HashMap::new(),
-        turn: crate::input_modes::TurnContext::new_for_tests(),
+        turn: super::TurnContext::new_for_tests(),
     });
 
     tx.try_send(StreamEvent::ToolCallStart {
@@ -1495,7 +1497,7 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
         model: app.model.clone(),
         step_id: StepId::new(1),
         tool_batch_id: None,
-        turn: crate::input_modes::TurnContext::new_for_tests(),
+        turn: super::TurnContext::new_for_tests(),
     });
 
     match &app.state {
@@ -1550,7 +1552,7 @@ async fn run_approval_request_captures_reason_without_changing_summary() {
         model: app.model.clone(),
         step_id: StepId::new(1),
         tool_batch_id: None,
-        turn: crate::input_modes::TurnContext::new_for_tests(),
+        turn: super::TurnContext::new_for_tests(),
     });
 
     let requests = app
@@ -1591,7 +1593,7 @@ async fn tool_loop_preserves_order_after_approval() {
         model: app.model.clone(),
         step_id: StepId::new(1),
         tool_batch_id: None,
-        turn: crate::input_modes::TurnContext::new_for_tests(),
+        turn: super::TurnContext::new_for_tests(),
     });
 
     match &app.state {
@@ -1641,7 +1643,7 @@ async fn tool_loop_write_then_read_same_batch() {
         model: app.model.clone(),
         step_id: StepId::new(1),
         tool_batch_id: None,
-        turn: crate::input_modes::TurnContext::new_for_tests(),
+        turn: super::TurnContext::new_for_tests(),
     });
 
     // In Permissive mode, neither write_file nor read_file requires approval,
@@ -1688,7 +1690,7 @@ async fn compaction_failure_goes_to_idle_no_retry() {
         task,
         message: QueuedUserMessage {
             config: config.clone(),
-            turn: crate::input_modes::TurnContext::new_for_tests(),
+            turn: super::TurnContext::new_for_tests(),
         },
     });
 
@@ -1719,7 +1721,7 @@ fn tool_loop_max_iterations_short_circuits() {
         model: app.model.clone(),
         step_id: StepId::new(1),
         tool_batch_id: None,
-        turn: crate::input_modes::TurnContext::new_for_tests(),
+        turn: super::TurnContext::new_for_tests(),
     });
 
     assert!(matches!(app.state, OperationState::Idle));
@@ -1772,7 +1774,7 @@ fn submit_plan_call(app: &mut App, call: ToolCall) {
         model: app.model.clone(),
         step_id: StepId::new(1),
         tool_batch_id: None,
-        turn: crate::input_modes::TurnContext::new_for_tests(),
+        turn: super::TurnContext::new_for_tests(),
     });
 }
 
@@ -1947,7 +1949,7 @@ fn plan_advance_creates_checkpoint() {
     assert!(
         summaries
             .iter()
-            .any(|s| s.kind == crate::checkpoints::CheckpointKind::PlanStep(step_id)),
+            .any(|s| s.kind == super::checkpoints::CheckpointKind::PlanStep(step_id)),
         "Expected a PlanStep checkpoint for step {step_id:?}"
     );
 }
@@ -1996,7 +1998,7 @@ fn plan_skip_creates_checkpoint() {
     assert!(
         summaries
             .iter()
-            .any(|s| s.kind == crate::checkpoints::CheckpointKind::PlanStep(step_id)),
+            .any(|s| s.kind == super::checkpoints::CheckpointKind::PlanStep(step_id)),
         "Expected a PlanStep checkpoint for step {step_id:?}"
     );
 }

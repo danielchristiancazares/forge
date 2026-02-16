@@ -31,10 +31,10 @@ fn tool_args_journal_flush_interval() -> Duration {
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .filter(|value| *value > 0)
-            .map(Duration::from_millis)
-            .unwrap_or(Duration::from_millis(
-                DEFAULT_TOOL_ARGS_JOURNAL_FLUSH_INTERVAL_MS,
-            ))
+            .map_or(
+                Duration::from_millis(DEFAULT_TOOL_ARGS_JOURNAL_FLUSH_INTERVAL_MS),
+                Duration::from_millis,
+            )
     })
 }
 
@@ -983,7 +983,7 @@ impl super::App {
 /// If not, creates a new cache via the Gemini API and stores it.
 ///
 /// Note: Tools must be included in the cache because Gemini's API doesn't allow
-/// specifying `tools` in GenerateContent when using cached content.
+/// specifying `tools` in `GenerateContent` when using cached content.
 async fn get_or_create_gemini_cache(
     cache_arc: &std::sync::Arc<tokio::sync::Mutex<Option<GeminiCache>>>,
     config: &GeminiCacheConfig,
@@ -1151,8 +1151,9 @@ mod token_cache_planner_tests {
         // System + tools + 4 message breakpoints would be 6, but budget caps at 4
         let tokens: Vec<u32> = vec![4096; 20];
         let plan = plan_cache_allocation(CacheBudget::full(), 5000, 5000, &tokens);
-        let total =
-            plan.cache_system as u8 + plan.cache_tools as u8 + plan.message_breakpoints.len() as u8;
+        let total = u8::from(plan.cache_system)
+            + u8::from(plan.cache_tools)
+            + plan.message_breakpoints.len() as u8;
         assert!(total <= CacheBudget::MAX);
     }
 }
