@@ -473,7 +473,6 @@ impl super::App {
                 }
 
                 self.display.clear();
-                self.display_version = self.display_version.wrapping_add(1);
                 self.pending_user_message = None;
                 self.session_changes = crate::SessionChangeLog::default();
                 self.context_manager = ContextManager::new(self.model.clone());

@@ -10,7 +10,7 @@ use super::{LspRuntimeState, ProviderRuntimeState, SystemPrompts};
 use crate::config::{self, ForgeConfig, OpenAIConfig};
 use crate::state::{DataDir, DataDirSource, OperationState};
 use crate::tools::{self, builtins};
-use crate::ui::InputState;
+use crate::ui::{DisplayLog, InputState};
 use crate::{
     App, ContextManager, EnvironmentContext, Librarian, OpenAIReasoningEffort,
     OpenAIReasoningSummary, OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation,
@@ -104,8 +104,7 @@ pub(crate) struct AppBuildParts {
 pub(crate) fn build_app(parts: AppBuildParts) -> App {
     App {
         input: InputState::default(),
-        display: Vec::new(),
-        display_version: 0,
+        display: DisplayLog::default(),
         should_quit: false,
         view: parts.view,
         configured_model: parts.configured_model,

@@ -89,17 +89,16 @@ impl App {
     }
 
     pub(crate) fn rebuild_display_from_history(&mut self) {
-        self.display.clear();
+        let mut items = Vec::new();
         for entry in self.context_manager.history().entries() {
-            self.display.push(DisplayItem::History(entry.id()));
+            items.push(DisplayItem::History(entry.id()));
         }
-        self.display_version = self.display_version.wrapping_add(1);
+        self.display.set_items(items);
     }
 
     pub(crate) fn push_history_message(&mut self, message: Message) -> MessageId {
         let id = self.context_manager.push_message(message);
         self.display.push(DisplayItem::History(id));
-        self.display_version = self.display_version.wrapping_add(1);
         self.invalidate_usage_cache();
         id
     }
@@ -116,7 +115,6 @@ impl App {
             .context_manager
             .push_message_with_step_id(message, step_id);
         self.display.push(DisplayItem::History(id));
-        self.display_version = self.display_version.wrapping_add(1);
         self.invalidate_usage_cache();
         id
     }
@@ -344,7 +342,6 @@ impl App {
 
     pub(crate) fn push_local_message(&mut self, message: Message) {
         self.display.push(DisplayItem::Local(message));
-        self.display_version = self.display_version.wrapping_add(1);
     }
 
     /// Adds a system message that appears in the content pane, visible to

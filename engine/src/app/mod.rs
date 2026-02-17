@@ -35,9 +35,9 @@ use tokio::sync::mpsc;
 
 use crate::ui::InputState;
 use crate::ui::{
-    ChangeKind, DisplayItem, DraftInput, FilesPanelState, FocusState, InputMode, ModalEffect,
-    PanelEffect, PanelEffectKind, PredefinedModel, ScrollState, SettingsCategory, SettingsSurface,
-    UiOptions, ViewMode, ViewState,
+    ChangeKind, DisplayItem, DisplayLog, DraftInput, FilesPanelState, FocusState, InputMode,
+    ModalEffect, PanelEffect, PanelEffectKind, PredefinedModel, ScrollState, SettingsCategory,
+    SettingsSurface, UiOptions, ViewMode, ViewState,
 };
 
 use forge_context::{
@@ -704,10 +704,7 @@ struct LspRuntimeState {
 
 pub struct App {
     input: InputState,
-    display: Vec<DisplayItem>,
-    /// Version counter for display changes - incremented when display items change.
-    /// Used by TUI to cache rendered output and avoid rebuilding every frame.
-    display_version: usize,
+    display: DisplayLog,
     should_quit: bool,
     /// View state for rendering (scroll, status, modal effects).
     view: ViewState,
@@ -1485,7 +1482,7 @@ impl App {
     }
 
     pub fn display_items(&self) -> &[DisplayItem] {
-        &self.display
+        self.display.items()
     }
 
     pub fn is_tool_hidden(&self, name: &str) -> bool {
@@ -1494,7 +1491,7 @@ impl App {
 
     /// Version counter for display changes - used for render caching.
     pub fn display_version(&self) -> usize {
-        self.display_version
+        self.display.revision()
     }
 
     pub fn has_api_key(&self, provider: Provider) -> bool {

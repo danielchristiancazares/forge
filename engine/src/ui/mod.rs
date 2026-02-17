@@ -13,6 +13,7 @@ mod scroll;
 mod view_state;
 
 pub use display::DisplayItem;
+pub(crate) use display::DisplayLog;
 pub use file_picker::{FileEntry, FilePickerState, find_match_positions};
 pub use forge_types::PredefinedModel;
 pub use history::InputHistory;
