@@ -279,10 +279,7 @@ impl App {
     ///
     /// This runs only while the app is idle to avoid interfering with streaming/tool execution.
     pub(crate) fn poll_journal_cleanup(&mut self) {
-        if !matches!(
-            self.state,
-            OperationState::Idle | OperationState::ToolsDisabled(_)
-        ) {
+        if !matches!(self.state, OperationState::Idle) {
             return;
         }
 
@@ -412,8 +409,7 @@ impl App {
             Ok(batch) => batch,
             Err(e) => {
                 tracing::warn!("Tool journal recovery failed: {e}");
-                self.tools_disabled_state =
-                    Some(crate::state::ToolsDisabledState::new(e.to_string()));
+                let _ = self.tool_gate.disable(e.to_string());
                 self.push_notification(format!(
                     "Tool journal recovery failed; tool execution disabled for safety. ({e})"
                 ));
@@ -513,8 +509,7 @@ impl App {
                             "Failed to discard idempotent tool batch {}: {e}",
                             recovered_batch.batch_id
                         );
-                        self.tools_disabled_state =
-                            Some(crate::state::ToolsDisabledState::new(e.to_string()));
+                        let _ = self.tool_gate.disable(e.to_string());
                     }
                     if self.autosave_history() {
                         self.finalize_journal_commit(step_id);
@@ -623,8 +618,7 @@ impl App {
             );
             if let Err(e) = self.tool_journal.discard_batch(recovered_batch.batch_id) {
                 tracing::warn!("Failed to discard orphaned tool batch: {e}");
-                self.tools_disabled_state =
-                    Some(crate::state::ToolsDisabledState::new(e.to_string()));
+                let _ = self.tool_gate.disable(e.to_string());
                 self.push_notification(format!(
                     "Tool journal error: failed to discard orphaned batch; tools disabled. ({e})"
                 ));

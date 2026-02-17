@@ -389,11 +389,6 @@ impl super::App {
                 self.push_notification("Compaction cancelled");
                 true
             }
-            OperationState::ToolsDisabled(state) => {
-                // Not an in-flight operation.
-                self.op_restore(OperationState::ToolsDisabled(state));
-                false
-            }
             OperationState::Idle => false,
         }
     }
@@ -462,9 +457,7 @@ impl super::App {
                         }
                         self.discard_journal_step(state.step_id);
                     }
-                    OperationState::RecoveryBlocked(_)
-                    | OperationState::ToolsDisabled(_)
-                    | OperationState::Idle => {
+                    OperationState::RecoveryBlocked(_) | OperationState::Idle => {
                         // No in-flight async work; /clear below resets history/display state.
                     }
                     OperationState::Distilling(state) => {
@@ -488,7 +481,7 @@ impl super::App {
                     tracing::warn!("Failed to discard pending tool batch on clear: {e}");
                 }
                 self.pending_tool_cleanup_failures = 0;
-                self.tools_disabled_state = None;
+                self.tool_gate.clear();
                 self.provider_runtime.openai_previous_response_id = None;
                 self.invalidate_usage_cache();
                 self.autosave_history();
@@ -724,10 +717,7 @@ impl super::App {
                 Some("clear") => {
                     self.plan_state = PlanState::Inactive;
                     self.save_plan();
-                    self.tools_disabled_state = None;
-                    if matches!(self.state, OperationState::ToolsDisabled(_)) {
-                        self.op_transition(OperationState::Idle);
-                    }
+                    self.tool_gate.clear();
                     self.push_notification("Plan cleared.");
                 }
                 Some(other) => {

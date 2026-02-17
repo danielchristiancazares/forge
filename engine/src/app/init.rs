@@ -138,7 +138,7 @@ pub(crate) fn build_app(parts: AppBuildParts) -> App {
         tool_registry: parts.tool_registry,
         tool_settings: parts.tool_settings,
         tool_journal: parts.tool_journal,
-        tools_disabled_state: None,
+        tool_gate: super::ToolGate::Enabled,
         pending_stream_cleanup: None,
         pending_stream_cleanup_failures: 0,
         pending_tool_cleanup: None,

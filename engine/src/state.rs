@@ -502,29 +502,6 @@ pub(crate) struct ToolRecoveryState {
     pub(crate) model: ModelName,
 }
 
-/// Tool execution is disabled due to tool journal errors.
-///
-/// This is an *idle* state: streaming may continue, but any tool calls are
-/// pre-resolved to errors rather than executed (fail closed for safety).
-#[derive(Debug, Clone)]
-pub(crate) struct ToolsDisabledState {
-    reason: String,
-}
-
-impl ToolsDisabledState {
-    #[must_use]
-    pub(crate) fn new(reason: impl Into<String>) -> Self {
-        Self {
-            reason: reason.into(),
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn reason(&self) -> &str {
-        &self.reason
-    }
-}
-
 /// Crash recovery could not proceed due to journal errors.
 ///
 /// This is a safety state: we refuse to start new streams until the user clears
@@ -596,7 +573,6 @@ pub(crate) struct PlanApprovalState {
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum OperationState {
     Idle,
-    ToolsDisabled(ToolsDisabledState),
     Streaming(ActiveStream),
     ToolLoop(Box<ToolLoopState>),
     PlanApproval(Box<PlanApprovalState>),
@@ -612,7 +588,6 @@ pub(crate) enum OperationState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OperationTag {
     Idle,
-    ToolsDisabled,
     Streaming,
     ToolLoop,
     PlanApproval,
@@ -628,7 +603,7 @@ pub(crate) enum OperationTag {
 /// transitions at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OperationEdge {
-    /// User turn transitions from idle/tools-disabled into response streaming.
+    /// User turn transitions from idle into response streaming.
     StartStreaming,
 
     /// Streaming produced tool calls that require approval before execution.
@@ -643,7 +618,7 @@ pub(crate) enum OperationEdge {
     /// Tool batch finalized and operation returned to idle.
     FinishToolBatch,
 
-    /// User turn transitions from idle/tools-disabled into distillation.
+    /// User turn transitions from idle into distillation.
     StartDistillation,
 
     /// User turn context finalized without changing `OperationState`.
@@ -668,7 +643,6 @@ impl OperationState {
     pub(crate) fn tag(&self) -> OperationTag {
         match self {
             Self::Idle => OperationTag::Idle,
-            Self::ToolsDisabled(_) => OperationTag::ToolsDisabled,
             Self::Streaming(_) => OperationTag::Streaming,
             Self::ToolLoop(_) => OperationTag::ToolLoop,
             Self::PlanApproval(_) => OperationTag::PlanApproval,

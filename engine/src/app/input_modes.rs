@@ -108,10 +108,7 @@ impl InsertMode<'_> {
     /// begin a new stream.
     #[must_use]
     pub fn queue_message(self) -> Option<QueuedUserMessage> {
-        if !matches!(
-            self.app.state,
-            OperationState::Idle | OperationState::ToolsDisabled(_)
-        ) {
+        if !matches!(self.app.state, OperationState::Idle) {
             return None;
         }
 
@@ -126,12 +123,7 @@ impl InsertMode<'_> {
         // If we recover after pushing a new user message, recovered assistant/tool
         // content would be appended after the new prompt (wrong chronology).
         let recovered = self.app.check_crash_recovery();
-        if recovered.is_some()
-            || !matches!(
-                self.app.state,
-                OperationState::Idle | OperationState::ToolsDisabled(_)
-            )
-        {
+        if recovered.is_some() || !matches!(self.app.state, OperationState::Idle) {
             // Recovery may have appended messages and/or entered ToolRecovery.
             // Don't consume the draft; let the user resume/discard, then re-send.
             return None;

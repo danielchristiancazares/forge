@@ -72,6 +72,7 @@ mod lsp_integration;
 mod persistence;
 mod plan;
 pub(crate) mod streaming;
+mod tool_gate;
 pub(crate) mod tool_loop;
 
 pub use commands::{CommandSpec, command_specs};
@@ -773,11 +774,10 @@ pub struct App {
     tool_settings: tools::ToolSettings,
     /// Tool journal for crash recovery.
     tool_journal: ToolJournal,
-    /// Session-scoped tools-disabled latch.
+    /// Session-scoped tool execution gate.
     ///
-    /// When set, tool execution is disabled for safety due to tool journal errors.
-    /// The same state payload is carried in `OperationState::ToolsDisabled` when idle.
-    tools_disabled_state: Option<state::ToolsDisabledState>,
+    /// When disabled, tool execution is fail-closed due to tool journal health errors.
+    tool_gate: ToolGate,
     /// Pending stream journal step ID that needs commit+prune cleanup.
     ///
     /// Best-effort retries run during `tick()` when idle. If this remains uncleared,
@@ -838,6 +838,8 @@ enum SettingsEditorState {
     Context(ContextSettingsEditor),
     Appearance(AppearanceSettingsEditor),
 }
+
+use tool_gate::ToolGate;
 
 impl App {
     pub fn should_quit(&self) -> bool {
@@ -1603,9 +1605,7 @@ impl App {
 
     /// If present, tools are disabled for safety due to a tool journal error.
     pub fn tool_journal_disabled_reason(&self) -> Option<&str> {
-        self.tools_disabled_state
-            .as_ref()
-            .map(state::ToolsDisabledState::reason)
+        self.tool_gate.reason()
     }
 
     /// Human-readable reason for a recovery block (if recovery is blocked).
@@ -1620,7 +1620,7 @@ impl App {
     /// `start_streaming`, `start_distillation`, and UI queries.
     fn busy_reason(&self) -> Option<&'static str> {
         match &self.state {
-            OperationState::Idle | OperationState::ToolsDisabled(_) => None,
+            OperationState::Idle => None,
             OperationState::Streaming(_) => Some("streaming a response"),
             OperationState::ToolLoop(_) => Some("tool execution in progress"),
             OperationState::PlanApproval(_) => Some("plan approval pending"),
@@ -1662,13 +1662,9 @@ impl App {
     pub fn last_turn_usage(&self) -> Option<&TurnUsage> {
         self.last_turn_usage.as_ref()
     }
-
+    #[allow(clippy::unused_self)]
     fn idle_state(&self) -> OperationState {
-        if let Some(disabled) = self.tools_disabled_state.clone() {
-            OperationState::ToolsDisabled(disabled)
-        } else {
-            OperationState::Idle
-        }
+        OperationState::Idle
     }
 
     fn replace_with_idle(&mut self) -> OperationState {
@@ -1720,17 +1716,15 @@ impl App {
             EnterToolLoopAwaitingApproval, EnterToolLoopExecuting, FinishToolBatch,
             ResolvePlanApproval, StartDistillation, StartStreaming,
         };
-        use OperationTag::{Distilling, Idle, PlanApproval, Streaming, ToolLoop, ToolsDisabled};
+        use OperationTag::{Distilling, Idle, PlanApproval, Streaming, ToolLoop};
 
         match (from, to) {
-            (Idle | ToolsDisabled, Streaming) => Some(StartStreaming),
-            (Idle | ToolsDisabled, Distilling) => Some(StartDistillation),
+            (Idle, Streaming) => Some(StartStreaming),
+            (Idle, Distilling) => Some(StartDistillation),
             (Streaming, PlanApproval) => Some(EnterToolLoopAwaitingApproval),
             (Streaming, ToolLoop) => Some(EnterToolLoopExecuting),
             (PlanApproval, ToolLoop) => Some(ResolvePlanApproval),
-            (ToolLoop | PlanApproval | Idle | ToolsDisabled, Idle | ToolsDisabled) => {
-                Some(FinishToolBatch)
-            }
+            (ToolLoop | PlanApproval | Idle, Idle) => Some(FinishToolBatch),
             _ => None,
         }
     }
@@ -1740,12 +1734,12 @@ impl App {
             EnterToolLoopAwaitingApproval, EnterToolLoopExecuting, FinishToolBatch, FinishTurn,
             ResolvePlanApproval, StartDistillation, StartStreaming,
         };
-        use OperationTag::{Distilling, Idle, PlanApproval, Streaming, ToolLoop, ToolsDisabled};
+        use OperationTag::{Distilling, Idle, PlanApproval, Streaming, ToolLoop};
 
         match edge {
-            StartStreaming => matches!(from, Idle | ToolsDisabled) && to == Streaming,
+            StartStreaming => from == Idle && to == Streaming,
 
-            StartDistillation => matches!(from, Idle | ToolsDisabled) && to == Distilling,
+            StartDistillation => from == Idle && to == Distilling,
 
             EnterToolLoopAwaitingApproval => {
                 from == Streaming && matches!(to, PlanApproval | ToolLoop)
@@ -1755,12 +1749,9 @@ impl App {
 
             ResolvePlanApproval => from == PlanApproval && matches!(to, ToolLoop),
 
-            FinishToolBatch => {
-                matches!(to, Idle | ToolsDisabled)
-                    && matches!(from, ToolLoop | PlanApproval | Idle | ToolsDisabled)
-            }
+            FinishToolBatch => to == Idle && matches!(from, ToolLoop | PlanApproval | Idle),
 
-            FinishTurn => from == to && matches!(from, Idle | ToolsDisabled),
+            FinishTurn => from == to && from == Idle,
         }
     }
 
@@ -1864,7 +1855,7 @@ impl App {
     /// Internal state write used for "take + restore" patterns.
     ///
     /// This intentionally does not emit a transition edge, because callers use
-    /// temporary `Idle`/`ToolsDisabled` slots to satisfy Rust move/borrow rules.
+    /// temporary `Idle` slots to satisfy Rust move/borrow rules.
     /// Logging those internal hops would drown out real lifecycle edges.
     fn op_restore(&mut self, next: OperationState) {
         self.state = next;
