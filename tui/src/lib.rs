@@ -2,6 +2,7 @@
 
 mod diff_render;
 mod effects;
+#[cfg(feature = "focus-view")]
 mod focus;
 mod input;
 pub mod markdown;
@@ -33,7 +34,7 @@ use unicode_width::UnicodeWidthStr;
 
 use forge_engine::{
     App, ChangeKind, ContextUsageStatus, DisplayItem, FileDiff, InputMode, Message,
-    PredefinedModel, Provider, SettingsCategory, SettingsSurface, TurnUsage, UiOptions, ViewMode,
+    PredefinedModel, Provider, SettingsCategory, SettingsSurface, TurnUsage, UiOptions,
     command_specs, find_match_positions, sanitize_display_text, sanitize_terminal_text,
 };
 use forge_types::{ToolResult, sanitize_path_for_display};
@@ -159,14 +160,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(1), Constraint::Length(input_height)])
         .split(main_area);
 
+    #[cfg(feature = "focus-view")]
     match app.view_mode() {
-        ViewMode::Focus => {
+        forge_engine::ViewMode::Focus => {
             focus::draw(frame, app, chunks[0], &palette);
         }
-        ViewMode::Classic => {
+        forge_engine::ViewMode::Classic => {
             draw_messages(frame, app, chunks[0], &palette, &glyphs);
         }
     }
+    #[cfg(not(feature = "focus-view"))]
+    draw_messages(frame, app, chunks[0], &palette, &glyphs);
     draw_input(frame, app, chunks[1], &palette, &glyphs);
 
     if let Some(panel_area) = files_panel_area {

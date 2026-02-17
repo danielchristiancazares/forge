@@ -42,8 +42,8 @@ pub struct UiOptions {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
-    #[default]
     Focus,
+    #[default]
     Classic,
 }
 

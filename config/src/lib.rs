@@ -62,6 +62,9 @@ pub struct AppConfig {
     /// Render provider thinking/reasoning deltas in the UI (if available).
     #[serde(default)]
     pub show_thinking: bool,
+    /// Enable Focus view at startup (requires focus-view feature).
+    #[serde(default)]
+    pub focus_view: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -860,6 +863,7 @@ tui = "full"
 ascii_only = true
 high_contrast = false
 reduced_motion = true
+focus_view = true
 "#;
         let config: ForgeConfig = toml::from_str(toml_str).unwrap();
         let app = config.app.unwrap();
@@ -868,6 +872,7 @@ reduced_motion = true
         assert!(app.ascii_only);
         assert!(!app.high_contrast);
         assert!(app.reduced_motion);
+        assert!(app.focus_view);
     }
 
     #[test]

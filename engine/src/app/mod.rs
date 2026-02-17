@@ -850,7 +850,14 @@ impl App {
         self.should_quit = true;
     }
     pub fn view_mode(&self) -> ViewMode {
-        self.view.view_mode
+        #[cfg(feature = "focus-view")]
+        {
+            self.view.view_mode
+        }
+        #[cfg(not(feature = "focus-view"))]
+        {
+            ViewMode::Classic
+        }
     }
 
     pub fn focus_state(&self) -> &FocusState {
@@ -884,10 +891,17 @@ impl App {
     }
 
     pub fn toggle_view_mode(&mut self) {
-        self.view.view_mode = match self.view.view_mode {
-            ViewMode::Focus => ViewMode::Classic,
-            ViewMode::Classic => ViewMode::Focus,
-        };
+        #[cfg(feature = "focus-view")]
+        {
+            self.view.view_mode = match self.view.view_mode {
+                ViewMode::Focus => ViewMode::Classic,
+                ViewMode::Classic => ViewMode::Focus,
+            };
+        }
+        #[cfg(not(feature = "focus-view"))]
+        {
+            self.view.view_mode = ViewMode::Classic;
+        }
     }
 
     pub fn take_clear_transcript(&mut self) -> bool {
@@ -1883,7 +1897,7 @@ impl App {
     }
 
     fn focus_start_execution(&mut self) {
-        if self.view.view_mode == crate::ui::ViewMode::Focus {
+        if self.view_mode() == crate::ui::ViewMode::Focus {
             self.view.focus_state = crate::ui::FocusState::Executing {
                 step_started_at: Some(std::time::Instant::now()),
             };
@@ -1891,7 +1905,7 @@ impl App {
     }
 
     fn focus_finish_execution(&mut self) {
-        if self.view.view_mode == crate::ui::ViewMode::Focus
+        if self.view_mode() == crate::ui::ViewMode::Focus
             && matches!(
                 self.view.focus_state,
                 crate::ui::FocusState::Executing { .. }

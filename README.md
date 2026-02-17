@@ -162,6 +162,7 @@ model = "claude-opus-4-6"
 # Reserved for future UI variants; currently only "full" is supported.
 tui = "full"
 show_thinking = false                  # Render provider thinking/reasoning in UI (if available)
+focus_view = false                     # Enable Focus view at startup (requires --features focus-view)
 
 # Accessibility options
 ascii_only = false                     # Use ASCII-only glyphs (no Unicode icons)
@@ -273,6 +274,8 @@ type = "string"
 description = "City name, e.g. 'Seattle, WA'"
 
 ```
+
+To enable Focus view, build with `--features focus-view` and set `focus_view = true` under `[app]`.
 
 ### Environment Variables
 

@@ -9,6 +9,10 @@ description = "TUI rendering and input handling for Forge"
 [lints]
 workspace = true
 
+[features]
+default = []
+focus-view = ["forge-engine/focus-view"]
+
 [dependencies]
 forge-engine.workspace = true
 forge-types.workspace = true

@@ -10,6 +10,10 @@ description = "A custom TUI for interacting with GPT and Claude"
 [lints]
 workspace = true
 
+[features]
+default = []
+focus-view = ["forge-engine/focus-view", "forge-tui/focus-view"]
+
 [[bin]]
 name = "forge"
 path = "src/main.rs"
