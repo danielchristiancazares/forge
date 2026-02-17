@@ -11,21 +11,28 @@ This crate provides the foundational type system that enforces correctness at co
 - [NonEmpty String Types](#nonempty-string-types)
 - [PersistableContent](#persistablecontent)
 - [Provider and Model Types](#provider-and-model-types)
+  - [InternalModel](#internalmodel)
 - [API Key Types](#api-key-types)
 - [OpenAI Request Options](#openai-request-options)
 - [Caching and Output Limits](#caching-and-output-limits)
-- [Thought Signatures](#thought-signatures)
+  - [CacheBudget](#cachebudget)
+- [Thought Signatures and Replay](#thought-signatures-and-replay)
+  - [ThinkingReplayState](#thinkingreplaystate)
+  - [OpenAI Reasoning Replay Items](#openai-reasoning-replay-items)
 - [Streaming Events](#streaming-events)
 - [API Usage Tracking](#api-usage-tracking)
 - [Tool Calling Types](#tool-calling-types)
+- [Plan Types](#plan-types)
 - [Message Types](#message-types)
 - [Terminal Sanitization](#terminal-sanitization)
+  - [Path Sanitization](#path-sanitization)
+  - [Environment Denylist Patterns](#environment-denylist-patterns)
 - [Steganographic Sanitization](#steganographic-sanitization)
 - [Homoglyph Detection](#homoglyph-detection)
 - [Text Utilities](#text-utilities)
 - [Type Relationships](#type-relationships)
 - [Error Types Summary](#error-types-summary)
-- [Testing](#testing)
+- [Building and Testing](#building-and-testing)
 - [Extending the Crate](#extending-the-crate)
 
 ---
@@ -49,7 +56,7 @@ assert_eq!(safe.as_str(), "attack\noverwrite");
 // OutputLimits: thinking_budget constraints enforced at creation
 let limits = OutputLimits::with_thinking(4096, 5000)?;  // Err: budget >= max
 
-// ModelName: Provider prefix validated during parsing
+// ModelName: Provider prefix validated during parsing + must be in the known catalog
 let model = Provider::OpenAI.parse_model("gpt-5.2")?;  // Ok
 let model = Provider::Gemini.parse_model("gemini-3-pro-preview")?;  // Ok
 ```
@@ -75,11 +82,11 @@ assert_eq!(key.provider(), Provider::Claude);
 ```rust
 pub enum Message {
     System(SystemMessage),        // content, timestamp
-    User(UserMessage),            // content, timestamp
+    User(UserMessage),            // content, display_content (optional), timestamp
     Assistant(AssistantMessage),   // content, timestamp, model
-    Thinking(ThinkingMessage),     // content, signature, timestamp, model
+    Thinking(ThinkingMessage),     // content, replay_state, timestamp, model
     ToolUse(ToolCall),            // id, name, arguments, thought_signature
-    ToolResult(ToolResult),       // tool_call_id, content, is_error
+    ToolResult(ToolResult),       // tool_call_id, tool_name, content, is_error
 }
 ```
 
@@ -117,6 +124,7 @@ forge-types/
 ├── Cargo.toml
 └── src/
     ├── lib.rs           # All public types and core implementations
+    ├── plan.rs          # Plan domain model (phases/steps/edits) — pure types
     ├── sanitize.rs      # Terminal text sanitization + steganographic stripping (security)
     ├── text.rs          # Pure text helpers (truncation)
     └── confusables.rs   # Homoglyph / mixed-script detection (security)
@@ -126,11 +134,13 @@ forge-types/
 
 ```toml
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "2.0"
-unicode-script = "..."   # For mixed-script / homoglyph detection
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+unicode-script.workspace = true
 ```
+
+No crate feature flags are defined.
 
 ---
 
@@ -370,16 +380,10 @@ assert_eq!(Provider::parse("gemini").unwrap(), Provider::Gemini);
 assert_eq!(Provider::parse("google").unwrap(), Provider::Gemini);
 assert!(Provider::parse("unknown").is_err());
 
-// Infer provider from model name prefix
-assert_eq!(
-    Provider::from_model_name("claude-opus-4-6").unwrap(),
-    Provider::Claude
-);
+// Infer provider from known model IDs
+assert_eq!(Provider::from_model_name("claude-opus-4-6").unwrap(), Provider::Claude);
 assert_eq!(Provider::from_model_name("gpt-5.2").unwrap(), Provider::OpenAI);
-assert_eq!(
-    Provider::from_model_name("gemini-3-pro-preview").unwrap(),
-    Provider::Gemini
-);
+assert_eq!(Provider::from_model_name("gemini-3-pro-preview").unwrap(), Provider::Gemini);
 assert!(Provider::from_model_name("unknown-model").is_err());
 
 // Enumerate all providers
@@ -411,13 +415,13 @@ let models = Provider::Gemini.available_models();
 let model_ids: Vec<&'static str> = models.iter().map(|model| model.model_id()).collect();
 // ["gemini-3-pro-preview", "gemini-3-flash-preview"]
 
-// Parse model name with validation
+// Parse model name with validation (must be in the known catalog)
 let model = Provider::Claude.parse_model("claude-opus-4-6")?;
 ```
 
 ### PredefinedModel
 
-Enumeration of known models with associated metadata.
+Enumeration of known user-selectable models with associated metadata.
 
 **Variants:**
 
@@ -433,7 +437,7 @@ Enumeration of known models with associated metadata.
 **Methods:**
 
 ```rust
-use forge_types::PredefinedModel;
+use forge_types::{PredefinedModel, Provider};
 
 let model = PredefinedModel::ClaudeOpus;
 
@@ -471,7 +475,7 @@ A provider-scoped model name that prevents mixing models across providers.
 - Claude models must start with `claude-`
 - OpenAI models must start with `gpt-5`
 - Gemini models must start with `gemini-`
-- Model names must exist in the predefined catalog
+- Model names must exist in the predefined catalog (`PredefinedModel`)
 - Empty model names are rejected
 
 **Fields:**
@@ -523,13 +527,7 @@ let known = Provider::Claude.default_model();  // Cow::Borrowed
 
 Structured error returned when parsing provider names, model IDs, or OpenAI option strings from user input.
 
-**Fields:**
-
-| Field | Type | Description |
-| ----- | ---- | ----------- |
-| `kind` | `EnumKind` | Which enum was being parsed |
-| `raw` | `String` | The invalid input value |
-| `expected` | `&'static [&'static str]` | Valid values |
+**Note:** The fields are private; use accessors (`kind()`, `raw()`, `expected()`).
 
 **EnumKind Variants:**
 
@@ -548,13 +546,33 @@ Structured error returned when parsing provider names, model IDs, or OpenAI opti
 
 Errors that occur when parsing a model name via `ModelName::parse()`.
 
-| Variant | Condition | Message |
-| ------- | --------- | ------- |
-| `Empty` | Model name is empty or whitespace-only | "model name cannot be empty" |
-| `ClaudePrefix(String)` | Claude model missing `claude-` prefix | "Claude model must start with claude-" |
-| `OpenAIMinimum(String)` | OpenAI model missing `gpt-5` prefix | "OpenAI model must start with gpt-5" |
-| `GeminiPrefix(String)` | Gemini model missing `gemini-` prefix | "Gemini model must start with gemini-" |
-| `UnknownModel(String)` | Model name not in the predefined catalog | "unknown model name" |
+| Variant | Condition |
+| ------- | --------- |
+| `Empty` | Model name is empty or whitespace-only |
+| `ClaudePrefix(String)` | Claude model missing `claude-` prefix |
+| `OpenAIMinimum(String)` | OpenAI model missing `gpt-5` prefix |
+| `GeminiPrefix(String)` | Gemini model missing `gemini-` prefix |
+| `UnknownModel(String)` | Model name not in the predefined catalog |
+
+### InternalModel
+
+`InternalModel` is a small catalog of **system-owned model IDs** used by background workflows (distillation, librarian), not user-selectable UI models.
+
+These IDs are not necessarily part of the `PredefinedModel` catalog, so they may not round-trip through `ModelName::parse`.
+
+| Variant | Model ID | Provider |
+| ------- | -------- | -------- |
+| `ClaudeDistiller` | `claude-haiku-4-5` | Claude |
+| `OpenAIDistiller` | `gpt-5-nano` | OpenAI |
+| `GeminiDistiller` | `gemini-3-pro-preview` | Gemini |
+| `GeminiLibrarian` | `gemini-3-flash-preview` | Gemini |
+
+```rust
+use forge_types::{InternalModel, Provider};
+
+assert_eq!(InternalModel::ClaudeDistiller.provider(), Provider::Claude);
+assert_eq!(InternalModel::ClaudeDistiller.model_id(), "claude-haiku-4-5");
+```
 
 ---
 
@@ -785,6 +803,26 @@ assert_eq!(default, CacheHint::Default);
 let cached = CacheHint::Ephemeral;
 ```
 
+### CacheBudget
+
+Encodes the maximum number of `cache_control` markers allowed by Claude-style APIs. The budget clamps to `CacheBudget::MAX` (4), making ">4 slots" structurally unrepresentable.
+
+```rust
+use forge_types::CacheBudget;
+
+let budget = CacheBudget::full();
+assert_eq!(budget.remaining(), CacheBudget::MAX); // 4
+
+// Consume one slot
+let budget = budget.take_one().unwrap();
+assert_eq!(budget.remaining(), 3);
+
+// Exhausted budget returns None
+let mut b = CacheBudget::new(1);
+b = b.take_one().unwrap();  // remaining = 0
+assert!(b.take_one().is_none());
+```
+
 ### OutputLimits
 
 Validated output configuration that guarantees invariants by construction.
@@ -838,20 +876,20 @@ assert!(matches!(result, Err(OutputLimitsError::ThinkingBudgetTooLarge { .. })))
 
 Errors when constructing invalid output limits.
 
-| Variant | Condition | Message |
-| ------- | --------- | ------- |
-| `ThinkingBudgetTooSmall` | `thinking_budget < 1024` | "thinking budget must be at least 1024 tokens" |
-| `ThinkingBudgetTooLarge { budget, max_output }` | `thinking_budget >= max_output_tokens` | "thinking budget ({budget}) must be less than max output tokens ({max_output})" |
+| Variant | Condition |
+| ------- | --------- |
+| `ThinkingBudgetTooSmall` | `thinking_budget < 1024` |
+| `ThinkingBudgetTooLarge { budget, max_output }` | `thinking_budget >= max_output_tokens` |
 
 ---
 
-## Thought Signatures
+## Thought Signatures and Replay
 
-Types for tracking provider-specific thinking/reasoning signatures required for API replay.
+Types for tracking provider-specific thinking/reasoning signatures and replay state.
 
 ### ThoughtSignature
 
-An opaque wrapper for the encrypted thinking signature string that some providers (e.g., Claude) require when replaying conversations with thinking enabled.
+An opaque wrapper for an encrypted thinking signature string (Claude-style signed thinking replay).
 
 ```rust
 use forge_types::ThoughtSignature;
@@ -872,12 +910,12 @@ let sig: ThoughtSignature = String::from("sig-abc").into();
 
 ### ThoughtSignatureState
 
-Tracks whether a thinking block or tool call has a provider signature attached.
+A small tagged type used for tool-call replay metadata and legacy thinking deserialization.
 
 | Variant | Description |
 | ------- | ----------- |
 | `Unsigned` | No signature present |
-| `Signed(ThoughtSignature)` | Signature attached for API replay |
+| `Signed(ThoughtSignature)` | Signature attached |
 
 ```rust
 use forge_types::{ThoughtSignatureState, ThoughtSignature};
@@ -891,6 +929,47 @@ assert!(signed.is_signed());
 
 **Serde:** Serializes with `#[serde(tag = "state", content = "signature", rename_all = "snake_case")]`.
 
+### ThinkingReplayState
+
+Thinking blocks are persisted and replayed using `ThinkingReplayState`, which supports both Claude signed thinking and OpenAI reasoning replay items. This replaced the older `ThoughtSignatureState` on `ThinkingMessage`.
+
+| Variant | Meaning |
+| ------- | ------- |
+| `Unsigned` | No replay payload |
+| `ClaudeSigned { signature }` | Claude-style signature for signed replay |
+| `OpenAIReasoning { items }` | OpenAI reasoning output items captured for stateless replay |
+| `Unknown` | Persisted shape could not be decoded (kept observable) |
+
+Legacy `ThoughtSignatureState` payloads are automatically migrated during deserialization via the `alias = "signature"` serde attribute.
+
+### OpenAI Reasoning Replay Items
+
+OpenAI reasoning replay is modeled by two types:
+
+- `OpenAIReasoningSummaryPart` — a typed text part (e.g. `"summary_text"`)
+- `OpenAIReasoningItem` — a complete reasoning output item with `id`, `summary`, and optional `encrypted_content`
+
+These are accumulated from `StreamEvent::OpenAIReasoningDone` events and attached to a `ThinkingMessage`:
+
+```rust
+use forge_types::{
+    OpenAIReasoningItem, OpenAIReasoningSummaryPart,
+    ThinkingMessage, Provider, NonEmptyString,
+};
+
+let model = Provider::OpenAI.default_model();
+let content = NonEmptyString::new("Thinking...")?;
+
+let item = OpenAIReasoningItem::try_new(
+    "r_1",
+    vec![OpenAIReasoningSummaryPart::summary_text("short summary")?],
+    Some("encrypted_payload".to_string()),
+)?;
+
+let msg = ThinkingMessage::with_openai_reasoning(model, content, vec![item]);
+assert!(msg.requires_persistence());
+```
+
 ---
 
 ## Streaming Events
@@ -902,18 +981,25 @@ Events emitted during streaming API responses.
 | Variant | Description |
 | ------- | ----------- |
 | `TextDelta(String)` | Incremental text content |
-| `ThinkingDelta(String)` | Provider reasoning content (Claude extended thinking or OpenAI reasoning summaries) |
-| `ThinkingSignature(String)` | Encrypted thinking signature for API replay (Claude extended thinking) |
+| `ThinkingDelta(String)` | Provider reasoning content delta |
+| `ThinkingSignature(String)` | Claude thinking signature delta |
+| `ResponseId(String)` | OpenAI response ID for `previous_response_id` chaining |
+| `OpenAIReasoningDone { id, summary, encrypted_content }` | Completed OpenAI reasoning output item for stateless replay |
 | `ToolCallStart { id, name, thought_signature }` | Tool use content block began; `thought_signature` is `ThoughtSignatureState` |
 | `ToolCallDelta { id, arguments }` | Tool call JSON arguments chunk |
-| `Usage(ApiUsage)` | API-reported token usage from provider |
+| `Usage(ApiUsage)` | API-reported token usage |
 | `Done` | Stream completed successfully |
 | `Error(String)` | Error occurred during streaming |
 
 ```rust
-use forge_types::{StreamEvent, ApiUsage, ThoughtSignatureState};
+use forge_types::{StreamEvent, ApiUsage, OpenAIReasoningItem, OpenAIReasoningSummaryPart};
 
-fn handle_event(event: StreamEvent, response: &mut String, thinking: &mut String) {
+fn handle_event(
+    event: StreamEvent,
+    response: &mut String,
+    thinking: &mut String,
+    openai_items: &mut Vec<OpenAIReasoningItem>,
+) {
     match event {
         StreamEvent::TextDelta(text) => {
             response.push_str(&text);
@@ -921,22 +1007,25 @@ fn handle_event(event: StreamEvent, response: &mut String, thinking: &mut String
         StreamEvent::ThinkingDelta(thought) => {
             thinking.push_str(&thought);
         }
+        StreamEvent::ResponseId(id) => {
+            println!("OpenAI response id: {id}");
+        }
+        StreamEvent::OpenAIReasoningDone { id, summary, encrypted_content } => {
+            if let Ok(item) = OpenAIReasoningItem::try_new(id, summary, encrypted_content) {
+                openai_items.push(item);
+            }
+        }
         StreamEvent::ThinkingSignature(sig) => {
-            // Store signature for API replay
             println!("Thinking signature received: {} bytes", sig.len());
         }
-        StreamEvent::ToolCallStart {
-            id,
-            name,
-            thought_signature,
-        } => {
-            println!("Tool call started: {} ({})", name, id);
+        StreamEvent::ToolCallStart { id, name, thought_signature } => {
+            println!("Tool call started: {name} ({id})");
             if thought_signature.is_signed() {
                 println!("  (has thought signature)");
             }
         }
         StreamEvent::ToolCallDelta { id, arguments } => {
-            println!("Tool {} args: {}", id, arguments);
+            println!("Tool {id} args chunk: {arguments}");
         }
         StreamEvent::Usage(usage) => {
             println!("Tokens: {} in, {} out", usage.input_tokens, usage.output_tokens);
@@ -945,7 +1034,7 @@ fn handle_event(event: StreamEvent, response: &mut String, thinking: &mut String
             println!("Stream completed");
         }
         StreamEvent::Error(msg) => {
-            eprintln!("Stream error: {}", msg);
+            eprintln!("Stream error: {msg}");
         }
     }
 }
@@ -1019,7 +1108,6 @@ let usage = ApiUsage {
 };
 
 // Non-cached input tokens (for cost calculation)
-// cost = (non_cached * input_price) + (cache_read * cached_price) + (output * output_price)
 assert_eq!(usage.non_cached_input_tokens(), 200);
 
 // Check if usage has any data
@@ -1027,7 +1115,7 @@ assert!(usage.has_data());
 
 // Cache hit percentage (0-100)
 let hit_rate = usage.cache_hit_percentage();
-assert!((hit_rate - 80.0).abs() < 0.01);  // 80% cache hit rate
+assert!((hit_rate - 80.0).abs() < 0.01);
 ```
 
 **Aggregation:**
@@ -1049,7 +1137,6 @@ let call2 = ApiUsage {
     output_tokens: 1000,
 };
 
-// Merge another usage into this one (saturating arithmetic)
 total.merge(&call2);
 
 assert_eq!(total.input_tokens, 3000);
@@ -1088,23 +1175,16 @@ let tool = ToolDefinition::new(
     json!({
         "type": "object",
         "properties": {
-            "location": {
-                "type": "string",
-                "description": "The city and state, e.g. San Francisco, CA"
-            },
-            "unit": {
-                "type": "string",
-                "enum": ["celsius", "fahrenheit"],
-                "description": "Temperature unit"
-            }
+            "location": {"type": "string"},
+            "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}
         },
         "required": ["location"]
     }),
 );
 
 assert_eq!(tool.name, "get_weather");
-assert!(!tool.hidden);           // default: visible
-assert!(tool.provider.is_none()); // default: all providers
+assert!(!tool.hidden);
+assert!(tool.provider.is_none());
 ```
 
 ### ToolCall
@@ -1128,10 +1208,7 @@ use serde_json::json;
 let call = ToolCall::new(
     "call_abc123",
     "get_weather",
-    json!({
-        "location": "San Francisco, CA",
-        "unit": "fahrenheit"
-    }),
+    json!({"location": "San Francisco, CA"}),
 );
 
 assert_eq!(call.id, "call_abc123");
@@ -1184,6 +1261,73 @@ assert!(result.is_error);
 
 ---
 
+## Plan Types
+
+The `plan` module provides pure domain types for plan-guided sessions: a phased plan with DAG-style dependencies and a constrained edit model.
+
+Core types:
+
+- `PlanStepId` — step identifier
+- `StepStatus` — forward-only lifecycle (`Pending -> Active -> Complete|Failed|Skipped`)
+- `PlanStep`, `Phase`, `Plan`
+- `PlanState` — `Inactive | Proposed(Plan) | Active(Plan)`
+- `EditOp` — edit operations applied to a plan with validation
+- `CompletedPlan` — proof object produced only when all steps are satisfied
+
+```rust
+use forge_types::{
+    Plan, PlanState, PhaseInput, StepInput, PlanStepId,
+    StepStatus, EditOp,
+};
+
+// Create a plan from input (IDs assigned monotonically from 1)
+let plan = Plan::from_input(vec![
+    PhaseInput {
+        name: "Discovery".to_string(),
+        steps: vec![
+            StepInput { description: "Audit config paths".to_string(), depends_on: vec![] },
+            StepInput { description: "Map dispatch flow".to_string(), depends_on: vec![] },
+        ],
+    },
+    PhaseInput {
+        name: "Implementation".to_string(),
+        steps: vec![
+            StepInput {
+                description: "Replace hardcoded paths".to_string(),
+                depends_on: vec![PlanStepId::new(1)],
+            },
+        ],
+    },
+])?;
+
+// Wrap in a lifecycle state
+let state = PlanState::Proposed(plan.clone());
+assert!(!state.is_active());
+
+// Activate after user approval
+let mut plan = plan;
+let state = PlanState::Active(plan.clone());
+assert!(state.is_active());
+
+// Transition a step (Pending -> Active -> Complete)
+let step_id = PlanStepId::new(1);
+let step = plan.step_mut(step_id).unwrap();
+step.transition(StepStatus::Active)?;
+step.transition(StepStatus::Complete("done".to_string()))?;
+
+// Apply an edit (validated and DAG-rechecked)
+plan.apply_edit(EditOp::UpdateDescription {
+    step_id: PlanStepId::new(2),
+    description: "Map tool loop flow".to_string(),
+})?;
+
+// Render plan for UI
+let rendered = plan.render();
+println!("{rendered}");
+```
+
+---
+
 ## Message Types
 
 ### SystemMessage
@@ -1204,22 +1348,32 @@ assert_eq!(msg.content(), "You are a helpful assistant.");
 
 A user input message with content and timestamp.
 
+Supports an optional **display-only content** channel: `content` is the canonical content sent to the model, while `display_content` is a UI-facing representation (e.g., with file references expanded).
+
 ```rust
 use forge_types::{UserMessage, NonEmptyString};
 
 let content = NonEmptyString::new("Hello, world!")?;
 let msg = UserMessage::new(content);
 assert_eq!(msg.content(), "Hello, world!");
+assert_eq!(msg.display_content(), "Hello, world!"); // falls back to content
+
+// With separate display content
+let content = NonEmptyString::new("@README.md summarize this")?;
+let display = NonEmptyString::new("summarize README.md (expanded preview...)")?;
+let msg = UserMessage::with_display(content, display);
+assert_eq!(msg.content(), "@README.md summarize this");
+assert_eq!(msg.display_content(), "summarize README.md (expanded preview...)");
 ```
 
-**Fields:** `content: NonEmptyString`, `timestamp: SystemTime`
+**Fields:** `content: NonEmptyString`, `display_content: Option<NonEmptyString>`, `timestamp: SystemTime`
 
 ### AssistantMessage
 
 An assistant response with content, timestamp, and the model that generated it.
 
 ```rust
-use forge_types::{AssistantMessage, ModelName, Provider, NonEmptyString};
+use forge_types::{AssistantMessage, Provider, NonEmptyString};
 
 let model = Provider::Claude.default_model();
 let content = NonEmptyString::new("Hello! How can I help you today?")?;
@@ -1234,34 +1388,35 @@ assert_eq!(msg.model().as_str(), "claude-opus-4-6");
 
 ### ThinkingMessage
 
-Provider reasoning/thinking content (Claude extended thinking, Gemini thinking, etc.).
+Provider reasoning/thinking content (Claude extended thinking, OpenAI reasoning replay, etc.).
 
 This is separate from `AssistantMessage` because thinking is metadata about the reasoning process, not part of the actual response. It can be shown/hidden independently in the UI.
 
+Replay metadata is stored as a `ThinkingReplayState` (not `ThoughtSignatureState`).
+
 ```rust
-use forge_types::{ThinkingMessage, ModelName, Provider, NonEmptyString};
+use forge_types::{ThinkingMessage, Provider, NonEmptyString};
 
 let model = Provider::Claude.default_model();
 let content = NonEmptyString::new("Let me think about this...")?;
 
-// Without signature
+// Unsigned (no replay payload)
 let msg = ThinkingMessage::new(model.clone(), content.clone());
 assert_eq!(msg.content(), "Let me think about this...");
-assert!(!msg.has_signature());
-assert_eq!(msg.provider(), Provider::Claude);
-assert_eq!(msg.model().as_str(), "claude-opus-4-6");
+assert!(!msg.requires_persistence());
+assert!(msg.claude_signature().is_none());
 
-// With encrypted signature (for API replay)
+// Claude signed replay
 let msg = ThinkingMessage::with_signature(
     model,
     content,
     "encrypted-sig-data".to_string(),
 );
-assert!(msg.has_signature());
-assert!(msg.signature_state().is_signed());
+assert!(msg.requires_persistence());
+assert!(msg.claude_signature().is_some());
 ```
 
-**Fields:** `content: NonEmptyString`, `signature: ThoughtSignatureState`, `timestamp: SystemTime`, `model: ModelName`
+**Fields:** `content: NonEmptyString`, `replay: ThinkingReplayState`, `timestamp: SystemTime`, `model: ModelName`
 
 ### Message
 
@@ -1281,12 +1436,19 @@ A sum type representing any message in a conversation.
 **Construction:**
 
 ```rust
-use forge_types::{Message, NonEmptyString, Provider, ToolCall, ToolResult};
+use forge_types::{Message, NonEmptyString, Provider, ToolCall, ToolResult, OpenAIReasoningItem};
 use serde_json::json;
 
 // Direct constructors
 let system = Message::system(NonEmptyString::new("You are helpful.")?);
 let user = Message::user(NonEmptyString::new("Hi!")?);
+
+// With display text distinct from canonical model input
+let user = Message::user_with_display(
+    NonEmptyString::new("@README.md summarize")?,
+    NonEmptyString::new("summarize README.md (expanded...)")?,
+);
+
 let assistant = Message::assistant(
     Provider::Claude.default_model(),
     NonEmptyString::new("Hello!")?
@@ -1303,8 +1465,15 @@ let thinking_signed = Message::thinking_with_signature(
     "encrypted-sig".to_string(),
 );
 
+// OpenAI reasoning replay
+let thinking_openai = Message::thinking_with_openai_reasoning(
+    Provider::OpenAI.default_model(),
+    NonEmptyString::new("thinking...")?,
+    Vec::<OpenAIReasoningItem>::new(),
+);
+
 // Convenience constructor with validation
-let user = Message::try_user("Hello")?;  // Returns Result
+let user = Message::try_user("Hello")?;
 
 // Tool messages
 let tool_use = Message::tool_use(ToolCall::new(
@@ -1327,36 +1496,16 @@ let tool_result = Message::tool_result(ToolResult::success(
 assert_eq!(system.role_str(), "system");
 assert_eq!(user.role_str(), "user");
 assert_eq!(assistant.role_str(), "assistant");
-assert_eq!(thinking.role_str(), "assistant");     // Thinking is assistant-role content
-assert_eq!(tool_use.role_str(), "assistant");     // Tool use is from assistant
-assert_eq!(tool_result.role_str(), "user");       // Tool result is sent as user role
+assert_eq!(thinking.role_str(), "assistant");
+assert_eq!(tool_use.role_str(), "assistant");
+assert_eq!(tool_result.role_str(), "user");
 
-// Content access
-assert_eq!(user.content(), "Hello");
+// Display content for UI (UserMessage may carry a dedicated display channel)
+let ui_text = user.display_content();
 
-// Pattern matching for role-specific data
-match &message {
-    Message::System(m) => println!("System: {}", m.content()),
-    Message::User(m) => println!("User: {}", m.content()),
-    Message::Assistant(m) => {
-        println!("Assistant ({:?}): {}", m.provider(), m.content());
-    }
-    Message::Thinking(m) => {
-        println!("Thinking ({:?}): {}", m.provider(), m.content());
-    }
-    Message::ToolUse(call) => {
-        println!("Tool call: {} with {:?}", call.name, call.arguments);
-    }
-    Message::ToolResult(result) => {
-        println!("Tool result: {} (error={})", result.content, result.is_error);
-    }
-}
+// Content access (canonical)
+let canonical = user.content();
 ```
-
-**Serde Behavior:**
-
-- `AssistantMessage` and `ThinkingMessage` model info is flattened via `#[serde(flatten)]`
-- Each variant serializes with its role and content
 
 ### CacheableMessage
 
@@ -1451,6 +1600,24 @@ assert_eq!(sanitize_terminal_text("Line1\nLine2\tTabbed"), "Line1\nLine2\tTabbed
 // Control characters stripped
 assert_eq!(sanitize_terminal_text("A\x00B\x01C"), "ABC");
 ```
+
+### Path Sanitization
+
+Paths are higher risk to render because filenames can contain newlines/tabs on Unix.
+
+- `sanitize_path_display(input)` — applies `sanitize_terminal_text` then replaces `\n`, `\r`, `\t` with visible Unicode control picture substitutes
+- `strip_windows_extended_prefix(r"\\?\path")` — strips the `\\?\` prefix
+- `sanitize_path_for_display(&Path)` — combines stripping + sanitization for display-ready output
+
+### Environment Denylist Patterns
+
+The crate exports glob-like env var patterns used by boundary components to identify credential-bearing variables and dynamic-linker injection vectors:
+
+- `ENV_CREDENTIAL_PATTERNS` — env vars whose values are likely secrets (used for output redaction)
+- `ENV_INJECTION_PATTERNS` — dynamic linker env vars dangerous in child processes
+- `ENV_SECRET_DENYLIST` — union of both (used for subprocess env sanitization)
+
+All three are generated from a single macro invocation so the lists cannot drift independently.
 
 ---
 
@@ -1552,15 +1719,17 @@ Only flags Latin mixed with Cyrillic, Greek, Armenian, or Cherokee (highest atta
 ```rust
 use forge_types::detect_mixed_script;
 
-// Cyrillic 'a' (U+0430) looks like Latin 'a'
-let warning = detect_mixed_script("paypal.com", "url");
+// Cyrillic 'а' (U+0430) looks like Latin 'a'
+// The string below is "pаypal.com" with a Cyrillic 'а'
+let suspicious = format!("p\u{0430}ypal.com");
+let warning = detect_mixed_script(&suspicious, "url");
 assert!(warning.is_some());
 
 // Pure Latin is fine
 assert!(detect_mixed_script("paypal.com", "url").is_none());
 
-// Pure Cyrillic is fine (legitimate Russian content)
-assert!(detect_mixed_script("hello", "text").is_none());
+// Pure Cyrillic is fine (legitimate non-English content)
+assert!(detect_mixed_script("\u{043F}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442}", "text").is_none());
 ```
 
 ### HomoglyphWarning
@@ -1572,7 +1741,7 @@ Proof object that homoglyph analysis was performed and detected suspicious conte
 | Field | Type | Description |
 | ----- | ---- | ----------- |
 | `field_name` | `String` | The field name where mixed scripts were detected (e.g., "url", "command") |
-| `snippet` | `String` | A truncated snippet of the suspicious content for display (max 40 chars) |
+| `snippet` | `String` | A truncated snippet of the suspicious content (40 chars + `...` when truncated) |
 | `scripts` | `Vec<Script>` | The scripts detected in the content |
 
 ```rust
@@ -1616,64 +1785,77 @@ assert_eq!(truncate_with_ellipsis("hello world", 8), "hello...");
 assert_eq!(truncate_with_ellipsis("hello", 1), "...");
 ```
 
+### truncate_to_fit
+
+Truncates a string so the **total** returned length stays within `max_total` characters, counting `suffix` inside the budget.
+
+```rust
+use forge_types::truncate_to_fit;
+
+let s = truncate_to_fit("hello world", 8, "\u{2026}");
+assert!(s.chars().count() <= 8);
+assert!(s.ends_with('\u{2026}'));
+
+// Short strings pass through unchanged
+assert_eq!(truncate_to_fit("hello", 10, "\u{2026}"), "hello");
+```
+
 ---
 
 ## Type Relationships
 
 ```text
-                    NonEmptyString <------- NonEmptyStaticStr
-                          |                     (compile-time)
-                          v
-    +---------------------+----------------------+
-    |                     |                      |
-SystemMessage        UserMessage          AssistantMessage
-    |                     |                      |
-    +---------------------+-----+--------+-------+
-                          |     |        |
-                     +----+     +----+   |
-                     |              |    |
-                 ToolCall      ToolResult |
-                     |              |    |
-                     +------+-------+    |
-                            |            |
-                            v            |
-                        Message  <-------+---- ThinkingMessage
-                            |
-                            v
-                    CacheableMessage -------> CacheHint
+NonEmptyString <------- NonEmptyStaticStr
+      |
+      +--> PersistableContent
 
-Provider -----> PredefinedModel
-    |               |
-    |               +---> ModelName (scoped)
+Provider -----> PredefinedModel -----> ModelName
     |
-    +-----> ApiKey (scoped) -------> SecretString
+    +-----> InternalModel
+    |
+    +-----> ApiKey -----> SecretString
     |
     +-----> OpenAIRequestOptions
-                |
-                +---> OpenAIReasoningEffort
-                +---> OpenAIReasoningSummary
-                +---> OpenAITextVerbosity
-                +---> OpenAITruncation
+            +---> OpenAIReasoningEffort
+            +---> OpenAIReasoningSummary
+            +---> OpenAITextVerbosity
+            +---> OpenAITruncation
 
 ThoughtSignature -----> ThoughtSignatureState
-                            |
                             +---> ToolCall.thought_signature
-                            +---> ThinkingMessage.signature
                             +---> StreamEvent::ToolCallStart
 
-ToolDefinition (standalone - tool schemas, optional hidden + provider)
+ThinkingReplayState -----> ThinkingMessage.replay
+    +---> ClaudeSigned { signature: ThoughtSignature }
+    +---> OpenAIReasoning { items: Vec<OpenAIReasoningItem> }
 
-PersistableContent (standalone - safe-persisted strings)
+OpenAIReasoningSummaryPart -----> OpenAIReasoningItem
+
+CacheBudget (bounded u8, max 4)
+
+SystemMessage / UserMessage / AssistantMessage / ThinkingMessage
+    +-----> Message -----> CacheableMessage -----> CacheHint
+
+Plan -----> Phase -----> PlanStep (PlanStepId, StepStatus)
+PlanState (Inactive / Proposed / Active)
+EditOp -----> EditValidationError
+CompletedPlan (proof from Plan::try_complete)
 
 StreamEvent -----> StreamFinishReason
-    |
-    +-----> ApiUsage (token tracking)
+    +-----> ApiUsage
+    +-----> ResponseId, OpenAIReasoningDone
+
+ToolDefinition (standalone)
+ToolCall -----> ThoughtSignatureState
+ToolResult (tool_call_id, tool_name, content, is_error)
 
 OutputLimits -----> ThinkingBudget -----> ThinkingState
 
 EnumParseError -----> EnumKind
 
 HomoglyphWarning (proof object from detect_mixed_script)
+
+ENV_CREDENTIAL_PATTERNS, ENV_INJECTION_PATTERNS, ENV_SECRET_DENYLIST
 ```
 
 ---
@@ -1683,20 +1865,24 @@ HomoglyphWarning (proof object from detect_mixed_script)
 | Error Type | Source | Condition |
 | ---------- | ------ | --------- |
 | `EmptyStringError` | `NonEmptyString::new()` | Empty or whitespace-only input |
-| `ModelParseError::Empty` | `ModelName::parse()` | Empty model name |
-| `ModelParseError::ClaudePrefix` | `ModelName::parse()` | Claude model without `claude-` prefix |
-| `ModelParseError::OpenAIMinimum` | `ModelName::parse()` | OpenAI model without `gpt-5` prefix |
-| `ModelParseError::GeminiPrefix` | `ModelName::parse()` | Gemini model without `gemini-` prefix |
-| `ModelParseError::UnknownModel` | `ModelName::parse()` | Model name not in the predefined catalog |
-| `EnumParseError` | `Provider::parse()`, `PredefinedModel::from_model_id()`, OpenAI option `parse()` methods | Invalid string for the target enum; includes `kind`, `raw`, and `expected` values |
-| `OutputLimitsError::ThinkingBudgetTooSmall` | `OutputLimits::with_thinking()` | `thinking_budget < 1024` |
-| `OutputLimitsError::ThinkingBudgetTooLarge` | `OutputLimits::with_thinking()` | `thinking_budget >= max_output_tokens` |
+| `ModelParseError::*` | `ModelName::parse()` | Empty name / wrong provider prefix / unknown model |
+| `EnumParseError` | `Provider::parse()`, `PredefinedModel::*`, OpenAI option `parse()` methods | Invalid string for the target enum |
+| `OutputLimitsError::*` | `OutputLimits::with_thinking()` | Invalid thinking budget (too small or >= max) |
+| `PlanValidationError` | `Plan::from_input`, `Plan::new` | Invalid plan shape or DAG |
+| `PlanTransitionError` | `PlanStep::transition` | Invalid forward step transition |
+| `EditValidationError` | `Plan::apply_edit` | Out-of-range edits / invalid resulting plan |
 
 All error types implement `std::error::Error` via `thiserror` and provide descriptive messages.
 
 ---
 
-## Testing
+## Building and Testing
+
+Build (library only):
+
+```bash
+cargo build -p forge-types
+```
 
 Run the crate's tests:
 
@@ -1706,22 +1892,16 @@ cargo test -p forge-types
 
 The test suite verifies:
 
-- `NonEmptyString` rejects empty and whitespace-only strings
-- `PersistableContent` normalizes standalone `\r` to `\n` and preserves `\r\n`
-- `Provider::parse()` handles all aliases correctly
-- `ModelName::parse()` validates provider prefix requirements and known model list
-- `PredefinedModel::from_model_id()` and `from_provider_and_id()` resolve correctly
-- `OutputLimits::with_thinking()` enforces budget constraints
-- `ApiKey` opaque constructors and `expose_secret()` work correctly
-- `ApiUsage` arithmetic and aggregation functions
-- `sanitize_terminal_text()` strips all dangerous escape sequences
-- `sanitize_terminal_text()` preserves safe content without allocation
-- `strip_steganographic_chars()` strips all invisible Unicode injection vectors
-- `strip_steganographic_chars()` preserves normal text without allocation
-- `strip_steganographic_chars()` composes correctly with `sanitize_terminal_text()`
-- `detect_mixed_script()` flags Latin mixed with Cyrillic/Greek/Armenian/Cherokee
-- `detect_mixed_script()` ignores pure non-Latin scripts and ASCII-only input
-- `truncate_with_ellipsis()` truncates correctly and enforces minimum length
+- String invariants (`NonEmptyString`, `NonEmptyStaticStr`, `PersistableContent`)
+- Provider/model parsing and catalogs (`Provider`, `PredefinedModel`, `ModelName`, `InternalModel`)
+- Output constraints (`OutputLimits`, thinking budget invariants)
+- Replay state migration (`ThinkingReplayState` legacy/new deserialization)
+- Streaming event models (`StreamEvent` variants including `ResponseId`, `OpenAIReasoningDone`)
+- Tool calling shapes (`ToolDefinition`, `ToolCall`, `ToolResult`)
+- Sanitizers (`sanitize_terminal_text`, `sanitize_path_display`, `strip_steganographic_chars`)
+- Homoglyph detection (`detect_mixed_script`)
+- Truncation helpers (`truncate_with_ellipsis`, `truncate_to_fit`)
+- Plan invariants, transitions, edits, eligibility, and rendering (`plan` module)
 
 ---
 
