@@ -51,10 +51,10 @@ pub(crate) use app::{ActiveExecution, ToolQueue, TurnContext};
 
 pub use forge_context::{
     ActiveJournal, BeginSessionError, CompactionPlan, ContextAdaptation, ContextBuildError,
-    ContextManager, ContextUsageStatus, ExtractionResult, Fact, FactType, FullHistory, Librarian,
-    MessageId, ModelLimits, ModelLimitsSource, ModelRegistry, PreparedContext, RecoveredStream,
-    RecoveredToolBatch, RetrievalResult, StreamJournal, TokenCounter, ToolBatchId, ToolJournal,
-    distillation_model, generate_distillation, retrieve_relevant,
+    ContextManager, ContextUsageStatus, Fact, FactType, FullHistory, Librarian, MessageId,
+    ModelLimits, ModelLimitsSource, ModelRegistry, PreparedContext, RecoveredStream,
+    RecoveredToolBatch, StreamJournal, TokenCounter, ToolBatchId, ToolJournal, distillation_model,
+    generate_distillation,
 };
 
 pub use forge_tools as tools;

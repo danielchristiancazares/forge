@@ -330,23 +330,18 @@ impl App {
 
         let data_dir = Self::data_dir()?;
 
-        // Initialize Librarian for memory (if enabled and Gemini API key available)
+        // Initialize Librarian for memory when enabled.
         let librarian = if memory_enabled {
-            if let Some(gemini_key) = api_keys.get(&Provider::Gemini) {
-                let librarian_path = data_dir.join("librarian.db");
-                match Librarian::open(&librarian_path, gemini_key.clone()) {
-                    Ok(lib) => {
-                        tracing::info!("Librarian initialized with {} facts", lib.fact_count());
-                        Some(std::sync::Arc::new(tokio::sync::Mutex::new(lib)))
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to initialize Librarian: {e}");
-                        None
-                    }
+            let librarian_path = data_dir.join("librarian.db");
+            match Librarian::open(&librarian_path) {
+                Ok(lib) => {
+                    tracing::info!("Librarian initialized with {} facts", lib.fact_count());
+                    Some(std::sync::Arc::new(tokio::sync::Mutex::new(lib)))
                 }
-            } else {
-                tracing::info!("Memory enabled but no Gemini API key - Librarian disabled");
-                None
+                Err(e) => {
+                    tracing::warn!("Failed to initialize Librarian: {e}");
+                    None
+                }
             }
         } else {
             None

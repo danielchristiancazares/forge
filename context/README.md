@@ -76,8 +76,8 @@ WorkingContext -----> API Messages
 | `ModelRegistry` | Model-specific token limits from the predefined catalog |
 | `WorkingContext` | Derived view of what to send to the API |
 | `StreamJournal` | SQLite-backed crash recovery for streaming responses |
-| `Librarian` | Intelligent fact extraction and retrieval using Gemini Flash |
-| `FactStore` | SQLite-backed persistent storage for extracted facts |
+| `Librarian` | High-level fact memory API for memory tools |
+| `FactStore` | SQLite-backed persistent storage for facts |
 | `atomic_write` | Safe file writes via temp-file-and-rename pattern |
 
 ### Directory Structure
@@ -93,7 +93,7 @@ context/src/
   stream_journal.rs   # StreamJournal, ActiveJournal (crash recovery)
   distillation.rs     # LLM-based distillation via cheaper models
   tool_journal.rs     # ToolJournal (tool batch crash recovery)
-  librarian.rs        # Librarian - intelligent fact extraction/retrieval
+  librarian.rs        # Librarian - fact storage/recall API
   fact_store.rs       # FactStore - SQLite persistence for facts
   atomic_write.rs     # Atomic file write helpers (temp file + rename)
 ```
@@ -771,27 +771,18 @@ fn count_message(&self, msg: &Message) -> u32;
 
 ---
 
-## The Librarian (Intelligent Context Distillation)
+## The Librarian (Fact Memory)
 
-The Librarian is a background component that provides intelligent fact extraction and retrieval, enabling effectively unlimited conversation length while keeping API costs low.
+The Librarian is a persistent fact-memory component used by memory tools.
 
 ### How It Works
 
-Instead of sending full conversation history to the LLM, the Librarian:
+Facts are stored and recalled explicitly:
 
-1. **Extracts** structured facts from each conversation exchange (post-turn)
-2. **Retrieves** relevant facts for new queries (pre-flight)
+1. **Store** facts via the `Memory` tool (pins a fact and entities)
+2. **Recall** facts via the `Recall` tool (keyword search with staleness info)
 
-The API call then includes:
-
-- System prompt
-- Retrieved facts (what Librarian determines is relevant)
-- Recent N messages (immediate context)
-- Current user message
-
-### Model Choice
-
-The Librarian uses **Gemini 3 Flash** (`gemini-3-flash-preview`) for cheap, fast operations. It runs invisibly in the background - users never see it directly. The model is called with low temperature (0.1) and low thinking level for consistent extraction.
+Facts are persisted in SQLite and can be linked to source files for stale detection.
 
 ### Fact Types
 
@@ -818,44 +809,31 @@ pub struct Fact {
 ### Librarian Interaction Workflow
 
 ```text
-User message arrives
+Memory tool call
         |
         v
-+------------------+
-| Pre-flight:      |     Librarian.retrieve_context(query)
-| Retrieve facts   | --> Returns relevant facts to inject
-+------------------+
+Librarian.pin_fact(content, entities)
         |
         v
-Build context with facts + recent messages
+FactStore persists fact and entities
         |
         v
-Make API call
+Recall tool call
         |
         v
-+------------------+
-| Post-turn:       |     Librarian.extract_and_store(user, assistant)
-| Extract facts    | --> Stores new facts for future retrieval
-+------------------+
+Librarian.search_with_staleness(query)
+        |
+        v
+Returns matching facts with stale-source metadata
 ```
 
 ### API Usage
 
 ```rust
-use forge_context::{Librarian, Fact, FactType, RetrievalResult};
+use forge_context::Librarian;
 
 // Initialize with persistent storage
-let mut librarian = Librarian::open("<data_dir>/librarian.db", gemini_api_key)?;
-
-// Pre-flight: Get relevant context for a query
-let retrieval: RetrievalResult = librarian.retrieve_context("How do I add tests?").await?;
-let context_text = format_facts_for_context(&retrieval.relevant_facts);
-
-// Post-turn: Extract facts from the exchange
-let extraction = librarian.extract_and_store(
-    "How do I add tests?",
-    "You can add tests by creating a #[test] function..."
-).await?;
+let mut librarian = Librarian::open("<data_dir>/librarian.db")?;
 
 // Manual fact pinning (user-requested)
 librarian.pin_fact(
@@ -863,15 +841,15 @@ librarian.pin_fact(
     &["migrations".to_string()]
 )?;
 
-// Search facts by keyword
-let related = librarian.search("migrations")?;
+// Search facts by keyword (with staleness metadata)
+let related = librarian.search_with_staleness("migrations")?;
 ```
 
 ---
 
 ## Fact Store (Persistent Storage)
 
-The `FactStore` provides SQLite-backed persistence for Librarian-extracted facts with source tracking and staleness detection.
+The `FactStore` provides SQLite-backed persistence for Librarian facts with source tracking and staleness detection.
 
 ### Fact Store Schema
 
@@ -1566,33 +1544,20 @@ The function validates that input doesn't exceed the distiller model's context l
 
 #### `Librarian`
 
-High-level API for intelligent context management:
+High-level API for persistent fact memory:
 
 ```rust
-use forge_context::{Librarian, Fact, FactType, RetrievalResult, ExtractionResult};
+use forge_context::Librarian;
 
 // Create with persistent storage
-let mut librarian = Librarian::open("<data_dir>/librarian.db", api_key)?;
+let mut librarian = Librarian::open("<data_dir>/librarian.db")?;
 
 // Or in-memory for testing
-let mut librarian = Librarian::open_in_memory(api_key)?;
-
-// Pre-flight: Retrieve relevant facts for a query
-let result: RetrievalResult = librarian.retrieve_context("How do I add tests?").await?;
-println!("Found {} relevant facts (~{} tokens)",
-    result.relevant_facts.len(),
-    result.token_estimate);
-
-// Post-turn: Extract and store facts from exchange
-let extraction: ExtractionResult = librarian.extract_and_store(
-    "user message",
-    "assistant response"
-).await?;
+let mut librarian = Librarian::open_in_memory()?;
 
 // Manual operations
 librarian.pin_fact("Important constraint", &["keyword".to_string()])?;
-let facts = librarian.search("keyword")?;
-let all_facts = librarian.all_facts()?;
+let facts = librarian.search_with_staleness("keyword")?;
 librarian.clear()?;  // Reset for testing
 ```
 
@@ -1600,36 +1565,12 @@ librarian.clear()?;  // Reset for testing
 
 | Method | Description |
 | :--- | :--- |
-| `open(path, api_key)` | Create with persistent SQLite storage |
-| `open_in_memory(api_key)` | Create in-memory store (testing) |
-| `retrieve_context(query)` | Async: get relevant facts for pre-flight injection |
-| `extract_and_store(user, assistant)` | Async: extract facts from exchange and store |
-| `store_facts(facts)` | Store pre-extracted facts (sync) |
-| `store_facts_with_sources(facts, paths)` | Store with source file tracking |
+| `open(path)` | Create with persistent SQLite storage |
+| `open_in_memory()` | Create in-memory store (testing) |
 | `pin_fact(content, entities)` | Add user-pinned fact |
-| `search(keyword)` | Search facts by entity keyword |
 | `search_with_staleness(keyword)` | Search with source file staleness info |
-| `all_facts()` | Get all stored facts |
 | `fact_count()` | Number of stored facts |
-| `turn_counter()` | Current turn number |
-| `increment_turn()` | Increment the turn counter before storing new exchange facts |
-| `set_turn_counter(turn)` | Set the turn counter to a specific value |
-| `api_key()` | Get the API key (for making async calls without holding the lock) |
 | `clear()` | Delete all facts |
-
-#### Standalone Functions
-
-Two public standalone functions are available for making Librarian API calls without holding a `Librarian` instance (useful for async contexts where SQLite's `!Send` constraint is problematic):
-
-```rust
-use forge_context::{extract_facts, retrieve_relevant};
-
-// Extract facts from an exchange
-let result = extract_facts(api_key, "user message", "assistant response").await?;
-
-// Retrieve relevant facts for a query
-let result = retrieve_relevant(api_key, "query", &available_facts).await?;
-```
 
 #### `Fact`
 
@@ -1655,41 +1596,6 @@ pub enum FactType {
     CodeState,  // What was created, modified, deleted
     Pinned,     // User-explicitly marked important
 }
-```
-
-#### `ExtractionResult`
-
-Result from post-turn fact extraction:
-
-```rust
-pub struct ExtractionResult {
-    pub facts: Vec<Fact>,
-}
-```
-
-#### `RetrievalResult`
-
-Result from pre-flight fact retrieval:
-
-```rust
-pub struct RetrievalResult {
-    pub relevant_facts: Vec<Fact>,
-    pub token_estimate: u32,
-}
-```
-
-#### `format_facts_for_context`
-
-Helper to format facts for context injection:
-
-```rust
-use forge_context::format_facts_for_context;
-
-let formatted = format_facts_for_context(&facts);
-// Returns markdown with emoji prefixes:
-// ## Relevant Context
-// (file icon) File src/lib.rs contains the App struct
-// (wrench icon) Chose async/await for concurrency
 ```
 
 ### Fact Store

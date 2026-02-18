@@ -5,7 +5,7 @@
 //! - Exact token counting via tiktoken
 //! - Full history preservation with distillation
 //! - Stream journal for durability (crash recovery)
-//! - Fact extraction and retrieval (Librarian)
+//! - Fact storage and recall (Librarian)
 //!
 //! # Architecture
 //!
@@ -36,10 +36,7 @@ mod working_context;
 pub use distillation::{distillation_model, generate_distillation};
 pub use fact_store::{FactId, FactStore, FactWithStaleness, StoredFact};
 pub use history::{CompactionSummary, FullHistory, HistoryEntry, MessageId};
-pub use librarian::{
-    ExtractionResult, Fact, FactType, Librarian, RetrievalResult, extract_facts,
-    format_facts_for_context, retrieve_relevant,
-};
+pub use librarian::{Fact, FactType, Librarian};
 pub use manager::{
     CompactionPlan, ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus,
     PreparedContext,
