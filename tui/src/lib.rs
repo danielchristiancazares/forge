@@ -212,8 +212,18 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
     if app.is_empty() && app.display_items().is_empty() {
         app.update_scroll_max(0);
         MESSAGE_CACHE.with(|cache| cache.borrow_mut().invalidate());
-        let welcome = create_welcome_screen(app, palette, glyphs);
-        frame.render_widget(welcome.block(messages_block), area);
+        let ready = Paragraph::new("Ready")
+            .style(Style::default().fg(palette.text_muted))
+            .alignment(Alignment::Center)
+            .block(messages_block);
+        let center_y = area.height / 2;
+        let ready_area = Rect {
+            x: area.x,
+            y: area.y + center_y,
+            width: area.width,
+            height: 1,
+        };
+        frame.render_widget(ready, ready_area);
         return;
     }
 
@@ -958,27 +968,13 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
         ""
     };
 
-    let (mode_label, mode_style, border_style) = match mode {
-        InputMode::Normal | InputMode::ModelSelect | InputMode::FileSelect => (
-            "NORMAL",
-            styles::mode_normal(palette),
-            Style::default().fg(palette.text_muted),
-        ),
-        InputMode::Settings => (
-            "SETTINGS",
-            styles::mode_command(palette),
-            Style::default().fg(palette.primary),
-        ),
-        InputMode::Insert => (
-            "INSERT",
-            styles::mode_insert(palette),
-            Style::default().fg(palette.green),
-        ),
-        InputMode::Command => (
-            "COMMAND",
-            styles::mode_command(palette),
-            Style::default().fg(palette.yellow),
-        ),
+    let (mode_label, mode_style) = match mode {
+        InputMode::Normal | InputMode::ModelSelect | InputMode::FileSelect => {
+            ("NORMAL", styles::mode_normal(palette))
+        }
+        InputMode::Settings => ("SETTINGS", styles::mode_command(palette)),
+        InputMode::Insert => ("INSERT", styles::mode_insert(palette)),
+        InputMode::Command => ("COMMAND", styles::mode_command(palette)),
     };
     let mode_text = if multiline {
         format!(" {mode_label} · MULTI ")
@@ -1091,16 +1087,7 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
         None
     };
 
-    let padding_v: u16 = match mode {
-        InputMode::Normal | InputMode::ModelSelect | InputMode::Settings => 0,
-        InputMode::Insert if multiline => 0,
-        _ => 1,
-    };
-    let input_padding = Padding::vertical(padding_v);
-    let inner_height = area
-        .height
-        .saturating_sub(2 + padding_v.saturating_mul(2))
-        .max(1);
+    let inner_height = area.height.saturating_sub(2).max(1);
 
     let prefix = match mode {
         InputMode::Command => " / ".to_string(),
@@ -1170,10 +1157,7 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
             .saturating_add(1 + prefix_width)
             .saturating_add(cursor_display_pos as u16)
             .saturating_sub(horizontal_scroll);
-        let cursor_y = area
-            .y
-            .saturating_add(1 + padding_v)
-            .saturating_add(cursor_row);
+        let cursor_y = area.y.saturating_add(1).saturating_add(cursor_row);
         cursor_pos = Some((cursor_x, cursor_y));
 
         display_lines
@@ -1253,7 +1237,7 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
                 .saturating_add(1 + prefix_width)
                 .saturating_add(cursor_display_pos)
                 .saturating_sub(horizontal_scroll);
-            let cursor_y = area.y.saturating_add(1 + padding_v);
+            let cursor_y = area.y.saturating_add(1);
             cursor_pos = Some((cursor_x, cursor_y));
         } else if mode == InputMode::Command
             && let Some(command_line) = command_line.as_ref()
@@ -1268,7 +1252,7 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
                 .saturating_add(1 + prefix_width)
                 .saturating_add(cursor_display_pos)
                 .saturating_sub(horizontal_scroll);
-            let cursor_y = area.y.saturating_add(1 + padding_v);
+            let cursor_y = area.y.saturating_add(1);
             cursor_pos = Some((cursor_x, cursor_y));
         }
 
@@ -1295,9 +1279,6 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
 
     let input = Paragraph::new(input_lines).block(
         Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(border_style)
             .title_top(Line::from(vec![Span::styled(mode_text, mode_style)]))
             .title_top(Line::from(hints).alignment(Alignment::Right))
             .title_bottom(Line::from(vec![Span::styled(model_text, model_style)]))
@@ -1319,7 +1300,7 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
                 }
                 Line::from(spans).alignment(Alignment::Right)
             })
-            .padding(input_padding),
+            .padding(Padding::uniform(1)),
     );
 
     frame.render_widget(input, area);
@@ -3457,189 +3438,6 @@ fn highlight_file_refs<'a>(text: &str, palette: &Palette) -> Vec<Span<'a>> {
     }
 
     spans
-}
-
-fn create_welcome_screen(app: &App, palette: &Palette, glyphs: &Glyphs) -> Paragraph<'static> {
-    let version = env!("CARGO_PKG_VERSION");
-    let build_profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    // ASCII art logo
-    let logo_style = Style::default()
-        .fg(palette.primary)
-        .add_modifier(Modifier::BOLD);
-
-    let logo = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            " ███████╗ ██████╗ ██████╗  ██████╗ ███████╗",
-            logo_style,
-        )),
-        Line::from(Span::styled(
-            " ██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝",
-            logo_style,
-        )),
-        Line::from(Span::styled(
-            " █████╗  ██║   ██║██████╔╝██║  ███╗█████╗  ",
-            logo_style,
-        )),
-        Line::from(Span::styled(
-            " ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  ",
-            logo_style,
-        )),
-        Line::from(Span::styled(
-            " ██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗",
-            logo_style,
-        )),
-        Line::from(Span::styled(
-            " ╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝",
-            logo_style,
-        )),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            format!(" v{version} ({build_profile}) - CLI Coding Assistant"),
-            Style::default().fg(palette.text_secondary),
-        )]),
-        Line::from(""),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            " Quick Start:",
-            Style::default()
-                .fg(palette.text_primary)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "   i",
-                Style::default()
-                    .fg(palette.green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "  Enter insert mode to type",
-                Style::default().fg(palette.text_secondary),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "   Enter",
-                Style::default()
-                    .fg(palette.green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "  Send your message",
-                Style::default().fg(palette.text_secondary),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "   Esc",
-                Style::default()
-                    .fg(palette.yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "  Return to normal mode",
-                Style::default().fg(palette.text_secondary),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "   /",
-                Style::default()
-                    .fg(palette.peach)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "  Open command palette",
-                Style::default().fg(palette.text_secondary),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "   q",
-                Style::default()
-                    .fg(palette.red)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  Quit", Style::default().fg(palette.text_secondary)),
-        ]),
-        Line::from(""),
-        Line::from(""),
-    ];
-
-    let mut lines = logo;
-
-    // Show status for each provider
-    for provider in Provider::all() {
-        let has_key = app.has_api_key(*provider);
-        let is_current = app.provider() == *provider;
-
-        let status_line = if has_key {
-            Line::from(vec![
-                Span::styled(
-                    if is_current {
-                        format!("  {} ", glyphs.status_ready)
-                    } else {
-                        format!("  {} ", glyphs.status_missing)
-                    },
-                    Style::default().fg(if is_current {
-                        palette.success
-                    } else {
-                        palette.text_muted
-                    }),
-                ),
-                Span::styled(
-                    provider.display_name(),
-                    Style::default().fg(if is_current {
-                        palette.success
-                    } else {
-                        palette.text_secondary
-                    }),
-                ),
-                Span::styled(" - Ready", Style::default().fg(palette.text_muted)),
-                if is_current {
-                    Span::styled(" (active)", Style::default().fg(palette.success))
-                } else {
-                    Span::styled("", Style::default())
-                },
-            ])
-        } else {
-            Line::from(vec![
-                Span::styled(
-                    format!("  {} ", glyphs.status_missing),
-                    Style::default().fg(palette.text_muted),
-                ),
-                Span::styled(
-                    provider.display_name(),
-                    Style::default().fg(palette.text_muted),
-                ),
-                Span::styled(" - Set ", Style::default().fg(palette.text_muted)),
-                Span::styled(provider.env_var(), Style::default().fg(palette.peach)),
-            ])
-        };
-        lines.push(status_line);
-    }
-
-    if app.current_api_key().is_none() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("  Next: ", Style::default().fg(palette.text_muted)),
-            Span::styled(
-                format!(
-                    "Set {} and restart to begin chatting.",
-                    app.provider().env_var()
-                ),
-                Style::default().fg(palette.peach),
-            ),
-        ]));
-    }
-
-    Paragraph::new(lines).alignment(Alignment::Left)
 }
 
 /// Returns a compact string like "Tokens 12.3k in / 1.2k out (85% cached)" or empty if no data.
