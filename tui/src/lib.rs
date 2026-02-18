@@ -207,11 +207,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, glyphs: &Glyphs) {
-    let messages_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(palette.text_muted))
-        .padding(Padding::horizontal(1));
+    let messages_block = Block::default().padding(Padding::horizontal(1));
 
     if app.is_empty() && app.display_items().is_empty() {
         app.update_scroll_max(0);
@@ -313,14 +309,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette
         let mut scrollbar_state =
             ScrollbarState::new(max_scroll as usize).position(scroll_offset as usize);
 
-        frame.render_stateful_widget(
-            scrollbar,
-            area.inner(Margin {
-                vertical: 1,
-                horizontal: 0,
-            }),
-            &mut scrollbar_state,
-        );
+        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
 }
 
