@@ -1087,7 +1087,16 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
         None
     };
 
-    let inner_height = area.height.saturating_sub(2).max(1);
+    let padding_v: u16 = match mode {
+        InputMode::Normal | InputMode::ModelSelect | InputMode::Settings => 0,
+        InputMode::Insert if multiline => 0,
+        _ => 1,
+    };
+    let input_padding = Padding::new(1, 1, padding_v, padding_v);
+    let inner_height = area
+        .height
+        .saturating_sub(2 + padding_v.saturating_mul(2))
+        .max(1);
 
     let prefix = match mode {
         InputMode::Command => " / ".to_string(),
@@ -1157,7 +1166,10 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
             .saturating_add(1 + prefix_width)
             .saturating_add(cursor_display_pos as u16)
             .saturating_sub(horizontal_scroll);
-        let cursor_y = area.y.saturating_add(1).saturating_add(cursor_row);
+        let cursor_y = area
+            .y
+            .saturating_add(1 + padding_v)
+            .saturating_add(cursor_row);
         cursor_pos = Some((cursor_x, cursor_y));
 
         display_lines
@@ -1237,7 +1249,7 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
                 .saturating_add(1 + prefix_width)
                 .saturating_add(cursor_display_pos)
                 .saturating_sub(horizontal_scroll);
-            let cursor_y = area.y.saturating_add(1);
+            let cursor_y = area.y.saturating_add(1 + padding_v);
             cursor_pos = Some((cursor_x, cursor_y));
         } else if mode == InputMode::Command
             && let Some(command_line) = command_line.as_ref()
@@ -1252,7 +1264,7 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
                 .saturating_add(1 + prefix_width)
                 .saturating_add(cursor_display_pos)
                 .saturating_sub(horizontal_scroll);
-            let cursor_y = area.y.saturating_add(1);
+            let cursor_y = area.y.saturating_add(1 + padding_v);
             cursor_pos = Some((cursor_x, cursor_y));
         }
 
@@ -1300,7 +1312,7 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
                 }
                 Line::from(spans).alignment(Alignment::Right)
             })
-            .padding(Padding::horizontal(1)),
+            .padding(input_padding),
     );
 
     frame.render_widget(input, area);
