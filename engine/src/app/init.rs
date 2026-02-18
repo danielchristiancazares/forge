@@ -760,31 +760,57 @@ impl App {
             denied_patterns.extend(default_sandbox_deny_patterns());
         }
 
-        let mut allowed_roots: Vec<PathBuf> = sandbox_cfg
+        let mut invalid_allowed_root = false;
+        let mut allowed_roots: Vec<PathBuf> = Vec::new();
+        for raw in sandbox_cfg
             .map(|cfg| cfg.allowed_roots.clone())
             .unwrap_or_default()
-            .into_iter()
-            .map(|raw| PathBuf::from(config::expand_env_vars(&raw)))
-            .collect();
-        if allowed_roots.is_empty() {
+        {
+            let expanded = config::expand_env_vars(&raw);
+            if expanded.trim().is_empty() {
+                invalid_allowed_root = true;
+                tracing::error!(
+                    "Invalid sandbox allowed_root '{}': expansion produced empty path",
+                    raw
+                );
+            } else {
+                allowed_roots.push(PathBuf::from(expanded));
+            }
+        }
+        if allowed_roots.is_empty() && !invalid_allowed_root {
             allowed_roots.push(PathBuf::from("."));
         }
         let allow_absolute = sandbox_cfg.is_some_and(|cfg| cfg.allow_absolute);
-
-        let sandbox = tools::sandbox::Sandbox::new(
-            allowed_roots.clone(),
-            denied_patterns.clone(),
-            allow_absolute,
-        )
-        .unwrap_or_else(|e| {
-            tracing::warn!("Invalid sandbox config: {e}. Using defaults.");
-            tools::sandbox::Sandbox::new(
-                vec![PathBuf::from(".")],
-                default_sandbox_deny_patterns(),
-                false,
-            )
-            .expect("default sandbox")
-        });
+        let sandbox = if invalid_allowed_root {
+            tracing::error!(
+                "Sandbox configuration is invalid. Entering fail-closed sandbox mode until config is corrected."
+            );
+            tools::sandbox::Sandbox::new(Vec::new(), denied_patterns.clone(), allow_absolute)
+                .expect("fail-closed sandbox")
+        } else {
+            tools::sandbox::Sandbox::new(allowed_roots, denied_patterns.clone(), allow_absolute)
+                .unwrap_or_else(|e| {
+                    if sandbox_cfg.is_some() {
+                        tracing::error!(
+                            "Invalid sandbox config: {e}. Entering fail-closed sandbox mode."
+                        );
+                        tools::sandbox::Sandbox::new(
+                            Vec::new(),
+                            denied_patterns.clone(),
+                            allow_absolute,
+                        )
+                        .expect("fail-closed sandbox")
+                    } else {
+                        tracing::warn!("Invalid sandbox config: {e}. Using defaults.");
+                        tools::sandbox::Sandbox::new(
+                            vec![PathBuf::from(".")],
+                            default_sandbox_deny_patterns(),
+                            false,
+                        )
+                        .expect("default sandbox")
+                    }
+                })
+        };
 
         // Command blacklist initialization (patterns defined in command_blacklist module)
         let command_blacklist = tools::CommandBlacklist::with_defaults().unwrap_or_else(|e| {
@@ -876,5 +902,41 @@ fn parse_run_fallback_mode(mode: Option<config::RunFallbackMode>) -> tools::RunS
         config::RunFallbackMode::AllowWithWarning => {
             tools::RunSandboxFallbackMode::AllowWithWarning
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::App;
+    use crate::config::ForgeConfig;
+
+    #[test]
+    fn tool_settings_use_default_sandbox_when_not_configured() {
+        let settings = App::tool_settings_from_config(None);
+        let cwd = std::env::current_dir().expect("cwd");
+        let result = settings.sandbox.resolve_path("Cargo.toml", &cwd);
+        assert!(result.is_ok(), "default sandbox should allow cwd files");
+    }
+
+    #[test]
+    fn tool_settings_fail_closed_on_empty_expanded_allowed_root() {
+        let var_name = "FORGE_TEST_MISSING_ALLOWED_ROOT";
+        // SAFETY: Tests run in a single process; this variable name is unique to this test.
+        unsafe { std::env::remove_var(var_name) };
+
+        let toml = format!(
+            r#"
+[tools.sandbox]
+allowed_roots = ["${{{var_name}}}"]
+"#
+        );
+        let config: ForgeConfig = toml::from_str(&toml).expect("config parse");
+        let settings = App::tool_settings_from_config(Some(&config));
+        let cwd = std::env::current_dir().expect("cwd");
+        let result = settings.sandbox.resolve_path("Cargo.toml", &cwd);
+        assert!(
+            result.is_err(),
+            "invalid expanded root must not silently downgrade to default sandbox"
+        );
     }
 }

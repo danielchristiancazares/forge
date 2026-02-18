@@ -3,4 +3,7 @@
 //! Keeping this module preserves existing `crate::config::*` call sites while
 //! moving implementation ownership into a dedicated crate.
 
-pub use forge_config::*;
+pub use forge_config::{
+    AnthropicEffort, AnthropicThinkingMode, AppConfig, AppUiSettings, ConfigError, ContextSettings,
+    ForgeConfig, OpenAIConfig, RunFallbackMode, ToolApprovalSettings, config_path, expand_env_vars,
+};

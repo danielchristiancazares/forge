@@ -28,7 +28,8 @@ use crossterm::{
         enable_raw_mode,
     },
 };
-use ratatui::prelude::*;
+use ratatui::Terminal;
+use ratatui::backend::{Backend, CrosstermBackend};
 use std::{
     fs::{self, OpenOptions},
     io::{Stdout, Write, stdout},
