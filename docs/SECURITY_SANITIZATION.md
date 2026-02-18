@@ -291,7 +291,7 @@ Display: "ERROR: Permission denied" (overwrites "File saved")
 
 ### IFA Conformance
 
-`PersistableContent` is a proof-carrying type with a single constructor (Authority Boundary per IFA-7). Persistence functions accept only `PersistableContent`, ensuring the invariant is enforced at the type level.
+`PersistableContent` is the normalization authority boundary (IFA-7). Persistence paths call `PersistableContent::normalize_borrowed` before serialization/storage (for example history serialization and stream/tool journal writes), so standalone `\r` is normalized before data reaches disk.
 
 ### Usage Example
 

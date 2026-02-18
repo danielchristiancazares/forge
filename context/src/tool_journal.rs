@@ -36,7 +36,8 @@ use crate::StepId;
 use crate::sqlite_security::prepare_db_path;
 use crate::time_utils::system_time_to_iso8601_millis;
 use forge_types::{
-    ThinkingReplayState, ThoughtSignature, ThoughtSignatureState, ToolCall, ToolResult,
+    PersistableContent, ThinkingReplayState, ThoughtSignature, ThoughtSignatureState, ToolCall,
+    ToolResult,
 };
 
 /// Unique identifier for a tool batch.
@@ -184,10 +185,17 @@ impl ToolJournal {
             .transaction()
             .context("Failed to start tool batch transaction")?;
 
+        let assistant_text = normalize_persistable_borrowed(assistant_text);
         tx.execute(
             "INSERT INTO tool_batches (stream_step_id, model_name, assistant_text, committed, created_at, thinking_replay_json)
              VALUES (?1, ?2, ?3, 0, ?4, ?5)",
-            params![stream_step_id, model_name, assistant_text, created_at, thinking_replay_json],
+            params![
+                stream_step_id,
+                model_name,
+                assistant_text.as_ref(),
+                created_at,
+                thinking_replay_json
+            ],
         )
         .context("Failed to insert tool batch")?;
 
@@ -196,6 +204,7 @@ impl ToolJournal {
         for (seq, call) in calls.iter().enumerate() {
             let args_json = serde_json::to_string(&call.arguments)
                 .context("Failed to serialize tool call arguments")?;
+            let args_json = normalize_persistable_owned(args_json);
             let thought_signature = match call.signature_state() {
                 ThoughtSignatureState::Signed(signature) => Some(signature.as_str()),
                 ThoughtSignatureState::Unsigned => None,
@@ -285,13 +294,14 @@ impl ToolJournal {
         tool_call_id: &str,
         delta: &str,
     ) -> Result<()> {
+        let delta = normalize_persistable_borrowed(delta);
         let updated = self
             .db
             .execute(
                 "UPDATE tool_calls
                  SET arguments_json = arguments_json || ?1
                  WHERE batch_id = ?2 AND tool_call_id = ?3",
-                params![delta, batch_id, tool_call_id],
+                params![delta.as_ref(), batch_id, tool_call_id],
             )
             .with_context(|| format!("Failed to append tool args {tool_call_id}"))?;
         if updated == 0 {
@@ -320,6 +330,7 @@ impl ToolJournal {
             .context("Failed to start tool args append transaction")?;
 
         for (tool_call_id, delta) in deltas {
+            let delta = normalize_persistable_owned(delta);
             let updated = tx
                 .execute(
                     "UPDATE tool_calls
@@ -427,11 +438,12 @@ impl ToolJournal {
         batch_id: ToolBatchId,
         assistant_text: &str,
     ) -> Result<()> {
+        let assistant_text = normalize_persistable_borrowed(assistant_text);
         let updated = self
             .db
             .execute(
                 "UPDATE tool_batches SET assistant_text = ?1 WHERE batch_id = ?2",
-                params![assistant_text, batch_id],
+                params![assistant_text.as_ref(), batch_id],
             )
             .with_context(|| format!("Failed to update assistant text for batch {batch_id}"))?;
         if updated == 0 {
@@ -445,11 +457,12 @@ impl ToolJournal {
     /// Uses SQL concatenation (`||`) to avoid rewriting the full text on every delta,
     /// improving performance from O(n²) to O(n).
     pub fn append_assistant_delta(&mut self, batch_id: ToolBatchId, delta: &str) -> Result<()> {
+        let delta = normalize_persistable_borrowed(delta);
         let updated = self
             .db
             .execute(
                 "UPDATE tool_batches SET assistant_text = assistant_text || ?1 WHERE batch_id = ?2",
-                params![delta, batch_id],
+                params![delta.as_ref(), batch_id],
             )
             .with_context(|| format!("Failed to append assistant delta for batch {batch_id}"))?;
         if updated == 0 {
@@ -486,6 +499,7 @@ impl ToolJournal {
     /// Record a tool result for a batch.
     pub fn record_result(&mut self, batch_id: ToolBatchId, result: &ToolResult) -> Result<()> {
         let created_at = system_time_to_iso8601_millis(SystemTime::now());
+        let content = normalize_persistable_borrowed(&result.content);
         let inserted = self
             .db
             .execute(
@@ -495,7 +509,7 @@ impl ToolJournal {
                     batch_id,
                     &result.tool_call_id,
                     &result.tool_name,
-                    &result.content,
+                    content.as_ref(),
                     i32::from(result.is_error),
                     created_at,
                 ],
@@ -1009,6 +1023,17 @@ fn deserialize_replay(json: Option<&str>) -> ThinkingReplayState {
     }
 }
 
+fn normalize_persistable_borrowed(input: &str) -> std::borrow::Cow<'_, str> {
+    PersistableContent::normalize_borrowed(input)
+}
+
+fn normalize_persistable_owned(input: String) -> String {
+    match normalize_persistable_borrowed(&input) {
+        std::borrow::Cow::Borrowed(_) => input,
+        std::borrow::Cow::Owned(normalized) => normalized,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1199,6 +1224,36 @@ mod tests {
         assert_eq!(recovered.calls.len(), 1);
         assert_eq!(recovered.calls[0].name, "Read");
         assert_eq!(recovered.calls[0].arguments["path"], "foo.txt");
+    }
+
+    #[test]
+    fn streaming_batch_normalizes_standalone_carriage_returns() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+
+        let batch_id = journal
+            .begin_streaming_batch(StepId::new(1), "test-model")
+            .unwrap();
+        journal
+            .record_call_start(
+                batch_id,
+                0,
+                "call_1",
+                "Read",
+                &ThoughtSignatureState::Unsigned,
+            )
+            .unwrap();
+        journal
+            .append_call_args(batch_id, "call_1", "{\"path\":\"foo.txt\"}")
+            .unwrap();
+        journal.update_assistant_text(batch_id, "Let\rme").unwrap();
+        journal.append_assistant_delta(batch_id, "\r now").unwrap();
+        let result = ToolResult::success("call_1", "Read", "ok\rdone");
+        journal.record_result(batch_id, &result).unwrap();
+
+        let recovered = journal.recover().unwrap().expect("should recover");
+        assert_eq!(recovered.assistant_text, "Let\nme\n now");
+        assert_eq!(recovered.calls[0].arguments["path"], "foo.txt");
+        assert_eq!(recovered.results[0].content, "ok\ndone");
     }
 
     #[test]

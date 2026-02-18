@@ -607,6 +607,32 @@ mod tests {
     }
 
     #[test]
+    fn test_save_normalizes_persisted_message_content() {
+        use forge_types::ToolResult;
+
+        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
+        manager.push_message(Message::try_user("hello\rworld").expect("non-empty"));
+        manager.push_message(Message::tool_result(ToolResult::success(
+            "call_1",
+            "Read",
+            "line1\rline2",
+        )));
+
+        let tmp_dir = std::env::temp_dir();
+        let tmp_path = tmp_dir.join(format!(
+            "forge_test_normalized_history_{}.json",
+            std::process::id()
+        ));
+
+        manager.save(&tmp_path).expect("save");
+        let json = std::fs::read_to_string(&tmp_path).expect("read saved json");
+        assert!(!json.contains("\\r"));
+        assert!(json.contains("\\n"));
+
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+
+    #[test]
     fn test_load_nonexistent_file() {
         let result = ContextManager::load(
             "/nonexistent/path/file.json",

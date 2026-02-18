@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
-use forge_types::{Message, NonEmptyString};
+use forge_types::{Message, NonEmptyString, PersistableContent};
 
 use crate::StepId;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -53,7 +53,7 @@ impl From<&HistoryEntry> for HistoryEntrySerde {
     fn from(entry: &HistoryEntry) -> Self {
         Self {
             id: entry.id,
-            message: entry.message.clone(),
+            message: entry.message.normalized_for_persistence(),
             token_count: entry.token_count,
             created_at: entry.created_at,
             stream_step_id: entry.stream_step_id,
@@ -175,6 +175,21 @@ impl CompactionSummary {
     pub fn token_count(&self) -> u32 {
         self.token_count
     }
+
+    fn normalized_for_persistence(&self) -> Self {
+        let content = match PersistableContent::normalize_borrowed(self.content.as_str()) {
+            std::borrow::Cow::Borrowed(_) => self.content.clone(),
+            std::borrow::Cow::Owned(normalized) => {
+                NonEmptyString::new(normalized).unwrap_or_else(|_| self.content.clone())
+            }
+        };
+        Self {
+            content,
+            token_count: self.token_count,
+            created_at: self.created_at,
+            generated_by: self.generated_by.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -207,7 +222,10 @@ impl From<&FullHistory> for FullHistorySerde {
                 .collect(),
             next_message_id: history.next_message_id,
             compaction_point: history.compaction_point,
-            compaction_summary: history.compaction_summary.clone(),
+            compaction_summary: history
+                .compaction_summary
+                .as_ref()
+                .map(CompactionSummary::normalized_for_persistence),
         }
     }
 }

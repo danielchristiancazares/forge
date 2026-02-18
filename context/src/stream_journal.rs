@@ -45,6 +45,7 @@ use thiserror::Error;
 
 use crate::sqlite_security::prepare_db_path;
 use crate::time_utils::system_time_to_iso8601_millis;
+use forge_types::PersistableContent;
 
 /// Unique identifier for a streaming step/session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -261,7 +262,7 @@ impl ActiveJournal {
     ) -> Result<()> {
         let seq = self.next_seq;
         self.next_seq += 1;
-        let content = content.into();
+        let content = normalize_persistable_owned(content.into());
         self.pending_bytes += content.len();
         let delta = StreamDelta::new(self.step_id, seq, StreamDeltaEvent::TextDelta(content));
         self.pending_deltas.push(delta);
@@ -313,7 +314,10 @@ impl ActiveJournal {
         message: impl Into<String>,
     ) -> Result<()> {
         self.flush(journal)?;
-        journal.append_event(self, StreamDeltaEvent::Error(message.into()))
+        journal.append_event(
+            self,
+            StreamDeltaEvent::Error(normalize_persistable_owned(message.into())),
+        )
     }
 
     pub fn seal(mut self, journal: &mut StreamJournal) -> Result<String> {
@@ -683,7 +687,7 @@ impl StreamJournal {
                     delta.step_id,
                     seq_i64,
                     delta.event.event_type(),
-                    delta.event.content(),
+                    normalize_persistable_borrowed(delta.event.content()).as_ref(),
                     created_at
                 ],
             )
@@ -848,7 +852,7 @@ fn append_delta(db: &Connection, delta: &StreamDelta) -> Result<()> {
             delta.step_id,
             seq_i64,
             delta.event.event_type(),
-            delta.event.content(),
+            normalize_persistable_borrowed(delta.event.content()).as_ref(),
             created_at
         ],
     )
@@ -860,6 +864,17 @@ fn append_delta(db: &Connection, delta: &StreamDelta) -> Result<()> {
     })?;
 
     Ok(())
+}
+
+fn normalize_persistable_borrowed(input: &str) -> std::borrow::Cow<'_, str> {
+    PersistableContent::normalize_borrowed(input)
+}
+
+fn normalize_persistable_owned(input: String) -> String {
+    match normalize_persistable_borrowed(&input) {
+        std::borrow::Cow::Borrowed(_) => input,
+        std::borrow::Cow::Owned(normalized) => normalized,
+    }
 }
 
 fn collect_text(db: &Connection, step_id: StepId) -> Result<String> {
@@ -1108,6 +1123,36 @@ mod tests {
 
         let text = active.seal(&mut journal).unwrap();
         assert_eq!(text, "Hello World");
+    }
+
+    #[test]
+    fn test_stream_content_normalizes_standalone_carriage_returns() {
+        let db_path = unique_db_path("normalize_cr");
+        let _ = fs::remove_file(&db_path);
+
+        {
+            let mut journal = StreamJournal::open(&db_path).unwrap();
+            let mut active = journal.begin_session("test-model").unwrap();
+            active.append_text(&mut journal, "Hello\rWorld").unwrap();
+            active.append_error(&mut journal, "Bad\rError").unwrap();
+            // Drop without sealing to simulate crash recovery.
+        }
+
+        let journal = StreamJournal::open(&db_path).unwrap();
+        let recovered = journal.recover().unwrap().expect("recovered stream");
+        match recovered {
+            RecoveredStream::Errored {
+                partial_text,
+                error,
+                ..
+            } => {
+                assert_eq!(partial_text, "Hello\nWorld");
+                assert_eq!(error, "Bad\nError");
+            }
+            _ => panic!("Expected errored recovery"),
+        }
+
+        let _ = fs::remove_file(&db_path);
     }
 
     #[test]

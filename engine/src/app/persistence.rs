@@ -10,7 +10,7 @@
 use std::time::{Duration, Instant};
 
 use forge_context::{RecoveredStream, StepId};
-use forge_types::{Message, NonEmptyStaticStr, NonEmptyString};
+use forge_types::{Message, NonEmptyStaticStr, NonEmptyString, PersistableContent};
 
 use crate::session_state::SessionState;
 use crate::state::{
@@ -216,7 +216,9 @@ impl App {
             self.input_history.clone(),
             self.session_changes.clone(),
         );
-        let json = serde_json::to_string_pretty(&state)?;
+        let mut value = serde_json::to_value(&state)?;
+        normalize_json_strings_for_persistence(&mut value);
+        let json = serde_json::to_string_pretty(&value)?;
 
         forge_utils::atomic_write_with_options(
             &path,
@@ -843,5 +845,24 @@ impl App {
                 msg_id
             );
         }
+    }
+}
+
+fn normalize_json_strings_for_persistence(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            *text = PersistableContent::normalize_borrowed(text).into_owned();
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                normalize_json_strings_for_persistence(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for value in map.values_mut() {
+                normalize_json_strings_for_persistence(value);
+            }
+        }
+        _ => {}
     }
 }

@@ -319,7 +319,7 @@ fn process_command_clear_resets_conversation() {
     app.process_command(command);
 
     assert!(app.is_empty());
-    assert_eq!(last_notification(&app), Some("Conversation cleared"));
+    assert!(app.display_items().is_empty());
     assert_eq!(app.input_mode(), InputMode::Normal);
 }
 

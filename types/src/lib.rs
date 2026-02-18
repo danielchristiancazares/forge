@@ -274,7 +274,7 @@ impl TryFrom<NonEmptyStaticStr> for NonEmptyString {
 /// Uses a fast-path check: if no standalone `\r` is found, no allocation
 /// is performed. Only strings containing attack vectors allocate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
+#[serde(try_from = "String", into = "String")]
 pub struct PersistableContent(String);
 
 impl PersistableContent {
@@ -285,10 +285,18 @@ impl PersistableContent {
     #[must_use]
     pub fn new(input: impl Into<String>) -> Self {
         let input = input.into();
-        if Self::needs_normalization(&input) {
-            Self(Self::normalize(&input))
+        match Self::normalize_borrowed(&input) {
+            Cow::Borrowed(_) => Self(input),
+            Cow::Owned(normalized) => Self(normalized),
+        }
+    }
+
+    #[must_use]
+    pub fn normalize_borrowed(input: &str) -> Cow<'_, str> {
+        if Self::needs_normalization(input) {
+            Cow::Owned(Self::normalize(input))
         } else {
-            Self(input)
+            Cow::Borrowed(input)
         }
     }
 
@@ -344,6 +352,12 @@ impl PersistableContent {
 impl AsRef<str> for PersistableContent {
     fn as_ref(&self) -> &str {
         self.as_str()
+    }
+}
+
+impl From<String> for PersistableContent {
+    fn from(value: String) -> Self {
+        Self::new(value)
     }
 }
 
@@ -1634,6 +1648,16 @@ impl ToolCall {
     pub const fn signature_state(&self) -> &ThoughtSignatureState {
         &self.thought_signature
     }
+
+    #[must_use]
+    pub fn normalized_for_persistence(&self) -> Self {
+        Self {
+            id: normalize_string_for_persistence(&self.id),
+            name: normalize_string_for_persistence(&self.name),
+            arguments: normalize_json_for_persistence(&self.arguments),
+            thought_signature: self.thought_signature.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1673,6 +1697,16 @@ impl ToolResult {
             is_error: true,
         }
     }
+
+    #[must_use]
+    pub fn normalized_for_persistence(&self) -> Self {
+        Self {
+            tool_call_id: normalize_string_for_persistence(&self.tool_call_id),
+            tool_name: normalize_string_for_persistence(&self.tool_name),
+            content: normalize_string_for_persistence(&self.content),
+            is_error: self.is_error,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1693,6 +1727,14 @@ impl SystemMessage {
     #[must_use]
     pub fn content(&self) -> &str {
         self.content.as_str()
+    }
+
+    #[must_use]
+    pub fn normalized_for_persistence(&self) -> Self {
+        Self {
+            content: normalize_non_empty_for_persistence(&self.content),
+            timestamp: self.timestamp,
+        }
     }
 }
 
@@ -1734,6 +1776,18 @@ impl UserMessage {
             .as_ref()
             .map_or_else(|| self.content.as_str(), NonEmptyString::as_str)
     }
+
+    #[must_use]
+    pub fn normalized_for_persistence(&self) -> Self {
+        Self {
+            content: normalize_non_empty_for_persistence(&self.content),
+            display_content: self
+                .display_content
+                .as_ref()
+                .map(normalize_non_empty_for_persistence),
+            timestamp: self.timestamp,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1767,6 +1821,15 @@ impl AssistantMessage {
     #[must_use]
     pub fn model(&self) -> &ModelName {
         &self.model
+    }
+
+    #[must_use]
+    pub fn normalized_for_persistence(&self) -> Self {
+        Self {
+            content: normalize_non_empty_for_persistence(&self.content),
+            timestamp: self.timestamp,
+            model: self.model.clone(),
+        }
     }
 }
 
@@ -1854,6 +1917,16 @@ impl ThinkingMessage {
     #[must_use]
     pub fn model(&self) -> &ModelName {
         &self.model
+    }
+
+    #[must_use]
+    pub fn normalized_for_persistence(&self) -> Self {
+        Self {
+            content: normalize_non_empty_for_persistence(&self.content),
+            replay: self.replay.clone(),
+            timestamp: self.timestamp,
+            model: self.model.clone(),
+        }
     }
 }
 
@@ -1961,6 +2034,54 @@ impl Message {
             Message::User(m) => m.display_content(),
             other => other.content(),
         }
+    }
+
+    #[must_use]
+    pub fn normalized_for_persistence(&self) -> Self {
+        match self {
+            Message::System(message) => Message::System(message.normalized_for_persistence()),
+            Message::User(message) => Message::User(message.normalized_for_persistence()),
+            Message::Assistant(message) => Message::Assistant(message.normalized_for_persistence()),
+            Message::Thinking(message) => Message::Thinking(message.normalized_for_persistence()),
+            Message::ToolUse(call) => Message::ToolUse(call.normalized_for_persistence()),
+            Message::ToolResult(result) => Message::ToolResult(result.normalized_for_persistence()),
+        }
+    }
+}
+
+fn normalize_non_empty_for_persistence(value: &NonEmptyString) -> NonEmptyString {
+    match PersistableContent::normalize_borrowed(value.as_str()) {
+        Cow::Borrowed(_) => value.clone(),
+        Cow::Owned(normalized) => {
+            debug_assert!(!normalized.trim().is_empty());
+            NonEmptyString(normalized)
+        }
+    }
+}
+
+fn normalize_string_for_persistence(value: &str) -> String {
+    PersistableContent::normalize_borrowed(value).into_owned()
+}
+
+fn normalize_json_for_persistence(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(text) => {
+            serde_json::Value::String(normalize_string_for_persistence(text))
+        }
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(normalize_json_for_persistence)
+                .collect::<Vec<_>>(),
+        ),
+        serde_json::Value::Object(map) => {
+            let normalized = map
+                .iter()
+                .map(|(key, value)| (key.clone(), normalize_json_for_persistence(value)))
+                .collect::<serde_json::Map<_, _>>();
+            serde_json::Value::Object(normalized)
+        }
+        _ => value.clone(),
     }
 }
 
@@ -2084,8 +2205,45 @@ mod tests {
         let original = PersistableContent::new("test\rcontent");
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: PersistableContent = serde_json::from_str(&json).unwrap();
-        // Note: deserialization re-normalizes (transparent serde)
+        // Deserialization re-normalizes through `try_from = "String"`.
         assert_eq!(original.as_str(), deserialized.as_str());
+    }
+
+    #[test]
+    fn persistable_content_deserialize_normalizes_standalone_carriage_return() {
+        let deserialized: PersistableContent = serde_json::from_str("\"a\\rb\"").unwrap();
+        assert_eq!(deserialized.as_str(), "a\nb");
+    }
+
+    #[test]
+    fn message_normalized_for_persistence_normalizes_tool_fields() {
+        let call = ToolCall::new(
+            "id\r1",
+            "Read\rTool",
+            serde_json::json!({
+                "path": "src\rmain.rs",
+                "nested": { "note": "line1\rline2" }
+            }),
+        );
+        let normalized_call = Message::tool_use(call).normalized_for_persistence();
+        if let Message::ToolUse(call) = normalized_call {
+            assert_eq!(call.id, "id\n1");
+            assert_eq!(call.name, "Read\nTool");
+            assert_eq!(call.arguments["path"], "src\nmain.rs");
+            assert_eq!(call.arguments["nested"]["note"], "line1\nline2");
+        } else {
+            panic!("expected tool use message");
+        }
+
+        let result = ToolResult::success("call\rid", "Read\rTool", "ok\rvalue");
+        let normalized_result = Message::tool_result(result).normalized_for_persistence();
+        if let Message::ToolResult(result) = normalized_result {
+            assert_eq!(result.tool_call_id, "call\nid");
+            assert_eq!(result.tool_name, "Read\nTool");
+            assert_eq!(result.content, "ok\nvalue");
+        } else {
+            panic!("expected tool result message");
+        }
     }
 
     #[test]
