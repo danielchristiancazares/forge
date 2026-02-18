@@ -726,7 +726,11 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use ratatui::style::{Modifier, Style};
+
+    use super::{
+        clear_render_cache, render_markdown, render_markdown_preserve_newlines, wrap_text,
+    };
     use crate::theme::Palette;
 
     #[test]

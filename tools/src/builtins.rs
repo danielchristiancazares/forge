@@ -1698,7 +1698,11 @@ use super::process::ChildGuard;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        GlobArgs, GlobTool, ReadFileLimits, ReadFileTool, RiskLevel, RunCommandTool, ToolExecutor,
+        WriteFileTool, expand_braces, expand_single_brace, format_with_line_numbers,
+        is_crash_dump_artifact,
+    };
     use crate::{DetectedShell, RunSandboxPolicy};
 
     fn run_tool() -> RunCommandTool {

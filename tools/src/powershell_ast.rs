@@ -337,7 +337,7 @@ dynamic invocation, or string interpolation)."
 mod tests {
     use std::path::PathBuf;
 
-    use super::*;
+    use super::{DenialReason, EnvSanitizer, ToolError, policy_text_for_command};
 
     fn powershell_binary() -> PathBuf {
         which::which("pwsh")

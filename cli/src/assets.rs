@@ -97,7 +97,7 @@ pub fn system_prompts() -> SystemPrompts {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{BASE_PROMPT_RAW, GEMINI_PROMPT_RAW, resolve_partials};
 
     #[test]
     fn resolved_prompts_contain_no_unresolved_placeholders() {

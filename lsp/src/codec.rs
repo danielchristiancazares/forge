@@ -114,7 +114,7 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{FrameReader, FrameWriter, MAX_FRAME_BYTES};
 
     #[tokio::test]
     async fn test_roundtrip() {

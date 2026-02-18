@@ -983,7 +983,11 @@ fn normalize_whitespace_final(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        ConversionContext, Html, MIN_EXTRACTED_CHARS, Url, collapse_whitespace, extract,
+        extract_language, extract_title, has_boilerplate_token, normalize_whitespace_final,
+        strip_bom_and_whitespace,
+    };
 
     #[test]
     fn extract_falls_back_when_main_is_boilerplate_heavy() {

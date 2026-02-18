@@ -1036,7 +1036,12 @@ fn normalize_persistable_owned(input: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{RecoveredToolCallExecution, ToolJournal};
+    use crate::StepId;
+    use crate::time_utils::system_time_to_iso8601_millis;
+    use forge_types::{ThinkingReplayState, ThoughtSignatureState, ToolCall, ToolResult};
+    use rusqlite::params;
+    use std::time::SystemTime;
 
     #[test]
     fn begins_and_recovers_batch() {

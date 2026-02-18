@@ -1036,9 +1036,13 @@ fn ymd_to_days(year: i32, month: u32, day: u32) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        BeginSessionError, RecoveredStream, StepId, StreamJournal, iso8601_to_system_time,
+    };
+    use crate::time_utils::system_time_to_iso8601_millis;
     use std::fs;
     use std::path::PathBuf;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn unique_db_path(label: &str) -> PathBuf {
         let mut path = std::env::temp_dir();

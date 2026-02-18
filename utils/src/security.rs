@@ -429,7 +429,12 @@ fn apply_if_match(re: &Regex, replacement: &str, output: &mut String) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use aho_corasick::{AhoCorasickBuilder, MatchKind};
+
+    use super::{
+        SecretRedactor, looks_like_non_secret, normalize_untrusted, redact_api_keys,
+        sanitize_stream_error,
+    };
 
     #[test]
     fn redact_api_keys_replaces_openai_key() {

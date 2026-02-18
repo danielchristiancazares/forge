@@ -108,7 +108,7 @@ impl std::fmt::Debug for Librarian {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{FactType, Librarian};
 
     #[test]
     fn test_fact_type_as_str() {

@@ -797,7 +797,7 @@ impl super::App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::Command;
 
     #[test]
     fn parse_quit_commands() {

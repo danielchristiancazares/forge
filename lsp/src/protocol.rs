@@ -157,7 +157,12 @@ pub(crate) fn file_uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::types::DiagnosticSeverity;
+
+    use super::{
+        LspDiagnostic, LspPosition, LspRange, Notification, PublishDiagnosticsParams, Request,
+        did_change_params, did_open_params, file_uri_to_path, initialize_params, path_to_file_uri,
+    };
 
     #[test]
     fn test_initialize_params_has_required_fields() {

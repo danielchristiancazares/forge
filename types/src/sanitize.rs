@@ -415,7 +415,7 @@ pub fn is_steganographic_char(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Cow, sanitize_path_display, sanitize_terminal_text, strip_steganographic_chars};
 
     #[test]
     fn clean_text_no_allocation() {

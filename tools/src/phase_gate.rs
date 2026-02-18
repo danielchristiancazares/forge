@@ -125,7 +125,7 @@ impl ToolExecutor for GeminiGateTool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{GeminiGateTool, Phase, Provider, RiskLevel, ToolExecutor, json};
 
     #[test]
     fn gemini_gate_is_hidden() {

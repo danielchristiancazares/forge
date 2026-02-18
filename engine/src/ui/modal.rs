@@ -64,7 +64,8 @@ impl ModalEffect {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ModalEffect, ModalEffectKind};
+    use std::time::Duration;
 
     #[test]
     fn pop_scale_initial_state() {

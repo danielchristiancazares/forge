@@ -110,8 +110,9 @@ impl SessionState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{InputHistory, InputState, SessionChangeLog, SessionState};
     use crate::ui::DraftInput;
+    use std::collections::BTreeSet;
 
     #[test]
     fn session_state_default_version() {

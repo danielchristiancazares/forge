@@ -529,8 +529,12 @@ impl CommandOutput {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use forge_types::ToolCall;
     use serde_json::json;
+
+    use super::{
+        ToolCallMeta, ToolResultRender, format_tool_result_summary, tool_result_render_decision,
+    };
 
     #[test]
     fn summary_read_range_prefers_call_args() {

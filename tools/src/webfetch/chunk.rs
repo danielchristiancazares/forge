@@ -934,7 +934,10 @@ fn extract_list_marker(item: &str) -> (String, &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        Block, chunk, extract_list_marker, is_fence_close, is_list_item_start, parse_atx_heading,
+        parse_blocks, parse_fence_start, parse_list_items, split_at_sentences,
+    };
 
     #[test]
     fn test_parse_atx_heading() {

@@ -55,7 +55,8 @@ impl PanelEffect {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{PanelEffect, PanelEffectKind};
+    use std::time::Duration;
 
     #[test]
     fn slide_out_right_initial_state() {

@@ -474,7 +474,9 @@ fn apply_final_newline(content: &mut FileContent, value: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        EolKind, FileContent, Op, PatchError, apply_ops, emit_file, parse_file, parse_patch,
+    };
 
     // parse_patch tests
 

@@ -25,7 +25,7 @@ pub fn parse_model_name_from_string(name: &str) -> Option<ModelName> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Provider, parse_model_name_from_string};
 
     #[test]
     fn parse_model_name_claude() {

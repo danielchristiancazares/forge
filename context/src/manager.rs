@@ -388,8 +388,11 @@ impl ContextManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use forge_types::PredefinedModel;
+    use super::{
+        ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus, ModelLimits,
+        ModelLimitsSource, StepId,
+    };
+    use forge_types::{Message, ModelName, NonEmptyString, PredefinedModel};
 
     fn model(predefined: PredefinedModel) -> ModelName {
         predefined.to_model_name()

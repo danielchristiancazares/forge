@@ -43,7 +43,7 @@ pub fn truncate_with_ellipsis(raw: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{truncate_preview, truncate_to_fit, truncate_with_ellipsis};
 
     #[test]
     fn truncate_short_string_unchanged() {

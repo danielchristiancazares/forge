@@ -127,7 +127,7 @@ fn detect_platform_shell() -> DetectedShell {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{PathBuf, ShellConfig, default_args_for, detect_shell};
 
     #[test]
     #[cfg(windows)]

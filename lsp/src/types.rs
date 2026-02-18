@@ -305,7 +305,11 @@ impl DiagnosticsSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::path::PathBuf;
+
+    use super::{
+        DiagnosticSeverity, DiagnosticsSnapshot, ForgeDiagnostic, LspConfig, ServerConfig,
+    };
 
     fn make_diag(severity: DiagnosticSeverity, msg: &str) -> ForgeDiagnostic {
         ForgeDiagnostic::new(severity, msg.to_string(), 10, 5, "rustc".to_string())

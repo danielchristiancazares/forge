@@ -739,7 +739,10 @@ impl Plan {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        EditOp, EditValidationError, PhaseInput, Plan, PlanState, PlanStep, PlanStepId,
+        PlanValidationError, StepInput, StepStatus,
+    };
 
     fn simple_input() -> Vec<PhaseInput> {
         vec![

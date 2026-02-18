@@ -1016,7 +1016,7 @@ fn timeout_phase_label(phase: TimeoutPhase) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::super::resolved::DEFAULT_ALLOWED_PORTS;
-    use super::*;
+    use super::DEFAULT_BLOCKED_CIDRS;
 
     #[test]
     fn test_default_blocked_cidrs() {

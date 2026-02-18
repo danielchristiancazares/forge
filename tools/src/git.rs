@@ -2089,7 +2089,7 @@ async fn handle_git_pull(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{GitDiffArgs, GitTool, RiskLevel, ToolExecutor};
     use serde_json::json;
 
     #[test]

@@ -9,12 +9,32 @@ use futures_util::future::AbortHandle;
 use serde_json::json;
 use tempfile::tempdir;
 
+use std::collections::HashMap;
+
+use tokio::sync::mpsc;
+
 use super::init::DEFAULT_MAX_TOOL_ARGS_BYTES;
-use super::*;
+use super::{
+    App, AppearanceEditorSnapshot, ContextEditorSnapshot, ModelEditorSnapshot,
+    ProviderRuntimeState, QueuedUserMessage, StreamingMessage, SystemPrompts, ToolsEditorSnapshot,
+};
 use crate::EnvironmentContext;
-use crate::state::DataDirSource;
-use crate::ui::DraftInput;
-use forge_types::ApiKey;
+use crate::state::{
+    ActiveStream, DataDir, DataDirSource, DistillationStart, DistillationState, DistillationTask,
+    OperationState, ToolLoopPhase,
+};
+use crate::tools;
+use crate::ui::{
+    DisplayItem, DraftInput, InputMode, InputState, PredefinedModel, ScrollState, SettingsCategory,
+    SettingsSurface, UiOptions, ViewState,
+};
+use forge_context::{ContextManager, StreamJournal, ToolJournal};
+use forge_providers::ApiConfig;
+use forge_types::{
+    ApiKey, Message, ModelName, NonEmptyString, OpenAIReasoningEffort, OpenAIRequestOptions,
+    OutputLimits, PlanState, Provider, SecretString, StreamEvent, StreamFinishReason,
+    ThinkingReplayState, ThoughtSignatureState, ToolCall, ToolResult,
+};
 
 /// Test system prompts for unit tests.
 const TEST_SYSTEM_PROMPTS: SystemPrompts = SystemPrompts {

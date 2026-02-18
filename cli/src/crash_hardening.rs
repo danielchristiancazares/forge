@@ -93,7 +93,7 @@ fn apply_platform_hardening() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::is_truthy;
 
     #[test]
     fn truthy_override_values_are_accepted() {

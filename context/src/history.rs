@@ -407,7 +407,8 @@ impl FullHistory {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{CompactionSummary, FullHistory, MessageId};
+    use forge_types::{Message, NonEmptyString};
 
     fn make_test_message(content: &str) -> Message {
         Message::try_user(content).expect("non-empty test message")

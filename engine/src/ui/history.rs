@@ -197,7 +197,7 @@ impl InputHistory {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{InputHistory, MAX_COMMAND_HISTORY, MAX_PROMPT_HISTORY};
 
     #[test]
     fn push_prompt_adds_to_history() {

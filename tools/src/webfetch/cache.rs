@@ -491,7 +491,10 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        Cache, CacheEntry, CacheSettings, Duration, SystemTime, Url, cache_key, format_rfc3339,
+        parse_rfc3339,
+    };
 
     #[test]
     fn test_cache_key_deterministic() {

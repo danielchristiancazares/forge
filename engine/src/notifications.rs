@@ -98,7 +98,7 @@ impl NotificationQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{NotificationQueue, SystemNotification};
 
     #[test]
     fn test_notification_format() {

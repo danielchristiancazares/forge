@@ -782,7 +782,8 @@ impl crate::App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{CheckpointId, CheckpointKind, CheckpointStore, RewindScope, format_bytes};
+    use std::path::PathBuf;
 
     #[test]
     fn parse_rewind_scope() {

@@ -482,7 +482,12 @@ fn escape_seatbelt_literal(value: &str) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use super::*;
+    use super::{
+        DenialReason, DetectedShell, MacOsRunSandboxPolicy, Path, PreparedRunCommand,
+        RunCommandText, RunSandboxFallbackMode, ToolError, WindowsRunSandboxPolicy,
+        escape_seatbelt_literal, is_powershell_shell, prepare_windows_run_command,
+        prepare_windows_run_command_with_host_probe,
+    };
 
     fn shell(binary: &str) -> DetectedShell {
         DetectedShell {

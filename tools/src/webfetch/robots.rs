@@ -710,7 +710,10 @@ pub fn parse(content: &str) -> Result<Robots, WebFetchError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        RobotsResult, Url, compute_origin, effective_length, is_valid_robots_redirect, parse,
+        path_matches,
+    };
 
     #[test]
     fn test_parse_basic() {

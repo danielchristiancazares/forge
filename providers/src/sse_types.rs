@@ -157,7 +157,7 @@ pub mod claude {
 
     #[cfg(test)]
     mod tests {
-        use super::*;
+        use super::{ContentBlock, Delta, Event, StopReason};
 
         #[test]
         fn deserialize_message_start() {
@@ -549,7 +549,7 @@ pub mod openai {
 
     #[cfg(test)]
     mod tests {
-        use super::*;
+        use super::{Event, OutputItem};
 
         #[test]
         fn deserialize_output_item_function_call() {
@@ -872,7 +872,7 @@ pub mod gemini {
 
     #[cfg(test)]
     mod tests {
-        use super::*;
+        use super::{FinishReason, Response};
 
         #[test]
         fn deserialize_text_response() {

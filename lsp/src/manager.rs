@@ -189,8 +189,17 @@ impl LspManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::types::DiagnosticSeverity;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    use tokio::sync::mpsc;
+
+    use crate::diagnostics::DiagnosticsStore;
+    use crate::types::{
+        DiagnosticSeverity, ForgeDiagnostic, LspConfig, LspEvent, ServerStopReason,
+    };
+
+    use super::{EVENT_CHANNEL_CAPACITY, LspManager, build_extension_map};
 
     fn test_config() -> LspConfig {
         serde_json::from_value(serde_json::json!({

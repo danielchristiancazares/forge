@@ -705,8 +705,11 @@ fn activate_next_eligible(plan: &mut Plan) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use forge_types::{PhaseInput, StepInput, ThoughtSignatureState};
+    use super::{PLAN_TOOL_NAME, activate_next_eligible, parse_edit_op, parse_step_id_and_text};
+    use forge_types::{
+        EditOp, PhaseInput, Plan, PlanStepId, StepInput, StepStatus, ThoughtSignatureState,
+        ToolCall,
+    };
     use serde_json::json;
 
     fn tool_call(args: serde_json::Value) -> ToolCall {

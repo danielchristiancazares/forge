@@ -620,7 +620,9 @@ pub mod gemini;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        ApiConfig, ApiKey, drain_next_sse_event, extract_sse_data, find_sse_event_boundary,
+    };
     use forge_types::Provider;
 
     #[test]
@@ -640,7 +642,7 @@ mod tests {
     }
 
     mod sse_boundary {
-        use super::*;
+        use super::find_sse_event_boundary;
 
         #[test]
         fn finds_lf_boundary() {
@@ -691,7 +693,7 @@ mod tests {
     }
 
     mod sse_drain {
-        use super::*;
+        use super::drain_next_sse_event;
 
         #[test]
         fn drains_single_event() {
@@ -744,7 +746,7 @@ mod tests {
     }
 
     mod sse_extract {
-        use super::*;
+        use super::extract_sse_data;
 
         #[test]
         fn extracts_single_data_line() {

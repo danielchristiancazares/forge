@@ -175,7 +175,7 @@ pub fn assemble_prompt(base: &str, env: &EnvironmentContext, model: &str) -> Str
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{EnvironmentContext, assemble_prompt, discover_agents_md, has_git_ancestor};
 
     #[test]
     fn gather_produces_valid_context() {

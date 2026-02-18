@@ -445,7 +445,11 @@ pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        CacheHint, CacheableMessage, ClaudeParser, ClaudeRequestBodyInput, Message, OutputLimits,
+        SseParseAction, SseParser, StreamEvent, ToolDefinition, anthropic_beta_header,
+        build_request_body, json,
+    };
     use forge_types::Provider;
     use forge_types::{ModelName, NonEmptyString};
 

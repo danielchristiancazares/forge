@@ -203,7 +203,8 @@ impl Default for TokenCounter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::TokenCounter;
+    use forge_types::Message;
 
     #[test]
     fn new_creates_counter() {

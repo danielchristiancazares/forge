@@ -215,7 +215,11 @@ fn last_os_error(operation: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[cfg(windows)]
-    use super::*;
+    use super::{
+        JOB_OBJECT_UILIMIT_DESKTOP, JOB_OBJECT_UILIMIT_READCLIPBOARD,
+        JOB_OBJECT_UILIMIT_WRITECLIPBOARD, attach_process_to_sandbox, job_ui_limit_flags,
+        sandbox_preflight,
+    };
 
     #[cfg(windows)]
     #[test]

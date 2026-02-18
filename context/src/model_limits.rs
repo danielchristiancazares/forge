@@ -178,10 +178,10 @@ impl Default for ModelRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ModelLimits, ModelLimitsSource, ModelRegistry};
 
     mod model_limits {
-        use super::*;
+        use super::ModelLimits;
 
         #[test]
         fn new_creates_limits_with_given_values() {
@@ -262,7 +262,7 @@ mod tests {
     }
 
     mod model_registry {
-        use super::*;
+        use super::{ModelLimits, ModelLimitsSource, ModelRegistry};
         use forge_types::{ModelName, PredefinedModel};
 
         fn model(predefined: PredefinedModel) -> ModelName {

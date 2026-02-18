@@ -510,7 +510,7 @@ impl InputState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{DraftInput, InputMode, InputState, SettingsCategory, SettingsSurface};
 
     #[test]
     fn draft_input_set_text_moves_cursor_to_end() {

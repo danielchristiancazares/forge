@@ -178,7 +178,7 @@ pub fn atomic_write_with_options(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{AtomicWriteOptions, atomic_write_with_options};
 
     #[test]
     fn atomic_write_overwrites_existing_and_cleans_backup() {

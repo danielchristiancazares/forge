@@ -440,7 +440,14 @@ impl RunningServer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use tokio::sync::{mpsc, oneshot};
+
+    use crate::types::LspEvent;
+
+    use super::{RunningServer, WriterCommand, env_glob_matches};
 
     type PendingMap =
         std::sync::Arc<tokio::sync::Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>;

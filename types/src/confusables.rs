@@ -130,7 +130,7 @@ pub fn detect_mixed_script(input: &str, field_name: &str) -> Option<HomoglyphWar
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{HomoglyphWarning, Script, detect_mixed_script};
 
     #[test]
     fn detects_latin_cyrillic_mix() {

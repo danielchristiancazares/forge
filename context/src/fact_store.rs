@@ -574,7 +574,8 @@ fn compute_file_sha256(path: impl AsRef<Path>) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::FactStore;
+    use crate::librarian::{Fact, FactType};
 
     #[test]
     fn test_store_and_retrieve_facts() {

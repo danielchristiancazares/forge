@@ -342,7 +342,10 @@ fn is_retryable_error(error: &reqwest::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        Duration, HeaderMap, RetryConfig, StatusCode, calculate_retry_delay,
+        generate_idempotency_key, parse_retry_after, should_retry,
+    };
     use reqwest::header::HeaderValue;
 
     #[test]
@@ -446,7 +449,7 @@ mod tests {
 
 #[cfg(test)]
 mod integration_tests {
-    use super::*;
+    use super::{Duration, RetryConfig, RetryOutcome, StatusCode, send_with_retry};
     use std::sync::atomic::{AtomicU32, Ordering};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};

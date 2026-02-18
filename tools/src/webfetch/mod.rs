@@ -426,7 +426,9 @@ fn shrink_output_to_fit(mut output: WebFetchOutput, max_bytes: usize) -> Result<
 
 #[cfg(test)]
 mod unit_tests {
-    use super::*;
+    use super::{
+        FetchChunk, WebFetchOutput, WebFetchToolConfig, canonicalize_url, shrink_output_to_fit,
+    };
 
     #[test]
     fn default_config() {

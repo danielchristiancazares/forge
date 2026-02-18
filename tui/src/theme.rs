@@ -309,7 +309,9 @@ pub mod styles {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use forge_engine::UiOptions;
+
+    use super::spinner_frame;
 
     #[test]
     fn spinner_frame_cycles_without_reduced_motion() {

@@ -244,7 +244,7 @@ pub fn find_match_positions(path: &str, filter: &str) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{find_match_positions, fuzzy_match_score};
 
     #[test]
     fn fuzzy_match_basic() {

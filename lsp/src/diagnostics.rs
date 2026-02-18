@@ -67,8 +67,11 @@ impl DiagnosticsStore {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::types::DiagnosticSeverity;
+    use std::path::PathBuf;
+
+    use crate::types::{DiagnosticSeverity, ForgeDiagnostic};
+
+    use super::DiagnosticsStore;
 
     fn make_diag(severity: DiagnosticSeverity, msg: &str, line: u32) -> ForgeDiagnostic {
         ForgeDiagnostic::new(severity, msg.to_string(), line, 0, "test".to_string())

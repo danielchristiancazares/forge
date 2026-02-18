@@ -304,8 +304,10 @@ fn try_common_keys(obj: &serde_json::Map<String, Value>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use serde_json::json;
+    use forge_types::truncate_to_fit;
+    use serde_json::{Value, json};
+
+    use super::format_tool_call_compact;
 
     #[test]
     fn test_search_tool() {

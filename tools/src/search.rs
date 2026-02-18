@@ -1707,7 +1707,10 @@ fn looks_like_option_error(stderr: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        SearchTool, SearchToolConfig, ToolExecutor, normalize_path_text,
+        pattern_has_ascii_uppercase, trim_line_endings,
+    };
 
     #[test]
     fn trim_line_endings_removes_trailing_newlines() {

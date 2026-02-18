@@ -193,7 +193,8 @@ fn format_error_summary(errors: &[(PathBuf, Vec<forge_lsp::ForgeDiagnostic>)]) -
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{MAX_DIAG_FEEDBACK_LINES, format_error_summary};
+    use std::path::PathBuf;
 
     fn make_diag(msg: &str, line: u32) -> forge_lsp::ForgeDiagnostic {
         forge_lsp::ForgeDiagnostic::new(

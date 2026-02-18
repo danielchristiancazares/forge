@@ -426,7 +426,13 @@ const fn distillation_internal_model(provider: Provider) -> InternalModel {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        ApiConfig, CLAUDE_DISTILLATION_MODEL, CLAUDE_DISTILLER_INPUT_LIMIT,
+        OPENAI_DISTILLATION_MODEL, OPENAI_DISTILLER_INPUT_LIMIT, TokenCounter,
+        build_distillation_prompt, distillation_model, distiller_input_limit,
+        generate_distillation,
+    };
+    use forge_types::{Message, Provider};
 
     #[test]
     fn test_distillation_model_selection() {

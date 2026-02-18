@@ -171,7 +171,8 @@ impl ContextUsage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ContextSegment, ContextUsage, WorkingContext};
+    use crate::history::MessageId;
 
     #[test]
     fn test_working_context_new() {

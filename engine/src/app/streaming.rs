@@ -1035,7 +1035,7 @@ async fn get_or_create_gemini_cache(
 
 #[cfg(test)]
 mod token_cache_planner_tests {
-    use super::*;
+    use super::plan_cache_allocation;
     use forge_types::CacheBudget;
 
     #[test]
@@ -1154,8 +1154,8 @@ mod token_cache_planner_tests {
 
 #[cfg(test)]
 mod plan_context_injection_tests {
-    use super::*;
-    use forge_types::{PhaseInput, Plan, PlanState, StepInput};
+    use super::{Message, NonEmptyString, inject_plan_context};
+    use forge_types::{PhaseInput, Plan, PlanState, Provider, StepInput};
 
     fn active_plan_state() -> PlanState {
         let plan = Plan::from_input(vec![PhaseInput {

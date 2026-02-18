@@ -171,7 +171,7 @@ fn truncate_command(cmd: &str, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{CommandBlacklist, truncate_command};
 
     fn default_blacklist() -> CommandBlacklist {
         CommandBlacklist::with_defaults().unwrap()

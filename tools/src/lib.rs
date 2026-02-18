@@ -609,7 +609,7 @@ pub fn redact_distillate(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{EnvSanitizer, analyze_tool_arguments, sanitize_output};
     use serde_json::json;
 
     #[test]

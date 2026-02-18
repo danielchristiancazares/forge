@@ -118,7 +118,10 @@ fn lp1_diff_marker(line: &str) -> Option<char> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use ratatui::style::Style;
+
+    use super::{diff_style_for_line, lp1_diff_marker};
+    use crate::theme::Palette;
 
     #[test]
     fn lp1_marker_detects_add_and_remove() {

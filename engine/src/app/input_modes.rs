@@ -751,7 +751,10 @@ fn longest_common_prefix(strings: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        complete_command_name, expand_file_references, longest_common_prefix,
+        parse_file_references, read_file_reference_content,
+    };
 
     #[test]
     fn longest_common_prefix_empty() {
