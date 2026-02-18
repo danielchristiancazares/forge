@@ -1300,7 +1300,7 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
                 }
                 Line::from(spans).alignment(Alignment::Right)
             })
-            .padding(Padding::uniform(1)),
+            .padding(Padding::horizontal(1)),
     );
 
     frame.render_widget(input, area);
