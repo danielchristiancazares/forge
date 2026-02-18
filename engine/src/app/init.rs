@@ -506,7 +506,13 @@ impl App {
             // Only modify permissions if we own the directory
             let our_uid = unsafe { libc::getuid() };
             if metadata.uid() != our_uid {
-                // Not our directory - skip silently (e.g., /tmp)
+                tracing::warn!(
+                    path = %path.display(),
+                    owner_uid = metadata.uid(),
+                    our_uid,
+                    "Data directory is not owned by current user — \
+                     sensitive data (history, API keys, journals) may be accessible to other users"
+                );
                 return Ok(());
             }
 
@@ -782,8 +788,14 @@ impl App {
 
         // Command blacklist initialization (patterns defined in command_blacklist module)
         let command_blacklist = tools::CommandBlacklist::with_defaults().unwrap_or_else(|e| {
-            tracing::error!("Failed to compile command blacklist: {e}. Using empty blacklist.");
-            tools::CommandBlacklist::new(&[]).expect("empty blacklist")
+            tracing::error!(
+                "Failed to compile command blacklist: {e}. Entering fail-closed mode for Run."
+            );
+            tools::CommandBlacklist::new(&[(
+                r"(?s).*",
+                "Run disabled: command blacklist initialization failed",
+            )])
+            .expect("fail-closed blacklist")
         });
 
         tools::ToolSettings {

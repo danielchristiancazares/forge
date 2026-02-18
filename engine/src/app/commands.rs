@@ -101,6 +101,11 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         help_label: "plan",
         description: "Show plan status or clear active plan",
     },
+    CommandSpec {
+        palette_label: "export [path]",
+        help_label: "export",
+        description: "Export conversation to JSON",
+    },
 ];
 
 #[must_use]
@@ -126,11 +131,12 @@ pub(crate) enum CommandKind {
     Retry,
     Problems,
     Plan,
+    Export,
 }
 
 impl CommandKind {
     pub(crate) fn expects_arg(self) -> bool {
-        matches!(self, Self::Model | Self::Rewind)
+        matches!(self, Self::Model | Self::Rewind | Self::Export)
     }
 }
 
@@ -229,6 +235,10 @@ const COMMAND_ALIASES: &[CommandAlias] = &[
         name: "plan",
         kind: CommandKind::Plan,
     },
+    CommandAlias {
+        name: "export",
+        kind: CommandKind::Export,
+    },
 ];
 
 pub(crate) fn command_aliases() -> &'static [CommandAlias] {
@@ -269,6 +279,7 @@ pub(crate) enum Command<'a> {
     Plan {
         subcommand: Option<&'a str>,
     },
+    Export(Option<&'a str>),
     Unknown(&'a str),
     Empty,
 }
@@ -315,8 +326,16 @@ impl<'a> Command<'a> {
             CommandKind::Plan => Command::Plan {
                 subcommand: parts.get(1).copied(),
             },
+            CommandKind::Export => Command::Export(parts.get(1).copied()),
         }
     }
+}
+
+#[derive(serde::Serialize)]
+struct ConversationExport<'a> {
+    model: &'a str,
+    exported_at: String,
+    messages: Vec<&'a forge_types::Message>,
 }
 
 impl super::App {
@@ -485,7 +504,6 @@ impl super::App {
                 self.provider_runtime.openai_previous_response_id = None;
                 self.invalidate_usage_cache();
                 self.autosave_history();
-                self.push_notification("Conversation cleared");
                 self.view.clear_transcript = true;
                 self.op_transition(self.idle_state());
             }
@@ -726,6 +744,49 @@ impl super::App {
                     ));
                 }
             },
+            Command::Export(path_arg) => {
+                let path = if let Some(p) = path_arg {
+                    std::path::PathBuf::from(p)
+                } else {
+                    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+                    std::path::PathBuf::from(format!("forge-export-{ts}.json"))
+                };
+
+                let messages: Vec<_> = self
+                    .context_manager
+                    .history()
+                    .entries()
+                    .iter()
+                    .map(forge_context::HistoryEntry::message)
+                    .collect();
+
+                let export = ConversationExport {
+                    model: self.model.as_str(),
+                    exported_at: chrono::Utc::now().to_rfc3339(),
+                    messages,
+                };
+
+                match serde_json::to_string_pretty(&export) {
+                    Ok(json) => {
+                        let opts = forge_utils::AtomicWriteOptions {
+                            sync_all: true,
+                            dir_sync: false,
+                            unix_mode: Some(0o600),
+                        };
+                        match forge_utils::atomic_write_with_options(&path, json.as_bytes(), opts) {
+                            Ok(()) => {
+                                self.push_notification(format!("Exported to {}", path.display()));
+                            }
+                            Err(e) => {
+                                self.push_notification(format!("Export failed: {e}"));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.push_notification(format!("Export serialization failed: {e}"));
+                    }
+                }
+            }
             Command::Unknown(cmd) => {
                 self.push_notification(format!("Unknown command: {cmd}"));
             }
@@ -891,5 +952,23 @@ mod tests {
     fn parse_undo_and_retry_commands() {
         assert_eq!(Command::parse("undo"), Command::Undo);
         assert_eq!(Command::parse("retry"), Command::Retry);
+    }
+
+    #[test]
+    fn parse_export_command() {
+        assert_eq!(Command::parse("export"), Command::Export(None));
+        assert_eq!(Command::parse("/export"), Command::Export(None));
+    }
+
+    #[test]
+    fn parse_export_command_with_path() {
+        assert_eq!(
+            Command::parse("export out.json"),
+            Command::Export(Some("out.json"))
+        );
+        assert_eq!(
+            Command::parse("/export /tmp/dump.json"),
+            Command::Export(Some("/tmp/dump.json"))
+        );
     }
 }

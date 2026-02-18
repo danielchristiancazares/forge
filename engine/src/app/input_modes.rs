@@ -186,11 +186,27 @@ impl InsertMode<'_> {
         self.app.create_turn_checkpoint();
 
         // Track user message in context manager (also adds to display).
-        // When AGENTS.md or @file refs were prepended, store the original draft as
-        // display_content so the TUI shows only what the user typed.
+        // When AGENTS.md or @file refs were prepended, store a display version
+        // that includes an attachment summary so the user can see what was sent.
         let message = match NonEmptyString::new(draft_text.clone()) {
             Ok(display) if display.as_str() != content.as_str() => {
-                Message::user_with_display(content, display)
+                let display_with_summary =
+                    if expansion.expanded_files.is_empty() && agents_md.is_empty() {
+                        display
+                    } else {
+                        let mut summary_parts = Vec::new();
+                        if !agents_md.is_empty() {
+                            summary_parts.push("AGENTS.md".to_string());
+                        }
+                        for (path, bytes) in &expansion.expanded_files {
+                            let kb = *bytes as f64 / 1024.0;
+                            summary_parts.push(format!("@{path} ({kb:.1}KB)"));
+                        }
+                        let summary = format!("[Attached: {}]", summary_parts.join(", "));
+                        NonEmptyString::new(format!("{summary}\n\n{}", display.as_str()))
+                            .unwrap_or(display)
+                    };
+                Message::user_with_display(content, display_with_summary)
             }
             _ => Message::user(content),
         };
@@ -493,6 +509,8 @@ fn complete_command_arg(
 
 struct FileExpansionResult {
     file_sections: Vec<String>,
+    /// (path, byte_count) for each successfully expanded file.
+    expanded_files: Vec<(String, usize)>,
     denied: Vec<(String, String)>,
     failed: Vec<(String, String)>,
 }
@@ -510,6 +528,7 @@ fn expand_file_references(
 ) -> FileExpansionResult {
     let working_dir = sandbox.working_dir();
     let mut file_sections = Vec::new();
+    let mut expanded_files = Vec::new();
     let mut denied = Vec::new();
     let mut failed = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -547,11 +566,13 @@ fn expand_file_references(
 
         match read_file_reference_content(&resolved, max_read_bytes) {
             Some(content) => {
+                let byte_count = content.len();
                 let line_count = content.lines().count() as u32;
                 if let Ok(mut cache) = file_cache.try_lock() {
                     let _ = forge_tools::record_file_read(&mut cache, &resolved, line_count);
                 }
                 file_sections.push(format!("`{path_str}`:\n```\n{content}\n```"));
+                expanded_files.push((path_str, byte_count));
             }
             None => {
                 failed.push((path_str, "binary or non-UTF-8 file".to_string()));
@@ -561,6 +582,7 @@ fn expand_file_references(
 
     FileExpansionResult {
         file_sections,
+        expanded_files,
         denied,
         failed,
     }

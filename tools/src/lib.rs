@@ -125,14 +125,34 @@ pub fn analyze_tool_arguments(tool_name: &str, args: &Value) -> Vec<HomoglyphWar
     };
 
     for field in fields_to_check {
-        if let Some(value) = args.get(field).and_then(|v| v.as_str())
-            && let Some(warning) = detect_mixed_script(value, field)
-        {
-            warnings.push(warning);
+        if let Some(value) = args.get(field) {
+            collect_homoglyph_warnings(value, field, &mut warnings);
         }
     }
 
     warnings
+}
+
+/// Recursively scan a JSON value for homoglyphs in all string leaves.
+fn collect_homoglyph_warnings(value: &Value, field: &str, warnings: &mut Vec<HomoglyphWarning>) {
+    match value {
+        Value::String(s) => {
+            if let Some(warning) = detect_mixed_script(s, field) {
+                warnings.push(warning);
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr {
+                collect_homoglyph_warnings(item, field, warnings);
+            }
+        }
+        Value::Object(map) => {
+            for (key, val) in map {
+                collect_homoglyph_warnings(val, key, warnings);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Tool events for streaming output.

@@ -96,9 +96,28 @@ env_denylist! {
         "NPM_*",
     ],
     injection: [
+        // Dynamic linker injection
         "DYLD_*",
         "LD_PRELOAD",
         "LD_LIBRARY_PATH",
+        // Shell init injection (sourced by non-interactive shells)
+        "BASH_ENV",
+        "ENV",
+        "ZDOTDIR",
+        "PROMPT_COMMAND",
+        // Git execution vectors
+        "GIT_SSH_COMMAND",
+        "GIT_EXEC_PATH",
+        "GIT_PAGER",
+        "SSH_ASKPASS",
+        // Interpreter injection
+        "NODE_OPTIONS",
+        "NODE_EXTRA_CA_CERTS",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "RUBYOPT",
+        "PERL5OPT",
+        "PERL5LIB",
     ],
 }
 
