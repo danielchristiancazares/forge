@@ -2114,7 +2114,15 @@ impl CacheableMessage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        ApiKey, ApiUsage, CacheBudget, CacheHint, CacheableMessage, ENV_CREDENTIAL_PATTERNS,
+        ENV_INJECTION_PATTERNS, ENV_SECRET_DENYLIST, InternalModel, Message, NonEmptyStaticStr,
+        NonEmptyString, OpenAIReasoningEffort, OpenAIReasoningItem, OpenAIReasoningSummary,
+        OpenAIReasoningSummaryPart, OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation,
+        OutputLimits, OutputLimitsError, PersistableContent, Provider, StreamFinishReason,
+        ThinkingBudget, ThinkingMessage, ThinkingReplayState, ThinkingState, ThoughtSignature,
+        ToolCall, ToolResult,
+    };
 
     #[test]
     fn non_empty_string_rejects_empty() {

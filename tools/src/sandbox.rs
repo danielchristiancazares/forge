@@ -231,20 +231,22 @@ impl Sandbox {
     /// Post-creation validation for TOCTOU mitigation.
     ///
     /// After `create_dir_all` creates the directory tree and before writing content,
-    /// re-canonicalize the parent and verify it's still within allowed roots and
-    /// contains no symlinks in the path chain. This closes the race window where
-    /// an attacker process could replace a directory with a symlink between
-    /// `resolve_path_for_create` and the actual write.
+    /// re-canonicalize the parent and verify it's still within allowed roots,
+    /// contains no symlinks/reparse points in the path chain, and the final
+    /// canonical path does not match any deny patterns. This closes the race
+    /// window where an attacker process could replace a directory with a
+    /// symlink or NTFS junction between `resolve_path_for_create` and the
+    /// actual write.
     pub fn validate_created_parent(&self, path: &Path) -> Result<(), ToolError> {
         let parent = path.parent().ok_or_else(|| ToolError::BadArgs {
             message: "path has no parent directory".to_string(),
         })?;
 
-        // Walk the path chain checking for symlinks
+        // Walk the path chain checking for symlinks and reparse points (F-01)
         let mut current = parent.to_path_buf();
         loop {
             if let Ok(meta) = std::fs::symlink_metadata(&current)
-                && meta.file_type().is_symlink()
+                && (meta.file_type().is_symlink() || is_reparse_point(&meta))
             {
                 return Err(ToolError::SandboxViolation(
                     DenialReason::PathOutsideSandbox {
@@ -271,6 +273,17 @@ impl Sandbox {
                 DenialReason::PathOutsideSandbox {
                     attempted: path.to_path_buf(),
                     resolved: canonical,
+                },
+            ));
+        }
+
+        // Re-check deny patterns on the canonical path (F-02)
+        let canonical_file = canonical.join(path.file_name().unwrap_or_default());
+        if let Some(pat) = self.matches_denied_pattern(&canonical_file) {
+            return Err(ToolError::SandboxViolation(
+                DenialReason::DeniedPatternMatched {
+                    attempted: canonical_file,
+                    pattern: pat,
                 },
             ));
         }
@@ -433,6 +446,20 @@ fn contains_ntfs_ads(input: &str) -> bool {
         .any(|c| matches!(c, std::path::Component::Normal(s) if s.to_string_lossy().contains(':')))
 }
 
+/// Detect NTFS reparse points (junctions, mount points) that `is_symlink()`
+/// misses on Windows. On non-Windows this always returns `false`.
+#[cfg(windows)]
+fn is_reparse_point(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(_meta: &std::fs::Metadata) -> bool {
+    false
+}
+
 fn contains_unsafe_path_chars(input: &str) -> bool {
     input.chars().any(is_unsafe_path_char)
 }
@@ -453,7 +480,10 @@ fn is_unsafe_path_char(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        DenialReason, Path, PathBuf, Sandbox, ToolError, contains_ntfs_ads,
+        contains_unsafe_path_chars, is_unsafe_path_char, normalize_path, strip_ads_suffixes,
+    };
     use tempfile::tempdir;
 
     // is_unsafe_path_char tests
@@ -879,5 +909,72 @@ mod tests {
 
         assert!(sandbox.is_path_denied(Path::new("subdir/.env")));
         assert!(!sandbox.is_path_denied(Path::new("allowed.txt")));
+    }
+
+    // validate_created_parent tests (F-01, F-02)
+
+    #[test]
+    fn validate_created_parent_allows_normal_path() {
+        let temp = tempdir().unwrap();
+        let sub = temp.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let sandbox = Sandbox::new(
+            vec![temp.path().to_path_buf()],
+            vec!["**/.ssh/**".to_string()],
+            false,
+        )
+        .unwrap();
+
+        let file = sub.join("ok.txt");
+        assert!(sandbox.validate_created_parent(&file).is_ok());
+    }
+
+    #[test]
+    fn validate_created_parent_rejects_symlink_in_chain() {
+        let temp = tempdir().unwrap();
+        let real_dir = temp.path().join("real");
+        std::fs::create_dir(&real_dir).unwrap();
+        let link = temp.path().join("link");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_dir, &link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&real_dir, &link).unwrap();
+
+        let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], false).unwrap();
+
+        let file = link.join("file.txt");
+        assert!(sandbox.validate_created_parent(&file).is_err());
+    }
+
+    #[test]
+    fn validate_created_parent_rechecks_deny_patterns() {
+        // F-02: After re-canonicalization, deny patterns must still be enforced.
+        // Simulate: parent dir is within allowed roots but the final path
+        // matches a deny pattern.
+        let temp = tempdir().unwrap();
+        let ssh_dir = temp.path().join(".ssh");
+        std::fs::create_dir(&ssh_dir).unwrap();
+        let sandbox = Sandbox::new(
+            vec![temp.path().to_path_buf()],
+            vec!["**/.ssh/**".to_string()],
+            false,
+        )
+        .unwrap();
+
+        // The parent (.ssh) is within the allowed root, but the file path
+        // .ssh/authorized_keys should be caught by the deny pattern re-check.
+        let file = ssh_dir.join("authorized_keys");
+        let result = sandbox.validate_created_parent(&file);
+        assert!(result.is_err());
+        if let Err(ToolError::SandboxViolation(DenialReason::DeniedPatternMatched {
+            pattern,
+            ..
+        })) = result
+        {
+            assert_eq!(pattern, "**/.ssh/**");
+        } else {
+            panic!("Expected DeniedPatternMatched, got: {result:?}");
+        }
     }
 }
