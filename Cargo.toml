@@ -165,6 +165,9 @@ default_trait_access = "allow"
 # Sometimes Result is used for API consistency
 unnecessary_wraps = "allow"
 
+# Import hygiene
+wildcard_imports = "deny"
+
 [profile.release]
 lto = true
 codegen-units = 1
