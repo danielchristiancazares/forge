@@ -639,10 +639,10 @@ fn ensure_config_parent_secure(path: &Path) -> std::io::Result<()> {
 fn persist_config_doc(path: &Path, doc: &toml_edit::DocumentMut) -> std::io::Result<()> {
     let serialized = doc.to_string();
 
-    forge_context::atomic_write_with_options(
+    forge_utils::atomic_write_with_options(
         path,
         serialized.as_bytes(),
-        forge_context::AtomicWriteOptions {
+        forge_utils::AtomicWriteOptions {
             sync_all: true,
             dir_sync: true,
             unix_mode: None,

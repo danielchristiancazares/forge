@@ -157,10 +157,10 @@ impl App {
             PlanState::Proposed(_) | PlanState::Active(_) => {
                 match serde_json::to_string_pretty(&self.plan_state) {
                     Ok(json) => {
-                        if let Err(e) = forge_context::atomic_write_with_options(
+                        if let Err(e) = forge_utils::atomic_write_with_options(
                             &path,
                             json.as_bytes(),
-                            forge_context::AtomicWriteOptions {
+                            forge_utils::AtomicWriteOptions {
                                 sync_all: true,
                                 dir_sync: true,
                                 unix_mode: None,
@@ -218,10 +218,10 @@ impl App {
         );
         let json = serde_json::to_string_pretty(&state)?;
 
-        forge_context::atomic_write_with_options(
+        forge_utils::atomic_write_with_options(
             &path,
             json.as_bytes(),
-            forge_context::AtomicWriteOptions {
+            forge_utils::AtomicWriteOptions {
                 sync_all: true,
                 dir_sync: true,
                 unix_mode: None,

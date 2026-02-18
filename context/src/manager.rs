@@ -345,10 +345,10 @@ impl ContextManager {
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
         let json = serde_json::to_string_pretty(&self.history)?;
-        crate::atomic_write_with_options(
+        forge_utils::atomic_write_with_options(
             path,
             json.as_bytes(),
-            crate::AtomicWriteOptions {
+            forge_utils::AtomicWriteOptions {
                 sync_all: true,
                 dir_sync: true,
                 unix_mode: Some(0o600),

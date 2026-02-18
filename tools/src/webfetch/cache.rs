@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use url::Url;
 
-use forge_context::{AtomicWriteOptions, atomic_write_with_options};
+use forge_utils::{AtomicWriteOptions, atomic_write_with_options};
 
 use super::resolved::CacheSettings;
 use super::types::{ErrorCode, WebFetchError};

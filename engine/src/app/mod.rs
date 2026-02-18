@@ -1263,7 +1263,7 @@ impl App {
             .and_then(|proof| self.checkpoints.baseline_content(proof, path));
 
         if let Some(old_bytes) = baseline {
-            let diff = tools::builtins::format_unified_diff(
+            let diff = forge_utils::format_unified_diff(
                 &path.to_string_lossy(),
                 old_bytes,
                 &current,

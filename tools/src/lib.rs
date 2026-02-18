@@ -14,7 +14,6 @@ pub mod recall;
 pub(crate) mod region_hash;
 pub mod sandbox;
 pub mod search;
-pub mod security;
 pub mod shell;
 pub mod webfetch;
 pub mod windows_run;
@@ -559,7 +558,7 @@ pub fn truncate_output(output: String, effective_max: usize) -> String {
 /// - secret redaction (pattern + env-derived)
 #[must_use]
 pub fn sanitize_output(output: &str) -> String {
-    crate::security::sanitize_display_text(output)
+    forge_utils::sanitize_display_text(output)
 }
 
 /// Redact obvious secrets in output distillates (best-effort).

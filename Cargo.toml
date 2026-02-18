@@ -9,6 +9,7 @@ members = [
     "tools",
     "tui",
     "types",
+    "utils",
 ]
 resolver = "3"
 
@@ -29,6 +30,7 @@ forge-engine = { path = "engine" }
 forge-tui = { path = "tui" }
 forge-lsp = { path = "lsp" }
 forge-tools = { path = "tools" }
+forge-utils = { path = "utils" }
 
 # TUI framework
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
@@ -59,6 +61,7 @@ sha2 = "0.10"
 url = "2.5"
 ignore = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+similar = "2"
 
 # HTML parsing
 scraper = { version = "0.25", default-features = false, features = ["errors"] }

@@ -95,13 +95,14 @@ thinking_enabled = true      # thinkingLevel="high" for Gemini 3 Pro
 
 Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_CONTEXT_INFINITY=0`
 
-## Crates (9)
+## Crates (10)
 
 | Crate | Purpose |
 |-------|---------|
 | `cli` | Binary entry point, terminal session, event loop |
 | `config` | Config schemas, parsing, resolution helpers, and persistence |
 | `types` | Core domain types (no IO, no async) |
+| `utils` | Shared utilities: atomic IO, security redaction, text diffing |
 | `providers` | LLM API clients: Claude, OpenAI, Gemini |
 | `context` | Context window management, SQLite persistence, journaling |
 | `engine` | App state machine, commands, tool execution |
@@ -115,6 +116,9 @@ Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_C
 |-------|------|---------|
 | `cli` | `main.rs` | Entry point, terminal session, event loop |
 | `config` | `lib.rs` | Config parsing and persistence (`ForgeConfig`) |
+| `utils` | `atomic_write.rs` | Crash-safe file persistence (temp + rename) |
+| `utils` | `security.rs` | Secret redaction and sanitization for display |
+| `utils` | `diff.rs` | Unified diff formatting and stats |
 | `engine` | `lib.rs` | App state machine, orchestration |
 | `engine` | `commands.rs` | Slash command parsing and dispatch |
 | `engine` | `config.rs` | Compatibility shim re-exporting `forge-config` |

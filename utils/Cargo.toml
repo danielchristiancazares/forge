@@ -1,0 +1,29 @@
+[package]
+name = "forge-utils"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Shared utilities for Forge: atomic IO, security redaction, text diffing"
+
+[lints]
+workspace = true
+
+[dependencies]
+forge-types.workspace = true
+
+# atomic_write
+tempfile.workspace = true
+
+# security (SecretRedactor)
+aho-corasick.workspace = true
+globset.workspace = true
+regex.workspace = true
+
+# diff
+similar.workspace = true
+
+tracing.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

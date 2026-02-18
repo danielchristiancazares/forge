@@ -20,6 +20,7 @@ forge-context.workspace = true
 forge-config.workspace = true
 forge-lsp.workspace = true
 forge-tools.workspace = true
+forge-utils.workspace = true
 
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
 

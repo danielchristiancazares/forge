@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 forge-types.workspace = true
 forge-providers.workspace = true
+forge-utils.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
@@ -21,7 +22,6 @@ thiserror.workspace = true
 
 tiktoken-rs.workspace = true
 rusqlite.workspace = true
-tempfile.workspace = true
 sha2.workspace = true
 
 tracing.workspace = true
