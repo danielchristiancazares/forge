@@ -862,11 +862,9 @@ mod tests {
         let sandbox = test_sandbox(dir.path());
         let cache = test_file_cache();
 
-        let raw_path = path.to_string_lossy().to_string();
-        let escaped_path = raw_path.replace('\\', "\\\\").replace('"', "\\\"");
-        let input = format!(r#"inspect @"{escaped_path}""#);
+        let input = r#"inspect @"My File.md""#;
 
-        let result = expand_file_references(&input, &sandbox, TEST_MAX_BYTES, &cache);
+        let result = expand_file_references(input, &sandbox, TEST_MAX_BYTES, &cache);
         assert!(result.denied.is_empty());
         assert!(result.failed.is_empty());
         assert_eq!(result.file_sections.len(), 1);
@@ -912,11 +910,9 @@ mod tests {
         let sandbox = test_sandbox(dir.path());
         let cache = test_file_cache();
 
-        let raw_path = path.to_string_lossy().to_string();
-        let escaped_path = raw_path.replace('\\', "\\\\").replace('"', "\\\"");
-        let input = format!(r#"read @"{escaped_path}""#);
+        let input = r#"read @"cached.rs""#;
 
-        let result = expand_file_references(&input, &sandbox, TEST_MAX_BYTES, &cache);
+        let result = expand_file_references(input, &sandbox, TEST_MAX_BYTES, &cache);
         assert!(result.denied.is_empty());
         assert!(result.failed.is_empty());
         assert_eq!(result.file_sections.len(), 1);

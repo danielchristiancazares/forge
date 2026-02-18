@@ -970,6 +970,7 @@ dependencies = [
  "forge-lsp",
  "forge-tools",
  "forge-types",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

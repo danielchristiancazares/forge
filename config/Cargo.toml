@@ -21,6 +21,7 @@ toml.workspace = true
 toml_edit.workspace = true
 dirs.workspace = true
 tracing.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
