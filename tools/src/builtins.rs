@@ -1,6 +1,6 @@
 //! Built-in tool executors.
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
@@ -454,7 +454,12 @@ impl ToolExecutor for ReadFileTool {
                 .max_file_read_bytes
                 .min(ctx.available_capacity_bytes);
 
-            let is_binary = sniff_binary(&resolved).map_err(|e| ToolError::ExecutionFailed {
+            let mut file =
+                std::fs::File::open(&resolved).map_err(|e| ToolError::ExecutionFailed {
+                    tool: "Read".to_string(),
+                    message: e.to_string(),
+                })?;
+            let is_binary = sniff_binary(&mut file).map_err(|e| ToolError::ExecutionFailed {
                 tool: "Read".to_string(),
                 message: e.to_string(),
             })?;
@@ -469,7 +474,7 @@ impl ToolExecutor for ReadFileTool {
                     });
                 }
                 ctx.allow_truncation = false;
-                (read_binary(&resolved, output_limit)?, None)
+                (read_binary(&mut file, meta.len(), output_limit)?, None)
             } else if typed.start_line.is_none() && typed.end_line.is_none() {
                 if meta.len() as usize > read_limit {
                     return Err(ToolError::ExecutionFailed {
@@ -477,7 +482,7 @@ impl ToolExecutor for ReadFileTool {
                         message: "File too large; use start_line/end_line".to_string(),
                     });
                 }
-                let content = read_text_lossy(&resolved)?;
+                let content = read_text_lossy(&mut file)?;
                 let line_count = content.lines().count().max(1) as u32;
                 let formatted = if show_line_numbers {
                     format_with_line_numbers(&content, 1)
@@ -488,7 +493,7 @@ impl ToolExecutor for ReadFileTool {
             } else {
                 let start = typed.start_line.unwrap_or(1) as usize;
                 let end = typed.end_line.unwrap_or(u32::MAX) as usize;
-                let content = read_text_range(&resolved, start, end, self.limits.max_scan_bytes)?;
+                let content = read_text_range(&mut file, start, end, self.limits.max_scan_bytes)?;
                 let lines_read = content.lines().count().max(1) as u32;
                 let actual_end = (start as u32).saturating_add(lines_read).saturating_sub(1);
                 let formatted = if show_line_numbers {
@@ -1422,10 +1427,11 @@ pub fn register_builtins(
     Ok(())
 }
 
-fn sniff_binary(path: &Path) -> Result<bool, std::io::Error> {
-    let mut file = std::fs::File::open(path)?;
+fn sniff_binary(file: &mut std::fs::File) -> Result<bool, std::io::Error> {
+    file.seek(SeekFrom::Start(0))?;
     let mut buf = [0u8; 8192];
     let n = file.read(&mut buf)?;
+    file.seek(SeekFrom::Start(0))?;
     if n == 0 {
         return Ok(false);
     }
@@ -1458,13 +1464,12 @@ fn is_crash_dump_artifact(path: &Path) -> bool {
         })
 }
 
-fn read_binary(path: &Path, output_limit: usize) -> Result<String, ToolError> {
+fn read_binary(
+    file: &mut std::fs::File,
+    file_len: u64,
+    output_limit: usize,
+) -> Result<String, ToolError> {
     let mut header = "[binary:base64]".to_string();
-    let meta = std::fs::metadata(path).map_err(|e| ToolError::ExecutionFailed {
-        tool: "Read".to_string(),
-        message: e.to_string(),
-    })?;
-
     let mut truncated = false;
     let mut available = output_limit.saturating_sub(header.len() + 1); // +1 for newline
     if available == 0 {
@@ -1472,7 +1477,7 @@ fn read_binary(path: &Path, output_limit: usize) -> Result<String, ToolError> {
     }
 
     let max_raw = (available / 4) * 3;
-    if meta.len() as usize > max_raw {
+    if file_len as usize > max_raw {
         truncated = true;
     }
 
@@ -1482,10 +1487,11 @@ fn read_binary(path: &Path, output_limit: usize) -> Result<String, ToolError> {
     }
 
     let max_raw = (available / 4) * 3;
-    let mut file = std::fs::File::open(path).map_err(|e| ToolError::ExecutionFailed {
-        tool: "Read".to_string(),
-        message: e.to_string(),
-    })?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| ToolError::ExecutionFailed {
+            tool: "Read".to_string(),
+            message: e.to_string(),
+        })?;
     let mut buf = vec![0u8; max_raw];
     let n = file
         .read(&mut buf)
@@ -1525,15 +1531,16 @@ fn format_with_line_numbers(content: &str, start_line: usize) -> String {
 }
 
 fn read_text_range(
-    path: &Path,
+    file: &mut std::fs::File,
     start: usize,
     end: usize,
     max_scan_bytes: usize,
 ) -> Result<String, ToolError> {
-    let file = std::fs::File::open(path).map_err(|e| ToolError::ExecutionFailed {
-        tool: "Read".to_string(),
-        message: e.to_string(),
-    })?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| ToolError::ExecutionFailed {
+            tool: "Read".to_string(),
+            message: e.to_string(),
+        })?;
     let mut reader = BufReader::new(file);
     let mut output = String::new();
     let mut line_num = 1usize;
@@ -1571,11 +1578,18 @@ fn read_text_range(
     Ok(output)
 }
 
-fn read_text_lossy(path: &Path) -> Result<String, ToolError> {
-    let bytes = std::fs::read(path).map_err(|e| ToolError::ExecutionFailed {
-        tool: "Read".to_string(),
-        message: e.to_string(),
-    })?;
+fn read_text_lossy(file: &mut std::fs::File) -> Result<String, ToolError> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| ToolError::ExecutionFailed {
+            tool: "Read".to_string(),
+            message: e.to_string(),
+        })?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|e| ToolError::ExecutionFailed {
+            tool: "Read".to_string(),
+            message: e.to_string(),
+        })?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
