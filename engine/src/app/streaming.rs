@@ -778,7 +778,7 @@ impl super::App {
         let mut active = match self.replace_with_idle() {
             OperationState::Streaming(active) => active,
             other => {
-                self.state = other;
+                self.op_restore(other);
                 return;
             }
         };

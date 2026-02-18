@@ -1970,3 +1970,324 @@ fn plan_skip_creates_checkpoint() {
         "Expected a PlanStep checkpoint for step {step_id:?}"
     );
 }
+
+// ─── Phase 0: Guardrail tests ───────────────────────────────────────────────
+
+/// Exhaustive truth table for all `(OperationTag, OperationTag)` → `OperationEdge` mappings.
+///
+/// When the state machine changes (e.g. new edges for ToolRecovery / RecoveryBlocked in Phase 2),
+/// this test **must** be updated. That's the point: it's a tripwire.
+#[test]
+fn operation_transition_edge_matrix_is_exhaustive() {
+    use crate::state::{OperationEdge, OperationTag};
+    use OperationEdge::{
+        EnterToolLoopAwaitingApproval, EnterToolLoopExecuting, FinishToolBatch,
+        ResolvePlanApproval, StartDistillation, StartStreaming,
+    };
+    use OperationTag::{
+        Distilling, Idle, PlanApproval, RecoveryBlocked, Streaming, ToolLoop, ToolRecovery,
+    };
+
+    let all_tags = [
+        Idle,
+        Streaming,
+        ToolLoop,
+        PlanApproval,
+        ToolRecovery,
+        RecoveryBlocked,
+        Distilling,
+    ];
+
+    // Legal transitions: (from, to) → expected edge
+    let legal: Vec<(OperationTag, OperationTag, OperationEdge)> = vec![
+        (Idle, Streaming, StartStreaming),
+        (Idle, Distilling, StartDistillation),
+        (Idle, Idle, FinishToolBatch),
+        (Streaming, PlanApproval, EnterToolLoopAwaitingApproval),
+        (Streaming, ToolLoop, EnterToolLoopExecuting),
+        (PlanApproval, ToolLoop, ResolvePlanApproval),
+        (PlanApproval, Idle, FinishToolBatch),
+        (ToolLoop, Idle, FinishToolBatch),
+    ];
+
+    // Verify every legal entry returns the correct edge.
+    for (from, to, expected) in &legal {
+        assert_eq!(
+            App::op_transition_edge(*from, *to),
+            Some(*expected),
+            "Expected ({from:?}, {to:?}) → {expected:?}"
+        );
+    }
+
+    // Every other (from, to) pair must return None.
+    let is_legal = |from: OperationTag, to: OperationTag| -> bool {
+        legal.iter().any(|(f, t, _)| *f == from && *t == to)
+    };
+
+    for from in &all_tags {
+        for to in &all_tags {
+            if !is_legal(*from, *to) {
+                assert_eq!(
+                    App::op_transition_edge(*from, *to),
+                    None,
+                    "({from:?}, {to:?}) should have no named edge"
+                );
+            }
+        }
+    }
+}
+
+/// Cross-check: every legal `(from, to, edge)` triple passes `op_is_legal_transition`.
+#[test]
+fn every_transition_edge_passes_legality_check() {
+    use crate::state::{OperationEdge, OperationTag};
+    use OperationEdge::{
+        EnterToolLoopAwaitingApproval, EnterToolLoopExecuting, FinishToolBatch, FinishTurn,
+        ResolvePlanApproval, StartDistillation, StartStreaming,
+    };
+    use OperationTag::{Distilling, Idle, PlanApproval, Streaming, ToolLoop};
+
+    let cases: Vec<(OperationTag, OperationEdge, OperationTag)> = vec![
+        (Idle, StartStreaming, Streaming),
+        (Idle, StartDistillation, Distilling),
+        (Idle, FinishToolBatch, Idle),
+        (Streaming, EnterToolLoopAwaitingApproval, PlanApproval),
+        (Streaming, EnterToolLoopExecuting, ToolLoop),
+        (PlanApproval, ResolvePlanApproval, ToolLoop),
+        (PlanApproval, FinishToolBatch, Idle),
+        (ToolLoop, FinishToolBatch, Idle),
+        // FinishTurn is a same-state edge, not produced by op_transition_edge
+        (Idle, FinishTurn, Idle),
+    ];
+
+    for (from, edge, to) in &cases {
+        assert!(
+            App::op_is_legal_transition(*from, *edge, *to),
+            "({from:?}, {edge:?}, {to:?}) should be legal"
+        );
+    }
+}
+
+/// Spot-check that impossible transitions are rejected by `op_is_legal_transition`.
+#[test]
+fn illegal_edges_are_rejected() {
+    use crate::state::{OperationEdge, OperationTag};
+
+    let cases: Vec<(OperationTag, OperationEdge, OperationTag)> = vec![
+        // Can't start streaming while streaming
+        (
+            OperationTag::Streaming,
+            OperationEdge::StartStreaming,
+            OperationTag::Streaming,
+        ),
+        // Can't distill from tool loop
+        (
+            OperationTag::ToolLoop,
+            OperationEdge::StartDistillation,
+            OperationTag::Distilling,
+        ),
+        // Can't resolve plan approval from idle
+        (
+            OperationTag::Idle,
+            OperationEdge::ResolvePlanApproval,
+            OperationTag::ToolLoop,
+        ),
+        // Distilling can't use FinishToolBatch
+        (
+            OperationTag::Distilling,
+            OperationEdge::FinishToolBatch,
+            OperationTag::Idle,
+        ),
+    ];
+
+    for (from, edge, to) in &cases {
+        assert!(
+            !App::op_is_legal_transition(*from, *edge, *to),
+            "({from:?}, {edge:?}, {to:?}) should be illegal"
+        );
+    }
+}
+
+/// Tool gate disabled → tool calls pre-resolved to errors, app returns to Idle.
+#[tokio::test]
+async fn tool_gate_disabled_blocks_tool_execution() {
+    let mut app = test_app();
+    app.api_keys.clear();
+    app.tool_gate.disable("test reason");
+
+    set_streaming_state(&mut app);
+    assert!(matches!(app.state, OperationState::Streaming(_)));
+
+    // Feed a tool call into the streaming message
+    if let OperationState::Streaming(ref mut active) = app.state {
+        active
+            .message_mut()
+            .apply_event(StreamEvent::ToolCallStart {
+                id: "call-gate".to_string(),
+                name: "Read".to_string(),
+                thought_signature: ThoughtSignatureState::Unsigned,
+            });
+        active
+            .message_mut()
+            .apply_event(StreamEvent::ToolCallDelta {
+                id: "call-gate".to_string(),
+                arguments: r#"{"path":"foo.txt"}"#.to_string(),
+            });
+    }
+
+    app.finish_streaming(StreamFinishReason::Done);
+
+    // Tool gate disabled → tool calls pre-resolved to errors, returns to Idle
+    assert!(
+        matches!(app.state, OperationState::Idle),
+        "Expected Idle after tool gate blocked execution, got {:?}",
+        app.state.tag()
+    );
+
+    // Verify the tool result was an error
+    let results: Vec<&ToolResult> = app
+        .history()
+        .entries()
+        .iter()
+        .filter_map(|entry| match entry.message() {
+            Message::ToolResult(result) => Some(result),
+            _ => None,
+        })
+        .collect();
+
+    assert!(!results.is_empty(), "Expected at least one tool result");
+    assert!(
+        results.iter().all(|r| r.is_error),
+        "All tool results should be errors"
+    );
+}
+
+/// `commit_tool_batch` requires `JournalStatus` proof — structural enforcement via type system.
+#[test]
+fn commit_tool_batch_requires_journal_proof() {
+    let state_src = include_str!("../state.rs");
+
+    // JournalStatus struct has private fields (no `pub` on inner)
+    assert!(
+        state_src.contains("pub(crate) struct JournalStatus(ToolBatchId)"),
+        "JournalStatus should have a private inner field"
+    );
+
+    // Only constructor is `new`
+    let new_count = state_src.matches("fn new(id: ToolBatchId) -> Self").count();
+    assert_eq!(
+        new_count, 1,
+        "JournalStatus should have exactly one constructor"
+    );
+
+    // commit_tool_batch_without_journal exists as a separate path
+    let tool_loop_src = include_str!("tool_loop.rs");
+    assert!(
+        tool_loop_src.contains("fn commit_tool_batch_without_journal"),
+        "commit_tool_batch_without_journal should exist as explicit fallback"
+    );
+    assert!(
+        tool_loop_src.contains("fn commit_tool_batch("),
+        "commit_tool_batch should exist with journal_status parameter"
+    );
+}
+
+/// Source guardrail: `self.state =` only in `app/mod.rs` (op_transition, op_transition_from, op_restore).
+///
+/// The search needle is built at runtime to prevent this test from self-matching
+/// when scanning its own source file.
+#[test]
+fn self_state_assignment_only_in_authorized_locations() {
+    let app_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
+    // Runtime-constructed needle avoids self-matching when this file is scanned.
+    let needle = ["self", ".state", " ="].concat();
+
+    for entry in std::fs::read_dir(&app_dir).expect("read app dir") {
+        let entry = entry.expect("dir entry");
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        let source = std::fs::read_to_string(&path).expect("read source file");
+
+        let count = source
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                if trimmed.starts_with("//")
+                    || trimmed.starts_with("///")
+                    || trimmed.starts_with('*')
+                {
+                    return false;
+                }
+                trimmed.contains(&needle)
+            })
+            .count();
+
+        match filename {
+            "mod.rs" => {
+                assert_eq!(
+                    count, 3,
+                    "mod.rs: expected 3 state-assignment sites \
+                     (op_transition, op_transition_from, op_restore), found {count}"
+                );
+            }
+            _ => {
+                assert_eq!(
+                    count, 0,
+                    "{filename}: expected 0 state-assignment sites, found {count}"
+                );
+            }
+        }
+    }
+}
+
+/// Source guardrail: `replace_with_idle` usage baseline across `app/` files.
+///
+/// The search needle is built at runtime to prevent this test from self-matching.
+#[test]
+fn replace_with_idle_usage_baseline() {
+    let app_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
+    let needle = ["replace", "_with_idle("].concat();
+
+    for entry in std::fs::read_dir(&app_dir).expect("read app dir") {
+        let entry = entry.expect("dir entry");
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        let source = std::fs::read_to_string(&path).expect("read source file");
+
+        let count = source.matches(&*needle).count();
+
+        match filename {
+            "mod.rs" => {
+                assert_eq!(
+                    count, 1,
+                    "mod.rs: expected 1 replace-with-idle (definition), found {count}"
+                );
+            }
+            "commands.rs" => {
+                assert_eq!(
+                    count, 2,
+                    "commands.rs: expected 2 replace-with-idle (cancel + /clear), found {count}"
+                );
+            }
+            "streaming.rs" => {
+                assert_eq!(
+                    count, 2,
+                    "streaming.rs: expected 2 replace-with-idle \
+                     (journal abort + finish_streaming), found {count}"
+                );
+            }
+            _ => {
+                assert_eq!(
+                    count, 0,
+                    "{filename}: expected 0 replace-with-idle, found {count}"
+                );
+            }
+        }
+    }
+}
