@@ -156,6 +156,12 @@ const NETWORK_BLOCKLIST: &[&str] = &[
     "curl.exe",
     "wget.exe",
     "bitsadmin",
+    "nslookup",
+    "resolve-dnsname",
+    "certutil",
+    "ssh.exe",
+    "scp.exe",
+    "sftp.exe",
     "net.webclient",
     "http://",
     "https://",
@@ -168,6 +174,24 @@ const PROCESS_ESCAPE_BLOCKLIST: &[&str] = &[
     "cmd /c",
     "cmd.exe",
     "wsl.exe",
+    "bash.exe",
+    "bash -c",
+    "python.exe",
+    "python -c",
+    "python3.exe",
+    "python3 -c",
+    "py.exe",
+    "py -c",
+    "node.exe",
+    "node -e",
+    "perl.exe",
+    "perl -e",
+    "ruby.exe",
+    "ruby -e",
+    "java.exe",
+    "javaw.exe",
+    "php.exe",
+    "php -r",
     "rundll32",
     "mshta",
     "regsvr32",
@@ -182,27 +206,15 @@ pub(crate) fn prepare_run_command(
     command: RunCommandText<'_>,
     shell: &DetectedShell,
     policy: RunSandboxPolicy,
-    unsafe_allow_unsandboxed: bool,
     working_dir: &Path,
 ) -> Result<PreparedRunCommand, ToolError> {
     if cfg!(windows) {
         let _ = working_dir;
-        return prepare_windows_run_command(
-            command,
-            shell,
-            policy.windows,
-            unsafe_allow_unsandboxed,
-        );
+        return prepare_windows_run_command(command, shell, policy.windows);
     }
     #[cfg(target_os = "macos")]
     {
-        prepare_macos_run_command(
-            command.raw(),
-            shell,
-            policy.macos,
-            unsafe_allow_unsandboxed,
-            working_dir,
-        )
+        prepare_macos_run_command(command.raw(), shell, policy.macos, working_dir)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -216,7 +228,6 @@ pub(crate) fn prepare_run_command(
                 command,
                 shell,
                 linux_policy,
-                unsafe_allow_unsandboxed,
                 false,     // Not Windows host (skip job object checks)
                 || Ok(()), // Host probe always succeeds
             );
@@ -235,13 +246,11 @@ pub(crate) fn prepare_windows_run_command(
     command: RunCommandText<'_>,
     shell: &DetectedShell,
     policy: WindowsRunSandboxPolicy,
-    unsafe_allow_unsandboxed: bool,
 ) -> Result<PreparedRunCommand, ToolError> {
     prepare_windows_run_command_with_host_probe(
         command,
         shell,
         policy,
-        unsafe_allow_unsandboxed,
         cfg!(windows),
         default_windows_host_probe,
     )
@@ -251,7 +260,6 @@ fn prepare_windows_run_command_with_host_probe<F>(
     command: RunCommandText<'_>,
     shell: &DetectedShell,
     policy: WindowsRunSandboxPolicy,
-    unsafe_allow_unsandboxed: bool,
     check_windows_host: bool,
     host_probe: F,
 ) -> Result<PreparedRunCommand, ToolError>
@@ -267,7 +275,6 @@ where
         return handle_unsandboxed_fallback(
             PreparedRunCommand::passthrough(shell, command.raw()),
             policy.fallback_mode,
-            unsafe_allow_unsandboxed,
             format!(
                 "configured shell '{}' is not PowerShell",
                 shell.binary.display()
@@ -304,7 +311,6 @@ where
             return handle_unsandboxed_fallback(
                 PreparedRunCommand::new(shell.binary.clone(), fallback_args, None, false),
                 policy.fallback_mode,
-                unsafe_allow_unsandboxed,
                 format!("host isolation unavailable ({reason})"),
             );
         }
@@ -355,7 +361,6 @@ fn default_windows_host_probe() -> Result<(), String> {
 fn handle_unsandboxed_fallback(
     passthrough: PreparedRunCommand,
     mode: RunSandboxFallbackMode,
-    unsafe_allow_unsandboxed: bool,
     reason: String,
 ) -> Result<PreparedRunCommand, ToolError> {
     match mode {
@@ -363,24 +368,12 @@ fn handle_unsandboxed_fallback(
             tool: "Run".to_string(),
             message: format!("Sandbox unavailable: {reason}. Fallback mode is deny."),
         }),
-        RunSandboxFallbackMode::Prompt => {
-            if !unsafe_allow_unsandboxed {
-                return Err(ToolError::ExecutionFailed {
-                    tool: "Run".to_string(),
-                    message: format!(
-                        "Sandbox unavailable: {reason}. \
-To run unsandboxed once, set unsafe_allow_unsandboxed=true."
-                    ),
-                });
-            }
-            Ok(PreparedRunCommand {
-                warning: Some(format!(
-                    "WARNING: sandbox unavailable ({reason}); running unsandboxed due to explicit override."
-                )),
-                requires_host_sandbox: false,
-                ..passthrough
-            })
-        }
+        RunSandboxFallbackMode::Prompt => Err(ToolError::ExecutionFailed {
+            tool: "Run".to_string(),
+            message: format!(
+                "Sandbox unavailable: {reason}. Fallback mode is prompt but per-call unsandboxed override is disabled."
+            ),
+        }),
         RunSandboxFallbackMode::AllowWithWarning => Ok(PreparedRunCommand {
             warning: Some(format!(
                 "WARNING: sandbox unavailable ({reason}); running unsandboxed."
@@ -396,7 +389,6 @@ fn prepare_macos_run_command(
     command: &str,
     shell: &DetectedShell,
     policy: MacOsRunSandboxPolicy,
-    unsafe_allow_unsandboxed: bool,
     working_dir: &Path,
 ) -> Result<PreparedRunCommand, ToolError> {
     use std::sync::OnceLock;
@@ -417,7 +409,6 @@ fn prepare_macos_run_command(
         return handle_unsandboxed_fallback(
             PreparedRunCommand::passthrough(shell, command),
             policy.fallback_mode,
-            unsafe_allow_unsandboxed,
             "sandbox-exec not found at /usr/bin/sandbox-exec".to_string(),
         );
     };
@@ -533,7 +524,22 @@ mod tests {
             cmd("Start-Process cmd.exe /c whoami"),
             &shell("pwsh"),
             WindowsRunSandboxPolicy::default(),
-            false,
+        )
+        .unwrap_err();
+        match err {
+            ToolError::SandboxViolation(DenialReason::LimitsExceeded { message }) => {
+                assert!(message.contains("process escape token"));
+            }
+            _ => panic!("expected sandbox violation"),
+        }
+    }
+
+    #[test]
+    fn blocks_interpreter_escape_tokens() {
+        let err = prepare_windows_run_command(
+            cmd("python -c \"print('owned')\""),
+            &shell("pwsh"),
+            WindowsRunSandboxPolicy::default(),
         )
         .unwrap_err();
         match err {
@@ -550,7 +556,6 @@ mod tests {
             cmd("Invoke-WebRequest https://example.com"),
             &shell("pwsh"),
             WindowsRunSandboxPolicy::default(),
-            false,
         )
         .unwrap_err();
         match err {
@@ -562,7 +567,23 @@ mod tests {
     }
 
     #[test]
-    fn prompt_fallback_requires_explicit_override() {
+    fn blocks_dns_tokens_when_enabled() {
+        let err = prepare_windows_run_command(
+            cmd("nslookup example.com"),
+            &shell("pwsh"),
+            WindowsRunSandboxPolicy::default(),
+        )
+        .unwrap_err();
+        match err {
+            ToolError::SandboxViolation(DenialReason::LimitsExceeded { message }) => {
+                assert!(message.contains("network token"));
+            }
+            _ => panic!("expected sandbox violation"),
+        }
+    }
+
+    #[test]
+    fn prompt_fallback_denies_when_shell_is_not_powershell() {
         let err = prepare_windows_run_command(
             cmd("Get-ChildItem"),
             &shell("cmd.exe"),
@@ -572,19 +593,18 @@ mod tests {
                 block_network: false,
                 fallback_mode: RunSandboxFallbackMode::Prompt,
             },
-            false,
         )
         .unwrap_err();
         match err {
             ToolError::ExecutionFailed { message, .. } => {
-                assert!(message.contains("unsafe_allow_unsandboxed=true"));
+                assert!(message.contains("Fallback mode is prompt"));
             }
             _ => panic!("expected execution failure"),
         }
     }
 
     #[test]
-    fn prompt_fallback_allows_when_override_set() {
+    fn allow_with_warning_fallback_allows_when_shell_is_not_powershell() {
         let prepared = prepare_windows_run_command(
             cmd("Get-ChildItem"),
             &shell("cmd.exe"),
@@ -592,11 +612,10 @@ mod tests {
                 enabled: true,
                 enforce_powershell_only: true,
                 block_network: false,
-                fallback_mode: RunSandboxFallbackMode::Prompt,
+                fallback_mode: RunSandboxFallbackMode::AllowWithWarning,
             },
-            true,
         )
-        .expect("fallback allowed");
+        .expect("allow-with-warning fallback");
         assert!(prepared.warning().is_some());
         assert_eq!(prepared.args().last().unwrap(), "Get-ChildItem");
     }
@@ -607,7 +626,6 @@ mod tests {
             cmd("Get-ChildItem"),
             &shell("pwsh"),
             WindowsRunSandboxPolicy::default(),
-            false,
         )
         .expect("wrapped command");
         let last_arg = prepared.args().last().unwrap().to_string_lossy();
@@ -616,12 +634,11 @@ mod tests {
     }
 
     #[test]
-    fn host_probe_failure_requires_override_in_prompt_mode() {
+    fn host_probe_failure_in_prompt_mode_denies() {
         let err = prepare_windows_run_command_with_host_probe(
             cmd("Get-ChildItem"),
             &shell("pwsh"),
             WindowsRunSandboxPolicy::default(),
-            false,
             true,
             || Err("job object API unavailable".to_string()),
         )
@@ -629,23 +646,27 @@ mod tests {
         match err {
             ToolError::ExecutionFailed { message, .. } => {
                 assert!(message.contains("host isolation unavailable"));
-                assert!(message.contains("unsafe_allow_unsandboxed=true"));
+                assert!(message.contains("Fallback mode is prompt"));
             }
             _ => panic!("expected execution failure"),
         }
     }
 
     #[test]
-    fn host_probe_failure_with_override_keeps_constrained_language_wrapper() {
+    fn host_probe_failure_allow_with_warning_keeps_constrained_language_wrapper() {
         let prepared = prepare_windows_run_command_with_host_probe(
             cmd("Get-ChildItem"),
             &shell("pwsh"),
-            WindowsRunSandboxPolicy::default(),
-            true,
+            WindowsRunSandboxPolicy {
+                enabled: true,
+                enforce_powershell_only: true,
+                block_network: true,
+                fallback_mode: RunSandboxFallbackMode::AllowWithWarning,
+            },
             true,
             || Err("job object API unavailable".to_string()),
         )
-        .expect("fallback allowed");
+        .expect("allow-with-warning fallback");
         assert!(prepared.warning().is_some());
         let last_arg = prepared.args().last().unwrap().to_string_lossy();
         assert!(last_arg.contains("ConstrainedLanguage"));
@@ -658,7 +679,6 @@ mod tests {
             cmd("Get-ChildItem"),
             &shell("pwsh"),
             WindowsRunSandboxPolicy::default(),
-            false,
             true,
             || Ok(()),
         )

@@ -117,8 +117,7 @@ struct WriteFileArgs {
 #[derive(Debug, Deserialize)]
 struct RunCommandArgs {
     command: String,
-    #[serde(default)]
-    unsafe_allow_unsandboxed: bool,
+    reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1031,10 +1030,10 @@ impl ToolExecutor for RunCommandTool {
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "command": { "type": "string", "description": "Shell command to execute." },
-                "reason": { "type": "string", "description": "Brief explanation of why this command needs to run." },
-                "unsafe_allow_unsandboxed": { "type": "boolean", "description": "If true, allow unsandboxed execution when the sandbox is unavailable." }
+                "reason": { "type": "string", "description": "Brief explanation of why this command needs to run." }
             },
             "required": ["command"]
         })
@@ -1054,14 +1053,8 @@ impl ToolExecutor for RunCommandTool {
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
         let typed: RunCommandArgs = parse_args(args)?;
-        let distillate = if typed.unsafe_allow_unsandboxed {
-            format!(
-                "Run command (unsandboxed override requested): {}",
-                typed.command
-            )
-        } else {
-            format!("Run command: {}", typed.command)
-        };
+        let _ = &typed.reason;
+        let distillate = format!("Run command: {}", typed.command);
         Ok(redact_distillate(&distillate))
     }
 
@@ -1101,7 +1094,6 @@ impl ToolExecutor for RunCommandTool {
                 super::windows_run::RunCommandText::new(&typed.command, policy_text),
                 &self.shell,
                 self.run_policy,
-                typed.unsafe_allow_unsandboxed,
                 &ctx.working_dir,
             )?;
 
@@ -1847,7 +1839,7 @@ mod tests {
     }
 
     #[test]
-    fn run_tool_schema_exposes_unsandboxed_override_flag() {
+    fn run_tool_schema_omits_unsandboxed_override_flag() {
         let tool = run_tool();
         let schema = tool.schema();
         let props = schema
@@ -1855,19 +1847,31 @@ mod tests {
             .expect("properties")
             .as_object()
             .expect("properties object");
-        assert!(props.contains_key("unsafe_allow_unsandboxed"));
+        assert!(!props.contains_key("unsafe_allow_unsandboxed"));
     }
 
     #[test]
-    fn run_tool_approval_summary_marks_unsandboxed_override() {
+    fn run_tool_schema_disallows_additional_properties() {
+        let tool = run_tool();
+        let schema = tool.schema();
+        assert_eq!(
+            schema
+                .get("additionalProperties")
+                .expect("additionalProperties"),
+            &serde_json::Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn run_tool_approval_summary_ignores_reason_field() {
         let tool = run_tool();
         let summary = tool
             .approval_summary(&serde_json::json!({
                 "command": "Get-ChildItem",
-                "unsafe_allow_unsandboxed": true
+                "reason": "inspect files"
             }))
             .expect("summary");
-        assert!(summary.contains("unsandboxed override requested"));
+        assert_eq!(summary, "Run command: Get-ChildItem");
     }
 
     #[test]
