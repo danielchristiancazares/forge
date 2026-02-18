@@ -121,7 +121,7 @@ impl ToolExecutor for SearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search inside file contents with regex/literal matching (not filename search; use Glob for paths)"
+        "Search inside file contents with regex/literal matching. Only 'pattern' is required; all other parameters are optional and should be omitted unless specifically needed. Use Glob for filename search."
     }
 
     fn schema(&self) -> serde_json::Value {
@@ -226,7 +226,7 @@ impl ToolExecutor for SearchTool {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 4,
-                    "description": "Enable fuzzy matching with 1-4 allowed edits (insertions, deletions, substitutions)."
+                    "description": "Approximate matching with 1-4 allowed edits. Requires ugrep. Omit this field for standard regex/literal matching (most searches should NOT set this)."
                 }
             },
             "required": ["pattern"]
