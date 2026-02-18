@@ -3,7 +3,7 @@
 ## LLM-TOC
 <!-- Stable section identifiers for LLM context -->
 | ID | Section |
-|----|---------|
+| -- | ------- |
 | IFA-0 | Status and Scope |
 | IFA-1 | Definitions |
 | IFA-1.1 | Core Terms |
