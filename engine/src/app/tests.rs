@@ -16,8 +16,8 @@ use tokio::sync::mpsc;
 use super::init::DEFAULT_MAX_TOOL_ARGS_BYTES;
 use super::{
     App, AppearanceEditorSnapshot, CommandInputAccess, ContextEditorSnapshot, ModelEditorSnapshot,
-    ProviderRuntimeState, QueueMessageResult, QueuedUserMessage, StreamingMessage, SystemPrompts,
-    ToolsEditorSnapshot,
+    ProviderRuntimeState, QueueMessageResult, QueuedUserMessage, SettingsAccess, StreamingMessage,
+    SystemPrompts, ToolsEditorSnapshot,
 };
 use crate::EnvironmentContext;
 use crate::state::{
@@ -157,6 +157,41 @@ fn set_streaming_state(app: &mut App) {
         tool_args_journal_bytes: std::collections::HashMap::new(),
         turn: super::TurnContext::new_for_tests(),
     });
+}
+
+fn settings_surface(app: &App) -> Option<SettingsSurface> {
+    match app.settings_access() {
+        SettingsAccess::Active { surface, .. } => Some(surface),
+        SettingsAccess::Inactive => None,
+    }
+}
+
+fn settings_filter_text(app: &App) -> Option<&str> {
+    match app.settings_access() {
+        SettingsAccess::Active { filter_text, .. } => Some(filter_text),
+        SettingsAccess::Inactive => None,
+    }
+}
+
+fn settings_filter_active(app: &App) -> bool {
+    match app.settings_access() {
+        SettingsAccess::Active { filter_active, .. } => filter_active,
+        SettingsAccess::Inactive => false,
+    }
+}
+
+fn settings_detail_view(app: &App) -> Option<SettingsCategory> {
+    match app.settings_access() {
+        SettingsAccess::Active { detail_view, .. } => detail_view,
+        SettingsAccess::Inactive => None,
+    }
+}
+
+fn settings_selected_index(app: &App) -> Option<usize> {
+    match app.settings_access() {
+        SettingsAccess::Active { selected_index, .. } => Some(selected_index),
+        SettingsAccess::Inactive => None,
+    }
 }
 
 #[test]
@@ -406,11 +441,11 @@ fn process_command_settings_opens_settings_modal() {
     app.process_command(command);
 
     assert_eq!(app.input_mode(), InputMode::Settings);
-    assert_eq!(app.settings_filter_text(), Some(""));
-    assert!(!app.settings_filter_active());
-    assert_eq!(app.settings_selected_index(), Some(0));
-    assert_eq!(app.settings_detail_view(), None);
-    assert_eq!(app.settings_surface(), Some(SettingsSurface::Root));
+    assert_eq!(settings_filter_text(&app), Some(""));
+    assert!(!settings_filter_active(&app));
+    assert_eq!(settings_selected_index(&app), Some(0));
+    assert_eq!(settings_detail_view(&app), None);
+    assert_eq!(settings_surface(&app), Some(SettingsSurface::Root));
 }
 
 #[test]
@@ -453,7 +488,7 @@ fn process_command_runtime_opens_runtime_panel() {
     app.process_command(command);
 
     assert_eq!(app.input_mode(), InputMode::Settings);
-    assert_eq!(app.settings_surface(), Some(SettingsSurface::Runtime));
+    assert_eq!(settings_surface(&app), Some(SettingsSurface::Runtime));
 }
 
 #[test]
@@ -472,7 +507,7 @@ fn process_command_resolve_opens_resolve_panel() {
     app.process_command(command);
 
     assert_eq!(app.input_mode(), InputMode::Settings);
-    assert_eq!(app.settings_surface(), Some(SettingsSurface::Resolve));
+    assert_eq!(settings_surface(&app), Some(SettingsSurface::Resolve));
 }
 
 #[test]
@@ -491,7 +526,7 @@ fn process_command_validate_opens_validation_panel() {
     app.process_command(command);
 
     assert_eq!(app.input_mode(), InputMode::Settings);
-    assert_eq!(app.settings_surface(), Some(SettingsSurface::Validate));
+    assert_eq!(settings_surface(&app), Some(SettingsSurface::Validate));
 }
 
 #[test]
@@ -504,8 +539,8 @@ fn settings_resolve_activate_selected_jumps_to_target_detail() {
 
     app.settings_resolve_activate_selected();
 
-    assert_eq!(app.settings_surface(), Some(SettingsSurface::Root));
-    assert_eq!(app.settings_detail_view(), Some(SettingsCategory::Tools));
+    assert_eq!(settings_surface(&app), Some(SettingsSurface::Root));
+    assert_eq!(settings_detail_view(&app), Some(SettingsCategory::Tools));
 }
 
 #[test]
@@ -517,7 +552,7 @@ fn settings_resolve_move_down_clamps_to_last_setting() {
     }
 
     let last_index = app.resolve_cascade().settings.len().saturating_sub(1);
-    assert_eq!(app.settings_selected_index(), Some(last_index));
+    assert_eq!(settings_selected_index(&app), Some(last_index));
 }
 
 #[test]
@@ -660,7 +695,7 @@ fn settings_close_or_exit_blocks_with_unsaved_detail_changes() {
     app.settings_detail_toggle_selected();
     app.settings_close_or_exit();
 
-    assert_eq!(app.settings_detail_view(), Some(SettingsCategory::Models));
+    assert_eq!(settings_detail_view(&app), Some(SettingsCategory::Models));
     assert_eq!(
         last_notification(&app),
         Some("Unsaved settings changes. Press s to save or r to revert before leaving.")
@@ -677,7 +712,7 @@ fn settings_close_or_exit_allows_leaving_detail_after_revert() {
     app.settings_revert_edits();
     app.settings_close_or_exit();
 
-    assert_eq!(app.settings_detail_view(), None);
+    assert_eq!(settings_detail_view(&app), None);
     assert_eq!(app.input_mode(), InputMode::Settings);
 }
 
@@ -703,7 +738,7 @@ fn settings_activate_models_initializes_editor_snapshot() {
 
     open_models_settings(&mut app);
 
-    assert_eq!(app.settings_detail_view(), Some(SettingsCategory::Models));
+    assert_eq!(settings_detail_view(&app), Some(SettingsCategory::Models));
     assert_eq!(
         app.settings_model_editor_snapshot(),
         Some(ModelEditorSnapshot {
@@ -771,7 +806,7 @@ fn settings_activate_tools_initializes_editor_snapshot() {
 
     open_tools_settings(&mut app);
 
-    assert_eq!(app.settings_detail_view(), Some(SettingsCategory::Tools));
+    assert_eq!(settings_detail_view(&app), Some(SettingsCategory::Tools));
     assert_eq!(
         app.settings_tools_editor_snapshot(),
         Some(ToolsEditorSnapshot {
@@ -832,7 +867,7 @@ fn settings_activate_context_initializes_editor_snapshot() {
 
     open_context_settings(&mut app);
 
-    assert_eq!(app.settings_detail_view(), Some(SettingsCategory::Context));
+    assert_eq!(settings_detail_view(&app), Some(SettingsCategory::Context));
     assert_eq!(
         app.settings_context_editor_snapshot(),
         Some(ContextEditorSnapshot {
@@ -876,7 +911,7 @@ fn settings_activate_appearance_initializes_editor_snapshot() {
     open_appearance_settings(&mut app);
 
     assert_eq!(
-        app.settings_detail_view(),
+        settings_detail_view(&app),
         Some(SettingsCategory::Appearance)
     );
     assert_eq!(

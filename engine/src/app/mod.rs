@@ -2337,52 +2337,15 @@ impl App {
     }
 
     #[must_use]
-    pub fn settings_surface(&self) -> Option<SettingsSurface> {
-        match self.settings_access() {
-            SettingsAccess::Active { surface, .. } => Some(surface),
-            SettingsAccess::Inactive => None,
-        }
-    }
-
-    #[must_use]
-    pub fn settings_filter_text(&self) -> Option<&str> {
-        match self.settings_access() {
-            SettingsAccess::Active { filter_text, .. } => Some(filter_text),
-            SettingsAccess::Inactive => None,
-        }
-    }
-
-    #[must_use]
-    pub fn settings_filter_active(&self) -> bool {
-        match self.settings_access() {
-            SettingsAccess::Active { filter_active, .. } => filter_active,
-            SettingsAccess::Inactive => false,
-        }
-    }
-
-    #[must_use]
-    pub fn settings_detail_view(&self) -> Option<SettingsCategory> {
-        match self.settings_access() {
-            SettingsAccess::Active { detail_view, .. } => detail_view,
-            SettingsAccess::Inactive => None,
-        }
-    }
-
-    #[must_use]
-    pub fn settings_selected_index(&self) -> Option<usize> {
-        match self.settings_access() {
-            SettingsAccess::Active { selected_index, .. } => Some(selected_index),
-            SettingsAccess::Inactive => None,
-        }
-    }
-
-    #[must_use]
     pub fn settings_categories(&self) -> Vec<SettingsCategory> {
-        if !self.settings_is_root_surface() {
-            return Vec::new();
+        match self.settings_access() {
+            SettingsAccess::Active {
+                surface: SettingsSurface::Root,
+                filter_text,
+                ..
+            } => SettingsCategory::filtered(filter_text),
+            SettingsAccess::Active { .. } | SettingsAccess::Inactive => Vec::new(),
         }
-        let filter = self.settings_filter_text().unwrap_or_default();
-        SettingsCategory::filtered(filter)
     }
 
     fn open_settings_detail(&mut self, category: SettingsCategory) {
@@ -2428,8 +2391,9 @@ impl App {
         if !self.settings_is_root_surface() {
             return;
         }
-        let Some(selected) = self.settings_selected_index() else {
-            return;
+        let selected = match self.settings_access() {
+            SettingsAccess::Active { selected_index, .. } => selected_index,
+            SettingsAccess::Inactive => return,
         };
         if selected == 0 {
             return;
@@ -2443,8 +2407,9 @@ impl App {
         if !self.settings_is_root_surface() {
             return;
         }
-        let Some(selected) = self.settings_selected_index() else {
-            return;
+        let selected = match self.settings_access() {
+            SettingsAccess::Active { selected_index, .. } => selected_index,
+            SettingsAccess::Inactive => return,
         };
         let len = self.settings_categories().len();
         if len == 0 || selected + 1 >= len {
