@@ -80,14 +80,14 @@ impl fmt::Display for PlanStepId {
 
 // ── Step Typestates ──────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StepData {
     id: PlanStepId,
     description: String,
     depends_on: Vec<PlanStepId>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PendingStep(StepData);
 
 impl PendingStep {
@@ -97,7 +97,7 @@ impl PendingStep {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ActiveStep(StepData);
 
 impl ActiveStep {
@@ -126,19 +126,19 @@ impl ActiveStep {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CompletedStep {
     data: StepData,
     outcome: NonEmptyString,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FailedStep {
     data: StepData,
     reason: NonEmptyString,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SkippedStep {
     data: StepData,
     reason: NonEmptyString,
@@ -170,12 +170,38 @@ impl<'de> Deserialize<'de> for PlanStep {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        struct StepDataWire {
+            id: PlanStepId,
+            description: String,
+            #[serde(default)]
+            depends_on: Vec<PlanStepId>,
+        }
+
+        #[derive(Deserialize)]
+        struct CompleteWire {
+            data: StepDataWire,
+            outcome: NonEmptyString,
+        }
+
+        #[derive(Deserialize)]
+        struct FailedWire {
+            data: StepDataWire,
+            reason: NonEmptyString,
+        }
+
+        #[derive(Deserialize)]
+        struct SkippedWire {
+            data: StepDataWire,
+            reason: NonEmptyString,
+        }
+
+        #[derive(Deserialize)]
         enum CurrentWire {
-            Pending(PendingStep),
-            Active(ActiveStep),
-            Complete(CompletedStep),
-            Failed(FailedStep),
-            Skipped(SkippedStep),
+            Pending(StepDataWire),
+            Active(StepDataWire),
+            Complete(CompleteWire),
+            Failed(FailedWire),
+            Skipped(SkippedWire),
         }
 
         #[derive(Deserialize)]
@@ -205,11 +231,40 @@ impl<'de> Deserialize<'de> for PlanStep {
 
         match Wire::deserialize(deserializer)? {
             Wire::Current(c) => Ok(match c {
-                CurrentWire::Pending(s) => Self::Pending(s),
-                CurrentWire::Active(s) => Self::Active(s),
-                CurrentWire::Complete(s) => Self::Complete(s),
-                CurrentWire::Failed(s) => Self::Failed(s),
-                CurrentWire::Skipped(s) => Self::Skipped(s),
+                CurrentWire::Pending(s) => Self::Pending(PendingStep(StepData {
+                    id: s.id,
+                    description: s.description,
+                    depends_on: s.depends_on,
+                })),
+                CurrentWire::Active(s) => Self::Active(ActiveStep(StepData {
+                    id: s.id,
+                    description: s.description,
+                    depends_on: s.depends_on,
+                })),
+                CurrentWire::Complete(s) => Self::Complete(CompletedStep {
+                    data: StepData {
+                        id: s.data.id,
+                        description: s.data.description,
+                        depends_on: s.data.depends_on,
+                    },
+                    outcome: s.outcome,
+                }),
+                CurrentWire::Failed(s) => Self::Failed(FailedStep {
+                    data: StepData {
+                        id: s.data.id,
+                        description: s.data.description,
+                        depends_on: s.data.depends_on,
+                    },
+                    reason: s.reason,
+                }),
+                CurrentWire::Skipped(s) => Self::Skipped(SkippedStep {
+                    data: StepData {
+                        id: s.data.id,
+                        description: s.data.description,
+                        depends_on: s.data.depends_on,
+                    },
+                    reason: s.reason,
+                }),
             }),
             Wire::Legacy(l) => {
                 let data = StepData {

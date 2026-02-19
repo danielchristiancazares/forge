@@ -59,6 +59,7 @@ Completed now:
 47. Replaced `CacheBudget::take_one -> Option<CacheBudget>` with `CacheBudgetTake` (`Remaining` | `Exhausted`).
 48. Updated cache allocation callsites, tests, and docs to use explicit cache-budget outcomes.
 49. Reclassified `types/src/budget.rs` to Core after removing Option from its core interface and clearing banned Core variants.
+50. Narrowed `PlanStep` construction surface further by removing direct `Deserialize` derives from step typestate structs and routing deserialization through `PlanStep`'s authority boundary mapping.
 
 In progress:
 
