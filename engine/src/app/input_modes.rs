@@ -291,7 +291,8 @@ impl CommandMode<'_> {
         self.app
             .ui
             .input
-            .command_mut()
+            .command_mut_access()
+            .into_active()
             .expect("CommandMode must hold Command input state")
     }
 

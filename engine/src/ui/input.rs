@@ -298,6 +298,26 @@ pub enum InputState {
     },
 }
 
+pub enum CommandDraftRef<'a> {
+    Active(&'a DraftInput),
+    Inactive,
+}
+
+pub enum CommandDraftMut<'a> {
+    Active(&'a mut DraftInput),
+    Inactive,
+}
+
+impl<'a> CommandDraftMut<'a> {
+    #[must_use]
+    pub fn into_active(self) -> Option<&'a mut DraftInput> {
+        match self {
+            Self::Active(command) => Some(command),
+            Self::Inactive => None,
+        }
+    }
+}
+
 impl Default for InputState {
     fn default() -> Self {
         Self::Normal(DraftInput::default())
@@ -341,33 +361,17 @@ impl InputState {
     }
 
     #[must_use]
-    pub fn command(&self) -> Option<&str> {
+    pub fn command_ref(&self) -> CommandDraftRef<'_> {
         match self {
-            InputState::Command { command, .. } => Some(command.text()),
-            _ => None,
+            InputState::Command { command, .. } => CommandDraftRef::Active(command),
+            _ => CommandDraftRef::Inactive,
         }
     }
 
-    #[must_use]
-    pub fn command_cursor(&self) -> Option<usize> {
+    pub fn command_mut_access(&mut self) -> CommandDraftMut<'_> {
         match self {
-            InputState::Command { command, .. } => Some(command.cursor()),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub fn command_cursor_byte_index(&self) -> Option<usize> {
-        match self {
-            InputState::Command { command, .. } => Some(command.byte_index()),
-            _ => None,
-        }
-    }
-
-    pub fn command_mut(&mut self) -> Option<&mut DraftInput> {
-        match self {
-            InputState::Command { command, .. } => Some(command),
-            _ => None,
+            InputState::Command { command, .. } => CommandDraftMut::Active(command),
+            _ => CommandDraftMut::Inactive,
         }
     }
 
@@ -510,7 +514,10 @@ impl InputState {
 
 #[cfg(test)]
 mod tests {
-    use super::{DraftInput, InputMode, InputState, SettingsCategory, SettingsSurface};
+    use super::{
+        CommandDraftMut, CommandDraftRef, DraftInput, InputMode, InputState, SettingsCategory,
+        SettingsSurface,
+    };
 
     #[test]
     fn draft_input_set_text_moves_cursor_to_end() {
@@ -927,15 +934,19 @@ mod tests {
                 cursor: 4,
             },
         };
-        assert_eq!(state.command(), Some("quit"));
-        assert_eq!(state.command_cursor(), Some(4));
+        match state.command_ref() {
+            CommandDraftRef::Active(command) => {
+                assert_eq!(command.text(), "quit");
+                assert_eq!(command.cursor(), 4);
+            }
+            CommandDraftRef::Inactive => panic!("expected command state"),
+        }
     }
 
     #[test]
     fn input_state_command_accessor_not_in_command_mode() {
         let state = InputState::Normal(DraftInput::default());
-        assert_eq!(state.command(), None);
-        assert_eq!(state.command_cursor(), None);
+        assert!(matches!(state.command_ref(), CommandDraftRef::Inactive));
     }
 
     #[test]
@@ -947,7 +958,10 @@ mod tests {
                 cursor: 2,
             },
         };
-        assert_eq!(state.command_cursor_byte_index(), Some(5));
+        match state.command_ref() {
+            CommandDraftRef::Active(command) => assert_eq!(command.byte_index(), 5),
+            CommandDraftRef::Inactive => panic!("expected command state"),
+        }
     }
 
     #[test]
@@ -994,16 +1008,22 @@ mod tests {
                 cursor: 3,
             },
         };
-        if let Some(cmd) = state.command_mut() {
+        if let CommandDraftMut::Active(cmd) = state.command_mut_access() {
             cmd.enter_char('!');
         }
-        assert_eq!(state.command(), Some("cmd!"));
+        match state.command_ref() {
+            CommandDraftRef::Active(command) => assert_eq!(command.text(), "cmd!"),
+            CommandDraftRef::Inactive => panic!("expected command state"),
+        }
     }
 
     #[test]
     fn input_state_command_mut_not_in_command_mode() {
         let mut state = InputState::Normal(DraftInput::default());
-        assert!(state.command_mut().is_none());
+        assert!(matches!(
+            state.command_mut_access(),
+            CommandDraftMut::Inactive
+        ));
     }
 
     #[test]

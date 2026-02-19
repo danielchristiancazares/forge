@@ -3451,15 +3451,24 @@ impl App {
     }
 
     pub fn command_text(&self) -> Option<&str> {
-        self.ui.input.command()
+        match self.ui.input.command_ref() {
+            ui::CommandDraftRef::Active(command) => Some(command.text()),
+            ui::CommandDraftRef::Inactive => None,
+        }
     }
 
     pub fn command_cursor(&self) -> Option<usize> {
-        self.ui.input.command_cursor()
+        match self.ui.input.command_ref() {
+            ui::CommandDraftRef::Active(command) => Some(command.cursor()),
+            ui::CommandDraftRef::Inactive => None,
+        }
     }
 
     pub fn command_cursor_byte_index(&self) -> Option<usize> {
-        self.ui.input.command_cursor_byte_index()
+        match self.ui.input.command_ref() {
+            ui::CommandDraftRef::Active(command) => Some(command.byte_index()),
+            ui::CommandDraftRef::Inactive => None,
+        }
     }
 
     /// Navigate to previous (older) prompt in Insert mode.
