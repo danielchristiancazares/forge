@@ -1028,7 +1028,14 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
             Span::styled(" cancel ", styles::key_hint(palette)),
         ],
         InputMode::Settings => {
-            if app.settings_is_root_surface() {
+            let is_root_surface = matches!(
+                app.settings_access(),
+                SettingsAccess::Active {
+                    surface: SettingsSurface::Root,
+                    ..
+                }
+            );
+            if is_root_surface {
                 vec![
                     Span::styled("↑↓/jk", styles::key_highlight(palette)),
                     Span::styled(" navigate  ", styles::key_hint(palette)),
