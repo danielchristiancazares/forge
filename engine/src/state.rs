@@ -7,10 +7,11 @@ use std::time::{Duration, Instant};
 use futures_util::future::AbortHandle;
 
 use forge_context::{RecoveredToolBatch, StepId, ToolBatchId};
-use forge_types::{Message, ModelName, Plan, ToolCall, ToolResult};
+use forge_types::{ModelName, Plan, ToolCall, ToolResult};
 
 use crate::StreamingMessage;
 use crate::TurnContext;
+use crate::core::thinking::ThinkingPayload;
 use crate::tools::ConfirmationRequest;
 use crate::{ActiveExecution, ToolQueue};
 
@@ -52,22 +53,54 @@ impl JournalStatus {
     }
 }
 
+/// Presence of a tool journal batch for this turn.
+///
+/// This replaces `Option<ToolBatchId>` in core payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolJournalBatch {
+    Absent,
+    Present(ToolBatchId),
+}
+
+impl ToolJournalBatch {
+    #[allow(dead_code)]
+    #[must_use]
+    pub(crate) fn is_present(self) -> bool {
+        matches!(self, Self::Present(_))
+    }
+}
+
 #[derive(Debug)]
-pub(crate) struct ToolLoopInput {
+pub(crate) struct ToolLoopIngress {
     pub(crate) assistant_text: String,
-    pub(crate) thinking_message: Option<Message>,
+    pub(crate) thinking: ThinkingPayload,
     pub(crate) calls: Vec<ToolCall>,
     pub(crate) pre_resolved: Vec<ToolResult>,
     pub(crate) model: ModelName,
     pub(crate) step_id: StepId,
-    pub(crate) tool_batch_id: Option<ToolBatchId>,
+    pub(crate) tool_journal: ToolJournalBatch,
+    pub(crate) turn: TurnContext,
+}
+
+/// Fully prepared tool loop start payload.
+///
+/// `handle_tool_calls` consumes a [`ToolLoopIngress`] and produces this payload
+/// only after establishing a `JournalStatus` capability proof.
+#[derive(Debug)]
+pub(crate) struct ToolLoopStart {
+    pub(crate) assistant_text: String,
+    pub(crate) thinking: ThinkingPayload,
+    pub(crate) calls: Vec<ToolCall>,
+    pub(crate) pre_resolved: Vec<ToolResult>,
+    pub(crate) model: ModelName,
+    pub(crate) step_id: StepId,
     pub(crate) turn: TurnContext,
 }
 
 #[derive(Debug)]
 pub(crate) struct ToolCommitPayload {
     pub(crate) assistant_text: String,
-    pub(crate) thinking_message: Option<Message>,
+    pub(crate) thinking: ThinkingPayload,
     pub(crate) calls: Vec<ToolCall>,
     pub(crate) results: Vec<ToolResult>,
     pub(crate) model: ModelName,
@@ -183,8 +216,32 @@ impl ActiveStream {
                 tool_args_buffer: ToolArgsJournalBuffer::new(),
                 turn,
             },
-            ActiveStream::Journaled { .. } => {
-                unreachable!("transition_to_journaled called on already journaled stream")
+            ActiveStream::Journaled {
+                message,
+                journal,
+                abort_handle,
+                tool_batch_id,
+                tool_call_seq,
+                tool_args_journal_bytes,
+                tool_args_buffer,
+                turn,
+            } => {
+                // Idempotent transition: a second call is a no-op if it targets
+                // the same batch. A mismatched batch ID is a safety violation.
+                assert!(
+                    tool_batch_id == batch_id,
+                    "transition_to_journaled attempted to overwrite existing tool batch {tool_batch_id} with {batch_id}"
+                );
+                ActiveStream::Journaled {
+                    message,
+                    journal,
+                    abort_handle,
+                    tool_batch_id,
+                    tool_call_seq,
+                    tool_args_journal_bytes,
+                    tool_args_buffer,
+                    turn,
+                }
             }
         }
     }
@@ -253,28 +310,6 @@ impl ActiveStream {
         }
     }
 
-    pub(crate) fn tool_args_journal_bytes_mut(&mut self) -> &mut HashMap<String, usize> {
-        match self {
-            ActiveStream::Transient {
-                tool_args_journal_bytes,
-                ..
-            }
-            | ActiveStream::Journaled {
-                tool_args_journal_bytes,
-                ..
-            } => tool_args_journal_bytes,
-        }
-    }
-
-    pub(crate) fn tool_args_buffer_mut(&mut self) -> Option<&mut ToolArgsJournalBuffer> {
-        match self {
-            ActiveStream::Journaled {
-                tool_args_buffer, ..
-            } => Some(tool_args_buffer),
-            ActiveStream::Transient { .. } => None,
-        }
-    }
-
     /// Consume self and return parts for cleanup.
     #[allow(clippy::type_complexity)]
     pub(crate) fn into_parts(
@@ -283,7 +318,7 @@ impl ActiveStream {
         StreamingMessage,
         ActiveJournal,
         AbortHandle,
-        Option<ToolBatchId>,
+        ToolJournalBatch,
         TurnContext,
     ) {
         match self {
@@ -293,7 +328,13 @@ impl ActiveStream {
                 abort_handle,
                 turn,
                 ..
-            } => (message, journal, abort_handle, None, turn),
+            } => (
+                message,
+                journal,
+                abort_handle,
+                ToolJournalBatch::Absent,
+                turn,
+            ),
             ActiveStream::Journaled {
                 message,
                 journal,
@@ -301,7 +342,13 @@ impl ActiveStream {
                 tool_batch_id,
                 turn,
                 ..
-            } => (message, journal, abort_handle, Some(tool_batch_id), turn),
+            } => (
+                message,
+                journal,
+                abort_handle,
+                ToolJournalBatch::Present(tool_batch_id),
+                turn,
+            ),
         }
     }
 }
@@ -350,7 +397,7 @@ impl DistillationState {
 #[derive(Debug)]
 pub(crate) struct ToolBatch {
     pub(crate) assistant_text: String,
-    pub(crate) thinking_message: Option<Message>,
+    pub(crate) thinking: ThinkingPayload,
     pub(crate) calls: Vec<ToolCall>,
     pub(crate) results: Vec<ToolResult>,
     pub(crate) model: ModelName,
@@ -366,7 +413,7 @@ impl ToolBatch {
     pub(crate) fn into_commit(self) -> ToolCommitPayload {
         ToolCommitPayload {
             assistant_text: self.assistant_text,
-            thinking_message: self.thinking_message,
+            thinking: self.thinking,
             calls: self.calls,
             results: self.results,
             model: self.model,
@@ -376,12 +423,38 @@ impl ToolBatch {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalSelection {
+    Approve,
+    Deny,
+}
+
+impl ApprovalSelection {
+    pub fn toggle(&mut self) {
+        *self = match self {
+            Self::Approve => Self::Deny,
+            Self::Deny => Self::Approve,
+        };
+    }
+
+    #[must_use]
+    pub fn is_approved(self) -> bool {
+        matches!(self, Self::Approve)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalExpanded {
+    Collapsed,
+    Expanded(usize),
+}
+
 #[derive(Debug)]
 pub(crate) struct ApprovalData {
     pub(crate) requests: Vec<ConfirmationRequest>,
-    pub(crate) selected: Vec<bool>,
+    pub(crate) selected: Vec<ApprovalSelection>,
     pub(crate) cursor: usize,
-    pub(crate) expanded: Option<usize>,
+    pub(crate) expanded: ApprovalExpanded,
     pub(crate) scroll_offset: usize,
 }
 
@@ -390,9 +463,9 @@ impl ApprovalData {
         let len = requests.len();
         Self {
             requests,
-            selected: vec![true; len],
+            selected: vec![ApprovalSelection::Approve; len],
             cursor: 0,
-            expanded: None,
+            expanded: ApprovalExpanded::Collapsed,
             scroll_offset: 0,
         }
     }
@@ -411,47 +484,45 @@ impl ApprovalData {
 ///                                              v
 ///                                    [Execute denial - consume state]
 /// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApprovalPhase {
+    Selecting,
+    ConfirmingDeny,
+}
+
 #[derive(Debug)]
-pub(crate) enum ApprovalState {
-    /// User is selecting which tools to approve/deny.
-    Selecting(ApprovalData),
-    /// User pressed 'd'; awaiting confirmation.
-    ConfirmingDeny(ApprovalData),
+pub(crate) struct ApprovalState {
+    phase: ApprovalPhase,
+    data: ApprovalData,
 }
 
 impl ApprovalState {
     pub(crate) fn new(requests: Vec<ConfirmationRequest>) -> Self {
-        Self::Selecting(ApprovalData::new(requests))
+        Self {
+            phase: ApprovalPhase::Selecting,
+            data: ApprovalData::new(requests),
+        }
     }
 
     /// Read-only access to data (allowed in any phase).
     pub(crate) fn data(&self) -> &ApprovalData {
-        match self {
-            Self::Selecting(d) | Self::ConfirmingDeny(d) => d,
-        }
+        &self.data
     }
 
     /// Mutable access to data with automatic cancel of deny confirmation.
     /// Any mutation cancels the `ConfirmingDeny` state.
     pub(crate) fn data_mut(&mut self) -> &mut ApprovalData {
-        *self = match std::mem::replace(self, Self::Selecting(ApprovalData::new(vec![]))) {
-            Self::Selecting(d) | Self::ConfirmingDeny(d) => Self::Selecting(d),
-        };
-        match self {
-            Self::Selecting(d) => d,
-            Self::ConfirmingDeny(_) => unreachable!(),
-        }
+        self.phase = ApprovalPhase::Selecting;
+        &mut self.data
     }
 
     pub(crate) fn is_confirming_deny(&self) -> bool {
-        matches!(self, Self::ConfirmingDeny(_))
+        self.phase == ApprovalPhase::ConfirmingDeny
     }
 
     /// Transition: enter deny confirmation (Selecting -> `ConfirmingDeny`).
     pub(crate) fn enter_deny_confirmation(&mut self) {
-        *self = match std::mem::replace(self, Self::Selecting(ApprovalData::new(vec![]))) {
-            Self::Selecting(d) | Self::ConfirmingDeny(d) => Self::ConfirmingDeny(d),
-        };
+        self.phase = ApprovalPhase::ConfirmingDeny;
     }
 }
 

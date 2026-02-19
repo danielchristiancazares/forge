@@ -2912,7 +2912,11 @@ fn draw_tool_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
     lines.push(Line::from(""));
 
     for (i, item) in view.items.iter().enumerate() {
-        let is_selected = selected.get(i).copied().unwrap_or(false);
+        let is_selected = selected
+            .get(i)
+            .copied()
+            .map(forge_engine::ApprovalSelection::is_approved)
+            .unwrap_or(false);
         let pointer = if i == cursor { ">" } else { " " };
         let checkbox = if is_selected { "[x]" } else { "[ ]" };
         let risk_label = item.risk_label.as_str();

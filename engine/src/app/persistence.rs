@@ -40,7 +40,7 @@ impl App {
             Self::ensure_secure_dir(parent)?;
         }
 
-        self.context_manager.save(&path)
+        self.core.context_manager.save(&path)
     }
 
     /// Load conversation history from disk (called during init if file exists).
@@ -62,12 +62,12 @@ impl App {
             }
         }
 
-        match ContextManager::load(&path, self.model.clone()) {
+        match ContextManager::load(&path, self.core.model.clone()) {
             Ok(mut loaded_manager) => {
                 let count = loaded_manager.history().len();
                 // Sync output limit before replacing context manager
-                loaded_manager.set_output_limit(self.output_limits.max_output_tokens());
-                self.context_manager = loaded_manager;
+                loaded_manager.set_output_limit(self.core.output_limits.max_output_tokens());
+                self.core.context_manager = loaded_manager;
                 self.rebuild_display_from_history();
                 if count > 0 {
                     let msg = format!("History: {count} msgs");
@@ -78,9 +78,9 @@ impl App {
             }
             Err(e) => {
                 tracing::warn!("Failed to load history: {e}");
-                if !self.history_load_warning_shown {
+                if !self.runtime.history_load_warning_shown {
                     self.push_notification("Failed to load history.json — starting fresh.");
-                    self.history_load_warning_shown = true;
+                    self.runtime.history_load_warning_shown = true;
                 }
             }
         }
@@ -90,15 +90,15 @@ impl App {
 
     pub(crate) fn rebuild_display_from_history(&mut self) {
         let mut items = Vec::new();
-        for entry in self.context_manager.history().entries() {
+        for entry in self.core.context_manager.history().entries() {
             items.push(DisplayItem::History(entry.id()));
         }
-        self.display.set_items(items);
+        self.ui.display.set_items(items);
     }
 
     pub(crate) fn push_history_message(&mut self, message: Message) -> MessageId {
-        let id = self.context_manager.push_message(message);
-        self.display.push(DisplayItem::History(id));
+        let id = self.core.context_manager.push_message(message);
+        self.ui.display.push(DisplayItem::History(id));
         self.invalidate_usage_cache();
         id
     }
@@ -112,9 +112,10 @@ impl App {
         step_id: StepId,
     ) -> MessageId {
         let id = self
+            .core
             .context_manager
             .push_message_with_step_id(message, step_id);
-        self.display.push(DisplayItem::History(id));
+        self.ui.display.push(DisplayItem::History(id));
         self.invalidate_usage_cache();
         id
     }
@@ -129,9 +130,9 @@ impl App {
             }
             Err(e) => {
                 tracing::warn!("Autosave failed: {e}");
-                if !self.autosave_warning_shown {
+                if !self.runtime.autosave_warning_shown {
                     self.push_notification("Autosave failed — changes may not persist.");
-                    self.autosave_warning_shown = true;
+                    self.runtime.autosave_warning_shown = true;
                 }
                 false
             }
@@ -146,7 +147,7 @@ impl App {
         use forge_types::PlanState;
 
         let path = self.plan_path();
-        match &self.plan_state {
+        match &self.core.plan_state {
             PlanState::Inactive => {
                 if path.exists()
                     && let Err(e) = std::fs::remove_file(&path)
@@ -155,7 +156,7 @@ impl App {
                 }
             }
             PlanState::Proposed(_) | PlanState::Active(_) => {
-                match serde_json::to_string_pretty(&self.plan_state) {
+                match serde_json::to_string_pretty(&self.core.plan_state) {
                     Ok(json) => {
                         if let Err(e) = forge_utils::atomic_write_with_options(
                             &path,
@@ -187,8 +188,8 @@ impl App {
         match std::fs::read_to_string(&path) {
             Ok(data) => match serde_json::from_str::<forge_types::PlanState>(&data) {
                 Ok(state) => {
-                    self.plan_state = state;
-                    if self.plan_state.is_active() {
+                    self.core.plan_state = state;
+                    if self.core.plan_state.is_active() {
                         tracing::debug!("Loaded active plan from {}", path.display());
                     }
                 }
@@ -212,9 +213,9 @@ impl App {
         }
 
         let state = SessionState::new(
-            self.input.clone(),
-            self.input_history.clone(),
-            self.session_changes.clone(),
+            self.ui.input.clone(),
+            self.ui.input_history.clone(),
+            self.core.session_changes.clone(),
         );
         let mut value = serde_json::to_value(&state)?;
         normalize_json_strings_for_persistence(&mut value);
@@ -243,14 +244,16 @@ impl App {
         match std::fs::read_to_string(&path) {
             Ok(data) => match serde_json::from_str::<SessionState>(&data) {
                 Ok(state) if state.is_compatible() => {
-                    // Restore input state
-                    if let Some(input) = state.input {
-                        self.input = input;
-                    }
-                    // Restore input history
-                    self.input_history = state.history;
-                    // Restore modified files
-                    self.session_changes = state.modified_files;
+                    let SessionState {
+                        input,
+                        history,
+                        modified_files,
+                        ..
+                    } = state;
+
+                    self.ui.input = input;
+                    self.ui.input_history = history;
+                    self.core.session_changes = modified_files;
                     tracing::debug!("Loaded session state from {}", path.display());
                 }
                 Ok(_) => {
@@ -281,29 +284,31 @@ impl App {
     ///
     /// This runs only while the app is idle to avoid interfering with streaming/tool execution.
     pub(crate) fn poll_journal_cleanup(&mut self) {
-        if !matches!(self.state, OperationState::Idle) {
+        if !matches!(self.core.state, OperationState::Idle) {
             return;
         }
 
         let now = Instant::now();
-        if now < self.next_journal_cleanup_attempt {
+        if now < self.runtime.next_journal_cleanup_attempt {
             return;
         }
 
         let mut attempted_any = false;
 
-        if let Some(step_id) = self.pending_stream_cleanup {
+        if let Some(step_id) = self.runtime.pending_stream_cleanup {
             attempted_any = true;
-            match self.stream_journal.commit_and_prune_step(step_id) {
+            match self.runtime.stream_journal.commit_and_prune_step(step_id) {
                 Ok(_) => {
-                    self.pending_stream_cleanup = None;
-                    self.pending_stream_cleanup_failures = 0;
+                    self.runtime.pending_stream_cleanup = None;
+                    self.runtime.pending_stream_cleanup_failures = 0;
                 }
                 Err(e) => {
-                    self.pending_stream_cleanup_failures =
-                        self.pending_stream_cleanup_failures.saturating_add(1);
+                    self.runtime.pending_stream_cleanup_failures = self
+                        .runtime
+                        .pending_stream_cleanup_failures
+                        .saturating_add(1);
                     tracing::warn!("Failed to retry commit/prune journal step {step_id}: {e}");
-                    if self.pending_stream_cleanup_failures == 3 {
+                    if self.runtime.pending_stream_cleanup_failures == 3 {
                         self.push_notification(
                             "Stream journal cleanup failed repeatedly; run /clear to reset.",
                         );
@@ -312,18 +317,18 @@ impl App {
             }
         }
 
-        if let Some(batch_id) = self.pending_tool_cleanup {
+        if let Some(batch_id) = self.runtime.pending_tool_cleanup {
             attempted_any = true;
-            match self.tool_journal.commit_batch(batch_id) {
+            match self.runtime.tool_journal.commit_batch(batch_id) {
                 Ok(()) => {
-                    self.pending_tool_cleanup = None;
-                    self.pending_tool_cleanup_failures = 0;
+                    self.runtime.pending_tool_cleanup = None;
+                    self.runtime.pending_tool_cleanup_failures = 0;
                 }
                 Err(e) => {
-                    self.pending_tool_cleanup_failures =
-                        self.pending_tool_cleanup_failures.saturating_add(1);
+                    self.runtime.pending_tool_cleanup_failures =
+                        self.runtime.pending_tool_cleanup_failures.saturating_add(1);
                     tracing::warn!("Failed to retry commit tool batch {batch_id}: {e}");
-                    if self.pending_tool_cleanup_failures == 3 {
+                    if self.runtime.pending_tool_cleanup_failures == 3 {
                         self.push_notification(
                             "Tool journal cleanup failed repeatedly; run /clear to reset.",
                         );
@@ -333,14 +338,15 @@ impl App {
         }
 
         if attempted_any
-            && (self.pending_stream_cleanup.is_some() || self.pending_tool_cleanup.is_some())
+            && (self.runtime.pending_stream_cleanup.is_some()
+                || self.runtime.pending_tool_cleanup.is_some())
         {
-            self.next_journal_cleanup_attempt = now + Duration::from_secs(1);
+            self.runtime.next_journal_cleanup_attempt = now + Duration::from_secs(1);
         }
     }
 
     pub(crate) fn push_local_message(&mut self, message: Message) {
-        self.display.push(DisplayItem::Local(message));
+        self.ui.display.push(DisplayItem::Local(message));
     }
 
     /// Adds a system message that appears in the content pane, visible to
@@ -407,22 +413,22 @@ impl App {
             }
         }
 
-        let tool_recovered = match self.tool_journal.recover() {
+        let tool_recovered = match self.runtime.tool_journal.recover() {
             Ok(batch) => batch,
             Err(e) => {
                 tracing::warn!("Tool journal recovery failed: {e}");
-                let _ = self.tool_gate.disable(e.to_string());
+                let _ = self.core.tool_gate.disable(e.to_string());
                 self.push_notification(format!(
                     "Tool journal recovery failed; tool execution disabled for safety. ({e})"
                 ));
-                if matches!(self.state, OperationState::Idle) {
+                if matches!(self.core.state, OperationState::Idle) {
                     self.op_transition(self.idle_state());
                 }
                 None
             }
         };
 
-        let stream_recovered = match self.stream_journal.recover() {
+        let stream_recovered = match self.runtime.stream_journal.recover() {
             Ok(recovered) => recovered,
             Err(e) => {
                 tracing::warn!("Stream journal recovery failed: {e}");
@@ -499,19 +505,23 @@ impl App {
                         .as_ref()
                         .and_then(|name| util::parse_model_name_from_string(name))
                 })
-                .unwrap_or_else(|| self.model.clone());
+                .unwrap_or_else(|| self.core.model.clone());
 
             let step_id = stream_step_id.or(recovered_batch.stream_step_id);
             if let Some(step_id) = step_id {
                 // Idempotency guard: if history already contains this step_id,
                 // the response was already committed - just clean up stale journals.
-                if self.context_manager.has_step_id(step_id) {
-                    if let Err(e) = self.tool_journal.discard_batch(recovered_batch.batch_id) {
+                if self.core.context_manager.has_step_id(step_id) {
+                    if let Err(e) = self
+                        .runtime
+                        .tool_journal
+                        .discard_batch(recovered_batch.batch_id)
+                    {
                         tracing::warn!(
                             "Failed to discard idempotent tool batch {}: {e}",
                             recovered_batch.batch_id
                         );
-                        let _ = self.tool_gate.disable(e.to_string());
+                        let _ = self.core.tool_gate.disable(e.to_string());
                     }
                     if self.autosave_history() {
                         self.finalize_journal_commit(step_id);
@@ -618,9 +628,13 @@ impl App {
             self.push_notification(
                 "Recovered tool batch but stream journal missing; discarding tool recovery data.",
             );
-            if let Err(e) = self.tool_journal.discard_batch(recovered_batch.batch_id) {
+            if let Err(e) = self
+                .runtime
+                .tool_journal
+                .discard_batch(recovered_batch.batch_id)
+            {
                 tracing::warn!("Failed to discard orphaned tool batch: {e}");
-                let _ = self.tool_gate.disable(e.to_string());
+                let _ = self.core.tool_gate.disable(e.to_string());
                 self.push_notification(format!(
                     "Tool journal error: failed to discard orphaned batch; tools disabled. ({e})"
                 ));
@@ -675,7 +689,7 @@ impl App {
             };
 
         // Check if history already has this step_id (idempotent recovery)
-        if self.context_manager.has_step_id(step_id) {
+        if self.core.context_manager.has_step_id(step_id) {
             // Already recovered or committed - ensure it's persisted before pruning
             if self.autosave_history() {
                 self.finalize_journal_commit(step_id);
@@ -690,7 +704,7 @@ impl App {
         // Use the model from the stream if available, otherwise fall back to current
         let model = model_name
             .and_then(|name| util::parse_model_name_from_string(&name))
-            .unwrap_or_else(|| self.model.clone());
+            .unwrap_or_else(|| self.core.model.clone());
 
         // Add the partial response as an assistant message with recovery badge.
         let mut recovered_content =
@@ -718,7 +732,7 @@ impl App {
         let history_saved = self.autosave_history();
 
         // Seal any unsealed entries, then mark committed and prune
-        if let Err(e) = self.stream_journal.seal_unsealed(step_id) {
+        if let Err(e) = self.runtime.stream_journal.seal_unsealed(step_id) {
             tracing::warn!("Failed to seal recovered journal: {e}");
         }
         if history_saved {
@@ -757,31 +771,33 @@ impl App {
     ///
     /// Called ONLY after history has been successfully persisted to disk.
     pub(crate) fn finalize_journal_commit(&mut self, step_id: StepId) {
-        if let Err(e) = self.stream_journal.commit_and_prune_step(step_id) {
+        if let Err(e) = self.runtime.stream_journal.commit_and_prune_step(step_id) {
             tracing::warn!("Failed to commit/prune journal step {}: {e}", step_id);
 
             // Record pending cleanup so we can retry in-session.
-            if self.pending_stream_cleanup == Some(step_id) {
-                self.pending_stream_cleanup_failures =
-                    self.pending_stream_cleanup_failures.saturating_add(1);
+            if self.runtime.pending_stream_cleanup == Some(step_id) {
+                self.runtime.pending_stream_cleanup_failures = self
+                    .runtime
+                    .pending_stream_cleanup_failures
+                    .saturating_add(1);
             } else {
-                self.pending_stream_cleanup = Some(step_id);
-                self.pending_stream_cleanup_failures = 1;
+                self.runtime.pending_stream_cleanup = Some(step_id);
+                self.runtime.pending_stream_cleanup_failures = 1;
                 self.push_notification(format!(
                     "Stream journal cleanup failed; will retry. If sending gets stuck, run /clear. ({e})"
                 ));
             }
 
             let after = Instant::now() + Duration::from_secs(1);
-            if self.next_journal_cleanup_attempt < after {
-                self.next_journal_cleanup_attempt = after;
+            if self.runtime.next_journal_cleanup_attempt < after {
+                self.runtime.next_journal_cleanup_attempt = after;
             }
         }
     }
 
     /// Discard a journal step that won't be recovered (error/empty cases).
     pub(crate) fn discard_journal_step(&mut self, step_id: StepId) {
-        if let Err(e) = self.stream_journal.discard_step(step_id) {
+        if let Err(e) = self.runtime.stream_journal.discard_step(step_id) {
             tracing::warn!("Failed to discard journal step {}: {e}", step_id);
         }
     }
@@ -811,24 +827,29 @@ impl App {
     /// This removes the user message from history and display, then restores
     /// the original text to the input box for easy retry.
     pub(crate) fn rollback_pending_user_message(&mut self) {
-        let Some((msg_id, original_text, agents_md)) = self.pending_user_message.take() else {
+        let Some((msg_id, original_text, agents_md)) = self.core.pending_user_message.take() else {
             return;
         };
 
-        if self.context_manager.rollback_last_message(msg_id).is_some() {
+        if self
+            .core
+            .context_manager
+            .rollback_last_message(msg_id)
+            .is_some()
+        {
             // Remove from display (should be the last History item)
-            if let Some(DisplayItem::History(display_id)) = self.display.last()
+            if let Some(DisplayItem::History(display_id)) = self.ui.display.last()
                 && *display_id == msg_id
             {
-                self.display.pop();
+                self.ui.display.pop();
             }
 
             // Restore to input box and enter insert mode for easy retry
-            self.input.draft_mut().set_text(original_text);
-            self.input = std::mem::take(&mut self.input).into_insert();
+            self.ui.input.draft_mut().set_text(original_text);
+            self.ui.input = std::mem::take(&mut self.ui.input).into_insert();
 
             // Restore consumed AGENTS.md so the next message gets it
-            self.environment.restore_agents_md(agents_md);
+            self.core.environment.restore_agents_md(agents_md);
 
             // Invalidate usage cache since we modified history
             self.invalidate_usage_cache();

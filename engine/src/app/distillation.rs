@@ -44,11 +44,11 @@ impl super::App {
         let overhead = {
             let provider = queued_request
                 .as_ref()
-                .map_or_else(|| self.model.provider(), |q| q.config.provider());
+                .map_or_else(|| self.core.model.provider(), |q| q.config.provider());
             self.streaming_overhead(provider)
         };
 
-        match self.context_manager.prepare(overhead) {
+        match self.core.context_manager.prepare(overhead) {
             Ok(_) => {
                 if let Some(queued) = queued_request {
                     self.start_streaming(queued);
@@ -68,7 +68,7 @@ impl super::App {
             }
         }
 
-        let plan = self.context_manager.prepare_compaction();
+        let plan = self.core.context_manager.prepare_compaction();
         let original_tokens = plan.original_tokens;
 
         self.push_notification(format!("Compacting ~{original_tokens} tokens..."));
@@ -80,12 +80,12 @@ impl super::App {
             (queued.config.api_key_owned(), queued.config.model().clone())
         } else {
             let key = if let Some(key) = self.current_api_key().cloned() {
-                crate::util::wrap_api_key(self.model.provider(), key)
+                crate::util::wrap_api_key(self.core.model.provider(), key)
             } else {
                 self.push_notification("Cannot compact: no API key configured");
                 return DistillationStart::Failed;
             };
-            (key, self.model.clone())
+            (key, self.core.model.clone())
         };
 
         let config = match ApiConfig::new(api_key, model.clone()) {
@@ -127,7 +127,7 @@ impl super::App {
     pub fn poll_distillation(&mut self) {
         use futures_util::future::FutureExt;
 
-        let finished = match &self.state {
+        let finished = match &self.core.state {
             OperationState::Distilling(state) => state.task().handle.is_finished(),
             _ => return,
         };
@@ -137,7 +137,7 @@ impl super::App {
         }
 
         let idle = self.idle_state();
-        let (task, queued_request) = match std::mem::replace(&mut self.state, idle) {
+        let (task, queued_request) = match std::mem::replace(&mut self.core.state, idle) {
             OperationState::Distilling(state) => match state {
                 DistillationState::Running(task) => (task, None),
                 DistillationState::CompletedWithQueued { task, message } => (task, Some(message)),
@@ -171,7 +171,8 @@ impl super::App {
                     return;
                 };
 
-                self.context_manager
+                self.core
+                    .context_manager
                     .complete_compaction(distillation_text, generated_by);
                 self.invalidate_usage_cache();
                 self.push_notification("Compaction complete");

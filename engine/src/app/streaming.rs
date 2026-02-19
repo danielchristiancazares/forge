@@ -48,6 +48,7 @@ use super::{
     StreamEvent, StreamFinishReason, StreamingMessage, ThinkingReplayState, notifications,
     sanitize_terminal_text, security,
 };
+use crate::core::thinking::ThinkingPayload;
 use crate::errors::format_stream_error;
 
 /// Prepend a rendered plan block to the last user message in the API payload.
@@ -77,37 +78,50 @@ pub(crate) fn build_thinking_message(
     model: ModelName,
     content: String,
     replay: ThinkingReplayState,
-) -> Option<Message> {
+) -> ThinkingPayload {
     let sanitized = security::sanitize_display_text(&content);
     if let Ok(thinking) = NonEmptyString::new(sanitized) {
-        return Some(match replay {
+        let message = match replay {
             ThinkingReplayState::ClaudeSigned { signature } => {
-                Message::thinking_with_signature(model, thinking, signature.as_str().to_string())
+                forge_types::ThinkingMessage::with_signature(
+                    model,
+                    thinking,
+                    signature.as_str().to_string(),
+                )
             }
             ThinkingReplayState::OpenAIReasoning { items } => {
-                Message::thinking_with_openai_reasoning(model, thinking, items)
+                forge_types::ThinkingMessage::with_openai_reasoning(model, thinking, items)
             }
             ThinkingReplayState::Unsigned | ThinkingReplayState::Unknown => {
-                Message::thinking(model, thinking)
+                forge_types::ThinkingMessage::new(model, thinking)
             }
-        });
+        };
+        return ThinkingPayload::Provided(message);
     }
 
     if replay.requires_persistence() {
         let placeholder = NonEmptyString::try_from(REDACTED_THINKING_PLACEHOLDER)
             .expect("REDACTED_THINKING_PLACEHOLDER must be non-empty");
-        return Some(match replay {
+        let message = match replay {
             ThinkingReplayState::ClaudeSigned { signature } => {
-                Message::thinking_with_signature(model, placeholder, signature.as_str().to_string())
+                forge_types::ThinkingMessage::with_signature(
+                    model,
+                    placeholder,
+                    signature.as_str().to_string(),
+                )
             }
             ThinkingReplayState::OpenAIReasoning { items } => {
-                Message::thinking_with_openai_reasoning(model, placeholder, items)
+                forge_types::ThinkingMessage::with_openai_reasoning(model, placeholder, items)
             }
-            ThinkingReplayState::Unsigned | ThinkingReplayState::Unknown => unreachable!(),
-        });
+            // Defensive: if replay state semantics change, still persist a placeholder.
+            ThinkingReplayState::Unsigned | ThinkingReplayState::Unknown => {
+                forge_types::ThinkingMessage::new(model, placeholder)
+            }
+        };
+        return ThinkingPayload::Provided(message);
     }
 
-    None
+    ThinkingPayload::NotProvided
 }
 
 /// Minimum token count for a content section to be worth caching.
@@ -214,13 +228,14 @@ impl super::App {
     pub(crate) fn streaming_overhead(&self, provider: Provider) -> u32 {
         let counter = TokenCounter::new();
         let assembled = crate::environment::assemble_prompt(
-            self.system_prompts.get(provider),
-            &self.environment,
-            self.model.as_str(),
+            self.core.system_prompts.get(provider),
+            &self.core.environment,
+            self.core.model.as_str(),
         );
         let sys_tokens = counter.count_str(&assembled);
         let tool_tokens = {
             let tools: Vec<&ToolDefinition> = self
+                .core
                 .tool_definitions
                 .iter()
                 .filter(|t| t.provider.is_none() || t.provider == Some(provider))
@@ -249,11 +264,12 @@ impl super::App {
         let overhead = self.streaming_overhead(provider);
 
         let system_prompt = crate::environment::assemble_prompt(
-            self.system_prompts.get(provider),
-            &self.environment,
+            self.core.system_prompts.get(provider),
+            &self.core.environment,
             config.model().as_str(),
         );
         let tools: Vec<_> = self
+            .core
             .tool_definitions
             .iter()
             .filter(|t| t.provider.is_none() || t.provider == Some(provider))
@@ -263,7 +279,7 @@ impl super::App {
         // When memory enabled, use distillation-based context management.
         // Otherwise, use basic mode.
         let api_messages = if memory_enabled {
-            match self.context_manager.prepare(overhead) {
+            match self.core.context_manager.prepare(overhead) {
                 Ok(prepared) => prepared.api_messages(),
                 Err(ContextBuildError::CompactionNeeded) => {
                     let queued = QueuedUserMessage { config, turn };
@@ -294,14 +310,19 @@ impl super::App {
         // Inject plan state into API payload after compaction so the LLM
         // retains plan awareness even when earlier tool-call history has been
         // distilled away. Transient — never persisted, no cache slot consumed.
-        let api_messages =
-            if self.context_manager.history().is_compacted() && self.plan_state.is_active() {
-                inject_plan_context(api_messages, &self.plan_state)
-            } else {
-                api_messages
-            };
+        let api_messages = if self.core.context_manager.history().is_compacted()
+            && self.core.plan_state.is_active()
+        {
+            inject_plan_context(api_messages, &self.core.plan_state)
+        } else {
+            api_messages
+        };
 
-        let journal = match self.stream_journal.begin_session(config.model().as_str()) {
+        let journal = match self
+            .runtime
+            .stream_journal
+            .begin_session(config.model().as_str())
+        {
             Ok(session) => session,
             Err(BeginSessionError::RecoverableStepExists(_step_id)) => {
                 // A recoverable step exists — attempt recovery without corrupting
@@ -311,7 +332,7 @@ impl super::App {
                 let recovered = self.check_crash_recovery();
                 if recovered.is_some()
                     || matches!(
-                        self.state,
+                        self.core.state,
                         OperationState::ToolRecovery(_) | OperationState::RecoveryBlocked(_)
                     )
                 {
@@ -344,7 +365,7 @@ impl super::App {
             message: StreamingMessage::new(
                 config.model().clone(),
                 rx,
-                self.tool_settings.limits.max_tool_args_bytes,
+                self.runtime.tool_settings.limits.max_tool_args_bytes,
             ),
             journal,
             abort_handle,
@@ -357,10 +378,10 @@ impl super::App {
 
         // OutputLimits is pre-validated at config load time - no runtime checks needed
         // Invariant: if thinking is enabled, budget < max_tokens (guaranteed by type)
-        let limits = self.output_limits;
+        let limits = self.core.output_limits;
 
         // Plan cache allocation and convert messages to cacheable format
-        let cache_enabled = self.cache_enabled;
+        let cache_enabled = self.core.cache_enabled;
         let (cacheable_messages, system_cache_hint, cache_last_tool): (
             Vec<CacheableMessage>,
             CacheHint,
@@ -415,10 +436,14 @@ impl super::App {
         let cacheable_messages = self.inject_pending_notifications(cacheable_messages);
 
         // Clone Gemini cache state for async task (only relevant for Gemini provider)
-        let gemini_cache_arc = self.provider_runtime.gemini_cache.clone();
-        let gemini_cache_config = self.provider_runtime.gemini_cache_config.clone();
+        let gemini_cache_arc = self.runtime.provider_runtime.gemini_cache.clone();
+        let gemini_cache_config = self.runtime.provider_runtime.gemini_cache_config.clone();
         let is_gemini = config.provider() == Provider::Gemini;
-        let previous_response_id = self.provider_runtime.openai_previous_response_id.clone();
+        let previous_response_id = self
+            .runtime
+            .provider_runtime
+            .openai_previous_response_id
+            .clone();
 
         let task = async move {
             // Convert tools to Option<&[ToolDefinition]>
@@ -470,7 +495,7 @@ impl super::App {
 
     /// Process any pending stream events.
     pub fn process_stream_events(&mut self) {
-        if !matches!(self.state, OperationState::Streaming(_)) {
+        if !matches!(self.core.state, OperationState::Streaming(_)) {
             return;
         }
 
@@ -493,7 +518,7 @@ impl super::App {
             let event = if let Some(event) = pending_event.take() {
                 event
             } else {
-                let active = match &mut self.state {
+                let active = match &mut self.core.state {
                     OperationState::Streaming(active) => active,
                     _ => return,
                 };
@@ -517,7 +542,7 @@ impl super::App {
                     processed = processed.saturating_add(1);
                     // Try to coalesce more TextDelta events (up to remaining budget)
                     while processed < max_events {
-                        let active = match &mut self.state {
+                        let active = match &mut self.core.state {
                             OperationState::Streaming(active) => active,
                             _ => break,
                         };
@@ -543,7 +568,7 @@ impl super::App {
                 StreamEvent::ThinkingDelta(mut thinking) => {
                     processed = processed.saturating_add(1);
                     while processed < max_events {
-                        let active = match &mut self.state {
+                        let active = match &mut self.core.state {
                             OperationState::Streaming(active) => active,
                             _ => break,
                         };
@@ -579,7 +604,7 @@ impl super::App {
             let mut finish_reason: Option<StreamFinishReason> = None;
 
             let idle = self.idle_state();
-            let mut active = match std::mem::replace(&mut self.state, idle) {
+            let mut active = match std::mem::replace(&mut self.core.state, idle) {
                 OperationState::Streaming(active) => active,
                 other => {
                     self.op_restore(other);
@@ -590,7 +615,7 @@ impl super::App {
             let persist_result = match &event {
                 StreamEvent::TextDelta(text) => active
                     .journal_mut()
-                    .append_text(&mut self.stream_journal, text.clone()),
+                    .append_text(&mut self.runtime.stream_journal, text.clone()),
                 StreamEvent::ThinkingDelta(_)
                 | StreamEvent::ThinkingSignature(_)
                 | StreamEvent::ResponseId(_)
@@ -598,10 +623,12 @@ impl super::App {
                 | StreamEvent::Usage(_)
                 | StreamEvent::ToolCallStart { .. }
                 | StreamEvent::ToolCallDelta { .. } => Ok(()),
-                StreamEvent::Done => active.journal_mut().append_done(&mut self.stream_journal),
+                StreamEvent::Done => active
+                    .journal_mut()
+                    .append_done(&mut self.runtime.stream_journal),
                 StreamEvent::Error(msg) => active
                     .journal_mut()
-                    .append_error(&mut self.stream_journal, msg.clone()),
+                    .append_error(&mut self.runtime.stream_journal, msg.clone()),
             };
 
             // Persist BEFORE display.
@@ -618,7 +645,7 @@ impl super::App {
                     } => {
                         // Ensure we're in Journaled state (transition if Transient)
                         if matches!(&active, ActiveStream::Transient { .. }) {
-                            match self.tool_journal.begin_streaming_batch(
+                            match self.runtime.tool_journal.begin_streaming_batch(
                                 active.journal().step_id(),
                                 active.journal().model_name(),
                             ) {
@@ -633,7 +660,7 @@ impl super::App {
                             let batch_id = *tool_batch_id;
                             let seq = active.tool_call_seq();
                             active.increment_tool_call_seq();
-                            if let Err(e) = self.tool_journal.record_call_start(
+                            if let Err(e) = self.runtime.tool_journal.record_call_start(
                                 batch_id,
                                 seq,
                                 id,
@@ -645,41 +672,38 @@ impl super::App {
                         }
                     }
                     StreamEvent::ToolCallDelta { id, arguments } => {
-                        if let ActiveStream::Journaled { tool_batch_id, .. } = &active {
+                        if let ActiveStream::Journaled {
+                            tool_batch_id,
+                            tool_args_journal_bytes,
+                            tool_args_buffer,
+                            ..
+                        } = &mut active
+                        {
                             let batch_id = *tool_batch_id;
                             // Check size cap before appending to journal
-                            let max_bytes = self.tool_settings.limits.max_tool_args_bytes;
-                            let current_bytes = active
-                                .tool_args_journal_bytes_mut()
-                                .get(id)
-                                .copied()
-                                .unwrap_or(0);
+                            let max_bytes = self.runtime.tool_settings.limits.max_tool_args_bytes;
+                            let current_bytes =
+                                tool_args_journal_bytes.get(id).copied().unwrap_or(0);
                             let new_total = current_bytes.saturating_add(arguments.len());
 
                             if new_total <= max_bytes {
                                 // Under limit: buffer deltas and flush periodically to avoid
                                 // per-delta SQLite UPDATEs (perf + UI responsiveness).
-                                active
-                                    .tool_args_journal_bytes_mut()
-                                    .insert(id.clone(), new_total);
+                                tool_args_journal_bytes.insert(id.clone(), new_total);
 
-                                let pending_flush =
-                                    if let Some(buffer) = active.tool_args_buffer_mut() {
-                                        buffer.push_delta(id, arguments);
-                                        if buffer.should_flush(
-                                            tool_args_journal_flush_bytes(),
-                                            tool_args_journal_flush_interval(),
-                                        ) {
-                                            buffer.take_pending()
-                                        } else {
-                                            Vec::new()
-                                        }
-                                    } else {
-                                        Vec::new()
-                                    };
+                                tool_args_buffer.push_delta(id, arguments);
+                                let pending_flush = if tool_args_buffer.should_flush(
+                                    tool_args_journal_flush_bytes(),
+                                    tool_args_journal_flush_interval(),
+                                ) {
+                                    tool_args_buffer.take_pending()
+                                } else {
+                                    Vec::new()
+                                };
 
                                 if !pending_flush.is_empty()
                                     && let Err(e) = self
+                                        .runtime
                                         .tool_journal
                                         .append_call_args_batch(batch_id, pending_flush)
                                 {
@@ -710,19 +734,20 @@ impl super::App {
                     }
                 };
 
-                let (message, journal, abort_handle, tool_batch_id, turn) = active.into_parts();
+                let (message, journal, abort_handle, tool_batch_journal, turn) =
+                    active.into_parts();
 
                 abort_handle.abort();
 
                 // Discard any in-progress tool batch to prevent stale recovery
-                if let Some(batch_id) = tool_batch_id
-                    && let Err(e) = self.tool_journal.discard_batch(batch_id)
+                if let crate::state::ToolJournalBatch::Present(batch_id) = tool_batch_journal
+                    && let Err(e) = self.runtime.tool_journal.discard_batch(batch_id)
                 {
                     tracing::warn!("Failed to discard tool batch on stream error: {e}");
                 }
 
                 let step_id = journal.step_id();
-                if let Err(seal_err) = journal.seal(&mut self.stream_journal) {
+                if let Err(seal_err) = journal.seal(&mut self.runtime.stream_journal) {
                     tracing::warn!("Journal seal failed after append error: {seal_err}");
                 }
                 // Discard the step to prevent blocking future sessions
@@ -796,6 +821,7 @@ impl super::App {
             let pending = tool_args_buffer.take_pending();
             if !pending.is_empty()
                 && let Err(e) = self
+                    .runtime
                     .tool_journal
                     .append_call_args_batch(*tool_batch_id, pending)
             {
@@ -804,7 +830,7 @@ impl super::App {
             }
         }
 
-        let (mut message, journal, abort_handle, tool_batch_id, turn) = active.into_parts();
+        let (mut message, journal, abort_handle, tool_batch_journal, turn) = active.into_parts();
 
         abort_handle.abort();
 
@@ -812,7 +838,7 @@ impl super::App {
         let step_id = journal.step_id();
 
         // Seal the journal (marks stream as complete)
-        if let Err(e) = journal.seal(&mut self.stream_journal) {
+        if let Err(e) = journal.seal(&mut self.runtime.stream_journal) {
             tracing::warn!("Journal seal failed: {e}");
             // Continue anyway - we'll try to commit to history
         }
@@ -823,12 +849,12 @@ impl super::App {
 
         // Capture OpenAI response ID for Pro model `previous_response_id` chaining.
         if let Some(resp_id) = message.openai_response_id() {
-            self.provider_runtime.openai_previous_response_id = Some(resp_id.to_string());
+            self.runtime.provider_runtime.openai_previous_response_id = Some(resp_id.to_string());
         }
 
         // Aggregate API usage for this turn
         if stream_usage.has_data() {
-            let turn_usage = self.turn_usage.get_or_insert_with(Default::default);
+            let turn_usage = self.core.turn_usage.get_or_insert_with(Default::default);
             turn_usage.record_call(stream_usage);
         }
 
@@ -837,8 +863,8 @@ impl super::App {
         // which could happen if partial tool call data accumulated before the error.
         if let StreamFinishReason::Error(err) = finish_reason {
             // Discard any pending tool batch - do NOT execute tools on error
-            if let Some(batch_id) = tool_batch_id
-                && let Err(e) = self.tool_journal.discard_batch(batch_id)
+            if let crate::state::ToolJournalBatch::Present(batch_id) = tool_batch_journal
+                && let Err(e) = self.runtime.tool_journal.discard_batch(batch_id)
             {
                 tracing::warn!("Failed to discard tool batch on stream error: {e}");
             }
@@ -848,7 +874,7 @@ impl super::App {
 
             if let Some(message) = message {
                 // Partial content received - keep both user message and partial response
-                self.pending_user_message = None;
+                self.core.pending_user_message = None;
                 self.commit_history_message(message, step_id);
             } else {
                 // No message content - rollback user message for easy retry
@@ -867,22 +893,21 @@ impl super::App {
         if message.has_tool_calls() {
             let thinking_content = message.thinking().to_owned();
             let thinking_replay = message.thinking_replay_state().clone();
-            let thinking_message =
-                build_thinking_message(model.clone(), thinking_content, thinking_replay);
+            let thinking = build_thinking_message(model.clone(), thinking_content, thinking_replay);
             let parsed = message.take_tool_calls();
             let assistant_text = message.content().to_string();
             // NOTE: We do NOT clear pending_user_message here because:
             // 1. The user message was already committed to history
             // 2. We need the user query for Librarian extraction when the turn completes
             // 3. rollback_pending_user_message() safely fails if it's not the last message
-            self.handle_tool_calls(crate::state::ToolLoopInput {
+            self.handle_tool_calls(crate::state::ToolLoopIngress {
                 assistant_text,
-                thinking_message,
+                thinking,
                 calls: parsed.calls,
                 pre_resolved: parsed.pre_resolved,
                 model,
                 step_id,
-                tool_batch_id,
+                tool_journal: tool_batch_journal,
                 turn,
             });
             return;
@@ -892,7 +917,7 @@ impl super::App {
         let thinking_replay = message.thinking_replay_state().clone();
 
         let Some(assistant_message) = message.into_message().ok() else {
-            self.pending_user_message = None;
+            self.core.pending_user_message = None;
             let empty_badge = NonEmptyString::try_from(EMPTY_RESPONSE_BADGE)
                 .expect("EMPTY_RESPONSE_BADGE must be non-empty");
             let empty_msg = Message::assistant(model.clone(), empty_badge);
@@ -920,15 +945,17 @@ impl super::App {
             return;
         };
 
-        self.pending_user_message = None;
+        self.core.pending_user_message = None;
 
-        let requires_persistence = thinking_replay.requires_persistence();
-        if let Some(thinking_msg) = build_thinking_message(model, thinking_content, thinking_replay)
-        {
-            if requires_persistence {
-                self.push_history_message(thinking_msg);
-            } else {
-                self.push_local_message(thinking_msg);
+        let thinking = build_thinking_message(model, thinking_content, thinking_replay);
+        match thinking {
+            ThinkingPayload::NotProvided => {}
+            ThinkingPayload::Provided(thinking_message) => {
+                if thinking_message.requires_persistence() {
+                    self.push_history_message(Message::Thinking(thinking_message));
+                } else {
+                    self.push_local_message(Message::Thinking(thinking_message));
+                }
             }
         }
         self.commit_history_message(assistant_message, step_id);
@@ -948,7 +975,7 @@ impl super::App {
         &mut self,
         mut messages: Vec<CacheableMessage>,
     ) -> Vec<CacheableMessage> {
-        let notifications = self.notification_queue.take();
+        let notifications = self.core.notification_queue.take();
         if notifications.is_empty() {
             return messages;
         }
@@ -965,7 +992,7 @@ impl super::App {
         let combined = crate::security::sanitize_display_text(&combined);
 
         if let Ok(content) = NonEmptyString::new(combined) {
-            let msg = Message::assistant(self.model.clone(), content);
+            let msg = Message::assistant(self.core.model.clone(), content);
             messages.push(CacheableMessage::plain(msg)); // tail = cache-safe
         }
 

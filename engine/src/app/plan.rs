@@ -99,7 +99,7 @@ impl App {
     }
 
     fn plan_create(&mut self, call: &ToolCall) -> PlanCallResult {
-        if self.plan_state.is_active() {
+        if self.core.plan_state.is_active() {
             return PlanCallResult::Resolved(ToolResult::error(
                 &call.id,
                 PLAN_TOOL_NAME,
@@ -140,7 +140,7 @@ impl App {
             }
         };
 
-        self.plan_state = PlanState::Proposed(plan);
+        self.core.plan_state = PlanState::Proposed(plan);
         PlanCallResult::NeedsApproval {
             kind: PlanApprovalKind::Create,
         }
@@ -154,7 +154,7 @@ impl App {
 
         // Scope the plan borrow so we can call self.create_plan_step_checkpoint after.
         let (rendered, completion) = {
-            let plan = match &mut self.plan_state {
+            let plan = match &mut self.core.plan_state {
                 PlanState::Active(plan) => plan,
                 PlanState::Proposed(_) => {
                     return ToolResult::error(
@@ -225,7 +225,7 @@ impl App {
             );
         }
 
-        if let Some(plan) = self.plan_state.plan()
+        if let Some(plan) = self.core.plan_state.plan()
             && let Some(next) = plan.active_step()
         {
             self.push_notification(format!(
@@ -248,7 +248,7 @@ impl App {
         };
 
         let rendered = {
-            let plan = match &mut self.plan_state {
+            let plan = match &mut self.core.plan_state {
                 PlanState::Active(plan) => plan,
                 _ => {
                     return ToolResult::error(
@@ -295,7 +295,7 @@ impl App {
 
         self.create_plan_step_checkpoint(step_id);
 
-        if let Some(plan) = self.plan_state.plan()
+        if let Some(plan) = self.core.plan_state.plan()
             && let Some(next) = plan.active_step()
         {
             self.push_notification(format!(
@@ -312,7 +312,7 @@ impl App {
     }
 
     fn plan_fail(&mut self, call: &ToolCall) -> ToolResult {
-        let plan = match &mut self.plan_state {
+        let plan = match &mut self.core.plan_state {
             PlanState::Active(plan) => plan,
             _ => {
                 return ToolResult::error(
@@ -367,7 +367,7 @@ impl App {
     }
 
     fn plan_edit(&mut self, call: &ToolCall) -> PlanCallResult {
-        let plan = match &mut self.plan_state {
+        let plan = match &mut self.core.plan_state {
             PlanState::Active(plan) => plan,
             _ => {
                 return PlanCallResult::Resolved(ToolResult::error(
@@ -428,7 +428,7 @@ impl App {
     }
 
     fn plan_status(&self, call: &ToolCall) -> ToolResult {
-        let content = match &self.plan_state {
+        let content = match &self.core.plan_state {
             PlanState::Inactive => "No active plan.".to_string(),
             PlanState::Proposed(plan) => {
                 format!("[Proposed — awaiting approval]\n\n{}", plan.render())
@@ -445,7 +445,7 @@ impl App {
         };
 
         let idle = self.idle_state();
-        let state = match std::mem::replace(&mut self.state, idle) {
+        let state = match std::mem::replace(&mut self.core.state, idle) {
             OperationState::PlanApproval(state) => *state,
             other => {
                 self.op_restore(other);
@@ -463,10 +463,10 @@ impl App {
         let result = if approved {
             match kind {
                 PlanApprovalKind::Create => {
-                    let plan = match std::mem::take(&mut self.plan_state) {
+                    let plan = match std::mem::take(&mut self.core.plan_state) {
                         PlanState::Proposed(plan) => plan,
                         other => {
-                            self.plan_state = other;
+                            self.core.plan_state = other;
                             batch.results.push(ToolResult::error(
                                 &tool_call_id,
                                 PLAN_TOOL_NAME,
@@ -479,7 +479,7 @@ impl App {
                     let rendered = plan.render();
                     let mut plan = plan;
                     activate_next_eligible(&mut plan);
-                    self.plan_state = PlanState::Active(plan);
+                    self.core.plan_state = PlanState::Active(plan);
                     ToolResult::success(
                         &tool_call_id,
                         PLAN_TOOL_NAME,
@@ -487,7 +487,12 @@ impl App {
                     )
                 }
                 PlanApprovalKind::Edit { .. } => {
-                    let rendered = self.plan_state.plan().map(Plan::render).unwrap_or_default();
+                    let rendered = self
+                        .core
+                        .plan_state
+                        .plan()
+                        .map(Plan::render)
+                        .unwrap_or_default();
                     ToolResult::success(
                         &tool_call_id,
                         PLAN_TOOL_NAME,
@@ -498,11 +503,11 @@ impl App {
         } else {
             match kind {
                 PlanApprovalKind::Create => {
-                    self.plan_state = PlanState::Inactive;
+                    self.core.plan_state = PlanState::Inactive;
                     ToolResult::error(&tool_call_id, PLAN_TOOL_NAME, "Plan rejected by user.")
                 }
                 PlanApprovalKind::Edit { pre_edit_plan } => {
-                    if let PlanState::Active(plan) = &mut self.plan_state {
+                    if let PlanState::Active(plan) = &mut self.core.plan_state {
                         *plan = pre_edit_plan;
                     }
                     ToolResult::error(

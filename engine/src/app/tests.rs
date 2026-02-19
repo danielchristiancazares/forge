@@ -104,7 +104,7 @@ fn test_app() -> App {
 }
 
 fn last_notification(app: &App) -> Option<&str> {
-    for item in app.display.iter().rev() {
+    for item in app.ui.display.iter().rev() {
         if let DisplayItem::Local(msg) = item
             && msg.role_str() == "system"
         {
@@ -117,16 +117,17 @@ fn last_notification(app: &App) -> Option<&str> {
 fn set_streaming_state(app: &mut App) {
     let (_tx, rx) = mpsc::channel(1);
     let streaming = StreamingMessage::new(
-        app.model.clone(),
+        app.core.model.clone(),
         rx,
-        app.tool_settings.limits.max_tool_args_bytes,
+        app.runtime.tool_settings.limits.max_tool_args_bytes,
     );
     let (abort_handle, _abort_registration) = AbortHandle::new_pair();
     let journal = app
+        .runtime
         .stream_journal
-        .begin_session(app.model.as_str())
+        .begin_session(app.core.model.as_str())
         .expect("journal session");
-    app.state = OperationState::Streaming(ActiveStream::Transient {
+    app.core.state = OperationState::Streaming(ActiveStream::Transient {
         message: streaming,
         journal,
         abort_handle,
@@ -152,12 +153,17 @@ fn openai_options_default_upgrade_for_gpt_52_pro() {
 #[test]
 fn openai_options_respects_explicit_effort_for_gpt_52_pro() {
     let mut app = test_app();
-    app.provider_runtime.openai_reasoning_effort_explicit = true;
-    app.provider_runtime.openai_options = OpenAIRequestOptions::new(
+    app.runtime
+        .provider_runtime
+        .openai_reasoning_effort_explicit = true;
+    app.runtime.provider_runtime.openai_options = OpenAIRequestOptions::new(
         OpenAIReasoningEffort::Medium,
-        app.provider_runtime.openai_options.reasoning_summary(),
-        app.provider_runtime.openai_options.verbosity(),
-        app.provider_runtime.openai_options.truncation(),
+        app.runtime
+            .provider_runtime
+            .openai_options
+            .reasoning_summary(),
+        app.runtime.provider_runtime.openai_options.verbosity(),
+        app.runtime.provider_runtime.openai_options.truncation(),
     );
     let pro_model = ModelName::from_predefined(PredefinedModel::Gpt52Pro);
     let pro_options = app.openai_options_for_model(&pro_model);
@@ -231,10 +237,10 @@ async fn drive_tool_loop_to_idle(app: &mut App) {
     let start = Instant::now();
     let timeout = Duration::from_secs(5);
     loop {
-        if matches!(app.state, OperationState::Idle) {
+        if matches!(app.core.state, OperationState::Idle) {
             break;
         }
-        match app.state {
+        match app.core.state {
             OperationState::ToolLoop(_) => {
                 app.poll_tool_loop();
                 tokio::task::yield_now().await;
@@ -251,7 +257,7 @@ async fn drive_tool_loop_to_idle(app: &mut App) {
 #[test]
 fn enter_and_delete_respects_unicode_cursor() {
     let mut app = test_app();
-    app.input = InputState::Insert(DraftInput {
+    app.ui.input = InputState::Insert(DraftInput {
         text: "a🦀b".to_string(),
         cursor: 1,
     });
@@ -281,7 +287,7 @@ fn enter_and_delete_respects_unicode_cursor() {
 #[test]
 fn submit_message_adds_user_message() {
     let mut app = test_app();
-    app.input = InputState::Insert(DraftInput {
+    app.ui.input = InputState::Insert(DraftInput {
         text: "hello".to_string(),
         cursor: 5,
     });
@@ -294,7 +300,7 @@ fn submit_message_adds_user_message() {
 
     assert!(app.draft_text().is_empty());
     assert_eq!(app.draft_cursor(), 0);
-    assert_eq!(app.view.scroll, ScrollState::AutoBottom);
+    assert_eq!(app.ui.view.scroll, ScrollState::AutoBottom);
     assert!(!app.is_loading());
 
     assert_eq!(app.history().len(), 1);
@@ -495,9 +501,9 @@ fn settings_resolve_move_down_clamps_to_last_setting() {
 #[test]
 fn runtime_snapshot_lists_pending_next_turn_settings() {
     let mut app = test_app();
-    app.pending_turn_model = Some(ModelName::from_predefined(PredefinedModel::Gpt52Pro));
-    app.pending_turn_context_memory_enabled = Some(false);
-    app.pending_turn_ui_options = Some(UiOptions {
+    app.core.pending_turn_model = Some(ModelName::from_predefined(PredefinedModel::Gpt52Pro));
+    app.core.pending_turn_context_memory_enabled = Some(false);
+    app.core.pending_turn_ui_options = Some(UiOptions {
         ascii_only: true,
         high_contrast: true,
         reduced_motion: false,
@@ -529,8 +535,8 @@ fn runtime_snapshot_lists_pending_next_turn_settings() {
 #[test]
 fn resolve_cascade_includes_context_memory_and_ui_defaults_layers() {
     let mut app = test_app();
-    app.pending_turn_context_memory_enabled = Some(false);
-    app.pending_turn_ui_options = Some(UiOptions {
+    app.core.pending_turn_context_memory_enabled = Some(false);
+    app.core.pending_turn_ui_options = Some(UiOptions {
         ascii_only: false,
         high_contrast: true,
         reduced_motion: true,
@@ -569,7 +575,7 @@ fn resolve_cascade_includes_context_memory_and_ui_defaults_layers() {
 #[test]
 fn resolve_cascade_uses_pending_model_for_session_layer() {
     let mut app = test_app();
-    app.pending_turn_model = Some(ModelName::from_predefined(PredefinedModel::Gpt52Pro));
+    app.core.pending_turn_model = Some(ModelName::from_predefined(PredefinedModel::Gpt52Pro));
 
     let cascade = app.resolve_cascade();
 
@@ -658,11 +664,13 @@ fn settings_usable_model_count_reflects_configured_providers() {
     let mut app = test_app();
     assert_eq!(app.settings_usable_model_count(), 2);
 
-    app.api_keys
+    app.runtime
+        .api_keys
         .insert(Provider::OpenAI, SecretString::new("openai".to_string()));
     assert_eq!(app.settings_usable_model_count(), 4);
 
-    app.api_keys
+    app.runtime
+        .api_keys
         .insert(Provider::Gemini, SecretString::new("gemini".to_string()));
     assert_eq!(app.settings_usable_model_count(), 6);
 }
@@ -896,7 +904,7 @@ fn apply_pending_turn_settings_consumes_staged_defaults() {
         reduced_motion: true,
         show_thinking: true,
     };
-    app.pending_turn_ui_options = Some(pending);
+    app.core.pending_turn_ui_options = Some(pending);
 
     app.apply_pending_turn_settings();
 
@@ -908,8 +916,8 @@ fn apply_pending_turn_settings_consumes_staged_defaults() {
 fn queue_message_applies_pending_model_before_request_config() {
     let mut app = test_app();
     let pending_model = ModelName::from_predefined(PredefinedModel::ClaudeHaiku);
-    app.pending_turn_model = Some(pending_model.clone());
-    app.input = InputState::Insert(DraftInput {
+    app.core.pending_turn_model = Some(pending_model.clone());
+    app.ui.input = InputState::Insert(DraftInput {
         text: "pending model".to_string(),
         cursor: 13,
     });
@@ -928,8 +936,8 @@ fn queue_message_applies_pending_model_before_request_config() {
 #[test]
 fn queue_message_applies_pending_context_before_request_config() {
     let mut app = test_app();
-    app.pending_turn_context_memory_enabled = Some(false);
-    app.input = InputState::Insert(DraftInput {
+    app.core.pending_turn_context_memory_enabled = Some(false);
+    app.ui.input = InputState::Insert(DraftInput {
         text: "pending context".to_string(),
         cursor: 15,
     });
@@ -947,8 +955,8 @@ fn queue_message_applies_pending_context_before_request_config() {
 #[test]
 fn queue_message_applies_pending_tools_before_request_config() {
     let mut app = test_app();
-    app.pending_turn_tool_approval_mode = Some(tools::ApprovalMode::Strict);
-    app.input = InputState::Insert(DraftInput {
+    app.core.pending_turn_tool_approval_mode = Some(tools::ApprovalMode::Strict);
+    app.ui.input = InputState::Insert(DraftInput {
         text: "pending tools".to_string(),
         cursor: 13,
     });
@@ -959,7 +967,10 @@ fn queue_message_applies_pending_tools_before_request_config() {
         .queue_message()
         .expect("queued message");
 
-    assert_eq!(app.tool_settings.policy.mode, tools::ApprovalMode::Strict);
+    assert_eq!(
+        app.runtime.tool_settings.policy.mode,
+        tools::ApprovalMode::Strict
+    );
     assert!(!app.settings_pending_tools_apply_next_turn());
 }
 
@@ -991,16 +1002,17 @@ fn process_stream_events_applies_deltas_and_done() {
 
     let (tx, rx) = mpsc::channel(1024);
     let streaming = StreamingMessage::new(
-        app.model.clone(),
+        app.core.model.clone(),
         rx,
-        app.tool_settings.limits.max_tool_args_bytes,
+        app.runtime.tool_settings.limits.max_tool_args_bytes,
     );
     let (abort_handle, _abort_registration) = AbortHandle::new_pair();
     let journal = app
+        .runtime
         .stream_journal
-        .begin_session(app.model.as_str())
+        .begin_session(app.core.model.as_str())
         .expect("journal session");
-    app.state = OperationState::Streaming(ActiveStream::Transient {
+    app.core.state = OperationState::Streaming(ActiveStream::Transient {
         message: streaming,
         journal,
         abort_handle,
@@ -1029,16 +1041,17 @@ fn process_stream_events_persists_thinking_signature_when_hidden() {
 
     let (tx, rx) = mpsc::channel(1024);
     let streaming = StreamingMessage::new(
-        app.model.clone(),
+        app.core.model.clone(),
         rx,
-        app.tool_settings.limits.max_tool_args_bytes,
+        app.runtime.tool_settings.limits.max_tool_args_bytes,
     );
     let (abort_handle, _abort_registration) = AbortHandle::new_pair();
     let journal = app
+        .runtime
         .stream_journal
-        .begin_session(app.model.as_str())
+        .begin_session(app.core.model.as_str())
         .expect("journal session");
-    app.state = OperationState::Streaming(ActiveStream::Transient {
+    app.core.state = OperationState::Streaming(ActiveStream::Transient {
         message: streaming,
         journal,
         abort_handle,
@@ -1079,16 +1092,17 @@ fn process_stream_events_respects_budget() {
 
     let (tx, rx) = mpsc::channel(1024);
     let streaming = StreamingMessage::new(
-        app.model.clone(),
+        app.core.model.clone(),
         rx,
-        app.tool_settings.limits.max_tool_args_bytes,
+        app.runtime.tool_settings.limits.max_tool_args_bytes,
     );
     let (abort_handle, _abort_registration) = AbortHandle::new_pair();
     let journal = app
+        .runtime
         .stream_journal
-        .begin_session(app.model.as_str())
+        .begin_session(app.core.model.as_str())
         .expect("journal session");
-    app.state = OperationState::Streaming(ActiveStream::Transient {
+    app.core.state = OperationState::Streaming(ActiveStream::Transient {
         message: streaming,
         journal,
         abort_handle,
@@ -1114,16 +1128,17 @@ fn process_stream_events_starts_tool_journal_on_first_tool_call() {
 
     let (tx, rx) = mpsc::channel(1024);
     let streaming = StreamingMessage::new(
-        app.model.clone(),
+        app.core.model.clone(),
         rx,
-        app.tool_settings.limits.max_tool_args_bytes,
+        app.runtime.tool_settings.limits.max_tool_args_bytes,
     );
     let (abort_handle, _abort_registration) = AbortHandle::new_pair();
     let journal = app
+        .runtime
         .stream_journal
-        .begin_session(app.model.as_str())
+        .begin_session(app.core.model.as_str())
         .expect("journal session");
-    app.state = OperationState::Streaming(ActiveStream::Transient {
+    app.core.state = OperationState::Streaming(ActiveStream::Transient {
         message: streaming,
         journal,
         abort_handle,
@@ -1146,18 +1161,19 @@ fn process_stream_events_starts_tool_journal_on_first_tool_call() {
 
     app.process_stream_events();
 
-    let tool_batch_id = match &app.state {
+    let tool_batch_id = match &app.core.state {
         OperationState::Streaming(ActiveStream::Journaled { tool_batch_id, .. }) => *tool_batch_id,
         _ => panic!("expected journaled stream"),
     };
 
     let recovered = app
+        .runtime
         .tool_journal
         .recover()
         .expect("recover tool batch")
         .expect("pending tool batch");
     assert_eq!(recovered.batch_id, tool_batch_id);
-    assert_eq!(recovered.model_name, app.model.as_str());
+    assert_eq!(recovered.model_name, app.core.model.as_str());
     assert_eq!(recovered.calls.len(), 1);
     let call = &recovered.calls[0];
     assert_eq!(call.id, "call-1");
@@ -1169,8 +1185,8 @@ fn process_stream_events_starts_tool_journal_on_first_tool_call() {
 #[test]
 fn submit_message_without_key_sets_status_and_does_not_queue() {
     let mut app = test_app();
-    app.api_keys.clear();
-    app.input = InputState::Insert(DraftInput {
+    app.runtime.api_keys.clear();
+    app.ui.input = InputState::Insert(DraftInput {
         text: "hi".to_string(),
         cursor: 2,
     });
@@ -1188,7 +1204,7 @@ fn submit_message_without_key_sets_status_and_does_not_queue() {
 #[test]
 fn queue_message_sets_pending_user_message() {
     let mut app = test_app();
-    app.input = InputState::Insert(DraftInput {
+    app.ui.input = InputState::Insert(DraftInput {
         text: "test message".to_string(),
         cursor: 12,
     });
@@ -1199,8 +1215,8 @@ fn queue_message_sets_pending_user_message() {
         .queue_message()
         .expect("queued message");
 
-    assert!(app.pending_user_message.is_some());
-    let (msg_id, original_text, _agents_md) = app.pending_user_message.as_ref().unwrap();
+    assert!(app.core.pending_user_message.is_some());
+    let (msg_id, original_text, _agents_md) = app.core.pending_user_message.as_ref().unwrap();
     assert_eq!(msg_id.as_u64(), 0);
     assert_eq!(original_text, "test message");
 }
@@ -1208,7 +1224,7 @@ fn queue_message_sets_pending_user_message() {
 #[tokio::test]
 async fn distillation_not_needed_starts_queued_request() {
     let mut app = test_app();
-    app.input = InputState::Insert(DraftInput {
+    app.ui.input = InputState::Insert(DraftInput {
         text: "queued".to_string(),
         cursor: 6,
     });
@@ -1222,7 +1238,7 @@ async fn distillation_not_needed_starts_queued_request() {
     let result = app.try_start_distillation(Some(queued));
 
     assert_eq!(result, DistillationStart::NotNeeded);
-    assert!(matches!(app.state, OperationState::Streaming(_)));
+    assert!(matches!(app.core.state, OperationState::Streaming(_)));
 }
 
 #[test]
@@ -1231,30 +1247,30 @@ fn rollback_pending_user_message_restores_input() {
 
     let content = NonEmptyString::new("my message").expect("non-empty");
     let msg_id = app.push_history_message(Message::user(content));
-    app.pending_user_message = Some((msg_id, "my message".to_string(), String::new()));
+    app.core.pending_user_message = Some((msg_id, "my message".to_string(), String::new()));
 
     assert_eq!(app.history().len(), 1);
-    assert_eq!(app.display.len(), 1);
+    assert_eq!(app.ui.display.len(), 1);
 
     app.rollback_pending_user_message();
 
     assert_eq!(app.history().len(), 0);
-    assert_eq!(app.display.len(), 0);
+    assert_eq!(app.ui.display.len(), 0);
     assert_eq!(app.draft_text(), "my message");
     assert_eq!(app.input_mode(), InputMode::Insert);
-    assert!(app.pending_user_message.is_none());
+    assert!(app.core.pending_user_message.is_none());
 }
 
 #[test]
 fn rollback_pending_user_message_no_op_when_empty() {
     let mut app = test_app();
 
-    assert!(app.pending_user_message.is_none());
+    assert!(app.core.pending_user_message.is_none());
 
     app.rollback_pending_user_message();
 
     assert!(app.draft_text().is_empty());
-    assert!(app.pending_user_message.is_none());
+    assert!(app.core.pending_user_message.is_none());
 }
 
 #[test]
@@ -1443,7 +1459,7 @@ fn tool_call_args_escaped_sequences_across_deltas_are_deserialized() {
 #[tokio::test]
 async fn tool_loop_awaiting_approval_then_deny_all_commits() {
     let mut app = test_app();
-    app.api_keys.clear();
+    app.runtime.api_keys.clear();
 
     let call = ToolCall::new(
         "call-1",
@@ -1452,23 +1468,25 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
             "patch": "LP1\nF foo.txt\nT\nhello\n.\nEND\n"
         }),
     );
-    let thinking = Message::thinking_with_signature(
-        app.model.clone(),
-        NonEmptyString::new("thinking").expect("non-empty"),
-        "sig".to_string(),
+    let thinking = crate::core::thinking::ThinkingPayload::Provided(
+        forge_types::ThinkingMessage::with_signature(
+            app.core.model.clone(),
+            NonEmptyString::new("thinking").expect("non-empty"),
+            "sig".to_string(),
+        ),
     );
-    app.handle_tool_calls(crate::state::ToolLoopInput {
+    app.handle_tool_calls(crate::state::ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking_message: Some(thinking),
+        thinking,
         calls: vec![call],
         pre_resolved: Vec::new(),
-        model: app.model.clone(),
+        model: app.core.model.clone(),
         step_id: StepId::new(1),
-        tool_batch_id: None,
+        tool_journal: crate::state::ToolJournalBatch::Absent,
         turn: super::TurnContext::new_for_tests(),
     });
 
-    match &app.state {
+    match &app.core.state {
         OperationState::ToolLoop(state) => match state.phase {
             ToolLoopPhase::AwaitingApproval(ref approval) => {
                 assert_eq!(approval.data().requests.len(), 1);
@@ -1482,7 +1500,7 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
 
     app.resolve_tool_approval(tools::ApprovalDecision::DenyAll);
 
-    assert!(matches!(app.state, OperationState::Idle));
+    assert!(matches!(app.core.state, OperationState::Idle));
     let entries = app.history().entries();
     let thinking_entry = entries.first().expect("thinking message");
     let Message::Thinking(thinking) = thinking_entry.message() else {
@@ -1500,9 +1518,9 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
 #[tokio::test]
 async fn run_approval_request_captures_reason_without_changing_summary() {
     let mut app = test_app();
-    app.api_keys.clear();
-    app.tool_settings.policy.mode = tools::ApprovalMode::Default;
-    app.tool_settings.policy.denylist.remove("Run");
+    app.runtime.api_keys.clear();
+    app.runtime.tool_settings.policy.mode = tools::ApprovalMode::Default;
+    app.runtime.tool_settings.policy.denylist.remove("Run");
 
     let call = ToolCall::new(
         "call-1",
@@ -1512,14 +1530,14 @@ async fn run_approval_request_captures_reason_without_changing_summary() {
             "reason": "Need to verify the local build toolchain."
         }),
     );
-    app.handle_tool_calls(crate::state::ToolLoopInput {
+    app.handle_tool_calls(crate::state::ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking_message: None,
+        thinking: crate::core::thinking::ThinkingPayload::NotProvided,
         calls: vec![call],
         pre_resolved: Vec::new(),
-        model: app.model.clone(),
+        model: app.core.model.clone(),
         step_id: StepId::new(1),
-        tool_batch_id: None,
+        tool_journal: crate::state::ToolJournalBatch::Absent,
         turn: super::TurnContext::new_for_tests(),
     });
 
@@ -1537,34 +1555,35 @@ async fn run_approval_request_captures_reason_without_changing_summary() {
 #[tokio::test]
 async fn tool_loop_preserves_order_after_approval() {
     let mut app = test_app();
-    app.api_keys.clear();
+    app.runtime.api_keys.clear();
 
     let log = Arc::new(Mutex::new(Vec::new()));
-    let registry = std::sync::Arc::get_mut(&mut app.tool_registry).expect("unique registry");
+    let registry =
+        std::sync::Arc::get_mut(&mut app.runtime.tool_registry).expect("unique registry");
     registry
         .register(Box::new(MockTool::new("mock_a", true, Arc::clone(&log))))
         .expect("register mock_a");
     registry
         .register(Box::new(MockTool::new("mock_b", false, Arc::clone(&log))))
         .expect("register mock_b");
-    app.tool_definitions = app.tool_registry.definitions();
+    app.core.tool_definitions = app.runtime.tool_registry.definitions();
 
     let calls = vec![
         ToolCall::new("call-a", "mock_a", json!({})),
         ToolCall::new("call-b", "mock_b", json!({})),
     ];
-    app.handle_tool_calls(crate::state::ToolLoopInput {
+    app.handle_tool_calls(crate::state::ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking_message: None,
+        thinking: crate::core::thinking::ThinkingPayload::NotProvided,
         calls,
         pre_resolved: Vec::new(),
-        model: app.model.clone(),
+        model: app.core.model.clone(),
         step_id: StepId::new(1),
-        tool_batch_id: None,
+        tool_journal: crate::state::ToolJournalBatch::Absent,
         turn: super::TurnContext::new_for_tests(),
     });
 
-    match &app.state {
+    match &app.core.state {
         OperationState::ToolLoop(state) => match state.phase {
             ToolLoopPhase::AwaitingApproval(_) => {}
             ToolLoopPhase::Processing(_) | ToolLoopPhase::Executing(_) => {
@@ -1586,11 +1605,11 @@ async fn tool_loop_preserves_order_after_approval() {
 #[tokio::test]
 async fn tool_loop_write_then_read_same_batch() {
     let mut app = test_app();
-    app.tool_settings.policy.mode = tools::ApprovalMode::Permissive;
-    app.api_keys.clear();
+    app.runtime.tool_settings.policy.mode = tools::ApprovalMode::Permissive;
+    app.runtime.api_keys.clear();
 
     let temp_dir = tempdir().expect("temp dir");
-    app.tool_settings.sandbox =
+    app.runtime.tool_settings.sandbox =
         tools::sandbox::Sandbox::new(vec![temp_dir.path().to_path_buf()], Vec::new(), false)
             .expect("sandbox");
 
@@ -1603,14 +1622,14 @@ async fn tool_loop_write_then_read_same_batch() {
         ToolCall::new("call-read", "Read", json!({ "path": "test.txt" })),
     ];
 
-    app.handle_tool_calls(crate::state::ToolLoopInput {
+    app.handle_tool_calls(crate::state::ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking_message: None,
+        thinking: crate::core::thinking::ThinkingPayload::NotProvided,
         calls,
         pre_resolved: Vec::new(),
-        model: app.model.clone(),
+        model: app.core.model.clone(),
         step_id: StepId::new(1),
-        tool_batch_id: None,
+        tool_journal: crate::state::ToolJournalBatch::Absent,
         turn: super::TurnContext::new_for_tests(),
     });
 
@@ -1647,14 +1666,15 @@ async fn tool_loop_write_then_read_same_batch() {
 async fn compaction_failure_goes_to_idle_no_retry() {
     let mut app = test_app();
 
-    let config = ApiConfig::new(ApiKey::claude("test"), app.model.clone()).expect("api config");
+    let config =
+        ApiConfig::new(ApiKey::claude("test"), app.core.model.clone()).expect("api config");
     let handle = tokio::spawn(async { Err(anyhow!("boom")) });
 
     let task = DistillationTask {
         generated_by: "test".to_string(),
         handle,
     };
-    app.state = OperationState::Distilling(DistillationState::CompletedWithQueued {
+    app.core.state = OperationState::Distilling(DistillationState::CompletedWithQueued {
         task,
         message: QueuedUserMessage {
             config: config.clone(),
@@ -1667,32 +1687,36 @@ async fn compaction_failure_goes_to_idle_no_retry() {
 
     // With transport-layer retries handling transient failures, compaction errors
     // go directly to Idle state (no engine-level retry).
-    assert!(matches!(app.state, OperationState::Idle));
+    assert!(matches!(app.core.state, OperationState::Idle));
 }
 
 #[test]
 fn tool_loop_max_iterations_short_circuits() {
     let mut app = test_app();
-    app.tool_iterations = app.tool_settings.limits.max_tool_iterations_per_user_turn;
-    app.api_keys.clear();
+    app.core.tool_iterations = app
+        .runtime
+        .tool_settings
+        .limits
+        .max_tool_iterations_per_user_turn;
+    app.runtime.api_keys.clear();
 
     let call = ToolCall::new(
         "call-1",
         "Edit",
         json!({ "patch": "LP1\nF foo.txt\nT\nhello\n.\nEND\n" }),
     );
-    app.handle_tool_calls(crate::state::ToolLoopInput {
+    app.handle_tool_calls(crate::state::ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking_message: None,
+        thinking: crate::core::thinking::ThinkingPayload::NotProvided,
         calls: vec![call],
         pre_resolved: Vec::new(),
-        model: app.model.clone(),
+        model: app.core.model.clone(),
         step_id: StepId::new(1),
-        tool_batch_id: None,
+        tool_journal: crate::state::ToolJournalBatch::Absent,
         turn: super::TurnContext::new_for_tests(),
     });
 
-    assert!(matches!(app.state, OperationState::Idle));
+    assert!(matches!(app.core.state, OperationState::Idle));
     let last = app.history().entries().last().expect("tool result");
     assert!(matches!(last.message(), Message::ToolResult(_)));
     assert_eq!(last.message().content(), "Max tool iterations reached");
@@ -1734,14 +1758,14 @@ fn plan_edit_call() -> ToolCall {
 }
 
 fn submit_plan_call(app: &mut App, call: ToolCall) {
-    app.handle_tool_calls(crate::state::ToolLoopInput {
+    app.handle_tool_calls(crate::state::ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking_message: None,
+        thinking: crate::core::thinking::ThinkingPayload::NotProvided,
         calls: vec![call],
         pre_resolved: Vec::new(),
-        model: app.model.clone(),
+        model: app.core.model.clone(),
         step_id: StepId::new(1),
-        tool_batch_id: None,
+        tool_journal: crate::state::ToolJournalBatch::Absent,
         turn: super::TurnContext::new_for_tests(),
     });
 }
@@ -1751,8 +1775,8 @@ fn plan_create_enters_plan_approval_state() {
     let mut app = test_app();
     submit_plan_call(&mut app, plan_create_call());
 
-    assert!(matches!(app.state, OperationState::PlanApproval(_)));
-    assert!(matches!(app.plan_state, PlanState::Proposed(_)));
+    assert!(matches!(app.core.state, OperationState::PlanApproval(_)));
+    assert!(matches!(app.core.plan_state, PlanState::Proposed(_)));
     assert_eq!(app.plan_approval_kind(), Some("create"));
     assert!(app.plan_approval_rendered().is_some());
 }
@@ -1760,33 +1784,33 @@ fn plan_create_enters_plan_approval_state() {
 #[test]
 fn plan_create_approve_activates_plan() {
     let mut app = test_app();
-    app.api_keys.clear();
+    app.runtime.api_keys.clear();
     submit_plan_call(&mut app, plan_create_call());
-    assert!(matches!(app.state, OperationState::PlanApproval(_)));
+    assert!(matches!(app.core.state, OperationState::PlanApproval(_)));
 
     app.plan_approval_approve();
 
-    assert!(matches!(app.plan_state, PlanState::Active(_)));
-    let plan = app.plan_state.plan().unwrap();
+    assert!(matches!(app.core.plan_state, PlanState::Active(_)));
+    let plan = app.core.plan_state.plan().unwrap();
     assert!(plan.active_step().is_some());
 }
 
 #[test]
 fn plan_create_reject_returns_inactive() {
     let mut app = test_app();
-    app.api_keys.clear();
+    app.runtime.api_keys.clear();
     submit_plan_call(&mut app, plan_create_call());
-    assert!(matches!(app.state, OperationState::PlanApproval(_)));
+    assert!(matches!(app.core.state, OperationState::PlanApproval(_)));
 
     app.plan_approval_reject();
 
-    assert!(matches!(app.plan_state, PlanState::Inactive));
+    assert!(matches!(app.core.plan_state, PlanState::Inactive));
 }
 
 #[test]
 fn plan_edit_approve_keeps_edit() {
     let mut app = test_app();
-    app.api_keys.clear();
+    app.runtime.api_keys.clear();
 
     let plan = forge_types::Plan::from_input(vec![forge_types::PhaseInput {
         name: "Phase 1".to_string(),
@@ -1807,18 +1831,18 @@ fn plan_edit_approve_keeps_edit() {
         .unwrap()
         .transition(forge_types::StepStatus::Active)
         .unwrap();
-    app.plan_state = PlanState::Active(plan);
+    app.core.plan_state = PlanState::Active(plan);
 
     submit_plan_call(&mut app, plan_edit_call());
-    assert!(matches!(app.state, OperationState::PlanApproval(_)));
+    assert!(matches!(app.core.state, OperationState::PlanApproval(_)));
     assert_eq!(app.plan_approval_kind(), Some("edit"));
 
-    let step_count_before_approve = app.plan_state.plan().unwrap().step_count();
+    let step_count_before_approve = app.core.plan_state.plan().unwrap().step_count();
     app.plan_approval_approve();
 
-    assert!(matches!(app.plan_state, PlanState::Active(_)));
+    assert!(matches!(app.core.plan_state, PlanState::Active(_)));
     assert_eq!(
-        app.plan_state.plan().unwrap().step_count(),
+        app.core.plan_state.plan().unwrap().step_count(),
         step_count_before_approve
     );
 }
@@ -1826,7 +1850,7 @@ fn plan_edit_approve_keeps_edit() {
 #[test]
 fn plan_edit_reject_reverts() {
     let mut app = test_app();
-    app.api_keys.clear();
+    app.runtime.api_keys.clear();
 
     let plan = forge_types::Plan::from_input(vec![forge_types::PhaseInput {
         name: "Phase 1".to_string(),
@@ -1848,16 +1872,16 @@ fn plan_edit_reject_reverts() {
         .transition(forge_types::StepStatus::Active)
         .unwrap();
     let original_step_count = plan.step_count();
-    app.plan_state = PlanState::Active(plan);
+    app.core.plan_state = PlanState::Active(plan);
 
     submit_plan_call(&mut app, plan_edit_call());
-    assert!(matches!(app.state, OperationState::PlanApproval(_)));
+    assert!(matches!(app.core.state, OperationState::PlanApproval(_)));
 
     app.plan_approval_reject();
 
-    assert!(matches!(app.plan_state, PlanState::Active(_)));
+    assert!(matches!(app.core.plan_state, PlanState::Active(_)));
     assert_eq!(
-        app.plan_state.plan().unwrap().step_count(),
+        app.core.plan_state.plan().unwrap().step_count(),
         original_step_count
     );
 }
@@ -1866,11 +1890,11 @@ fn plan_edit_reject_reverts() {
 fn plan_approval_cancel_reverts() {
     let mut app = test_app();
     submit_plan_call(&mut app, plan_create_call());
-    assert!(matches!(app.state, OperationState::PlanApproval(_)));
+    assert!(matches!(app.core.state, OperationState::PlanApproval(_)));
 
     app.cancel_active_operation();
 
-    assert!(matches!(app.plan_state, PlanState::Inactive));
+    assert!(matches!(app.core.plan_state, PlanState::Inactive));
 }
 
 #[test]
@@ -1896,7 +1920,7 @@ fn plan_advance_creates_checkpoint() {
         .unwrap()
         .transition(forge_types::StepStatus::Active)
         .unwrap();
-    app.plan_state = PlanState::Active(plan);
+    app.core.plan_state = PlanState::Active(plan);
 
     let step_id = forge_types::PlanStepId::new(1);
     let advance_call = ToolCall::new(
@@ -1913,7 +1937,7 @@ fn plan_advance_creates_checkpoint() {
     assert_eq!(resolution.pre_resolved.len(), 1);
     assert!(!resolution.pre_resolved[0].is_error);
 
-    let summaries = app.checkpoints.summaries();
+    let summaries = app.core.checkpoints.summaries();
     assert!(
         summaries
             .iter()
@@ -1945,7 +1969,7 @@ fn plan_skip_creates_checkpoint() {
         .unwrap()
         .transition(forge_types::StepStatus::Active)
         .unwrap();
-    app.plan_state = PlanState::Active(plan);
+    app.core.plan_state = PlanState::Active(plan);
 
     let step_id = forge_types::PlanStepId::new(1);
     let skip_call = ToolCall::new(
@@ -1962,7 +1986,7 @@ fn plan_skip_creates_checkpoint() {
     assert_eq!(resolution.pre_resolved.len(), 1);
     assert!(!resolution.pre_resolved[0].is_error);
 
-    let summaries = app.checkpoints.summaries();
+    let summaries = app.core.checkpoints.summaries();
     assert!(
         summaries
             .iter()
@@ -2112,14 +2136,14 @@ fn illegal_edges_are_rejected() {
 #[tokio::test]
 async fn tool_gate_disabled_blocks_tool_execution() {
     let mut app = test_app();
-    app.api_keys.clear();
-    app.tool_gate.disable("test reason");
+    app.runtime.api_keys.clear();
+    app.core.tool_gate.disable("test reason");
 
     set_streaming_state(&mut app);
-    assert!(matches!(app.state, OperationState::Streaming(_)));
+    assert!(matches!(app.core.state, OperationState::Streaming(_)));
 
     // Feed a tool call into the streaming message
-    if let OperationState::Streaming(ref mut active) = app.state {
+    if let OperationState::Streaming(ref mut active) = app.core.state {
         active
             .message_mut()
             .apply_event(StreamEvent::ToolCallStart {
@@ -2139,9 +2163,9 @@ async fn tool_gate_disabled_blocks_tool_execution() {
 
     // Tool gate disabled → tool calls pre-resolved to errors, returns to Idle
     assert!(
-        matches!(app.state, OperationState::Idle),
+        matches!(app.core.state, OperationState::Idle),
         "Expected Idle after tool gate blocked execution, got {:?}",
-        app.state.tag()
+        app.core.state.tag()
     );
 
     // Verify the tool result was an error
@@ -2200,7 +2224,7 @@ fn commit_tool_batch_requires_journal_proof() {
 fn self_state_assignment_only_in_authorized_locations() {
     let app_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
     // Runtime-constructed needle avoids self-matching when this file is scanned.
-    let needle = ["self", ".state", " ="].concat();
+    let needle = ["self", ".core.state", " ="].concat();
 
     for entry in std::fs::read_dir(&app_dir).expect("read app dir") {
         let entry = entry.expect("dir entry");

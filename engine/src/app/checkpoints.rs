@@ -549,8 +549,8 @@ impl crate::App {
     /// This is intentionally silent (no notification spam). It is discoverable via /rewind list,
     /// and consumed by /undo and /retry.
     pub(crate) fn create_turn_checkpoint(&mut self) {
-        let conversation_len = self.context_manager.history().len();
-        let _ = self.checkpoints.create_for_files(
+        let conversation_len = self.core.context_manager.history().len();
+        let _ = self.core.checkpoints.create_for_files(
             CheckpointKind::Turn,
             conversation_len,
             Vec::<PathBuf>::new(),
@@ -559,8 +559,8 @@ impl crate::App {
 
     /// Create a conversation-only checkpoint when a plan step completes (advance/skip).
     pub(crate) fn create_plan_step_checkpoint(&mut self, step_id: forge_types::PlanStepId) {
-        let conversation_len = self.context_manager.history().len();
-        let _ = self.checkpoints.create_for_files(
+        let conversation_len = self.core.context_manager.history().len();
+        let _ = self.core.checkpoints.create_for_files(
             CheckpointKind::PlanStep(step_id),
             conversation_len,
             Vec::<PathBuf>::new(),
@@ -570,6 +570,7 @@ impl crate::App {
     /// Obtain a proof for the latest per-turn checkpoint (used by /undo, /retry).
     pub(crate) fn prepare_latest_turn_checkpoint(&mut self) -> Option<PreparedRewind> {
         let Some(proof) = self
+            .core
             .checkpoints
             .prepare_latest_of_kind(CheckpointKind::Turn)
         else {
@@ -586,24 +587,27 @@ impl crate::App {
         &mut self,
         calls: impl IntoIterator<Item = &'a forge_types::ToolCall>,
     ) {
-        let working_dir = self.tool_settings.sandbox.working_dir();
-        let targets = match collect_edit_targets(calls, &self.tool_settings.sandbox, &working_dir) {
-            Ok(t) => t,
-            Err(e) => {
-                // A failed checkpoint must not block tool execution.
-                self.push_notification(format!("Checkpointing skipped (sandbox error): {e}"));
-                return;
-            }
-        };
+        let working_dir = self.runtime.tool_settings.sandbox.working_dir();
+        let targets =
+            match collect_edit_targets(calls, &self.runtime.tool_settings.sandbox, &working_dir) {
+                Ok(t) => t,
+                Err(e) => {
+                    // A failed checkpoint must not block tool execution.
+                    self.push_notification(format!("Checkpointing skipped (sandbox error): {e}"));
+                    return;
+                }
+            };
 
         if targets.is_empty() {
             return;
         }
 
-        let conversation_len = self.context_manager.history().len();
-        let created =
-            self.checkpoints
-                .create_for_files(CheckpointKind::ToolEdit, conversation_len, targets);
+        let conversation_len = self.core.context_manager.history().len();
+        let created = self.core.checkpoints.create_for_files(
+            CheckpointKind::ToolEdit,
+            conversation_len,
+            targets,
+        );
 
         if let Some(warning) = created.warning {
             self.push_notification(warning);
@@ -619,7 +623,7 @@ impl crate::App {
 
     /// Show a short list of available checkpoints.
     pub(crate) fn show_checkpoint_list(&mut self) {
-        if self.checkpoints.is_empty() {
+        if self.core.checkpoints.is_empty() {
             self.push_notification(
                 "No checkpoints yet. Forge creates them automatically at the start of each turn and before apply_patch/write_file.",
             );
@@ -629,6 +633,7 @@ impl crate::App {
         let mut lines: Vec<String> = Vec::new();
         lines.push("Checkpoints (newest last):".to_string());
         for s in self
+            .core
             .checkpoints
             .summaries()
             .into_iter()
@@ -657,11 +662,11 @@ impl crate::App {
         // Accept '#<id>' as well as '<id>' for convenience (checkpoint lists are formatted as '#<id>').
         let target = target.strip_prefix('#').unwrap_or(target);
         if target.is_empty() {
-            return self.checkpoints.prepare_latest();
+            return self.core.checkpoints.prepare_latest();
         }
 
         if matches!(target, "last" | "latest") {
-            if let Some(p) = self.checkpoints.prepare_latest() {
+            if let Some(p) = self.core.checkpoints.prepare_latest() {
                 return Some(p);
             }
             self.push_notification("No checkpoints available");
@@ -673,7 +678,7 @@ impl crate::App {
             return None;
         };
 
-        if let Some(p) = self.checkpoints.prepare(id) {
+        if let Some(p) = self.core.checkpoints.prepare(id) {
             Some(p)
         } else {
             self.push_notification(format!("Unknown checkpoint id: {id}"));
@@ -690,7 +695,7 @@ impl crate::App {
         scope: RewindScope,
     ) -> Result<(), String> {
         let (id, conversation_len) = {
-            let cp = self.checkpoints.checkpoint(proof);
+            let cp = self.core.checkpoints.checkpoint(proof);
             (cp.id(), cp.conversation_len())
         };
 
@@ -700,14 +705,14 @@ impl crate::App {
         }
 
         if scope.includes_code() {
-            let Some(code_proof) = self.checkpoints.prepare_code(proof) else {
+            let Some(code_proof) = self.core.checkpoints.prepare_code(proof) else {
                 return Err(format!("Checkpoint #{id} does not contain a code snapshot"));
             };
-            let (_cp, ws) = self.checkpoints.checkpoint_code(code_proof);
+            let (_cp, ws) = self.core.checkpoints.checkpoint_code(code_proof);
             let report = restore_workspace(ws).map_err(|e| format!("Code rewind failed: {e}"))?;
 
             // Clear tool file cache to avoid stale-file protection false positives.
-            if let Ok(mut guard) = self.tool_file_cache.try_lock() {
+            if let Ok(mut guard) = self.runtime.tool_file_cache.try_lock() {
                 guard.clear();
             }
 
@@ -720,7 +725,7 @@ impl crate::App {
 
         if scope.includes_conversation() {
             self.truncate_history_to(conversation_len)?;
-            self.checkpoints.prune_after(id);
+            self.core.checkpoints.prune_after(id);
             self.autosave_history();
             self.push_notification(format!("Conversation rewound to checkpoint #{id}"));
         }
@@ -733,9 +738,10 @@ impl crate::App {
 
         // The ContextManager only supports rollback_last_message for the most recent entry.
         // We need to call it repeatedly to truncate down to target_len.
-        let mut current = self.context_manager.history().len();
+        let mut current = self.core.context_manager.history().len();
         while current > target_len {
             let last_id = self
+                .core
                 .context_manager
                 .history()
                 .entries()
@@ -745,31 +751,32 @@ impl crate::App {
 
             // rollback_last_message returns None if the entry is Distilled or not the last
             let _removed = self
+                .core
                 .context_manager
                 .rollback_last_message(last_id)
                 .ok_or_else(|| {
                     "Cannot rewind conversation (unexpected Distilled tail)".to_string()
                 })?;
-            current = self.context_manager.history().len();
+            current = self.core.context_manager.history().len();
         }
 
         self.rebuild_display_from_history();
         self.invalidate_usage_cache();
-        self.pending_user_message = None;
+        self.core.pending_user_message = None;
         self.scroll_to_bottom();
         Ok(())
     }
 
     /// Verify we can truncate history down to `target_len` without mutating state.
     fn can_truncate_history_to(&self, target_len: usize) -> Result<(), String> {
-        let entries = self.context_manager.history().entries();
+        let entries = self.core.context_manager.history().entries();
         if target_len >= entries.len() {
             return Ok(());
         }
 
         // Cannot rewind past a compaction point — the pre-compaction messages
         // are display-only and no longer part of the API view.
-        let history = self.context_manager.history();
+        let history = self.core.context_manager.history();
         if history.is_compacted() {
             let api_len = history.api_entries().len();
             if target_len < entries.len().saturating_sub(api_len) {

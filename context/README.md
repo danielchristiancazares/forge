@@ -26,15 +26,15 @@ Context Infinity is Forge's system for managing unlimited conversation context w
 | 705-727 | Type-Driven Design |
 | 728-755 | Extension Points |
 | 756-773 | Limitations |
-| 774-871 | The Librarian |
-| 872-931 | Fact Store |
-| 932-975 | Atomic Write Helpers |
-| 976-1787 | Public API |
-| 1788-1888 | Complete Workflow Example |
-| 1889-1906 | Type Relationships |
-| 1907-1913 | Error Handling |
-| 1914-1926 | Dependencies |
-| 1927-1934 | Testing |
+| 774-849 | The Librarian (Fact Memory) |
+| 850-909 | Fact Store |
+| 910-953 | Atomic Write Helpers |
+| 954-1693 | Public API |
+| 1694-1794 | Complete Workflow Example |
+| 1795-1812 | Type Relationships |
+| 1813-1819 | Error Handling |
+| 1820-1832 | Dependencies |
+| 1833-1840 | Testing |
 <!-- toc:end -->
 
 ## Overview

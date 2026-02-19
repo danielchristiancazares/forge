@@ -29,6 +29,7 @@ pub use notifications::SystemNotification;
 
 mod state;
 pub use state::DistillationTask;
+pub use state::{ApprovalExpanded, ApprovalSelection};
 
 mod util;
 
