@@ -3500,13 +3500,13 @@ impl App {
     }
 
     pub fn command_input_access(&self) -> CommandInputAccess<'_> {
-        match &self.ui.input {
-            InputState::Command { command, .. } => CommandInputAccess::Active {
+        match self.ui.input.command_ref() {
+            ui::CommandDraftRef::Active(command) => CommandInputAccess::Active {
                 text: command.text(),
                 cursor: command.cursor(),
                 cursor_byte_index: command.byte_index(),
             },
-            _ => CommandInputAccess::Inactive,
+            ui::CommandDraftRef::Inactive => CommandInputAccess::Inactive,
         }
     }
 
@@ -3535,7 +3535,7 @@ impl App {
 
     /// Navigate to previous (older) command in Command mode.
     pub fn navigate_command_history_up(&mut self) {
-        if let InputState::Command { command, .. } = &mut self.ui.input
+        if let ui::CommandDraftMut::Active(command) = self.ui.input.command_mut_access()
             && let Some(text) = self.ui.input_history.navigate_command_up(command.text())
         {
             command.set_text(text.to_owned());
@@ -3544,7 +3544,7 @@ impl App {
 
     /// Navigate to next (newer) command in Command mode.
     pub fn navigate_command_history_down(&mut self) {
-        if let InputState::Command { command, .. } = &mut self.ui.input
+        if let ui::CommandDraftMut::Active(command) = self.ui.input.command_mut_access()
             && let Some(text) = self.ui.input_history.navigate_command_down()
         {
             command.set_text(text.to_owned());
