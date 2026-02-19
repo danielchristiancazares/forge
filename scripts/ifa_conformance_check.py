@@ -43,7 +43,8 @@ REQUIRED_FILES = [
     CLASSIFICATION_MAP,
 ]
 
-ALLOWED_VISIBILITY = {"private", "pub(super)", "pub(crate)"}
+ALLOWED_VISIBILITY = {"private", "pub(super)", "pub(crate)", "pub"}
+VISIBILITY_RUNG_ORDER = {"private": 0, "pub(super)": 1, "pub(crate)": 2, "pub": 3}
 ALLOWED_CLASSIFICATIONS = {"core", "boundary"}
 BANNED_CORE_ENUM_VARIANTS = {"None", "Empty", "Unknown", "Default"}
 CARGO_TOML = ROOT / "Cargo.toml"
@@ -612,6 +613,211 @@ def validate_controlled_struct_unforgeability(
             # Enum-controlled types have no field visibility to inspect here.
 
 
+def _extract_visibility(vis_prefix: str | None) -> str:
+    """Map a Rust visibility modifier prefix to a rung string."""
+    if not vis_prefix or not vis_prefix.strip():
+        return "private"
+    trimmed = vis_prefix.strip()
+    if trimmed == "pub":
+        return "pub"
+    m = re.match(r"pub\(([^)]+)\)", trimmed)
+    if m:
+        inner = m.group(1).strip()
+        if inner == "crate":
+            return "pub(crate)"
+        if inner == "super":
+            return "pub(super)"
+        return "pub(crate)"
+    return "private"
+
+
+def _find_enum_visibility(
+    lines: list[str], enum_name: str, source_file: Path
+) -> tuple[str, Path, int] | None:
+    pattern = re.compile(
+        rf"^\s*(pub(?:\([^)]*\))?\s+)?enum\s+{re.escape(enum_name)}\b"
+    )
+    for idx, line in enumerate(lines):
+        m = pattern.match(line)
+        if m:
+            return (_extract_visibility(m.group(1)), source_file, idx + 1)
+    return None
+
+
+def _find_inherent_method_visibility(
+    lines: list[str], type_name: str, method_name: str, source_file: Path
+) -> tuple[str, Path, int] | None:
+    fn_pattern = re.compile(
+        rf"^\s*(pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+{re.escape(method_name)}\b"
+    )
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        if re.match(r"^\s*impl\b", line):
+            header = line.strip()
+            while "{" not in header and idx + 1 < len(lines):
+                idx += 1
+                header = f"{header} {lines[idx].strip()}"
+
+            is_inherent = (
+                re.match(
+                    rf"impl(?:\s*<[^>]*>)?\s+{re.escape(type_name)}\s*(?:<[^>]*>)?\s*\{{",
+                    header,
+                )
+                and " for " not in header
+            )
+
+            if is_inherent:
+                brace_depth = header.count("{") - header.count("}")
+                idx += 1
+                while idx < len(lines) and brace_depth > 0:
+                    body_line = lines[idx]
+                    if brace_depth == 1:
+                        fn_match = fn_pattern.match(body_line)
+                        if fn_match:
+                            return (
+                                _extract_visibility(fn_match.group(1)),
+                                source_file,
+                                idx + 1,
+                            )
+                    brace_depth += body_line.count("{") - body_line.count("}")
+                    idx += 1
+                continue
+        idx += 1
+    return None
+
+
+def _find_trait_impl_method(
+    lines: list[str], type_name: str, method_name: str, source_file: Path
+) -> tuple[str, Path, int] | None:
+    fn_pattern = re.compile(
+        rf"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+{re.escape(method_name)}\b"
+    )
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        if re.match(r"^\s*impl\b", line):
+            header = line.strip()
+            while "{" not in header and idx + 1 < len(lines):
+                idx += 1
+                header = f"{header} {lines[idx].strip()}"
+
+            is_trait_impl = " for " in header and re.search(
+                rf"\bfor\s+{re.escape(type_name)}\b", header
+            )
+
+            if is_trait_impl:
+                brace_depth = header.count("{") - header.count("}")
+                idx += 1
+                while idx < len(lines) and brace_depth > 0:
+                    body_line = lines[idx]
+                    if brace_depth == 1:
+                        fn_match = fn_pattern.match(body_line)
+                        if fn_match:
+                            return ("pub", source_file, idx + 1)
+                    brace_depth += body_line.count("{") - body_line.count("}")
+                    idx += 1
+                continue
+        idx += 1
+    return None
+
+
+def _resolve_constructor_visibility(
+    constructor_path: str,
+    crate_source_files: dict[str, list[Path]],
+    source_cache: dict[Path, str],
+    toml_path: Path,
+) -> tuple[str, Path, int] | None:
+    """Resolve the actual visibility rung of a constructor symbol.
+
+    Returns ``(visibility, source_file, line)`` or ``None`` if the symbol
+    cannot be resolved (already caught by symbol-path validation).
+    """
+    segments = _split_path(constructor_path, "constructor_paths[]", toml_path)
+    crate = segments[0]
+
+    is_wildcard = segments[-1] == "*"
+    if is_wildcard:
+        type_name = segments[-2]
+        module_segments = _leading_module_segments(segments[1:-2])
+    else:
+        symbol_name = segments[-1]
+        type_name = segments[-2] if len(segments) >= 3 else None
+        pre_symbol = segments[1:-1] if type_name else segments[1:]
+        module_segments = _leading_module_segments(pre_symbol)
+
+    module_candidates = [
+        c for c in _module_candidates(crate, module_segments) if c.exists()
+    ]
+    search_files = module_candidates if module_candidates else crate_source_files.get(crate, [])
+
+    for source_file in search_files:
+        text = source_cache.get(source_file)
+        if text is None:
+            text = source_file.read_text(encoding="utf-8")
+            source_cache[source_file] = text
+        lines = _strip_rust_comments(text).splitlines()
+
+        if is_wildcard or (not is_wildcard and symbol_name[:1].isupper()):
+            result = _find_enum_visibility(lines, type_name or symbol_name, source_file)
+            if result:
+                return result
+
+        if not is_wildcard and type_name:
+            result = _find_inherent_method_visibility(lines, type_name, symbol_name, source_file)
+            if result:
+                return result
+            result = _find_trait_impl_method(lines, type_name, symbol_name, source_file)
+            if result:
+                return result
+
+    return None
+
+
+def validate_constructor_visibility_rungs(
+    path: Path,
+    entries: list[dict],
+    crate_source_files: dict[str, list[Path]],
+    source_cache: dict[Path, str],
+) -> None:
+    """Validate that each constructor's actual visibility does not exceed
+    the declared ``max_constructor_visibility_rung``."""
+    for idx, entry in enumerate(entries):
+        max_rung = _require_non_empty_str(
+            entry.get("max_constructor_visibility_rung"),
+            "max_constructor_visibility_rung",
+            path,
+        )
+        max_rung_val = VISIBILITY_RUNG_ORDER.get(max_rung)
+        if max_rung_val is None:
+            continue
+
+        constructor_paths = _require_non_empty_list(
+            entry.get("constructor_paths"), "constructor_paths", path
+        )
+        controlled_type = entry.get("controlled_type_path", "<unknown>")
+
+        for constructor in constructor_paths:
+            constructor_value = _require_non_empty_str(
+                constructor, "constructor_paths[]", path
+            )
+            result = _resolve_constructor_visibility(
+                constructor_value, crate_source_files, source_cache, path
+            )
+            if result is None:
+                continue
+
+            actual_vis, source_file, line_number = result
+            actual_val = VISIBILITY_RUNG_ORDER.get(actual_vis, -1)
+            if actual_val > max_rung_val:
+                raise ValueError(
+                    f"{path}: entries[{idx}] ({controlled_type}) constructor "
+                    f"'{constructor_value}' has visibility '{actual_vis}' which "
+                    f"exceeds max_constructor_visibility_rung '{max_rung}' "
+                    f"(at {source_file}:{line_number})"
+                )
+
+
 def validate_parametricity_rules(path: Path) -> None:
     data = _load_toml(path)
     _validate_common_metadata(data, path)
@@ -739,6 +945,12 @@ def main() -> int:
             source_cache,
         )
         validate_controlled_struct_unforgeability(
+            AUTHORITY_BOUNDARY_MAP,
+            authority_entries,
+            crate_source_files,
+            source_cache,
+        )
+        validate_constructor_visibility_rungs(
             AUTHORITY_BOUNDARY_MAP,
             authority_entries,
             crate_source_files,
