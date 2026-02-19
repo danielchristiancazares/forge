@@ -916,14 +916,12 @@ mod tests {
     #[test]
     fn validate_created_parent_allows_normal_path() {
         let temp = tempdir().unwrap();
-        let sub = temp.path().join("sub");
+        // Canonicalize to resolve platform symlinks (macOS: /var → /private/var)
+        // so the input path doesn't contain symlinks that the walk would reject.
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let sub = root.join("sub");
         std::fs::create_dir(&sub).unwrap();
-        let sandbox = Sandbox::new(
-            vec![temp.path().to_path_buf()],
-            vec!["**/.ssh/**".to_string()],
-            false,
-        )
-        .unwrap();
+        let sandbox = Sandbox::new(vec![root], vec!["**/.ssh/**".to_string()], false).unwrap();
 
         let file = sub.join("ok.txt");
         assert!(sandbox.validate_created_parent(&file).is_ok());
@@ -932,16 +930,17 @@ mod tests {
     #[test]
     fn validate_created_parent_rejects_symlink_in_chain() {
         let temp = tempdir().unwrap();
-        let real_dir = temp.path().join("real");
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let real_dir = root.join("real");
         std::fs::create_dir(&real_dir).unwrap();
-        let link = temp.path().join("link");
+        let link = root.join("link");
 
         #[cfg(unix)]
         std::os::unix::fs::symlink(&real_dir, &link).unwrap();
         #[cfg(windows)]
         std::os::windows::fs::symlink_dir(&real_dir, &link).unwrap();
 
-        let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], false).unwrap();
+        let sandbox = Sandbox::new(vec![root], vec![], false).unwrap();
 
         let file = link.join("file.txt");
         assert!(sandbox.validate_created_parent(&file).is_err());
@@ -953,14 +952,11 @@ mod tests {
         // Simulate: parent dir is within allowed roots but the final path
         // matches a deny pattern.
         let temp = tempdir().unwrap();
-        let ssh_dir = temp.path().join(".ssh");
+        // Canonicalize to resolve platform symlinks (macOS: /var → /private/var).
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let ssh_dir = root.join(".ssh");
         std::fs::create_dir(&ssh_dir).unwrap();
-        let sandbox = Sandbox::new(
-            vec![temp.path().to_path_buf()],
-            vec!["**/.ssh/**".to_string()],
-            false,
-        )
-        .unwrap();
+        let sandbox = Sandbox::new(vec![root], vec!["**/.ssh/**".to_string()], false).unwrap();
 
         // The parent (.ssh) is within the allowed root, but the file path
         // .ssh/authorized_keys should be caught by the deny pattern re-check.
