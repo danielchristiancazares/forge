@@ -92,7 +92,7 @@ pub struct PendingStep(StepData);
 
 impl PendingStep {
     #[must_use]
-    pub fn activate(self) -> ActiveStep {
+    fn activate(self) -> ActiveStep {
         ActiveStep(self.0)
     }
 }
@@ -102,7 +102,7 @@ pub struct ActiveStep(StepData);
 
 impl ActiveStep {
     #[must_use]
-    pub fn complete(self, outcome: NonEmptyString) -> CompletedStep {
+    fn complete(self, outcome: NonEmptyString) -> CompletedStep {
         CompletedStep {
             data: self.0,
             outcome,
@@ -110,7 +110,7 @@ impl ActiveStep {
     }
 
     #[must_use]
-    pub fn fail(self, reason: NonEmptyString) -> FailedStep {
+    fn fail(self, reason: NonEmptyString) -> FailedStep {
         FailedStep {
             data: self.0,
             reason,
@@ -118,7 +118,7 @@ impl ActiveStep {
     }
 
     #[must_use]
-    pub fn skip(self, reason: NonEmptyString) -> SkippedStep {
+    fn skip(self, reason: NonEmptyString) -> SkippedStep {
         SkippedStep {
             data: self.0,
             reason,

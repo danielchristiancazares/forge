@@ -65,6 +65,7 @@ Completed now:
 53. `ThinkingMessage::claude_signature` now returns explicit `ClaudeSignatureRef` instead of `Option<&ThoughtSignature>`.
 54. Reclassified `types/src/message.rs` to Core after clearing `Option` from message-domain struct fields and method signatures.
 55. Removed remaining public mutable `PlanStep` escape hatches (`description_mut`, `depends_on_mut`) and narrowed `editor::resolve_step_mut` to internal scope.
+56. Reduced `PlanStep` typestate transition authority surface by narrowing `PendingStep::activate` and `ActiveStep::{complete,fail,skip}` to internal-only methods.
 
 In progress:
 
