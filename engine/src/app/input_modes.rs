@@ -3,7 +3,7 @@
 //! This module provides borrow-scoped mode guards that ensure operations
 //! are only performed when the app is in the correct mode.
 
-use super::ui::{CommandDraftMut, DraftInput, InputState};
+use super::ui::{CommandDraftMut, DraftInput, InputMode, InputState};
 use super::{ApiConfig, App, Message, NonEmptyString, OperationState};
 
 pub(crate) use forge_tools::change_recording::{ChangeRecorder, TurnChangeReport, TurnContext};
@@ -51,9 +51,10 @@ impl App {
     /// The returned guard holds `&mut App`, so the input mode cannot be
     /// changed while the guard exists.
     pub fn insert_mode_mut(&mut self) -> InsertModeAccess<'_> {
-        match &self.ui.input {
-            InputState::Insert(_) => InsertModeAccess::InInsert(InsertMode { app: self }),
-            _ => InsertModeAccess::NotInsert,
+        if self.ui.input.mode() == InputMode::Insert {
+            InsertModeAccess::InInsert(InsertMode { app: self })
+        } else {
+            InsertModeAccess::NotInsert
         }
     }
 
@@ -62,9 +63,10 @@ impl App {
     /// The returned guard holds `&mut App`, so the input mode cannot be
     /// changed while the guard exists.
     pub fn command_mode_mut(&mut self) -> CommandModeAccess<'_> {
-        match &self.ui.input {
-            InputState::Command { .. } => CommandModeAccess::InCommand(CommandMode { app: self }),
-            _ => CommandModeAccess::NotCommand,
+        if self.ui.input.mode() == InputMode::Command {
+            CommandModeAccess::InCommand(CommandMode { app: self })
+        } else {
+            CommandModeAccess::NotCommand
         }
     }
 }
