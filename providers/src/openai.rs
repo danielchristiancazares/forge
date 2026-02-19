@@ -691,6 +691,7 @@ mod tests {
     };
     use serde_json::{Value, json};
     use std::sync::{Arc, Mutex};
+    use std::time::SystemTime;
 
     fn collect_events(json: Value, parser: &mut OpenAIParser) -> Vec<StreamEvent> {
         match parser.parse(&json) {
@@ -706,8 +707,11 @@ mod tests {
         let config = ApiConfig::new(key, model).unwrap();
 
         let messages = vec![
-            CacheableMessage::plain(Message::system(NonEmptyString::new("Distillate").unwrap())),
-            CacheableMessage::plain(Message::try_user("hi").unwrap()),
+            CacheableMessage::plain(Message::system(
+                NonEmptyString::new("Distillate").unwrap(),
+                SystemTime::now(),
+            )),
+            CacheableMessage::plain(Message::try_user("hi", SystemTime::now()).unwrap()),
         ];
 
         let body = build_request_body(
@@ -735,6 +739,7 @@ mod tests {
 
         let messages = vec![CacheableMessage::plain(Message::system(
             NonEmptyString::new("Distillate").unwrap(),
+            SystemTime::now(),
         ))];
 
         let body = build_request_body(
@@ -763,7 +768,9 @@ mod tests {
             .unwrap()
             .with_openai_options(options);
 
-        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hi", SystemTime::now()).unwrap(),
+        )];
 
         let body = build_request_body(
             &config,
@@ -784,7 +791,9 @@ mod tests {
         let model = Provider::OpenAI.default_model();
         let config = ApiConfig::new(key, model).unwrap();
 
-        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hi", SystemTime::now()).unwrap(),
+        )];
 
         let body = build_request_body(
             &config,
@@ -1084,7 +1093,9 @@ mod tests {
         let model = ModelName::from_predefined(PredefinedModel::Gpt52Pro);
         let config = ApiConfig::new(key, model).unwrap();
 
-        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hi", SystemTime::now()).unwrap(),
+        )];
         let body = build_request_body(
             &config,
             &messages,
@@ -1105,7 +1116,9 @@ mod tests {
         let model = Provider::OpenAI.default_model();
         let config = ApiConfig::new(key, model).unwrap();
 
-        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hi", SystemTime::now()).unwrap(),
+        )];
         let body = build_request_body(
             &config,
             &messages,
@@ -1221,14 +1234,16 @@ mod tests {
                 .unwrap(),
                 OpenAIReasoningItem::try_new("r_2", vec![], None).unwrap(),
             ],
+            SystemTime::now(),
         );
 
         let messages = vec![
-            CacheableMessage::plain(Message::try_user("hi").unwrap()),
+            CacheableMessage::plain(Message::try_user("hi", SystemTime::now()).unwrap()),
             CacheableMessage::plain(thinking),
             CacheableMessage::plain(Message::assistant(
                 Provider::OpenAI.default_model(),
                 NonEmptyString::new("reply").unwrap(),
+                SystemTime::now(),
             )),
         ];
 
@@ -1263,7 +1278,9 @@ mod tests {
         let model = Provider::OpenAI.default_model();
         let config = ApiConfig::new(key, model).unwrap();
 
-        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hi", SystemTime::now()).unwrap(),
+        )];
         let body = build_request_body(
             &config,
             &messages,
@@ -1286,7 +1303,9 @@ mod tests {
         let model = ModelName::from_predefined(PredefinedModel::Gpt52Pro);
         let config = ApiConfig::new(key, model).unwrap();
 
-        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hi", SystemTime::now()).unwrap(),
+        )];
         let body = build_request_body(
             &config,
             &messages,

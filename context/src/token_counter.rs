@@ -116,7 +116,7 @@ impl TokenCounter {
     /// use forge_types::Message;
     ///
     /// let counter = TokenCounter::new();
-    /// let msg = Message::try_user("What is the meaning of life?").unwrap();
+    /// let msg = Message::try_user("What is the meaning of life?", SystemTime::now()).unwrap();
     /// let tokens = counter.count_message(&msg);
     /// ```
     #[must_use]
@@ -183,8 +183,8 @@ impl TokenCounter {
     ///
     /// let counter = TokenCounter::new();
     /// let messages = vec![
-    ///     Message::try_user("Hello!").unwrap(),
-    ///     Message::try_user("How are you?").unwrap(),
+    ///     Message::try_user("Hello!", SystemTime::now()).unwrap(),
+    ///     Message::try_user("How are you?", SystemTime::now()).unwrap(),
     /// ];
     /// let total = counter.count_messages(&messages);
     /// ```
@@ -203,6 +203,8 @@ impl Default for TokenCounter {
 
 #[cfg(test)]
 mod tests {
+    use std::time::SystemTime;
+
     use super::TokenCounter;
     use forge_types::Message;
 
@@ -272,7 +274,7 @@ mod tests {
     #[test]
     fn count_message_user() {
         let counter = TokenCounter::new();
-        let msg = Message::try_user("Hello!").expect("non-empty test message");
+        let msg = Message::try_user("Hello!", SystemTime::now()).expect("non-empty test message");
 
         let tokens = counter.count_message(&msg);
 
@@ -286,7 +288,7 @@ mod tests {
     #[test]
     fn count_message_includes_overhead() {
         let counter = TokenCounter::new();
-        let msg = Message::try_user("Hi").expect("non-empty test message");
+        let msg = Message::try_user("Hi", SystemTime::now()).expect("non-empty test message");
 
         let content_tokens = counter.count_str("Hi");
         let message_tokens = counter.count_message(&msg);
@@ -305,7 +307,8 @@ mod tests {
     #[test]
     fn count_messages_single() {
         let counter = TokenCounter::new();
-        let messages = vec![Message::try_user("Hello!").expect("non-empty test message")];
+        let messages =
+            vec![Message::try_user("Hello!", SystemTime::now()).expect("non-empty test message")];
 
         let total = counter.count_messages(&messages);
         let single = counter.count_message(&messages[0]);
@@ -317,9 +320,11 @@ mod tests {
     fn count_messages_multiple() {
         let counter = TokenCounter::new();
         let messages = vec![
-            Message::try_user("Hello!").expect("non-empty test message"),
-            Message::try_user("How are you today?").expect("non-empty test message"),
-            Message::try_user("I have a question about Rust.").expect("non-empty test message"),
+            Message::try_user("Hello!", SystemTime::now()).expect("non-empty test message"),
+            Message::try_user("How are you today?", SystemTime::now())
+                .expect("non-empty test message"),
+            Message::try_user("I have a question about Rust.", SystemTime::now())
+                .expect("non-empty test message"),
         ];
 
         let total = counter.count_messages(&messages);

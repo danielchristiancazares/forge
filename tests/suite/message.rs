@@ -1,5 +1,7 @@
 //! Message type tests
 
+use std::time::SystemTime;
+
 use forge_types::{Message, NonEmptyString, Provider};
 
 #[test]
@@ -41,9 +43,9 @@ fn message_role_str() {
     let content = NonEmptyString::new("test").unwrap();
     let model = Provider::Claude.default_model();
 
-    let system = Message::system(content.clone());
-    let user = Message::user(content.clone());
-    let assistant = Message::assistant(model, content);
+    let system = Message::system(content.clone(), SystemTime::now());
+    let user = Message::user(content.clone(), SystemTime::now());
+    let assistant = Message::assistant(model, content, SystemTime::now());
 
     assert_eq!(system.role_str(), "system");
     assert_eq!(user.role_str(), "user");
@@ -53,20 +55,20 @@ fn message_role_str() {
 #[test]
 fn message_content_access() {
     let content = NonEmptyString::new("test content").unwrap();
-    let msg = Message::user(content);
+    let msg = Message::user(content, SystemTime::now());
     assert_eq!(msg.content(), "test content");
 }
 
 #[test]
 fn try_user_with_valid_content() {
-    let msg = Message::try_user("hello").unwrap();
+    let msg = Message::try_user("hello", SystemTime::now()).unwrap();
     assert_eq!(msg.content(), "hello");
     assert_eq!(msg.role_str(), "user");
 }
 
 #[test]
 fn try_user_with_empty_content() {
-    let result = Message::try_user("");
+    let result = Message::try_user("", SystemTime::now());
     assert!(result.is_err());
 }
 
@@ -75,7 +77,7 @@ fn assistant_message_has_provider() {
     let content = NonEmptyString::new("response").unwrap();
     let model = Provider::OpenAI.default_model();
 
-    if let Message::Assistant(m) = Message::assistant(model, content) {
+    if let Message::Assistant(m) = Message::assistant(model, content, SystemTime::now()) {
         assert_eq!(m.provider(), Provider::OpenAI);
     } else {
         panic!("Expected Assistant variant");

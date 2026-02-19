@@ -453,6 +453,7 @@ mod tests {
     };
     use forge_types::Provider;
     use forge_types::{ModelName, NonEmptyString};
+    use std::time::SystemTime;
 
     #[test]
     fn hoists_system_messages_into_system_blocks() {
@@ -460,8 +461,11 @@ mod tests {
         let limits = OutputLimits::new(1024);
 
         let messages = vec![
-            CacheableMessage::plain(Message::system(NonEmptyString::new("Distillate").unwrap())),
-            CacheableMessage::plain(Message::try_user("hi").unwrap()),
+            CacheableMessage::plain(Message::system(
+                NonEmptyString::new("Distillate").unwrap(),
+                SystemTime::now(),
+            )),
+            CacheableMessage::plain(Message::try_user("hi", SystemTime::now()).unwrap()),
         ];
 
         let body = build_request_body(ClaudeRequestBodyInput {
@@ -492,6 +496,7 @@ mod tests {
 
         let messages = vec![CacheableMessage::plain(Message::system(
             NonEmptyString::new("Distillate").unwrap(),
+            SystemTime::now(),
         ))];
 
         // With Default hint, system prompt should NOT have cache_control
@@ -518,7 +523,9 @@ mod tests {
     fn system_prompt_cached_when_hint_ephemeral() {
         let model = Provider::Claude.default_model();
         let limits = OutputLimits::new(1024);
-        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hi", SystemTime::now()).unwrap(),
+        )];
 
         let body = build_request_body(ClaudeRequestBodyInput {
             model: model.as_str(),
@@ -544,7 +551,9 @@ mod tests {
     fn tool_schema_cache_control_with_ttl() {
         let model = Provider::Claude.default_model();
         let limits = OutputLimits::new(1024);
-        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hi", SystemTime::now()).unwrap(),
+        )];
         let tools = vec![
             ToolDefinition::new("tool_a", "desc a", json!({"type": "object"})),
             ToolDefinition::new("tool_b", "desc b", json!({"type": "object"})),
@@ -578,8 +587,8 @@ mod tests {
         let model = Provider::Claude.default_model();
         let limits = OutputLimits::new(1024);
         let messages = vec![
-            CacheableMessage::cached(Message::try_user("cached msg").unwrap()),
-            CacheableMessage::plain(Message::try_user("plain msg").unwrap()),
+            CacheableMessage::cached(Message::try_user("cached msg", SystemTime::now()).unwrap()),
+            CacheableMessage::plain(Message::try_user("plain msg", SystemTime::now()).unwrap()),
         ];
 
         let body = build_request_body(ClaudeRequestBodyInput {
@@ -610,7 +619,9 @@ mod tests {
     fn opus_4_6_default_adaptive_and_max_effort() {
         let model = Provider::Claude.default_model();
         let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
-        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hi", SystemTime::now()).unwrap(),
+        )];
 
         let body = build_request_body(ClaudeRequestBodyInput {
             model: model.as_str(),
@@ -634,7 +645,9 @@ mod tests {
     fn opus_4_6_uses_adaptive_even_when_thinking_not_requested() {
         let model = Provider::Claude.default_model();
         let limits = OutputLimits::new(16_000);
-        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hi", SystemTime::now()).unwrap(),
+        )];
 
         let body = build_request_body(ClaudeRequestBodyInput {
             model: model.as_str(),
@@ -656,7 +669,9 @@ mod tests {
     fn opus_4_6_disabled_thinking_mode() {
         let model = Provider::Claude.default_model();
         let limits = OutputLimits::new(16_000);
-        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hi", SystemTime::now()).unwrap(),
+        )];
 
         let body = build_request_body(ClaudeRequestBodyInput {
             model: model.as_str(),
@@ -681,7 +696,9 @@ mod tests {
     fn opus_4_6_enabled_thinking_with_budget() {
         let model = Provider::Claude.default_model();
         let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
-        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hi", SystemTime::now()).unwrap(),
+        )];
 
         let body = build_request_body(ClaudeRequestBodyInput {
             model: model.as_str(),
@@ -704,7 +721,9 @@ mod tests {
     fn opus_4_6_effort_levels() {
         let model = Provider::Claude.default_model();
         let limits = OutputLimits::new(16_000);
-        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hi", SystemTime::now()).unwrap(),
+        )];
 
         for effort in &["low", "medium", "high", "max"] {
             let body = build_request_body(ClaudeRequestBodyInput {
@@ -728,7 +747,9 @@ mod tests {
             .parse_model("claude-haiku-4-5-20251001")
             .unwrap();
         let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
-        let messages = vec![CacheableMessage::plain(Message::try_user("hi").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hi", SystemTime::now()).unwrap(),
+        )];
 
         let body = build_request_body(ClaudeRequestBodyInput {
             model: model.as_str(),
@@ -755,10 +776,11 @@ mod tests {
         let model = Provider::Claude.default_model();
         let limits = OutputLimits::new(1024);
         let messages = vec![
-            CacheableMessage::plain(Message::try_user("hi").unwrap()),
+            CacheableMessage::plain(Message::try_user("hi", SystemTime::now()).unwrap()),
             CacheableMessage::plain(Message::assistant(
                 model.clone(),
                 NonEmptyString::new("prefill").unwrap(),
+                SystemTime::now(),
             )),
         ];
 
@@ -812,10 +834,11 @@ mod tests {
         let result = forge_types::ToolResult::success("call_1", "Read", "file contents");
         let limits = OutputLimits::new(1024);
         let messages = vec![
-            CacheableMessage::plain(Message::try_user("hi").unwrap()),
+            CacheableMessage::plain(Message::try_user("hi", SystemTime::now()).unwrap()),
             CacheableMessage::plain(Message::assistant(
                 model.clone(),
                 NonEmptyString::new("I'll read that file").unwrap(),
+                SystemTime::now(),
             )),
             CacheableMessage::cached(Message::tool_result(result)),
         ];
@@ -846,7 +869,7 @@ mod tests {
         let result = forge_types::ToolResult::success("call_1", "Read", "file contents");
         let limits = OutputLimits::new(1024);
         let messages = vec![
-            CacheableMessage::plain(Message::try_user("hi").unwrap()),
+            CacheableMessage::plain(Message::try_user("hi", SystemTime::now()).unwrap()),
             CacheableMessage::plain(Message::tool_result(result)),
         ];
 
@@ -879,12 +902,13 @@ mod tests {
         };
         let limits = OutputLimits::new(1024);
         let messages = vec![
-            CacheableMessage::plain(Message::try_user("hi").unwrap()),
+            CacheableMessage::plain(Message::try_user("hi", SystemTime::now()).unwrap()),
             // Assistant text + tool_use grouped into one API message.
             // Mark the tool_use as cached — cache_control goes on last block.
             CacheableMessage::plain(Message::assistant(
                 model.clone(),
                 NonEmptyString::new("Let me read that").unwrap(),
+                SystemTime::now(),
             )),
             CacheableMessage::cached(Message::tool_use(tool_call)),
             // ToolResult triggers flush of the assistant group above.

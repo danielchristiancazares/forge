@@ -1382,7 +1382,7 @@ impl App {
             }
         }
         if let Ok(content) = NonEmptyString::new(assistant_text.clone()) {
-            let message = Message::assistant(payload.model.clone(), content);
+            let message = Message::assistant(payload.model.clone(), content, SystemTime::now());
             self.push_history_message_with_step_id(message, step_id);
             step_id_recorded = true;
         }
@@ -1918,7 +1918,7 @@ impl App {
 
         if let TurnChangeReport::Changes(distillate) = report {
             let msg = distillate.into_message();
-            self.push_local_message(Message::system(msg));
+            self.push_local_message(Message::system(msg, SystemTime::now()));
         }
         self.core.pending_user_message = None;
 

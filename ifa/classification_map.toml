@@ -32,6 +32,31 @@ classification = "core"
 rationale = "Pure thinking payload sum type."
 
 [[rules]]
+prefix = "core/src/env_context.rs"
+classification = "boundary"
+rationale = "Environment context struct contains a non-lifecycle bool fact (is_git_repo); classified boundary until checker distinguishes lifecycle from factual bools."
+
+[[rules]]
+prefix = "core/src/environment.rs"
+classification = "boundary"
+rationale = "Gathers runtime environment via filesystem, clock, and env-var access."
+
+[[rules]]
+prefix = "core/src/errors.rs"
+classification = "boundary"
+rationale = "JSON parsing, string probing, and error message extraction from raw API responses."
+
+[[rules]]
+prefix = "core/src/util.rs"
+classification = "boundary"
+rationale = "Fallback parsing APIs returning maybe values for crash recovery."
+
+[[rules]]
+prefix = "core/src/security.rs"
+classification = "boundary"
+rationale = "Re-exports security sanitization from forge-utils boundary."
+
+[[rules]]
 prefix = "core/src/"
 classification = "boundary"
 rationale = "Remaining core crate modules include boundary concerns pending split."
@@ -62,14 +87,34 @@ classification = "boundary"
 rationale = "Terminal rendering and input handling are UI boundaries."
 
 [[rules]]
+prefix = "types/src/budget.rs"
+classification = "boundary"
+rationale = "Budget invariant types; reclassify Core after Phase 3 removes Option from take_one."
+
+[[rules]]
 prefix = "types/src/confusables.rs"
 classification = "core"
 rationale = "Pure text analysis and warning construction."
 
 [[rules]]
+prefix = "types/src/message.rs"
+classification = "boundary"
+rationale = "Message domain model; reclassify Core after Phase 3 removes Option fields and signatures."
+
+[[rules]]
+prefix = "types/src/model.rs"
+classification = "core"
+rationale = "Core model domain types and provider enumeration."
+
+[[rules]]
 prefix = "types/src/plan.rs"
 classification = "core"
 rationale = "Pure plan-domain model and transitions."
+
+[[rules]]
+prefix = "types/src/proofs.rs"
+classification = "core"
+rationale = "Core proof types for validated content."
 
 [[rules]]
 prefix = "types/src/text.rs"
@@ -79,7 +124,7 @@ rationale = "Pure string truncation helpers."
 [[rules]]
 prefix = "types/src/"
 classification = "boundary"
-rationale = "Remaining types modules include boundary-oriented transport and compatibility shapes pending split."
+rationale = "Remaining types modules include boundary-oriented transport and compatibility shapes."
 
 [[rules]]
 prefix = "utils/src/"

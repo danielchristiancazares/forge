@@ -1,7 +1,7 @@
 //! Streaming response handling for the App.
 
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use futures_util::future::{AbortHandle, Abortable};
 use tokio::sync::mpsc;
@@ -69,7 +69,7 @@ fn inject_plan_context(mut messages: Vec<Message>, plan_state: &PlanState) -> Ve
     {
         let original = user_msg.content().to_string();
         if let Ok(content) = NonEmptyString::new(format!("{plan_block}\n\n{original}")) {
-            *user_msg = Message::user(content);
+            *user_msg = Message::user(content, SystemTime::now());
         }
     }
     messages
@@ -88,13 +88,19 @@ pub(crate) fn build_thinking_message(
                     model,
                     thinking,
                     signature.as_str().to_string(),
+                    SystemTime::now(),
                 )
             }
             ThinkingReplayState::OpenAIReasoning { items } => {
-                forge_types::ThinkingMessage::with_openai_reasoning(model, thinking, items)
+                forge_types::ThinkingMessage::with_openai_reasoning(
+                    model,
+                    thinking,
+                    items,
+                    SystemTime::now(),
+                )
             }
             ThinkingReplayState::Unsigned | ThinkingReplayState::Unknown => {
-                forge_types::ThinkingMessage::new(model, thinking)
+                forge_types::ThinkingMessage::new(model, thinking, SystemTime::now())
             }
         };
         return ThinkingPayload::Provided(message);
@@ -109,14 +115,20 @@ pub(crate) fn build_thinking_message(
                     model,
                     placeholder,
                     signature.as_str().to_string(),
+                    SystemTime::now(),
                 )
             }
             ThinkingReplayState::OpenAIReasoning { items } => {
-                forge_types::ThinkingMessage::with_openai_reasoning(model, placeholder, items)
+                forge_types::ThinkingMessage::with_openai_reasoning(
+                    model,
+                    placeholder,
+                    items,
+                    SystemTime::now(),
+                )
             }
             // Defensive: if replay state semantics change, still persist a placeholder.
             ThinkingReplayState::Unsigned | ThinkingReplayState::Unknown => {
-                forge_types::ThinkingMessage::new(model, placeholder)
+                forge_types::ThinkingMessage::new(model, placeholder, SystemTime::now())
             }
         };
         return ThinkingPayload::Provided(message);
@@ -763,7 +775,7 @@ impl super::App {
                 } else {
                     aborted_badge.append("\n\n").append(partial.as_str())
                 };
-                self.push_local_message(Message::assistant(model, aborted));
+                self.push_local_message(Message::assistant(model, aborted, SystemTime::now()));
                 self.push_notification(format!("Journal append failed: {err}"));
                 // Clean up turn state (pending_user_message, tool_iterations, etc.)
                 self.finish_turn(turn);
@@ -884,7 +896,7 @@ impl super::App {
             }
             // Use stream's model/provider, not current app settings (user may have changed during stream)
             let error_msg = format_stream_error(model.provider(), model.as_str(), &err);
-            let system_msg = Message::system(error_msg);
+            let system_msg = Message::system(error_msg, SystemTime::now());
             self.push_local_message(system_msg);
             self.finish_turn(turn);
             return;
@@ -921,7 +933,7 @@ impl super::App {
             self.core.pending_user_message = None;
             let empty_badge = NonEmptyString::try_from(EMPTY_RESPONSE_BADGE)
                 .expect("EMPTY_RESPONSE_BADGE must be non-empty");
-            let empty_msg = Message::assistant(model.clone(), empty_badge);
+            let empty_msg = Message::assistant(model.clone(), empty_badge, SystemTime::now());
             if let Ok(thinking) = NonEmptyString::new(thinking_content) {
                 let thinking_msg = match &thinking_replay {
                     ThinkingReplayState::ClaudeSigned { signature } => {
@@ -929,13 +941,19 @@ impl super::App {
                             model,
                             thinking,
                             signature.as_str().to_string(),
+                            SystemTime::now(),
                         )
                     }
                     ThinkingReplayState::OpenAIReasoning { items } => {
-                        Message::thinking_with_openai_reasoning(model, thinking, items.clone())
+                        Message::thinking_with_openai_reasoning(
+                            model,
+                            thinking,
+                            items.clone(),
+                            SystemTime::now(),
+                        )
                     }
                     ThinkingReplayState::Unsigned | ThinkingReplayState::Unknown => {
-                        Message::thinking(model, thinking)
+                        Message::thinking(model, thinking, SystemTime::now())
                     }
                 };
                 self.push_local_message(thinking_msg);
@@ -993,7 +1011,7 @@ impl super::App {
         let combined = crate::security::sanitize_display_text(&combined);
 
         if let Ok(content) = NonEmptyString::new(combined) {
-            let msg = Message::assistant(self.core.model.clone(), content);
+            let msg = Message::assistant(self.core.model.clone(), content, SystemTime::now());
             messages.push(CacheableMessage::plain(msg)); // tail = cache-safe
         }
 
@@ -1182,6 +1200,8 @@ mod token_cache_planner_tests {
 
 #[cfg(test)]
 mod plan_context_injection_tests {
+    use std::time::SystemTime;
+
     use super::{Message, NonEmptyString, inject_plan_context};
     use forge_types::{PhaseInput, Plan, PlanState, Provider, StepInput};
 
@@ -1198,7 +1218,7 @@ mod plan_context_injection_tests {
     }
 
     fn messages_with_user(text: &str) -> Vec<Message> {
-        vec![Message::try_user(text).unwrap()]
+        vec![Message::try_user(text, SystemTime::now()).unwrap()]
     }
 
     #[test]
@@ -1249,8 +1269,8 @@ mod plan_context_injection_tests {
     fn injects_into_last_user_message() {
         let state = active_plan_state();
         let msgs = vec![
-            Message::try_user("first").unwrap(),
-            Message::try_user("second").unwrap(),
+            Message::try_user("first", SystemTime::now()).unwrap(),
+            Message::try_user("second", SystemTime::now()).unwrap(),
         ];
         let result = inject_plan_context(msgs, &state);
         // First message untouched.
@@ -1267,6 +1287,7 @@ mod plan_context_injection_tests {
         let msgs = vec![Message::assistant(
             model,
             NonEmptyString::new("assistant text").unwrap(),
+            SystemTime::now(),
         )];
         let result = inject_plan_context(msgs, &state);
         assert_eq!(result.len(), 1);

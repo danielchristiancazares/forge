@@ -37,23 +37,23 @@ allowed_caller_module_paths = ["engine::app::streaming"]
 max_constructor_visibility_rung = "pub(crate)"
 
 [[entries]]
-controlled_type_path = "types::NonEmptyString"
-boundary_module_path = "types"
-constructor_paths = ["types::NonEmptyString::new", "types::NonEmptyString::try_from"]
+controlled_type_path = "types::proofs::NonEmptyString"
+boundary_module_path = "types::proofs"
+constructor_paths = ["types::proofs::NonEmptyString::new", "types::proofs::NonEmptyString::try_from"]
 allowed_caller_module_paths = ["types", "engine", "context", "providers", "tools", "tui", "cli"]
 max_constructor_visibility_rung = "pub(crate)"
 
 [[entries]]
-controlled_type_path = "types::PersistableContent"
-boundary_module_path = "types"
-constructor_paths = ["types::PersistableContent::new", "types::PersistableContent::from"]
+controlled_type_path = "types::proofs::PersistableContent"
+boundary_module_path = "types::proofs"
+constructor_paths = ["types::proofs::PersistableContent::new", "types::proofs::PersistableContent::from"]
 allowed_caller_module_paths = ["context", "engine", "types"]
 max_constructor_visibility_rung = "pub(crate)"
 
 [[entries]]
-controlled_type_path = "types::ModelName"
-boundary_module_path = "types"
-constructor_paths = ["types::ModelName::parse", "types::ModelName::from_predefined"]
+controlled_type_path = "types::model::ModelName"
+boundary_module_path = "types::model"
+constructor_paths = ["types::model::ModelName::parse", "types::model::ModelName::from_predefined"]
 allowed_caller_module_paths = ["engine::app::init", "engine", "config"]
 max_constructor_visibility_rung = "pub(crate)"
 

@@ -7,6 +7,7 @@
 //! Future phases will move the full App state machine here.
 
 mod display;
+mod env_context;
 pub mod environment;
 pub mod errors;
 pub mod notifications;
@@ -15,7 +16,7 @@ pub mod thinking;
 mod util;
 
 pub use display::{DisplayItem, DisplayLog, DisplayPop, DisplayTail};
-pub use environment::{EnvironmentContext, assemble_prompt};
+pub use env_context::{EnvironmentContext, assemble_prompt};
 pub use notifications::{NotificationQueue, SystemNotification};
 pub use security::sanitize_display_text;
 pub use util::{parse_model_name_from_string, wrap_api_key};

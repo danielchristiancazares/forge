@@ -407,11 +407,13 @@ impl FullHistory {
 
 #[cfg(test)]
 mod tests {
+    use std::time::SystemTime;
+
     use super::{CompactionSummary, FullHistory, MessageId};
     use forge_types::{Message, NonEmptyString};
 
     fn make_test_message(content: &str) -> Message {
-        Message::try_user(content).expect("non-empty test message")
+        Message::try_user(content, SystemTime::now()).expect("non-empty test message")
     }
 
     #[test]

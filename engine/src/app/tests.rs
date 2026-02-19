@@ -1,7 +1,7 @@
 //! Unit tests for the engine crate.
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::anyhow;
 use forge_context::StepId;
@@ -382,7 +382,7 @@ fn process_command_quit_sets_should_quit() {
 fn process_command_clear_resets_conversation() {
     let mut app = test_app();
     let content = NonEmptyString::new("hi").expect("non-empty test content");
-    app.push_history_message(Message::user(content));
+    app.push_history_message(Message::user(content, SystemTime::now()));
     app.enter_command_mode();
 
     let command = {
@@ -1287,7 +1287,7 @@ fn rollback_pending_user_message_restores_input() {
     let mut app = test_app();
 
     let content = NonEmptyString::new("my message").expect("non-empty");
-    let msg_id = app.push_history_message(Message::user(content));
+    let msg_id = app.push_history_message(Message::user(content, SystemTime::now()));
     app.core.pending_user_message = Some((msg_id, "my message".to_string(), String::new()));
 
     assert_eq!(app.history().len(), 1);
@@ -1514,6 +1514,7 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
             app.core.model.clone(),
             NonEmptyString::new("thinking").expect("non-empty"),
             "sig".to_string(),
+            SystemTime::now(),
         ));
     app.handle_tool_calls(crate::state::ToolLoopIngress {
         assistant_text: "assistant".to_string(),

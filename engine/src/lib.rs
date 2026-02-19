@@ -32,7 +32,7 @@ pub(crate) mod util {
 
 pub use forge_core::{
     DisplayLog, EnvironmentContext, NotificationQueue, SystemNotification, assemble_prompt,
-    parse_model_name_from_string, sanitize_display_text, wrap_api_key,
+    sanitize_display_text,
 };
 
 mod session_state;

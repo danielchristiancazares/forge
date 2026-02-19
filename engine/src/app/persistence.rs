@@ -7,7 +7,7 @@
 //! - Journal commit/discard operations
 //! - Message rollback after errors
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use forge_context::{RecoveredStream, StepId};
 use forge_types::{Message, NonEmptyStaticStr, NonEmptyString, PersistableContent};
@@ -72,7 +72,7 @@ impl App {
                 if count > 0 {
                     let msg = format!("History: {count} msgs");
                     if let Ok(content) = NonEmptyString::try_from(msg) {
-                        self.push_local_message(Message::system(content));
+                        self.push_local_message(Message::system(content, SystemTime::now()));
                     }
                 }
             }
@@ -355,7 +355,7 @@ impl App {
     pub(crate) fn push_notification(&mut self, message: impl Into<String>) {
         let text = message.into();
         if let Ok(content) = NonEmptyString::new(text) {
-            self.push_local_message(Message::system(content));
+            self.push_local_message(Message::system(content, SystemTime::now()));
         }
     }
 
@@ -726,7 +726,7 @@ impl App {
 
         // Push recovered partial response with step_id for idempotent future recovery
         self.push_history_message_with_step_id(
-            Message::assistant(model, recovered_content),
+            Message::assistant(model, recovered_content, SystemTime::now()),
             step_id,
         );
         let history_saved = self.autosave_history();

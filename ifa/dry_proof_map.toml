@@ -28,13 +28,13 @@ authority_boundary_module_path = "engine::state"
 
 [[entries]]
 invariant_id = "APP-INV-6"
-canonical_proof_type_path = "types::NonEmptyString"
-authority_boundary_module_path = "types"
+canonical_proof_type_path = "types::proofs::NonEmptyString"
+authority_boundary_module_path = "types::proofs"
 
 [[entries]]
 invariant_id = "APP-INV-7"
-canonical_proof_type_path = "types::PersistableContent"
-authority_boundary_module_path = "types"
+canonical_proof_type_path = "types::proofs::PersistableContent"
+authority_boundary_module_path = "types::proofs"
 
 [[entries]]
 invariant_id = "APP-INV-8"
@@ -48,8 +48,8 @@ authority_boundary_module_path = "types::ui::view_state"
 
 [[entries]]
 invariant_id = "APP-INV-10"
-canonical_proof_type_path = "types::ModelName"
-authority_boundary_module_path = "types"
+canonical_proof_type_path = "types::model::ModelName"
+authority_boundary_module_path = "types::model"
 
 [[entries]]
 invariant_id = "APP-INV-11"

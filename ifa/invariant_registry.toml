@@ -34,14 +34,14 @@ authority_boundary_module_path = "engine::state"
 [[invariants]]
 id = "APP-INV-6"
 predicate = "User-facing message content is non-empty after normalization."
-canonical_proof_type_path = "types::NonEmptyString"
-authority_boundary_module_path = "types"
+canonical_proof_type_path = "types::proofs::NonEmptyString"
+authority_boundary_module_path = "types::proofs"
 
 [[invariants]]
 id = "APP-INV-7"
 predicate = "Persisted content contains no standalone carriage returns."
-canonical_proof_type_path = "types::PersistableContent"
-authority_boundary_module_path = "types"
+canonical_proof_type_path = "types::proofs::PersistableContent"
+authority_boundary_module_path = "types::proofs"
 
 [[invariants]]
 id = "APP-INV-8"
@@ -58,8 +58,8 @@ authority_boundary_module_path = "types::ui::view_state"
 [[invariants]]
 id = "APP-INV-10"
 predicate = "Provider request/response model name selection is represented by strongly typed model names."
-canonical_proof_type_path = "types::ModelName"
-authority_boundary_module_path = "types"
+canonical_proof_type_path = "types::model::ModelName"
+authority_boundary_module_path = "types::model"
 
 [[invariants]]
 id = "APP-INV-11"

@@ -33,15 +33,28 @@
 
 pub mod ui;
 
+mod budget;
 mod confusables;
+mod message;
+mod model;
 pub mod plan;
+mod proofs;
 mod sanitize;
 mod text;
+
+pub use budget::{
+    CacheBudget, CacheHint, OutputLimits, OutputLimitsError, ThinkingBudget, ThinkingState,
+};
 pub use confusables::{HomoglyphWarning, MixedScriptDetection, detect_mixed_script};
+pub use message::{AssistantMessage, Message, SystemMessage, ThinkingMessage, UserMessage};
+pub use model::{
+    EnumKind, EnumParseError, InternalModel, ModelName, ModelParseError, PredefinedModel, Provider,
+};
 pub use plan::{
     CompletedPlan, EditOp, EditValidationError, Phase, PhaseInput, Plan, PlanState, PlanStep,
     PlanStepId, PlanTransitionError, PlanValidationError, StepInput,
 };
+pub use proofs::{EmptyStringError, NonEmptyStaticStr, NonEmptyString, PersistableContent};
 pub use sanitize::{
     is_steganographic_char, sanitize_path_display, sanitize_path_for_display,
     sanitize_terminal_text, strip_steganographic_chars, strip_windows_extended_prefix,
@@ -98,21 +111,17 @@ env_denylist! {
         "NPM_*",
     ],
     injection: [
-        // Dynamic linker injection
         "DYLD_*",
         "LD_PRELOAD",
         "LD_LIBRARY_PATH",
-        // Shell init injection (sourced by non-interactive shells)
         "BASH_ENV",
         "ENV",
         "ZDOTDIR",
         "PROMPT_COMMAND",
-        // Git execution vectors
         "GIT_SSH_COMMAND",
         "GIT_EXEC_PATH",
         "GIT_PAGER",
         "SSH_ASKPASS",
-        // Interpreter injection
         "NODE_OPTIONS",
         "NODE_EXTRA_CA_CERTS",
         "PYTHONPATH",
@@ -124,720 +133,10 @@ env_denylist! {
 }
 
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
-use std::time::SystemTime;
-use thiserror::Error;
 
-/// This type enforces the invariant that the contained string is never empty
-/// (or whitespace-only) after trimming. Validation occurs at construction time,
-/// so all operations on an existing `NonEmptyString` can assume the content is valid.
-///
-/// # Invariants
-///
-/// - Content is never empty after `trim()`
-/// - Whitespace-only strings are rejected
-///
-/// # Serde
-///
-/// Serializes as a plain JSON string. Deserialization validates non-emptiness
-/// and fails with an error if the string is empty or whitespace-only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct NonEmptyString(String);
+use proofs::normalize_string_for_persistence;
 
-#[derive(Debug, Error)]
-#[error("message content must not be empty")]
-pub struct EmptyStringError;
-
-impl NonEmptyString {
-    pub fn new(value: impl Into<String>) -> Result<Self, EmptyStringError> {
-        let value = value.into();
-        if value.trim().is_empty() {
-            Err(EmptyStringError)
-        } else {
-            Ok(Self(value))
-        }
-    }
-
-    /// The `content` argument already satisfies the trim invariant...
-    #[must_use]
-    pub fn prefixed(prefix: NonEmptyStaticStr, separator: &str, content: &NonEmptyString) -> Self {
-        let mut value =
-            String::with_capacity(prefix.as_str().len() + separator.len() + content.as_str().len());
-        value.push_str(prefix.as_str());
-        value.push_str(separator);
-        value.push_str(content.as_str());
-        Self(value)
-    }
-
-    #[must_use]
-    pub fn append(mut self, suffix: impl AsRef<str>) -> Self {
-        self.0.push_str(suffix.as_ref());
-        Self(self.0)
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn into_inner(self) -> String {
-        self.0
-    }
-}
-
-impl TryFrom<String> for NonEmptyString {
-    type Error = EmptyStringError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-
-impl TryFrom<&str> for NonEmptyString {
-    type Error = EmptyStringError;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-
-impl From<NonEmptyString> for String {
-    fn from(value: NonEmptyString) -> Self {
-        value.0
-    }
-}
-
-impl std::ops::Deref for NonEmptyString {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        self.as_str()
-    }
-}
-
-impl AsRef<str> for NonEmptyString {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-/// **Note**: This only validates non-emptiness, not whitespace...
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NonEmptyStaticStr(&'static str);
-
-impl NonEmptyStaticStr {
-    #[must_use]
-    pub const fn new(value: &'static str) -> Self {
-        assert!(!value.is_empty(), "NonEmptyStaticStr must not be empty");
-        Self(value)
-    }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        self.0
-    }
-}
-
-impl TryFrom<NonEmptyStaticStr> for NonEmptyString {
-    type Error = EmptyStringError;
-
-    fn try_from(value: NonEmptyStaticStr) -> Result<Self, Self::Error> {
-        Self::new(value.0)
-    }
-}
-
-/// This type enforces the invariant that standalone `\r` characters are
-/// normalized to `\n`. The normalization occurs at construction time
-/// (single Authority Boundary per IFA-7).
-///
-/// # Invariant
-///
-/// - No standalone `\r` exists (only `\r\n` pairs permitted)
-/// - Normalization: standalone `\r` → `\n`, `\r\n` preserved
-///
-/// # Security
-///
-/// Prevents log spoofing attacks where `\r` overwrites preceding content
-/// when viewed in raw terminal contexts:
-///
-/// ```text
-/// Attack: "File saved\rERROR: Permission denied"
-/// Display: "ERROR: Permission denied" (overwrites "File saved")
-/// Raw view: Hidden payload visible
-/// ```
-///
-/// By normalizing at construction, we prevent this attack vector in
-/// all persisted content (history, journals, logs).
-///
-/// # Performance
-///
-/// Uses a fast-path check: if no standalone `\r` is found, no allocation
-/// is performed. Only strings containing attack vectors allocate.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct PersistableContent(String);
-
-impl PersistableContent {
-    /// Create persistable content by normalizing line endings.
-    ///
-    /// This is the ONLY constructor (Authority Boundary per IFA-7).
-    /// Converts standalone `\r` to `\n` while preserving `\r\n` (Windows line endings).
-    #[must_use]
-    pub fn new(input: impl Into<String>) -> Self {
-        let input = input.into();
-        match Self::normalize_borrowed(&input) {
-            Cow::Borrowed(_) => Self(input),
-            Cow::Owned(normalized) => Self(normalized),
-        }
-    }
-
-    #[must_use]
-    pub fn normalize_borrowed(input: &str) -> Cow<'_, str> {
-        if Self::needs_normalization(input) {
-            Cow::Owned(Self::normalize(input))
-        } else {
-            Cow::Borrowed(input)
-        }
-    }
-
-    fn needs_normalization(input: &str) -> bool {
-        let bytes = input.as_bytes();
-        for (i, &b) in bytes.iter().enumerate() {
-            if b == b'\r' && bytes.get(i + 1) != Some(&b'\n') {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn normalize(input: &str) -> String {
-        let mut result = String::with_capacity(input.len());
-        let mut chars = input.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\r' {
-                if chars.peek() == Some(&'\n') {
-                    result.push('\r');
-                    result.push(chars.next().unwrap());
-                } else {
-                    result.push('\n');
-                }
-            } else {
-                result.push(c);
-            }
-        }
-        result
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn into_inner(self) -> String {
-        self.0
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-}
-
-impl AsRef<str> for PersistableContent {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl From<String> for PersistableContent {
-    fn from(value: String) -> Self {
-        Self::new(value)
-    }
-}
-
-impl From<PersistableContent> for String {
-    fn from(value: PersistableContent) -> Self {
-        value.0
-    }
-}
-
-impl std::ops::Deref for PersistableContent {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        self.as_str()
-    }
-}
-
-impl std::fmt::Display for PersistableContent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub enum Provider {
-    #[default]
-    Claude,
-    OpenAI,
-    Gemini,
-}
-
-const PROVIDER_PARSE_VALUES: &[&str] = &[
-    "claude",
-    "anthropic",
-    "openai",
-    "gpt",
-    "chatgpt",
-    "gemini",
-    "google",
-];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnumKind {
-    Provider,
-    PredefinedModel,
-    OpenAIReasoningEffort,
-    OpenAIReasoningSummary,
-    OpenAITextVerbosity,
-    OpenAITruncation,
-}
-
-impl EnumKind {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            EnumKind::Provider => "provider",
-            EnumKind::PredefinedModel => "predefined model",
-            EnumKind::OpenAIReasoningEffort => "OpenAI reasoning effort",
-            EnumKind::OpenAIReasoningSummary => "OpenAI reasoning summary",
-            EnumKind::OpenAITextVerbosity => "OpenAI text verbosity",
-            EnumKind::OpenAITruncation => "OpenAI truncation",
-        }
-    }
-}
-
-impl std::fmt::Display for EnumKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error("invalid {kind} value '{raw}'; expected one of: {expected:?}")]
-pub struct EnumParseError {
-    kind: EnumKind,
-    raw: String,
-    expected: &'static [&'static str],
-}
-
-impl EnumParseError {
-    #[must_use]
-    pub fn new(kind: EnumKind, raw: impl Into<String>, expected: &'static [&'static str]) -> Self {
-        Self {
-            kind,
-            raw: raw.into(),
-            expected,
-        }
-    }
-
-    #[must_use]
-    pub const fn kind(&self) -> EnumKind {
-        self.kind
-    }
-
-    #[must_use]
-    pub fn raw(&self) -> &str {
-        &self.raw
-    }
-
-    #[must_use]
-    pub const fn expected(&self) -> &'static [&'static str] {
-        self.expected
-    }
-}
-
-impl Provider {
-    #[must_use]
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Provider::Claude => "claude",
-            Provider::OpenAI => "openai",
-            Provider::Gemini => "gemini",
-        }
-    }
-
-    #[must_use]
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Provider::Claude => "Claude",
-            Provider::OpenAI => "GPT",
-            Provider::Gemini => "Gemini",
-        }
-    }
-
-    #[must_use]
-    pub fn env_var(&self) -> &'static str {
-        match self {
-            Provider::Claude => "ANTHROPIC_API_KEY",
-            Provider::OpenAI => "OPENAI_API_KEY",
-            Provider::Gemini => "GEMINI_API_KEY",
-        }
-    }
-
-    #[must_use]
-    pub fn default_model(&self) -> ModelName {
-        match self {
-            Provider::Claude => ModelName::from_predefined(PredefinedModel::ClaudeOpus),
-            Provider::OpenAI => ModelName::from_predefined(PredefinedModel::Gpt52),
-            Provider::Gemini => ModelName::from_predefined(PredefinedModel::GeminiPro),
-        }
-    }
-
-    /// All available models for this provider.
-    #[must_use]
-    pub fn available_models(&self) -> Vec<PredefinedModel> {
-        PredefinedModel::all()
-            .iter()
-            .copied()
-            .filter(|model| model.provider() == *self)
-            .collect()
-    }
-
-    /// Parse a model name for this provider.
-    pub fn parse_model(&self, raw: &str) -> Result<ModelName, ModelParseError> {
-        ModelName::parse(*self, raw)
-    }
-
-    /// Parse provider from string.
-    pub fn parse(s: &str) -> Result<Self, EnumParseError> {
-        let trimmed = s.trim();
-        if trimmed.is_empty() {
-            return Err(EnumParseError::new(
-                EnumKind::Provider,
-                trimmed,
-                PROVIDER_PARSE_VALUES,
-            ));
-        }
-        match trimmed.to_ascii_lowercase().as_str() {
-            "claude" | "anthropic" => Ok(Provider::Claude),
-            "openai" | "gpt" | "chatgpt" => Ok(Provider::OpenAI),
-            "gemini" | "google" => Ok(Provider::Gemini),
-            _ => Err(EnumParseError::new(
-                EnumKind::Provider,
-                trimmed,
-                PROVIDER_PARSE_VALUES,
-            )),
-        }
-    }
-
-    /// Infer provider from model name prefix.
-    pub fn from_model_name(model: &str) -> Result<Self, EnumParseError> {
-        Ok(PredefinedModel::from_model_id(model)?.provider())
-    }
-
-    #[must_use]
-    pub fn all() -> &'static [Provider] {
-        &[Provider::Claude, Provider::OpenAI, Provider::Gemini]
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum PredefinedModel {
-    ClaudeOpus,
-    ClaudeSonnet,
-    ClaudeHaiku,
-    Gpt52Pro,
-    Gpt52,
-    GeminiPro,
-    GeminiFlash,
-}
-
-const CLAUDE_MODEL_IDS: &[&str] = &[
-    "claude-opus-4-6",
-    "claude-sonnet-4-6",
-    "claude-haiku-4-5-20251001",
-];
-
-const OPENAI_MODEL_IDS: &[&str] = &["gpt-5.2-pro", "gpt-5.2"];
-
-const GEMINI_MODEL_IDS: &[&str] = &["gemini-3-pro-preview", "gemini-3-flash-preview"];
-
-const ALL_MODEL_IDS: &[&str] = &[
-    "claude-opus-4-6",
-    "claude-sonnet-4-6",
-    "claude-haiku-4-5-20251001",
-    "gpt-5.2-pro",
-    "gpt-5.2",
-    "gemini-3-pro-preview",
-    "gemini-3-flash-preview",
-];
-
-fn expected_model_ids(provider: Provider) -> &'static [&'static str] {
-    match provider {
-        Provider::Claude => CLAUDE_MODEL_IDS,
-        Provider::OpenAI => OPENAI_MODEL_IDS,
-        Provider::Gemini => GEMINI_MODEL_IDS,
-    }
-}
-
-impl PredefinedModel {
-    #[must_use]
-    pub const fn all() -> &'static [PredefinedModel] {
-        &[
-            PredefinedModel::ClaudeOpus,
-            PredefinedModel::ClaudeSonnet,
-            PredefinedModel::ClaudeHaiku,
-            PredefinedModel::Gpt52Pro,
-            PredefinedModel::Gpt52,
-            PredefinedModel::GeminiPro,
-            PredefinedModel::GeminiFlash,
-        ]
-    }
-
-    #[must_use]
-    pub const fn display_name(self) -> &'static str {
-        match self {
-            PredefinedModel::ClaudeOpus => "Anthropic Claude Opus 4.6",
-            PredefinedModel::ClaudeSonnet => "Anthropic Claude Sonnet 4.6",
-            PredefinedModel::ClaudeHaiku => "Anthropic Claude Haiku 4.5",
-            PredefinedModel::Gpt52Pro => "OpenAI GPT 5.2 Pro",
-            PredefinedModel::Gpt52 => "OpenAI GPT 5.2",
-            PredefinedModel::GeminiPro => "Google Gemini 3 Pro",
-            PredefinedModel::GeminiFlash => "Google Gemini 3 Flash",
-        }
-    }
-
-    #[must_use]
-    pub const fn model_name(self) -> &'static str {
-        match self {
-            PredefinedModel::ClaudeOpus => "Opus 4.6",
-            PredefinedModel::ClaudeSonnet => "Sonnet 4.6",
-            PredefinedModel::ClaudeHaiku => "Haiku 4.5",
-            PredefinedModel::Gpt52Pro => "GPT 5.2 Pro",
-            PredefinedModel::Gpt52 => "GPT 5.2",
-            PredefinedModel::GeminiPro => "Gemini 3 Pro",
-            PredefinedModel::GeminiFlash => "Gemini 3 Flash",
-        }
-    }
-
-    #[must_use]
-    pub const fn firm_name(self) -> &'static str {
-        match self {
-            PredefinedModel::ClaudeOpus
-            | PredefinedModel::ClaudeSonnet
-            | PredefinedModel::ClaudeHaiku => "Anthropic",
-            PredefinedModel::Gpt52 | PredefinedModel::Gpt52Pro => "OpenAI",
-            PredefinedModel::GeminiPro | PredefinedModel::GeminiFlash => "Google",
-        }
-    }
-
-    #[must_use]
-    pub const fn model_id(self) -> &'static str {
-        match self {
-            PredefinedModel::ClaudeOpus => "claude-opus-4-6",
-            PredefinedModel::ClaudeSonnet => "claude-sonnet-4-6",
-            PredefinedModel::ClaudeHaiku => "claude-haiku-4-5-20251001",
-            PredefinedModel::Gpt52Pro => "gpt-5.2-pro",
-            PredefinedModel::Gpt52 => "gpt-5.2",
-            PredefinedModel::GeminiPro => "gemini-3-pro-preview",
-            PredefinedModel::GeminiFlash => "gemini-3-flash-preview",
-        }
-    }
-
-    #[must_use]
-    pub const fn provider(self) -> Provider {
-        match self {
-            PredefinedModel::ClaudeOpus
-            | PredefinedModel::ClaudeSonnet
-            | PredefinedModel::ClaudeHaiku => Provider::Claude,
-            PredefinedModel::Gpt52 | PredefinedModel::Gpt52Pro => Provider::OpenAI,
-            PredefinedModel::GeminiPro | PredefinedModel::GeminiFlash => Provider::Gemini,
-        }
-    }
-
-    #[must_use]
-    pub fn to_model_name(self) -> ModelName {
-        ModelName::from_predefined(self)
-    }
-
-    pub fn from_model_id(raw: &str) -> Result<Self, EnumParseError> {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return Err(EnumParseError::new(
-                EnumKind::PredefinedModel,
-                trimmed,
-                ALL_MODEL_IDS,
-            ));
-        }
-        Self::all()
-            .iter()
-            .copied()
-            .find(|model| model.model_id().eq_ignore_ascii_case(trimmed))
-            .ok_or_else(|| EnumParseError::new(EnumKind::PredefinedModel, trimmed, ALL_MODEL_IDS))
-    }
-
-    pub fn from_provider_and_id(provider: Provider, raw: &str) -> Result<Self, EnumParseError> {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return Err(EnumParseError::new(
-                EnumKind::PredefinedModel,
-                trimmed,
-                expected_model_ids(provider),
-            ));
-        }
-        Self::all()
-            .iter()
-            .copied()
-            .find(|model| {
-                model.provider() == provider && model.model_id().eq_ignore_ascii_case(trimmed)
-            })
-            .ok_or_else(|| {
-                EnumParseError::new(
-                    EnumKind::PredefinedModel,
-                    trimmed,
-                    expected_model_ids(provider),
-                )
-            })
-    }
-}
-
-/// Internal, system-owned model IDs used by background workflows.
-///
-/// Unlike [`PredefinedModel`], these are not user-selectable UI models. They
-/// represent bounded internal choices used by distillation and librarian tasks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum InternalModel {
-    ClaudeDistiller,
-    OpenAIDistiller,
-    GeminiDistiller,
-    GeminiLibrarian,
-}
-
-impl InternalModel {
-    #[must_use]
-    pub const fn model_id(self) -> &'static str {
-        match self {
-            InternalModel::ClaudeDistiller => "claude-haiku-4-5",
-            InternalModel::OpenAIDistiller => "gpt-5-nano",
-            InternalModel::GeminiDistiller => "gemini-3-pro-preview",
-            InternalModel::GeminiLibrarian => "gemini-3-flash-preview",
-        }
-    }
-
-    #[must_use]
-    pub const fn provider(self) -> Provider {
-        match self {
-            InternalModel::ClaudeDistiller => Provider::Claude,
-            InternalModel::OpenAIDistiller => Provider::OpenAI,
-            InternalModel::GeminiDistiller | InternalModel::GeminiLibrarian => Provider::Gemini,
-        }
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum ModelParseError {
-    #[error("model name cannot be empty")]
-    Empty,
-    #[error("Claude model must start with claude- (got {0})")]
-    ClaudePrefix(String),
-    #[error("OpenAI model must start with gpt-5 (got {0})")]
-    OpenAIMinimum(String),
-    #[error("Gemini model must start with gemini- (got {0})")]
-    GeminiPrefix(String),
-    #[error("unknown model name {0}")]
-    UnknownModel(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ModelName {
-    provider: Provider,
-    #[serde(rename = "model")]
-    name: Cow<'static, str>,
-}
-
-impl ModelName {
-    pub fn parse(provider: Provider, raw: &str) -> Result<Self, ModelParseError> {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return Err(ModelParseError::Empty);
-        }
-
-        let lower = trimmed.to_ascii_lowercase();
-
-        if provider == Provider::Claude && !lower.starts_with("claude-") {
-            return Err(ModelParseError::ClaudePrefix(trimmed.to_string()));
-        }
-
-        if provider == Provider::OpenAI && !lower.starts_with("gpt-5") {
-            return Err(ModelParseError::OpenAIMinimum(trimmed.to_string()));
-        }
-
-        if provider == Provider::Gemini && !lower.starts_with("gemini-") {
-            return Err(ModelParseError::GeminiPrefix(trimmed.to_string()));
-        }
-
-        let model = PredefinedModel::from_provider_and_id(provider, trimmed)
-            .map_err(|_| ModelParseError::UnknownModel(trimmed.to_string()))?;
-
-        Ok(Self::from_predefined(model))
-    }
-
-    #[must_use]
-    pub const fn from_predefined(model: PredefinedModel) -> Self {
-        Self {
-            provider: model.provider(),
-            name: Cow::Borrowed(model.model_id()),
-        }
-    }
-
-    #[must_use]
-    pub const fn provider(&self) -> Provider {
-        self.provider
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.name.as_ref()
-    }
-
-    #[must_use]
-    pub fn predefined(&self) -> PredefinedModel {
-        PredefinedModel::from_provider_and_id(self.provider, self.as_str())
-            .expect("ModelName should always be constructed from a known model")
-    }
-}
-
-impl std::fmt::Display for ModelName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.name.fmt(f)
-    }
-}
-
-impl<'de> Deserialize<'de> for ModelName {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct RawModelName {
-            provider: Provider,
-            #[serde(rename = "model")]
-            model: String,
-        }
-
-        let raw = RawModelName::deserialize(deserializer)?;
-        ModelName::parse(raw.provider, &raw.model).map_err(serde::de::Error::custom)
-    }
-}
+// --- Boundary types below: secrets, wire formats, provider-specific options ---
 
 /// Opaque wrapper for secret strings that prevents accidental disclosure.
 ///
@@ -1110,169 +409,7 @@ impl OpenAIRequestOptions {
     }
 }
 
-/// Hint for whether content should be cached by the provider.
-///
-/// Different providers handle caching differently:
-/// - Claude: Explicit `cache_control: { type: "ephemeral" }` markers
-/// - `OpenAI`: Automatic server-side prefix caching (hints ignored)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CacheHint {
-    /// No caching preference - provider uses default behavior.
-    #[default]
-    Default,
-    /// Content is stable and should be cached if supported.
-    ///
-    /// Named "Ephemeral" to match Anthropic's API terminology. Despite the name,
-    /// this actually means "cache this content" - Anthropic uses "ephemeral" to
-    /// indicate the cache entry has a limited TTL (~5 min) rather than permanent
-    /// storage. The content itself should be stable/unchanging for caching to help.
-    Ephemeral,
-}
-
-/// Cache slot budget for a Claude API request.
-///
-/// Claude allows at most 4 `cache_control` blocks per request. This type
-/// makes >4 unrepresentable by construction (IFA §2.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CacheBudget(u8);
-
-impl CacheBudget {
-    pub const MAX: u8 = 4;
-
-    /// Construct a budget, clamping to `MAX`.
-    #[must_use]
-    pub fn new(slots: u8) -> Self {
-        Self(slots.min(Self::MAX))
-    }
-
-    #[must_use]
-    pub fn full() -> Self {
-        Self(Self::MAX)
-    }
-
-    #[must_use]
-    pub fn remaining(self) -> u8 {
-        self.0
-    }
-
-    /// Consume one slot. Returns the decremented budget, or `None` if exhausted.
-    #[must_use]
-    pub fn take_one(self) -> Option<CacheBudget> {
-        if self.0 > 0 {
-            Some(Self(self.0 - 1))
-        } else {
-            None
-        }
-    }
-}
-
-/// Error when trying to construct invalid output limits.
-#[derive(Debug, Clone, Error)]
-pub enum OutputLimitsError {
-    #[error("thinking budget ({budget}) must be less than max output tokens ({max_output})")]
-    ThinkingBudgetTooLarge { budget: u32, max_output: u32 },
-    #[error("thinking budget must be at least 1024 tokens")]
-    ThinkingBudgetTooSmall,
-}
-
-/// Validated thinking budget for extended reasoning.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ThinkingBudget(u32);
-
-impl ThinkingBudget {
-    pub const MIN_TOKENS: u32 = 1024;
-
-    pub fn new(value: u32) -> Result<Self, OutputLimitsError> {
-        if value < Self::MIN_TOKENS {
-            return Err(OutputLimitsError::ThinkingBudgetTooSmall);
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub const fn as_u32(self) -> u32 {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThinkingState {
-    Disabled,
-    Enabled(ThinkingBudget),
-}
-
-impl ThinkingState {
-    #[must_use]
-    pub const fn is_enabled(self) -> bool {
-        matches!(self, ThinkingState::Enabled(_))
-    }
-}
-
-/// Validated output configuration that guarantees invariants.
-///
-/// If thinking is enabled, `thinking_budget < max_output_tokens` is guaranteed
-/// by construction. You cannot create an invalid `OutputLimits`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputLimits {
-    Standard {
-        max_output_tokens: u32,
-    },
-    WithThinking {
-        max_output_tokens: u32,
-        thinking_budget: ThinkingBudget,
-    },
-}
-
-impl OutputLimits {
-    #[must_use]
-    pub const fn new(max_output_tokens: u32) -> Self {
-        Self::Standard { max_output_tokens }
-    }
-
-    ///
-    /// Returns an error if `thinking_budget >= max_output_tokens` or `thinking_budget < 1024`.
-    pub fn with_thinking(
-        max_output_tokens: u32,
-        thinking_budget: u32,
-    ) -> Result<Self, OutputLimitsError> {
-        let budget = ThinkingBudget::new(thinking_budget)?;
-        if budget.as_u32() >= max_output_tokens {
-            return Err(OutputLimitsError::ThinkingBudgetTooLarge {
-                budget: budget.as_u32(),
-                max_output: max_output_tokens,
-            });
-        }
-        Ok(Self::WithThinking {
-            max_output_tokens,
-            thinking_budget: budget,
-        })
-    }
-
-    #[must_use]
-    pub const fn max_output_tokens(&self) -> u32 {
-        match self {
-            OutputLimits::Standard { max_output_tokens }
-            | OutputLimits::WithThinking {
-                max_output_tokens, ..
-            } => *max_output_tokens,
-        }
-    }
-
-    #[must_use]
-    pub const fn thinking(&self) -> ThinkingState {
-        match self {
-            OutputLimits::Standard { .. } => ThinkingState::Disabled,
-            OutputLimits::WithThinking {
-                thinking_budget, ..
-            } => ThinkingState::Enabled(*thinking_budget),
-        }
-    }
-
-    #[must_use]
-    pub const fn has_thinking(&self) -> bool {
-        matches!(self, OutputLimits::WithThinking { .. })
-    }
-}
+// --- Replay / thinking signature types (boundary: format migration logic) ---
 
 /// Opaque provider signature for thinking/tool-call replay.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1455,7 +592,6 @@ impl<'de> Deserialize<'de> for ThinkingReplayState {
             return Ok(Self::Unknown);
         };
 
-        // New format: discriminated by "kind"
         if has_kind {
             #[derive(Deserialize)]
             #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1479,7 +615,6 @@ impl<'de> Deserialize<'de> for ThinkingReplayState {
             });
         }
 
-        // Old format: discriminated by "state"
         if has_state {
             return Ok(match serde_json::from_value::<ThoughtSignatureState>(v) {
                 Ok(old) => match old {
@@ -1494,40 +629,33 @@ impl<'de> Deserialize<'de> for ThinkingReplayState {
     }
 }
 
+// --- Stream / tool / usage types (boundary: wire format) ---
+
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
-    /// Text content delta.
     TextDelta(String),
-    /// Provider reasoning content delta (Claude extended thinking or OpenAI reasoning summaries).
     ThinkingDelta(String),
-    /// Encrypted thinking signature for API replay (Claude extended thinking).
     ThinkingSignature(String),
-    /// OpenAI response ID for stateful `previous_response_id` chaining.
     ResponseId(String),
-    /// Completed OpenAI reasoning output item for stateless replay.
     OpenAIReasoningDone {
         id: String,
         summary: Vec<OpenAIReasoningSummaryPart>,
         encrypted_content: Option<String>,
     },
-    /// Tool call started - emitted when a `tool_use` content block begins.
     ToolCallStart {
         id: String,
         name: String,
         thought_signature: ThoughtSignatureState,
     },
-    /// Tool call arguments delta - emitted as JSON arguments stream in.
     ToolCallDelta {
         id: String,
         arguments: String,
     },
-    /// API-reported token usage (from `message_start` or `message_delta` events).
     Usage(ApiUsage),
     Done,
     Error(String),
 }
 
-/// Reason a stream finished.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamFinishReason {
     Done,
@@ -1540,27 +668,18 @@ pub enum StreamFinishReason {
 /// and `message_delta` events) for accurate cost tracking and cache hit analysis.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ApiUsage {
-    /// Total input tokens (includes cached tokens).
     pub input_tokens: u32,
-    /// Input tokens read from cache (cache hits).
     pub cache_read_tokens: u32,
-    /// Input tokens written to cache (cache misses that were cached).
     pub cache_creation_tokens: u32,
-    /// Output tokens generated by the model.
     pub output_tokens: u32,
 }
 
 impl ApiUsage {
-    /// Input tokens that were not read from cache.
-    ///
-    /// For cost calculation:
-    /// `cost = (non_cached_input * input_price) + (cache_read * cached_price) + (output * output_price)`
     #[must_use]
     pub const fn non_cached_input_tokens(&self) -> u32 {
         self.input_tokens.saturating_sub(self.cache_read_tokens)
     }
 
-    /// Merge another usage into this one (for aggregation across multiple API calls).
     pub fn merge(&mut self, other: &ApiUsage) {
         self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
         self.cache_read_tokens = self
@@ -1577,7 +696,6 @@ impl ApiUsage {
         self.input_tokens > 0 || self.output_tokens > 0
     }
 
-    /// Cache hit percentage (0-100).
     #[must_use]
     pub fn cache_hit_percentage(&self) -> f64 {
         if self.input_tokens == 0 {
@@ -1589,17 +707,11 @@ impl ApiUsage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
-    /// The name of the tool (function name).
     pub name: String,
-    /// A description of what the tool does.
     pub description: String,
-    /// JSON Schema describing the tool's parameters.
     pub parameters: serde_json::Value,
-    /// Whether this tool is hidden from UI rendering.
-    /// Hidden tools execute normally but are invisible to the user.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
-    /// If set, this tool is only included in the tool manifest for the specified provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<Provider>,
 }
@@ -1622,13 +734,9 @@ impl ToolDefinition {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
-    /// Unique identifier for this tool call (used to match results).
     pub id: String,
-    /// The name of the tool being called.
     pub name: String,
-    /// The arguments to pass to the tool, as parsed JSON.
     pub arguments: serde_json::Value,
-    /// Thought signature state for providers that require it (Gemini).
     pub thought_signature: ThoughtSignatureState,
 }
 
@@ -1678,11 +786,8 @@ impl ToolCall {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
-    /// The ID of the tool call this result is for.
     pub tool_call_id: String,
-    /// The name of the tool that was called (needed for Gemini's functionResponse).
     pub tool_name: String,
-    /// The result content (typically a string or JSON).
     pub content: String,
     pub is_error: bool,
 }
@@ -1723,360 +828,6 @@ impl ToolResult {
             is_error: self.is_error,
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SystemMessage {
-    content: NonEmptyString,
-    timestamp: SystemTime,
-}
-
-impl SystemMessage {
-    #[must_use]
-    pub fn new(content: NonEmptyString) -> Self {
-        Self {
-            content,
-            timestamp: SystemTime::now(),
-        }
-    }
-
-    #[must_use]
-    pub fn content(&self) -> &str {
-        self.content.as_str()
-    }
-
-    #[must_use]
-    pub fn normalized_for_persistence(&self) -> Self {
-        Self {
-            content: normalize_non_empty_for_persistence(&self.content),
-            timestamp: self.timestamp,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserMessage {
-    content: NonEmptyString,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    display_content: Option<NonEmptyString>,
-    timestamp: SystemTime,
-}
-
-impl UserMessage {
-    #[must_use]
-    pub fn new(content: NonEmptyString) -> Self {
-        Self {
-            content,
-            display_content: None,
-            timestamp: SystemTime::now(),
-        }
-    }
-
-    #[must_use]
-    pub fn with_display(content: NonEmptyString, display_content: NonEmptyString) -> Self {
-        Self {
-            content,
-            display_content: Some(display_content),
-            timestamp: SystemTime::now(),
-        }
-    }
-
-    #[must_use]
-    pub fn content(&self) -> &str {
-        self.content.as_str()
-    }
-
-    #[must_use]
-    pub fn display_content(&self) -> &str {
-        self.display_content
-            .as_ref()
-            .map_or_else(|| self.content.as_str(), NonEmptyString::as_str)
-    }
-
-    #[must_use]
-    pub fn normalized_for_persistence(&self) -> Self {
-        Self {
-            content: normalize_non_empty_for_persistence(&self.content),
-            display_content: self
-                .display_content
-                .as_ref()
-                .map(normalize_non_empty_for_persistence),
-            timestamp: self.timestamp,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AssistantMessage {
-    content: NonEmptyString,
-    timestamp: SystemTime,
-    #[serde(flatten)]
-    model: ModelName,
-}
-
-impl AssistantMessage {
-    #[must_use]
-    pub fn new(model: ModelName, content: NonEmptyString) -> Self {
-        Self {
-            content,
-            timestamp: SystemTime::now(),
-            model,
-        }
-    }
-
-    #[must_use]
-    pub fn content(&self) -> &str {
-        self.content.as_str()
-    }
-
-    #[must_use]
-    pub fn provider(&self) -> Provider {
-        self.model.provider()
-    }
-
-    #[must_use]
-    pub fn model(&self) -> &ModelName {
-        &self.model
-    }
-
-    #[must_use]
-    pub fn normalized_for_persistence(&self) -> Self {
-        Self {
-            content: normalize_non_empty_for_persistence(&self.content),
-            timestamp: self.timestamp,
-            model: self.model.clone(),
-        }
-    }
-}
-
-/// Provider reasoning/thinking content (Claude extended thinking, Gemini thinking, etc.).
-///
-/// This is separate from `AssistantMessage` because thinking is metadata about the
-/// reasoning process, not part of the actual response. It can be shown/hidden
-/// independently in the UI.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThinkingMessage {
-    content: NonEmptyString,
-    /// Provider-specific replay state for thinking blocks.
-    #[serde(default, alias = "signature")]
-    replay: ThinkingReplayState,
-    timestamp: SystemTime,
-    #[serde(flatten)]
-    model: ModelName,
-}
-
-impl ThinkingMessage {
-    #[must_use]
-    pub fn new(model: ModelName, content: NonEmptyString) -> Self {
-        Self {
-            content,
-            replay: ThinkingReplayState::Unsigned,
-            timestamp: SystemTime::now(),
-            model,
-        }
-    }
-
-    #[must_use]
-    pub fn with_signature(model: ModelName, content: NonEmptyString, signature: String) -> Self {
-        Self {
-            content,
-            replay: ThinkingReplayState::ClaudeSigned {
-                signature: ThoughtSignature::new(signature),
-            },
-            timestamp: SystemTime::now(),
-            model,
-        }
-    }
-
-    #[must_use]
-    pub fn with_openai_reasoning(
-        model: ModelName,
-        content: NonEmptyString,
-        items: Vec<OpenAIReasoningItem>,
-    ) -> Self {
-        Self {
-            content,
-            replay: ThinkingReplayState::OpenAIReasoning { items },
-            timestamp: SystemTime::now(),
-            model,
-        }
-    }
-
-    #[must_use]
-    pub fn content(&self) -> &str {
-        self.content.as_str()
-    }
-
-    #[must_use]
-    pub fn replay_state(&self) -> &ThinkingReplayState {
-        &self.replay
-    }
-
-    #[must_use]
-    pub fn requires_persistence(&self) -> bool {
-        self.replay.requires_persistence()
-    }
-
-    #[must_use]
-    pub fn claude_signature(&self) -> Option<&ThoughtSignature> {
-        match &self.replay {
-            ThinkingReplayState::ClaudeSigned { signature } => Some(signature),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub fn provider(&self) -> Provider {
-        self.model.provider()
-    }
-
-    #[must_use]
-    pub fn model(&self) -> &ModelName {
-        &self.model
-    }
-
-    #[must_use]
-    pub fn normalized_for_persistence(&self) -> Self {
-        Self {
-            content: normalize_non_empty_for_persistence(&self.content),
-            replay: self.replay.clone(),
-            timestamp: self.timestamp,
-            model: self.model.clone(),
-        }
-    }
-}
-
-/// A complete message.
-///
-/// This is a real sum type (not a `Role` tag + "sometimes-meaningful" fields).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Message {
-    System(SystemMessage),
-    User(UserMessage),
-    Assistant(AssistantMessage),
-    /// Provider reasoning/thinking content.
-    Thinking(ThinkingMessage),
-    /// A tool call requested by the assistant.
-    ToolUse(ToolCall),
-    /// The result of a tool call execution.
-    ToolResult(ToolResult),
-}
-
-impl Message {
-    #[must_use]
-    pub fn system(content: NonEmptyString) -> Self {
-        Self::System(SystemMessage::new(content))
-    }
-
-    #[must_use]
-    pub fn user(content: NonEmptyString) -> Self {
-        Self::User(UserMessage::new(content))
-    }
-
-    #[must_use]
-    pub fn user_with_display(content: NonEmptyString, display_content: NonEmptyString) -> Self {
-        Self::User(UserMessage::with_display(content, display_content))
-    }
-
-    pub fn try_user(content: impl Into<String>) -> Result<Self, EmptyStringError> {
-        Ok(Self::user(NonEmptyString::new(content)?))
-    }
-
-    #[must_use]
-    pub fn assistant(model: ModelName, content: NonEmptyString) -> Self {
-        Self::Assistant(AssistantMessage::new(model, content))
-    }
-
-    #[must_use]
-    pub fn thinking(model: ModelName, content: NonEmptyString) -> Self {
-        Self::Thinking(ThinkingMessage::new(model, content))
-    }
-
-    #[must_use]
-    pub fn thinking_with_signature(
-        model: ModelName,
-        content: NonEmptyString,
-        signature: String,
-    ) -> Self {
-        Self::Thinking(ThinkingMessage::with_signature(model, content, signature))
-    }
-
-    #[must_use]
-    pub fn thinking_with_openai_reasoning(
-        model: ModelName,
-        content: NonEmptyString,
-        items: Vec<OpenAIReasoningItem>,
-    ) -> Self {
-        Self::Thinking(ThinkingMessage::with_openai_reasoning(
-            model, content, items,
-        ))
-    }
-
-    #[must_use]
-    pub fn tool_use(call: ToolCall) -> Self {
-        Self::ToolUse(call)
-    }
-
-    #[must_use]
-    pub fn tool_result(result: ToolResult) -> Self {
-        Self::ToolResult(result)
-    }
-
-    #[must_use]
-    pub fn role_str(&self) -> &'static str {
-        match self {
-            Message::System(_) => "system",
-            Message::User(_) | Message::ToolResult(_) => "user",
-            // Thinking is assistant-role content (internal reasoning)
-            Message::Assistant(_) | Message::Thinking(_) | Message::ToolUse(_) => "assistant",
-        }
-    }
-
-    #[must_use]
-    pub fn content(&self) -> &str {
-        match self {
-            Message::System(m) => m.content(),
-            Message::User(m) => m.content(),
-            Message::Assistant(m) => m.content(),
-            Message::Thinking(m) => m.content(),
-            Message::ToolUse(call) => &call.name,
-            Message::ToolResult(result) => &result.content,
-        }
-    }
-
-    #[must_use]
-    pub fn display_content(&self) -> &str {
-        match self {
-            Message::User(m) => m.display_content(),
-            other => other.content(),
-        }
-    }
-
-    #[must_use]
-    pub fn normalized_for_persistence(&self) -> Self {
-        match self {
-            Message::System(message) => Message::System(message.normalized_for_persistence()),
-            Message::User(message) => Message::User(message.normalized_for_persistence()),
-            Message::Assistant(message) => Message::Assistant(message.normalized_for_persistence()),
-            Message::Thinking(message) => Message::Thinking(message.normalized_for_persistence()),
-            Message::ToolUse(call) => Message::ToolUse(call.normalized_for_persistence()),
-            Message::ToolResult(result) => Message::ToolResult(result.normalized_for_persistence()),
-        }
-    }
-}
-
-fn normalize_non_empty_for_persistence(value: &NonEmptyString) -> NonEmptyString {
-    match PersistableContent::normalize_borrowed(value.as_str()) {
-        Cow::Borrowed(_) => value.clone(),
-        Cow::Owned(normalized) => {
-            debug_assert!(!normalized.trim().is_empty());
-            NonEmptyString(normalized)
-        }
-    }
-}
-
-fn normalize_string_for_persistence(value: &str) -> String {
-    PersistableContent::normalize_borrowed(value).into_owned()
 }
 
 fn normalize_json_for_persistence(value: &serde_json::Value) -> serde_json::Value {
@@ -2130,6 +881,8 @@ impl CacheableMessage {
 
 #[cfg(test)]
 mod tests {
+    use std::time::SystemTime;
+
     use super::{
         ApiKey, ApiUsage, CacheBudget, CacheHint, CacheableMessage, ENV_CREDENTIAL_PATTERNS,
         ENV_INJECTION_PATTERNS, ENV_SECRET_DENYLIST, InternalModel, Message, NonEmptyStaticStr,
@@ -2184,7 +937,6 @@ mod tests {
 
     #[test]
     fn persistable_content_mixed_line_endings() {
-        // Unix \n, Windows \r\n, and old Mac \r all in one string
         let input = "Unix\nWindows\r\nOld Mac\rMore";
         let safe = PersistableContent::new(input);
         assert_eq!(safe.as_str(), "Unix\nWindows\r\nOld Mac\nMore");
@@ -2192,7 +944,6 @@ mod tests {
 
     #[test]
     fn persistable_content_cr_before_crlf() {
-        // \r followed by \r\n should normalize the first \r
         let input = "A\r\r\nB";
         let safe = PersistableContent::new(input);
         assert_eq!(safe.as_str(), "A\n\r\nB");
@@ -2229,7 +980,6 @@ mod tests {
         let original = PersistableContent::new("test\rcontent");
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: PersistableContent = serde_json::from_str(&json).unwrap();
-        // Deserialization re-normalizes through `try_from = "String"`.
         assert_eq!(original.as_str(), deserialized.as_str());
     }
 
@@ -2419,14 +1169,14 @@ mod tests {
 
     #[test]
     fn cacheable_message_plain_has_no_hint() {
-        let msg = Message::try_user("test").unwrap();
+        let msg = Message::try_user("test", SystemTime::now()).unwrap();
         let cacheable = CacheableMessage::plain(msg);
         assert_eq!(cacheable.cache_hint, CacheHint::Default);
     }
 
     #[test]
     fn cacheable_message_cached_has_ephemeral_hint() {
-        let msg = Message::try_user("test").unwrap();
+        let msg = Message::try_user("test", SystemTime::now()).unwrap();
         let cacheable = CacheableMessage::cached(msg);
         assert_eq!(cacheable.cache_hint, CacheHint::Ephemeral);
     }
@@ -2605,7 +1355,6 @@ mod tests {
 
     #[test]
     fn api_usage_non_cached_input_tokens_saturates() {
-        // Edge case: cache_read > input (shouldn't happen but handle gracefully)
         let usage = ApiUsage {
             input_tokens: 100,
             cache_read_tokens: 200,
@@ -2665,7 +1414,6 @@ mod tests {
         };
         assert!((usage.cache_hit_percentage() - 85.0).abs() < 0.01);
 
-        // Zero input tokens should return 0%
         let empty = ApiUsage::default();
         assert!((empty.cache_hit_percentage() - 0.0).abs() < 0.01);
     }

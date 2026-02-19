@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use std::path::Path;
+use std::time::SystemTime;
 
 #[cfg(test)]
 use forge_types::PredefinedModel;
@@ -243,7 +244,10 @@ impl ContextManager {
         let mut total_tokens = 0u32;
 
         if let Some(summary) = self.history.compaction_summary() {
-            messages.push(Message::system(summary.content_non_empty().clone()));
+            messages.push(Message::system(
+                summary.content_non_empty().clone(),
+                SystemTime::now(),
+            ));
             total_tokens += summary.token_count();
         }
 
@@ -262,7 +266,7 @@ impl ContextManager {
     pub fn complete_compaction(&mut self, content: NonEmptyString, generated_by: String) {
         let token_count = self
             .counter
-            .count_message(&Message::system(content.clone()));
+            .count_message(&Message::system(content.clone(), SystemTime::now()));
         let summary = CompactionSummary::new(content, token_count, generated_by);
         self.history.compact(summary);
     }
@@ -388,6 +392,8 @@ impl ContextManager {
 
 #[cfg(test)]
 mod tests {
+    use std::time::SystemTime;
+
     use super::{
         ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus, ModelLimits,
         ModelLimitsSource, StepId,
@@ -412,8 +418,12 @@ mod tests {
     fn test_push_message() {
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
-        let id1 = manager.push_message(Message::try_user("Hello").expect("non-empty test message"));
-        let id2 = manager.push_message(Message::try_user("World").expect("non-empty test message"));
+        let id1 = manager.push_message(
+            Message::try_user("Hello", SystemTime::now()).expect("non-empty test message"),
+        );
+        let id2 = manager.push_message(
+            Message::try_user("World", SystemTime::now()).expect("non-empty test message"),
+        );
 
         assert_eq!(id1.as_u64(), 0);
         assert_eq!(id2.as_u64(), 1);
@@ -450,8 +460,12 @@ mod tests {
     fn test_build_context_simple() {
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
-        manager.push_message(Message::try_user("Hello").expect("non-empty test message"));
-        manager.push_message(Message::try_user("World").expect("non-empty test message"));
+        manager.push_message(
+            Message::try_user("Hello", SystemTime::now()).expect("non-empty test message"),
+        );
+        manager.push_message(
+            Message::try_user("World", SystemTime::now()).expect("non-empty test message"),
+        );
 
         let result = manager.build_working_context(0);
         assert!(result.is_ok());
@@ -470,8 +484,11 @@ mod tests {
 
         for i in 0..20 {
             manager.push_message(
-                Message::try_user(format!("Message {i} with some content to use tokens"))
-                    .expect("non-empty"),
+                Message::try_user(
+                    format!("Message {i} with some content to use tokens"),
+                    SystemTime::now(),
+                )
+                .expect("non-empty"),
             );
         }
 
@@ -483,8 +500,8 @@ mod tests {
     fn test_prepare_and_complete_compaction() {
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
-        manager.push_message(Message::try_user("Hello").expect("non-empty"));
-        manager.push_message(Message::try_user("World").expect("non-empty"));
+        manager.push_message(Message::try_user("Hello", SystemTime::now()).expect("non-empty"));
+        manager.push_message(Message::try_user("World", SystemTime::now()).expect("non-empty"));
 
         let plan = manager.prepare_compaction();
         assert_eq!(plan.messages.len(), 2);
@@ -503,8 +520,10 @@ mod tests {
     fn test_rollback_last_message_success() {
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
-        let id1 = manager.push_message(Message::try_user("Hello").expect("non-empty"));
-        let id2 = manager.push_message(Message::try_user("World").expect("non-empty"));
+        let id1 =
+            manager.push_message(Message::try_user("Hello", SystemTime::now()).expect("non-empty"));
+        let id2 =
+            manager.push_message(Message::try_user("World", SystemTime::now()).expect("non-empty"));
 
         assert_eq!(manager.history().len(), 2);
 
@@ -523,8 +542,10 @@ mod tests {
     fn test_rollback_last_message_wrong_id() {
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
-        let id1 = manager.push_message(Message::try_user("Hello").expect("non-empty"));
-        let _id2 = manager.push_message(Message::try_user("World").expect("non-empty"));
+        let id1 =
+            manager.push_message(Message::try_user("Hello", SystemTime::now()).expect("non-empty"));
+        let _id2 =
+            manager.push_message(Message::try_user("World", SystemTime::now()).expect("non-empty"));
 
         let rolled_back = manager.rollback_last_message(id1);
         assert!(rolled_back.is_none());
@@ -559,8 +580,8 @@ mod tests {
     fn test_save_load_roundtrip() {
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
-        manager.push_message(Message::try_user("Hello").expect("non-empty"));
-        manager.push_message(Message::try_user("World").expect("non-empty"));
+        manager.push_message(Message::try_user("Hello", SystemTime::now()).expect("non-empty"));
+        manager.push_message(Message::try_user("World", SystemTime::now()).expect("non-empty"));
 
         assert_eq!(manager.history().len(), 2);
 
@@ -590,7 +611,7 @@ mod tests {
     #[test]
     fn test_load_with_different_model() {
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
-        manager.push_message(Message::try_user("Test").expect("non-empty"));
+        manager.push_message(Message::try_user("Test", SystemTime::now()).expect("non-empty"));
 
         let tmp_dir = std::env::temp_dir();
         let tmp_path = tmp_dir.join(format!("forge_test_model_{}.json", std::process::id()));
@@ -614,7 +635,8 @@ mod tests {
         use forge_types::ToolResult;
 
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
-        manager.push_message(Message::try_user("hello\rworld").expect("non-empty"));
+        manager
+            .push_message(Message::try_user("hello\rworld", SystemTime::now()).expect("non-empty"));
         manager.push_message(Message::tool_result(ToolResult::success(
             "call_1",
             "Read",
@@ -657,7 +679,7 @@ mod tests {
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
 
         let _id = manager.push_message_with_step_id(
-            Message::try_user("Hello").expect("non-empty"),
+            Message::try_user("Hello", SystemTime::now()).expect("non-empty"),
             StepId::new(12345),
         );
 

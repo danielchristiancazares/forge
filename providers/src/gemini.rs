@@ -522,6 +522,7 @@ mod tests {
     use chrono::Utc;
     use forge_types::{ApiKey, Provider};
     use serde_json::{Value, json};
+    use std::time::SystemTime;
 
     fn contains_additional_properties(value: &Value) -> bool {
         match value {
@@ -536,7 +537,9 @@ mod tests {
 
     #[test]
     fn builds_request_with_system_instruction() {
-        let messages = vec![CacheableMessage::plain(Message::try_user("hello").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hello", SystemTime::now()).unwrap(),
+        )];
         let limits = OutputLimits::new(4096);
 
         let body = build_request_body(
@@ -555,7 +558,9 @@ mod tests {
 
     #[test]
     fn builds_request_with_generation_config() {
-        let messages = vec![CacheableMessage::plain(Message::try_user("hello").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hello", SystemTime::now()).unwrap(),
+        )];
         let limits = OutputLimits::new(8192);
 
         let body = build_request_body(&messages, limits, None, None, false, None);
@@ -567,7 +572,9 @@ mod tests {
 
     #[test]
     fn builds_request_with_thinking_config() {
-        let messages = vec![CacheableMessage::plain(Message::try_user("hello").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hello", SystemTime::now()).unwrap(),
+        )];
         let limits = OutputLimits::new(8192);
 
         let body = build_request_body(&messages, limits, None, None, true, None);
@@ -580,7 +587,9 @@ mod tests {
 
     #[test]
     fn gemini_thinking_flag_controls_request() {
-        let messages = vec![CacheableMessage::plain(Message::try_user("hello").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hello", SystemTime::now()).unwrap(),
+        )];
         let limits = OutputLimits::with_thinking(8192, 2048).unwrap();
 
         let config =
@@ -613,7 +622,9 @@ mod tests {
 
     #[test]
     fn builds_request_with_tools() {
-        let messages = vec![CacheableMessage::plain(Message::try_user("hello").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hello", SystemTime::now()).unwrap(),
+        )];
         let limits = OutputLimits::new(4096);
 
         let tools = vec![forge_types::ToolDefinition::new(
@@ -636,7 +647,9 @@ mod tests {
 
     #[test]
     fn strips_additional_properties_from_tool_schemas() {
-        let messages = vec![CacheableMessage::plain(Message::try_user("hello").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hello", SystemTime::now()).unwrap(),
+        )];
         let limits = OutputLimits::new(4096);
 
         let tools = vec![forge_types::ToolDefinition::new(
@@ -774,7 +787,9 @@ mod tests {
     fn builds_request_with_cache_reference() {
         use chrono::TimeZone;
 
-        let messages = vec![CacheableMessage::plain(Message::try_user("hello").unwrap())];
+        let messages = vec![CacheableMessage::plain(
+            Message::try_user("hello", SystemTime::now()).unwrap(),
+        )];
         let limits = OutputLimits::new(4096);
 
         let cache = GeminiCache {

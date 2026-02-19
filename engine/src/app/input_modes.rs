@@ -6,6 +6,8 @@
 use super::ui::{
     CommandDraftMut, CommandStateOwned, DraftInput, InputMode, InputState, InsertDraftMut,
 };
+use std::time::SystemTime;
+
 use super::{ApiConfig, App, Message, NonEmptyString};
 
 pub(crate) use forge_tools::change_recording::{ChangeRecorder, TurnChangeReport, TurnContext};
@@ -233,9 +235,9 @@ impl InsertMode<'_> {
                         NonEmptyString::new(format!("{summary}\n\n{}", display.as_str()))
                             .unwrap_or(display)
                     };
-                Message::user_with_display(content, display_with_summary)
+                Message::user_with_display(content, display_with_summary, SystemTime::now())
             }
-            _ => Message::user(content),
+            _ => Message::user(content, SystemTime::now()),
         };
         let msg_id = self.app.push_history_message(message);
 

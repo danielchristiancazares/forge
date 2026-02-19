@@ -432,6 +432,8 @@ mod tests {
         build_distillation_prompt, distillation_model, distiller_input_limit,
         generate_distillation,
     };
+    use std::time::SystemTime;
+
     use forge_types::{Message, Provider};
 
     #[test]
@@ -449,9 +451,9 @@ mod tests {
     #[test]
     fn test_build_prompt_preserves_message_order() {
         let messages = vec![
-            Message::try_user("First message").expect("non-empty test message"),
-            Message::try_user("Second message").expect("non-empty test message"),
-            Message::try_user("Third message").expect("non-empty test message"),
+            Message::try_user("First message", SystemTime::now()).expect("non-empty test message"),
+            Message::try_user("Second message", SystemTime::now()).expect("non-empty test message"),
+            Message::try_user("Third message", SystemTime::now()).expect("non-empty test message"),
         ];
 
         let (_, prompt) = build_distillation_prompt(&messages);
@@ -501,6 +503,7 @@ mod tests {
 
         let messages = vec![Message::system(
             NonEmptyString::new("You are a helpful assistant.").expect("msg"),
+            SystemTime::now(),
         )];
 
         let (_, prompt) = build_distillation_prompt(&messages);
@@ -515,6 +518,7 @@ mod tests {
         let messages = vec![Message::assistant(
             Provider::Claude.default_model(),
             NonEmptyString::new("Hello! How can I help?").expect("msg"),
+            SystemTime::now(),
         )];
 
         let (_, prompt) = build_distillation_prompt(&messages);

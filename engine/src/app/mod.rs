@@ -29,7 +29,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use tokio::sync::mpsc;
 
@@ -687,7 +687,7 @@ impl StreamingMessage {
         // injection, and secret leaks.
         let sanitized = crate::security::sanitize_display_text(&self.content);
         let content = NonEmptyString::new(sanitized)?;
-        Ok(Message::assistant(self.model, content))
+        Ok(Message::assistant(self.model, content, SystemTime::now()))
     }
 }
 

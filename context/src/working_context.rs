@@ -8,6 +8,8 @@
 //! It represents what will actually be sent to the LLM API:
 //! either all messages (pre-compaction) or compaction summary + post-compaction messages.
 
+use std::time::SystemTime;
+
 use forge_types::Message;
 
 use super::history::{FullHistory, MessageId};
@@ -90,7 +92,10 @@ impl WorkingContext {
         let mut messages = Vec::with_capacity(self.segments.len() + 1);
 
         if let Some(summary) = history.compaction_summary() {
-            messages.push(Message::system(summary.content_non_empty().clone()));
+            messages.push(Message::system(
+                summary.content_non_empty().clone(),
+                SystemTime::now(),
+            ));
         }
 
         for segment in &self.segments {
