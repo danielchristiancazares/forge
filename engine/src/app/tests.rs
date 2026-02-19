@@ -111,6 +111,20 @@ fn expect_queued_message(result: QueueMessageResult) -> QueuedUserMessage {
     }
 }
 
+fn insert_mode(app: &mut App) -> super::InsertMode<'_> {
+    match app.insert_mode_mut() {
+        super::InsertModeAccess::InInsert(mode) => mode,
+        super::InsertModeAccess::NotInsert => panic!("insert mode"),
+    }
+}
+
+fn command_mode(app: &mut App) -> super::CommandMode<'_> {
+    match app.command_mode_mut() {
+        super::CommandModeAccess::InCommand(mode) => mode,
+        super::CommandModeAccess::NotCommand => panic!("command mode"),
+    }
+}
+
 fn last_notification(app: &App) -> Option<&str> {
     for item in app.ui.display.iter().rev() {
         if let DisplayItem::Local(msg) = item
@@ -271,21 +285,21 @@ fn enter_and_delete_respects_unicode_cursor() {
     });
 
     {
-        let mut insert = app.insert_mode_mut().expect("insert mode");
+        let mut insert = insert_mode(&mut app);
         insert.enter_char('X');
     }
     assert_eq!(app.draft_text(), "aX🦀b");
     assert_eq!(app.draft_cursor(), 2);
 
     {
-        let mut insert = app.insert_mode_mut().expect("insert mode");
+        let mut insert = insert_mode(&mut app);
         insert.delete_char();
     }
     assert_eq!(app.draft_text(), "a🦀b");
     assert_eq!(app.draft_cursor(), 1);
 
     {
-        let mut insert = app.insert_mode_mut().expect("insert mode");
+        let mut insert = insert_mode(&mut app);
         insert.delete_char_forward();
     }
     assert_eq!(app.draft_text(), "ab");
@@ -300,7 +314,7 @@ fn submit_message_adds_user_message() {
         cursor: 5,
     });
 
-    let queued = app.insert_mode_mut().expect("insert mode").queue_message();
+    let queued = insert_mode(&mut app).queue_message();
     let _ = expect_queued_message(queued);
 
     assert!(app.draft_text().is_empty());
@@ -320,7 +334,7 @@ fn process_command_quit_sets_should_quit() {
     app.enter_command_mode();
 
     let command = {
-        let mut command_mode = app.command_mode_mut().expect("command mode");
+        let mut command_mode = command_mode(&mut app);
         command_mode.push_char('q');
         command_mode.take_command()
     };
@@ -340,7 +354,7 @@ fn process_command_clear_resets_conversation() {
     app.enter_command_mode();
 
     let command = {
-        let mut command_mode = app.command_mode_mut().expect("command mode");
+        let mut command_mode = command_mode(&mut app);
         for c in "clear".chars() {
             command_mode.push_char(c);
         }
@@ -360,7 +374,7 @@ fn process_command_clear_requests_transcript_clear() {
     app.enter_command_mode();
 
     let command = {
-        let mut command_mode = app.command_mode_mut().expect("command mode");
+        let mut command_mode = command_mode(&mut app);
         for c in "clear".chars() {
             command_mode.push_char(c);
         }
@@ -379,7 +393,7 @@ fn process_command_settings_opens_settings_modal() {
     app.enter_command_mode();
 
     let command = {
-        let mut command_mode = app.command_mode_mut().expect("command mode");
+        let mut command_mode = command_mode(&mut app);
         for c in "settings".chars() {
             command_mode.push_char(c);
         }
@@ -403,7 +417,7 @@ fn process_command_settings_shows_guardrail_when_busy() {
     app.enter_command_mode();
 
     let command = {
-        let mut command_mode = app.command_mode_mut().expect("command mode");
+        let mut command_mode = command_mode(&mut app);
         for c in "settings".chars() {
             command_mode.push_char(c);
         }
@@ -426,7 +440,7 @@ fn process_command_runtime_opens_runtime_panel() {
     app.enter_command_mode();
 
     let command = {
-        let mut command_mode = app.command_mode_mut().expect("command mode");
+        let mut command_mode = command_mode(&mut app);
         for c in "runtime".chars() {
             command_mode.push_char(c);
         }
@@ -445,7 +459,7 @@ fn process_command_resolve_opens_resolve_panel() {
     app.enter_command_mode();
 
     let command = {
-        let mut command_mode = app.command_mode_mut().expect("command mode");
+        let mut command_mode = command_mode(&mut app);
         for c in "resolve".chars() {
             command_mode.push_char(c);
         }
@@ -464,7 +478,7 @@ fn process_command_validate_opens_validation_panel() {
     app.enter_command_mode();
 
     let command = {
-        let mut command_mode = app.command_mode_mut().expect("command mode");
+        let mut command_mode = command_mode(&mut app);
         for c in "validate".chars() {
             command_mode.push_char(c);
         }
@@ -928,7 +942,7 @@ fn queue_message_applies_pending_model_before_request_config() {
         cursor: 13,
     });
 
-    let queued = app.insert_mode_mut().expect("insert mode").queue_message();
+    let queued = insert_mode(&mut app).queue_message();
     let queued = expect_queued_message(queued);
 
     assert_eq!(queued.config.model(), &pending_model);
@@ -945,7 +959,7 @@ fn queue_message_applies_pending_context_before_request_config() {
         cursor: 15,
     });
 
-    let queued = app.insert_mode_mut().expect("insert mode").queue_message();
+    let queued = insert_mode(&mut app).queue_message();
     let _ = expect_queued_message(queued);
 
     assert!(!app.memory_enabled());
@@ -961,7 +975,7 @@ fn queue_message_applies_pending_tools_before_request_config() {
         cursor: 13,
     });
 
-    let queued = app.insert_mode_mut().expect("insert mode").queue_message();
+    let queued = insert_mode(&mut app).queue_message();
     let _ = expect_queued_message(queued);
 
     assert_eq!(
@@ -1188,7 +1202,7 @@ fn submit_message_without_key_sets_status_and_does_not_queue() {
         cursor: 2,
     });
 
-    let queued = app.insert_mode_mut().expect("insert mode").queue_message();
+    let queued = insert_mode(&mut app).queue_message();
     assert!(matches!(queued, QueueMessageResult::Skipped));
     assert_eq!(
         last_notification(&app),
@@ -1206,7 +1220,7 @@ fn queue_message_sets_pending_user_message() {
         cursor: 12,
     });
 
-    let queued = app.insert_mode_mut().expect("insert mode").queue_message();
+    let queued = insert_mode(&mut app).queue_message();
     let _ = expect_queued_message(queued);
 
     assert!(app.core.pending_user_message.is_some());
@@ -1223,7 +1237,7 @@ async fn distillation_not_needed_starts_queued_request() {
         cursor: 6,
     });
 
-    let queued = app.insert_mode_mut().expect("insert mode").queue_message();
+    let queued = insert_mode(&mut app).queue_message();
     let queued = expect_queued_message(queued);
 
     let result = app.try_start_distillation(Some(queued));

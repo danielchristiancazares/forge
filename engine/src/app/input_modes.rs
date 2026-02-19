@@ -35,15 +35,25 @@ pub struct CommandMode<'a> {
     pub(crate) app: &'a mut App,
 }
 
+pub enum InsertModeAccess<'a> {
+    InInsert(InsertMode<'a>),
+    NotInsert,
+}
+
+pub enum CommandModeAccess<'a> {
+    InCommand(CommandMode<'a>),
+    NotCommand,
+}
+
 impl App {
     /// Borrow-scoped access to Insert-mode operations.
     ///
     /// The returned guard holds `&mut App`, so the input mode cannot be
     /// changed while the guard exists.
-    pub fn insert_mode_mut(&mut self) -> Option<InsertMode<'_>> {
+    pub fn insert_mode_mut(&mut self) -> InsertModeAccess<'_> {
         match &self.ui.input {
-            InputState::Insert(_) => Some(InsertMode { app: self }),
-            _ => None,
+            InputState::Insert(_) => InsertModeAccess::InInsert(InsertMode { app: self }),
+            _ => InsertModeAccess::NotInsert,
         }
     }
 
@@ -51,10 +61,10 @@ impl App {
     ///
     /// The returned guard holds `&mut App`, so the input mode cannot be
     /// changed while the guard exists.
-    pub fn command_mode_mut(&mut self) -> Option<CommandMode<'_>> {
+    pub fn command_mode_mut(&mut self) -> CommandModeAccess<'_> {
         match &self.ui.input {
-            InputState::Command { .. } => Some(CommandMode { app: self }),
-            _ => None,
+            InputState::Command { .. } => CommandModeAccess::InCommand(CommandMode { app: self }),
+            _ => CommandModeAccess::NotCommand,
         }
     }
 }

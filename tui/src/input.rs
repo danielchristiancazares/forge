@@ -315,7 +315,8 @@ pub fn handle_events(app: &mut App, input: &mut InputPump) -> Result<bool> {
             if let Some(clipboard_text) = matched {
                 let remainder = &clipboard_text[received.len()..];
                 if !remainder.is_empty()
-                    && let Some(mut insert) = app.insert_mode_mut()
+                    && let forge_engine::InsertModeAccess::InInsert(mut insert) =
+                        app.insert_mode_mut()
                 {
                     insert.enter_text(remainder);
                 }
@@ -382,7 +383,8 @@ fn apply_event(app: &mut App, event: Event, paste_active: bool) -> bool {
                 return app.should_quit();
             }
             if app.input_mode() == InputMode::Insert {
-                let Some(mut insert) = app.insert_mode_mut() else {
+                let forge_engine::InsertModeAccess::InInsert(mut insert) = app.insert_mode_mut()
+                else {
                     return app.should_quit();
                 };
                 let normalized = normalize_line_endings(&text);
@@ -597,7 +599,7 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
     let is_paste_newline = paste_active && key.code == KeyCode::Enter && key.modifiers.is_empty();
 
     if is_explicit_newline || is_paste_newline {
-        let Some(mut insert) = app.insert_mode_mut() else {
+        let forge_engine::InsertModeAccess::InInsert(mut insert) = app.insert_mode_mut() else {
             return;
         };
         insert.enter_newline();
@@ -611,7 +613,7 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
         }
         // Submit message (only when not detected as paste)
         KeyCode::Enter => {
-            let Some(insert) = app.insert_mode_mut() else {
+            let forge_engine::InsertModeAccess::InInsert(insert) = app.insert_mode_mut() else {
                 return;
             };
             match insert.queue_message() {
@@ -632,18 +634,20 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
         KeyCode::Backspace => {
             if app.draft_text().is_empty() {
                 app.enter_normal_mode();
-            } else if let Some(mut insert) = app.insert_mode_mut() {
+            } else if let forge_engine::InsertModeAccess::InInsert(mut insert) =
+                app.insert_mode_mut()
+            {
                 insert.delete_char();
             }
         }
         KeyCode::Char('@') => {
-            if let Some(mut insert) = app.insert_mode_mut() {
+            if let forge_engine::InsertModeAccess::InInsert(mut insert) = app.insert_mode_mut() {
                 insert.enter_char('@');
             }
             app.enter_file_select_mode();
         }
         _ => {
-            let Some(mut insert) = app.insert_mode_mut() else {
+            let forge_engine::InsertModeAccess::InInsert(mut insert) = app.insert_mode_mut() else {
                 return;
             };
 
@@ -718,8 +722,8 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Enter => {
             let command_mode = match app.command_mode_mut() {
-                Some(mode) => mode,
-                None => return,
+                forge_engine::CommandModeAccess::InCommand(mode) => mode,
+                forge_engine::CommandModeAccess::NotCommand => return,
             };
             let command = command_mode.take_command();
 
@@ -736,12 +740,16 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Backspace => {
             if app.command_text().is_some_and(str::is_empty) {
                 app.enter_normal_mode();
-            } else if let Some(mut command_mode) = app.command_mode_mut() {
+            } else if let forge_engine::CommandModeAccess::InCommand(mut command_mode) =
+                app.command_mode_mut()
+            {
                 command_mode.backspace();
             }
         }
         _ => {
-            let Some(mut command_mode) = app.command_mode_mut() else {
+            let forge_engine::CommandModeAccess::InCommand(mut command_mode) =
+                app.command_mode_mut()
+            else {
                 return;
             };
 
