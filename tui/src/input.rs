@@ -12,7 +12,7 @@ use std::{
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use forge_engine::{App, FileSelectAccess, InputMode, SettingsSurface};
+use forge_engine::{App, FileSelectAccess, InputMode, SettingsAccess, SettingsSurface};
 #[cfg(feature = "focus-view")]
 use forge_engine::{FocusState, ViewMode};
 
@@ -870,9 +870,19 @@ fn handle_file_select_mode(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_settings_mode(app: &mut App, key: KeyEvent) {
-    if !app.settings_is_root_surface() {
-        match app.settings_surface() {
-            Some(SettingsSurface::Resolve) => match key.code {
+    let settings_access = app.settings_access();
+    let (surface, filter_active, detail_view) = match settings_access {
+        SettingsAccess::Active {
+            surface,
+            filter_active,
+            detail_view,
+            ..
+        } => (surface, filter_active, detail_view),
+        SettingsAccess::Inactive => (SettingsSurface::Root, false, None),
+    };
+    if surface != SettingsSurface::Root {
+        match surface {
+            SettingsSurface::Resolve => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     app.settings_close_or_exit();
                 }
@@ -887,17 +897,19 @@ fn handle_settings_mode(app: &mut App, key: KeyEvent) {
                 }
                 _ => {}
             },
-            _ => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
-                    app.settings_close_or_exit();
+            SettingsSurface::Runtime | SettingsSurface::Validate | SettingsSurface::Root => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+                        app.settings_close_or_exit();
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
         }
         return;
     }
 
-    if app.settings_detail_view().is_some() {
+    if detail_view.is_some() {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 app.settings_close_or_exit();
@@ -926,19 +938,19 @@ fn handle_settings_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.settings_close_or_exit();
         }
-        KeyCode::Char('q') if !app.settings_filter_active() => {
+        KeyCode::Char('q') if !filter_active => {
             app.settings_close_or_exit();
         }
         KeyCode::Enter => {
             app.settings_activate();
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            if !app.settings_filter_active() {
+            if !filter_active {
                 app.settings_move_up();
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if !app.settings_filter_active() {
+            if !filter_active {
                 app.settings_move_down();
             }
         }
@@ -946,11 +958,11 @@ fn handle_settings_mode(app: &mut App, key: KeyEvent) {
             app.settings_start_filter();
         }
         KeyCode::Backspace => {
-            if app.settings_filter_active() {
+            if filter_active {
                 app.settings_filter_backspace();
             }
         }
-        KeyCode::Char(c) if c != '\r' && app.settings_filter_active() => {
+        KeyCode::Char(c) if c != '\r' && filter_active => {
             app.settings_filter_push_char(c);
         }
         _ => {}

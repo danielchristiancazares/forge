@@ -132,6 +132,18 @@ pub enum FileSelectAccess<'a> {
     Inactive,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsAccess<'a> {
+    Active {
+        surface: SettingsSurface,
+        filter_text: &'a str,
+        filter_active: bool,
+        detail_view: Option<SettingsCategory>,
+        selected_index: usize,
+    },
+    Inactive,
+}
+
 /// Aggregated API usage for a user turn (may include multiple API calls).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TurnUsage {
@@ -2281,48 +2293,67 @@ impl App {
     }
 
     #[must_use]
-    pub fn settings_surface(&self) -> Option<SettingsSurface> {
+    pub fn settings_access(&self) -> SettingsAccess<'_> {
         match self.ui.input.settings_modal_ref() {
-            ui::SettingsModalRef::Active(modal) => Some(modal.surface),
-            ui::SettingsModalRef::Inactive => None,
+            ui::SettingsModalRef::Active(modal) => SettingsAccess::Active {
+                surface: modal.surface,
+                filter_text: modal.filter.text(),
+                filter_active: modal.filter_active,
+                detail_view: modal.detail_view,
+                selected_index: modal.selected,
+            },
+            ui::SettingsModalRef::Inactive => SettingsAccess::Inactive,
         }
     }
 
     #[must_use]
     pub fn settings_is_root_surface(&self) -> bool {
-        self.settings_surface()
-            .is_some_and(|surface| surface == SettingsSurface::Root)
+        matches!(
+            self.settings_access(),
+            SettingsAccess::Active {
+                surface: SettingsSurface::Root,
+                ..
+            }
+        )
+    }
+
+    #[must_use]
+    pub fn settings_surface(&self) -> Option<SettingsSurface> {
+        match self.settings_access() {
+            SettingsAccess::Active { surface, .. } => Some(surface),
+            SettingsAccess::Inactive => None,
+        }
     }
 
     #[must_use]
     pub fn settings_filter_text(&self) -> Option<&str> {
-        match self.ui.input.settings_modal_ref() {
-            ui::SettingsModalRef::Active(modal) => Some(modal.filter.text()),
-            ui::SettingsModalRef::Inactive => None,
+        match self.settings_access() {
+            SettingsAccess::Active { filter_text, .. } => Some(filter_text),
+            SettingsAccess::Inactive => None,
         }
     }
 
     #[must_use]
     pub fn settings_filter_active(&self) -> bool {
-        match self.ui.input.settings_modal_ref() {
-            ui::SettingsModalRef::Active(modal) => modal.filter_active,
-            ui::SettingsModalRef::Inactive => false,
+        match self.settings_access() {
+            SettingsAccess::Active { filter_active, .. } => filter_active,
+            SettingsAccess::Inactive => false,
         }
     }
 
     #[must_use]
     pub fn settings_detail_view(&self) -> Option<SettingsCategory> {
-        match self.ui.input.settings_modal_ref() {
-            ui::SettingsModalRef::Active(modal) => modal.detail_view,
-            ui::SettingsModalRef::Inactive => None,
+        match self.settings_access() {
+            SettingsAccess::Active { detail_view, .. } => detail_view,
+            SettingsAccess::Inactive => None,
         }
     }
 
     #[must_use]
     pub fn settings_selected_index(&self) -> Option<usize> {
-        match self.ui.input.settings_modal_ref() {
-            ui::SettingsModalRef::Active(modal) => Some(modal.selected),
-            ui::SettingsModalRef::Inactive => None,
+        match self.settings_access() {
+            SettingsAccess::Active { selected_index, .. } => Some(selected_index),
+            SettingsAccess::Inactive => None,
         }
     }
 
@@ -2649,11 +2680,14 @@ impl App {
         if !self.settings_is_root_surface() {
             return;
         }
-        let (filter_active, detail_view, selected) = match self.ui.input.settings_modal_ref() {
-            ui::SettingsModalRef::Active(modal) => {
-                (modal.filter_active, modal.detail_view, modal.selected)
-            }
-            ui::SettingsModalRef::Inactive => return,
+        let (filter_active, detail_view, selected) = match self.settings_access() {
+            SettingsAccess::Active {
+                filter_active,
+                detail_view,
+                selected_index,
+                ..
+            } => (filter_active, detail_view, selected_index),
+            SettingsAccess::Inactive => return,
         };
 
         if filter_active {
@@ -2674,9 +2708,13 @@ impl App {
     }
 
     pub fn settings_close_or_exit(&mut self) {
-        let (filter_active, detail_view) = match self.ui.input.settings_modal_ref() {
-            ui::SettingsModalRef::Active(modal) => (modal.filter_active, modal.detail_view),
-            ui::SettingsModalRef::Inactive => return,
+        let (filter_active, detail_view) = match self.settings_access() {
+            SettingsAccess::Active {
+                filter_active,
+                detail_view,
+                ..
+            } => (filter_active, detail_view),
+            SettingsAccess::Inactive => return,
         };
 
         if filter_active {

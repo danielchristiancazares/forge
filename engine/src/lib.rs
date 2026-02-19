@@ -44,8 +44,8 @@ pub use app::{
     ContextEditorSnapshot, DEFAULT_STREAM_EVENT_BUDGET, EnteredCommand, FileDiff, FileSelectAccess,
     InsertMode, InsertModeAccess, ModelEditorSnapshot, ModelSelectAccess, QueueMessageResult,
     QueuedUserMessage, ResolveCascade, ResolveLayerValue, ResolveSetting, RuntimeSnapshot,
-    StreamingMessage, SystemPrompts, ToolsEditorSnapshot, TurnUsage, ValidationFinding,
-    ValidationReport, command_specs,
+    SettingsAccess, StreamingMessage, SystemPrompts, ToolsEditorSnapshot, TurnUsage,
+    ValidationFinding, ValidationReport, command_specs,
 };
 
 // Crate-internal cross-layer glue.

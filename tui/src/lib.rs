@@ -34,9 +34,9 @@ use unicode_width::UnicodeWidthStr;
 
 use forge_engine::{
     App, ChangeKind, ContextUsageStatus, DisplayItem, FileDiff, FileSelectAccess, InputMode,
-    Message, ModelSelectAccess, PredefinedModel, Provider, SettingsCategory, SettingsSurface,
-    TurnUsage, UiOptions, command_specs, find_match_positions, sanitize_display_text,
-    sanitize_terminal_text,
+    Message, ModelSelectAccess, PredefinedModel, Provider, SettingsAccess, SettingsCategory,
+    SettingsSurface, TurnUsage, UiOptions, command_specs, find_match_positions,
+    sanitize_display_text, sanitize_terminal_text,
 };
 use forge_types::{ToolResult, sanitize_path_for_display};
 
@@ -2466,7 +2466,11 @@ fn draw_settings_modal(
     elapsed: Duration,
 ) {
     let area = frame.area();
-    let surface = app.settings_surface().unwrap_or(SettingsSurface::Root);
+    let settings_access = app.settings_access();
+    let surface = match settings_access {
+        SettingsAccess::Active { surface, .. } => surface,
+        SettingsAccess::Inactive => SettingsSurface::Root,
+    };
     let selector_width = match surface {
         SettingsSurface::Root => 76.min(area.width.saturating_sub(4)).max(52),
         SettingsSurface::Runtime | SettingsSurface::Resolve | SettingsSurface::Validate => {
@@ -2488,14 +2492,23 @@ fn draw_settings_modal(
             lines.extend(validation_detail_lines(app, palette, glyphs, content_width));
         }
         SettingsSurface::Root => {
-            let filter = app.settings_filter_text().unwrap_or_default().to_string();
-            let filter_active = app.settings_filter_active();
-            let detail_view = app.settings_detail_view();
+            let (filter, filter_active, detail_view, selected_index) = match settings_access {
+                SettingsAccess::Active {
+                    filter_text,
+                    filter_active,
+                    detail_view,
+                    selected_index,
+                    ..
+                } => (
+                    filter_text.to_string(),
+                    filter_active,
+                    detail_view,
+                    selected_index,
+                ),
+                SettingsAccess::Inactive => (String::new(), false, None, 0),
+            };
             let categories = app.settings_categories();
-            let selected_index = app
-                .settings_selected_index()
-                .unwrap_or(0)
-                .min(categories.len().saturating_sub(1));
+            let selected_index = selected_index.min(categories.len().saturating_sub(1));
 
             if let Some(category) = detail_view {
                 lines.extend(settings_detail_lines(
