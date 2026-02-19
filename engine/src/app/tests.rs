@@ -449,6 +449,28 @@ fn process_command_settings_opens_settings_modal() {
 }
 
 #[test]
+fn settings_access_is_inactive_outside_settings_mode() {
+    let app = test_app();
+    assert!(matches!(app.settings_access(), SettingsAccess::Inactive));
+}
+
+#[test]
+fn settings_access_reports_root_modal_state() {
+    let mut app = test_app();
+    app.enter_settings_mode();
+    assert!(matches!(
+        app.settings_access(),
+        SettingsAccess::Active {
+            surface: SettingsSurface::Root,
+            filter_text: "",
+            filter_active: false,
+            detail_view: None,
+            selected_index: 0,
+        }
+    ));
+}
+
+#[test]
 fn process_command_settings_shows_guardrail_when_busy() {
     let mut app = test_app();
     set_streaming_state(&mut app);
