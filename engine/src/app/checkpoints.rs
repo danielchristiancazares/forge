@@ -22,9 +22,18 @@ use crate::tools::{self, lp1};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct CheckpointId(u64);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckpointIdParse {
+    Valid(CheckpointId),
+    Invalid,
+}
+
 impl CheckpointId {
-    pub(crate) fn parse(raw: &str) -> Option<Self> {
-        raw.parse::<u64>().ok().map(Self)
+    pub(crate) fn parse(raw: &str) -> CheckpointIdParse {
+        match raw.parse::<u64>() {
+            Ok(value) => CheckpointIdParse::Valid(Self(value)),
+            Err(_) => CheckpointIdParse::Invalid,
+        }
     }
 }
 
@@ -63,13 +72,19 @@ pub(crate) enum RewindScope {
     Both,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RewindScopeParse {
+    Valid(RewindScope),
+    Invalid,
+}
+
 impl RewindScope {
-    pub(crate) fn parse(raw: Option<&str>) -> Option<Self> {
-        match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-            None | Some("" | "both") => Some(Self::Both),
-            Some("code") => Some(Self::Code),
-            Some("conversation" | "chat") => Some(Self::Conversation),
-            _ => None,
+    pub(crate) fn parse(raw: &str) -> RewindScopeParse {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "both" => RewindScopeParse::Valid(Self::Both),
+            "code" => RewindScopeParse::Valid(Self::Code),
+            "conversation" | "chat" => RewindScopeParse::Valid(Self::Conversation),
+            _ => RewindScopeParse::Invalid,
         }
     }
 
@@ -80,6 +95,18 @@ impl RewindScope {
     pub(crate) fn includes_code(self) -> bool {
         matches!(self, Self::Code | Self::Both)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckpointTarget<'a> {
+    Latest,
+    Id(&'a str),
+}
+
+#[derive(Debug)]
+pub(crate) enum CheckpointTargetResolution {
+    Resolved(PreparedRewind),
+    Rejected,
 }
 
 /// A compact, user-facing view of a checkpoint.
@@ -654,33 +681,34 @@ impl crate::App {
     /// Parse /rewind target argument into a proof that the checkpoint exists.
     pub(crate) fn parse_checkpoint_target(
         &mut self,
-        target: Option<&str>,
-    ) -> Option<PreparedRewind> {
-        let target = target?.trim();
-        // Accept '#<id>' as well as '<id>' for convenience (checkpoint lists are formatted as '#<id>').
-        let target = target.strip_prefix('#').unwrap_or(target);
-        if target.is_empty() {
-            return self.core.checkpoints.prepare_latest();
-        }
-
-        if matches!(target, "last" | "latest") {
-            if let Some(p) = self.core.checkpoints.prepare_latest() {
-                return Some(p);
+        target: CheckpointTarget<'_>,
+    ) -> CheckpointTargetResolution {
+        match target {
+            CheckpointTarget::Latest => {
+                if let Some(proof) = self.core.checkpoints.prepare_latest() {
+                    return CheckpointTargetResolution::Resolved(proof);
+                }
+                self.push_notification("No checkpoints available");
+                CheckpointTargetResolution::Rejected
             }
-            self.push_notification("No checkpoints available");
-            return None;
-        }
+            CheckpointTarget::Id(raw_id) => {
+                let normalized = raw_id.trim();
+                let normalized = normalized.strip_prefix('#').unwrap_or(normalized);
+                let id = match CheckpointId::parse(normalized) {
+                    CheckpointIdParse::Valid(id) => id,
+                    CheckpointIdParse::Invalid => {
+                        self.push_notification(format!("Invalid checkpoint id: {normalized}"));
+                        return CheckpointTargetResolution::Rejected;
+                    }
+                };
 
-        let Some(id) = CheckpointId::parse(target) else {
-            self.push_notification(format!("Invalid checkpoint id: {target}"));
-            return None;
-        };
-
-        if let Some(p) = self.core.checkpoints.prepare(id) {
-            Some(p)
-        } else {
-            self.push_notification(format!("Unknown checkpoint id: {id}"));
-            None
+                if let Some(p) = self.core.checkpoints.prepare(id) {
+                    CheckpointTargetResolution::Resolved(p)
+                } else {
+                    self.push_notification(format!("Unknown checkpoint id: {id}"));
+                    CheckpointTargetResolution::Rejected
+                }
+            }
         }
     }
 
@@ -787,34 +815,57 @@ impl crate::App {
 
 #[cfg(test)]
 mod tests {
-    use super::{CheckpointId, CheckpointKind, CheckpointStore, RewindScope, format_bytes};
+    use super::{
+        CheckpointId, CheckpointIdParse, CheckpointKind, CheckpointStore, RewindScope,
+        RewindScopeParse, format_bytes,
+    };
     use std::path::PathBuf;
 
     #[test]
     fn parse_rewind_scope() {
-        assert_eq!(RewindScope::parse(None), Some(RewindScope::Both));
-        assert_eq!(RewindScope::parse(Some("")), Some(RewindScope::Both));
-        assert_eq!(RewindScope::parse(Some("both")), Some(RewindScope::Both));
-        assert_eq!(RewindScope::parse(Some("BOTH")), Some(RewindScope::Both));
-        assert_eq!(RewindScope::parse(Some("code")), Some(RewindScope::Code));
-        assert_eq!(RewindScope::parse(Some("CODE")), Some(RewindScope::Code));
         assert_eq!(
-            RewindScope::parse(Some("conversation")),
-            Some(RewindScope::Conversation)
+            RewindScope::parse(""),
+            RewindScopeParse::Valid(RewindScope::Both)
         );
         assert_eq!(
-            RewindScope::parse(Some("chat")),
-            Some(RewindScope::Conversation)
+            RewindScope::parse("both"),
+            RewindScopeParse::Valid(RewindScope::Both)
         );
-        assert_eq!(RewindScope::parse(Some("invalid")), None);
+        assert_eq!(
+            RewindScope::parse("BOTH"),
+            RewindScopeParse::Valid(RewindScope::Both)
+        );
+        assert_eq!(
+            RewindScope::parse("code"),
+            RewindScopeParse::Valid(RewindScope::Code)
+        );
+        assert_eq!(
+            RewindScope::parse("CODE"),
+            RewindScopeParse::Valid(RewindScope::Code)
+        );
+        assert_eq!(
+            RewindScope::parse("conversation"),
+            RewindScopeParse::Valid(RewindScope::Conversation)
+        );
+        assert_eq!(
+            RewindScope::parse("chat"),
+            RewindScopeParse::Valid(RewindScope::Conversation)
+        );
+        assert_eq!(RewindScope::parse("invalid"), RewindScopeParse::Invalid);
     }
 
     #[test]
     fn parse_checkpoint_id() {
-        assert_eq!(CheckpointId::parse("0"), Some(CheckpointId(0)));
-        assert_eq!(CheckpointId::parse("42"), Some(CheckpointId(42)));
-        assert_eq!(CheckpointId::parse("abc"), None);
-        assert_eq!(CheckpointId::parse("-1"), None);
+        assert_eq!(
+            CheckpointId::parse("0"),
+            CheckpointIdParse::Valid(CheckpointId(0))
+        );
+        assert_eq!(
+            CheckpointId::parse("42"),
+            CheckpointIdParse::Valid(CheckpointId(42))
+        );
+        assert_eq!(CheckpointId::parse("abc"), CheckpointIdParse::Invalid);
+        assert_eq!(CheckpointId::parse("-1"), CheckpointIdParse::Invalid);
     }
 
     #[test]

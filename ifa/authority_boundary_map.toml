@@ -1,0 +1,65 @@
+version = 1
+last_updated = "2026-02-19"
+
+[[entries]]
+controlled_type_path = "engine::state::OperationState"
+boundary_module_path = "engine::app::mod"
+constructor_paths = ["engine::app::mod::App::op_transition", "engine::app::mod::App::op_transition_from"]
+allowed_caller_module_paths = ["engine::app::commands", "engine::app::streaming", "engine::app::tool_loop", "engine::app::persistence"]
+max_constructor_visibility_rung = "private"
+
+[[entries]]
+controlled_type_path = "engine::app::tool_gate::ToolGate"
+boundary_module_path = "engine::app::tool_gate"
+constructor_paths = ["engine::app::tool_gate::ToolGate::enabled", "engine::app::tool_gate::ToolGate::disabled"]
+allowed_caller_module_paths = ["engine::app::init", "engine::app::tool_loop", "engine::app::mod"]
+max_constructor_visibility_rung = "pub(crate)"
+
+[[entries]]
+controlled_type_path = "engine::state::ToolJournalBatch"
+boundary_module_path = "engine::state"
+constructor_paths = ["engine::state::ToolJournalBatch::Present", "engine::state::ToolJournalBatch::Absent"]
+allowed_caller_module_paths = ["engine::app::tool_loop", "engine::app::streaming"]
+max_constructor_visibility_rung = "pub(crate)"
+
+[[entries]]
+controlled_type_path = "engine::core::thinking::ThinkingPayload"
+boundary_module_path = "engine::core::thinking"
+constructor_paths = ["engine::core::thinking::ThinkingPayload::none", "engine::core::thinking::ThinkingPayload::from_*"]
+allowed_caller_module_paths = ["engine::app::streaming", "engine::app::tool_loop", "engine::state"]
+max_constructor_visibility_rung = "pub(crate)"
+
+[[entries]]
+controlled_type_path = "engine::state::ActiveStream"
+boundary_module_path = "engine::state"
+constructor_paths = ["engine::state::ActiveStream::transition_to_journaled"]
+allowed_caller_module_paths = ["engine::app::streaming"]
+max_constructor_visibility_rung = "pub(crate)"
+
+[[entries]]
+controlled_type_path = "types::NonEmptyString"
+boundary_module_path = "types"
+constructor_paths = ["types::NonEmptyString::new", "types::NonEmptyString::try_from"]
+allowed_caller_module_paths = ["types", "engine", "context", "providers", "tools", "tui", "cli"]
+max_constructor_visibility_rung = "pub(crate)"
+
+[[entries]]
+controlled_type_path = "types::PersistableContent"
+boundary_module_path = "types"
+constructor_paths = ["types::PersistableContent::new", "types::PersistableContent::try_from"]
+allowed_caller_module_paths = ["context", "engine", "types"]
+max_constructor_visibility_rung = "pub(crate)"
+
+[[entries]]
+controlled_type_path = "types::ModelName"
+boundary_module_path = "types"
+constructor_paths = ["types::ModelName::try_from", "types::ModelName::parse"]
+allowed_caller_module_paths = ["engine::app::init", "engine::util", "config"]
+max_constructor_visibility_rung = "pub(crate)"
+
+[[entries]]
+controlled_type_path = "engine::ui::view_state::FocusState"
+boundary_module_path = "engine::ui::view_state"
+constructor_paths = ["engine::ui::view_state::FocusState::*"]
+allowed_caller_module_paths = ["engine::app", "engine::ui"]
+max_constructor_visibility_rung = "pub(crate)"

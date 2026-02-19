@@ -73,7 +73,15 @@ deny:
     cargo deny check
 
 # Run all checks before committing (includes auto-formatting)
-verify: fix fmt fmt-check lint test deny
+verify: ifa-check fix fmt fmt-check lint test deny
+
+[windows]
+ifa-check:
+    python scripts/ifa_conformance_check.py
+
+[unix]
+ifa-check:
+    py=$(command -v python3 >/dev/null 2>&1 && echo python3 || echo python); $py scripts/ifa_conformance_check.py
 
 # Generate CONTEXT.md (file tree, state transitions, cargo metadata, features)
 [windows]

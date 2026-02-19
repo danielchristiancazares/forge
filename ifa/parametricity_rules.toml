@@ -1,0 +1,21 @@
+version = 1
+last_updated = "2026-02-19"
+
+banned_patterns = [
+    "std::any::Any downcasts in generic code",
+    "TypeId comparisons in generic code",
+    "specialization-based semantic branching",
+    "trait-object downcast branches that alter domain semantics",
+]
+
+required_interface_disclosures = [
+    "Any inspection of T requires explicit trait bounds on the function signature.",
+    "Formatting/logging/serialization of T requires corresponding Debug/Display/Serialize bounds.",
+    "Behavior differences by type require separate interfaces/contracts, not hidden branches.",
+]
+
+enforcement = [
+    "clippy::redundant_closure_for_method_calls is denied in CI.",
+    "Code review must reject generic implementations that inspect T without declared bounds.",
+    "Authority boundary map must identify any sanctioned type-erasure adapters and their scope.",
+]

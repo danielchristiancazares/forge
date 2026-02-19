@@ -404,7 +404,11 @@ fn compute_command_tab_completion(app: &App, line: &str, cursor_byte: usize) -> 
 
     // Argument completion depends on the (normalized) command name.
     let first = line.split_whitespace().next()?;
-    let kind = super::commands::normalize_command_name(first)?;
+    let kind = match super::commands::normalize_command_name(first) {
+        super::commands::NormalizedCommandName::Known(kind) => kind,
+        super::commands::NormalizedCommandName::Blank
+        | super::commands::NormalizedCommandName::Unrecognized(_) => return None,
+    };
     let arg_index = token_index.saturating_sub(1);
 
     complete_command_arg(app, kind, arg_index, fragment)

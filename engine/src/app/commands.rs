@@ -245,22 +245,71 @@ pub(crate) fn command_aliases() -> &'static [CommandAlias] {
     COMMAND_ALIASES
 }
 
-pub(crate) fn normalize_command_name(raw: &str) -> Option<CommandKind> {
+pub(crate) enum NormalizedCommandName<'a> {
+    Blank,
+    Known(CommandKind),
+    Unrecognized(&'a str),
+}
+
+pub(crate) fn normalize_command_name(raw: &str) -> NormalizedCommandName<'_> {
     let token = raw.trim().trim_start_matches('/');
     if token.is_empty() {
-        return None;
+        return NormalizedCommandName::Blank;
     }
-    COMMAND_ALIASES
+    if let Some(kind) = COMMAND_ALIASES
         .iter()
         .find(|alias| alias.name.eq_ignore_ascii_case(token))
         .map(|alias| alias.kind)
+    {
+        NormalizedCommandName::Known(kind)
+    } else {
+        NormalizedCommandName::Unrecognized(token)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ModelCommand<'a> {
+    OpenSelector,
+    SetByName(&'a str),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RewindTarget<'a> {
+    List,
+    Latest,
+    Id(&'a str),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RewindScopeInput<'a> {
+    DefaultBoth,
+    Named(&'a str),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PlanCommand<'a> {
+    Show,
+    Clear,
+    InvalidSubcommand(&'a str),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ExportDestination<'a> {
+    TimestampedDefault,
+    ExplicitPath(&'a str),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ParseIssue<'a> {
+    BlankInput,
+    UnrecognizedCommand(&'a str),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command<'a> {
     Quit,
     Clear,
-    Model(Option<&'a str>),
+    Model(ModelCommand<'a>),
     Settings,
     Runtime,
     Resolve,
@@ -270,18 +319,15 @@ pub(crate) enum Command<'a> {
     Distill,
     Cancel,
     Rewind {
-        target: Option<&'a str>,
-        scope: Option<&'a str>,
+        target: RewindTarget<'a>,
+        scope: RewindScopeInput<'a>,
     },
     Undo,
     Retry,
     Problems,
-    Plan {
-        subcommand: Option<&'a str>,
-    },
-    Export(Option<&'a str>),
-    Unknown(&'a str),
-    Empty,
+    Plan(PlanCommand<'a>),
+    Export(ExportDestination<'a>),
+    ParseIssue(ParseIssue<'a>),
 }
 
 impl<'a> Command<'a> {
@@ -290,24 +336,29 @@ impl<'a> Command<'a> {
         let parts: Vec<&str> = raw.split_whitespace().collect();
 
         let Some(cmd_raw) = parts.first().copied() else {
-            return Command::Empty;
+            return Command::ParseIssue(ParseIssue::BlankInput);
         };
 
         // Treat a bare "/" as empty, since the UI already renders the prefix.
         let trimmed = cmd_raw.trim();
-        let token = trimmed.trim_start_matches('/');
-        if token.is_empty() {
-            return Command::Empty;
-        }
-
-        let Some(kind) = normalize_command_name(trimmed) else {
-            return Command::Unknown(cmd_raw);
+        let kind = match normalize_command_name(trimmed) {
+            NormalizedCommandName::Blank => return Command::ParseIssue(ParseIssue::BlankInput),
+            NormalizedCommandName::Known(kind) => kind,
+            NormalizedCommandName::Unrecognized(token) => {
+                return Command::ParseIssue(ParseIssue::UnrecognizedCommand(token));
+            }
         };
 
         match kind {
             CommandKind::Quit => Command::Quit,
             CommandKind::Clear => Command::Clear,
-            CommandKind::Model => Command::Model(parts.get(1).copied()),
+            CommandKind::Model => {
+                if let Some(model_name) = parts.get(1).copied() {
+                    Command::Model(ModelCommand::SetByName(model_name))
+                } else {
+                    Command::Model(ModelCommand::OpenSelector)
+                }
+            }
             CommandKind::Settings => Command::Settings,
             CommandKind::Runtime => Command::Runtime,
             CommandKind::Resolve => Command::Resolve,
@@ -317,16 +368,35 @@ impl<'a> Command<'a> {
             CommandKind::Distill => Command::Distill,
             CommandKind::Cancel => Command::Cancel,
             CommandKind::Rewind => Command::Rewind {
-                target: parts.get(1).copied(),
-                scope: parts.get(2).copied(),
+                target: match parts.get(1).copied() {
+                    Some("list" | "ls") | None => RewindTarget::List,
+                    Some("last" | "latest") => RewindTarget::Latest,
+                    Some(target) => RewindTarget::Id(target),
+                },
+                scope: match parts.get(2).copied() {
+                    Some(scope) => RewindScopeInput::Named(scope),
+                    None => RewindScopeInput::DefaultBoth,
+                },
             },
             CommandKind::Undo => Command::Undo,
             CommandKind::Retry => Command::Retry,
             CommandKind::Problems => Command::Problems,
-            CommandKind::Plan => Command::Plan {
-                subcommand: parts.get(1).copied(),
-            },
-            CommandKind::Export => Command::Export(parts.get(1).copied()),
+            CommandKind::Plan => {
+                if let Some("clear") = parts.get(1).copied() {
+                    Command::Plan(PlanCommand::Clear)
+                } else if let Some(other) = parts.get(1).copied() {
+                    Command::Plan(PlanCommand::InvalidSubcommand(other))
+                } else {
+                    Command::Plan(PlanCommand::Show)
+                }
+            }
+            CommandKind::Export => {
+                if let Some(path) = parts.get(1).copied() {
+                    Command::Export(ExportDestination::ExplicitPath(path))
+                } else {
+                    Command::Export(ExportDestination::TimestampedDefault)
+                }
+            }
         }
     }
 }
@@ -520,26 +590,32 @@ impl super::App {
                 self.ui.view.clear_transcript = true;
                 self.op_transition(self.idle_state());
             }
-            Command::Model(model_arg) => {
+            Command::Model(model_cmd) => {
                 if let Some(reason) = self.busy_reason() {
                     self.push_notification(format!(
                         "Cannot change model while {reason}. Cancel or wait for it to finish."
                     ));
                     return;
                 }
-                if let Some(model_name) = model_arg {
-                    let provider = self.provider();
-                    match provider.parse_model(model_name) {
-                        Ok(model) => {
-                            self.set_model(model);
-                            self.push_notification(format!("Model set to: {}", self.core.model));
-                        }
-                        Err(e) => {
-                            self.push_notification(format!("Invalid model: {e}"));
+                match model_cmd {
+                    ModelCommand::SetByName(model_name) => {
+                        let provider = self.provider();
+                        match provider.parse_model(model_name) {
+                            Ok(model) => {
+                                self.set_model(model);
+                                self.push_notification(format!(
+                                    "Model set to: {}",
+                                    self.core.model
+                                ));
+                            }
+                            Err(e) => {
+                                self.push_notification(format!("Invalid model: {e}"));
+                            }
                         }
                     }
-                } else {
-                    self.enter_model_select_mode();
+                    ModelCommand::OpenSelector => {
+                        self.enter_model_select_mode();
+                    }
                 }
             }
             Command::Settings => {
@@ -641,18 +717,33 @@ impl super::App {
                     return;
                 }
 
-                if matches!(target, Some("list" | "ls")) || target.is_none() {
-                    self.show_checkpoint_list();
-                    return;
-                }
-
-                let Some(scope) = super::checkpoints::RewindScope::parse(scope) else {
-                    self.push_notification("Invalid scope. Use: code | conversation | both");
-                    return;
+                let scope = match scope {
+                    RewindScopeInput::DefaultBoth => super::checkpoints::RewindScope::Both,
+                    RewindScopeInput::Named(raw) => {
+                        match super::checkpoints::RewindScope::parse(raw) {
+                            super::checkpoints::RewindScopeParse::Valid(scope) => scope,
+                            super::checkpoints::RewindScopeParse::Invalid => {
+                                self.push_notification(
+                                    "Invalid scope. Use: code | conversation | both",
+                                );
+                                return;
+                            }
+                        }
+                    }
                 };
 
-                let Some(proof) = self.parse_checkpoint_target(target) else {
-                    return;
+                let target = match target {
+                    RewindTarget::List => {
+                        self.show_checkpoint_list();
+                        return;
+                    }
+                    RewindTarget::Latest => super::checkpoints::CheckpointTarget::Latest,
+                    RewindTarget::Id(raw_id) => super::checkpoints::CheckpointTarget::Id(raw_id),
+                };
+
+                let proof = match self.parse_checkpoint_target(target) {
+                    super::checkpoints::CheckpointTargetResolution::Resolved(proof) => proof,
+                    super::checkpoints::CheckpointTargetResolution::Rejected => return,
                 };
 
                 if let Err(msg) = self.apply_rewind(proof, scope) {
@@ -735,8 +826,8 @@ impl super::App {
                     self.push_notification(lines.join("\n"));
                 }
             }
-            Command::Plan { subcommand } => match subcommand {
-                None => {
+            Command::Plan(plan_cmd) => match plan_cmd {
+                PlanCommand::Show => {
                     let msg = match &self.core.plan_state {
                         PlanState::Inactive => "No active plan.".to_string(),
                         PlanState::Proposed(plan) => {
@@ -746,24 +837,25 @@ impl super::App {
                     };
                     self.push_notification(msg);
                 }
-                Some("clear") => {
+                PlanCommand::Clear => {
                     self.core.plan_state = PlanState::Inactive;
                     self.save_plan();
                     self.core.tool_gate.clear();
                     self.push_notification("Plan cleared.");
                 }
-                Some(other) => {
+                PlanCommand::InvalidSubcommand(other) => {
                     self.push_notification(format!(
                         "Unknown /plan subcommand: {other}. Usage: /plan [clear]"
                     ));
                 }
             },
-            Command::Export(path_arg) => {
-                let path = if let Some(p) = path_arg {
-                    std::path::PathBuf::from(p)
-                } else {
-                    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
-                    std::path::PathBuf::from(format!("forge-export-{ts}.json"))
+            Command::Export(export_destination) => {
+                let path = match export_destination {
+                    ExportDestination::ExplicitPath(path) => std::path::PathBuf::from(path),
+                    ExportDestination::TimestampedDefault => {
+                        let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+                        std::path::PathBuf::from(format!("forge-export-{ts}.json"))
+                    }
                 };
 
                 let messages: Vec<_> = self
@@ -802,17 +894,22 @@ impl super::App {
                     }
                 }
             }
-            Command::Unknown(cmd) => {
-                self.push_notification(format!("Unknown command: {cmd}"));
-            }
-            Command::Empty => {}
+            Command::ParseIssue(parse_issue) => match parse_issue {
+                ParseIssue::BlankInput => {}
+                ParseIssue::UnrecognizedCommand(cmd) => {
+                    self.push_notification(format!("Unknown command: {cmd}"));
+                }
+            },
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Command;
+    use super::{
+        Command, ExportDestination, ModelCommand, ParseIssue, PlanCommand, RewindScopeInput,
+        RewindTarget,
+    };
 
     #[test]
     fn parse_quit_commands() {
@@ -828,14 +925,17 @@ mod tests {
 
     #[test]
     fn parse_model_command() {
-        assert_eq!(Command::parse("model"), Command::Model(None));
+        assert_eq!(
+            Command::parse("model"),
+            Command::Model(ModelCommand::OpenSelector)
+        );
         assert_eq!(
             Command::parse("model claude-opus-4-6"),
-            Command::Model(Some("claude-opus-4-6"))
+            Command::Model(ModelCommand::SetByName("claude-opus-4-6"))
         );
         assert_eq!(
             Command::parse("model gpt-5.2"),
-            Command::Model(Some("gpt-5.2"))
+            Command::Model(ModelCommand::SetByName("gpt-5.2"))
         );
     }
 
@@ -876,21 +976,36 @@ mod tests {
 
     #[test]
     fn parse_empty_command() {
-        assert_eq!(Command::parse(""), Command::Empty);
-        assert_eq!(Command::parse("   "), Command::Empty);
+        assert_eq!(
+            Command::parse(""),
+            Command::ParseIssue(ParseIssue::BlankInput)
+        );
+        assert_eq!(
+            Command::parse("   "),
+            Command::ParseIssue(ParseIssue::BlankInput)
+        );
     }
 
     #[test]
     fn parse_unknown_command() {
-        assert_eq!(Command::parse("foobar"), Command::Unknown("foobar"));
-        assert_eq!(Command::parse("xyz 123"), Command::Unknown("xyz"));
+        assert_eq!(
+            Command::parse("foobar"),
+            Command::ParseIssue(ParseIssue::UnrecognizedCommand("foobar"))
+        );
+        assert_eq!(
+            Command::parse("xyz 123"),
+            Command::ParseIssue(ParseIssue::UnrecognizedCommand("xyz"))
+        );
     }
 
     #[test]
     fn parse_case_insensitive_and_slash_prefix() {
         assert_eq!(Command::parse("QUIT"), Command::Quit);
         assert_eq!(Command::parse("Clear"), Command::Clear);
-        assert_eq!(Command::parse("MODEL"), Command::Model(None));
+        assert_eq!(
+            Command::parse("MODEL"),
+            Command::Model(ModelCommand::OpenSelector)
+        );
         assert_eq!(Command::parse("Settings"), Command::Settings);
         assert_eq!(Command::parse("Validate"), Command::Validate);
 
@@ -901,10 +1016,13 @@ mod tests {
         assert_eq!(Command::parse("/resolve"), Command::Resolve);
         assert_eq!(
             Command::parse("/model gpt-5"),
-            Command::Model(Some("gpt-5"))
+            Command::Model(ModelCommand::SetByName("gpt-5"))
         );
 
-        assert_eq!(Command::parse("/"), Command::Empty);
+        assert_eq!(
+            Command::parse("/"),
+            Command::ParseIssue(ParseIssue::BlankInput)
+        );
     }
 
     #[test]
@@ -912,54 +1030,48 @@ mod tests {
         assert_eq!(
             Command::parse("rewind"),
             Command::Rewind {
-                target: None,
-                scope: None
+                target: RewindTarget::List,
+                scope: RewindScopeInput::DefaultBoth
             }
         );
         assert_eq!(
             Command::parse("rewind last code"),
             Command::Rewind {
-                target: Some("last"),
-                scope: Some("code")
+                target: RewindTarget::Latest,
+                scope: RewindScopeInput::Named("code")
             }
         );
         assert_eq!(
             Command::parse("rw 3 conversation"),
             Command::Rewind {
-                target: Some("3"),
-                scope: Some("conversation")
+                target: RewindTarget::Id("3"),
+                scope: RewindScopeInput::Named("conversation")
             }
         );
         assert_eq!(
             Command::parse("rewind list"),
             Command::Rewind {
-                target: Some("list"),
-                scope: None
+                target: RewindTarget::List,
+                scope: RewindScopeInput::DefaultBoth
             }
         );
     }
 
     #[test]
     fn parse_plan_commands() {
-        assert_eq!(Command::parse("plan"), Command::Plan { subcommand: None });
-        assert_eq!(Command::parse("/plan"), Command::Plan { subcommand: None });
+        assert_eq!(Command::parse("plan"), Command::Plan(PlanCommand::Show));
+        assert_eq!(Command::parse("/plan"), Command::Plan(PlanCommand::Show));
         assert_eq!(
             Command::parse("plan clear"),
-            Command::Plan {
-                subcommand: Some("clear")
-            }
+            Command::Plan(PlanCommand::Clear)
         );
         assert_eq!(
             Command::parse("/plan clear"),
-            Command::Plan {
-                subcommand: Some("clear")
-            }
+            Command::Plan(PlanCommand::Clear)
         );
         assert_eq!(
             Command::parse("plan bogus"),
-            Command::Plan {
-                subcommand: Some("bogus")
-            }
+            Command::Plan(PlanCommand::InvalidSubcommand("bogus"))
         );
     }
 
@@ -971,19 +1083,25 @@ mod tests {
 
     #[test]
     fn parse_export_command() {
-        assert_eq!(Command::parse("export"), Command::Export(None));
-        assert_eq!(Command::parse("/export"), Command::Export(None));
+        assert_eq!(
+            Command::parse("export"),
+            Command::Export(ExportDestination::TimestampedDefault)
+        );
+        assert_eq!(
+            Command::parse("/export"),
+            Command::Export(ExportDestination::TimestampedDefault)
+        );
     }
 
     #[test]
     fn parse_export_command_with_path() {
         assert_eq!(
             Command::parse("export out.json"),
-            Command::Export(Some("out.json"))
+            Command::Export(ExportDestination::ExplicitPath("out.json"))
         );
         assert_eq!(
             Command::parse("/export /tmp/dump.json"),
-            Command::Export(Some("/tmp/dump.json"))
+            Command::Export(ExportDestination::ExplicitPath("/tmp/dump.json"))
         );
     }
 }

@@ -1,0 +1,62 @@
+version = 1
+last_updated = "2026-02-19"
+
+[[invariants]]
+id = "APP-INV-1"
+predicate = "Exactly one operation lifecycle state exists at a time."
+canonical_proof_type_path = "engine::state::OperationState"
+authority_boundary_module_path = "engine::app::mod"
+
+[[invariants]]
+id = "APP-INV-2"
+predicate = "Tool execution is allowed only when tool gate state permits execution."
+canonical_proof_type_path = "engine::app::tool_gate::ToolGate"
+authority_boundary_module_path = "engine::app::tool_gate"
+
+[[invariants]]
+id = "APP-INV-3"
+predicate = "Tool loop ingress carries explicit tool journal batch presence via sum type."
+canonical_proof_type_path = "engine::state::ToolJournalBatch"
+authority_boundary_module_path = "engine::state"
+
+[[invariants]]
+id = "APP-INV-4"
+predicate = "Tool loop payload carries canonical thinking shape without optional payload fields."
+canonical_proof_type_path = "engine::core::thinking::ThinkingPayload"
+authority_boundary_module_path = "engine::core::thinking"
+
+[[invariants]]
+id = "APP-INV-5"
+predicate = "Active stream typestate transitions from transient to journaled only through consuming transition."
+canonical_proof_type_path = "engine::state::ActiveStream"
+authority_boundary_module_path = "engine::state"
+
+[[invariants]]
+id = "APP-INV-6"
+predicate = "User-facing message content is non-empty after normalization."
+canonical_proof_type_path = "types::NonEmptyString"
+authority_boundary_module_path = "types"
+
+[[invariants]]
+id = "APP-INV-7"
+predicate = "Persisted content contains no standalone carriage returns."
+canonical_proof_type_path = "types::PersistableContent"
+authority_boundary_module_path = "types"
+
+[[invariants]]
+id = "APP-INV-8"
+predicate = "Stream and tool journal crash-recovery identities are explicit typed IDs."
+canonical_proof_type_path = "context::ToolBatchId"
+authority_boundary_module_path = "context::tool_journal"
+
+[[invariants]]
+id = "APP-INV-9"
+predicate = "Focus view lifecycle is represented by explicit focus-state variants with state-owned fields."
+canonical_proof_type_path = "engine::ui::view_state::FocusState"
+authority_boundary_module_path = "engine::ui::view_state"
+
+[[invariants]]
+id = "APP-INV-10"
+predicate = "Provider request/response model name selection is represented by strongly typed model names."
+canonical_proof_type_path = "types::ModelName"
+authority_boundary_module_path = "types"

@@ -1,0 +1,52 @@
+version = 1
+last_updated = "2026-02-19"
+
+[[entries]]
+invariant_id = "APP-INV-1"
+canonical_proof_type_path = "engine::state::OperationState"
+authority_boundary_module_path = "engine::app::mod"
+
+[[entries]]
+invariant_id = "APP-INV-2"
+canonical_proof_type_path = "engine::app::tool_gate::ToolGate"
+authority_boundary_module_path = "engine::app::tool_gate"
+
+[[entries]]
+invariant_id = "APP-INV-3"
+canonical_proof_type_path = "engine::state::ToolJournalBatch"
+authority_boundary_module_path = "engine::state"
+
+[[entries]]
+invariant_id = "APP-INV-4"
+canonical_proof_type_path = "engine::core::thinking::ThinkingPayload"
+authority_boundary_module_path = "engine::core::thinking"
+
+[[entries]]
+invariant_id = "APP-INV-5"
+canonical_proof_type_path = "engine::state::ActiveStream"
+authority_boundary_module_path = "engine::state"
+
+[[entries]]
+invariant_id = "APP-INV-6"
+canonical_proof_type_path = "types::NonEmptyString"
+authority_boundary_module_path = "types"
+
+[[entries]]
+invariant_id = "APP-INV-7"
+canonical_proof_type_path = "types::PersistableContent"
+authority_boundary_module_path = "types"
+
+[[entries]]
+invariant_id = "APP-INV-8"
+canonical_proof_type_path = "context::ToolBatchId"
+authority_boundary_module_path = "context::tool_journal"
+
+[[entries]]
+invariant_id = "APP-INV-9"
+canonical_proof_type_path = "engine::ui::view_state::FocusState"
+authority_boundary_module_path = "engine::ui::view_state"
+
+[[entries]]
+invariant_id = "APP-INV-10"
+canonical_proof_type_path = "types::ModelName"
+authority_boundary_module_path = "types"
