@@ -1813,7 +1813,10 @@ fn resolve_detail_lines(
 ) -> Vec<Line<'static>> {
     let cascade = app.resolve_cascade();
     let mut lines = Vec::new();
-    let selected_index = app.settings_selected_index().unwrap_or(0);
+    let selected_index = match app.settings_access() {
+        SettingsAccess::Active { selected_index, .. } => selected_index,
+        SettingsAccess::Inactive => 0,
+    };
 
     for (index, setting) in cascade.settings.into_iter().enumerate() {
         let is_selected = index == selected_index;
@@ -2466,11 +2469,23 @@ fn draw_settings_modal(
     elapsed: Duration,
 ) {
     let area = frame.area();
-    let settings_access = app.settings_access();
-    let surface = match settings_access {
-        SettingsAccess::Active { surface, .. } => surface,
-        SettingsAccess::Inactive => SettingsSurface::Root,
-    };
+    let (surface, root_filter, root_filter_active, root_detail_view, root_selected_index) =
+        match app.settings_access() {
+            SettingsAccess::Active {
+                surface,
+                filter_text,
+                filter_active,
+                detail_view,
+                selected_index,
+            } => (
+                surface,
+                filter_text.to_string(),
+                filter_active,
+                detail_view,
+                selected_index,
+            ),
+            SettingsAccess::Inactive => (SettingsSurface::Root, String::new(), false, None, 0),
+        };
     let selector_width = match surface {
         SettingsSurface::Root => 76.min(area.width.saturating_sub(4)).max(52),
         SettingsSurface::Runtime | SettingsSurface::Resolve | SettingsSurface::Validate => {
@@ -2492,23 +2507,11 @@ fn draw_settings_modal(
             lines.extend(validation_detail_lines(app, palette, glyphs, content_width));
         }
         SettingsSurface::Root => {
-            let (filter, filter_active, detail_view, selected_index) = match settings_access {
-                SettingsAccess::Active {
-                    filter_text,
-                    filter_active,
-                    detail_view,
-                    selected_index,
-                    ..
-                } => (
-                    filter_text.to_string(),
-                    filter_active,
-                    detail_view,
-                    selected_index,
-                ),
-                SettingsAccess::Inactive => (String::new(), false, None, 0),
-            };
+            let filter = root_filter.clone();
+            let filter_active = root_filter_active;
+            let detail_view = root_detail_view;
             let categories = app.settings_categories();
-            let selected_index = selected_index.min(categories.len().saturating_sub(1));
+            let selected_index = root_selected_index.min(categories.len().saturating_sub(1));
 
             if let Some(category) = detail_view {
                 lines.extend(settings_detail_lines(
@@ -2643,7 +2646,7 @@ fn draw_settings_modal(
 
     let title = match surface {
         SettingsSurface::Root => {
-            if let Some(category) = app.settings_detail_view() {
+            if let Some(category) = root_detail_view {
                 let separator = if app.ui_options().ascii_only {
                     ">"
                 } else {

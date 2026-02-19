@@ -1631,7 +1631,13 @@ impl App {
     }
 
     pub fn settings_resolve_move_up(&mut self) {
-        if self.settings_surface() != Some(SettingsSurface::Resolve) {
+        if !matches!(
+            self.settings_access(),
+            SettingsAccess::Active {
+                surface: SettingsSurface::Resolve,
+                ..
+            }
+        ) {
             return;
         }
         if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access()
@@ -1642,7 +1648,13 @@ impl App {
     }
 
     pub fn settings_resolve_move_down(&mut self) {
-        if self.settings_surface() != Some(SettingsSurface::Resolve) {
+        if !matches!(
+            self.settings_access(),
+            SettingsAccess::Active {
+                surface: SettingsSurface::Resolve,
+                ..
+            }
+        ) {
             return;
         }
         let len = self.resolve_cascade().settings.len();
@@ -1657,15 +1669,22 @@ impl App {
     }
 
     pub fn settings_resolve_activate_selected(&mut self) {
-        if self.settings_surface() != Some(SettingsSurface::Resolve) {
+        if !matches!(
+            self.settings_access(),
+            SettingsAccess::Active {
+                surface: SettingsSurface::Resolve,
+                ..
+            }
+        ) {
             return;
         }
         if self.settings_has_unsaved_edits() {
             self.push_settings_unsaved_edits_notification();
             return;
         }
-        let Some(selected) = self.settings_selected_index() else {
-            return;
+        let selected = match self.settings_access() {
+            SettingsAccess::Active { selected_index, .. } => selected_index,
+            SettingsAccess::Inactive => return,
         };
         let Some(setting) = self
             .resolve_cascade()
