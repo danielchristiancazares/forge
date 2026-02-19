@@ -339,16 +339,6 @@ pub enum SettingsModalMut<'a> {
     Inactive,
 }
 
-impl<'a> CommandDraftMut<'a> {
-    #[must_use]
-    pub fn into_active(self) -> Option<&'a mut DraftInput> {
-        match self {
-            Self::Active(command) => Some(command),
-            Self::Inactive => None,
-        }
-    }
-}
-
 impl Default for InputState {
     fn default() -> Self {
         Self::Normal(DraftInput::default())

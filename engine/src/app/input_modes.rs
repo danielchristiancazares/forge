@@ -3,7 +3,7 @@
 //! This module provides borrow-scoped mode guards that ensure operations
 //! are only performed when the app is in the correct mode.
 
-use super::ui::{DraftInput, InputState};
+use super::ui::{CommandDraftMut, DraftInput, InputState};
 use super::{ApiConfig, App, Message, NonEmptyString, OperationState};
 
 pub(crate) use forge_tools::change_recording::{ChangeRecorder, TurnChangeReport, TurnContext};
@@ -288,12 +288,12 @@ impl InsertMode<'_> {
 
 impl CommandMode<'_> {
     fn command_mut(&mut self) -> &mut DraftInput {
-        self.app
-            .ui
-            .input
-            .command_mut_access()
-            .into_active()
-            .expect("CommandMode must hold Command input state")
+        match self.app.ui.input.command_mut_access() {
+            CommandDraftMut::Active(command) => command,
+            CommandDraftMut::Inactive => {
+                panic!("CommandMode must hold Command input state")
+            }
+        }
     }
 
     pub fn move_cursor_left(&mut self) {
