@@ -3202,7 +3202,7 @@ impl App {
     }
 
     pub fn model_select_move_up(&mut self) {
-        if let InputState::ModelSelect { selected, .. } = &mut self.ui.input
+        if let ui::ModelSelectMut::Active { selected } = self.ui.input.model_select_mut_access()
             && *selected > 0
         {
             *selected -= 1;
@@ -3210,7 +3210,7 @@ impl App {
     }
 
     pub fn model_select_move_down(&mut self) {
-        if let InputState::ModelSelect { selected, .. } = &mut self.ui.input {
+        if let ui::ModelSelectMut::Active { selected } = self.ui.input.model_select_mut_access() {
             let max_index = Self::model_select_max_index();
             if *selected < max_index {
                 *selected += 1;
@@ -3219,7 +3219,7 @@ impl App {
     }
 
     pub fn model_select_set_index(&mut self, index: usize) {
-        if let InputState::ModelSelect { selected, .. } = &mut self.ui.input {
+        if let ui::ModelSelectMut::Active { selected } = self.ui.input.model_select_mut_access() {
             let max_index = Self::model_select_max_index();
             *selected = index.min(max_index);
         }

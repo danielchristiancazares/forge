@@ -313,6 +313,11 @@ pub enum ModelSelectRef {
     Inactive,
 }
 
+pub enum ModelSelectMut<'a> {
+    Active { selected: &'a mut usize },
+    Inactive,
+}
+
 pub enum FileSelectRef<'a> {
     Active {
         filter: &'a DraftInput,
@@ -403,6 +408,13 @@ impl InputState {
                 selected: *selected,
             },
             _ => ModelSelectRef::Inactive,
+        }
+    }
+
+    pub fn model_select_mut_access(&mut self) -> ModelSelectMut<'_> {
+        match self {
+            InputState::ModelSelect { selected, .. } => ModelSelectMut::Active { selected },
+            _ => ModelSelectMut::Inactive,
         }
     }
 
@@ -538,7 +550,7 @@ impl InputState {
 mod tests {
     use super::{
         CommandDraftMut, CommandDraftRef, DraftInput, FileSelectMut, FileSelectRef, InputMode,
-        InputState, ModelSelectRef, SettingsCategory, SettingsSurface,
+        InputState, ModelSelectMut, ModelSelectRef, SettingsCategory, SettingsSurface,
     };
 
     #[test]
@@ -1002,6 +1014,21 @@ mod tests {
     fn input_state_model_select_index_not_in_mode() {
         let state = InputState::Normal(DraftInput::default());
         assert!(matches!(state.model_select_ref(), ModelSelectRef::Inactive));
+    }
+
+    #[test]
+    fn input_state_model_select_mut_access() {
+        let mut state = InputState::ModelSelect {
+            draft: DraftInput::default(),
+            selected: 1,
+        };
+        if let ModelSelectMut::Active { selected } = state.model_select_mut_access() {
+            *selected = 2;
+        }
+        assert!(matches!(
+            state.model_select_ref(),
+            ModelSelectRef::Active { selected: 2 }
+        ));
     }
 
     #[test]
