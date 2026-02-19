@@ -1387,8 +1387,13 @@ impl App {
         self.core.context_manager.history()
     }
 
+    #[inline]
+    fn operation_state(&self) -> &OperationState {
+        &self.core.state
+    }
+
     pub fn streaming(&self) -> Option<&StreamingMessage> {
-        match &self.core.state {
+        match self.operation_state() {
             OperationState::Streaming(active) => Some(active.message()),
             _ => None,
         }
@@ -1398,7 +1403,7 @@ impl App {
 
     #[inline]
     fn tool_loop_state(&self) -> Option<&state::ToolLoopState> {
-        match &self.core.state {
+        match self.operation_state() {
             OperationState::ToolLoop(state) => Some(state.as_ref()),
             _ => None,
         }
@@ -1438,7 +1443,7 @@ impl App {
 
     #[inline]
     fn plan_approval_state(&self) -> Option<&state::PlanApprovalState> {
-        match &self.core.state {
+        match self.operation_state() {
             OperationState::PlanApproval(state) => Some(state),
             _ => None,
         }
@@ -1446,7 +1451,7 @@ impl App {
 
     #[inline]
     fn tool_recovery_state(&self) -> Option<&state::ToolRecoveryState> {
-        match &self.core.state {
+        match self.operation_state() {
             OperationState::ToolRecovery(state) => Some(state),
             _ => None,
         }
@@ -1454,7 +1459,7 @@ impl App {
 
     #[inline]
     fn recovery_blocked_state(&self) -> Option<&state::RecoveryBlockedState> {
-        match &self.core.state {
+        match self.operation_state() {
             OperationState::RecoveryBlocked(state) => Some(state),
             _ => None,
         }
@@ -1741,7 +1746,7 @@ impl App {
     /// Centralizes busy-state checks to ensure consistency across
     /// `start_streaming`, `start_distillation`, and UI queries.
     fn busy_reason(&self) -> Option<&'static str> {
-        match &self.core.state {
+        match self.operation_state() {
             OperationState::Idle => None,
             OperationState::Streaming(_) => Some("streaming a response"),
             OperationState::ToolLoop(_) => Some("tool execution in progress"),
