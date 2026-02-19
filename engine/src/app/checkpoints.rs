@@ -145,8 +145,8 @@ pub(crate) struct Checkpoint {
     kind: CheckpointKind,
     /// Number of history entries present when the checkpoint was created.
     conversation_len: usize,
-    /// Present iff this checkpoint supports rewinding the workspace.
-    workspace: Option<WorkspaceSnapshot>,
+    /// Encodes whether this checkpoint supports rewinding the workspace.
+    workspace: CheckpointWorkspace,
 }
 
 impl Checkpoint {
@@ -160,8 +160,8 @@ impl Checkpoint {
 
     pub(crate) fn summary(&self) -> CheckpointSummary {
         let (has_code, file_count, total_bytes) = match &self.workspace {
-            Some(ws) => (true, ws.files.len(), ws.total_bytes),
-            None => (false, 0, 0),
+            CheckpointWorkspace::WithCode(ws) => (true, ws.files.len(), ws.total_bytes),
+            CheckpointWorkspace::ConversationOnly => (false, 0, 0),
         };
         CheckpointSummary {
             id: self.id,
@@ -175,6 +175,12 @@ impl Checkpoint {
 }
 
 #[derive(Debug)]
+pub(crate) enum CheckpointWorkspace {
+    ConversationOnly,
+    WithCode(WorkspaceSnapshot),
+}
+
+#[derive(Debug)]
 pub(crate) struct WorkspaceSnapshot {
     files: BTreeMap<PathBuf, FileSnapshot>,
     total_bytes: usize,
@@ -184,9 +190,14 @@ pub(crate) struct WorkspaceSnapshot {
 pub(crate) enum FileSnapshot {
     Existed {
         bytes: Vec<u8>,
-        permissions: Option<std::fs::Permissions>,
+        permissions: SnapshotPermissions,
     },
     Missing,
+}
+
+#[derive(Debug)]
+pub(crate) enum SnapshotPermissions {
+    Captured(std::fs::Permissions),
 }
 
 /// Proof that a rewind target exists.
@@ -220,7 +231,7 @@ pub(crate) enum PreparedCodeRewindLookup {
 }
 
 /// Proof that a file baseline exists in a checkpoint.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PreparedFileBaseline {
     checkpoint_id: CheckpointId,
 }
@@ -230,7 +241,32 @@ pub(crate) struct CreatedCheckpoint {
     pub id: CheckpointId,
     pub file_count: usize,
     pub total_bytes: usize,
-    pub warning: Option<String>,
+    pub warning: CheckpointWarning,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum CheckpointWarning {
+    NoWarning,
+    Message(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileBaselineLookup {
+    Found(PreparedFileBaseline),
+    Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BaselineContentLookup<'a> {
+    Existed(&'a [u8]),
+    MissingAtCheckpoint,
+    MissingBaseline,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum CheckpointRefLookup<'a> {
+    Found(&'a Checkpoint),
+    Missing,
 }
 
 /// Intentionally simple (`QoL` feature). If/when persistence is needed,
@@ -269,15 +305,18 @@ impl CheckpointStore {
         self.checkpoints.iter().map(Checkpoint::summary).collect()
     }
 
-    pub(crate) fn get(&self, id: CheckpointId) -> Option<&Checkpoint> {
-        self.checkpoints.iter().find(|c| c.id == id)
+    pub(crate) fn get(&self, id: CheckpointId) -> CheckpointRefLookup<'_> {
+        if let Some(checkpoint) = self.checkpoints.iter().find(|c| c.id == id) {
+            CheckpointRefLookup::Found(checkpoint)
+        } else {
+            CheckpointRefLookup::Missing
+        }
     }
 
     pub(crate) fn prepare(&self, id: CheckpointId) -> PreparedRewindLookup {
-        if self.get(id).is_some() {
-            PreparedRewindLookup::Prepared(PreparedRewind { id })
-        } else {
-            PreparedRewindLookup::Missing
+        match self.get(id) {
+            CheckpointRefLookup::Found(_) => PreparedRewindLookup::Prepared(PreparedRewind { id }),
+            CheckpointRefLookup::Missing => PreparedRewindLookup::Missing,
         }
     }
 
@@ -296,28 +335,42 @@ impl CheckpointStore {
     }
 
     pub(crate) fn prepare_code(&self, rewind: PreparedRewind) -> PreparedCodeRewindLookup {
-        let cp = self
-            .get(rewind.id)
-            .expect("prepared rewind proof must reference existing checkpoint");
-        if cp.workspace.is_some() {
-            PreparedCodeRewindLookup::Prepared(PreparedCodeRewind { id: rewind.id })
-        } else {
-            PreparedCodeRewindLookup::MissingCodeSnapshot
+        let cp = match self.get(rewind.id) {
+            CheckpointRefLookup::Found(checkpoint) => checkpoint,
+            CheckpointRefLookup::Missing => {
+                panic!("prepared rewind proof must reference existing checkpoint")
+            }
+        };
+        match cp.workspace {
+            CheckpointWorkspace::WithCode(_) => {
+                PreparedCodeRewindLookup::Prepared(PreparedCodeRewind { id: rewind.id })
+            }
+            CheckpointWorkspace::ConversationOnly => PreparedCodeRewindLookup::MissingCodeSnapshot,
         }
     }
 
     pub(crate) fn checkpoint(&self, proof: PreparedRewind) -> &Checkpoint {
         // Proof ensures existence; absence is a logic bug at the call site.
-        self.get(proof.id).expect("checkpoint exists")
+        match self.get(proof.id) {
+            CheckpointRefLookup::Found(checkpoint) => checkpoint,
+            CheckpointRefLookup::Missing => panic!("checkpoint exists"),
+        }
     }
 
     pub(crate) fn checkpoint_code(
         &self,
         proof: PreparedCodeRewind,
     ) -> (&Checkpoint, &WorkspaceSnapshot) {
-        let cp = self.get(proof.id).expect("checkpoint exists");
-        let ws = cp.workspace.as_ref().expect("code snapshot exists");
-        (cp, ws)
+        let cp = match self.get(proof.id) {
+            CheckpointRefLookup::Found(checkpoint) => checkpoint,
+            CheckpointRefLookup::Missing => panic!("checkpoint exists"),
+        };
+        match &cp.workspace {
+            CheckpointWorkspace::WithCode(ws) => (cp, ws),
+            CheckpointWorkspace::ConversationOnly => {
+                panic!("code rewind proof must reference checkpoint with workspace snapshot")
+            }
+        }
     }
 
     /// Create a checkpoint for the given set of files.
@@ -340,7 +393,7 @@ impl CheckpointStore {
 
         let mut snapshots: BTreeMap<PathBuf, FileSnapshot> = BTreeMap::new();
         let mut total_bytes: usize = 0;
-        let mut warning: Option<String> = None;
+        let mut warning = CheckpointWarning::NoWarning;
 
         for path in &unique {
             match snapshot_file(path) {
@@ -349,7 +402,7 @@ impl CheckpointStore {
                     snapshots.insert(path.clone(), snap);
                 }
                 Err(e) => {
-                    warning = Some(format!(
+                    warning = CheckpointWarning::Message(format!(
                         "Checkpoint {id} created without code snapshot (failed to read {}: {e})",
                         path.display()
                     ));
@@ -362,17 +415,20 @@ impl CheckpointStore {
 
         // Empty target set is intentionally conversation-only (no code snapshot to restore).
         let workspace = if unique.is_empty() {
-            None
-        } else if warning.is_none() {
-            Some(WorkspaceSnapshot {
+            CheckpointWorkspace::ConversationOnly
+        } else if matches!(warning, CheckpointWarning::NoWarning) {
+            CheckpointWorkspace::WithCode(WorkspaceSnapshot {
                 files: snapshots,
                 total_bytes,
             })
         } else {
-            None
+            CheckpointWorkspace::ConversationOnly
         };
 
-        let file_count = workspace.as_ref().map_or(0, |w| w.files.len());
+        let file_count = match &workspace {
+            CheckpointWorkspace::WithCode(w) => w.files.len(),
+            CheckpointWorkspace::ConversationOnly => 0,
+        };
         self.checkpoints.push(Checkpoint {
             id,
             created_at,
@@ -405,36 +461,42 @@ impl CheckpointStore {
     }
 
     /// Find the most recent `ToolEdit` checkpoint containing a snapshot of `path`.
-    pub(crate) fn find_baseline_for_file(&self, path: &Path) -> Option<PreparedFileBaseline> {
+    pub(crate) fn find_baseline_for_file(&self, path: &Path) -> FileBaselineLookup {
         let normalized = normalize_path(path);
 
         for checkpoint in self.checkpoints.iter().rev() {
             if checkpoint.kind == CheckpointKind::ToolEdit
-                && let Some(ws) = &checkpoint.workspace
+                && let CheckpointWorkspace::WithCode(ws) = &checkpoint.workspace
             {
                 let has_file = ws
                     .files
                     .keys()
                     .any(|stored| stored == path || normalize_path(stored) == normalized);
                 if has_file {
-                    return Some(PreparedFileBaseline {
+                    return FileBaselineLookup::Found(PreparedFileBaseline {
                         checkpoint_id: checkpoint.id,
                     });
                 }
             }
         }
-        None
+        FileBaselineLookup::Missing
     }
 
     /// Get file content from a checkpoint, given a baseline proof.
-    /// Returns None if file was marked as Missing (didn't exist at checkpoint time).
+    /// Returns explicit lookup variants for baseline and file-presence outcomes.
     pub(crate) fn baseline_content(
         &self,
         proof: PreparedFileBaseline,
         path: &Path,
-    ) -> Option<&[u8]> {
-        let cp = self.get(proof.checkpoint_id)?;
-        let ws = cp.workspace.as_ref()?;
+    ) -> BaselineContentLookup<'_> {
+        let cp = match self.get(proof.checkpoint_id) {
+            CheckpointRefLookup::Found(checkpoint) => checkpoint,
+            CheckpointRefLookup::Missing => return BaselineContentLookup::MissingBaseline,
+        };
+        let ws = match &cp.workspace {
+            CheckpointWorkspace::WithCode(ws) => ws,
+            CheckpointWorkspace::ConversationOnly => return BaselineContentLookup::MissingBaseline,
+        };
 
         let normalized = normalize_path(path);
         let snapshot = ws.files.get(path).or_else(|| {
@@ -442,11 +504,15 @@ impl CheckpointStore {
                 .iter()
                 .find(|(k, _)| normalize_path(k) == normalized)
                 .map(|(_, v)| v)
-        })?;
+        });
+        let snapshot = match snapshot {
+            Some(snapshot) => snapshot,
+            None => return BaselineContentLookup::MissingBaseline,
+        };
 
         match snapshot {
-            FileSnapshot::Existed { bytes, .. } => Some(bytes),
-            FileSnapshot::Missing => None,
+            FileSnapshot::Existed { bytes, .. } => BaselineContentLookup::Existed(bytes),
+            FileSnapshot::Missing => BaselineContentLookup::MissingAtCheckpoint,
         }
     }
 }
@@ -515,7 +581,7 @@ pub(crate) fn restore_workspace(
     for (path, snap) in &snapshot.files {
         match snap {
             FileSnapshot::Existed { bytes, permissions } => {
-                restore_file(path, bytes, permissions.as_ref())?;
+                restore_file(path, bytes, permissions)?;
                 restored_files = restored_files.saturating_add(1);
             }
             FileSnapshot::Missing => {
@@ -534,7 +600,7 @@ fn snapshot_file(path: &Path) -> std::io::Result<(FileSnapshot, usize)> {
     match std::fs::metadata(path) {
         Ok(meta) => {
             let bytes = std::fs::read(path)?;
-            let perms = Some(meta.permissions());
+            let perms = SnapshotPermissions::Captured(meta.permissions());
             let len = bytes.len();
             Ok((
                 FileSnapshot::Existed {
@@ -552,7 +618,7 @@ fn snapshot_file(path: &Path) -> std::io::Result<(FileSnapshot, usize)> {
 fn restore_file(
     path: &Path,
     bytes: &[u8],
-    permissions: Option<&std::fs::Permissions>,
+    permissions: &SnapshotPermissions,
 ) -> std::io::Result<()> {
     if let Ok(meta) = std::fs::metadata(path)
         && meta.is_dir()
@@ -568,9 +634,8 @@ fn restore_file(
     }
 
     std::fs::write(path, bytes)?;
-    if let Some(perms) = permissions {
-        std::fs::set_permissions(path, perms.clone())?;
-    }
+    let SnapshotPermissions::Captured(perms) = permissions;
+    std::fs::set_permissions(path, perms.clone())?;
     Ok(())
 }
 
@@ -673,15 +738,18 @@ impl crate::App {
             targets,
         );
 
-        if let Some(warning) = created.warning {
-            self.push_notification(warning);
-        } else {
-            self.push_notification(format!(
-                "Checkpoint #{id} created ({files} files, {size})",
-                id = created.id,
-                files = created.file_count,
-                size = format_bytes(created.total_bytes)
-            ));
+        match created.warning {
+            CheckpointWarning::Message(warning) => {
+                self.push_notification(warning);
+            }
+            CheckpointWarning::NoWarning => {
+                self.push_notification(format!(
+                    "Checkpoint #{id} created ({files} files, {size})",
+                    id = created.id,
+                    files = created.file_count,
+                    size = format_bytes(created.total_bytes)
+                ));
+            }
         }
     }
 

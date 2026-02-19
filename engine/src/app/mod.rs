@@ -1271,24 +1271,32 @@ impl App {
             return Some(FileDiff::Binary(current.len()));
         }
 
-        let baseline = self
-            .core
-            .checkpoints
-            .find_baseline_for_file(path)
-            .and_then(|proof| self.core.checkpoints.baseline_content(proof, path));
-
-        if let Some(old_bytes) = baseline {
-            let diff = forge_utils::format_unified_diff(
-                &path.to_string_lossy(),
-                old_bytes,
-                &current,
-                true,
-            );
-            Some(FileDiff::Diff(diff))
-        } else {
-            let content = String::from_utf8_lossy(&current);
-            let lines: Vec<_> = content.lines().map(|l| format!("+{l}")).collect();
-            Some(FileDiff::Created(lines.join("\n")))
+        let baseline = self.core.checkpoints.find_baseline_for_file(path);
+        match baseline {
+            crate::app::checkpoints::FileBaselineLookup::Found(proof) => {
+                match self.core.checkpoints.baseline_content(proof, path) {
+                    crate::app::checkpoints::BaselineContentLookup::Existed(old_bytes) => {
+                        let diff = forge_utils::format_unified_diff(
+                            &path.to_string_lossy(),
+                            old_bytes,
+                            &current,
+                            true,
+                        );
+                        Some(FileDiff::Diff(diff))
+                    }
+                    crate::app::checkpoints::BaselineContentLookup::MissingAtCheckpoint
+                    | crate::app::checkpoints::BaselineContentLookup::MissingBaseline => {
+                        let content = String::from_utf8_lossy(&current);
+                        let lines: Vec<_> = content.lines().map(|l| format!("+{l}")).collect();
+                        Some(FileDiff::Created(lines.join("\n")))
+                    }
+                }
+            }
+            crate::app::checkpoints::FileBaselineLookup::Missing => {
+                let content = String::from_utf8_lossy(&current);
+                let lines: Vec<_> = content.lines().map(|l| format!("+{l}")).collect();
+                Some(FileDiff::Created(lines.join("\n")))
+            }
         }
     }
 
