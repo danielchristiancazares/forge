@@ -18,9 +18,9 @@ pub use file_picker::{FileEntry, FilePickerState, find_match_positions};
 pub use forge_types::PredefinedModel;
 pub use history::InputHistory;
 pub use input::{
-    CommandDraftMut, CommandDraftRef, DraftInput, FileSelectMut, FileSelectRef, InputMode,
-    InputState, InsertDraftMut, ModelSelectMut, ModelSelectRef, SettingsCategory, SettingsModalMut,
-    SettingsModalRef, SettingsModalState, SettingsSurface,
+    CommandDraftMut, CommandDraftRef, CommandStateOwned, DraftInput, FileSelectMut, FileSelectRef,
+    InputMode, InputState, InsertDraftMut, ModelSelectMut, ModelSelectRef, SettingsCategory,
+    SettingsModalMut, SettingsModalRef, SettingsModalState, SettingsSurface,
 };
 pub use modal::{ModalEffect, ModalEffectKind};
 pub use panel::{PanelEffect, PanelEffectKind};

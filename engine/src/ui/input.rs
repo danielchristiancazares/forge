@@ -308,6 +308,14 @@ pub enum CommandDraftMut<'a> {
     Inactive,
 }
 
+pub enum CommandStateOwned {
+    Active {
+        draft: DraftInput,
+        command: DraftInput,
+    },
+    Inactive(InputState),
+}
+
 pub enum InsertDraftMut<'a> {
     Active(&'a mut DraftInput),
     Inactive,
@@ -403,6 +411,14 @@ impl InputState {
         match self {
             InputState::Command { command, .. } => CommandDraftMut::Active(command),
             _ => CommandDraftMut::Inactive,
+        }
+    }
+
+    #[must_use]
+    pub fn into_command_state(self) -> CommandStateOwned {
+        match self {
+            InputState::Command { draft, command } => CommandStateOwned::Active { draft, command },
+            state => CommandStateOwned::Inactive(state),
         }
     }
 
@@ -561,9 +577,9 @@ impl InputState {
 #[cfg(test)]
 mod tests {
     use super::{
-        CommandDraftMut, CommandDraftRef, DraftInput, FileSelectMut, FileSelectRef, InputMode,
-        InputState, InsertDraftMut, ModelSelectMut, ModelSelectRef, SettingsCategory,
-        SettingsSurface,
+        CommandDraftMut, CommandDraftRef, CommandStateOwned, DraftInput, FileSelectMut,
+        FileSelectRef, InputMode, InputState, InsertDraftMut, ModelSelectMut, ModelSelectRef,
+        SettingsCategory, SettingsSurface,
     };
 
     #[test]
@@ -1140,6 +1156,23 @@ mod tests {
             draft.enter_char('x');
         }
         assert_eq!(state.draft().text(), "x");
+    }
+
+    #[test]
+    fn input_state_into_command_state_active() {
+        let state = InputState::Command {
+            draft: DraftInput::default(),
+            command: DraftInput {
+                text: "quit".to_string(),
+                cursor: 4,
+            },
+        };
+        match state.into_command_state() {
+            CommandStateOwned::Active { draft: _, command } => {
+                assert_eq!(command.text(), "quit");
+            }
+            CommandStateOwned::Inactive(_) => panic!("expected active command state"),
+        }
     }
 
     #[test]

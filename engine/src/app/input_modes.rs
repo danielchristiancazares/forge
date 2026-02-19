@@ -3,7 +3,7 @@
 //! This module provides borrow-scoped mode guards that ensure operations
 //! are only performed when the app is in the correct mode.
 
-use super::ui::{CommandDraftMut, DraftInput, InputMode, InputState};
+use super::ui::{CommandDraftMut, CommandStateOwned, DraftInput, InputMode, InputState};
 use super::{ApiConfig, App, Message, NonEmptyString, OperationState};
 
 pub(crate) use forge_tools::change_recording::{ChangeRecorder, TurnChangeReport, TurnContext};
@@ -363,8 +363,9 @@ impl CommandMode<'_> {
     #[must_use]
     pub fn take_command(self) -> EnteredCommand {
         let input = std::mem::take(&mut self.app.ui.input);
-        let InputState::Command { draft, mut command } = input else {
-            panic!("CommandMode must hold Command input state");
+        let (draft, mut command) = match input.into_command_state() {
+            CommandStateOwned::Active { draft, command } => (draft, command),
+            CommandStateOwned::Inactive(_) => panic!("CommandMode must hold Command input state"),
         };
 
         self.app.ui.input = InputState::Normal(draft);
