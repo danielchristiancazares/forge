@@ -4,7 +4,7 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-use forge_engine::UiOptions;
+use forge_types::ui::UiOptions;
 
 /// Kanagawa Wave color palette constants.
 mod colors {
@@ -309,7 +309,7 @@ pub mod styles {
 
 #[cfg(test)]
 mod tests {
-    use forge_engine::UiOptions;
+    use forge_types::ui::UiOptions;
 
     use super::spinner_frame;
 

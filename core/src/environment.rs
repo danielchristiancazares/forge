@@ -62,7 +62,6 @@ impl EnvironmentContext {
     }
 
     /// Used by tests to avoid picking up real filesystem state.
-    #[cfg(test)]
     #[must_use]
     pub fn gather_without_agents_md() -> Self {
         let mut ctx = Self::gather();

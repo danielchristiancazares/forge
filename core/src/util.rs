@@ -2,10 +2,9 @@
 
 use forge_types::{ApiKey, ModelName, PredefinedModel, Provider, SecretString};
 
-pub use forge_types::truncate_with_ellipsis;
-
 /// Deliberately exposes the secret at the boundary where it enters the provider API.
 #[inline]
+#[must_use]
 pub fn wrap_api_key(provider: Provider, secret: SecretString) -> ApiKey {
     let raw = secret.expose_secret().to_string();
     match provider {

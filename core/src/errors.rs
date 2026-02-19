@@ -6,19 +6,18 @@ use std::fmt::Write;
 
 use serde_json::Value;
 
-use forge_types::{NonEmptyStaticStr, NonEmptyString, Provider};
-
-use crate::{config, util};
+use forge_types::{NonEmptyStaticStr, NonEmptyString, Provider, truncate_with_ellipsis};
 
 const STREAM_ERROR_BADGE: NonEmptyStaticStr = NonEmptyStaticStr::new("[Stream error]");
 
-pub(crate) fn split_api_error(raw: &str) -> Option<(String, String)> {
+#[must_use]
+pub fn split_api_error(raw: &str) -> Option<(String, String)> {
     let rest = raw.strip_prefix("API error ")?;
     let (status, body) = rest.split_once(": ")?;
     Some((status.trim().to_string(), body.trim().to_string()))
 }
 
-pub(crate) fn extract_error_message(raw: &str) -> Option<String> {
+pub fn extract_error_message(raw: &str) -> Option<String> {
     let body = split_api_error(raw).map_or_else(|| raw.trim().to_string(), |(_, body)| body);
     let payload: Value = serde_json::from_str(&body).ok()?;
     payload
@@ -34,7 +33,8 @@ pub(crate) fn extract_error_message(raw: &str) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
-pub(crate) fn is_auth_error(raw: &str) -> bool {
+#[must_use]
+pub fn is_auth_error(raw: &str) -> bool {
     let lower = raw.to_ascii_lowercase();
     let mentions_key =
         lower.contains("api key") || lower.contains("x-api-key") || lower.contains("authorization");
@@ -54,7 +54,8 @@ pub(crate) fn is_auth_error(raw: &str) -> bool {
 }
 
 /// Format a stream error into a user-friendly message.
-pub(crate) fn format_stream_error(provider: Provider, model: &str, err: &str) -> NonEmptyString {
+#[must_use]
+pub fn format_stream_error(provider: Provider, model: &str, err: &str) -> NonEmptyString {
     let trimmed = err.trim();
     let (status, body) =
         split_api_error(trimmed).unwrap_or_else(|| (String::new(), trimmed.to_string()));
@@ -74,7 +75,7 @@ pub(crate) fn format_stream_error(provider: Provider, model: &str, err: &str) ->
         );
         content.push_str("\n\nFix:\n- Set ");
         content.push_str(env_var);
-        let config_hint = config::config_path().map_or_else(
+        let config_hint = forge_config::config_path().map_or_else(
             || "~/.forge/config.toml".to_string(),
             |p| p.display().to_string(),
         );
@@ -84,7 +85,7 @@ pub(crate) fn format_stream_error(provider: Provider, model: &str, err: &str) ->
         );
 
         let detail = if status.trim().is_empty() {
-            util::truncate_with_ellipsis(&extracted, 160)
+            truncate_with_ellipsis(&extracted, 160)
         } else {
             status.trim().to_string()
         };
@@ -106,7 +107,7 @@ pub(crate) fn format_stream_error(provider: Provider, model: &str, err: &str) ->
     } else {
         "unknown error".to_string()
     };
-    let detail_short = util::truncate_with_ellipsis(&detail, 200);
+    let detail_short = truncate_with_ellipsis(&detail, 200);
     let mut content = String::new();
     content.push_str(STREAM_ERROR_BADGE.as_str());
     content.push_str("\n\n");

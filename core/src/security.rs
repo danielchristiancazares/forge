@@ -2,4 +2,4 @@
 //!
 //! Re-exports the canonical implementation from `forge-utils`.
 
-pub use forge_utils::security::{sanitize_display_text, sanitize_stream_error};
+pub use forge_utils::security::sanitize_display_text;

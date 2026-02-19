@@ -1,6 +1,6 @@
 use crate::theme::Palette;
-use forge_engine::{App, PlanState};
-use forge_types::{PlanStep, StepStatus};
+use forge_engine::App;
+use forge_types::{PlanState, PlanStep, StepStatus};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};

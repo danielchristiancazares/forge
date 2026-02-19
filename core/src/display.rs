@@ -25,39 +25,48 @@ pub enum DisplayItem {
 /// it after a mutation (IFA: cached derived values should be owned and updated
 /// by the same authority).
 #[derive(Debug, Clone, Default)]
-pub(crate) struct DisplayLog {
+pub struct DisplayLog {
     items: Vec<DisplayItem>,
     revision: usize,
 }
 
 impl DisplayLog {
     #[inline]
-    pub(crate) fn items(&self) -> &[DisplayItem] {
+    #[must_use]
+    pub fn items(&self) -> &[DisplayItem] {
         &self.items
     }
 
     #[inline]
-    pub(crate) fn revision(&self) -> usize {
+    #[must_use]
+    pub fn revision(&self) -> usize {
         self.revision
     }
 
-    #[cfg(test)]
     #[inline]
-    pub(crate) fn len(&self) -> usize {
+    #[must_use]
+    pub fn len(&self) -> usize {
         self.items.len()
     }
 
     #[inline]
-    pub(crate) fn iter(&self) -> std::slice::Iter<'_, DisplayItem> {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    #[inline]
+    pub fn iter(&self) -> std::slice::Iter<'_, DisplayItem> {
         self.items.iter()
     }
 
     #[inline]
-    pub(crate) fn last(&self) -> Option<&DisplayItem> {
+    #[must_use]
+    pub fn last(&self) -> Option<&DisplayItem> {
         self.items.last()
     }
 
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         if self.items.is_empty() {
             return;
         }
@@ -65,12 +74,12 @@ impl DisplayLog {
         self.bump();
     }
 
-    pub(crate) fn push(&mut self, item: DisplayItem) {
+    pub fn push(&mut self, item: DisplayItem) {
         self.items.push(item);
         self.bump();
     }
 
-    pub(crate) fn pop(&mut self) -> Option<DisplayItem> {
+    pub fn pop(&mut self) -> Option<DisplayItem> {
         let popped = self.items.pop();
         if popped.is_some() {
             self.bump();
@@ -78,7 +87,7 @@ impl DisplayLog {
         popped
     }
 
-    pub(crate) fn set_items(&mut self, items: Vec<DisplayItem>) {
+    pub fn set_items(&mut self, items: Vec<DisplayItem>) {
         self.items = items;
         self.bump();
     }
@@ -86,5 +95,14 @@ impl DisplayLog {
     #[inline]
     fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+}
+
+impl<'a> IntoIterator for &'a DisplayLog {
+    type Item = &'a DisplayItem;
+    type IntoIter = std::slice::Iter<'a, DisplayItem>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }

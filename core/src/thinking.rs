@@ -11,7 +11,7 @@ use forge_types::{ThinkingMessage, ThinkingReplayState};
 ///
 /// This replaces `Option<Message>` in core tool-loop payloads.
 #[derive(Debug, Clone)]
-pub(crate) enum ThinkingPayload {
+pub enum ThinkingPayload {
     /// No thinking content was produced (or it was intentionally withheld).
     NotProvided,
     /// A thinking message was produced.
@@ -20,7 +20,7 @@ pub(crate) enum ThinkingPayload {
 
 impl ThinkingPayload {
     #[must_use]
-    pub(crate) fn replay_state_for_journal(&self) -> ThinkingReplayState {
+    pub fn replay_state_for_journal(&self) -> ThinkingReplayState {
         match self {
             Self::NotProvided => ThinkingReplayState::Unsigned,
             Self::Provided(message) => message.replay_state().clone(),

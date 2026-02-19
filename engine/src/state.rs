@@ -11,7 +11,7 @@ use forge_types::{ModelName, Plan, ToolCall, ToolResult};
 
 use crate::StreamingMessage;
 use crate::TurnContext;
-use crate::core::thinking::ThinkingPayload;
+use crate::thinking::ThinkingPayload;
 use crate::tools::ConfirmationRequest;
 use crate::{ActiveExecution, ToolQueue};
 

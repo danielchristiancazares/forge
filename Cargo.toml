@@ -3,6 +3,7 @@ members = [
     "cli",
     "config",
     "context",
+    "core",
     "engine",
     "lsp",
     "providers",
@@ -26,6 +27,7 @@ forge-types = { path = "types" }
 forge-providers = { path = "providers" }
 forge-context = { path = "context" }
 forge-config = { path = "config" }
+forge-core = { path = "core" }
 forge-engine = { path = "engine" }
 forge-tui = { path = "tui" }
 forge-lsp = { path = "lsp" }

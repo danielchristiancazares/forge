@@ -314,10 +314,7 @@ async fn drive_tool_loop_to_idle(app: &mut App) {
 #[test]
 fn enter_and_delete_respects_unicode_cursor() {
     let mut app = test_app();
-    app.ui.input = InputState::Insert(DraftInput {
-        text: "a🦀b".to_string(),
-        cursor: 1,
-    });
+    app.ui.input = InputState::Insert(DraftInput::new("a🦀b".to_string(), 1));
 
     {
         let mut insert = insert_mode(&mut app);
@@ -344,10 +341,7 @@ fn enter_and_delete_respects_unicode_cursor() {
 #[test]
 fn submit_message_adds_user_message() {
     let mut app = test_app();
-    app.ui.input = InputState::Insert(DraftInput {
-        text: "hello".to_string(),
-        cursor: 5,
-    });
+    app.ui.input = InputState::Insert(DraftInput::new("hello".to_string(), 5));
 
     let queued = insert_mode(&mut app).queue_message();
     let _ = expect_queued_message(queued);
@@ -997,10 +991,7 @@ fn queue_message_applies_pending_model_before_request_config() {
     let mut app = test_app();
     let pending_model = ModelName::from_predefined(PredefinedModel::ClaudeHaiku);
     app.core.pending_turn_model = Some(pending_model.clone());
-    app.ui.input = InputState::Insert(DraftInput {
-        text: "pending model".to_string(),
-        cursor: 13,
-    });
+    app.ui.input = InputState::Insert(DraftInput::new("pending model".to_string(), 13));
 
     let queued = insert_mode(&mut app).queue_message();
     let queued = expect_queued_message(queued);
@@ -1014,10 +1005,7 @@ fn queue_message_applies_pending_model_before_request_config() {
 fn queue_message_applies_pending_context_before_request_config() {
     let mut app = test_app();
     app.core.pending_turn_context_memory_enabled = Some(false);
-    app.ui.input = InputState::Insert(DraftInput {
-        text: "pending context".to_string(),
-        cursor: 15,
-    });
+    app.ui.input = InputState::Insert(DraftInput::new("pending context".to_string(), 15));
 
     let queued = insert_mode(&mut app).queue_message();
     let _ = expect_queued_message(queued);
@@ -1030,10 +1018,7 @@ fn queue_message_applies_pending_context_before_request_config() {
 fn queue_message_applies_pending_tools_before_request_config() {
     let mut app = test_app();
     app.core.pending_turn_tool_approval_mode = Some(tools::ApprovalMode::Strict);
-    app.ui.input = InputState::Insert(DraftInput {
-        text: "pending tools".to_string(),
-        cursor: 13,
-    });
+    app.ui.input = InputState::Insert(DraftInput::new("pending tools".to_string(), 13));
 
     let queued = insert_mode(&mut app).queue_message();
     let _ = expect_queued_message(queued);
@@ -1257,10 +1242,7 @@ fn process_stream_events_starts_tool_journal_on_first_tool_call() {
 fn submit_message_without_key_sets_status_and_does_not_queue() {
     let mut app = test_app();
     app.runtime.api_keys.clear();
-    app.ui.input = InputState::Insert(DraftInput {
-        text: "hi".to_string(),
-        cursor: 2,
-    });
+    app.ui.input = InputState::Insert(DraftInput::new("hi".to_string(), 2));
 
     let queued = insert_mode(&mut app).queue_message();
     assert!(matches!(queued, QueueMessageResult::Skipped));
@@ -1275,10 +1257,7 @@ fn submit_message_without_key_sets_status_and_does_not_queue() {
 #[test]
 fn queue_message_sets_pending_user_message() {
     let mut app = test_app();
-    app.ui.input = InputState::Insert(DraftInput {
-        text: "test message".to_string(),
-        cursor: 12,
-    });
+    app.ui.input = InputState::Insert(DraftInput::new("test message".to_string(), 12));
 
     let queued = insert_mode(&mut app).queue_message();
     let _ = expect_queued_message(queued);
@@ -1292,10 +1271,7 @@ fn queue_message_sets_pending_user_message() {
 #[tokio::test]
 async fn distillation_not_needed_starts_queued_request() {
     let mut app = test_app();
-    app.ui.input = InputState::Insert(DraftInput {
-        text: "queued".to_string(),
-        cursor: 6,
-    });
+    app.ui.input = InputState::Insert(DraftInput::new("queued".to_string(), 6));
 
     let queued = insert_mode(&mut app).queue_message();
     let queued = expect_queued_message(queued);
@@ -1533,13 +1509,12 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
             "patch": "LP1\nF foo.txt\nT\nhello\n.\nEND\n"
         }),
     );
-    let thinking = crate::core::thinking::ThinkingPayload::Provided(
-        forge_types::ThinkingMessage::with_signature(
+    let thinking =
+        crate::thinking::ThinkingPayload::Provided(forge_types::ThinkingMessage::with_signature(
             app.core.model.clone(),
             NonEmptyString::new("thinking").expect("non-empty"),
             "sig".to_string(),
-        ),
-    );
+        ));
     app.handle_tool_calls(crate::state::ToolLoopIngress {
         assistant_text: "assistant".to_string(),
         thinking,
@@ -1597,7 +1572,7 @@ async fn run_approval_request_captures_reason_without_changing_summary() {
     );
     app.handle_tool_calls(crate::state::ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking: crate::core::thinking::ThinkingPayload::NotProvided,
+        thinking: crate::thinking::ThinkingPayload::NotProvided,
         calls: vec![call],
         pre_resolved: Vec::new(),
         model: app.core.model.clone(),
@@ -1639,7 +1614,7 @@ async fn tool_loop_preserves_order_after_approval() {
     ];
     app.handle_tool_calls(crate::state::ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking: crate::core::thinking::ThinkingPayload::NotProvided,
+        thinking: crate::thinking::ThinkingPayload::NotProvided,
         calls,
         pre_resolved: Vec::new(),
         model: app.core.model.clone(),
@@ -1689,7 +1664,7 @@ async fn tool_loop_write_then_read_same_batch() {
 
     app.handle_tool_calls(crate::state::ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking: crate::core::thinking::ThinkingPayload::NotProvided,
+        thinking: crate::thinking::ThinkingPayload::NotProvided,
         calls,
         pre_resolved: Vec::new(),
         model: app.core.model.clone(),
@@ -1772,7 +1747,7 @@ fn tool_loop_max_iterations_short_circuits() {
     );
     app.handle_tool_calls(crate::state::ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking: crate::core::thinking::ThinkingPayload::NotProvided,
+        thinking: crate::thinking::ThinkingPayload::NotProvided,
         calls: vec![call],
         pre_resolved: Vec::new(),
         model: app.core.model.clone(),
@@ -1825,7 +1800,7 @@ fn plan_edit_call() -> ToolCall {
 fn submit_plan_call(app: &mut App, call: ToolCall) {
     app.handle_tool_calls(crate::state::ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking: crate::core::thinking::ThinkingPayload::NotProvided,
+        thinking: crate::thinking::ThinkingPayload::NotProvided,
         calls: vec![call],
         pre_resolved: Vec::new(),
         model: app.core.model.clone(),

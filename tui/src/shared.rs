@@ -6,8 +6,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 
-use forge_engine::{App, Message, Provider, ToolResult, sanitize_display_text};
+use forge_core::sanitize_display_text;
+use forge_engine::App;
 use forge_types::truncate_with_ellipsis;
+use forge_types::{Message, Provider, ToolResult};
 use serde_json::Value;
 
 use crate::theme::{Glyphs, Palette, styles};

@@ -15,6 +15,7 @@ focus-view = ["forge-engine/focus-view"]
 
 [dependencies]
 forge-engine.workspace = true
+forge-core.workspace = true
 forge-types.workspace = true
 
 ratatui.workspace = true

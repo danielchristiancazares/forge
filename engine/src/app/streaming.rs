@@ -48,8 +48,8 @@ use super::{
     StreamEvent, StreamFinishReason, StreamingMessage, ThinkingReplayState, notifications,
     sanitize_terminal_text, security,
 };
-use crate::core::thinking::ThinkingPayload;
 use crate::errors::format_stream_error;
+use crate::thinking::ThinkingPayload;
 
 /// Prepend a rendered plan block to the last user message in the API payload.
 ///
@@ -227,7 +227,7 @@ impl super::App {
     /// (with real overhead), causing an infinite ping-pong.
     pub(crate) fn streaming_overhead(&self, provider: Provider) -> u32 {
         let counter = TokenCounter::new();
-        let assembled = crate::environment::assemble_prompt(
+        let assembled = forge_core::assemble_prompt(
             self.core.system_prompts.get(provider),
             &self.core.environment,
             self.core.model.as_str(),
@@ -263,7 +263,7 @@ impl super::App {
         let provider = config.provider();
         let overhead = self.streaming_overhead(provider);
 
-        let system_prompt = crate::environment::assemble_prompt(
+        let system_prompt = forge_core::assemble_prompt(
             self.core.system_prompts.get(provider),
             &self.core.environment,
             config.model().as_str(),

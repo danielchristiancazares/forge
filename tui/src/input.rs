@@ -12,9 +12,10 @@ use std::{
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use forge_engine::{App, FileSelectAccess, InputMode, SettingsAccess, SettingsSurface};
+use forge_engine::{App, FileSelectAccess, SettingsAccess};
 #[cfg(feature = "focus-view")]
-use forge_engine::{FocusState, ViewMode};
+use forge_types::ui::{FocusState, ViewMode};
+use forge_types::ui::{InputMode, SettingsSurface};
 
 const INPUT_POLL_TIMEOUT: Duration = Duration::from_millis(25); // shutdown responsiveness
 const INPUT_CHANNEL_CAPACITY: usize = 1024; // bounded: no OOM

@@ -1,28 +1,19 @@
 //! UI-facing types for the engine.
 //!
-//! Used by the TUI for rendering/input, intentionally separate from orchestration.
+//! Most UI types now live in `forge_types::ui`. Display types live in `forge_core`.
+//! This module re-exports them and hosts file_picker (IO dependency).
 
-mod animation;
-mod display;
 mod file_picker;
-mod history;
-mod input;
-mod modal;
-mod panel;
-mod scroll;
-mod view_state;
 
-pub use display::DisplayItem;
-pub(crate) use display::DisplayLog;
 pub use file_picker::{FileEntry, FilePickerState, find_match_positions};
+pub use forge_core::{DisplayItem, DisplayLog};
 pub use forge_types::PredefinedModel;
-pub use history::InputHistory;
-pub use input::{
-    CommandDraftMut, CommandDraftRef, CommandStateOwned, DraftInput, FileSelectMut, FileSelectRef,
-    InputMode, InputState, InsertDraftMut, ModelSelectMut, ModelSelectRef, SettingsCategory,
-    SettingsModalMut, SettingsModalRef, SettingsModalState, SettingsSurface,
+
+// Re-export all UI types from forge_types.
+pub use forge_types::ui::{
+    ChangeKind, CommandDraftMut, CommandDraftRef, CommandStateOwned, DraftInput, FileSelectMut,
+    FileSelectRef, FilesPanelState, FocusState, InputHistory, InputMode, InputState,
+    InsertDraftMut, ModalEffect, ModalEffectKind, ModelSelectMut, ModelSelectRef, PanelEffect,
+    PanelEffectKind, ScrollState, SettingsCategory, SettingsModalMut, SettingsModalRef,
+    SettingsModalState, SettingsSurface, UiOptions, ViewMode, ViewState,
 };
-pub use modal::{ModalEffect, ModalEffectKind};
-pub use panel::{PanelEffect, PanelEffectKind};
-pub use scroll::ScrollState;
-pub use view_state::{ChangeKind, FilesPanelState, FocusState, UiOptions, ViewMode, ViewState};

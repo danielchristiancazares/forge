@@ -2,7 +2,7 @@
 
 use ratatui::layout::Rect;
 
-use forge_engine::{ModalEffect, ModalEffectKind, PanelEffect, PanelEffectKind};
+use forge_types::ui::{ModalEffect, ModalEffectKind, PanelEffect, PanelEffectKind};
 
 /// Apply a modal effect to transform the base rectangle.
 #[must_use]

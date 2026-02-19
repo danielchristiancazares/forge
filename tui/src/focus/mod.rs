@@ -4,7 +4,8 @@ pub mod idle;
 pub mod reviewing;
 
 use crate::theme::Palette;
-use forge_engine::{App, FocusState};
+use forge_engine::App;
+use forge_types::ui::FocusState;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 

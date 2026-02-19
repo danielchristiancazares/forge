@@ -1372,8 +1372,8 @@ impl App {
 
         let mut step_id_recorded = false;
         match &payload.thinking {
-            crate::core::thinking::ThinkingPayload::NotProvided => {}
-            crate::core::thinking::ThinkingPayload::Provided(thinking_message) => {
+            crate::thinking::ThinkingPayload::NotProvided => {}
+            crate::thinking::ThinkingPayload::Provided(thinking_message) => {
                 if thinking_message.requires_persistence() {
                     self.push_history_message(Message::Thinking(thinking_message.clone()));
                 } else {

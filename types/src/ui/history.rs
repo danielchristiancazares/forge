@@ -5,10 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Maximum number of prompts to keep in history.
 const MAX_PROMPT_HISTORY: usize = 100;
 
-/// Maximum number of commands to keep in history.
 const MAX_COMMAND_HISTORY: usize = 50;
 
 /// Input history for prompt and command recall.
@@ -30,22 +28,17 @@ const MAX_COMMAND_HISTORY: usize = 50;
 /// Navigation is reset after submitting a prompt or command.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct InputHistory {
-    /// Previously submitted user prompts (Insert mode).
     prompts: Vec<String>,
-    /// Previously executed slash commands (Command mode).
     commands: Vec<String>,
 
     /// Current navigation index for prompts (None = editing new).
     #[serde(skip)]
     prompt_index: Option<usize>,
-    /// Current navigation index for commands.
     #[serde(skip)]
     command_index: Option<usize>,
 
-    /// Stashed draft when navigating prompts.
     #[serde(skip)]
     prompt_stash: Option<String>,
-    /// Stashed draft when navigating commands.
     #[serde(skip)]
     command_stash: Option<String>,
 }

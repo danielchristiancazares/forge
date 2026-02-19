@@ -31,6 +31,8 @@
 //! | Plan | [`Plan`], [`Phase`], [`PlanStep`], [`PlanStepId`], [`StepStatus`], [`PlanState`], [`CompletedPlan`], [`EditOp`] |
 //! | Security | [`sanitize_terminal_text`], [`strip_steganographic_chars`], [`detect_mixed_script`], [`HomoglyphWarning`] |
 
+pub mod ui;
+
 mod confusables;
 pub mod plan;
 mod sanitize;

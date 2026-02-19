@@ -1,4 +1,5 @@
-use forge_engine::{App, FocusState};
+use forge_engine::App;
+use forge_types::ui::FocusState;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::Style;

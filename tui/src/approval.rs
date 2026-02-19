@@ -6,7 +6,8 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap},
 };
 
-use forge_engine::{App, sanitize_display_text};
+use forge_core::sanitize_display_text;
+use forge_engine::App;
 use forge_types::ToolResult;
 
 use crate::shared::collect_approval_view;

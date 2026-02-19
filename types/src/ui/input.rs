@@ -140,6 +140,11 @@ pub struct SettingsModalState {
 
 impl DraftInput {
     #[must_use]
+    pub fn new(text: String, cursor: usize) -> Self {
+        Self { text, cursor }
+    }
+
+    #[must_use]
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -663,7 +668,7 @@ mod tests {
             cursor: 0,
         };
         draft.move_cursor_left();
-        assert_eq!(draft.cursor(), 0); // Should stay at 0
+        assert_eq!(draft.cursor(), 0);
     }
 
     #[test]
@@ -683,7 +688,7 @@ mod tests {
             cursor: 5,
         };
         draft.move_cursor_right();
-        assert_eq!(draft.cursor(), 5); // Should stay at end
+        assert_eq!(draft.cursor(), 5);
     }
 
     #[test]
@@ -789,7 +794,7 @@ mod tests {
             cursor: 0,
         };
         draft.delete_char();
-        assert_eq!(draft.text(), "hello"); // Nothing deleted
+        assert_eq!(draft.text(), "hello");
         assert_eq!(draft.cursor(), 0);
     }
 
@@ -822,7 +827,7 @@ mod tests {
             cursor: 5,
         };
         draft.delete_char_forward();
-        assert_eq!(draft.text(), "hello"); // Nothing deleted
+        assert_eq!(draft.text(), "hello");
         assert_eq!(draft.cursor(), 5);
     }
 
@@ -931,9 +936,9 @@ mod tests {
             cursor: 1,
         };
         draft.move_cursor_right();
-        assert_eq!(draft.cursor(), 2); // Past the emoji
+        assert_eq!(draft.cursor(), 2);
         draft.move_cursor_right();
-        assert_eq!(draft.cursor(), 3); // At end
+        assert_eq!(draft.cursor(), 3);
     }
 
     #[test]
@@ -964,7 +969,6 @@ mod tests {
             text: "a🦀b".to_string(), // 🦀 is 4 bytes
             cursor: 2,
         };
-        // 'a' is 1 byte, '🦀' is 4 bytes
         assert_eq!(draft.byte_index(), 5); // 1 + 4 = 5
     }
 

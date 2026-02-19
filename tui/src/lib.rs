@@ -31,11 +31,11 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use forge_engine::{
-    App, ChangeKind, ContextUsageStatus, FileDiff, FileSelectAccess, InputMode, ModelSelectAccess,
-    PredefinedModel, Provider, SettingsAccess, SettingsCategory, SettingsSurface, command_specs,
-    find_match_positions,
+    App, ContextUsageStatus, FileDiff, FileSelectAccess, ModelSelectAccess, PredefinedModel,
+    Provider, SettingsAccess, command_specs, find_match_positions,
 };
 use forge_types::sanitize_path_for_display;
+use forge_types::ui::{ChangeKind, InputMode, SettingsCategory, SettingsSurface};
 
 use self::diff_render::render_tool_result_lines;
 use self::format::{format_api_usage, format_token_count, highlight_file_refs};

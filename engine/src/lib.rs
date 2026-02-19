@@ -14,27 +14,33 @@ pub use ui::{
 mod config;
 pub use config::{AppConfig, ForgeConfig};
 
-mod errors;
-mod notifications;
-mod security;
-pub use security::sanitize_display_text;
+// Modules moved to forge-core; re-exported for engine-internal use.
+pub(crate) use forge_core::errors;
+pub(crate) use forge_core::notifications;
+pub(crate) use forge_core::thinking;
+
+// Module-level aliases for engine-internal callers.
+pub(crate) mod security {
+    pub use forge_core::sanitize_display_text;
+    pub use forge_utils::security::sanitize_stream_error;
+}
+
+pub(crate) mod util {
+    pub use forge_core::{parse_model_name_from_string, wrap_api_key};
+    pub use forge_types::truncate_with_ellipsis;
+}
+
+pub use forge_core::{
+    DisplayLog, EnvironmentContext, NotificationQueue, SystemNotification, assemble_prompt,
+    parse_model_name_from_string, sanitize_display_text, wrap_api_key,
+};
 
 mod session_state;
 pub use session_state::SessionChangeLog;
 
-mod environment;
-pub use environment::{EnvironmentContext, assemble_prompt};
-
-pub use notifications::SystemNotification;
-
 mod state;
 pub use state::DistillationTask;
 pub use state::{ApprovalExpanded, ApprovalSelection};
-
-mod util;
-
-mod core;
-mod runtime;
 
 mod app;
 

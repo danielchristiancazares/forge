@@ -1,4 +1,6 @@
-use forge_engine::{App, DisplayItem, Message};
+use forge_core::DisplayItem;
+use forge_engine::App;
+use forge_types::Message;
 
 #[derive(Debug, Clone)]
 pub enum ContentBlock {

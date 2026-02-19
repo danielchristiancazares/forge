@@ -9,9 +9,10 @@ use ratatui::{
     widgets::{Block, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
 };
 
-use forge_engine::{
-    App, DisplayItem, Message, Provider, UiOptions, sanitize_display_text, sanitize_terminal_text,
-};
+use forge_core::{DisplayItem, sanitize_display_text};
+use forge_engine::App;
+use forge_types::ui::UiOptions;
+use forge_types::{Message, Provider, sanitize_terminal_text};
 
 use crate::diff_render::render_tool_result_lines;
 use crate::markdown::{render_markdown, render_markdown_preserve_newlines};
