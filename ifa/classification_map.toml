@@ -88,8 +88,8 @@ rationale = "Terminal rendering and input handling are UI boundaries."
 
 [[rules]]
 prefix = "types/src/budget.rs"
-classification = "boundary"
-rationale = "Budget invariant types; reclassify Core after Phase 3 removes Option from take_one."
+classification = "core"
+rationale = "Budget invariant types with explicit outcomes and no optional core interfaces."
 
 [[rules]]
 prefix = "types/src/confusables.rs"

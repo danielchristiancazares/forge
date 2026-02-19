@@ -798,7 +798,7 @@ A hint for whether content should be cached by the provider.
 use forge_types::CacheHint;
 
 let default = CacheHint::default();
-assert_eq!(default, CacheHint::Default);
+assert_eq!(default, CacheHint::Standard);
 
 let cached = CacheHint::Ephemeral;
 ```
@@ -813,14 +813,19 @@ use forge_types::CacheBudget;
 let budget = CacheBudget::full();
 assert_eq!(budget.remaining(), CacheBudget::MAX); // 4
 
-// Consume one slot
-let budget = budget.take_one().unwrap();
+// Consume one slot (explicit outcome)
+let forge_types::CacheBudgetTake::Remaining(budget) = budget.take_one() else {
+    panic!("expected remaining cache budget");
+};
 assert_eq!(budget.remaining(), 3);
 
-// Exhausted budget returns None
+// Exhausted budget returns an explicit terminal outcome
 let mut b = CacheBudget::new(1);
-b = b.take_one().unwrap();  // remaining = 0
-assert!(b.take_one().is_none());
+let forge_types::CacheBudgetTake::Remaining(next) = b.take_one() else {
+    panic!("expected remaining cache budget");
+};
+b = next; // remaining = 0
+assert!(matches!(b.take_one(), forge_types::CacheBudgetTake::Exhausted));
 ```
 
 ### OutputLimits
@@ -1274,6 +1279,10 @@ Core types:
 - `EditOp` — edit operations applied to a plan with validation
 - `CompletedPlan` — proof object produced only when all steps are satisfied
 
+Transition outcomes and failure reasons are proof-typed: plan completion, skip,
+and fail transitions now require `NonEmptyString` values (whitespace-only text
+is rejected at the boundary).
+
 ```rust
 use forge_types::{
     Plan, PlanState, PhaseInput, StepInput, PlanStepId,
@@ -1294,7 +1303,7 @@ let plan = Plan::from_input(vec![
         steps: vec![
             StepInput {
                 description: "Replace hardcoded paths".to_string(),
-                depends_on: vec![PlanStepId::new(1)],
+                depends_on: vec![PlanStepId::try_new(1)?],
             },
         ],
     },
@@ -1310,14 +1319,14 @@ let state = PlanState::Active(plan.clone());
 assert!(state.is_active());
 
 // Transition a step (Pending -> Active -> Complete)
-let step_id = PlanStepId::new(1);
+let step_id = PlanStepId::try_new(1)?;
 let step = plan.step_mut(step_id).unwrap();
 step.transition(StepStatus::Active)?;
 step.transition(StepStatus::Complete("done".to_string()))?;
 
 // Apply an edit (validated and DAG-rechecked)
 plan.apply_edit(EditOp::UpdateDescription {
-    step_id: PlanStepId::new(2),
+    step_id: PlanStepId::try_new(2)?,
     description: "Map tool loop flow".to_string(),
 })?;
 
@@ -1518,7 +1527,7 @@ let msg = Message::system(NonEmptyString::new("You are helpful.")?);
 
 // No caching
 let plain = CacheableMessage::plain(msg.clone());
-assert_eq!(plain.cache_hint, CacheHint::Default);
+assert_eq!(plain.cache_hint, CacheHint::Standard);
 
 // With caching hint
 let cached = CacheableMessage::cached(msg.clone());

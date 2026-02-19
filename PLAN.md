@@ -48,10 +48,22 @@ Completed now:
 36. Removed rollback-prone mutate-then-revert path in plan editing:
 37. `types::plan::editor::apply` now performs pure transform (`Plan -> Result<Plan, EditValidationError>`).
 38. `engine` now stores proposed edited plans in approval state and applies them only on explicit approval.
+39. Hardened plan transition payload types:
+40. `PlanStep` complete/fail/skip transitions now require `NonEmptyString` outcomes/reasons.
+41. Legacy plan-step deserialization now validates non-empty terminal payloads.
+42. Tightened `Phase` and step payload internals (private fields + accessors) to reduce forgeable public mutation surface.
+43. Hardened `PlanStepId` constructor boundary:
+44. Replaced infallible `PlanStepId::new` with checked construction (`try_new`, `TryFrom<u32/u64>`) and validated serde deserialization.
+45. Updated plan tool argument parsing to reject zero/invalid step IDs at boundary conversion time.
+46. Completed first explicit-outcome migration from Phase 3:
+47. Replaced `CacheBudget::take_one -> Option<CacheBudget>` with `CacheBudgetTake` (`Remaining` | `Exhausted`).
+48. Updated cache allocation callsites, tests, and docs to use explicit cache-budget outcomes.
+49. Reclassified `types/src/budget.rs` to Core after removing Option from its core interface and clearing banned Core variants.
 
 In progress:
 
-1. Phase 2 remaining hardening: privatize `PlanStepId`/`PlanStep`/`Phase` internals and replace step outcome/reason strings with proof types.
+1. Phase 2 remaining hardening: continue shrinking `PlanStep` public construction surface.
+2. Phase 3 remaining hardening: remove `Option` from remaining Core interfaces and Core domain structs.
 
 ## Non-Negotiable Constraints
 

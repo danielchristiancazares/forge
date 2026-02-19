@@ -136,6 +136,10 @@ fn last_notification(app: &App) -> Option<&str> {
     None
 }
 
+fn plan_step_id(value: u32) -> forge_types::PlanStepId {
+    forge_types::PlanStepId::try_new(value).expect("test fixture must use non-zero plan step ids")
+}
+
 fn set_streaming_state(app: &mut App) {
     let (_tx, rx) = mpsc::channel(1);
     let streaming = StreamingMessage::new(
@@ -1874,7 +1878,7 @@ fn plan_edit_approve_applies_edit() {
     }])
     .unwrap();
     let mut plan = plan;
-    forge_types::plan::editor::activate_step(&mut plan, forge_types::PlanStepId::new(1)).unwrap();
+    forge_types::plan::editor::activate_step(&mut plan, plan_step_id(1)).unwrap();
     app.core.plan_state = PlanState::Active(plan);
 
     submit_plan_call(&mut app, plan_edit_call());
@@ -1917,7 +1921,7 @@ fn plan_edit_reject_reverts() {
     }])
     .unwrap();
     let mut plan = plan;
-    forge_types::plan::editor::activate_step(&mut plan, forge_types::PlanStepId::new(1)).unwrap();
+    forge_types::plan::editor::activate_step(&mut plan, plan_step_id(1)).unwrap();
     let original_step_count = plan.step_count();
     app.core.plan_state = PlanState::Active(plan);
 
@@ -1966,10 +1970,10 @@ fn plan_advance_creates_checkpoint() {
         ],
     }])
     .unwrap();
-    forge_types::plan::editor::activate_step(&mut plan, forge_types::PlanStepId::new(1)).unwrap();
+    forge_types::plan::editor::activate_step(&mut plan, plan_step_id(1)).unwrap();
     app.core.plan_state = PlanState::Active(plan);
 
-    let step_id = forge_types::PlanStepId::new(1);
+    let step_id = plan_step_id(1);
     let advance_call = ToolCall::new(
         "call-advance",
         "Plan",
@@ -2012,10 +2016,10 @@ fn plan_skip_creates_checkpoint() {
         ],
     }])
     .unwrap();
-    forge_types::plan::editor::activate_step(&mut plan, forge_types::PlanStepId::new(1)).unwrap();
+    forge_types::plan::editor::activate_step(&mut plan, plan_step_id(1)).unwrap();
     app.core.plan_state = PlanState::Active(plan);
 
-    let step_id = forge_types::PlanStepId::new(1);
+    let step_id = plan_step_id(1);
     let skip_call = ToolCall::new(
         "call-skip",
         "Plan",

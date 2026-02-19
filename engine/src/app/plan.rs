@@ -6,7 +6,8 @@
 use forge_types::plan::editor::StepTransitionError;
 use forge_types::plan::{ActiveStepQuery, CompletionStatus, editor};
 use forge_types::{
-    EditOp, PhaseInput, Plan, PlanState, PlanStepId, StepInput, ToolCall, ToolResult,
+    EditOp, NonEmptyString, PhaseInput, Plan, PlanState, PlanStepId, StepInput, ToolCall,
+    ToolResult,
 };
 use serde_json::Value;
 
@@ -529,7 +530,7 @@ impl App {
 fn parse_step_id_and_text(
     call: &ToolCall,
     text_field: &str,
-) -> Result<(PlanStepId, String), ToolResult> {
+) -> Result<(PlanStepId, NonEmptyString), ToolResult> {
     let step_id_raw = call
         .arguments
         .get("step_id")
@@ -542,9 +543,15 @@ fn parse_step_id_and_text(
             )
         })?;
 
-    let step_id = PlanStepId::new(step_id_raw as u32);
+    let step_id = PlanStepId::try_from(step_id_raw).map_err(|_err| {
+        ToolResult::error(
+            &call.id,
+            PLAN_TOOL_NAME,
+            "'step_id' must be a non-zero 32-bit integer.",
+        )
+    })?;
 
-    let text = call
+    let raw_text = call
         .arguments
         .get(text_field)
         .and_then(Value::as_str)
@@ -555,8 +562,15 @@ fn parse_step_id_and_text(
                 PLAN_TOOL_NAME,
                 format!("'{text_field}' is required and must be non-empty."),
             )
-        })?
-        .to_string();
+        })?;
+
+    let text = NonEmptyString::new(raw_text.to_string()).map_err(|_err| {
+        ToolResult::error(
+            &call.id,
+            PLAN_TOOL_NAME,
+            format!("'{text_field}' must not be empty or whitespace-only."),
+        )
+    })?;
 
     Ok((step_id, text))
 }
@@ -583,40 +597,43 @@ fn parse_edit_op(val: &serde_json::Value) -> Result<EditOp, String> {
             Ok(EditOp::AddStep { phase_index, step })
         }
         "remove_step" => {
-            let step_id =
-                val.get("step_id")
-                    .and_then(Value::as_u64)
-                    .ok_or("'remove_step' requires 'step_id' (integer).")? as u32;
-            Ok(EditOp::RemoveStep(PlanStepId::new(step_id)))
+            let step_id_raw = val
+                .get("step_id")
+                .and_then(Value::as_u64)
+                .ok_or("'remove_step' requires 'step_id' (integer).")?;
+            let step_id = PlanStepId::try_from(step_id_raw)
+                .map_err(|_err| "'remove_step.step_id' must be a non-zero 32-bit integer.")?;
+            Ok(EditOp::RemoveStep(step_id))
         }
         "reorder_step" => {
-            let step_id =
-                val.get("step_id")
-                    .and_then(Value::as_u64)
-                    .ok_or("'reorder_step' requires 'step_id' (integer).")? as u32;
+            let step_id_raw = val
+                .get("step_id")
+                .and_then(Value::as_u64)
+                .ok_or("'reorder_step' requires 'step_id' (integer).")?;
+            let step_id = PlanStepId::try_from(step_id_raw)
+                .map_err(|_err| "'reorder_step.step_id' must be a non-zero 32-bit integer.")?;
             let new_phase = val
                 .get("new_phase")
                 .and_then(Value::as_u64)
                 .ok_or("'reorder_step' requires 'new_phase' (integer).")?
                 as usize;
-            Ok(EditOp::ReorderStep {
-                step_id: PlanStepId::new(step_id),
-                new_phase,
-            })
+            Ok(EditOp::ReorderStep { step_id, new_phase })
         }
         "update_description" => {
-            let step_id = val
+            let step_id_raw = val
                 .get("step_id")
                 .and_then(Value::as_u64)
-                .ok_or("'update_description' requires 'step_id' (integer).")?
-                as u32;
+                .ok_or("'update_description' requires 'step_id' (integer).")?;
+            let step_id = PlanStepId::try_from(step_id_raw).map_err(
+                |_err| "'update_description.step_id' must be a non-zero 32-bit integer.",
+            )?;
             let description = val
                 .get("description")
                 .and_then(Value::as_str)
                 .ok_or("'update_description' requires 'description' (string).")?
                 .to_string();
             Ok(EditOp::UpdateDescription {
-                step_id: PlanStepId::new(step_id),
+                step_id,
                 description,
             })
         }
@@ -653,7 +670,8 @@ mod tests {
     use super::{PLAN_TOOL_NAME, parse_edit_op, parse_step_id_and_text};
     use forge_types::plan::editor;
     use forge_types::{
-        EditOp, PhaseInput, Plan, PlanStepId, StepInput, ThoughtSignatureState, ToolCall,
+        EditOp, NonEmptyString, PhaseInput, Plan, PlanStepId, StepInput, ThoughtSignatureState,
+        ToolCall,
     };
     use serde_json::json;
 
@@ -670,8 +688,8 @@ mod tests {
     fn parse_step_id_and_text_valid() {
         let call = tool_call(json!({ "step_id": 3, "outcome": "Did the thing" }));
         let (id, text) = parse_step_id_and_text(&call, "outcome").unwrap();
-        assert_eq!(id, PlanStepId::new(3));
-        assert_eq!(text, "Did the thing");
+        assert_eq!(id, plan_step_id(3));
+        assert_eq!(text.as_str(), "Did the thing");
     }
 
     #[test]
@@ -684,6 +702,20 @@ mod tests {
     #[test]
     fn parse_step_id_and_text_empty_text() {
         let call = tool_call(json!({ "step_id": 1, "outcome": "" }));
+        let err = parse_step_id_and_text(&call, "outcome").unwrap_err();
+        assert!(err.is_error);
+    }
+
+    #[test]
+    fn parse_step_id_and_text_whitespace_text() {
+        let call = tool_call(json!({ "step_id": 1, "outcome": "   " }));
+        let err = parse_step_id_and_text(&call, "outcome").unwrap_err();
+        assert!(err.is_error);
+    }
+
+    #[test]
+    fn parse_step_id_and_text_zero_step_id() {
+        let call = tool_call(json!({ "step_id": 0, "outcome": "Did the thing" }));
         let err = parse_step_id_and_text(&call, "outcome").unwrap_err();
         assert!(err.is_error);
     }
@@ -703,7 +735,7 @@ mod tests {
     fn parse_edit_op_remove_step() {
         let val = json!({ "type": "remove_step", "step_id": 5 });
         let op = parse_edit_op(&val).unwrap();
-        assert!(matches!(op, EditOp::RemoveStep(id) if id == PlanStepId::new(5)));
+        assert!(matches!(op, EditOp::RemoveStep(id) if id == plan_step_id(5)));
     }
 
     #[test]
@@ -715,7 +747,7 @@ mod tests {
             EditOp::ReorderStep {
                 step_id,
                 new_phase: 1
-            } if step_id == PlanStepId::new(2)
+            } if step_id == plan_step_id(2)
         ));
     }
 
@@ -729,7 +761,7 @@ mod tests {
         let op = parse_edit_op(&val).unwrap();
         assert!(
             matches!(op, EditOp::UpdateDescription { step_id, description }
-                if step_id == PlanStepId::new(3) && description == "Updated text"
+                if step_id == plan_step_id(3) && description == "Updated text"
             )
         );
     }
@@ -787,9 +819,9 @@ mod tests {
         .unwrap();
 
         editor::activate_next_eligible(&mut plan);
-        let s = editor::resolve_step(&plan, PlanStepId::new(1)).unwrap();
+        let s = editor::resolve_step(&plan, plan_step_id(1)).unwrap();
         assert!(s.is_active());
-        let s2 = editor::resolve_step(&plan, PlanStepId::new(2)).unwrap();
+        let s2 = editor::resolve_step(&plan, plan_step_id(2)).unwrap();
         assert!(s2.is_pending());
     }
 
@@ -811,11 +843,11 @@ mod tests {
         .unwrap();
 
         // Manually activate step 1.
-        editor::activate_step(&mut plan, PlanStepId::new(1)).unwrap();
+        editor::activate_step(&mut plan, plan_step_id(1)).unwrap();
 
         editor::activate_next_eligible(&mut plan);
         // Step 2 should still be Pending (only one active at a time).
-        let s2 = editor::resolve_step(&plan, PlanStepId::new(2)).unwrap();
+        let s2 = editor::resolve_step(&plan, plan_step_id(2)).unwrap();
         assert!(s2.is_pending());
     }
 
@@ -833,7 +865,7 @@ mod tests {
                 name: "Phase 2".to_string(),
                 steps: vec![StepInput {
                     description: "Step B".to_string(),
-                    depends_on: vec![PlanStepId::new(1)],
+                    depends_on: vec![plan_step_id(1)],
                 }],
             },
         ])
@@ -842,9 +874,9 @@ mod tests {
         // Phase 1 not complete yet — Phase 2 steps should not activate.
         editor::activate_next_eligible(&mut plan);
         // Should activate step 1 (Phase 1's eligible step).
-        let s1 = editor::resolve_step(&plan, PlanStepId::new(1)).unwrap();
+        let s1 = editor::resolve_step(&plan, plan_step_id(1)).unwrap();
         assert!(s1.is_active());
-        let s2 = editor::resolve_step(&plan, PlanStepId::new(2)).unwrap();
+        let s2 = editor::resolve_step(&plan, plan_step_id(2)).unwrap();
         assert!(s2.is_pending());
     }
 
@@ -869,11 +901,19 @@ mod tests {
         .unwrap();
 
         // Complete phase 1.
-        editor::activate_step(&mut plan, PlanStepId::new(1)).unwrap();
-        editor::complete_active_step(&mut plan, PlanStepId::new(1), "done".to_string()).unwrap();
+        editor::activate_step(&mut plan, plan_step_id(1)).unwrap();
+        editor::complete_active_step(&mut plan, plan_step_id(1), non_empty("done")).unwrap();
 
         editor::activate_next_eligible(&mut plan);
-        let s2 = editor::resolve_step(&plan, PlanStepId::new(2)).unwrap();
+        let s2 = editor::resolve_step(&plan, plan_step_id(2)).unwrap();
         assert!(s2.is_active());
+    }
+
+    fn non_empty(value: &str) -> NonEmptyString {
+        NonEmptyString::new(value).expect("test fixture must be non-empty")
+    }
+
+    fn plan_step_id(value: u32) -> PlanStepId {
+        PlanStepId::try_new(value).expect("test fixture must use non-zero plan step ids")
     }
 }

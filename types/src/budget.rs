@@ -12,7 +12,7 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CacheHint {
     #[default]
-    Default,
+    Standard,
     /// Content is stable and should be cached if supported.
     ///
     /// Named "Ephemeral" to match Anthropic's API terminology. Despite the name,
@@ -28,6 +28,13 @@ pub enum CacheHint {
 /// makes >4 unrepresentable by construction (IFA §2.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheBudget(u8);
+
+/// Outcome of attempting to consume one cache slot from a budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheBudgetTake {
+    Remaining(CacheBudget),
+    Exhausted,
+}
 
 impl CacheBudget {
     pub const MAX: u8 = 4;
@@ -47,13 +54,13 @@ impl CacheBudget {
         self.0
     }
 
-    /// Consume one slot. Returns the decremented budget, or `None` if exhausted.
+    /// Consume one slot with an explicit outcome.
     #[must_use]
-    pub fn take_one(self) -> Option<CacheBudget> {
+    pub fn take_one(self) -> CacheBudgetTake {
         if self.0 > 0 {
-            Some(Self(self.0 - 1))
+            CacheBudgetTake::Remaining(Self(self.0 - 1))
         } else {
-            None
+            CacheBudgetTake::Exhausted
         }
     }
 }

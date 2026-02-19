@@ -9,25 +9,66 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::NonEmptyString;
+
 // ── Identifiers ──────────────────────────────────────────────
 
 /// Unique identifier for a step within a plan.
 ///
 /// Named `PlanStepId` to avoid collision with `context::StepId` (stream
 /// recovery). Plan-scoped, monotonically assigned at construction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct PlanStepId(u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("plan step id must be a non-zero 32-bit integer")]
+pub struct PlanStepIdError;
+
 impl PlanStepId {
-    #[must_use]
-    pub const fn new(value: u32) -> Self {
+    pub fn try_new(value: u32) -> Result<Self, PlanStepIdError> {
+        if value == 0 {
+            Err(PlanStepIdError)
+        } else {
+            Ok(Self(value))
+        }
+    }
+
+    pub(crate) fn new_unchecked(value: u32) -> Self {
+        assert!(value > 0, "PlanStepId::new_unchecked requires value > 0");
         Self(value)
     }
 
     #[must_use]
     pub const fn value(self) -> u32 {
         self.0
+    }
+}
+
+impl TryFrom<u32> for PlanStepId {
+    type Error = PlanStepIdError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl TryFrom<u64> for PlanStepId {
+    type Error = PlanStepIdError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        let narrowed = u32::try_from(value).map_err(|_err| PlanStepIdError)?;
+        Self::try_new(narrowed)
+    }
+}
+
+impl<'de> Deserialize<'de> for PlanStepId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = u32::deserialize(deserializer)?;
+        Self::try_new(raw).map_err(serde::de::Error::custom)
     }
 }
 
@@ -41,13 +82,13 @@ impl fmt::Display for PlanStepId {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StepData {
-    pub id: PlanStepId,
-    pub description: String,
-    pub depends_on: Vec<PlanStepId>,
+    id: PlanStepId,
+    description: String,
+    depends_on: Vec<PlanStepId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingStep(pub StepData);
+pub struct PendingStep(StepData);
 
 impl PendingStep {
     #[must_use]
@@ -57,11 +98,11 @@ impl PendingStep {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ActiveStep(pub StepData);
+pub struct ActiveStep(StepData);
 
 impl ActiveStep {
     #[must_use]
-    pub fn complete(self, outcome: String) -> CompletedStep {
+    pub fn complete(self, outcome: NonEmptyString) -> CompletedStep {
         CompletedStep {
             data: self.0,
             outcome,
@@ -69,7 +110,7 @@ impl ActiveStep {
     }
 
     #[must_use]
-    pub fn fail(self, reason: String) -> FailedStep {
+    pub fn fail(self, reason: NonEmptyString) -> FailedStep {
         FailedStep {
             data: self.0,
             reason,
@@ -77,7 +118,7 @@ impl ActiveStep {
     }
 
     #[must_use]
-    pub fn skip(self, reason: String) -> SkippedStep {
+    pub fn skip(self, reason: NonEmptyString) -> SkippedStep {
         SkippedStep {
             data: self.0,
             reason,
@@ -87,20 +128,20 @@ impl ActiveStep {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompletedStep {
-    pub data: StepData,
-    pub outcome: String,
+    data: StepData,
+    outcome: NonEmptyString,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FailedStep {
-    pub data: StepData,
-    pub reason: String,
+    data: StepData,
+    reason: NonEmptyString,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkippedStep {
-    pub data: StepData,
-    pub reason: String,
+    data: StepData,
+    reason: NonEmptyString,
 }
 
 // ── Transition errors ────────────────────────────────────────
@@ -179,11 +220,18 @@ impl<'de> Deserialize<'de> for PlanStep {
                 Ok(match l.status {
                     LegacyStatus::Pending => Self::Pending(PendingStep(data)),
                     LegacyStatus::Active => Self::Active(ActiveStep(data)),
-                    LegacyStatus::Complete(outcome) => {
-                        Self::Complete(CompletedStep { data, outcome })
-                    }
-                    LegacyStatus::Failed(reason) => Self::Failed(FailedStep { data, reason }),
-                    LegacyStatus::Skipped(reason) => Self::Skipped(SkippedStep { data, reason }),
+                    LegacyStatus::Complete(outcome) => Self::Complete(CompletedStep {
+                        data,
+                        outcome: NonEmptyString::new(outcome).map_err(serde::de::Error::custom)?,
+                    }),
+                    LegacyStatus::Failed(reason) => Self::Failed(FailedStep {
+                        data,
+                        reason: NonEmptyString::new(reason).map_err(serde::de::Error::custom)?,
+                    }),
+                    LegacyStatus::Skipped(reason) => Self::Skipped(SkippedStep {
+                        data,
+                        reason: NonEmptyString::new(reason).map_err(serde::de::Error::custom)?,
+                    }),
                 })
             }
         }
@@ -290,7 +338,10 @@ impl PlanStep {
         }
     }
 
-    pub fn try_complete(self, outcome: String) -> Result<Self, (Self, PlanTransitionError)> {
+    pub fn try_complete(
+        self,
+        outcome: NonEmptyString,
+    ) -> Result<Self, (Self, PlanTransitionError)> {
         match self {
             Self::Active(s) => Ok(Self::Complete(s.complete(outcome))),
             other => {
@@ -306,7 +357,7 @@ impl PlanStep {
         }
     }
 
-    pub fn try_fail(self, reason: String) -> Result<Self, (Self, PlanTransitionError)> {
+    pub fn try_fail(self, reason: NonEmptyString) -> Result<Self, (Self, PlanTransitionError)> {
         match self {
             Self::Active(s) => Ok(Self::Failed(s.fail(reason))),
             other => {
@@ -322,7 +373,7 @@ impl PlanStep {
         }
     }
 
-    pub fn try_skip(self, reason: String) -> Result<Self, (Self, PlanTransitionError)> {
+    pub fn try_skip(self, reason: NonEmptyString) -> Result<Self, (Self, PlanTransitionError)> {
         match self {
             Self::Active(s) => Ok(Self::Skipped(s.skip(reason))),
             other => {
@@ -343,11 +394,21 @@ impl PlanStep {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Phase {
-    pub name: String,
-    pub steps: Vec<PlanStep>,
+    name: String,
+    steps: Vec<PlanStep>,
 }
 
 impl Phase {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn steps(&self) -> &[PlanStep] {
+        &self.steps
+    }
+
     /// Whether all steps in this phase are satisfied (Complete or Skipped).
     #[must_use]
     pub fn is_complete(&self) -> bool {
@@ -467,7 +528,7 @@ impl Plan {
                     .steps
                     .into_iter()
                     .map(|si| {
-                        let id = PlanStepId::new(next_id);
+                        let id = PlanStepId::new_unchecked(next_id);
                         next_id += 1;
                         PlanStep::Pending(PendingStep(StepData {
                             id,
@@ -705,9 +766,9 @@ impl Plan {
                 let (icon, suffix) = match step {
                     PlanStep::Pending(_) => ("  ", String::new()),
                     PlanStep::Active(_) => ("→ ", String::new()),
-                    PlanStep::Complete(s) => ("✓ ", format!(" — {}", s.outcome)),
-                    PlanStep::Failed(s) => ("✗ ", format!(" — FAILED: {}", s.reason)),
-                    PlanStep::Skipped(s) => ("⊘ ", format!(" — skipped: {}", s.reason)),
+                    PlanStep::Complete(s) => ("✓ ", format!(" — {}", s.outcome.as_str())),
+                    PlanStep::Failed(s) => ("✗ ", format!(" — FAILED: {}", s.reason.as_str())),
+                    PlanStep::Skipped(s) => ("⊘ ", format!(" — skipped: {}", s.reason.as_str())),
                 };
                 out.push_str(&format!(
                     "  {icon}{}. {}{}\n",
@@ -825,8 +886,8 @@ pub enum EditValidationError {
 
 pub mod editor {
     use super::{
-        ActiveStepQuery, EditOp, EditValidationError, HashSet, PendingStep, Phase, Plan, PlanStep,
-        PlanStepId, PlanTransitionError, PlanValidationError, StepData,
+        ActiveStepQuery, EditOp, EditValidationError, HashSet, NonEmptyString, PendingStep, Phase,
+        Plan, PlanStep, PlanStepId, PlanTransitionError, PlanValidationError, StepData,
     };
     use thiserror::Error;
 
@@ -915,7 +976,7 @@ pub mod editor {
     pub fn complete_active_step(
         plan: &mut Plan,
         step_id: PlanStepId,
-        outcome: String,
+        outcome: NonEmptyString,
     ) -> Result<(), StepTransitionError> {
         let step = resolve_step(plan, step_id).map_err(|_| not_found(step_id))?;
         if !step.is_active() {
@@ -927,7 +988,7 @@ pub mod editor {
     pub fn skip_active_step(
         plan: &mut Plan,
         step_id: PlanStepId,
-        reason: String,
+        reason: NonEmptyString,
     ) -> Result<(), StepTransitionError> {
         let step = resolve_step(plan, step_id).map_err(|_| not_found(step_id))?;
         if !step.is_active() {
@@ -939,7 +1000,7 @@ pub mod editor {
     pub fn fail_active_step(
         plan: &mut Plan,
         step_id: PlanStepId,
-        reason: String,
+        reason: NonEmptyString,
     ) -> Result<(), StepTransitionError> {
         let step = resolve_step(plan, step_id).map_err(|_| not_found(step_id))?;
         if !step.is_active() {
@@ -1042,8 +1103,8 @@ pub mod editor {
                     .steps
                     .into_iter()
                     .map(|si| {
-                        let id = PlanStepId::new(next_id.value());
-                        next_id = PlanStepId::new(next_id.value() + 1);
+                        let id = PlanStepId::new_unchecked(next_id.value());
+                        next_id = PlanStepId::new_unchecked(next_id.value() + 1);
                         PlanStep::Pending(PendingStep(StepData {
                             id,
                             description: si.description,
@@ -1102,7 +1163,7 @@ pub mod editor {
             .map(|s| s.id().value())
             .max()
             .unwrap_or(0);
-        PlanStepId::new(max + 1)
+        PlanStepId::new_unchecked(max + 1)
     }
 }
 
@@ -1112,6 +1173,15 @@ mod tests {
         CompletionStatus, EditOp, PhaseEligibility, PhaseInput, Plan, PlanStepId,
         PlanValidationError, StepInput, editor,
     };
+    use crate::NonEmptyString;
+
+    fn non_empty(value: &str) -> NonEmptyString {
+        NonEmptyString::new(value).expect("test fixture must be non-empty")
+    }
+
+    fn step_id(value: u32) -> PlanStepId {
+        PlanStepId::try_new(value).expect("test fixture must use non-zero plan step ids")
+    }
 
     fn simple_input() -> Vec<PhaseInput> {
         vec![
@@ -1133,7 +1203,7 @@ mod tests {
                 steps: vec![
                     StepInput {
                         description: "Replace hardcoded paths".to_owned(),
-                        depends_on: vec![PlanStepId::new(1)],
+                        depends_on: vec![step_id(1)],
                     },
                     StepInput {
                         description: "Add helper function".to_owned(),
@@ -1157,6 +1227,17 @@ mod tests {
     }
 
     #[test]
+    fn plan_step_id_rejects_zero() {
+        assert!(PlanStepId::try_new(0).is_err());
+    }
+
+    #[test]
+    fn plan_step_id_deserialize_rejects_zero() {
+        let parsed: Result<PlanStepId, _> = serde_json::from_str("0");
+        assert!(parsed.is_err());
+    }
+
+    #[test]
     fn from_input_rejects_empty_plan() {
         let err = Plan::from_input(vec![]).unwrap_err();
         assert!(matches!(err, PlanValidationError::EmptyPlan));
@@ -1169,7 +1250,7 @@ mod tests {
         step = step.try_activate().unwrap();
         assert!(step.is_active());
 
-        step = step.try_complete("done".to_owned()).unwrap();
+        step = step.try_complete(non_empty("done")).unwrap();
         assert!(step.is_terminal());
     }
 
@@ -1177,7 +1258,7 @@ mod tests {
     fn invalid_transition_pending_to_complete() {
         let plan = Plan::from_input(simple_input()).unwrap();
         let step = plan.phases()[0].steps[0].clone();
-        let err = step.try_complete("done".to_owned()).unwrap_err();
+        let err = step.try_complete(non_empty("done")).unwrap_err();
         assert_eq!(err.1.from, "Pending");
     }
 
@@ -1197,7 +1278,7 @@ mod tests {
             for step in &mut phase.steps {
                 let s = step.clone();
                 let active = s.try_activate().unwrap();
-                *step = active.try_complete("done".to_owned()).unwrap();
+                *step = active.try_complete(non_empty("done")).unwrap();
             }
         }
         assert!(matches!(plan.try_complete(), CompletionStatus::Complete(_)));
@@ -1218,7 +1299,7 @@ mod tests {
         for step in &mut plan.phases[0].steps {
             let s = step.clone();
             let active = s.try_activate().unwrap();
-            *step = active.try_complete("done".to_owned()).unwrap();
+            *step = active.try_complete(non_empty("done")).unwrap();
         }
         assert!(matches!(
             plan.eligible_phase_index(),
@@ -1267,7 +1348,7 @@ mod tests {
         let json = r#"{"id":1,"description":"Do something","status":"Pending","depends_on":[]}"#;
         let step: super::PlanStep = serde_json::from_str(json).unwrap();
         assert!(step.is_pending());
-        assert_eq!(step.id(), PlanStepId::new(1));
+        assert_eq!(step.id(), step_id(1));
         assert_eq!(step.description(), "Do something");
     }
 
@@ -1276,7 +1357,7 @@ mod tests {
         let json = r#"{"id":2,"description":"In progress","status":"Active","depends_on":[1]}"#;
         let step: super::PlanStep = serde_json::from_str(json).unwrap();
         assert!(step.is_active());
-        assert_eq!(step.depends_on(), &[PlanStepId::new(1)]);
+        assert_eq!(step.depends_on(), &[step_id(1)]);
     }
 
     #[test]

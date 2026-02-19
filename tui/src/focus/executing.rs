@@ -15,7 +15,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, palette: &Palette) {
     };
 
     // Flatten steps for linear carousel
-    let steps: Vec<&PlanStep> = plan.phases().iter().flat_map(|p| &p.steps).collect();
+    let steps: Vec<&PlanStep> = plan.phases().iter().flat_map(|p| p.steps()).collect();
 
     if steps.is_empty() {
         return;

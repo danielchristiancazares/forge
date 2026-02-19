@@ -43,7 +43,8 @@ mod sanitize;
 mod text;
 
 pub use budget::{
-    CacheBudget, CacheHint, OutputLimits, OutputLimitsError, ThinkingBudget, ThinkingState,
+    CacheBudget, CacheBudgetTake, CacheHint, OutputLimits, OutputLimitsError, ThinkingBudget,
+    ThinkingState,
 };
 pub use confusables::{HomoglyphWarning, MixedScriptDetection, detect_mixed_script};
 pub use message::{AssistantMessage, Message, SystemMessage, ThinkingMessage, UserMessage};
@@ -52,7 +53,7 @@ pub use model::{
 };
 pub use plan::{
     CompletedPlan, EditOp, EditValidationError, Phase, PhaseInput, Plan, PlanState, PlanStep,
-    PlanStepId, PlanTransitionError, PlanValidationError, StepInput,
+    PlanStepId, PlanStepIdError, PlanTransitionError, PlanValidationError, StepInput,
 };
 pub use proofs::{EmptyStringError, NonEmptyStaticStr, NonEmptyString, PersistableContent};
 pub use sanitize::{
@@ -870,7 +871,7 @@ impl CacheableMessage {
 
     #[must_use]
     pub fn plain(message: Message) -> Self {
-        Self::new(message, CacheHint::Default)
+        Self::new(message, CacheHint::Standard)
     }
 
     #[must_use]
@@ -884,13 +885,13 @@ mod tests {
     use std::time::SystemTime;
 
     use super::{
-        ApiKey, ApiUsage, CacheBudget, CacheHint, CacheableMessage, ENV_CREDENTIAL_PATTERNS,
-        ENV_INJECTION_PATTERNS, ENV_SECRET_DENYLIST, InternalModel, Message, NonEmptyStaticStr,
-        NonEmptyString, OpenAIReasoningEffort, OpenAIReasoningItem, OpenAIReasoningSummary,
-        OpenAIReasoningSummaryPart, OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation,
-        OutputLimits, OutputLimitsError, PersistableContent, Provider, StreamFinishReason,
-        ThinkingBudget, ThinkingMessage, ThinkingReplayState, ThinkingState, ThoughtSignature,
-        ToolCall, ToolResult,
+        ApiKey, ApiUsage, CacheBudget, CacheBudgetTake, CacheHint, CacheableMessage,
+        ENV_CREDENTIAL_PATTERNS, ENV_INJECTION_PATTERNS, ENV_SECRET_DENYLIST, InternalModel,
+        Message, NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort, OpenAIReasoningItem,
+        OpenAIReasoningSummary, OpenAIReasoningSummaryPart, OpenAIRequestOptions,
+        OpenAITextVerbosity, OpenAITruncation, OutputLimits, OutputLimitsError, PersistableContent,
+        Provider, StreamFinishReason, ThinkingBudget, ThinkingMessage, ThinkingReplayState,
+        ThinkingState, ThoughtSignature, ToolCall, ToolResult,
     };
 
     #[test]
@@ -1164,14 +1165,14 @@ mod tests {
     #[test]
     fn cache_hint_default_is_default() {
         let hint = CacheHint::default();
-        assert_eq!(hint, CacheHint::Default);
+        assert_eq!(hint, CacheHint::Standard);
     }
 
     #[test]
     fn cacheable_message_plain_has_no_hint() {
         let msg = Message::try_user("test", SystemTime::now()).unwrap();
         let cacheable = CacheableMessage::plain(msg);
-        assert_eq!(cacheable.cache_hint, CacheHint::Default);
+        assert_eq!(cacheable.cache_hint, CacheHint::Standard);
     }
 
     #[test]
@@ -1573,23 +1574,33 @@ mod tests {
     fn cache_budget_take_one_decrements() {
         let b = CacheBudget::full();
         assert_eq!(b.remaining(), 4);
-        let b = b.take_one().unwrap();
+        let CacheBudgetTake::Remaining(b) = b.take_one() else {
+            panic!("expected remaining budget");
+        };
         assert_eq!(b.remaining(), 3);
-        let b = b.take_one().unwrap();
+        let CacheBudgetTake::Remaining(b) = b.take_one() else {
+            panic!("expected remaining budget");
+        };
         assert_eq!(b.remaining(), 2);
-        let b = b.take_one().unwrap();
+        let CacheBudgetTake::Remaining(b) = b.take_one() else {
+            panic!("expected remaining budget");
+        };
         assert_eq!(b.remaining(), 1);
-        let b = b.take_one().unwrap();
+        let CacheBudgetTake::Remaining(b) = b.take_one() else {
+            panic!("expected remaining budget");
+        };
         assert_eq!(b.remaining(), 0);
     }
 
     #[test]
-    fn cache_budget_exhausted_returns_none() {
+    fn cache_budget_exhausted_returns_explicit_outcome() {
         let b = CacheBudget::new(0);
-        assert!(b.take_one().is_none());
+        assert!(matches!(b.take_one(), CacheBudgetTake::Exhausted));
 
-        let b = CacheBudget::new(1).take_one().unwrap();
-        assert!(b.take_one().is_none());
+        let CacheBudgetTake::Remaining(b) = CacheBudget::new(1).take_one() else {
+            panic!("expected remaining budget");
+        };
+        assert!(matches!(b.take_one(), CacheBudgetTake::Exhausted));
     }
 
     #[test]

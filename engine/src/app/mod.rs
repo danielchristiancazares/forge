@@ -1549,7 +1549,7 @@ impl App {
         match &self.core.plan_state {
             PlanState::Active(plan) => {
                 if let forge_types::plan::ActiveStepQuery::Active(active) = plan.active_step() {
-                    let phase_name = &plan.phases()[active.phase_index()].name;
+                    let phase_name = plan.phases()[active.phase_index()].name();
                     Some(format!(
                         "Plan: {phase_name} — {}",
                         active.step().description()

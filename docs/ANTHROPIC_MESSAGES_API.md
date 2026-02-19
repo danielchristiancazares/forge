@@ -541,7 +541,7 @@ In `providers/src/lib.rs`, cache hints are applied via `CacheHint`:
 ```rust
 fn content_block(text: &str, cache_hint: CacheHint) -> serde_json::Value {
     match cache_hint {
-        CacheHint::Default => json!({"type": "text", "text": text}),
+        CacheHint::Standard => json!({"type": "text", "text": text}),
         CacheHint::Ephemeral => json!({
             "type": "text",
             "text": text,

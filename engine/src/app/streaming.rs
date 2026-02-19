@@ -39,7 +39,7 @@ fn tool_args_journal_flush_interval() -> Duration {
 }
 
 use forge_context::{BeginSessionError, TokenCounter};
-use forge_types::{CacheBudget, CacheHint, ModelName, Provider, ToolDefinition};
+use forge_types::{CacheBudget, CacheBudgetTake, CacheHint, ModelName, Provider, ToolDefinition};
 
 use super::{
     ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError,
@@ -173,14 +173,14 @@ fn plan_cache_allocation(
     let mut cache_tools = false;
 
     if system_tokens >= MIN_CACHEABLE_TOKENS
-        && let Some(b) = budget.take_one()
+        && let CacheBudgetTake::Remaining(b) = budget.take_one()
     {
         budget = b;
         cache_system = true;
     }
 
     if tool_tokens >= MIN_CACHEABLE_TOKENS
-        && let Some(b) = budget.take_one()
+        && let CacheBudgetTake::Remaining(b) = budget.take_one()
     {
         budget = b;
         cache_tools = true;
@@ -433,7 +433,7 @@ impl super::App {
             let sys_hint = if plan.cache_system {
                 CacheHint::Ephemeral
             } else {
-                CacheHint::Default
+                CacheHint::Standard
             };
 
             (msgs, sys_hint, plan.cache_tools)
@@ -442,7 +442,7 @@ impl super::App {
                 .into_iter()
                 .map(CacheableMessage::plain)
                 .collect();
-            (msgs, CacheHint::Default, false)
+            (msgs, CacheHint::Standard, false)
         };
 
         // Inject any pending system notifications as an assistant message
