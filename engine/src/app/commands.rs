@@ -299,6 +299,16 @@ pub(crate) enum ExportDestination<'a> {
     ExplicitPath(&'a str),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContextUsageCondition {
+    Ready,
+    NeedsCompaction,
+    RecentMessagesTooLarge {
+        required_tokens: u32,
+        budget_tokens: u32,
+    },
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ParseIssue<'a> {
     BlankInput,
@@ -633,14 +643,22 @@ impl super::App {
             }
             Command::Context => {
                 let usage_status = self.context_usage_status();
-                let (usage, needs_compaction, recent_too_large) = match &usage_status {
-                    ContextUsageStatus::Ready(usage) => (usage, false, None),
-                    ContextUsageStatus::NeedsCompaction { usage } => (usage, true, None),
+                let (usage, condition) = match &usage_status {
+                    ContextUsageStatus::Ready(usage) => (usage, ContextUsageCondition::Ready),
+                    ContextUsageStatus::NeedsCompaction { usage } => {
+                        (usage, ContextUsageCondition::NeedsCompaction)
+                    }
                     ContextUsageStatus::RecentMessagesTooLarge {
                         usage,
                         required_tokens,
                         budget_tokens,
-                    } => (usage, false, Some((*required_tokens, *budget_tokens))),
+                    } => (
+                        usage,
+                        ContextUsageCondition::RecentMessagesTooLarge {
+                            required_tokens: *required_tokens,
+                            budget_tokens: *budget_tokens,
+                        },
+                    ),
                 };
                 let format_k = |n: u32| -> String {
                     if n >= 1_000_000 {
@@ -659,12 +677,15 @@ impl super::App {
                 let memory_flag = if self.memory_enabled() { "on" } else { "off" };
                 let pct = usage.percentage();
                 let remaining = (100.0_f32 - pct).clamp(0.0, 100.0);
-                let status_suffix = if let Some((required, budget)) = recent_too_large {
-                    format!(" │ ERROR: recent msgs ({required} tokens) > budget ({budget} tokens)")
-                } else if needs_compaction {
-                    " │ Compaction needed".to_string()
-                } else {
-                    String::new()
+                let status_suffix = match condition {
+                    ContextUsageCondition::RecentMessagesTooLarge {
+                        required_tokens,
+                        budget_tokens,
+                    } => format!(
+                        " │ ERROR: recent msgs ({required_tokens} tokens) > budget ({budget_tokens} tokens)"
+                    ),
+                    ContextUsageCondition::NeedsCompaction => " │ Compaction needed".to_string(),
+                    ContextUsageCondition::Ready => String::new(),
                 };
                 self.push_notification(format!(
                     "Memory: {} │ Context: {remaining:.0}% left │ Used: {} │ Budget(effective): {} │ Window(raw): {} │ Output(reserved): {} │ Model: {} │ Limits: {}{}",
