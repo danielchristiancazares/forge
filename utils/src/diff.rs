@@ -75,7 +75,10 @@ pub fn format_unified_diff_width(
                             out.push_str(&gap_marker);
                         }
                     }
-                    let line_no = change.old_index().unwrap_or(0) + 1;
+                    let line_no = change
+                        .old_index()
+                        .expect("Equal change always has old_index")
+                        + 1;
                     write!(out, "{line_no:>line_num_width$}  ").unwrap();
                     out.push_str(change.value().trim_end_matches('\n'));
                     out.push('\n');
@@ -89,7 +92,10 @@ pub fn format_unified_diff_width(
                         out.push_str(&gap_marker);
                     }
                 }
-                let line_no = change.old_index().unwrap_or(0) + 1;
+                let line_no = change
+                    .old_index()
+                    .expect("Delete change always has old_index")
+                    + 1;
                 write!(out, "{line_no:>line_num_width$} -").unwrap();
                 out.push_str(change.value().trim_end_matches('\n'));
                 out.push('\n');
@@ -102,7 +108,10 @@ pub fn format_unified_diff_width(
                         out.push_str(&gap_marker);
                     }
                 }
-                let line_no = change.new_index().unwrap_or(0) + 1;
+                let line_no = change
+                    .new_index()
+                    .expect("Insert change always has new_index")
+                    + 1;
                 write!(out, "{line_no:>line_num_width$} +").unwrap();
                 out.push_str(change.value().trim_end_matches('\n'));
                 out.push('\n');

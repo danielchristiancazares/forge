@@ -3223,7 +3223,6 @@ impl App {
         }
     }
 
-    /// Update the file select filter and refresh filtered results.
     pub fn file_select_update_filter(&mut self) {
         let filter = self.ui.input.file_select_filter().unwrap_or("").to_string();
         self.ui.file_picker.update_filter(&filter);

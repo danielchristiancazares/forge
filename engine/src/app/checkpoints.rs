@@ -541,8 +541,6 @@ fn format_bytes(bytes: usize) -> String {
     }
 }
 
-// App integration (tool-loop checkpointing + /rewind command helpers)
-
 impl crate::App {
     /// Create an automatic conversation-only checkpoint at the start of a user turn.
     ///

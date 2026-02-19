@@ -378,18 +378,18 @@ impl App {
             }
         };
 
-        let justification = call
+        let Some(_justification) = call
             .arguments
             .get("justification")
             .and_then(Value::as_str)
-            .unwrap_or("");
-        if justification.is_empty() {
+            .filter(|s| !s.is_empty())
+        else {
             return PlanCallResult::Resolved(ToolResult::error(
                 &call.id,
                 PLAN_TOOL_NAME,
                 "'edit' requires a non-empty 'justification'.",
             ));
-        }
+        };
 
         let edit_op_val = match call.arguments.get("edit_op") {
             Some(v) => v,
@@ -590,16 +590,15 @@ fn parse_step_id_and_text(
         .arguments
         .get(text_field)
         .and_then(Value::as_str)
-        .unwrap_or("")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            ToolResult::error(
+                &call.id,
+                PLAN_TOOL_NAME,
+                format!("'{text_field}' is required and must be non-empty."),
+            )
+        })?
         .to_string();
-
-    if text.is_empty() {
-        return Err(ToolResult::error(
-            &call.id,
-            PLAN_TOOL_NAME,
-            format!("'{text_field}' is required and must be non-empty."),
-        ));
-    }
 
     Ok((step_id, text))
 }
