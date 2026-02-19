@@ -1176,6 +1176,21 @@ mod tests {
     }
 
     #[test]
+    fn input_state_into_command_state_inactive() {
+        let state = InputState::Normal(DraftInput {
+            text: "draft".to_string(),
+            cursor: 5,
+        });
+        match state.into_command_state() {
+            CommandStateOwned::Active { .. } => panic!("expected inactive command state"),
+            CommandStateOwned::Inactive(restored) => {
+                assert!(matches!(restored.mode(), InputMode::Normal));
+                assert_eq!(restored.draft().text(), "draft");
+            }
+        }
+    }
+
+    #[test]
     fn input_mode_default() {
         let mode = InputMode::default();
         assert_eq!(mode, InputMode::Normal);
