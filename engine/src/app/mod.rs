@@ -107,6 +107,16 @@ pub enum FileDiff {
     Error(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandInputAccess<'a> {
+    Active {
+        text: &'a str,
+        cursor: usize,
+        cursor_byte_index: usize,
+    },
+    Inactive,
+}
+
 /// Aggregated API usage for a user turn (may include multiple API calls).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TurnUsage {
@@ -3427,6 +3437,17 @@ impl App {
 
     pub fn draft_cursor_byte_index(&self) -> usize {
         self.ui.input.draft().byte_index()
+    }
+
+    pub fn command_input_access(&self) -> CommandInputAccess<'_> {
+        match &self.ui.input {
+            InputState::Command { command, .. } => CommandInputAccess::Active {
+                text: command.text(),
+                cursor: command.cursor(),
+                cursor_byte_index: command.byte_index(),
+            },
+            _ => CommandInputAccess::Inactive,
+        }
     }
 
     pub fn command_text(&self) -> Option<&str> {

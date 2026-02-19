@@ -40,7 +40,7 @@ mod app;
 
 // Public app facade.
 pub use app::{
-    App, AppearanceEditorSnapshot, CommandMode, CommandModeAccess, CommandSpec,
+    App, AppearanceEditorSnapshot, CommandInputAccess, CommandMode, CommandModeAccess, CommandSpec,
     ContextEditorSnapshot, DEFAULT_STREAM_EVENT_BUDGET, EnteredCommand, FileDiff, InsertMode,
     InsertModeAccess, ModelEditorSnapshot, QueueMessageResult, QueuedUserMessage, ResolveCascade,
     ResolveLayerValue, ResolveSetting, RuntimeSnapshot, StreamingMessage, SystemPrompts,

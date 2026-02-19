@@ -953,10 +953,14 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
     let options = app.ui_options();
     // Clone command text to avoid borrow conflict with mutable context_usage_status()
     let (command_line, command_cursor_byte_index) = if mode == InputMode::Command {
-        (
-            app.command_text().map(str::to_string),
-            app.command_cursor_byte_index(),
-        )
+        match app.command_input_access() {
+            forge_engine::CommandInputAccess::Active {
+                text,
+                cursor_byte_index,
+                ..
+            } => (Some(text.to_string()), Some(cursor_byte_index)),
+            forge_engine::CommandInputAccess::Inactive => (None, None),
+        }
     } else {
         (None, None)
     };
@@ -1336,7 +1340,10 @@ fn draw_command_palette(frame: &mut Frame, app: &App, palette: &Palette) {
 
     frame.render_widget(Clear, palette_area);
 
-    let filter_raw = app.command_text().unwrap_or("").trim();
+    let filter_raw = match app.command_input_access() {
+        forge_engine::CommandInputAccess::Active { text, .. } => text.trim(),
+        forge_engine::CommandInputAccess::Inactive => "",
+    };
     let filter = filter_raw.trim_start_matches('/').to_ascii_lowercase();
 
     let commands = command_specs();

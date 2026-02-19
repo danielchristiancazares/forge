@@ -737,15 +737,19 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
             app.navigate_command_history_down();
         }
         // Backspace: exit command mode if empty, otherwise delete char
-        KeyCode::Backspace => {
-            if app.command_text().is_some_and(str::is_empty) {
+        KeyCode::Backspace => match app.command_input_access() {
+            forge_engine::CommandInputAccess::Active { text: "", .. } => {
                 app.enter_normal_mode();
-            } else if let forge_engine::CommandModeAccess::InCommand(mut command_mode) =
-                app.command_mode_mut()
-            {
-                command_mode.backspace();
             }
-        }
+            forge_engine::CommandInputAccess::Active { .. } => {
+                if let forge_engine::CommandModeAccess::InCommand(mut command_mode) =
+                    app.command_mode_mut()
+                {
+                    command_mode.backspace();
+                }
+            }
+            forge_engine::CommandInputAccess::Inactive => {}
+        },
         _ => {
             let forge_engine::CommandModeAccess::InCommand(mut command_mode) =
                 app.command_mode_mut()

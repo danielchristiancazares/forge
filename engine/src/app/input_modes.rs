@@ -337,14 +337,14 @@ impl CommandMode<'_> {
     /// - Model argument for `/model` (current provider)
     /// - Rewind targets/scopes for `/rewind`
     pub fn tab_complete(&mut self) {
-        let Some(line) = self.app.command_text().map(str::to_owned) else {
-            return;
+        let (line, cursor_byte) = match self.app.command_input_access() {
+            super::CommandInputAccess::Active {
+                text,
+                cursor_byte_index,
+                ..
+            } => (text.to_owned(), cursor_byte_index.min(text.len())),
+            super::CommandInputAccess::Inactive => return,
         };
-        let cursor_byte = self
-            .app
-            .command_cursor_byte_index()
-            .unwrap_or(line.len())
-            .min(line.len());
 
         let insert = match compute_command_tab_completion(self.app, &line, cursor_byte) {
             CommandCompletion::Available(insert) => insert,
