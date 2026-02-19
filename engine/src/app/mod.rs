@@ -1436,6 +1436,14 @@ impl App {
         }
     }
 
+    #[inline]
+    fn plan_approval_state(&self) -> Option<&state::PlanApprovalState> {
+        match &self.core.state {
+            OperationState::PlanApproval(state) => Some(state),
+            _ => None,
+        }
+    }
+
     // Tool loop public accessors
 
     pub fn tool_loop_calls(&self) -> Option<&[ToolCall]> {
@@ -1502,19 +1510,14 @@ impl App {
     // Plan approval accessors
 
     pub fn plan_approval_kind(&self) -> Option<&'static str> {
-        match &self.core.state {
-            OperationState::PlanApproval(state) => match &state.kind {
-                state::PlanApprovalKind::Create => Some("create"),
-                state::PlanApprovalKind::Edit { .. } => Some("edit"),
-            },
-            _ => None,
+        match &self.plan_approval_state()?.kind {
+            state::PlanApprovalKind::Create => Some("create"),
+            state::PlanApprovalKind::Edit { .. } => Some("edit"),
         }
     }
 
     pub fn plan_approval_rendered(&self) -> Option<String> {
-        if !matches!(self.core.state, OperationState::PlanApproval(_)) {
-            return None;
-        }
+        self.plan_approval_state()?;
         self.core.plan_state.plan().map(forge_types::Plan::render)
     }
 
