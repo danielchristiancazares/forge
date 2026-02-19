@@ -678,11 +678,14 @@ fn parse_file_reference_path(text: &str, start: usize) -> (ParsedReference, usiz
         return (ParsedReference::Missing, start);
     }
 
-    match text[start..].chars().next() {
-        Some('"') => parse_quoted_file_reference(text, start),
-        Some(ch) if ch.is_whitespace() => (ParsedReference::Missing, start),
-        Some(_) => parse_unquoted_file_reference(text, start),
-        None => (ParsedReference::Missing, start),
+    let first = text[start..]
+        .chars()
+        .next()
+        .expect("start < text.len() guarantees at least one char");
+    match first {
+        '"' => parse_quoted_file_reference(text, start),
+        ch if ch.is_whitespace() => (ParsedReference::Missing, start),
+        _ => parse_unquoted_file_reference(text, start),
     }
 }
 

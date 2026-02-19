@@ -9,12 +9,13 @@ use serde_json::json;
 
 const API_URL: &str = crate::CLAUDE_MESSAGES_API_URL;
 
-fn is_opus_4_6_model(model: &str) -> bool {
-    model.to_ascii_lowercase().starts_with("claude-opus-4-6")
+fn is_4_6_model(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    lower.starts_with("claude-opus-4-6") || lower.starts_with("claude-sonnet-4-6")
 }
 
 fn anthropic_beta_header(model: &str, limits: OutputLimits) -> Option<&'static str> {
-    if is_opus_4_6_model(model) {
+    if is_4_6_model(model) {
         // NOTE: Server-side compaction (compact-2026-01-12) is intentionally NOT
         // enabled here. Forge maintains its own client-side conversation history
         // and does not reconcile it after server compaction, causing an infinite
@@ -183,7 +184,7 @@ fn build_request_body(input: ClaudeRequestBodyInput<'_>) -> serde_json::Value {
         &mut api_messages,
     );
 
-    if is_opus_4_6_model(model)
+    if is_4_6_model(model)
         && matches!(
             api_messages.last(),
             Some(last) if last
@@ -194,7 +195,7 @@ fn build_request_body(input: ClaudeRequestBodyInput<'_>) -> serde_json::Value {
     {
         api_messages.pop();
         tracing::warn!(
-            "Dropped trailing assistant prefill for Opus 4.6 compatibility (Anthropic no longer accepts assistant-prefilled final turns)"
+            "Dropped trailing assistant prefill for Claude 4.6 compatibility (Anthropic no longer accepts assistant-prefilled final turns)"
         );
     }
 
@@ -228,8 +229,8 @@ fn build_request_body(input: ClaudeRequestBodyInput<'_>) -> serde_json::Value {
         body.insert("tools".into(), json!(tool_schemas));
     }
 
-    // Opus 4.6 thinking mode and effort are configurable via [anthropic] config.
-    if is_opus_4_6_model(model) {
+    // Claude 4.6 thinking mode and effort are configurable via [anthropic] config.
+    if is_4_6_model(model) {
         let mut thinking_obj = json!({"type": thinking_mode});
         // When mode is "enabled", also emit budget_tokens from OutputLimits
         if thinking_mode == "enabled"
@@ -783,6 +784,15 @@ mod tests {
         let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
         assert_eq!(
             anthropic_beta_header("claude-opus-4-6", limits),
+            Some("context-1m-2025-08-07")
+        );
+    }
+
+    #[test]
+    fn anthropic_beta_header_sets_context_1m_for_sonnet_4_6() {
+        let limits = OutputLimits::with_thinking(16_000, 4096).unwrap();
+        assert_eq!(
+            anthropic_beta_header("claude-sonnet-4-6", limits),
             Some("context-1m-2025-08-07")
         );
     }

@@ -100,7 +100,9 @@ impl ResolvedModelLimits {
 
 fn default_limits_for(model: PredefinedModel) -> ModelLimits {
     match model {
-        PredefinedModel::ClaudeOpus => ModelLimits::new(1_000_000, 128_000),
+        PredefinedModel::ClaudeOpus | PredefinedModel::ClaudeSonnet => {
+            ModelLimits::new(1_000_000, 128_000)
+        }
         PredefinedModel::ClaudeHaiku => ModelLimits::new(200_000, 64_000),
         PredefinedModel::Gpt52Pro | PredefinedModel::Gpt52 => ModelLimits::new(400_000, 128_000),
         PredefinedModel::GeminiPro | PredefinedModel::GeminiFlash => {
@@ -283,6 +285,20 @@ mod tests {
             assert_eq!(
                 resolved.source(),
                 ModelLimitsSource::Catalog(PredefinedModel::ClaudeOpus)
+            );
+            let limits = resolved.limits();
+            assert_eq!(limits.context_window(), 1_000_000);
+            assert_eq!(limits.max_output(), 128_000);
+        }
+
+        #[test]
+        fn get_claude_sonnet_4_6_models() {
+            let registry = ModelRegistry::new();
+
+            let resolved = registry.get(&model(PredefinedModel::ClaudeSonnet));
+            assert_eq!(
+                resolved.source(),
+                ModelLimitsSource::Catalog(PredefinedModel::ClaudeSonnet)
             );
             let limits = resolved.limits();
             assert_eq!(limits.context_window(), 1_000_000);
