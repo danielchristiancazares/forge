@@ -1855,7 +1855,7 @@ fn plan_create_reject_returns_inactive() {
 }
 
 #[test]
-fn plan_edit_approve_keeps_edit() {
+fn plan_edit_approve_applies_edit() {
     let mut app = test_app();
     app.runtime.api_keys.clear();
 
@@ -1893,7 +1893,7 @@ fn plan_edit_approve_keeps_edit() {
             PlanState::Active(plan) => plan.step_count(),
             _ => panic!("expected active plan"),
         },
-        step_count_before_approve
+        step_count_before_approve + 1
     );
 }
 

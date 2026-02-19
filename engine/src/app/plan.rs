@@ -338,7 +338,7 @@ impl App {
     }
 
     fn plan_edit(&mut self, call: &ToolCall) -> PlanCallResult {
-        let plan = match &mut self.core.plan_state {
+        let plan = match &self.core.plan_state {
             PlanState::Active(plan) => plan,
             _ => {
                 return PlanCallResult::Resolved(ToolResult::error(
@@ -380,21 +380,19 @@ impl App {
             }
         };
 
-        let pre_edit_plan = plan.clone();
-
-        if let Err(e) = editor::apply(plan, edit_op) {
-            // Restore from clone — apply_edit mutates in place before validation,
-            // so a validation failure leaves the plan in a corrupted state.
-            *plan = pre_edit_plan;
-            return PlanCallResult::Resolved(ToolResult::error(
-                &call.id,
-                PLAN_TOOL_NAME,
-                format!("Edit failed: {e}"),
-            ));
-        }
+        let edited_plan = match editor::apply(plan.clone(), edit_op) {
+            Ok(plan) => plan,
+            Err(e) => {
+                return PlanCallResult::Resolved(ToolResult::error(
+                    &call.id,
+                    PLAN_TOOL_NAME,
+                    format!("Edit failed: {e}"),
+                ));
+            }
+        };
 
         PlanCallResult::NeedsApproval {
-            kind: PlanApprovalKind::Edit { pre_edit_plan },
+            kind: PlanApprovalKind::Edit { edited_plan },
         }
     }
 
@@ -457,11 +455,9 @@ impl App {
                         format!("Plan approved and activated.\n\n{rendered}"),
                     )
                 }
-                PlanApprovalKind::Edit { .. } => {
-                    let rendered = match &self.core.plan_state {
-                        PlanState::Inactive => String::new(),
-                        PlanState::Proposed(plan) | PlanState::Active(plan) => plan.render(),
-                    };
+                PlanApprovalKind::Edit { edited_plan } => {
+                    let rendered = edited_plan.render();
+                    self.core.plan_state = PlanState::Active(edited_plan);
                     ToolResult::success(
                         &tool_call_id,
                         PLAN_TOOL_NAME,
@@ -475,15 +471,8 @@ impl App {
                     self.core.plan_state = PlanState::Inactive;
                     ToolResult::error(&tool_call_id, PLAN_TOOL_NAME, "Plan rejected by user.")
                 }
-                PlanApprovalKind::Edit { pre_edit_plan } => {
-                    if let PlanState::Active(plan) = &mut self.core.plan_state {
-                        *plan = pre_edit_plan;
-                    }
-                    ToolResult::error(
-                        &tool_call_id,
-                        PLAN_TOOL_NAME,
-                        "Plan edit rejected by user. Plan reverted.",
-                    )
+                PlanApprovalKind::Edit { .. } => {
+                    ToolResult::error(&tool_call_id, PLAN_TOOL_NAME, "Plan edit rejected by user.")
                 }
             }
         };

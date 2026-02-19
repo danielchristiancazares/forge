@@ -45,10 +45,13 @@ Completed now:
 33. Validation runs completed:
 34. `just verify` passed.
 35. `cargo cov` passed and regenerated `lcov.info`.
+36. Removed rollback-prone mutate-then-revert path in plan editing:
+37. `types::plan::editor::apply` now performs pure transform (`Plan -> Result<Plan, EditValidationError>`).
+38. `engine` now stores proposed edited plans in approval state and applies them only on explicit approval.
 
 In progress:
 
-1. Phase 0 remaining hardening: constructor visibility-rung enforcement for authority-map constructor paths.
+1. Phase 2 remaining hardening: privatize `PlanStepId`/`PlanStep`/`Phase` internals and replace step outcome/reason strings with proof types.
 
 ## Non-Negotiable Constraints
 

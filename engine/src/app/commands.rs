@@ -472,11 +472,7 @@ impl super::App {
                     crate::state::PlanApprovalKind::Create => {
                         self.core.plan_state = PlanState::Inactive;
                     }
-                    crate::state::PlanApprovalKind::Edit { pre_edit_plan } => {
-                        if let PlanState::Active(plan) = &mut self.core.plan_state {
-                            *plan = pre_edit_plan.clone();
-                        }
-                    }
+                    crate::state::PlanApprovalKind::Edit { .. } => {}
                 }
                 self.cancel_tool_batch(state.batch);
                 self.push_notification("Plan approval cancelled");
@@ -553,11 +549,7 @@ impl super::App {
                             crate::state::PlanApprovalKind::Create => {
                                 self.core.plan_state = PlanState::Inactive;
                             }
-                            crate::state::PlanApprovalKind::Edit { pre_edit_plan } => {
-                                if let PlanState::Active(plan) = &mut self.core.plan_state {
-                                    *plan = pre_edit_plan.clone();
-                                }
-                            }
+                            crate::state::PlanApprovalKind::Edit { .. } => {}
                         }
                         if let Err(e) = self
                             .runtime

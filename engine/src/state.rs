@@ -629,7 +629,7 @@ pub(crate) struct ToolPlan {
 #[derive(Debug)]
 pub(crate) enum PlanApprovalKind {
     Create,
-    Edit { pre_edit_plan: Plan },
+    Edit { edited_plan: Plan },
 }
 
 #[derive(Debug)]

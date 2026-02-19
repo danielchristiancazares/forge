@@ -957,9 +957,12 @@ pub mod editor {
         }
     }
 
-    /// Applies an edit operation to the plan, validating all constraints.
-    /// This Authority Boundary encapsulates the fallibility of applying user-driven edits.
-    pub fn apply(plan: &mut Plan, op: EditOp) -> Result<(), EditValidationError> {
+    /// Applies an edit operation as a pure transform.
+    ///
+    /// The input plan is consumed and a validated successor plan is returned.
+    /// This avoids mutate-then-revert error handling in boundary callers.
+    pub fn apply(plan: Plan, op: EditOp) -> Result<Plan, EditValidationError> {
+        let mut plan = plan;
         match op {
             EditOp::AddStep { phase_index, step } => {
                 if phase_index >= plan.phases.len() {
@@ -968,7 +971,7 @@ pub mod editor {
                 if plan.phases[phase_index].is_complete() {
                     return Err(EditValidationError::PhaseAlreadyComplete(phase_index));
                 }
-                let next_id = next_step_id(plan);
+                let next_id = next_step_id(&plan);
                 plan.phases[phase_index]
                     .steps
                     .push(PlanStep::Pending(PendingStep(StepData {
@@ -978,7 +981,7 @@ pub mod editor {
                     })));
             }
             EditOp::RemoveStep(id) => {
-                let (phase_idx, step_idx) = find_step_indices(plan, id)
+                let (phase_idx, step_idx) = find_step_indices(&plan, id)
                     .map_err(|_| EditValidationError::StepNotFound(id))?;
                 let step = &plan.phases[phase_idx].steps[step_idx];
                 if !step.is_pending() {
@@ -1000,7 +1003,7 @@ pub mod editor {
                 if new_phase >= plan.phases.len() {
                     return Err(EditValidationError::PhaseOutOfRange(new_phase));
                 }
-                let (phase_idx, step_idx) = find_step_indices(plan, step_id)
+                let (phase_idx, step_idx) = find_step_indices(&plan, step_id)
                     .map_err(|_| EditValidationError::StepNotFound(step_id))?;
                 let step = &plan.phases[phase_idx].steps[step_idx];
                 if !step.is_pending() {
@@ -1026,7 +1029,7 @@ pub mod editor {
                 step_id,
                 description,
             } => {
-                let step = resolve_step_mut(plan, step_id)
+                let step = resolve_step_mut(&mut plan, step_id)
                     .map_err(|_| EditValidationError::StepNotFound(step_id))?;
                 *step.description_mut() = description;
             }
@@ -1034,7 +1037,7 @@ pub mod editor {
                 if index > plan.phases.len() {
                     return Err(EditValidationError::PhaseOutOfRange(index));
                 }
-                let mut next_id = next_step_id(plan);
+                let mut next_id = next_step_id(&plan);
                 let steps = phase
                     .steps
                     .into_iter()
@@ -1087,7 +1090,7 @@ pub mod editor {
             ));
         }
 
-        Ok(())
+        Ok(plan)
     }
 
     /// Next available step ID (max existing + 1).
@@ -1236,9 +1239,9 @@ mod tests {
 
     #[test]
     fn add_step_to_phase() {
-        let mut plan = Plan::from_input(simple_input()).unwrap();
-        editor::apply(
-            &mut plan,
+        let plan = Plan::from_input(simple_input()).unwrap();
+        let plan = editor::apply(
+            plan,
             EditOp::AddStep {
                 phase_index: 0,
                 step: StepInput {
