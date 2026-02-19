@@ -15,6 +15,12 @@ pub struct QueuedUserMessage {
     pub(crate) turn: TurnContext,
 }
 
+#[derive(Debug)]
+pub enum QueueMessageResult {
+    Queued(QueuedUserMessage),
+    Skipped,
+}
+
 /// Proof that a command line was entered in Command mode.
 #[derive(Debug)]
 pub struct EnteredCommand {
@@ -107,15 +113,15 @@ impl InsertMode<'_> {
     /// Returns a token proving that a non-empty user message was queued, and that it is valid to
     /// begin a new stream.
     #[must_use]
-    pub fn queue_message(self) -> Option<QueuedUserMessage> {
+    pub fn queue_message(self) -> QueueMessageResult {
         if !matches!(self.app.core.state, OperationState::Idle) {
-            return None;
+            return QueueMessageResult::Skipped;
         }
 
         self.app.apply_pending_turn_settings();
 
         if self.app.draft_text().trim().is_empty() {
-            return None;
+            return QueueMessageResult::Skipped;
         }
 
         // Preflight crash recovery BEFORE mutating history.
@@ -126,7 +132,7 @@ impl InsertMode<'_> {
         if recovered.is_some() || !matches!(self.app.core.state, OperationState::Idle) {
             // Recovery may have appended messages and/or entered ToolRecovery.
             // Don't consume the draft; let the user resume/discard, then re-send.
-            return None;
+            return QueueMessageResult::Skipped;
         }
 
         let api_key = if let Some(key) = self.app.current_api_key().cloned() {
@@ -136,7 +142,7 @@ impl InsertMode<'_> {
                 "No API key configured. Set {} environment variable.",
                 self.app.provider().env_var()
             ));
-            return None;
+            return QueueMessageResult::Skipped;
         };
 
         let draft_text = self.app.ui.input.draft_mut().take_text();
@@ -182,7 +188,7 @@ impl InsertMode<'_> {
         let content = if let Ok(content) = NonEmptyString::new(expanded) {
             content
         } else {
-            return None;
+            return QueueMessageResult::Skipped;
         };
 
         // Automatic per-turn checkpoint (conversation rewind). Enables /undo and /retry.
@@ -228,7 +234,7 @@ impl InsertMode<'_> {
             self.app.push_notification(
                 "Cannot send: history save failed. Check disk space/permissions.",
             );
-            return None;
+            return QueueMessageResult::Skipped;
         }
 
         self.app.scroll_to_bottom();
@@ -257,11 +263,11 @@ impl InsertMode<'_> {
             Err(e) => {
                 self.app
                     .push_notification(format!("Cannot queue request: {e}"));
-                return None;
+                return QueueMessageResult::Skipped;
             }
         };
 
-        Some(QueuedUserMessage {
+        QueueMessageResult::Queued(QueuedUserMessage {
             config,
             turn: TurnContext::new(),
         })
@@ -271,64 +277,44 @@ impl InsertMode<'_> {
 // CommandMode operations
 
 impl CommandMode<'_> {
-    fn command_mut(&mut self) -> Option<&mut DraftInput> {
-        self.app.ui.input.command_mut()
+    fn command_mut(&mut self) -> &mut DraftInput {
+        self.app
+            .ui
+            .input
+            .command_mut()
+            .expect("CommandMode must hold Command input state")
     }
 
     pub fn move_cursor_left(&mut self) {
-        let Some(command) = self.command_mut() else {
-            return;
-        };
-        command.move_cursor_left();
+        self.command_mut().move_cursor_left();
     }
 
     pub fn move_cursor_right(&mut self) {
-        let Some(command) = self.command_mut() else {
-            return;
-        };
-        command.move_cursor_right();
+        self.command_mut().move_cursor_right();
     }
 
     pub fn reset_cursor(&mut self) {
-        let Some(command) = self.command_mut() else {
-            return;
-        };
-        command.reset_cursor();
+        self.command_mut().reset_cursor();
     }
 
     pub fn move_cursor_end(&mut self) {
-        let Some(command) = self.command_mut() else {
-            return;
-        };
-        command.move_cursor_end();
+        self.command_mut().move_cursor_end();
     }
 
     pub fn push_char(&mut self, c: char) {
-        let Some(command) = self.command_mut() else {
-            return;
-        };
-        command.enter_char(c);
+        self.command_mut().enter_char(c);
     }
 
     pub fn backspace(&mut self) {
-        let Some(command) = self.command_mut() else {
-            return;
-        };
-        command.delete_char();
+        self.command_mut().delete_char();
     }
 
     pub fn delete_word_backwards(&mut self) {
-        let Some(command) = self.command_mut() else {
-            return;
-        };
-        command.delete_word_backwards();
+        self.command_mut().delete_word_backwards();
     }
 
     pub fn clear_line(&mut self) {
-        let Some(command) = self.command_mut() else {
-            return;
-        };
-        command.clear();
+        self.command_mut().clear();
     }
 
     /// Perform shell-style tab completion on the command line.
@@ -350,37 +336,40 @@ impl CommandMode<'_> {
             .unwrap_or(line.len())
             .min(line.len());
 
-        let Some(insert) = compute_command_tab_completion(self.app, &line, cursor_byte) else {
-            return;
+        let insert = match compute_command_tab_completion(self.app, &line, cursor_byte) {
+            CommandCompletion::Available(insert) => insert,
+            CommandCompletion::Unavailable => return,
         };
         if insert.is_empty() {
             return;
         }
 
-        let Some(command) = self.command_mut() else {
-            return;
-        };
-        command.enter_text(&insert);
+        self.command_mut().enter_text(&insert);
     }
 
     #[must_use]
-    pub fn take_command(self) -> Option<EnteredCommand> {
+    pub fn take_command(self) -> EnteredCommand {
         let input = std::mem::take(&mut self.app.ui.input);
         let InputState::Command { draft, mut command } = input else {
-            self.app.ui.input = input;
-            return None;
+            panic!("CommandMode must hold Command input state");
         };
 
         self.app.ui.input = InputState::Normal(draft);
-        Some(EnteredCommand {
+        EnteredCommand {
             raw: command.take_text(),
-        })
+        }
     }
 }
 
 // Command tab-completion helpers
 
-fn compute_command_tab_completion(app: &App, line: &str, cursor_byte: usize) -> Option<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CommandCompletion {
+    Available(String),
+    Unavailable,
+}
+
+fn compute_command_tab_completion(app: &App, line: &str, cursor_byte: usize) -> CommandCompletion {
     let cursor_byte = cursor_byte.min(line.len());
     let before_cursor = &line[..cursor_byte];
 
@@ -403,18 +392,23 @@ fn compute_command_tab_completion(app: &App, line: &str, cursor_byte: usize) -> 
     }
 
     // Argument completion depends on the (normalized) command name.
-    let first = line.split_whitespace().next()?;
+    let first = match line.split_whitespace().next() {
+        Some(first) => first,
+        None => return CommandCompletion::Unavailable,
+    };
     let kind = match super::commands::normalize_command_name(first) {
         super::commands::NormalizedCommandName::Known(kind) => kind,
         super::commands::NormalizedCommandName::Blank
-        | super::commands::NormalizedCommandName::Unrecognized(_) => return None,
+        | super::commands::NormalizedCommandName::Unrecognized(_) => {
+            return CommandCompletion::Unavailable;
+        }
     };
     let arg_index = token_index.saturating_sub(1);
 
     complete_command_arg(app, kind, arg_index, fragment)
 }
 
-fn complete_command_name(fragment: &str, at_end_of_line: bool) -> Option<String> {
+fn complete_command_name(fragment: &str, at_end_of_line: bool) -> CommandCompletion {
     let (_prefix, core) = fragment
         .strip_prefix('/')
         .map_or(("", fragment), |rest| ("/", rest));
@@ -427,7 +421,7 @@ fn complete_command_name(fragment: &str, at_end_of_line: bool) -> Option<String>
         .collect();
 
     if matches.is_empty() {
-        return None;
+        return CommandCompletion::Unavailable;
     }
 
     if matches.len() == 1 {
@@ -436,17 +430,17 @@ fn complete_command_name(fragment: &str, at_end_of_line: bool) -> Option<String>
         if m.kind.expects_arg() && at_end_of_line {
             insert.push(' ');
         }
-        return Some(insert);
+        return CommandCompletion::Available(insert);
     }
 
     // Multiple matches: extend to the longest common prefix if it advances the cursor.
     let names: Vec<&str> = matches.iter().map(|m| m.name).collect();
     let lcp = longest_common_prefix(&names);
     if lcp.chars().count() <= core_chars {
-        return None;
+        return CommandCompletion::Unavailable;
     }
 
-    Some(lcp.chars().skip(core_chars).collect())
+    CommandCompletion::Available(lcp.chars().skip(core_chars).collect())
 }
 
 fn complete_command_arg(
@@ -454,7 +448,7 @@ fn complete_command_arg(
     kind: super::commands::CommandKind,
     arg_index: usize,
     fragment: &str,
-) -> Option<String> {
+) -> CommandCompletion {
     use super::commands::CommandKind;
 
     // Rewind targets accept optional leading '#', because checkpoint lists format ids as #<id>.
@@ -499,7 +493,7 @@ fn complete_command_arg(
     };
 
     if candidates.is_empty() {
-        return None;
+        return CommandCompletion::Unavailable;
     }
 
     let matches: Vec<&str> = candidates
@@ -509,20 +503,20 @@ fn complete_command_arg(
         .collect();
 
     if matches.is_empty() {
-        return None;
+        return CommandCompletion::Unavailable;
     }
 
     if matches.len() == 1 {
         let chosen = matches[0];
-        return Some(chosen.chars().skip(core_chars).collect());
+        return CommandCompletion::Available(chosen.chars().skip(core_chars).collect());
     }
 
     let lcp = longest_common_prefix(&matches);
     if lcp.chars().count() <= core_chars {
-        return None;
+        return CommandCompletion::Unavailable;
     }
 
-    Some(lcp.chars().skip(core_chars).collect())
+    CommandCompletion::Available(lcp.chars().skip(core_chars).collect())
 }
 
 struct FileExpansionResult {
@@ -815,8 +809,8 @@ fn longest_common_prefix(strings: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        FileReferenceContent, complete_command_name, expand_file_references, longest_common_prefix,
-        parse_file_references, read_file_reference_content,
+        CommandCompletion, FileReferenceContent, complete_command_name, expand_file_references,
+        longest_common_prefix, parse_file_references, read_file_reference_content,
     };
 
     #[test]
@@ -849,38 +843,62 @@ mod tests {
     #[test]
     fn complete_command_name_unique_match() {
         // "cle" uniquely matches "clear"
-        assert_eq!(complete_command_name("cle", true), Some("ar".to_string()));
+        assert_eq!(
+            complete_command_name("cle", true),
+            CommandCompletion::Available("ar".to_string())
+        );
         // "mo" uniquely matches "model", adds space since it expects arg
-        assert_eq!(complete_command_name("mo", true), Some("del ".to_string()));
+        assert_eq!(
+            complete_command_name("mo", true),
+            CommandCompletion::Available("del ".to_string())
+        );
     }
 
     #[test]
     fn complete_command_name_with_slash_prefix() {
         // Leading slash should be stripped for matching
-        assert_eq!(complete_command_name("/cle", true), Some("ar".to_string()));
+        assert_eq!(
+            complete_command_name("/cle", true),
+            CommandCompletion::Available("ar".to_string())
+        );
     }
 
     #[test]
     fn complete_command_name_ambiguous_extends_to_lcp() {
         // Ambiguous: "c" matches multiple commands, so no completion is applied.
-        assert_eq!(complete_command_name("c", true), None);
+        assert_eq!(
+            complete_command_name("c", true),
+            CommandCompletion::Unavailable
+        );
     }
 
     #[test]
     fn complete_command_name_no_match() {
-        assert_eq!(complete_command_name("xyz", true), None);
+        assert_eq!(
+            complete_command_name("xyz", true),
+            CommandCompletion::Unavailable
+        );
     }
 
     #[test]
     fn complete_command_name_exact_match() {
         // Already complete, nothing to add (except space for commands expecting args)
-        assert_eq!(complete_command_name("clear", true), Some(String::new()));
+        assert_eq!(
+            complete_command_name("clear", true),
+            CommandCompletion::Available(String::new())
+        );
     }
 
     #[test]
     fn complete_command_name_case_insensitive() {
-        assert_eq!(complete_command_name("CLE", true), Some("ar".to_string()));
-        assert_eq!(complete_command_name("QU", true), Some("it".to_string()));
+        assert_eq!(
+            complete_command_name("CLE", true),
+            CommandCompletion::Available("ar".to_string())
+        );
+        assert_eq!(
+            complete_command_name("QU", true),
+            CommandCompletion::Available("it".to_string())
+        );
     }
 
     #[test]

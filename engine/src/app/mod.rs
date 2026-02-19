@@ -76,7 +76,9 @@ mod tool_gate;
 pub(crate) mod tool_loop;
 
 pub use commands::{CommandSpec, command_specs};
-pub use input_modes::{CommandMode, EnteredCommand, InsertMode, QueuedUserMessage};
+pub use input_modes::{
+    CommandMode, EnteredCommand, InsertMode, QueueMessageResult, QueuedUserMessage,
+};
 
 pub(crate) use persistence::{ABORTED_JOURNAL_BADGE, EMPTY_RESPONSE_BADGE};
 

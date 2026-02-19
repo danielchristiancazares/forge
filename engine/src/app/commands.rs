@@ -384,14 +384,19 @@ impl<'a> Command<'a> {
             CommandKind::Distill => Command::Distill,
             CommandKind::Cancel => Command::Cancel,
             CommandKind::Rewind => Command::Rewind {
-                target: match parts.get(1).copied() {
-                    Some("list" | "ls") | None => RewindTarget::List,
-                    Some("last" | "latest") => RewindTarget::Latest,
-                    Some(target) => RewindTarget::Id(target),
+                target: if let Some(target) = parts.get(1).copied() {
+                    match target {
+                        "list" | "ls" => RewindTarget::List,
+                        "last" | "latest" => RewindTarget::Latest,
+                        other => RewindTarget::Id(other),
+                    }
+                } else {
+                    RewindTarget::List
                 },
-                scope: match parts.get(2).copied() {
-                    Some(scope) => RewindScopeInput::Named(scope),
-                    None => RewindScopeInput::DefaultBoth,
+                scope: if let Some(scope) = parts.get(2).copied() {
+                    RewindScopeInput::Named(scope)
+                } else {
+                    RewindScopeInput::DefaultBoth
                 },
             },
             CommandKind::Undo => Command::Undo,

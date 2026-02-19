@@ -614,9 +614,11 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
             let Some(insert) = app.insert_mode_mut() else {
                 return;
             };
-            let queued = insert.queue_message();
-            if let Some(queued) = queued {
-                app.start_streaming(queued);
+            match insert.queue_message() {
+                forge_engine::QueueMessageResult::Queued(queued) => {
+                    app.start_streaming(queued);
+                }
+                forge_engine::QueueMessageResult::Skipped => {}
             }
         }
         // Navigate prompt history (Up/Down)
@@ -719,9 +721,7 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
                 Some(mode) => mode,
                 None => return,
             };
-            let Some(command) = command_mode.take_command() else {
-                return;
-            };
+            let command = command_mode.take_command();
 
             app.process_command(command);
         }

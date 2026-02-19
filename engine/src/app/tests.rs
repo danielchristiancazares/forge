@@ -16,7 +16,8 @@ use tokio::sync::mpsc;
 use super::init::DEFAULT_MAX_TOOL_ARGS_BYTES;
 use super::{
     App, AppearanceEditorSnapshot, ContextEditorSnapshot, ModelEditorSnapshot,
-    ProviderRuntimeState, QueuedUserMessage, StreamingMessage, SystemPrompts, ToolsEditorSnapshot,
+    ProviderRuntimeState, QueueMessageResult, QueuedUserMessage, StreamingMessage, SystemPrompts,
+    ToolsEditorSnapshot,
 };
 use crate::EnvironmentContext;
 use crate::state::{
@@ -101,6 +102,13 @@ fn test_app() -> App {
         librarian: None,
         lsp_config: None,
     })
+}
+
+fn expect_queued_message(result: QueueMessageResult) -> QueuedUserMessage {
+    match result {
+        QueueMessageResult::Queued(queued) => queued,
+        QueueMessageResult::Skipped => panic!("queued message"),
+    }
 }
 
 fn last_notification(app: &App) -> Option<&str> {
@@ -292,11 +300,8 @@ fn submit_message_adds_user_message() {
         cursor: 5,
     });
 
-    let _queued = app
-        .insert_mode_mut()
-        .expect("insert mode")
-        .queue_message()
-        .expect("queued message");
+    let queued = app.insert_mode_mut().expect("insert mode").queue_message();
+    let _ = expect_queued_message(queued);
 
     assert!(app.draft_text().is_empty());
     assert_eq!(app.draft_cursor(), 0);
@@ -317,7 +322,7 @@ fn process_command_quit_sets_should_quit() {
     let command = {
         let mut command_mode = app.command_mode_mut().expect("command mode");
         command_mode.push_char('q');
-        command_mode.take_command().expect("take command")
+        command_mode.take_command()
     };
 
     app.process_command(command);
@@ -339,7 +344,7 @@ fn process_command_clear_resets_conversation() {
         for c in "clear".chars() {
             command_mode.push_char(c);
         }
-        command_mode.take_command().expect("take command")
+        command_mode.take_command()
     };
 
     app.process_command(command);
@@ -359,7 +364,7 @@ fn process_command_clear_requests_transcript_clear() {
         for c in "clear".chars() {
             command_mode.push_char(c);
         }
-        command_mode.take_command().expect("take command")
+        command_mode.take_command()
     };
 
     app.process_command(command);
@@ -378,7 +383,7 @@ fn process_command_settings_opens_settings_modal() {
         for c in "settings".chars() {
             command_mode.push_char(c);
         }
-        command_mode.take_command().expect("take command")
+        command_mode.take_command()
     };
 
     app.process_command(command);
@@ -402,7 +407,7 @@ fn process_command_settings_shows_guardrail_when_busy() {
         for c in "settings".chars() {
             command_mode.push_char(c);
         }
-        command_mode.take_command().expect("take command")
+        command_mode.take_command()
     };
 
     app.process_command(command);
@@ -425,7 +430,7 @@ fn process_command_runtime_opens_runtime_panel() {
         for c in "runtime".chars() {
             command_mode.push_char(c);
         }
-        command_mode.take_command().expect("take command")
+        command_mode.take_command()
     };
 
     app.process_command(command);
@@ -444,7 +449,7 @@ fn process_command_resolve_opens_resolve_panel() {
         for c in "resolve".chars() {
             command_mode.push_char(c);
         }
-        command_mode.take_command().expect("take command")
+        command_mode.take_command()
     };
 
     app.process_command(command);
@@ -463,7 +468,7 @@ fn process_command_validate_opens_validation_panel() {
         for c in "validate".chars() {
             command_mode.push_char(c);
         }
-        command_mode.take_command().expect("take command")
+        command_mode.take_command()
     };
 
     app.process_command(command);
@@ -662,17 +667,17 @@ fn settings_close_or_exit_allows_leaving_detail_after_revert() {
 #[test]
 fn settings_usable_model_count_reflects_configured_providers() {
     let mut app = test_app();
-    assert_eq!(app.settings_usable_model_count(), 2);
+    assert_eq!(app.settings_usable_model_count(), 3);
 
     app.runtime
         .api_keys
         .insert(Provider::OpenAI, SecretString::new("openai".to_string()));
-    assert_eq!(app.settings_usable_model_count(), 4);
+    assert_eq!(app.settings_usable_model_count(), 5);
 
     app.runtime
         .api_keys
         .insert(Provider::Gemini, SecretString::new("gemini".to_string()));
-    assert_eq!(app.settings_usable_model_count(), 6);
+    assert_eq!(app.settings_usable_model_count(), 7);
 }
 
 #[test]
@@ -700,7 +705,7 @@ fn settings_models_select_and_revert_updates_dirty_state() {
     app.settings_detail_move_down();
     app.settings_detail_toggle_selected();
 
-    let selected_model = ModelName::from_predefined(PredefinedModel::ClaudeHaiku);
+    let selected_model = ModelName::from_predefined(PredefinedModel::ClaudeSonnet);
     assert_eq!(
         app.settings_model_editor_snapshot(),
         Some(ModelEditorSnapshot {
@@ -726,6 +731,7 @@ fn settings_models_save_warns_when_provider_key_is_missing() {
     let mut app = test_app();
     open_models_settings(&mut app);
 
+    app.settings_detail_move_down();
     app.settings_detail_move_down();
     app.settings_detail_move_down();
     app.settings_detail_toggle_selected();
@@ -922,11 +928,8 @@ fn queue_message_applies_pending_model_before_request_config() {
         cursor: 13,
     });
 
-    let queued = app
-        .insert_mode_mut()
-        .expect("insert mode")
-        .queue_message()
-        .expect("queued message");
+    let queued = app.insert_mode_mut().expect("insert mode").queue_message();
+    let queued = expect_queued_message(queued);
 
     assert_eq!(queued.config.model(), &pending_model);
     assert_eq!(app.model(), pending_model.as_str());
@@ -942,11 +945,8 @@ fn queue_message_applies_pending_context_before_request_config() {
         cursor: 15,
     });
 
-    let _queued = app
-        .insert_mode_mut()
-        .expect("insert mode")
-        .queue_message()
-        .expect("queued message");
+    let queued = app.insert_mode_mut().expect("insert mode").queue_message();
+    let _ = expect_queued_message(queued);
 
     assert!(!app.memory_enabled());
     assert!(!app.settings_pending_context_apply_next_turn());
@@ -961,11 +961,8 @@ fn queue_message_applies_pending_tools_before_request_config() {
         cursor: 13,
     });
 
-    let _queued = app
-        .insert_mode_mut()
-        .expect("insert mode")
-        .queue_message()
-        .expect("queued message");
+    let queued = app.insert_mode_mut().expect("insert mode").queue_message();
+    let _ = expect_queued_message(queued);
 
     assert_eq!(
         app.runtime.tool_settings.policy.mode,
@@ -1192,7 +1189,7 @@ fn submit_message_without_key_sets_status_and_does_not_queue() {
     });
 
     let queued = app.insert_mode_mut().expect("insert mode").queue_message();
-    assert!(queued.is_none());
+    assert!(matches!(queued, QueueMessageResult::Skipped));
     assert_eq!(
         last_notification(&app),
         Some("No API key configured. Set ANTHROPIC_API_KEY environment variable.")
@@ -1209,11 +1206,8 @@ fn queue_message_sets_pending_user_message() {
         cursor: 12,
     });
 
-    let _queued = app
-        .insert_mode_mut()
-        .expect("insert mode")
-        .queue_message()
-        .expect("queued message");
+    let queued = app.insert_mode_mut().expect("insert mode").queue_message();
+    let _ = expect_queued_message(queued);
 
     assert!(app.core.pending_user_message.is_some());
     let (msg_id, original_text, _agents_md) = app.core.pending_user_message.as_ref().unwrap();
@@ -1229,11 +1223,8 @@ async fn distillation_not_needed_starts_queued_request() {
         cursor: 6,
     });
 
-    let queued = app
-        .insert_mode_mut()
-        .expect("insert mode")
-        .queue_message()
-        .expect("queued message");
+    let queued = app.insert_mode_mut().expect("insert mode").queue_message();
+    let queued = expect_queued_message(queued);
 
     let result = app.try_start_distillation(Some(queued));
 

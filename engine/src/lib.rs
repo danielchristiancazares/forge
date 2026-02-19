@@ -42,9 +42,9 @@ mod app;
 pub use app::{
     App, AppearanceEditorSnapshot, CommandMode, CommandSpec, ContextEditorSnapshot,
     DEFAULT_STREAM_EVENT_BUDGET, EnteredCommand, FileDiff, InsertMode, ModelEditorSnapshot,
-    QueuedUserMessage, ResolveCascade, ResolveLayerValue, ResolveSetting, RuntimeSnapshot,
-    StreamingMessage, SystemPrompts, ToolsEditorSnapshot, TurnUsage, ValidationFinding,
-    ValidationReport, command_specs,
+    QueueMessageResult, QueuedUserMessage, ResolveCascade, ResolveLayerValue, ResolveSetting,
+    RuntimeSnapshot, StreamingMessage, SystemPrompts, ToolsEditorSnapshot, TurnUsage,
+    ValidationFinding, ValidationReport, command_specs,
 };
 
 // Crate-internal cross-layer glue.
