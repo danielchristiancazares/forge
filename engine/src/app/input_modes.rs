@@ -3,8 +3,10 @@
 //! This module provides borrow-scoped mode guards that ensure operations
 //! are only performed when the app is in the correct mode.
 
-use super::ui::{CommandDraftMut, CommandStateOwned, DraftInput, InputMode, InputState};
-use super::{ApiConfig, App, Message, NonEmptyString, OperationState};
+use super::ui::{
+    CommandDraftMut, CommandStateOwned, DraftInput, InputMode, InputState, InsertDraftMut,
+};
+use super::{ApiConfig, App, Message, NonEmptyString};
 
 pub(crate) use forge_tools::change_recording::{ChangeRecorder, TurnChangeReport, TurnContext};
 
@@ -126,7 +128,7 @@ impl InsertMode<'_> {
     /// begin a new stream.
     #[must_use]
     pub fn queue_message(self) -> QueueMessageResult {
-        if !matches!(self.app.core.state, OperationState::Idle) {
+        if self.app.is_loading() {
             return QueueMessageResult::Skipped;
         }
 
@@ -141,7 +143,7 @@ impl InsertMode<'_> {
         // If we recover after pushing a new user message, recovered assistant/tool
         // content would be appended after the new prompt (wrong chronology).
         let recovered = self.app.check_crash_recovery();
-        if recovered.is_some() || !matches!(self.app.core.state, OperationState::Idle) {
+        if recovered.is_some() || self.app.is_loading() {
             // Recovery may have appended messages and/or entered ToolRecovery.
             // Don't consume the draft; let the user resume/discard, then re-send.
             return QueueMessageResult::Skipped;
@@ -157,7 +159,10 @@ impl InsertMode<'_> {
             return QueueMessageResult::Skipped;
         };
 
-        let draft_text = self.app.ui.input.draft_mut().take_text();
+        let draft_text = match self.app.ui.input.insert_mut_access() {
+            InsertDraftMut::Active(draft) => draft.take_text(),
+            InsertDraftMut::Inactive => panic!("InsertMode must hold Insert input state"),
+        };
         // Record prompt to history for Up/Down navigation
         self.app.record_prompt(&draft_text);
 
@@ -363,15 +368,17 @@ impl CommandMode<'_> {
     #[must_use]
     pub fn take_command(self) -> EnteredCommand {
         let input = std::mem::take(&mut self.app.ui.input);
-        let (draft, mut command) = match input.into_command_state() {
-            CommandStateOwned::Active { draft, command } => (draft, command),
+        let (next_input, raw) = match input.into_command_state() {
+            CommandStateOwned::Active { draft, mut command } => {
+                let raw = command.take_text();
+                let next_input = InputState::Command { draft, command }.into_normal();
+                (next_input, raw)
+            }
             CommandStateOwned::Inactive(_) => panic!("CommandMode must hold Command input state"),
         };
 
-        self.app.ui.input = InputState::Normal(draft);
-        EnteredCommand {
-            raw: command.take_text(),
-        }
+        self.app.ui.input = next_input;
+        EnteredCommand { raw }
     }
 }
 
