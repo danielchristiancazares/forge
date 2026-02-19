@@ -1831,8 +1831,14 @@ fn plan_create_approve_activates_plan() {
     app.plan_approval_approve();
 
     assert!(matches!(app.core.plan_state, PlanState::Active(_)));
-    let plan = app.core.plan_state.plan().unwrap();
-    assert!(plan.active_step().is_some());
+    let plan = match &app.core.plan_state {
+        PlanState::Active(plan) => plan,
+        _ => panic!("expected active plan"),
+    };
+    assert!(matches!(
+        plan.active_step(),
+        forge_types::plan::ActiveStepQuery::Active(_)
+    ));
 }
 
 #[test]
@@ -1867,22 +1873,25 @@ fn plan_edit_approve_keeps_edit() {
     }])
     .unwrap();
     let mut plan = plan;
-    plan.step_mut(forge_types::PlanStepId::new(1))
-        .unwrap()
-        .transition(forge_types::StepStatus::Active)
-        .unwrap();
+    forge_types::plan::editor::activate_step(&mut plan, forge_types::PlanStepId::new(1)).unwrap();
     app.core.plan_state = PlanState::Active(plan);
 
     submit_plan_call(&mut app, plan_edit_call());
     assert!(matches!(app.core.state, OperationState::PlanApproval(_)));
     assert_eq!(app.plan_approval_kind(), Some("edit"));
 
-    let step_count_before_approve = app.core.plan_state.plan().unwrap().step_count();
+    let step_count_before_approve = match &app.core.plan_state {
+        PlanState::Active(plan) => plan.step_count(),
+        _ => panic!("expected active plan"),
+    };
     app.plan_approval_approve();
 
     assert!(matches!(app.core.plan_state, PlanState::Active(_)));
     assert_eq!(
-        app.core.plan_state.plan().unwrap().step_count(),
+        match &app.core.plan_state {
+            PlanState::Active(plan) => plan.step_count(),
+            _ => panic!("expected active plan"),
+        },
         step_count_before_approve
     );
 }
@@ -1907,10 +1916,7 @@ fn plan_edit_reject_reverts() {
     }])
     .unwrap();
     let mut plan = plan;
-    plan.step_mut(forge_types::PlanStepId::new(1))
-        .unwrap()
-        .transition(forge_types::StepStatus::Active)
-        .unwrap();
+    forge_types::plan::editor::activate_step(&mut plan, forge_types::PlanStepId::new(1)).unwrap();
     let original_step_count = plan.step_count();
     app.core.plan_state = PlanState::Active(plan);
 
@@ -1921,7 +1927,10 @@ fn plan_edit_reject_reverts() {
 
     assert!(matches!(app.core.plan_state, PlanState::Active(_)));
     assert_eq!(
-        app.core.plan_state.plan().unwrap().step_count(),
+        match &app.core.plan_state {
+            PlanState::Active(plan) => plan.step_count(),
+            _ => panic!("expected active plan"),
+        },
         original_step_count
     );
 }
@@ -1956,10 +1965,7 @@ fn plan_advance_creates_checkpoint() {
         ],
     }])
     .unwrap();
-    plan.step_mut(forge_types::PlanStepId::new(1))
-        .unwrap()
-        .transition(forge_types::StepStatus::Active)
-        .unwrap();
+    forge_types::plan::editor::activate_step(&mut plan, forge_types::PlanStepId::new(1)).unwrap();
     app.core.plan_state = PlanState::Active(plan);
 
     let step_id = forge_types::PlanStepId::new(1);
@@ -2005,10 +2011,7 @@ fn plan_skip_creates_checkpoint() {
         ],
     }])
     .unwrap();
-    plan.step_mut(forge_types::PlanStepId::new(1))
-        .unwrap()
-        .transition(forge_types::StepStatus::Active)
-        .unwrap();
+    forge_types::plan::editor::activate_step(&mut plan, forge_types::PlanStepId::new(1)).unwrap();
     app.core.plan_state = PlanState::Active(plan);
 
     let step_id = forge_types::PlanStepId::new(1);

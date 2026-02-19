@@ -1539,16 +1539,21 @@ impl App {
 
     pub fn plan_approval_rendered(&self) -> Option<String> {
         self.plan_approval_state()?;
-        self.core.plan_state.plan().map(forge_types::Plan::render)
+        match &self.core.plan_state {
+            PlanState::Inactive => None,
+            PlanState::Proposed(plan) | PlanState::Active(plan) => Some(plan.render()),
+        }
     }
 
     pub fn plan_status_line(&self) -> Option<String> {
         match &self.core.plan_state {
             PlanState::Active(plan) => {
-                if let Some(step) = plan.active_step() {
-                    let phase_idx = plan.phase_of(step.id).unwrap_or(0);
-                    let phase_name = &plan.phases()[phase_idx].name;
-                    Some(format!("Plan: {phase_name} — {}", step.description))
+                if let forge_types::plan::ActiveStepQuery::Active(active) = plan.active_step() {
+                    let phase_name = &plan.phases()[active.phase_index()].name;
+                    Some(format!(
+                        "Plan: {phase_name} — {}",
+                        active.step().description()
+                    ))
                 } else {
                     Some("Plan: Active (no current step)".to_string())
                 }

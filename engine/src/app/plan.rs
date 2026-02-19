@@ -3,8 +3,10 @@
 //! The Plan tool is schema-only (no `ToolExecutor`). The engine resolves all
 //! Plan subcommands here and returns `ToolResult` directly.
 
+use forge_types::plan::editor::StepTransitionError;
+use forge_types::plan::{ActiveStepQuery, CompletionStatus, editor};
 use forge_types::{
-    EditOp, PhaseInput, Plan, PlanState, PlanStepId, StepInput, StepStatus, ToolCall, ToolResult,
+    EditOp, PhaseInput, Plan, PlanState, PlanStepId, StepInput, ToolCall, ToolResult,
 };
 use serde_json::Value;
 
@@ -99,7 +101,7 @@ impl App {
     }
 
     fn plan_create(&mut self, call: &ToolCall) -> PlanCallResult {
-        if self.core.plan_state.is_active() {
+        if matches!(self.core.plan_state, PlanState::Active(_)) {
             return PlanCallResult::Resolved(ToolResult::error(
                 &call.id,
                 PLAN_TOOL_NAME,
@@ -172,45 +174,32 @@ impl App {
                 }
             };
 
-            // Validate: step must exist and be Active.
-            let step = match plan.step(step_id) {
-                Some(s) => s,
-                None => {
-                    return ToolResult::error(
+            if let Err(err) = editor::complete_active_step(plan, step_id, outcome) {
+                return match err {
+                    StepTransitionError::StepNotFound { .. } => ToolResult::error(
                         &call.id,
                         PLAN_TOOL_NAME,
                         format!("Step {step_id} not found in the plan."),
-                    );
-                }
-            };
-
-            if !matches!(step.status, StepStatus::Active) {
-                return ToolResult::error(
-                    &call.id,
-                    PLAN_TOOL_NAME,
-                    format!(
-                        "Step {step_id} is {:?}, not Active. Only Active steps can be advanced.",
-                        step.status
                     ),
-                );
-            }
-
-            // Transition to Complete.
-            if let Err(e) = plan
-                .step_mut(step_id)
-                .expect("step existence verified")
-                .transition(StepStatus::Complete(outcome))
-            {
-                return ToolResult::error(&call.id, PLAN_TOOL_NAME, e.to_string());
+                    StepTransitionError::StepNotActive { .. } => ToolResult::error(
+                        &call.id,
+                        PLAN_TOOL_NAME,
+                        format!("Step {step_id} is not Active. Only Active steps can be advanced."),
+                    ),
+                    StepTransitionError::InvalidTransition(e) => {
+                        ToolResult::error(&call.id, PLAN_TOOL_NAME, e.to_string())
+                    }
+                };
             }
 
             // Auto-activate next eligible step.
-            activate_next_eligible(plan);
+            editor::activate_next_eligible(plan);
 
             let rendered = plan.render();
-            let completion = plan
-                .try_complete()
-                .map(|c| (c.phase_count(), c.step_count()));
+            let completion = match plan.try_complete() {
+                CompletionStatus::Complete(c) => Some((c.phase_count(), c.step_count())),
+                CompletionStatus::Incomplete { .. } => None,
+            };
             (rendered, completion)
         };
 
@@ -225,12 +214,14 @@ impl App {
             );
         }
 
-        if let Some(plan) = self.core.plan_state.plan()
-            && let Some(next) = plan.active_step()
+        if let PlanState::Active(plan) = &self.core.plan_state
+            && let ActiveStepQuery::Active(next) = plan.active_step()
         {
+            let step = next.step();
             self.push_notification(format!(
                 "Step {step_id} complete \u{2192} Step {}: {}",
-                next.id, next.description
+                step.id(),
+                step.description()
             ));
         }
 
@@ -259,48 +250,38 @@ impl App {
                 }
             };
 
-            let step = match plan.step(step_id) {
-                Some(s) => s,
-                None => {
-                    return ToolResult::error(
+            if let Err(err) = editor::skip_active_step(plan, step_id, reason) {
+                return match err {
+                    StepTransitionError::StepNotFound { .. } => ToolResult::error(
                         &call.id,
                         PLAN_TOOL_NAME,
                         format!("Step {step_id} not found in the plan."),
-                    );
-                }
-            };
-
-            if !matches!(step.status, StepStatus::Active) {
-                return ToolResult::error(
-                    &call.id,
-                    PLAN_TOOL_NAME,
-                    format!(
-                        "Step {step_id} is {:?}, not Active. Only Active steps can be skipped.",
-                        step.status
                     ),
-                );
+                    StepTransitionError::StepNotActive { .. } => ToolResult::error(
+                        &call.id,
+                        PLAN_TOOL_NAME,
+                        format!("Step {step_id} is not Active. Only Active steps can be skipped."),
+                    ),
+                    StepTransitionError::InvalidTransition(e) => {
+                        ToolResult::error(&call.id, PLAN_TOOL_NAME, e.to_string())
+                    }
+                };
             }
 
-            if let Err(e) = plan
-                .step_mut(step_id)
-                .expect("step existence verified")
-                .transition(StepStatus::Skipped(reason))
-            {
-                return ToolResult::error(&call.id, PLAN_TOOL_NAME, e.to_string());
-            }
-
-            activate_next_eligible(plan);
+            editor::activate_next_eligible(plan);
             plan.render()
         };
 
         self.create_plan_step_checkpoint(step_id);
 
-        if let Some(plan) = self.core.plan_state.plan()
-            && let Some(next) = plan.active_step()
+        if let PlanState::Active(plan) = &self.core.plan_state
+            && let ActiveStepQuery::Active(next) = plan.active_step()
         {
+            let step = next.step();
             self.push_notification(format!(
                 "Step {step_id} skipped \u{2192} Step {}: {}",
-                next.id, next.description
+                step.id(),
+                step.description()
             ));
         }
 
@@ -328,34 +309,24 @@ impl App {
             Err(result) => return result,
         };
 
-        let step = match plan.step(step_id) {
-            Some(s) => s,
-            None => {
-                return ToolResult::error(
+        if let Err(err) = editor::fail_active_step(plan, step_id, reason) {
+            return match err {
+                StepTransitionError::StepNotFound { .. } => ToolResult::error(
                     &call.id,
                     PLAN_TOOL_NAME,
                     format!("Step {step_id} not found in the plan."),
-                );
-            }
-        };
-
-        if !matches!(step.status, StepStatus::Active) {
-            return ToolResult::error(
-                &call.id,
-                PLAN_TOOL_NAME,
-                format!(
-                    "Step {step_id} is {:?}, not Active. Only Active steps can be marked as failed.",
-                    step.status
                 ),
-            );
-        }
-
-        if let Err(e) = plan
-            .step_mut(step_id)
-            .expect("step existence verified")
-            .transition(StepStatus::Failed(reason))
-        {
-            return ToolResult::error(&call.id, PLAN_TOOL_NAME, e.to_string());
+                StepTransitionError::StepNotActive { .. } => ToolResult::error(
+                    &call.id,
+                    PLAN_TOOL_NAME,
+                    format!(
+                        "Step {step_id} is not Active. Only Active steps can be marked as failed."
+                    ),
+                ),
+                StepTransitionError::InvalidTransition(e) => {
+                    ToolResult::error(&call.id, PLAN_TOOL_NAME, e.to_string())
+                }
+            };
         }
 
         let rendered = plan.render();
@@ -411,7 +382,7 @@ impl App {
 
         let pre_edit_plan = plan.clone();
 
-        if let Err(e) = plan.apply_edit(edit_op) {
+        if let Err(e) = editor::apply(plan, edit_op) {
             // Restore from clone — apply_edit mutates in place before validation,
             // so a validation failure leaves the plan in a corrupted state.
             *plan = pre_edit_plan;
@@ -478,7 +449,7 @@ impl App {
                     };
                     let rendered = plan.render();
                     let mut plan = plan;
-                    activate_next_eligible(&mut plan);
+                    editor::activate_next_eligible(&mut plan);
                     self.core.plan_state = PlanState::Active(plan);
                     ToolResult::success(
                         &tool_call_id,
@@ -487,12 +458,10 @@ impl App {
                     )
                 }
                 PlanApprovalKind::Edit { .. } => {
-                    let rendered = self
-                        .core
-                        .plan_state
-                        .plan()
-                        .map(Plan::render)
-                        .unwrap_or_default();
+                    let rendered = match &self.core.plan_state {
+                        PlanState::Inactive => String::new(),
+                        PlanState::Proposed(plan) | PlanState::Active(plan) => plan.render(),
+                    };
                     ToolResult::success(
                         &tool_call_id,
                         PLAN_TOOL_NAME,
@@ -690,29 +659,12 @@ fn parse_edit_op(val: &serde_json::Value) -> Result<EditOp, String> {
     }
 }
 
-/// Activate the first eligible pending step in the current phase.
-///
-/// Per spec: only one step may be `Active` at a time within a phase.
-/// If no step is currently active, this activates the first eligible pending step.
-fn activate_next_eligible(plan: &mut Plan) {
-    if plan.active_step().is_some() {
-        return;
-    }
-
-    let eligible = plan.eligible_steps();
-    if let Some(next_id) = eligible.first()
-        && let Some(step) = plan.step_mut(*next_id)
-    {
-        let _ = step.transition(StepStatus::Active);
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{PLAN_TOOL_NAME, activate_next_eligible, parse_edit_op, parse_step_id_and_text};
+    use super::{PLAN_TOOL_NAME, parse_edit_op, parse_step_id_and_text};
+    use forge_types::plan::editor;
     use forge_types::{
-        EditOp, PhaseInput, Plan, PlanStepId, StepInput, StepStatus, ThoughtSignatureState,
-        ToolCall,
+        EditOp, PhaseInput, Plan, PlanStepId, StepInput, ThoughtSignatureState, ToolCall,
     };
     use serde_json::json;
 
@@ -845,15 +797,11 @@ mod tests {
         }])
         .unwrap();
 
-        activate_next_eligible(&mut plan);
-        assert!(matches!(
-            plan.step(PlanStepId::new(1)).unwrap().status,
-            StepStatus::Active
-        ));
-        assert!(matches!(
-            plan.step(PlanStepId::new(2)).unwrap().status,
-            StepStatus::Pending
-        ));
+        editor::activate_next_eligible(&mut plan);
+        let s = editor::resolve_step(&plan, PlanStepId::new(1)).unwrap();
+        assert!(s.is_active());
+        let s2 = editor::resolve_step(&plan, PlanStepId::new(2)).unwrap();
+        assert!(s2.is_pending());
     }
 
     #[test]
@@ -874,17 +822,12 @@ mod tests {
         .unwrap();
 
         // Manually activate step 1.
-        plan.step_mut(PlanStepId::new(1))
-            .unwrap()
-            .transition(StepStatus::Active)
-            .unwrap();
+        editor::activate_step(&mut plan, PlanStepId::new(1)).unwrap();
 
-        activate_next_eligible(&mut plan);
+        editor::activate_next_eligible(&mut plan);
         // Step 2 should still be Pending (only one active at a time).
-        assert!(matches!(
-            plan.step(PlanStepId::new(2)).unwrap().status,
-            StepStatus::Pending
-        ));
+        let s2 = editor::resolve_step(&plan, PlanStepId::new(2)).unwrap();
+        assert!(s2.is_pending());
     }
 
     #[test]
@@ -908,16 +851,12 @@ mod tests {
         .unwrap();
 
         // Phase 1 not complete yet — Phase 2 steps should not activate.
-        activate_next_eligible(&mut plan);
+        editor::activate_next_eligible(&mut plan);
         // Should activate step 1 (Phase 1's eligible step).
-        assert!(matches!(
-            plan.step(PlanStepId::new(1)).unwrap().status,
-            StepStatus::Active
-        ));
-        assert!(matches!(
-            plan.step(PlanStepId::new(2)).unwrap().status,
-            StepStatus::Pending
-        ));
+        let s1 = editor::resolve_step(&plan, PlanStepId::new(1)).unwrap();
+        assert!(s1.is_active());
+        let s2 = editor::resolve_step(&plan, PlanStepId::new(2)).unwrap();
+        assert!(s2.is_pending());
     }
 
     #[test]
@@ -941,19 +880,11 @@ mod tests {
         .unwrap();
 
         // Complete phase 1.
-        plan.step_mut(PlanStepId::new(1))
-            .unwrap()
-            .transition(StepStatus::Active)
-            .unwrap();
-        plan.step_mut(PlanStepId::new(1))
-            .unwrap()
-            .transition(StepStatus::Complete("done".to_string()))
-            .unwrap();
+        editor::activate_step(&mut plan, PlanStepId::new(1)).unwrap();
+        editor::complete_active_step(&mut plan, PlanStepId::new(1), "done".to_string()).unwrap();
 
-        activate_next_eligible(&mut plan);
-        assert!(matches!(
-            plan.step(PlanStepId::new(2)).unwrap().status,
-            StepStatus::Active
-        ));
+        editor::activate_next_eligible(&mut plan);
+        let s2 = editor::resolve_step(&plan, PlanStepId::new(2)).unwrap();
+        assert!(s2.is_active());
     }
 }

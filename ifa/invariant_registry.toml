@@ -22,8 +22,8 @@ authority_boundary_module_path = "engine::state"
 [[invariants]]
 id = "APP-INV-4"
 predicate = "Tool loop payload carries canonical thinking shape without optional payload fields."
-canonical_proof_type_path = "engine::core::thinking::ThinkingPayload"
-authority_boundary_module_path = "engine::core::thinking"
+canonical_proof_type_path = "core::thinking::ThinkingPayload"
+authority_boundary_module_path = "core::thinking"
 
 [[invariants]]
 id = "APP-INV-5"
@@ -52,11 +52,23 @@ authority_boundary_module_path = "context::tool_journal"
 [[invariants]]
 id = "APP-INV-9"
 predicate = "Focus view lifecycle is represented by explicit focus-state variants with state-owned fields."
-canonical_proof_type_path = "engine::ui::view_state::FocusState"
-authority_boundary_module_path = "engine::ui::view_state"
+canonical_proof_type_path = "types::ui::view_state::FocusState"
+authority_boundary_module_path = "types::ui::view_state"
 
 [[invariants]]
 id = "APP-INV-10"
 predicate = "Provider request/response model name selection is represented by strongly typed model names."
 canonical_proof_type_path = "types::ModelName"
 authority_boundary_module_path = "types"
+
+[[invariants]]
+id = "APP-INV-11"
+predicate = "A plan is a valid DAG with non-empty phases and valid monotonically assigned step IDs."
+canonical_proof_type_path = "types::plan::Plan"
+authority_boundary_module_path = "types::plan"
+
+[[invariants]]
+id = "APP-INV-12"
+predicate = "A plan has reached a terminal satisfied state across all phases and steps."
+canonical_proof_type_path = "types::plan::CompletedPlan"
+authority_boundary_module_path = "types::plan"

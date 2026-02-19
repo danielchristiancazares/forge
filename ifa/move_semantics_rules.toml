@@ -10,10 +10,10 @@ consumes_self = true
 post_move_unusability_guarantee = "Transient state value is moved and cannot be reused after transition to Journaled."
 
 [[state_bearing_types]]
-type_path = "engine::ui::view_state::FocusState"
+type_path = "types::ui::view_state::FocusState"
 
 [[state_bearing_types.consumed_transition_methods]]
-method_path = "engine::app::mod::App::set_focus_state"
+method_path = "engine::app::mod::App::focus_start_execution"
 consumes_self = true
 post_move_unusability_guarantee = "Prior focus-state variant is replaced atomically; stale variant data is no longer reachable."
 
@@ -21,6 +21,32 @@ post_move_unusability_guarantee = "Prior focus-state variant is replaced atomica
 type_path = "engine::state::ToolLoopStart"
 
 [[state_bearing_types.consumed_transition_methods]]
-method_path = "engine::app::tool_loop::App::run_tool_loop"
+method_path = "engine::app::tool_loop::App::start_tool_loop"
 consumes_self = true
 post_move_unusability_guarantee = "ToolLoopStart payload ownership is consumed to prevent forked execution paths from reusing the same capability-bearing payload."
+
+[[state_bearing_types]]
+type_path = "types::plan::PendingStep"
+
+[[state_bearing_types.consumed_transition_methods]]
+method_path = "types::plan::PendingStep::activate"
+consumes_self = true
+post_move_unusability_guarantee = "PendingStep value is consumed. Cannot activate twice."
+
+[[state_bearing_types]]
+type_path = "types::plan::ActiveStep"
+
+[[state_bearing_types.consumed_transition_methods]]
+method_path = "types::plan::ActiveStep::complete"
+consumes_self = true
+post_move_unusability_guarantee = "ActiveStep value is consumed to prevent duplicate terminal transitions."
+
+[[state_bearing_types.consumed_transition_methods]]
+method_path = "types::plan::ActiveStep::fail"
+consumes_self = true
+post_move_unusability_guarantee = "ActiveStep value is consumed to prevent duplicate terminal transitions."
+
+[[state_bearing_types.consumed_transition_methods]]
+method_path = "types::plan::ActiveStep::skip"
+consumes_self = true
+post_move_unusability_guarantee = "ActiveStep value is consumed to prevent duplicate terminal transitions."
