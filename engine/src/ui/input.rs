@@ -329,6 +329,16 @@ pub enum FileSelectMut<'a> {
     Inactive,
 }
 
+pub enum SettingsModalRef<'a> {
+    Active(&'a SettingsModalState),
+    Inactive,
+}
+
+pub enum SettingsModalMut<'a> {
+    Active(&'a mut SettingsModalState),
+    Inactive,
+}
+
 impl<'a> CommandDraftMut<'a> {
     #[must_use]
     pub fn into_active(self) -> Option<&'a mut DraftInput> {
@@ -519,17 +529,17 @@ impl InputState {
     }
 
     #[must_use]
-    pub fn settings_modal(&self) -> Option<&SettingsModalState> {
+    pub fn settings_modal_ref(&self) -> SettingsModalRef<'_> {
         match self {
-            InputState::Settings { modal, .. } => Some(modal),
-            _ => None,
+            InputState::Settings { modal, .. } => SettingsModalRef::Active(modal),
+            _ => SettingsModalRef::Inactive,
         }
     }
 
-    pub fn settings_modal_mut(&mut self) -> Option<&mut SettingsModalState> {
+    pub fn settings_modal_mut_access(&mut self) -> SettingsModalMut<'_> {
         match self {
-            InputState::Settings { modal, .. } => Some(modal),
-            _ => None,
+            InputState::Settings { modal, .. } => SettingsModalMut::Active(modal),
+            _ => SettingsModalMut::Inactive,
         }
     }
 }

@@ -19,7 +19,8 @@ pub use forge_types::PredefinedModel;
 pub use history::InputHistory;
 pub use input::{
     CommandDraftRef, DraftInput, FileSelectMut, FileSelectRef, InputMode, InputState,
-    ModelSelectRef, SettingsCategory, SettingsModalState, SettingsSurface,
+    ModelSelectRef, SettingsCategory, SettingsModalMut, SettingsModalRef, SettingsModalState,
+    SettingsSurface,
 };
 pub use modal::{ModalEffect, ModalEffectKind};
 pub use panel::{PanelEffect, PanelEffectKind};

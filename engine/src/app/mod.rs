@@ -1622,7 +1622,7 @@ impl App {
         if self.settings_surface() != Some(SettingsSurface::Resolve) {
             return;
         }
-        if let Some(modal) = self.ui.input.settings_modal_mut()
+        if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access()
             && modal.selected > 0
         {
             modal.selected -= 1;
@@ -1637,7 +1637,7 @@ impl App {
         if len == 0 {
             return;
         }
-        if let Some(modal) = self.ui.input.settings_modal_mut()
+        if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access()
             && modal.selected + 1 < len
         {
             modal.selected += 1;
@@ -1666,7 +1666,7 @@ impl App {
         let Some(category) = Self::settings_category_for_resolve_setting(setting) else {
             return;
         };
-        if let Some(modal) = self.ui.input.settings_modal_mut() {
+        if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
             modal.surface = SettingsSurface::Root;
             modal.filter = DraftInput::default();
             modal.filter_active = false;
@@ -2282,7 +2282,10 @@ impl App {
 
     #[must_use]
     pub fn settings_surface(&self) -> Option<SettingsSurface> {
-        self.ui.input.settings_modal().map(|modal| modal.surface)
+        match self.ui.input.settings_modal_ref() {
+            ui::SettingsModalRef::Active(modal) => Some(modal.surface),
+            ui::SettingsModalRef::Inactive => None,
+        }
     }
 
     #[must_use]
@@ -2293,31 +2296,34 @@ impl App {
 
     #[must_use]
     pub fn settings_filter_text(&self) -> Option<&str> {
-        self.ui
-            .input
-            .settings_modal()
-            .map(|modal| modal.filter.text())
+        match self.ui.input.settings_modal_ref() {
+            ui::SettingsModalRef::Active(modal) => Some(modal.filter.text()),
+            ui::SettingsModalRef::Inactive => None,
+        }
     }
 
     #[must_use]
     pub fn settings_filter_active(&self) -> bool {
-        self.ui
-            .input
-            .settings_modal()
-            .is_some_and(|modal| modal.filter_active)
+        match self.ui.input.settings_modal_ref() {
+            ui::SettingsModalRef::Active(modal) => modal.filter_active,
+            ui::SettingsModalRef::Inactive => false,
+        }
     }
 
     #[must_use]
     pub fn settings_detail_view(&self) -> Option<SettingsCategory> {
-        self.ui
-            .input
-            .settings_modal()
-            .and_then(|modal| modal.detail_view)
+        match self.ui.input.settings_modal_ref() {
+            ui::SettingsModalRef::Active(modal) => modal.detail_view,
+            ui::SettingsModalRef::Inactive => None,
+        }
     }
 
     #[must_use]
     pub fn settings_selected_index(&self) -> Option<usize> {
-        self.ui.input.settings_modal().map(|modal| modal.selected)
+        match self.ui.input.settings_modal_ref() {
+            ui::SettingsModalRef::Active(modal) => Some(modal.selected),
+            ui::SettingsModalRef::Inactive => None,
+        }
     }
 
     #[must_use]
@@ -2330,7 +2336,7 @@ impl App {
     }
 
     fn open_settings_detail(&mut self, category: SettingsCategory) {
-        if let Some(modal) = self.ui.input.settings_modal_mut() {
+        if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
             modal.detail_view = Some(category);
         }
         self.ui.settings_editor = SettingsEditorState::Inactive;
@@ -2378,7 +2384,7 @@ impl App {
         if selected == 0 {
             return;
         }
-        if let Some(modal) = self.ui.input.settings_modal_mut() {
+        if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
             modal.selected -= 1;
         }
     }
@@ -2394,7 +2400,7 @@ impl App {
         if len == 0 || selected + 1 >= len {
             return;
         }
-        if let Some(modal) = self.ui.input.settings_modal_mut() {
+        if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
             modal.selected += 1;
         }
     }
@@ -2403,13 +2409,13 @@ impl App {
         if !self.settings_is_root_surface() {
             return;
         }
-        if let Some(modal) = self.ui.input.settings_modal_mut() {
+        if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
             modal.filter_active = true;
         }
     }
 
     pub fn settings_stop_filter(&mut self) {
-        if let Some(modal) = self.ui.input.settings_modal_mut() {
+        if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
             modal.filter_active = false;
         }
     }
@@ -2418,7 +2424,7 @@ impl App {
         if !self.settings_is_root_surface() {
             return;
         }
-        if let Some(modal) = self.ui.input.settings_modal_mut() {
+        if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
             modal.filter.enter_char(c);
         }
         self.settings_clamp_selection();
@@ -2428,7 +2434,7 @@ impl App {
         if !self.settings_is_root_surface() {
             return;
         }
-        if let Some(modal) = self.ui.input.settings_modal_mut() {
+        if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
             modal.filter.delete_char();
         }
         self.settings_clamp_selection();
@@ -2643,13 +2649,11 @@ impl App {
         if !self.settings_is_root_surface() {
             return;
         }
-        let Some((filter_active, detail_view, selected)) = self
-            .ui
-            .input
-            .settings_modal()
-            .map(|modal| (modal.filter_active, modal.detail_view, modal.selected))
-        else {
-            return;
+        let (filter_active, detail_view, selected) = match self.ui.input.settings_modal_ref() {
+            ui::SettingsModalRef::Active(modal) => {
+                (modal.filter_active, modal.detail_view, modal.selected)
+            }
+            ui::SettingsModalRef::Inactive => return,
         };
 
         if filter_active {
@@ -2670,13 +2674,9 @@ impl App {
     }
 
     pub fn settings_close_or_exit(&mut self) {
-        let Some((filter_active, detail_view)) = self
-            .ui
-            .input
-            .settings_modal()
-            .map(|modal| (modal.filter_active, modal.detail_view))
-        else {
-            return;
+        let (filter_active, detail_view) = match self.ui.input.settings_modal_ref() {
+            ui::SettingsModalRef::Active(modal) => (modal.filter_active, modal.detail_view),
+            ui::SettingsModalRef::Inactive => return,
         };
 
         if filter_active {
@@ -2689,7 +2689,7 @@ impl App {
                 self.push_settings_unsaved_edits_notification();
                 return;
             }
-            if let Some(modal) = self.ui.input.settings_modal_mut() {
+            if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
                 modal.detail_view = None;
             }
             self.reset_settings_detail_editor();
@@ -2701,7 +2701,7 @@ impl App {
 
     fn settings_clamp_selection(&mut self) {
         let len = self.settings_categories().len();
-        if let Some(modal) = self.ui.input.settings_modal_mut() {
+        if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
             if len == 0 {
                 modal.selected = 0;
             } else if modal.selected >= len {
