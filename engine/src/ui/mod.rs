@@ -19,7 +19,7 @@ pub use forge_types::PredefinedModel;
 pub use history::InputHistory;
 pub use input::{
     CommandDraftMut, CommandDraftRef, DraftInput, FileSelectMut, FileSelectRef, InputMode,
-    InputState, ModelSelectMut, ModelSelectRef, SettingsCategory, SettingsModalMut,
+    InputState, InsertDraftMut, ModelSelectMut, ModelSelectRef, SettingsCategory, SettingsModalMut,
     SettingsModalRef, SettingsModalState, SettingsSurface,
 };
 pub use modal::{ModalEffect, ModalEffectKind};

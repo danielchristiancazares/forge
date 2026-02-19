@@ -308,6 +308,11 @@ pub enum CommandDraftMut<'a> {
     Inactive,
 }
 
+pub enum InsertDraftMut<'a> {
+    Active(&'a mut DraftInput),
+    Inactive,
+}
+
 pub enum ModelSelectRef {
     Active { selected: usize },
     Inactive,
@@ -398,6 +403,13 @@ impl InputState {
         match self {
             InputState::Command { command, .. } => CommandDraftMut::Active(command),
             _ => CommandDraftMut::Inactive,
+        }
+    }
+
+    pub fn insert_mut_access(&mut self) -> InsertDraftMut<'_> {
+        match self {
+            InputState::Insert(draft) => InsertDraftMut::Active(draft),
+            _ => InsertDraftMut::Inactive,
         }
     }
 
@@ -550,7 +562,8 @@ impl InputState {
 mod tests {
     use super::{
         CommandDraftMut, CommandDraftRef, DraftInput, FileSelectMut, FileSelectRef, InputMode,
-        InputState, ModelSelectMut, ModelSelectRef, SettingsCategory, SettingsSurface,
+        InputState, InsertDraftMut, ModelSelectMut, ModelSelectRef, SettingsCategory,
+        SettingsSurface,
     };
 
     #[test]
@@ -1118,6 +1131,15 @@ mod tests {
             state.command_mut_access(),
             CommandDraftMut::Inactive
         ));
+    }
+
+    #[test]
+    fn input_state_insert_mut_access() {
+        let mut state = InputState::Insert(DraftInput::default());
+        if let InsertDraftMut::Active(draft) = state.insert_mut_access() {
+            draft.enter_char('x');
+        }
+        assert_eq!(state.draft().text(), "x");
     }
 
     #[test]

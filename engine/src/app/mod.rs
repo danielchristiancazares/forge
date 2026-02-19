@@ -3515,7 +3515,7 @@ impl App {
     /// On first call, stashes the current draft and shows the most recent prompt.
     /// Subsequent calls show progressively older prompts.
     pub fn navigate_history_up(&mut self) {
-        if let InputState::Insert(ref mut draft) = self.ui.input
+        if let ui::InsertDraftMut::Active(draft) = self.ui.input.insert_mut_access()
             && let Some(text) = self.ui.input_history.navigate_prompt_up(draft.text())
         {
             draft.set_text(text.to_owned());
@@ -3526,7 +3526,7 @@ impl App {
     ///
     /// When at the newest entry, restores the stashed draft.
     pub fn navigate_history_down(&mut self) {
-        if let InputState::Insert(ref mut draft) = self.ui.input
+        if let ui::InsertDraftMut::Active(draft) = self.ui.input.insert_mut_access()
             && let Some(text) = self.ui.input_history.navigate_prompt_down()
         {
             draft.set_text(text.to_owned());
