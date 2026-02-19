@@ -12,7 +12,7 @@ use std::{
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use forge_engine::{App, InputMode, SettingsSurface};
+use forge_engine::{App, FileSelectAccess, InputMode, SettingsSurface};
 #[cfg(feature = "focus-view")]
 use forge_engine::{FocusState, ViewMode};
 
@@ -851,7 +851,10 @@ fn handle_file_select_mode(app: &mut App, key: KeyEvent) {
         }
         // Backspace - delete filter character or cancel if empty
         KeyCode::Backspace => {
-            let filter = app.file_select_filter().unwrap_or("");
+            let filter = match app.file_select_access() {
+                FileSelectAccess::Active { filter, .. } => filter,
+                FileSelectAccess::Inactive => "",
+            };
             if filter.is_empty() {
                 app.file_select_cancel();
             } else {

@@ -117,6 +117,21 @@ pub enum CommandInputAccess<'a> {
     Inactive,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSelectAccess {
+    Active { selected_index: usize },
+    Inactive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileSelectAccess<'a> {
+    Active {
+        filter: &'a str,
+        selected_index: usize,
+    },
+    Inactive,
+}
+
 /// Aggregated API usage for a user turn (may include multiple API calls).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TurnUsage {
@@ -3136,8 +3151,13 @@ impl App {
         }
     }
 
-    pub fn model_select_index(&self) -> Option<usize> {
-        self.ui.input.model_select_index()
+    pub fn model_select_access(&self) -> ModelSelectAccess {
+        match self.ui.input.model_select_ref() {
+            ui::ModelSelectRef::Active { selected } => ModelSelectAccess::Active {
+                selected_index: selected,
+            },
+            ui::ModelSelectRef::Inactive => ModelSelectAccess::Inactive,
+        }
     }
 
     fn model_select_max_index() -> usize {
@@ -3178,7 +3198,10 @@ impl App {
 
     /// Select the current model and return to normal mode.
     pub fn model_select_confirm(&mut self) {
-        let Some(index) = self.model_select_index() else {
+        let ModelSelectAccess::Active {
+            selected_index: index,
+        } = self.model_select_access()
+        else {
             return;
         };
         let models = PredefinedModel::all();
@@ -3211,12 +3234,14 @@ impl App {
         }
     }
 
-    pub fn file_select_filter(&self) -> Option<&str> {
-        self.ui.input.file_select_filter()
-    }
-
-    pub fn file_select_index(&self) -> Option<usize> {
-        self.ui.input.file_select_index()
+    pub fn file_select_access(&self) -> FileSelectAccess<'_> {
+        match self.ui.input.file_select_ref() {
+            ui::FileSelectRef::Active { filter, selected } => FileSelectAccess::Active {
+                filter: filter.text(),
+                selected_index: selected,
+            },
+            ui::FileSelectRef::Inactive => FileSelectAccess::Inactive,
+        }
     }
 
     pub fn file_select_files(&self) -> Vec<&ui::FileEntry> {
@@ -3245,23 +3270,25 @@ impl App {
     }
 
     pub fn file_select_update_filter(&mut self) {
-        let filter = self.ui.input.file_select_filter().unwrap_or("").to_string();
+        let filter = match self.ui.input.file_select_ref() {
+            ui::FileSelectRef::Active { filter, .. } => filter.text().to_string(),
+            ui::FileSelectRef::Inactive => String::new(),
+        };
         self.ui.file_picker.update_filter(&filter);
-        // Reset selection to 0 when filter changes
-        if let InputState::FileSelect { selected, .. } = &mut self.ui.input {
+        if let ui::FileSelectMut::Active { selected, .. } = self.ui.input.file_select_mut_access() {
             *selected = 0;
         }
     }
 
     pub fn file_select_push_char(&mut self, c: char) {
-        if let Some(filter) = self.ui.input.file_select_filter_mut() {
+        if let ui::FileSelectMut::Active { filter, .. } = self.ui.input.file_select_mut_access() {
             filter.enter_char(c);
         }
         self.file_select_update_filter();
     }
 
     pub fn file_select_backspace(&mut self) {
-        if let Some(filter) = self.ui.input.file_select_filter_mut() {
+        if let ui::FileSelectMut::Active { filter, .. } = self.ui.input.file_select_mut_access() {
             filter.delete_char();
         }
         self.file_select_update_filter();
@@ -3269,7 +3296,11 @@ impl App {
 
     /// Confirm file selection - insert the selected file path into the draft.
     pub fn file_select_confirm(&mut self) {
-        let Some(index) = self.file_select_index() else {
+        let FileSelectAccess::Active {
+            selected_index: index,
+            ..
+        } = self.file_select_access()
+        else {
             self.enter_insert_mode();
             return;
         };

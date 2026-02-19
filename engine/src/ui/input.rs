@@ -308,6 +308,27 @@ pub enum CommandDraftMut<'a> {
     Inactive,
 }
 
+pub enum ModelSelectRef {
+    Active { selected: usize },
+    Inactive,
+}
+
+pub enum FileSelectRef<'a> {
+    Active {
+        filter: &'a DraftInput,
+        selected: usize,
+    },
+    Inactive,
+}
+
+pub enum FileSelectMut<'a> {
+    Active {
+        filter: &'a mut DraftInput,
+        selected: &'a mut usize,
+    },
+    Inactive,
+}
+
 impl<'a> CommandDraftMut<'a> {
     #[must_use]
     pub fn into_active(self) -> Option<&'a mut DraftInput> {
@@ -376,10 +397,12 @@ impl InputState {
     }
 
     #[must_use]
-    pub fn model_select_index(&self) -> Option<usize> {
+    pub fn model_select_ref(&self) -> ModelSelectRef {
         match self {
-            InputState::ModelSelect { selected, .. } => Some(*selected),
-            _ => None,
+            InputState::ModelSelect { selected, .. } => ModelSelectRef::Active {
+                selected: *selected,
+            },
+            _ => ModelSelectRef::Inactive,
         }
     }
 
@@ -474,25 +497,24 @@ impl InputState {
     }
 
     #[must_use]
-    pub fn file_select_filter(&self) -> Option<&str> {
+    pub fn file_select_ref(&self) -> FileSelectRef<'_> {
         match self {
-            InputState::FileSelect { filter, .. } => Some(filter.text()),
-            _ => None,
+            InputState::FileSelect {
+                filter, selected, ..
+            } => FileSelectRef::Active {
+                filter,
+                selected: *selected,
+            },
+            _ => FileSelectRef::Inactive,
         }
     }
 
-    pub fn file_select_filter_mut(&mut self) -> Option<&mut DraftInput> {
+    pub fn file_select_mut_access(&mut self) -> FileSelectMut<'_> {
         match self {
-            InputState::FileSelect { filter, .. } => Some(filter),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub fn file_select_index(&self) -> Option<usize> {
-        match self {
-            InputState::FileSelect { selected, .. } => Some(*selected),
-            _ => None,
+            InputState::FileSelect {
+                filter, selected, ..
+            } => FileSelectMut::Active { filter, selected },
+            _ => FileSelectMut::Inactive,
         }
     }
 
@@ -515,8 +537,8 @@ impl InputState {
 #[cfg(test)]
 mod tests {
     use super::{
-        CommandDraftMut, CommandDraftRef, DraftInput, InputMode, InputState, SettingsCategory,
-        SettingsSurface,
+        CommandDraftMut, CommandDraftRef, DraftInput, FileSelectMut, FileSelectRef, InputMode,
+        InputState, ModelSelectRef, SettingsCategory, SettingsSurface,
     };
 
     #[test]
@@ -970,13 +992,58 @@ mod tests {
             draft: DraftInput::default(),
             selected: 3,
         };
-        assert_eq!(state.model_select_index(), Some(3));
+        assert!(matches!(
+            state.model_select_ref(),
+            ModelSelectRef::Active { selected: 3 }
+        ));
     }
 
     #[test]
     fn input_state_model_select_index_not_in_mode() {
         let state = InputState::Normal(DraftInput::default());
-        assert_eq!(state.model_select_index(), None);
+        assert!(matches!(state.model_select_ref(), ModelSelectRef::Inactive));
+    }
+
+    #[test]
+    fn input_state_file_select_ref_access() {
+        let state = InputState::FileSelect {
+            draft: DraftInput::default(),
+            filter: DraftInput {
+                text: "src".to_string(),
+                cursor: 3,
+            },
+            selected: 4,
+        };
+        match state.file_select_ref() {
+            FileSelectRef::Active { filter, selected } => {
+                assert_eq!(filter.text(), "src");
+                assert_eq!(selected, 4);
+            }
+            FileSelectRef::Inactive => panic!("expected file-select state"),
+        }
+    }
+
+    #[test]
+    fn input_state_file_select_mut_access() {
+        let mut state = InputState::FileSelect {
+            draft: DraftInput::default(),
+            filter: DraftInput {
+                text: "src".to_string(),
+                cursor: 3,
+            },
+            selected: 1,
+        };
+        if let FileSelectMut::Active { filter, selected } = state.file_select_mut_access() {
+            filter.enter_char('!');
+            *selected = 2;
+        }
+        match state.file_select_ref() {
+            FileSelectRef::Active { filter, selected } => {
+                assert_eq!(filter.text(), "src!");
+                assert_eq!(selected, 2);
+            }
+            FileSelectRef::Inactive => panic!("expected file-select state"),
+        }
     }
 
     #[test]

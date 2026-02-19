@@ -33,9 +33,10 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use forge_engine::{
-    App, ChangeKind, ContextUsageStatus, DisplayItem, FileDiff, InputMode, Message,
-    PredefinedModel, Provider, SettingsCategory, SettingsSurface, TurnUsage, UiOptions,
-    command_specs, find_match_positions, sanitize_display_text, sanitize_terminal_text,
+    App, ChangeKind, ContextUsageStatus, DisplayItem, FileDiff, FileSelectAccess, InputMode,
+    Message, ModelSelectAccess, PredefinedModel, Provider, SettingsCategory, SettingsSurface,
+    TurnUsage, UiOptions, command_specs, find_match_positions, sanitize_display_text,
+    sanitize_terminal_text,
 };
 use forge_types::{ToolResult, sanitize_path_for_display};
 
@@ -2673,7 +2674,10 @@ pub fn draw_model_selector(
     elapsed: Duration,
 ) {
     let area = frame.area();
-    let selected_index = app.model_select_index().unwrap_or(0);
+    let selected_index = match app.model_select_access() {
+        ModelSelectAccess::Active { selected_index } => selected_index,
+        ModelSelectAccess::Inactive => 0,
+    };
 
     let selector_width = 60.min(area.width.saturating_sub(4)).max(40);
     let content_width = selector_width.saturating_sub(4).max(1) as usize; // borders + padding
@@ -3207,8 +3211,13 @@ fn draw_file_selector(
     elapsed: Duration,
 ) {
     let area = frame.area();
-    let selected_index = app.file_select_index().unwrap_or(0);
-    let filter = app.file_select_filter().unwrap_or("").to_string();
+    let (selected_index, filter) = match app.file_select_access() {
+        FileSelectAccess::Active {
+            filter,
+            selected_index,
+        } => (selected_index, filter.to_string()),
+        FileSelectAccess::Inactive => (0, String::new()),
+    };
     let files = app.file_select_files();
 
     let selector_width = 70.min(area.width.saturating_sub(4)).max(40);
