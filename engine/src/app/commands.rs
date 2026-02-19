@@ -309,6 +309,12 @@ pub(crate) enum ContextUsageCondition {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RetryPromptCapture {
+    Found(String),
+    Missing,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ParseIssue<'a> {
     BlankInput,
@@ -804,20 +810,22 @@ impl super::App {
                     let cp = self.core.checkpoints.checkpoint(proof);
                     cp.conversation_len()
                 };
-                let prompt = self
+                let mut prompt = RetryPromptCapture::Missing;
+                if let Some(slice) = self
                     .core
                     .context_manager
                     .history()
                     .entries()
                     .get(conversation_len..)
-                    .and_then(|slice| {
-                        slice.iter().find_map(|entry| match entry.message() {
-                            forge_types::Message::User(_) => {
-                                Some(entry.message().content().to_string())
-                            }
-                            _ => None,
-                        })
-                    });
+                {
+                    for entry in slice {
+                        if let forge_types::Message::User(_) = entry.message() {
+                            prompt =
+                                RetryPromptCapture::Found(entry.message().content().to_string());
+                            break;
+                        }
+                    }
+                }
 
                 if let Err(msg) =
                     self.apply_rewind(proof, super::checkpoints::RewindScope::Conversation)
@@ -826,7 +834,7 @@ impl super::App {
                     return;
                 }
 
-                if let Some(text) = prompt {
+                if let RetryPromptCapture::Found(text) = prompt {
                     self.ui.input.draft_mut().set_text(text);
                     self.ui.input = std::mem::take(&mut self.ui.input).into_insert();
                 }

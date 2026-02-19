@@ -583,7 +583,7 @@ fn expand_file_references(
         }
 
         match read_file_reference_content(&resolved, max_read_bytes) {
-            Some(content) => {
+            FileReferenceContent::Text(content) => {
                 let byte_count = content.len();
                 let line_count = content.lines().count() as u32;
                 if let Ok(mut cache) = file_cache.try_lock() {
@@ -592,7 +592,7 @@ fn expand_file_references(
                 file_sections.push(format!("`{path_str}`:\n```\n{content}\n```"));
                 expanded_files.push((path_str, byte_count));
             }
-            None => {
+            FileReferenceContent::NonTextOrUnreadable => {
                 failed.push((path_str, "binary or non-UTF-8 file".to_string()));
             }
         }
@@ -614,7 +614,7 @@ fn expand_file_references(
 /// - `@path/with\ spaces/file.md`
 fn parse_file_references(text: &str) -> Vec<String> {
     let mut references = Vec::new();
-    let mut prev_char: Option<char> = None;
+    let mut prev_char = PreviousChar::Start;
     let mut cursor = 0usize;
 
     while cursor < text.len() {
@@ -623,49 +623,76 @@ fn parse_file_references(text: &str) -> Vec<String> {
         let ch_len = ch.len_utf8();
 
         if ch == '@' {
-            let at_token_start = prev_char.is_none_or(char::is_whitespace);
+            let at_token_start = prev_char.is_token_boundary();
             if at_token_start {
                 let path_start = cursor + ch_len;
                 let (parsed, next_cursor) = parse_file_reference_path(text, path_start);
-                if let Some(path) = parsed {
+                if let ParsedReference::Path(path) = parsed {
                     references.push(path);
                 }
                 if next_cursor > cursor {
-                    prev_char = text[..next_cursor].chars().next_back();
+                    prev_char = text[..next_cursor]
+                        .chars()
+                        .next_back()
+                        .map_or(PreviousChar::Start, PreviousChar::Char);
                     cursor = next_cursor;
                     continue;
                 }
             }
         }
 
-        prev_char = Some(ch);
+        prev_char = PreviousChar::Char(ch);
         cursor += ch_len;
     }
 
     references
 }
 
-fn parse_file_reference_path(text: &str, start: usize) -> (Option<String>, usize) {
+#[derive(Debug, Clone, Copy)]
+enum PreviousChar {
+    Start,
+    Char(char),
+}
+
+impl PreviousChar {
+    fn is_token_boundary(self) -> bool {
+        match self {
+            Self::Start => true,
+            Self::Char(ch) => ch.is_whitespace(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParsedReference {
+    Path(String),
+    Missing,
+}
+
+fn parse_file_reference_path(text: &str, start: usize) -> (ParsedReference, usize) {
     if start >= text.len() {
-        return (None, start);
+        return (ParsedReference::Missing, start);
     }
 
     match text[start..].chars().next() {
         Some('"') => parse_quoted_file_reference(text, start),
-        Some(ch) if ch.is_whitespace() => (None, start),
+        Some(ch) if ch.is_whitespace() => (ParsedReference::Missing, start),
         Some(_) => parse_unquoted_file_reference(text, start),
-        None => (None, start),
+        None => (ParsedReference::Missing, start),
     }
 }
 
-fn parse_quoted_file_reference(text: &str, quote_start: usize) -> (Option<String>, usize) {
+fn parse_quoted_file_reference(text: &str, quote_start: usize) -> (ParsedReference, usize) {
     let mut path = String::new();
     let mut chars = text[quote_start + 1..].char_indices().peekable();
 
     while let Some((offset, ch)) = chars.next() {
         let abs_idx = quote_start + 1 + offset;
         if ch == '"' {
-            return ((!path.is_empty()).then_some(path), abs_idx + 1);
+            if path.is_empty() {
+                return (ParsedReference::Missing, abs_idx + 1);
+            }
+            return (ParsedReference::Path(path), abs_idx + 1);
         }
 
         if ch == '\\'
@@ -680,10 +707,10 @@ fn parse_quoted_file_reference(text: &str, quote_start: usize) -> (Option<String
         path.push(ch);
     }
 
-    (None, text.len())
+    (ParsedReference::Missing, text.len())
 }
 
-fn parse_unquoted_file_reference(text: &str, start: usize) -> (Option<String>, usize) {
+fn parse_unquoted_file_reference(text: &str, start: usize) -> (ParsedReference, usize) {
     let mut path = String::new();
     let mut end = text.len();
     let mut chars = text[start..].char_indices().peekable();
@@ -707,16 +734,31 @@ fn parse_unquoted_file_reference(text: &str, start: usize) -> (Option<String>, u
         path.push(ch);
     }
 
-    ((!path.is_empty()).then_some(path), end)
+    if path.is_empty() {
+        (ParsedReference::Missing, end)
+    } else {
+        (ParsedReference::Path(path), end)
+    }
 }
 
-fn read_file_reference_content(path: &std::path::Path, max_bytes: usize) -> Option<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FileReferenceContent {
+    Text(String),
+    NonTextOrUnreadable,
+}
+
+fn read_file_reference_content(path: &std::path::Path, max_bytes: usize) -> FileReferenceContent {
     use std::io::Read;
 
-    let file = std::fs::File::open(path).ok()?;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return FileReferenceContent::NonTextOrUnreadable,
+    };
     let mut limited = file.take((max_bytes + 1) as u64);
     let mut bytes = Vec::with_capacity(max_bytes + 1);
-    limited.read_to_end(&mut bytes).ok()?;
+    if limited.read_to_end(&mut bytes).is_err() {
+        return FileReferenceContent::NonTextOrUnreadable;
+    }
 
     let truncated = bytes.len() > max_bytes;
     let bytes = if truncated {
@@ -729,18 +771,21 @@ fn read_file_reference_content(path: &std::path::Path, max_bytes: usize) -> Opti
         Ok(content) => content.to_string(),
         Err(err) if truncated && err.error_len().is_none() => {
             let valid_up_to = err.valid_up_to();
-            std::str::from_utf8(&bytes[..valid_up_to]).ok()?.to_string()
+            match std::str::from_utf8(&bytes[..valid_up_to]) {
+                Ok(content) => content.to_string(),
+                Err(_) => return FileReferenceContent::NonTextOrUnreadable,
+            }
         }
-        Err(_) => return None,
+        Err(_) => return FileReferenceContent::NonTextOrUnreadable,
     };
 
     if truncated {
-        Some(format!(
+        FileReferenceContent::Text(format!(
             "{content}...\n[truncated at {}KB]",
             max_bytes / 1024
         ))
     } else {
-        Some(content)
+        FileReferenceContent::Text(content)
     }
 }
 
@@ -770,7 +815,7 @@ fn longest_common_prefix(strings: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        complete_command_name, expand_file_references, longest_common_prefix,
+        FileReferenceContent, complete_command_name, expand_file_references, longest_common_prefix,
         parse_file_references, read_file_reference_content,
     };
 
@@ -868,7 +913,10 @@ mod tests {
         content.push('b');
         std::fs::write(&path, content).expect("write file");
 
-        let loaded = read_file_reference_content(&path, TEST_MAX_BYTES).expect("load content");
+        let loaded = match read_file_reference_content(&path, TEST_MAX_BYTES) {
+            FileReferenceContent::Text(content) => content,
+            FileReferenceContent::NonTextOrUnreadable => panic!("load content"),
+        };
         let marker = format!("...\n[truncated at {}KB]", TEST_MAX_BYTES / 1024);
 
         assert!(loaded.ends_with(&marker));
