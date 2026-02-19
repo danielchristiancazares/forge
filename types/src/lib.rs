@@ -27,7 +27,7 @@
 //! | Output config | [`OutputLimits`], [`OutputLimitsError`], [`ThinkingBudget`], [`ThinkingState`], [`CacheHint`] |
 //! | Streaming | [`StreamEvent`], [`StreamFinishReason`], [`ApiUsage`] |
 //! | Tool calling | [`ToolDefinition`], [`ToolCall`], [`ToolResult`] |
-//! | Messages | [`SystemMessage`], [`UserMessage`], [`AssistantMessage`], [`Message`], [`CacheableMessage`] |
+//! | Messages | [`SystemMessage`], [`UserMessage`], [`AssistantMessage`], [`ThinkingMessage`], [`ClaudeSignatureRef`], [`Message`], [`CacheableMessage`] |
 //! | Plan | [`Plan`], [`Phase`], [`PlanStep`], [`PlanStepId`], [`PlanState`], [`CompletedPlan`], [`EditOp`] |
 //! | Security | [`sanitize_terminal_text`], [`strip_steganographic_chars`], [`detect_mixed_script`], [`MixedScriptDetection`], [`HomoglyphWarning`] |
 
@@ -47,7 +47,9 @@ pub use budget::{
     ThinkingState,
 };
 pub use confusables::{HomoglyphWarning, MixedScriptDetection, detect_mixed_script};
-pub use message::{AssistantMessage, Message, SystemMessage, ThinkingMessage, UserMessage};
+pub use message::{
+    AssistantMessage, ClaudeSignatureRef, Message, SystemMessage, ThinkingMessage, UserMessage,
+};
 pub use model::{
     EnumKind, EnumParseError, InternalModel, ModelName, ModelParseError, PredefinedModel, Provider,
 };

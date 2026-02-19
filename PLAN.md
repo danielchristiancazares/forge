@@ -60,11 +60,16 @@ Completed now:
 48. Updated cache allocation callsites, tests, and docs to use explicit cache-budget outcomes.
 49. Reclassified `types/src/budget.rs` to Core after removing Option from its core interface and clearing banned Core variants.
 50. Narrowed `PlanStep` construction surface further by removing direct `Deserialize` derives from step typestate structs and routing deserialization through `PlanStep`'s authority boundary mapping.
+51. Removed remaining `Option`-based message-domain surfaces:
+52. `UserMessage` now uses explicit display-content state (`Canonical`/`Override`) with compatibility-preserving serde mapping.
+53. `ThinkingMessage::claude_signature` now returns explicit `ClaudeSignatureRef` instead of `Option<&ThoughtSignature>`.
+54. Reclassified `types/src/message.rs` to Core after clearing `Option` from message-domain struct fields and method signatures.
+55. Removed remaining public mutable `PlanStep` escape hatches (`description_mut`, `depends_on_mut`) and narrowed `editor::resolve_step_mut` to internal scope.
 
 In progress:
 
 1. Phase 2 remaining hardening: continue shrinking `PlanStep` public construction surface.
-2. Phase 3 remaining hardening: remove `Option` from remaining Core interfaces and Core domain structs.
+2. Phase 3 remaining hardening: continue explicit-outcome migration in remaining boundary-classified type surfaces so they can be promoted to Core.
 
 ## Non-Negotiable Constraints
 

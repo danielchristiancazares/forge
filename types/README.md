@@ -1357,7 +1357,7 @@ assert_eq!(msg.content(), "You are a helpful assistant.");
 
 A user input message with content and timestamp.
 
-Supports an optional **display-only content** channel: `content` is the canonical content sent to the model, while `display_content` is a UI-facing representation (e.g., with file references expanded).
+Supports an explicit **display-content state**: `content` is the canonical content sent to the model, while an optional override can provide a UI-facing representation (e.g., with file references expanded).
 
 ```rust
 use forge_types::{UserMessage, NonEmptyString};
@@ -1375,7 +1375,7 @@ assert_eq!(msg.content(), "@README.md summarize this");
 assert_eq!(msg.display_content(), "summarize README.md (expanded preview...)");
 ```
 
-**Fields:** `content: NonEmptyString`, `display_content: Option<NonEmptyString>`, `timestamp: SystemTime`
+**Fields:** `content: NonEmptyString`, `display_content` state (`Canonical | Override(NonEmptyString)`), `timestamp: SystemTime`
 
 ### AssistantMessage
 
@@ -1413,7 +1413,7 @@ let content = NonEmptyString::new("Let me think about this...")?;
 let msg = ThinkingMessage::new(model.clone(), content.clone());
 assert_eq!(msg.content(), "Let me think about this...");
 assert!(!msg.requires_persistence());
-assert!(msg.claude_signature().is_none());
+assert!(!msg.claude_signature().is_signed());
 
 // Claude signed replay
 let msg = ThinkingMessage::with_signature(
@@ -1422,7 +1422,7 @@ let msg = ThinkingMessage::with_signature(
     "encrypted-sig-data".to_string(),
 );
 assert!(msg.requires_persistence());
-assert!(msg.claude_signature().is_some());
+assert!(msg.claude_signature().is_signed());
 ```
 
 **Fields:** `content: NonEmptyString`, `replay: ThinkingReplayState`, `timestamp: SystemTime`, `model: ModelName`

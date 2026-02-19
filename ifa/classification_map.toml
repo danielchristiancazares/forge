@@ -98,8 +98,8 @@ rationale = "Pure text analysis and warning construction."
 
 [[rules]]
 prefix = "types/src/message.rs"
-classification = "boundary"
-rationale = "Message domain model; reclassify Core after Phase 3 removes Option fields and signatures."
+classification = "core"
+rationale = "Message domain model now uses explicit display/signature outcomes with no Option in core interfaces or domain struct fields."
 
 [[rules]]
 prefix = "types/src/model.rs"

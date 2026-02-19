@@ -316,7 +316,7 @@ impl PlanStep {
         }
     }
 
-    pub fn description_mut(&mut self) -> &mut String {
+    fn description_mut(&mut self) -> &mut String {
         match self {
             Self::Pending(s) => &mut s.0.description,
             Self::Active(s) => &mut s.0.description,
@@ -337,7 +337,7 @@ impl PlanStep {
         }
     }
 
-    pub fn depends_on_mut(&mut self) -> &mut Vec<PlanStepId> {
+    fn depends_on_mut(&mut self) -> &mut Vec<PlanStepId> {
         match self {
             Self::Pending(s) => &mut s.0.depends_on,
             Self::Active(s) => &mut s.0.depends_on,
@@ -994,7 +994,7 @@ pub mod editor {
         Ok(&plan.phases[phase_idx].steps[step_idx])
     }
 
-    pub fn resolve_step_mut(
+    fn resolve_step_mut(
         plan: &mut Plan,
         step_id: PlanStepId,
     ) -> Result<&mut PlanStep, StepResolutionError> {

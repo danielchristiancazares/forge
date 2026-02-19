@@ -9,7 +9,77 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelName, Provider};
 use crate::proofs::{EmptyStringError, NonEmptyString, normalize_non_empty_for_persistence};
-use crate::{OpenAIReasoningItem, ThinkingReplayState, ThoughtSignature, ToolCall, ToolResult};
+use crate::{
+    OpenAIReasoningItem, ThinkingReplayState, ThoughtSignature, ThoughtSignatureState, ToolCall,
+    ToolResult,
+};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+enum UserDisplayContent {
+    #[default]
+    Canonical,
+    Override(NonEmptyString),
+}
+
+impl UserDisplayContent {
+    #[must_use]
+    pub const fn is_canonical(&self) -> bool {
+        matches!(self, Self::Canonical)
+    }
+
+    #[must_use]
+    pub fn as_str<'a>(&'a self, content: &'a NonEmptyString) -> &'a str {
+        match self {
+            Self::Canonical => content.as_str(),
+            Self::Override(display_content) => display_content.as_str(),
+        }
+    }
+
+    #[must_use]
+    pub fn normalized_for_persistence(&self) -> Self {
+        match self {
+            Self::Canonical => Self::Canonical,
+            Self::Override(display_content) => {
+                Self::Override(normalize_non_empty_for_persistence(display_content))
+            }
+        }
+    }
+}
+
+mod user_display_content_wire {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::NonEmptyString;
+
+    use super::UserDisplayContent;
+
+    pub fn serialize<S>(value: &UserDisplayContent, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            UserDisplayContent::Canonical => serializer.serialize_none(),
+            UserDisplayContent::Override(display_content) => display_content.serialize(serializer),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<UserDisplayContent, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            DisplayContent(NonEmptyString),
+            Null(()),
+        }
+
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::DisplayContent(display_content) => UserDisplayContent::Override(display_content),
+            Wire::Null(()) => UserDisplayContent::Canonical,
+        })
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemMessage {
@@ -40,8 +110,12 @@ impl SystemMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMessage {
     content: NonEmptyString,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    display_content: Option<NonEmptyString>,
+    #[serde(
+        default,
+        skip_serializing_if = "UserDisplayContent::is_canonical",
+        with = "user_display_content_wire"
+    )]
+    display_content: UserDisplayContent,
     timestamp: SystemTime,
 }
 
@@ -50,7 +124,7 @@ impl UserMessage {
     pub fn new(content: NonEmptyString, timestamp: SystemTime) -> Self {
         Self {
             content,
-            display_content: None,
+            display_content: UserDisplayContent::Canonical,
             timestamp,
         }
     }
@@ -63,7 +137,7 @@ impl UserMessage {
     ) -> Self {
         Self {
             content,
-            display_content: Some(display_content),
+            display_content: UserDisplayContent::Override(display_content),
             timestamp,
         }
     }
@@ -75,19 +149,14 @@ impl UserMessage {
 
     #[must_use]
     pub fn display_content(&self) -> &str {
-        self.display_content
-            .as_ref()
-            .map_or_else(|| self.content.as_str(), NonEmptyString::as_str)
+        self.display_content.as_str(&self.content)
     }
 
     #[must_use]
     pub fn normalized_for_persistence(&self) -> Self {
         Self {
             content: normalize_non_empty_for_persistence(&self.content),
-            display_content: self
-                .display_content
-                .as_ref()
-                .map(normalize_non_empty_for_persistence),
+            display_content: self.display_content.normalized_for_persistence(),
             timestamp: self.timestamp,
         }
     }
@@ -151,6 +220,19 @@ pub struct ThinkingMessage {
     model: ModelName,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaudeSignatureRef<'a> {
+    Unsigned,
+    Signed(&'a ThoughtSignature),
+}
+
+impl ClaudeSignatureRef<'_> {
+    #[must_use]
+    pub const fn is_signed(self) -> bool {
+        matches!(self, Self::Signed(_))
+    }
+}
+
 impl ThinkingMessage {
     #[must_use]
     pub fn new(model: ModelName, content: NonEmptyString, timestamp: SystemTime) -> Self {
@@ -210,10 +292,22 @@ impl ThinkingMessage {
     }
 
     #[must_use]
-    pub fn claude_signature(&self) -> Option<&ThoughtSignature> {
+    pub fn claude_signature(&self) -> ClaudeSignatureRef<'_> {
         match &self.replay {
-            ThinkingReplayState::ClaudeSigned { signature } => Some(signature),
-            _ => None,
+            ThinkingReplayState::ClaudeSigned { signature } => {
+                ClaudeSignatureRef::Signed(signature)
+            }
+            _ => ClaudeSignatureRef::Unsigned,
+        }
+    }
+
+    #[must_use]
+    pub fn claude_signature_state(&self) -> ThoughtSignatureState {
+        match self.claude_signature() {
+            ClaudeSignatureRef::Unsigned => ThoughtSignatureState::Unsigned,
+            ClaudeSignatureRef::Signed(signature) => {
+                ThoughtSignatureState::Signed(signature.clone())
+            }
         }
     }
 
@@ -365,5 +459,59 @@ impl Message {
             Message::ToolUse(call) => Message::ToolUse(call.normalized_for_persistence()),
             Message::ToolResult(result) => Message::ToolResult(result.normalized_for_persistence()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ClaudeSignatureRef, ThinkingMessage, UserMessage};
+    use crate::{NonEmptyString, Provider};
+
+    fn non_empty(value: &str) -> NonEmptyString {
+        NonEmptyString::new(value).unwrap()
+    }
+
+    #[test]
+    fn user_message_without_override_omits_display_content_field() {
+        let message = UserMessage::new(non_empty("hello"), std::time::UNIX_EPOCH);
+        let json = serde_json::to_value(&message).unwrap();
+        let object = json.as_object().unwrap();
+        assert!(!object.contains_key("display_content"));
+    }
+
+    #[test]
+    fn user_message_deserializes_legacy_missing_display_content() {
+        let json = serde_json::json!({
+            "content": "hello",
+            "timestamp": { "secs_since_epoch": 0, "nanos_since_epoch": 0 }
+        });
+        let message: UserMessage = serde_json::from_value(json).unwrap();
+        assert_eq!(message.content(), "hello");
+        assert_eq!(message.display_content(), "hello");
+    }
+
+    #[test]
+    fn thinking_message_signature_ref_is_explicit() {
+        let unsigned = ThinkingMessage::new(
+            Provider::Claude.default_model(),
+            non_empty("thinking"),
+            std::time::UNIX_EPOCH,
+        );
+        assert!(matches!(
+            unsigned.claude_signature(),
+            ClaudeSignatureRef::Unsigned
+        ));
+
+        let signed = ThinkingMessage::with_signature(
+            Provider::Claude.default_model(),
+            non_empty("thinking"),
+            "abc".to_string(),
+            std::time::UNIX_EPOCH,
+        );
+        assert!(matches!(
+            signed.claude_signature(),
+            ClaudeSignatureRef::Signed(_)
+        ));
+        assert!(signed.claude_signature_state().is_signed());
     }
 }
