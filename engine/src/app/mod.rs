@@ -1444,6 +1444,22 @@ impl App {
         }
     }
 
+    #[inline]
+    fn tool_recovery_state(&self) -> Option<&state::ToolRecoveryState> {
+        match &self.core.state {
+            OperationState::ToolRecovery(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn recovery_blocked_state(&self) -> Option<&state::RecoveryBlockedState> {
+        match &self.core.state {
+            OperationState::RecoveryBlocked(state) => Some(state),
+            _ => None,
+        }
+    }
+
     // Tool loop public accessors
 
     pub fn tool_loop_calls(&self) -> Option<&[ToolCall]> {
@@ -1545,17 +1561,11 @@ impl App {
     }
 
     pub fn tool_recovery_calls(&self) -> Option<&[ToolCall]> {
-        match &self.core.state {
-            OperationState::ToolRecovery(state) => Some(&state.batch.calls),
-            _ => None,
-        }
+        Some(&self.tool_recovery_state()?.batch.calls)
     }
 
     pub fn tool_recovery_results(&self) -> Option<&[ToolResult]> {
-        match &self.core.state {
-            OperationState::ToolRecovery(state) => Some(&state.batch.results),
-            _ => None,
-        }
+        Some(&self.tool_recovery_state()?.batch.results)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1725,10 +1735,7 @@ impl App {
 
     /// Human-readable reason for a recovery block (if recovery is blocked).
     pub fn recovery_blocked_reason(&self) -> Option<String> {
-        match &self.core.state {
-            OperationState::RecoveryBlocked(state) => Some(state.reason.message()),
-            _ => None,
-        }
+        Some(self.recovery_blocked_state()?.reason.message())
     }
 
     /// Centralizes busy-state checks to ensure consistency across
