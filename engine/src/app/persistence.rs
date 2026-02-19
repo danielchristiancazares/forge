@@ -284,7 +284,7 @@ impl App {
     ///
     /// This runs only while the app is idle to avoid interfering with streaming/tool execution.
     pub(crate) fn poll_journal_cleanup(&mut self) {
-        if !matches!(self.core.state, OperationState::Idle) {
+        if self.is_loading() {
             return;
         }
 

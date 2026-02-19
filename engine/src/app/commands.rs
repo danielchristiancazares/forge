@@ -712,7 +712,7 @@ impl super::App {
             }
             Command::Journal => match self.runtime.stream_journal.stats() {
                 Ok(stats) => {
-                    let streaming = matches!(self.core.state, OperationState::Streaming(_));
+                    let streaming = self.streaming().is_some();
                     let state_desc = if streaming {
                         "streaming"
                     } else if stats.unsealed_entries > 0 {
