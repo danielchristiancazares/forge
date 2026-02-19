@@ -4,3 +4,5 @@
 //! internal authority boundary. Subsequent phases will move deterministic state
 //! transitions and proof types under `crate::core` and restrict visibility with
 //! `pub(in crate::core)`.
+
+pub(crate) mod thinking;

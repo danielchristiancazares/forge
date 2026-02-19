@@ -17,8 +17,8 @@ use super::{
 };
 use crate::state::{
     ApprovalState, JournalStatus, OperationEdge, OperationState, PlanApprovalState, ToolBatch,
-    ToolCommitPayload, ToolLoopInput, ToolLoopPhase, ToolLoopState, ToolPlan, ToolRecoveryDecision,
-    ToolRecoveryState,
+    ToolCommitPayload, ToolJournalBatch, ToolLoopIngress, ToolLoopPhase, ToolLoopStart,
+    ToolLoopState, ToolPlan, ToolRecoveryDecision, ToolRecoveryState,
 };
 use crate::tools::{self, ConfirmationRequest, analyze_tool_arguments};
 use crate::util;
@@ -189,7 +189,7 @@ impl App {
         tracing::warn!("Tool journal error during {context}: {error}");
 
         // Latch tool gate so future tool calls are pre-resolved.
-        let newly_disabled = self.tool_gate.disable(error.clone());
+        let newly_disabled = self.core.tool_gate.disable(error.clone());
         if newly_disabled {
             self.push_notification(format!(
                 "Tool journal error during {context}; tool execution disabled for safety. ({error})"
@@ -203,22 +203,22 @@ impl App {
         result: &ToolResult,
         context: &'static str,
     ) -> bool {
-        if let Err(e) = self.tool_journal.record_result(batch_id, result) {
+        if let Err(e) = self.runtime.tool_journal.record_result(batch_id, result) {
             self.disable_tools_due_to_tool_journal_error(context, e);
             return false;
         }
         true
     }
 
-    pub(crate) fn handle_tool_calls(&mut self, input: ToolLoopInput) {
-        let ToolLoopInput {
+    pub(crate) fn handle_tool_calls(&mut self, input: ToolLoopIngress) {
+        let ToolLoopIngress {
             assistant_text,
-            thinking_message,
+            thinking,
             calls: tool_calls,
             pre_resolved,
             model,
             step_id,
-            tool_batch_id,
+            tool_journal,
             turn,
         } = input;
 
@@ -232,32 +232,28 @@ impl App {
         let assistant_text = crate::security::sanitize_display_text(&assistant_text);
 
         // Extract replay state for journal persistence (crash recovery needs it).
-        let replay_state = thinking_message
-            .as_ref()
-            .and_then(|m| match m {
-                Message::Thinking(t) => Some(t.replay_state().clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
+        let replay_state = thinking.replay_state_for_journal();
 
         // If tools are disabled due to journal health, fail closed: pre-resolve tool calls to errors.
-        if let Some(reason) = self
-            .tool_gate
-            .reason()
-            .map(std::string::ToString::to_string)
+        if let super::tool_gate::ToolGateStatus::Disabled { reason } = self.core.tool_gate.status()
         {
-            if let Some(batch_id) = tool_batch_id
-                && let Err(e) = self.tool_journal.discard_batch(batch_id)
+            let reason = reason.to_string();
+            if let ToolJournalBatch::Present(batch_id) = tool_journal
+                && let Err(e) = self.runtime.tool_journal.discard_batch(batch_id)
             {
                 tracing::warn!("Failed to discard stale tool batch {batch_id}: {e}");
             }
 
-            let max_iters = self.tool_settings.limits.max_tool_iterations_per_user_turn;
-            let next_iteration = self.tool_iterations.saturating_add(1);
+            let max_iters = self
+                .runtime
+                .tool_settings
+                .limits
+                .max_tool_iterations_per_user_turn;
+            let next_iteration = self.core.tool_iterations.saturating_add(1);
             let error_message = if next_iteration > max_iters {
                 "Max tool iterations reached"
             } else {
-                self.tool_iterations = next_iteration;
+                self.core.tool_iterations = next_iteration;
                 "Tool execution disabled: tool journal unavailable"
             };
 
@@ -279,7 +275,7 @@ impl App {
             self.commit_tool_batch_without_journal(
                 ToolCommitPayload {
                     assistant_text,
-                    thinking_message,
+                    thinking,
                     calls: tool_calls,
                     results,
                     model,
@@ -294,162 +290,183 @@ impl App {
         // Determine journal status BEFORE constructing ToolBatch (IFA §10.1).
         // Persisted(id) is the capability proof that crash recovery is possible.
         // Without it, tool execution is blocked — fail closed.
-        let journal_status = if let Some(id) = tool_batch_id {
-            // Try to update existing batch
-            match self.tool_journal.update_assistant_text(id, &assistant_text) {
-                Ok(()) => {
-                    // Also persist thinking replay state for crash recovery.
-                    if let Err(e) = self.tool_journal.update_thinking_replay(id, &replay_state) {
-                        tracing::warn!("Tool journal thinking replay update failed: {e}");
+        let journal_status = match tool_journal {
+            ToolJournalBatch::Present(id) => {
+                // Try to update existing batch.
+                match self
+                    .runtime
+                    .tool_journal
+                    .update_assistant_text(id, &assistant_text)
+                {
+                    Ok(()) => {
+                        // Also persist thinking replay state for crash recovery.
+                        if let Err(e) = self
+                            .runtime
+                            .tool_journal
+                            .update_thinking_replay(id, &replay_state)
+                        {
+                            tracing::warn!("Tool journal thinking replay update failed: {e}");
+                        }
+                        JournalStatus::new(id)
                     }
-                    JournalStatus::new(id)
-                }
-                Err(e) => {
-                    tracing::warn!("Tool journal update failed: {e}");
-                    self.push_notification(format!("Tool journal error: {e}"));
-                    // Try to create a new batch instead
-                    match self.tool_journal.begin_batch(
-                        step_id,
-                        model.as_str(),
-                        &assistant_text,
-                        &tool_calls,
-                        &replay_state,
-                    ) {
-                        Ok(new_id) => JournalStatus::new(new_id),
-                        Err(e2) => {
-                            tracing::warn!("Tool journal begin failed after retry: {e2}");
-                            let _ = self.tool_gate.disable(e2.to_string());
-                            self.push_notification(format!(
-                                "Tool execution disabled: cannot persist tool journal for crash recovery. ({e2})"
-                            ));
-
-                            let max_iters =
-                                self.tool_settings.limits.max_tool_iterations_per_user_turn;
-                            let next_iteration = self.tool_iterations.saturating_add(1);
-                            let error_message = if next_iteration > max_iters {
-                                "Max tool iterations reached"
-                            } else {
-                                self.tool_iterations = next_iteration;
-                                "Tool execution disabled: tool journal unavailable"
-                            };
-
-                            let mut results = pre_resolved;
-                            let existing: HashSet<String> =
-                                results.iter().map(|r| r.tool_call_id.clone()).collect();
-                            for call in &tool_calls {
-                                if existing.contains(&call.id) {
-                                    continue;
-                                }
-                                results.push(ToolResult::error(
-                                    call.id.clone(),
-                                    call.name.clone(),
-                                    error_message,
+                    Err(e) => {
+                        tracing::warn!("Tool journal update failed: {e}");
+                        self.push_notification(format!("Tool journal error: {e}"));
+                        // Try to create a new batch instead.
+                        match self.runtime.tool_journal.begin_batch(
+                            step_id,
+                            model.as_str(),
+                            &assistant_text,
+                            &tool_calls,
+                            &replay_state,
+                        ) {
+                            Ok(new_id) => JournalStatus::new(new_id),
+                            Err(e2) => {
+                                tracing::warn!("Tool journal begin failed after retry: {e2}");
+                                let _ = self.core.tool_gate.disable(e2.to_string());
+                                self.push_notification(format!(
+                                    "Tool execution disabled: cannot persist tool journal for crash recovery. ({e2})"
                                 ));
-                            }
 
-                            self.commit_tool_batch_without_journal(
-                                ToolCommitPayload {
-                                    assistant_text,
-                                    thinking_message,
-                                    calls: tool_calls,
-                                    results,
-                                    model,
-                                    step_id,
-                                    turn,
-                                },
-                                true,
-                            );
-                            return;
+                                let max_iters = self
+                                    .runtime
+                                    .tool_settings
+                                    .limits
+                                    .max_tool_iterations_per_user_turn;
+                                let next_iteration = self.core.tool_iterations.saturating_add(1);
+                                let error_message = if next_iteration > max_iters {
+                                    "Max tool iterations reached"
+                                } else {
+                                    self.core.tool_iterations = next_iteration;
+                                    "Tool execution disabled: tool journal unavailable"
+                                };
+
+                                let mut results = pre_resolved;
+                                let existing: HashSet<String> =
+                                    results.iter().map(|r| r.tool_call_id.clone()).collect();
+                                for call in &tool_calls {
+                                    if existing.contains(&call.id) {
+                                        continue;
+                                    }
+                                    results.push(ToolResult::error(
+                                        call.id.clone(),
+                                        call.name.clone(),
+                                        error_message,
+                                    ));
+                                }
+
+                                self.commit_tool_batch_without_journal(
+                                    ToolCommitPayload {
+                                        assistant_text,
+                                        thinking,
+                                        calls: tool_calls,
+                                        results,
+                                        model,
+                                        step_id,
+                                        turn,
+                                    },
+                                    true,
+                                );
+                                return;
+                            }
                         }
                     }
                 }
             }
-        } else {
-            // No existing batch, create new one
-            match self.tool_journal.begin_batch(
-                step_id,
-                model.as_str(),
-                &assistant_text,
-                &tool_calls,
-                &replay_state,
-            ) {
-                Ok(id) => JournalStatus::new(id),
-                Err(e) => {
-                    tracing::warn!("Tool journal begin failed: {e}");
-                    let _ = self.tool_gate.disable(e.to_string());
-                    self.push_notification(format!(
-                        "Tool execution disabled: cannot persist tool journal for crash recovery. ({e})"
-                    ));
-
-                    let max_iters = self.tool_settings.limits.max_tool_iterations_per_user_turn;
-                    let next_iteration = self.tool_iterations.saturating_add(1);
-                    let error_message = if next_iteration > max_iters {
-                        "Max tool iterations reached"
-                    } else {
-                        self.tool_iterations = next_iteration;
-                        "Tool execution disabled: tool journal unavailable"
-                    };
-
-                    let mut results = pre_resolved;
-                    let existing: HashSet<String> =
-                        results.iter().map(|r| r.tool_call_id.clone()).collect();
-                    for call in &tool_calls {
-                        if existing.contains(&call.id) {
-                            continue;
-                        }
-                        results.push(ToolResult::error(
-                            call.id.clone(),
-                            call.name.clone(),
-                            error_message,
+            ToolJournalBatch::Absent => {
+                match self.runtime.tool_journal.begin_batch(
+                    step_id,
+                    model.as_str(),
+                    &assistant_text,
+                    &tool_calls,
+                    &replay_state,
+                ) {
+                    Ok(id) => JournalStatus::new(id),
+                    Err(e) => {
+                        tracing::warn!("Tool journal begin failed: {e}");
+                        let _ = self.core.tool_gate.disable(e.to_string());
+                        self.push_notification(format!(
+                            "Tool execution disabled: cannot persist tool journal for crash recovery. ({e})"
                         ));
-                    }
 
-                    self.commit_tool_batch_without_journal(
-                        ToolCommitPayload {
-                            assistant_text,
-                            thinking_message,
-                            calls: tool_calls,
-                            results,
-                            model,
-                            step_id,
-                            turn,
-                        },
-                        true,
-                    );
-                    return;
+                        let max_iters = self
+                            .runtime
+                            .tool_settings
+                            .limits
+                            .max_tool_iterations_per_user_turn;
+                        let next_iteration = self.core.tool_iterations.saturating_add(1);
+                        let error_message = if next_iteration > max_iters {
+                            "Max tool iterations reached"
+                        } else {
+                            self.core.tool_iterations = next_iteration;
+                            "Tool execution disabled: tool journal unavailable"
+                        };
+
+                        let mut results = pre_resolved;
+                        let existing: HashSet<String> =
+                            results.iter().map(|r| r.tool_call_id.clone()).collect();
+                        for call in &tool_calls {
+                            if existing.contains(&call.id) {
+                                continue;
+                            }
+                            results.push(ToolResult::error(
+                                call.id.clone(),
+                                call.name.clone(),
+                                error_message,
+                            ));
+                        }
+
+                        self.commit_tool_batch_without_journal(
+                            ToolCommitPayload {
+                                assistant_text,
+                                thinking,
+                                calls: tool_calls,
+                                results,
+                                model,
+                                step_id,
+                                turn,
+                            },
+                            true,
+                        );
+                        return;
+                    }
                 }
             }
         };
 
         self.start_tool_loop(
-            ToolLoopInput {
+            ToolLoopStart {
                 assistant_text,
-                thinking_message,
+                thinking,
                 calls: tool_calls,
                 pre_resolved,
                 model,
                 step_id,
-                tool_batch_id: None,
                 turn,
             },
             journal_status,
         );
     }
 
-    fn start_tool_loop(&mut self, input: ToolLoopInput, journal_status: JournalStatus) {
-        let ToolLoopInput {
+    fn start_tool_loop(&mut self, input: ToolLoopStart, journal_status: JournalStatus) {
+        let ToolLoopStart {
             assistant_text,
-            thinking_message,
+            thinking,
             calls: tool_calls,
             pre_resolved,
             model,
             step_id,
-            tool_batch_id: _,
             turn,
         } = input;
 
-        let next_iteration = self.tool_iterations.saturating_add(1);
-        if next_iteration > self.tool_settings.limits.max_tool_iterations_per_user_turn {
+        let next_iteration = self.core.tool_iterations.saturating_add(1);
+        if next_iteration
+            > self
+                .runtime
+                .tool_settings
+                .limits
+                .max_tool_iterations_per_user_turn
+        {
             let mut results = pre_resolved;
             results.extend(tool_calls.iter().map(|call| {
                 ToolResult::error(
@@ -467,7 +484,7 @@ impl App {
             self.commit_tool_batch(
                 ToolCommitPayload {
                     assistant_text,
-                    thinking_message,
+                    thinking,
                     calls: tool_calls,
                     results,
                     model,
@@ -479,7 +496,7 @@ impl App {
             );
             return;
         }
-        self.tool_iterations = next_iteration;
+        self.core.tool_iterations = next_iteration;
 
         // Intercept schema-only tools (Plan) before executor dispatch.
         let resolution = self.resolve_plan_tool_calls(&tool_calls, pre_resolved);
@@ -517,7 +534,7 @@ impl App {
                     self.commit_tool_batch(
                         ToolCommitPayload {
                             assistant_text,
-                            thinking_message,
+                            thinking,
                             calls: tool_calls,
                             results,
                             model,
@@ -540,7 +557,7 @@ impl App {
 
         let batch = ToolBatch {
             assistant_text,
-            thinking_message,
+            thinking,
             calls: tool_calls,
             results: plan.pre_resolved,
             model,
@@ -609,7 +626,7 @@ impl App {
                 self.commit_tool_batch(
                     ToolCommitPayload {
                         assistant_text: batch.assistant_text,
-                        thinking_message: batch.thinking_message,
+                        thinking: batch.thinking,
                         calls: batch.calls,
                         results,
                         model: batch.model,
@@ -651,7 +668,7 @@ impl App {
                 continue;
             }
             accepted += 1;
-            if accepted > self.tool_settings.limits.max_tool_calls_per_batch {
+            if accepted > self.runtime.tool_settings.limits.max_tool_calls_per_batch {
                 pre_resolved.push(tool_error_result(
                     call,
                     tools::ToolError::SandboxViolation(tools::DenialReason::LimitsExceeded {
@@ -665,7 +682,7 @@ impl App {
                 continue;
             }
 
-            if self.tool_settings.policy.is_denylisted(&call.name) {
+            if self.runtime.tool_settings.policy.is_denylisted(&call.name) {
                 pre_resolved.push(tool_error_result(
                     call,
                     tools::ToolError::SandboxViolation(tools::DenialReason::Denylisted {
@@ -679,7 +696,7 @@ impl App {
             let args_size = serde_json::to_vec(&call.arguments)
                 .map(|v| v.len())
                 .unwrap_or(0);
-            if args_size > self.tool_settings.limits.max_tool_args_bytes {
+            if args_size > self.runtime.tool_settings.limits.max_tool_args_bytes {
                 pre_resolved.push(tool_error_result(
                     call,
                     tools::ToolError::SandboxViolation(tools::DenialReason::LimitsExceeded {
@@ -692,7 +709,7 @@ impl App {
 
             if call.name == "Edit"
                 && let Some(patch) = call.arguments.get("patch").and_then(|v| v.as_str())
-                && patch.len() > self.tool_settings.patch_limits.max_patch_bytes
+                && patch.len() > self.runtime.tool_settings.patch_limits.max_patch_bytes
             {
                 pre_resolved.push(tool_error_result(
                     call,
@@ -704,7 +721,7 @@ impl App {
                 continue;
             }
 
-            let exec = match self.tool_registry.lookup(&call.name) {
+            let exec = match self.runtime.tool_registry.lookup(&call.name) {
                 Ok(exec) => exec,
                 Err(err) => {
                     pre_resolved.push(tool_error_result(call, err));
@@ -719,14 +736,16 @@ impl App {
                 continue;
             }
 
-            if let Err(err) = preflight_sandbox(&self.tool_settings.sandbox, call) {
+            if let Err(err) = preflight_sandbox(&self.runtime.tool_settings.sandbox, call) {
                 pre_resolved.push(tool_error_result(call, err));
                 pre_resolved_ids.insert(call.id.clone());
                 continue;
             }
 
-            if matches!(self.tool_settings.policy.mode, tools::ApprovalMode::Strict)
-                && !self.tool_settings.policy.is_allowlisted(&call.name)
+            if matches!(
+                self.runtime.tool_settings.policy.mode,
+                tools::ApprovalMode::Strict
+            ) && !self.runtime.tool_settings.policy.is_allowlisted(&call.name)
             {
                 pre_resolved.push(tool_error_result(
                     call,
@@ -738,8 +757,8 @@ impl App {
                 continue;
             }
 
-            let allowlisted = self.tool_settings.policy.is_allowlisted(&call.name);
-            let needs_confirmation = match self.tool_settings.policy.mode {
+            let allowlisted = self.runtime.tool_settings.policy.is_allowlisted(&call.name);
+            let needs_confirmation = match self.runtime.tool_settings.policy.mode {
                 tools::ApprovalMode::Permissive => exec.requires_approval(),
                 tools::ApprovalMode::Strict => true, // All tools require approval
                 tools::ApprovalMode::Default => {
@@ -841,17 +860,18 @@ impl App {
             return Ok(ToolLoopPhase::Processing(queue));
         };
 
-        self.tool_journal
+        self.runtime
+            .tool_journal
             .mark_call_started(batch_id, &call.id, now_unix_ms())?;
 
         let remaining_capacity = queue.remaining_capacity_bytes;
         let turn_recorder = queue.turn_recorder.clone();
 
         // Capture app state needed for tool execution
-        let registry = self.tool_registry.clone();
-        let settings = self.tool_settings.clone();
-        let file_cache = self.tool_file_cache.clone();
-        let librarian = self.librarian.clone();
+        let registry = self.runtime.tool_registry.clone();
+        let settings = self.runtime.tool_settings.clone();
+        let file_cache = self.runtime.tool_file_cache.clone();
+        let librarian = self.runtime.librarian.clone();
         let working_dir = settings.sandbox.working_dir();
 
         let spawned = SpawnedTool::spawn(call.clone(), |event_tx, _abort_handle| {
@@ -951,7 +971,7 @@ impl App {
 
     pub(crate) fn poll_tool_loop(&mut self) {
         let idle = self.idle_state();
-        let state = match std::mem::replace(&mut self.state, idle) {
+        let state = match std::mem::replace(&mut self.core.state, idle) {
             OperationState::ToolLoop(state) => *state,
             other => {
                 self.op_restore(other);
@@ -972,7 +992,9 @@ impl App {
             ToolLoopPhase::Processing(queue) => {
                 // If tool journaling was disabled mid-loop, fail closed and do not execute
                 // any additional tools in this turn.
-                if self.tool_gate.is_disabled() {
+                if let super::tool_gate::ToolGateStatus::Disabled { .. } =
+                    self.core.tool_gate.status()
+                {
                     let mut results = batch.results;
                     let existing: HashSet<String> =
                         results.iter().map(|r| r.tool_call_id.clone()).collect();
@@ -990,7 +1012,7 @@ impl App {
                     self.commit_tool_batch(
                         ToolCommitPayload {
                             assistant_text: batch.assistant_text,
-                            thinking_message: batch.thinking_message,
+                            thinking: batch.thinking,
                             calls: batch.calls,
                             results,
                             model: batch.model,
@@ -1009,7 +1031,7 @@ impl App {
                     self.commit_tool_batch(
                         ToolCommitPayload {
                             assistant_text: batch.assistant_text,
-                            thinking_message: batch.thinking_message,
+                            thinking: batch.thinking,
                             calls: batch.calls,
                             results: batch.results,
                             model: batch.model,
@@ -1047,7 +1069,7 @@ impl App {
                                 self.commit_tool_batch(
                                     ToolCommitPayload {
                                         assistant_text: batch.assistant_text,
-                                        thinking_message: batch.thinking_message,
+                                        thinking: batch.thinking,
                                         calls: batch.calls,
                                         results,
                                         model: batch.model,
@@ -1076,7 +1098,7 @@ impl App {
                         process_started_at_unix_ms,
                         ..
                     } = &event
-                        && let Err(e) = self.tool_journal.record_call_process(
+                        && let Err(e) = self.runtime.tool_journal.record_call_process(
                             batch.journal_status.batch_id(),
                             tool_call_id,
                             i64::from(*pid),
@@ -1128,7 +1150,7 @@ impl App {
                             process_started_at_unix_ms,
                             ..
                         } = &event
-                            && let Err(e) = self.tool_journal.record_call_process(
+                            && let Err(e) = self.runtime.tool_journal.record_call_process(
                                 batch.journal_status.batch_id(),
                                 tool_call_id,
                                 i64::from(*pid),
@@ -1186,7 +1208,7 @@ impl App {
                         self.commit_tool_batch(
                             ToolCommitPayload {
                                 assistant_text: batch.assistant_text,
-                                thinking_message: batch.thinking_message,
+                                thinking: batch.thinking,
                                 calls: batch.calls,
                                 results,
                                 model: batch.model,
@@ -1216,7 +1238,7 @@ impl App {
                         self.commit_tool_batch(
                             ToolCommitPayload {
                                 assistant_text: batch.assistant_text,
-                                thinking_message: batch.thinking_message,
+                                thinking: batch.thinking,
                                 calls: batch.calls,
                                 results: batch.results,
                                 model: batch.model,
@@ -1229,7 +1251,9 @@ impl App {
                     } else {
                         // If tool journaling was disabled mid-loop, fail closed and do not execute
                         // any additional tools in this turn.
-                        if self.tool_gate.is_disabled() {
+                        if let super::tool_gate::ToolGateStatus::Disabled { .. } =
+                            self.core.tool_gate.status()
+                        {
                             let mut results = batch.results;
                             let existing: HashSet<String> =
                                 results.iter().map(|r| r.tool_call_id.clone()).collect();
@@ -1247,7 +1271,7 @@ impl App {
                             self.commit_tool_batch(
                                 ToolCommitPayload {
                                     assistant_text: batch.assistant_text,
-                                    thinking_message: batch.thinking_message,
+                                    thinking: batch.thinking,
                                     calls: batch.calls,
                                     results,
                                     model: batch.model,
@@ -1288,7 +1312,7 @@ impl App {
                                 self.commit_tool_batch(
                                     ToolCommitPayload {
                                         assistant_text: batch.assistant_text,
-                                        thinking_message: batch.thinking_message,
+                                        thinking: batch.thinking,
                                         calls: batch.calls,
                                         results,
                                         model: batch.model,
@@ -1347,15 +1371,14 @@ impl App {
         let step_id = payload.step_id;
 
         let mut step_id_recorded = false;
-        if let Some(thinking_message) = payload.thinking_message.clone() {
-            let requires_persistence = matches!(
-                &thinking_message,
-                Message::Thinking(thinking) if thinking.requires_persistence()
-            );
-            if requires_persistence {
-                self.push_history_message(thinking_message);
-            } else {
-                self.push_local_message(thinking_message);
+        match &payload.thinking {
+            crate::core::thinking::ThinkingPayload::NotProvided => {}
+            crate::core::thinking::ThinkingPayload::Provided(thinking_message) => {
+                if thinking_message.requires_persistence() {
+                    self.push_history_message(Message::Thinking(thinking_message.clone()));
+                } else {
+                    self.push_local_message(Message::Thinking(thinking_message.clone()));
+                }
             }
         }
         if let Ok(content) = NonEmptyString::new(assistant_text.clone()) {
@@ -1423,31 +1446,31 @@ impl App {
         if autosave_succeeded {
             self.finalize_journal_commit(step_id);
             let id = journal_status.batch_id();
-            if let Err(e) = self.tool_journal.commit_batch(id) {
+            if let Err(e) = self.runtime.tool_journal.commit_batch(id) {
                 tracing::warn!("Failed to commit tool batch {id}: {e}");
                 tool_cleanup_failed = true;
                 self.disable_tools_due_to_tool_journal_error("tool batch commit", &e);
 
-                if self.pending_tool_cleanup == Some(id) {
-                    self.pending_tool_cleanup_failures =
-                        self.pending_tool_cleanup_failures.saturating_add(1);
+                if self.runtime.pending_tool_cleanup == Some(id) {
+                    self.runtime.pending_tool_cleanup_failures =
+                        self.runtime.pending_tool_cleanup_failures.saturating_add(1);
                 } else {
-                    self.pending_tool_cleanup = Some(id);
-                    self.pending_tool_cleanup_failures = 1;
+                    self.runtime.pending_tool_cleanup = Some(id);
+                    self.runtime.pending_tool_cleanup_failures = 1;
                     self.push_notification(format!(
                         "Tool journal cleanup failed; will retry. If tools get stuck, run /clear. ({e})"
                     ));
                 }
 
                 let after = Instant::now() + Duration::from_secs(1);
-                if self.next_journal_cleanup_attempt < after {
-                    self.next_journal_cleanup_attempt = after;
+                if self.runtime.next_journal_cleanup_attempt < after {
+                    self.runtime.next_journal_cleanup_attempt = after;
                 }
             }
         }
 
         if !auto_resume {
-            self.pending_user_message = None;
+            self.core.pending_user_message = None;
         }
 
         // Only auto_resume if autosave succeeded - otherwise the journal step
@@ -1463,7 +1486,7 @@ impl App {
         if auto_resume && tool_cleanup_failed {
             // If tools are already disabled due to journal errors, allow streaming to continue.
             // The pending batch will be cleaned up best-effort or cleared manually via /clear.
-            if !self.tool_gate.is_disabled() {
+            if let super::tool_gate::ToolGateStatus::Enabled = self.core.tool_gate.status() {
                 self.push_notification(
                     "Cannot continue tool loop: tool journal cleanup failed. Stopping to prevent stuck state.",
                 );
@@ -1473,7 +1496,7 @@ impl App {
         }
 
         if auto_resume {
-            let Some(api_key) = self.api_keys.get(&model.provider()).cloned() else {
+            let Some(api_key) = self.runtime.api_keys.get(&model.provider()).cloned() else {
                 self.push_notification(format!(
                     "Cannot resume: no API key for {}",
                     model.provider().display_name()
@@ -1487,10 +1510,18 @@ impl App {
             let config = match ApiConfig::new(api_key, model.clone()) {
                 Ok(config) => config
                     .with_openai_options(self.openai_options_for_model(&model))
-                    .with_gemini_thinking_enabled(self.provider_runtime.gemini_thinking_enabled)
+                    .with_gemini_thinking_enabled(
+                        self.runtime.provider_runtime.gemini_thinking_enabled,
+                    )
                     .with_anthropic_thinking(
-                        self.provider_runtime.anthropic_thinking_mode.as_str(),
-                        self.provider_runtime.anthropic_thinking_effort.as_str(),
+                        self.runtime
+                            .provider_runtime
+                            .anthropic_thinking_mode
+                            .as_str(),
+                        self.runtime
+                            .provider_runtime
+                            .anthropic_thinking_effort
+                            .as_str(),
                     ),
                 Err(e) => {
                     self.push_notification(format!("Cannot resume after tools: {e}"));
@@ -1524,7 +1555,7 @@ impl App {
         }
 
         if !auto_resume {
-            self.pending_user_message = None;
+            self.core.pending_user_message = None;
         }
 
         // Only auto_resume if autosave succeeded - otherwise the journal step
@@ -1538,7 +1569,7 @@ impl App {
         }
 
         if auto_resume {
-            let Some(api_key) = self.api_keys.get(&model.provider()).cloned() else {
+            let Some(api_key) = self.runtime.api_keys.get(&model.provider()).cloned() else {
                 self.push_notification(format!(
                     "Cannot resume: no API key for {}",
                     model.provider().display_name()
@@ -1552,10 +1583,18 @@ impl App {
             let config = match ApiConfig::new(api_key, model.clone()) {
                 Ok(config) => config
                     .with_openai_options(self.openai_options_for_model(&model))
-                    .with_gemini_thinking_enabled(self.provider_runtime.gemini_thinking_enabled)
+                    .with_gemini_thinking_enabled(
+                        self.runtime.provider_runtime.gemini_thinking_enabled,
+                    )
                     .with_anthropic_thinking(
-                        self.provider_runtime.anthropic_thinking_mode.as_str(),
-                        self.provider_runtime.anthropic_thinking_effort.as_str(),
+                        self.runtime
+                            .provider_runtime
+                            .anthropic_thinking_mode
+                            .as_str(),
+                        self.runtime
+                            .provider_runtime
+                            .anthropic_thinking_effort
+                            .as_str(),
                     ),
                 Err(e) => {
                     self.push_notification(format!("Cannot resume after tools: {e}"));
@@ -1573,7 +1612,7 @@ impl App {
 
     pub(crate) fn resolve_tool_approval(&mut self, decision: tools::ApprovalDecision) {
         let idle = self.idle_state();
-        let state = match std::mem::replace(&mut self.state, idle) {
+        let state = match std::mem::replace(&mut self.core.state, idle) {
             OperationState::ToolLoop(state) => *state,
             other => {
                 self.op_restore(other);
@@ -1658,7 +1697,7 @@ impl App {
 
         // If tool journaling failed while recording denied results, fail closed and do not execute
         // any additional tools in this turn.
-        if self.tool_gate.is_disabled() {
+        if let super::tool_gate::ToolGateStatus::Disabled { .. } = self.core.tool_gate.status() {
             let mut results = batch.results;
             let existing: HashSet<String> =
                 results.iter().map(|r| r.tool_call_id.clone()).collect();
@@ -1676,7 +1715,7 @@ impl App {
             self.commit_tool_batch(
                 ToolCommitPayload {
                     assistant_text: batch.assistant_text,
-                    thinking_message: batch.thinking_message,
+                    thinking: batch.thinking,
                     calls: batch.calls,
                     results,
                     model: batch.model,
@@ -1709,7 +1748,7 @@ impl App {
             self.commit_tool_batch(
                 ToolCommitPayload {
                     assistant_text: batch.assistant_text,
-                    thinking_message: batch.thinking_message,
+                    thinking: batch.thinking,
                     calls: batch.calls,
                     results: batch.results,
                     model: batch.model,
@@ -1750,7 +1789,7 @@ impl App {
                 self.commit_tool_batch(
                     ToolCommitPayload {
                         assistant_text: batch.assistant_text,
-                        thinking_message: batch.thinking_message,
+                        thinking: batch.thinking,
                         calls: batch.calls,
                         results,
                         model: batch.model,
@@ -1771,7 +1810,7 @@ impl App {
 
     pub(crate) fn resolve_tool_recovery(&mut self, decision: ToolRecoveryDecision) {
         let idle = self.idle_state();
-        let state = match std::mem::replace(&mut self.state, idle) {
+        let state = match std::mem::replace(&mut self.core.state, idle) {
             OperationState::ToolRecovery(state) => state,
             other => {
                 self.op_restore(other);
@@ -1830,7 +1869,7 @@ impl App {
         }
 
         // Reconstruct thinking message from persisted replay state (IFA §7: reuse build_thinking_message).
-        let thinking_message = super::streaming::build_thinking_message(
+        let thinking = super::streaming::build_thinking_message(
             model.clone(),
             String::new(),
             batch.thinking_replay.clone(),
@@ -1840,7 +1879,7 @@ impl App {
         self.commit_tool_batch(
             ToolCommitPayload {
                 assistant_text,
-                thinking_message,
+                thinking,
                 calls: batch.calls,
                 results,
                 model,
@@ -1865,14 +1904,14 @@ impl App {
     pub(crate) fn finish_turn(&mut self, turn: TurnContext) {
         self.op_edge(OperationEdge::FinishTurn);
 
-        let working_dir = self.tool_settings.sandbox.working_dir();
+        let working_dir = self.runtime.tool_settings.sandbox.working_dir();
         let (report, created, modified) = turn.finish(&working_dir);
 
         // Notify LSP servers about file changes
         self.notify_lsp_file_changes(&created, &modified);
 
         // Aggregate turn changes into session-wide log
-        self.session_changes.merge_turn(&created, &modified);
+        self.core.session_changes.merge_turn(&created, &modified);
 
         // Sync files panel selection after file list changes
         self.files_panel_sync_selection();
@@ -1881,13 +1920,13 @@ impl App {
             let msg = distillate.into_message();
             self.push_local_message(Message::system(msg));
         }
-        self.pending_user_message = None;
+        self.core.pending_user_message = None;
 
         // Transfer turn usage to last_turn_usage for display, reset for next turn
-        if self.turn_usage.is_some() {
-            self.last_turn_usage = self.turn_usage.take();
+        if self.core.turn_usage.is_some() {
+            self.core.last_turn_usage = self.core.turn_usage.take();
         }
-        self.tool_iterations = 0;
+        self.core.tool_iterations = 0;
     }
 }
 

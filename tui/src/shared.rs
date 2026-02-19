@@ -195,7 +195,7 @@ pub(crate) fn message_header_parts(
 
 pub(crate) struct ApprovalView {
     pub(crate) items: Vec<ApprovalItem>,
-    pub(crate) selected: Vec<bool>,
+    pub(crate) selected: Vec<forge_engine::ApprovalSelection>,
     pub(crate) cursor: usize,
     pub(crate) any_selected: bool,
     pub(crate) deny_confirm: bool,
@@ -230,7 +230,10 @@ pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<Appro
     let selected = app.tool_approval_selected().unwrap_or(&[]);
     let cursor = app.tool_approval_cursor().unwrap_or(0);
     let deny_confirm = app.tool_approval_deny_confirm();
-    let any_selected = selected.iter().any(|flag| *flag);
+    let any_selected = selected
+        .iter()
+        .copied()
+        .any(forge_engine::ApprovalSelection::is_approved);
 
     let expanded = app.tool_approval_expanded();
 
@@ -247,7 +250,7 @@ pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<Appro
                 max_width.saturating_sub(6),
             ))
         };
-        let details = if expanded == Some(i) {
+        let details = if expanded == forge_engine::ApprovalExpanded::Expanded(i) {
             extract_tool_details(&req.tool_name, &req.arguments, max_width.saturating_sub(8))
         } else {
             Vec::new()

@@ -38,15 +38,20 @@ pub(crate) enum ToolGate {
     Disabled(ToolsDisabledState),
 }
 
-impl ToolGate {
-    pub(crate) fn is_disabled(&self) -> bool {
-        matches!(self, Self::Disabled(_))
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolGateStatus<'a> {
+    Enabled,
+    Disabled { reason: &'a str },
+}
 
-    pub(crate) fn reason(&self) -> Option<&str> {
+impl ToolGate {
+    #[must_use]
+    pub(crate) fn status(&self) -> ToolGateStatus<'_> {
         match self {
-            Self::Enabled => None,
-            Self::Disabled(state) => Some(state.reason()),
+            Self::Enabled => ToolGateStatus::Enabled,
+            Self::Disabled(state) => ToolGateStatus::Disabled {
+                reason: state.reason(),
+            },
         }
     }
 

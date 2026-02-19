@@ -345,12 +345,15 @@ impl super::App {
                 active.abort_handle().abort();
 
                 if let ActiveStream::Journaled { tool_batch_id, .. } = &active
-                    && let Err(e) = self.tool_journal.discard_batch(*tool_batch_id)
+                    && let Err(e) = self.runtime.tool_journal.discard_batch(*tool_batch_id)
                 {
                     tracing::warn!("Failed to discard tool batch on cancel: {e}");
                 }
 
-                if let Err(e) = active.into_journal().discard(&mut self.stream_journal) {
+                if let Err(e) = active
+                    .into_journal()
+                    .discard(&mut self.runtime.stream_journal)
+                {
                     tracing::warn!("Failed to discard stream journal on cancel: {e}");
                 }
 
@@ -359,7 +362,7 @@ impl super::App {
 
                 // Discard any partial usage from the cancelled stream so it
                 // doesn't leak into the next turn's accounting.
-                self.turn_usage = None;
+                self.core.turn_usage = None;
 
                 self.push_notification("Streaming cancelled");
                 true
@@ -376,10 +379,10 @@ impl super::App {
             OperationState::PlanApproval(state) => {
                 match &state.kind {
                     crate::state::PlanApprovalKind::Create => {
-                        self.plan_state = PlanState::Inactive;
+                        self.core.plan_state = PlanState::Inactive;
                     }
                     crate::state::PlanApprovalKind::Edit { pre_edit_plan } => {
-                        if let PlanState::Active(plan) = &mut self.plan_state {
+                        if let PlanState::Active(plan) = &mut self.core.plan_state {
                             *plan = pre_edit_plan.clone();
                         }
                     }
@@ -429,11 +432,14 @@ impl super::App {
                     OperationState::Streaming(active) => {
                         active.abort_handle().abort();
                         if let ActiveStream::Journaled { tool_batch_id, .. } = &active
-                            && let Err(e) = self.tool_journal.discard_batch(*tool_batch_id)
+                            && let Err(e) = self.runtime.tool_journal.discard_batch(*tool_batch_id)
                         {
                             tracing::warn!("Failed to discard tool batch on clear: {e}");
                         }
-                        if let Err(e) = active.into_journal().discard(&mut self.stream_journal) {
+                        if let Err(e) = active
+                            .into_journal()
+                            .discard(&mut self.runtime.stream_journal)
+                        {
                             tracing::warn!("Failed to discard stream journal on clear: {e}");
                         }
                     }
@@ -443,6 +449,7 @@ impl super::App {
                             exec.spawned.abort();
                         }
                         if let Err(e) = self
+                            .runtime
                             .tool_journal
                             .discard_batch(batch.journal_status.batch_id())
                         {
@@ -453,15 +460,16 @@ impl super::App {
                     OperationState::PlanApproval(state) => {
                         match &state.kind {
                             crate::state::PlanApprovalKind::Create => {
-                                self.plan_state = PlanState::Inactive;
+                                self.core.plan_state = PlanState::Inactive;
                             }
                             crate::state::PlanApprovalKind::Edit { pre_edit_plan } => {
-                                if let PlanState::Active(plan) = &mut self.plan_state {
+                                if let PlanState::Active(plan) = &mut self.core.plan_state {
                                     *plan = pre_edit_plan.clone();
                                 }
                             }
                         }
                         if let Err(e) = self
+                            .runtime
                             .tool_journal
                             .discard_batch(state.batch.journal_status.batch_id())
                         {
@@ -471,7 +479,11 @@ impl super::App {
                     }
                     OperationState::ToolRecovery(state) => {
                         // RecoveredToolBatch always has a valid batch_id from the journal
-                        if let Err(e) = self.tool_journal.discard_batch(state.batch.batch_id) {
+                        if let Err(e) = self
+                            .runtime
+                            .tool_journal
+                            .discard_batch(state.batch.batch_id)
+                        {
                             tracing::warn!("Failed to discard recovered tool batch on clear: {e}");
                         }
                         self.discard_journal_step(state.step_id);
@@ -484,27 +496,28 @@ impl super::App {
                     }
                 }
 
-                self.display.clear();
-                self.pending_user_message = None;
-                self.session_changes = crate::SessionChangeLog::default();
-                self.context_manager = ContextManager::new(self.model.clone());
-                self.context_manager
-                    .set_output_limit(self.output_limits.max_output_tokens());
-                if let Some(step_id) = self.pending_stream_cleanup.take() {
+                self.ui.display.clear();
+                self.core.pending_user_message = None;
+                self.core.session_changes = crate::SessionChangeLog::default();
+                self.core.context_manager = ContextManager::new(self.core.model.clone());
+                self.core
+                    .context_manager
+                    .set_output_limit(self.core.output_limits.max_output_tokens());
+                if let Some(step_id) = self.runtime.pending_stream_cleanup.take() {
                     self.discard_journal_step(step_id);
                 }
-                self.pending_stream_cleanup_failures = 0;
-                if let Some(batch_id) = self.pending_tool_cleanup.take()
-                    && let Err(e) = self.tool_journal.discard_batch(batch_id)
+                self.runtime.pending_stream_cleanup_failures = 0;
+                if let Some(batch_id) = self.runtime.pending_tool_cleanup.take()
+                    && let Err(e) = self.runtime.tool_journal.discard_batch(batch_id)
                 {
                     tracing::warn!("Failed to discard pending tool batch on clear: {e}");
                 }
-                self.pending_tool_cleanup_failures = 0;
-                self.tool_gate.clear();
-                self.provider_runtime.openai_previous_response_id = None;
+                self.runtime.pending_tool_cleanup_failures = 0;
+                self.core.tool_gate.clear();
+                self.runtime.provider_runtime.openai_previous_response_id = None;
                 self.invalidate_usage_cache();
                 self.autosave_history();
-                self.view.clear_transcript = true;
+                self.ui.view.clear_transcript = true;
                 self.op_transition(self.idle_state());
             }
             Command::Model(model_arg) => {
@@ -519,7 +532,7 @@ impl super::App {
                     match provider.parse_model(model_name) {
                         Ok(model) => {
                             self.set_model(model);
-                            self.push_notification(format!("Model set to: {}", self.model));
+                            self.push_notification(format!("Model set to: {}", self.core.model));
                         }
                         Err(e) => {
                             self.push_notification(format!("Invalid model: {e}"));
@@ -562,8 +575,8 @@ impl super::App {
                         n.to_string()
                     }
                 };
-                let limits = self.context_manager.current_limits();
-                let limits_source = match self.context_manager.current_limits_source() {
+                let limits = self.core.context_manager.current_limits();
+                let limits_source = match self.core.context_manager.current_limits_source() {
                     ModelLimitsSource::Override => "override".to_string(),
                     ModelLimitsSource::Catalog(model) => model.model_id().to_string(),
                 };
@@ -583,15 +596,15 @@ impl super::App {
                     format_k(usage.used_tokens),
                     format_k(usage.budget_tokens),
                     format_k(limits.context_window()),
-                    format_k(self.output_limits.max_output_tokens()),
-                    self.context_manager.current_model(),
+                    format_k(self.core.output_limits.max_output_tokens()),
+                    self.core.context_manager.current_model(),
                     limits_source,
                     status_suffix,
                 ));
             }
-            Command::Journal => match self.stream_journal.stats() {
+            Command::Journal => match self.runtime.stream_journal.stats() {
                 Ok(stats) => {
-                    let streaming = matches!(self.state, OperationState::Streaming(_));
+                    let streaming = matches!(self.core.state, OperationState::Streaming(_));
                     let state_desc = if streaming {
                         "streaming"
                     } else if stats.unsealed_entries > 0 {
@@ -674,10 +687,11 @@ impl super::App {
 
                 // Capture the user prompt we are about to rewind away (best-effort).
                 let conversation_len = {
-                    let cp = self.checkpoints.checkpoint(proof);
+                    let cp = self.core.checkpoints.checkpoint(proof);
                     cp.conversation_len()
                 };
                 let prompt = self
+                    .core
                     .context_manager
                     .history()
                     .entries()
@@ -699,12 +713,12 @@ impl super::App {
                 }
 
                 if let Some(text) = prompt {
-                    self.input.draft_mut().set_text(text);
-                    self.input = std::mem::take(&mut self.input).into_insert();
+                    self.ui.input.draft_mut().set_text(text);
+                    self.ui.input = std::mem::take(&mut self.ui.input).into_insert();
                 }
             }
             Command::Problems => {
-                let snapshot = self.lsp_runtime.snapshot.clone();
+                let snapshot = self.runtime.lsp_runtime.snapshot.clone();
                 if snapshot.is_empty() {
                     self.push_notification("No diagnostics");
                 } else {
@@ -723,7 +737,7 @@ impl super::App {
             }
             Command::Plan { subcommand } => match subcommand {
                 None => {
-                    let msg = match &self.plan_state {
+                    let msg = match &self.core.plan_state {
                         PlanState::Inactive => "No active plan.".to_string(),
                         PlanState::Proposed(plan) => {
                             format!("[Proposed — awaiting approval]\n\n{}", plan.render())
@@ -733,9 +747,9 @@ impl super::App {
                     self.push_notification(msg);
                 }
                 Some("clear") => {
-                    self.plan_state = PlanState::Inactive;
+                    self.core.plan_state = PlanState::Inactive;
                     self.save_plan();
-                    self.tool_gate.clear();
+                    self.core.tool_gate.clear();
                     self.push_notification("Plan cleared.");
                 }
                 Some(other) => {
@@ -753,6 +767,7 @@ impl super::App {
                 };
 
                 let messages: Vec<_> = self
+                    .core
                     .context_manager
                     .history()
                     .entries()
@@ -761,7 +776,7 @@ impl super::App {
                     .collect();
 
                 let export = ConversationExport {
-                    model: self.model.as_str(),
+                    model: self.core.model.as_str(),
                     exported_at: chrono::Utc::now().to_rfc3339(),
                     messages,
                 };

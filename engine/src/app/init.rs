@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use forge_types::{ModelName, OutputLimits, Provider, SecretString, ToolDefinition};
 
-use super::{LspRuntimeState, ProviderRuntimeState, SystemPrompts};
+use super::{AppCore, AppRuntime, AppUi, LspRuntimeState, ProviderRuntimeState, SystemPrompts};
 use crate::config::{self, ForgeConfig, OpenAIConfig};
 use crate::state::{DataDir, DataDirSource, OperationState};
 use crate::tools::{self, builtins};
@@ -103,68 +103,74 @@ pub(crate) struct AppBuildParts {
 
 pub(crate) fn build_app(parts: AppBuildParts) -> App {
     App {
-        input: InputState::default(),
-        display: DisplayLog::default(),
-        should_quit: false,
-        view: parts.view,
-        configured_model: parts.configured_model,
-        configured_tool_approval_mode: parts.configured_tool_approval_mode,
-        configured_context_memory_enabled: parts.configured_context_memory_enabled,
-        configured_ui_options: parts.configured_ui_options,
-        pending_turn_model: None,
-        pending_turn_tool_approval_mode: None,
-        pending_turn_context_memory_enabled: None,
-        pending_turn_ui_options: None,
-        settings_editor: super::SettingsEditorState::Inactive,
-        api_keys: parts.api_keys,
-        config_path: parts.config_path,
-        model: parts.model,
-        tick: 0,
-        data_dir: parts.data_dir,
-        context_manager: parts.context_manager,
-        stream_journal: parts.stream_journal,
-        state: OperationState::Idle,
-        memory_enabled: parts.memory_enabled,
-        output_limits: parts.output_limits,
-        configured_output_limits: parts.configured_output_limits,
-        cache_enabled: parts.cache_enabled,
-        provider_runtime: parts.provider_runtime,
-        system_prompts: parts.system_prompts,
-        environment: parts.environment,
-        cached_usage_status: None,
-        pending_user_message: None,
-        tool_definitions: parts.tool_definitions,
-        hidden_tools: parts.hidden_tools,
-        tool_registry: parts.tool_registry,
-        tool_settings: parts.tool_settings,
-        tool_journal: parts.tool_journal,
-        tool_gate: super::ToolGate::Enabled,
-        pending_stream_cleanup: None,
-        pending_stream_cleanup_failures: 0,
-        pending_tool_cleanup: None,
-        pending_tool_cleanup_failures: 0,
-        tool_file_cache: parts.tool_file_cache,
-        checkpoints: super::checkpoints::CheckpointStore::default(),
-        tool_iterations: 0,
-        history_load_warning_shown: false,
-        autosave_warning_shown: false,
-        librarian: parts.librarian,
-        input_history: crate::ui::InputHistory::default(),
-        last_ui_tick: Instant::now(),
-        last_session_autosave: Instant::now(),
-        next_journal_cleanup_attempt: Instant::now(),
-        session_changes: crate::session_state::SessionChangeLog::default(),
-        file_picker: crate::ui::FilePickerState::new(),
-        turn_usage: None,
-        last_turn_usage: None,
-        notification_queue: crate::notifications::NotificationQueue::new(),
-        lsp_runtime: LspRuntimeState {
-            config: parts.lsp_config,
-            manager: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
-            snapshot: forge_lsp::DiagnosticsSnapshot::default(),
-            pending_diag_check: None,
+        ui: AppUi {
+            input: InputState::default(),
+            display: DisplayLog::default(),
+            should_quit: false,
+            view: parts.view,
+            settings_editor: super::SettingsEditorState::Inactive,
+            input_history: crate::ui::InputHistory::default(),
+            last_ui_tick: Instant::now(),
+            file_picker: crate::ui::FilePickerState::new(),
         },
-        plan_state: crate::PlanState::Inactive,
+        core: AppCore {
+            configured_model: parts.configured_model,
+            configured_tool_approval_mode: parts.configured_tool_approval_mode,
+            configured_context_memory_enabled: parts.configured_context_memory_enabled,
+            configured_ui_options: parts.configured_ui_options,
+            pending_turn_model: None,
+            pending_turn_tool_approval_mode: None,
+            pending_turn_context_memory_enabled: None,
+            pending_turn_ui_options: None,
+            model: parts.model,
+            context_manager: parts.context_manager,
+            state: OperationState::Idle,
+            memory_enabled: parts.memory_enabled,
+            output_limits: parts.output_limits,
+            configured_output_limits: parts.configured_output_limits,
+            cache_enabled: parts.cache_enabled,
+            system_prompts: parts.system_prompts,
+            environment: parts.environment,
+            cached_usage_status: None,
+            pending_user_message: None,
+            tool_definitions: parts.tool_definitions,
+            hidden_tools: parts.hidden_tools,
+            tool_gate: super::ToolGate::Enabled,
+            checkpoints: super::checkpoints::CheckpointStore::default(),
+            tool_iterations: 0,
+            session_changes: crate::session_state::SessionChangeLog::default(),
+            turn_usage: None,
+            last_turn_usage: None,
+            notification_queue: crate::notifications::NotificationQueue::new(),
+            plan_state: crate::PlanState::Inactive,
+        },
+        runtime: AppRuntime {
+            api_keys: parts.api_keys,
+            config_path: parts.config_path,
+            tick: 0,
+            data_dir: parts.data_dir,
+            stream_journal: parts.stream_journal,
+            provider_runtime: parts.provider_runtime,
+            tool_registry: parts.tool_registry,
+            tool_settings: parts.tool_settings,
+            tool_journal: parts.tool_journal,
+            pending_stream_cleanup: None,
+            pending_stream_cleanup_failures: 0,
+            pending_tool_cleanup: None,
+            pending_tool_cleanup_failures: 0,
+            tool_file_cache: parts.tool_file_cache,
+            history_load_warning_shown: false,
+            autosave_warning_shown: false,
+            librarian: parts.librarian,
+            last_session_autosave: Instant::now(),
+            next_journal_cleanup_attempt: Instant::now(),
+            lsp_runtime: LspRuntimeState {
+                config: parts.lsp_config,
+                manager: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+                snapshot: forge_lsp::DiagnosticsSnapshot::default(),
+                pending_diag_check: None,
+            },
+        },
     }
 }
 
@@ -419,8 +425,9 @@ impl App {
 
         app.reconcile_output_limits_with_model();
         // Sync output limit to context manager for accurate budget calculation
-        app.context_manager
-            .set_output_limit(app.output_limits.max_output_tokens());
+        app.core
+            .context_manager
+            .set_output_limit(app.core.output_limits.max_output_tokens());
 
         // Load previous session's history if available
         app.load_history_if_exists();
@@ -440,10 +447,10 @@ impl App {
             app.push_notification(message);
         }
 
-        if matches!(app.data_dir.source, DataDirSource::Custom) {
+        if matches!(app.runtime.data_dir.source, DataDirSource::Custom) {
             app.push_notification(format!(
                 "Using custom data dir: {}",
-                app.data_dir.path.display()
+                app.runtime.data_dir.path.display()
             ));
         }
 
@@ -530,16 +537,17 @@ impl App {
     }
 
     pub(crate) fn history_path(&self) -> PathBuf {
-        self.data_dir.join("history.json")
+        self.runtime.data_dir.join("history.json")
     }
 
     pub(crate) fn session_path(&self) -> std::path::PathBuf {
-        self.data_dir
+        self.runtime
+            .data_dir
             .join(crate::session_state::SessionState::FILENAME)
     }
 
     pub(crate) fn plan_path(&self) -> PathBuf {
-        self.data_dir.join("plan.json")
+        self.runtime.data_dir.join("plan.json")
     }
 
     pub(crate) fn context_infinity_enabled_from_env() -> bool {

@@ -67,7 +67,7 @@ pub struct SessionState {
     ///
     /// This captures the user's in-progress composition, including which mode
     /// they were in (Normal, Insert, Command, `ModelSelect`).
-    pub input: Option<InputState>,
+    pub input: InputState,
 
     /// Input history for prompt and command recall.
     ///
@@ -96,7 +96,7 @@ impl SessionState {
 
     pub fn new(input: InputState, history: InputHistory, modified_files: SessionChangeLog) -> Self {
         Self {
-            input: Some(input),
+            input,
             history,
             modified_files,
             version: Self::CURRENT_VERSION,
@@ -162,7 +162,7 @@ mod tests {
         let restored: SessionState = serde_json::from_str(&json).unwrap();
 
         assert!(restored.is_compatible());
-        assert!(restored.input.is_some());
+        assert!(matches!(restored.input, InputState::Insert(_)));
     }
 
     #[test]

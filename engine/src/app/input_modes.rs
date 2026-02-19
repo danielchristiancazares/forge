@@ -35,7 +35,7 @@ impl App {
     /// The returned guard holds `&mut App`, so the input mode cannot be
     /// changed while the guard exists.
     pub fn insert_mode_mut(&mut self) -> Option<InsertMode<'_>> {
-        match &self.input {
+        match &self.ui.input {
             InputState::Insert(_) => Some(InsertMode { app: self }),
             _ => None,
         }
@@ -46,7 +46,7 @@ impl App {
     /// The returned guard holds `&mut App`, so the input mode cannot be
     /// changed while the guard exists.
     pub fn command_mode_mut(&mut self) -> Option<CommandMode<'_>> {
-        match &self.input {
+        match &self.ui.input {
             InputState::Command { .. } => Some(CommandMode { app: self }),
             _ => None,
         }
@@ -55,7 +55,7 @@ impl App {
 
 impl InsertMode<'_> {
     fn draft_mut(&mut self) -> &mut DraftInput {
-        self.app.input.draft_mut()
+        self.app.ui.input.draft_mut()
     }
 
     pub fn move_cursor_left(&mut self) {
@@ -108,7 +108,7 @@ impl InsertMode<'_> {
     /// begin a new stream.
     #[must_use]
     pub fn queue_message(self) -> Option<QueuedUserMessage> {
-        if !matches!(self.app.state, OperationState::Idle) {
+        if !matches!(self.app.core.state, OperationState::Idle) {
             return None;
         }
 
@@ -123,7 +123,7 @@ impl InsertMode<'_> {
         // If we recover after pushing a new user message, recovered assistant/tool
         // content would be appended after the new prompt (wrong chronology).
         let recovered = self.app.check_crash_recovery();
-        if recovered.is_some() || !matches!(self.app.state, OperationState::Idle) {
+        if recovered.is_some() || !matches!(self.app.core.state, OperationState::Idle) {
             // Recovery may have appended messages and/or entered ToolRecovery.
             // Don't consume the draft; let the user resume/discard, then re-send.
             return None;
@@ -139,13 +139,13 @@ impl InsertMode<'_> {
             return None;
         };
 
-        let draft_text = self.app.input.draft_mut().take_text();
+        let draft_text = self.app.ui.input.draft_mut().take_text();
         // Record prompt to history for Up/Down navigation
         self.app.record_prompt(&draft_text);
 
         // Prepend AGENTS.md content to the first user message.
         // take_agents_md() consumes the content — subsequent messages get an empty string.
-        let agents_md = self.app.environment.take_agents_md();
+        let agents_md = self.app.core.environment.take_agents_md();
         let expanded = if agents_md.is_empty() {
             draft_text.clone()
         } else {
@@ -155,9 +155,13 @@ impl InsertMode<'_> {
         // Expand @path file references: read file contents and prepend them.
         let expansion = expand_file_references(
             &expanded,
-            &self.app.tool_settings.sandbox,
-            self.app.tool_settings.read_limits.max_file_read_bytes,
-            &self.app.tool_file_cache,
+            &self.app.runtime.tool_settings.sandbox,
+            self.app
+                .runtime
+                .tool_settings
+                .read_limits
+                .max_file_read_bytes,
+            &self.app.runtime.tool_file_cache,
         );
 
         for (path, reason) in &expansion.denied {
@@ -214,7 +218,7 @@ impl InsertMode<'_> {
 
         // Store original draft text (not expanded) for rollback on cancel.
         // Also stash consumed agents_md so it can be restored on rollback.
-        self.app.pending_user_message = Some((msg_id, draft_text, agents_md));
+        self.app.core.pending_user_message = Some((msg_id, draft_text, agents_md));
 
         // Persist user message immediately for crash durability.
         // If persistence fails, rollback — streaming without a durable user
@@ -228,17 +232,27 @@ impl InsertMode<'_> {
         }
 
         self.app.scroll_to_bottom();
-        self.app.tool_iterations = 0;
+        self.app.core.tool_iterations = 0;
 
-        let api_key = crate::util::wrap_api_key(self.app.model.provider(), api_key);
+        let api_key = crate::util::wrap_api_key(self.app.core.model.provider(), api_key);
 
-        let config = match ApiConfig::new(api_key, self.app.model.clone()) {
+        let config = match ApiConfig::new(api_key, self.app.core.model.clone()) {
             Ok(config) => config
-                .with_openai_options(self.app.openai_options_for_model(&self.app.model))
-                .with_gemini_thinking_enabled(self.app.provider_runtime.gemini_thinking_enabled)
+                .with_openai_options(self.app.openai_options_for_model(&self.app.core.model))
+                .with_gemini_thinking_enabled(
+                    self.app.runtime.provider_runtime.gemini_thinking_enabled,
+                )
                 .with_anthropic_thinking(
-                    self.app.provider_runtime.anthropic_thinking_mode.as_str(),
-                    self.app.provider_runtime.anthropic_thinking_effort.as_str(),
+                    self.app
+                        .runtime
+                        .provider_runtime
+                        .anthropic_thinking_mode
+                        .as_str(),
+                    self.app
+                        .runtime
+                        .provider_runtime
+                        .anthropic_thinking_effort
+                        .as_str(),
                 ),
             Err(e) => {
                 self.app
@@ -258,7 +272,7 @@ impl InsertMode<'_> {
 
 impl CommandMode<'_> {
     fn command_mut(&mut self) -> Option<&mut DraftInput> {
-        self.app.input.command_mut()
+        self.app.ui.input.command_mut()
     }
 
     pub fn move_cursor_left(&mut self) {
@@ -351,13 +365,13 @@ impl CommandMode<'_> {
 
     #[must_use]
     pub fn take_command(self) -> Option<EnteredCommand> {
-        let input = std::mem::take(&mut self.app.input);
+        let input = std::mem::take(&mut self.app.ui.input);
         let InputState::Command { draft, mut command } = input else {
-            self.app.input = input;
+            self.app.ui.input = input;
             return None;
         };
 
-        self.app.input = InputState::Normal(draft);
+        self.app.ui.input = InputState::Normal(draft);
         Some(EnteredCommand {
             raw: command.take_text(),
         })
@@ -466,7 +480,7 @@ fn complete_command_arg(
                 "latest".to_string(),
             ];
             // Checkpoints are cheap (<= 50). Offer all numeric ids for completion.
-            for s in app.checkpoints.summaries() {
+            for s in app.core.checkpoints.summaries() {
                 v.push(s.id.to_string());
             }
             v

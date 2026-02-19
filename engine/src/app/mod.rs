@@ -703,12 +703,23 @@ struct LspRuntimeState {
     pending_diag_check: Option<(Vec<std::path::PathBuf>, Instant)>,
 }
 
-pub struct App {
+struct AppUi {
     input: InputState,
     display: DisplayLog,
     should_quit: bool,
     /// View state for rendering (scroll, status, modal effects).
     view: ViewState,
+    /// Mutually-exclusive settings detail editor state.
+    settings_editor: SettingsEditorState,
+    /// Input history for prompt and command recall.
+    input_history: ui::InputHistory,
+    /// Wall-clock timestamp for animation tick cadence (spinner ~10Hz).
+    last_ui_tick: Instant,
+    /// File picker state for "@" reference feature.
+    file_picker: ui::FilePickerState,
+}
+
+struct AppCore {
     /// Configured model (resolved from config at init).
     configured_model: ModelName,
     /// Persisted tool approval mode loaded from config and edited in `/settings`.
@@ -725,16 +736,8 @@ pub struct App {
     pending_turn_context_memory_enabled: Option<bool>,
     /// Saved UI defaults staged to take effect at the start of the next turn.
     pending_turn_ui_options: Option<UiOptions>,
-    /// Mutually-exclusive settings detail editor state.
-    settings_editor: SettingsEditorState,
-    api_keys: HashMap<Provider, SecretString>,
-    /// Path to the config file for persist operations.
-    config_path: std::path::PathBuf,
     model: ModelName,
-    tick: usize,
-    data_dir: DataDir,
     context_manager: ContextManager,
-    stream_journal: StreamJournal,
     state: OperationState,
     /// Whether memory (automatic distillation) is enabled.
     /// This is determined at init from config/env and does not change during runtime.
@@ -748,7 +751,6 @@ pub struct App {
     configured_output_limits: OutputLimits,
     /// Whether prompt caching is enabled (for Claude).
     cache_enabled: bool,
-    provider_runtime: ProviderRuntimeState,
     /// Provider-specific system prompts.
     /// The correct prompt is selected at streaming time based on the active provider.
     system_prompts: SystemPrompts,
@@ -768,16 +770,40 @@ pub struct App {
     tool_definitions: Vec<ToolDefinition>,
     /// Tool names hidden from UI rendering (source-of-truth: `ToolExecutor::is_hidden()`).
     hidden_tools: HashSet<String>,
+    /// Session-scoped tool execution gate.
+    ///
+    /// When disabled, tool execution is fail-closed due to tool journal health errors.
+    tool_gate: ToolGate,
+    /// Checkpoints for rewind (per-turn conversation checkpoints + tool-edit snapshots).
+    checkpoints: checkpoints::CheckpointStore,
+    /// Tool iterations used in the current user turn.
+    tool_iterations: u32,
+    /// Session-wide log of files created and modified.
+    session_changes: SessionChangeLog,
+    /// API usage for the current user turn (reset when turn completes).
+    turn_usage: Option<TurnUsage>,
+    /// API usage from the last completed turn (for status bar display).
+    last_turn_usage: Option<TurnUsage>,
+    /// Queue of pending system notifications to inject into next API request.
+    notification_queue: crate::notifications::NotificationQueue,
+    /// Plan lifecycle state (Inactive / Proposed / Active).
+    plan_state: PlanState,
+}
+
+struct AppRuntime {
+    api_keys: HashMap<Provider, SecretString>,
+    /// Path to the config file for persist operations.
+    config_path: std::path::PathBuf,
+    tick: usize,
+    data_dir: DataDir,
+    stream_journal: StreamJournal,
+    provider_runtime: ProviderRuntimeState,
     /// Tool registry for executors.
     tool_registry: std::sync::Arc<tools::ToolRegistry>,
     /// Tool settings derived from config.
     tool_settings: tools::ToolSettings,
     /// Tool journal for crash recovery.
     tool_journal: ToolJournal,
-    /// Session-scoped tool execution gate.
-    ///
-    /// When disabled, tool execution is fail-closed due to tool journal health errors.
-    tool_gate: ToolGate,
     /// Pending stream journal step ID that needs commit+prune cleanup.
     ///
     /// Best-effort retries run during `tick()` when idle. If this remains uncleared,
@@ -792,10 +818,6 @@ pub struct App {
     pending_tool_cleanup_failures: u8,
     /// File hash cache for tool safety checks.
     tool_file_cache: std::sync::Arc<tokio::sync::Mutex<tools::ToolFileCache>>,
-    /// Checkpoints for rewind (per-turn conversation checkpoints + tool-edit snapshots).
-    checkpoints: checkpoints::CheckpointStore,
-    /// Tool iterations used in the current user turn.
-    tool_iterations: u32,
     /// Whether we've already warned about a failed history load.
     history_load_warning_shown: bool,
     /// Whether we've already warned about autosave failures.
@@ -804,27 +826,17 @@ pub struct App {
     /// Uses `Arc<Mutex>` because it's accessed from async tasks for extraction.
     /// None if long-term memory is disabled or no Gemini API key.
     librarian: Option<std::sync::Arc<tokio::sync::Mutex<Librarian>>>,
-    /// Input history for prompt and command recall.
-    input_history: ui::InputHistory,
-    /// Wall-clock timestamp for animation tick cadence (spinner ~10Hz).
-    last_ui_tick: Instant,
     /// Wall-clock timestamp for session autosave cadence (~3s).
     last_session_autosave: Instant,
     /// Earliest time to attempt journal cleanup retries.
     next_journal_cleanup_attempt: Instant,
-    /// Session-wide log of files created and modified.
-    session_changes: SessionChangeLog,
-    /// File picker state for "@" reference feature.
-    file_picker: ui::FilePickerState,
-    /// API usage for the current user turn (reset when turn completes).
-    turn_usage: Option<TurnUsage>,
-    /// API usage from the last completed turn (for status bar display).
-    last_turn_usage: Option<TurnUsage>,
-    /// Queue of pending system notifications to inject into next API request.
-    notification_queue: crate::notifications::NotificationQueue,
     lsp_runtime: LspRuntimeState,
-    /// Plan lifecycle state (Inactive / Proposed / Active).
-    plan_state: PlanState,
+}
+
+pub struct App {
+    ui: AppUi,
+    core: AppCore,
+    runtime: AppRuntime,
 }
 
 /// Mutually-exclusive settings editor state (IFA §9.2).
@@ -843,16 +855,16 @@ use tool_gate::ToolGate;
 
 impl App {
     pub fn should_quit(&self) -> bool {
-        self.should_quit
+        self.ui.should_quit
     }
 
     pub fn request_quit(&mut self) {
-        self.should_quit = true;
+        self.ui.should_quit = true;
     }
     pub fn view_mode(&self) -> ViewMode {
         #[cfg(feature = "focus-view")]
         {
-            self.view.view_mode
+            self.ui.view.view_mode
         }
         #[cfg(not(feature = "focus-view"))]
         {
@@ -861,18 +873,18 @@ impl App {
     }
 
     pub fn focus_state(&self) -> &FocusState {
-        &self.view.focus_state
+        &self.ui.view.focus_state
     }
 
     pub fn focus_state_mut(&mut self) -> &mut FocusState {
-        &mut self.view.focus_state
+        &mut self.ui.view.focus_state
     }
 
     pub fn focus_review_next(&mut self) {
         if let FocusState::Reviewing {
             ref mut active_index,
             ref mut auto_advance,
-        } = self.view.focus_state
+        } = self.ui.view.focus_state
         {
             *active_index = active_index.saturating_add(1);
             *auto_advance = false;
@@ -883,7 +895,7 @@ impl App {
         if let FocusState::Reviewing {
             ref mut active_index,
             ref mut auto_advance,
-        } = self.view.focus_state
+        } = self.ui.view.focus_state
         {
             *active_index = active_index.saturating_sub(1);
             *auto_advance = false;
@@ -893,23 +905,23 @@ impl App {
     pub fn toggle_view_mode(&mut self) {
         #[cfg(feature = "focus-view")]
         {
-            self.view.view_mode = match self.view.view_mode {
+            self.ui.view.view_mode = match self.ui.view.view_mode {
                 ViewMode::Focus => ViewMode::Classic,
                 ViewMode::Classic => ViewMode::Focus,
             };
         }
         #[cfg(not(feature = "focus-view"))]
         {
-            self.view.view_mode = ViewMode::Classic;
+            self.ui.view.view_mode = ViewMode::Classic;
         }
     }
 
     pub fn take_clear_transcript(&mut self) -> bool {
-        std::mem::take(&mut self.view.clear_transcript)
+        std::mem::take(&mut self.ui.view.clear_transcript)
     }
 
     pub fn ui_options(&self) -> UiOptions {
-        self.view.ui_options
+        self.ui.view.ui_options
     }
 
     #[must_use]
@@ -922,47 +934,47 @@ impl App {
 
     #[must_use]
     pub fn settings_configured_model(&self) -> &ModelName {
-        &self.configured_model
+        &self.core.configured_model
     }
 
     #[must_use]
     pub fn settings_configured_tool_approval_mode(&self) -> tools::ApprovalMode {
-        self.configured_tool_approval_mode
+        self.core.configured_tool_approval_mode
     }
 
     #[must_use]
     pub fn settings_configured_tool_approval_mode_label(&self) -> &'static str {
-        approval_mode_display(self.configured_tool_approval_mode)
+        approval_mode_display(self.core.configured_tool_approval_mode)
     }
 
     #[must_use]
     pub fn settings_configured_context_memory_enabled(&self) -> bool {
-        self.configured_context_memory_enabled
+        self.core.configured_context_memory_enabled
     }
 
     #[must_use]
     pub fn settings_configured_ui_options(&self) -> UiOptions {
-        self.configured_ui_options
+        self.core.configured_ui_options
     }
 
     #[must_use]
     pub fn settings_pending_model_apply_next_turn(&self) -> bool {
-        self.pending_turn_model.is_some()
+        self.core.pending_turn_model.is_some()
     }
 
     #[must_use]
     pub fn settings_pending_tools_apply_next_turn(&self) -> bool {
-        self.pending_turn_tool_approval_mode.is_some()
+        self.core.pending_turn_tool_approval_mode.is_some()
     }
 
     #[must_use]
     pub fn settings_pending_ui_apply_next_turn(&self) -> bool {
-        self.pending_turn_ui_options.is_some()
+        self.core.pending_turn_ui_options.is_some()
     }
 
     #[must_use]
     pub fn settings_pending_context_apply_next_turn(&self) -> bool {
-        self.pending_turn_context_memory_enabled.is_some()
+        self.core.pending_turn_context_memory_enabled.is_some()
     }
 
     #[must_use]
@@ -975,7 +987,7 @@ impl App {
 
     #[must_use]
     pub fn settings_model_editor_snapshot(&self) -> Option<ModelEditorSnapshot> {
-        match &self.settings_editor {
+        match &self.ui.settings_editor {
             SettingsEditorState::Model(editor) => Some(ModelEditorSnapshot {
                 draft: editor.draft.clone(),
                 selected: editor.selected,
@@ -987,7 +999,7 @@ impl App {
 
     #[must_use]
     pub fn settings_context_editor_snapshot(&self) -> Option<ContextEditorSnapshot> {
-        match &self.settings_editor {
+        match &self.ui.settings_editor {
             SettingsEditorState::Context(editor) => Some(ContextEditorSnapshot {
                 draft_memory_enabled: editor.draft_memory_enabled,
                 selected: editor.selected,
@@ -999,7 +1011,7 @@ impl App {
 
     #[must_use]
     pub fn settings_tools_editor_snapshot(&self) -> Option<ToolsEditorSnapshot> {
-        match &self.settings_editor {
+        match &self.ui.settings_editor {
             SettingsEditorState::Tools(editor) => Some(ToolsEditorSnapshot {
                 draft_approval_mode: approval_mode_display(editor.draft_approval_mode),
                 selected: editor.selected,
@@ -1011,7 +1023,7 @@ impl App {
 
     #[must_use]
     pub fn settings_appearance_editor_snapshot(&self) -> Option<AppearanceEditorSnapshot> {
-        match &self.settings_editor {
+        match &self.ui.settings_editor {
             SettingsEditorState::Appearance(editor) => Some(AppearanceEditorSnapshot {
                 draft: editor.draft,
                 selected: editor.selected,
@@ -1023,7 +1035,7 @@ impl App {
 
     #[must_use]
     pub fn settings_has_unsaved_edits(&self) -> bool {
-        match &self.settings_editor {
+        match &self.ui.settings_editor {
             SettingsEditorState::Model(e) => e.is_dirty(),
             SettingsEditorState::Tools(e) => e.is_dirty(),
             SettingsEditorState::Context(e) => e.is_dirty(),
@@ -1033,40 +1045,40 @@ impl App {
     }
 
     pub(crate) fn apply_pending_turn_settings(&mut self) {
-        if let Some(approval_mode) = self.pending_turn_tool_approval_mode.take() {
-            self.configured_tool_approval_mode = approval_mode;
-            self.tool_settings.policy.mode = approval_mode;
+        if let Some(approval_mode) = self.core.pending_turn_tool_approval_mode.take() {
+            self.core.configured_tool_approval_mode = approval_mode;
+            self.runtime.tool_settings.policy.mode = approval_mode;
         }
-        if let Some(memory_enabled) = self.pending_turn_context_memory_enabled.take() {
+        if let Some(memory_enabled) = self.core.pending_turn_context_memory_enabled.take() {
             self.set_context_memory_enabled_internal(memory_enabled, false);
         }
-        if let Some(model) = self.pending_turn_model.take() {
-            self.configured_model = model;
-            self.provider_runtime.openai_previous_response_id = None;
-            let next_model = self.configured_model.clone();
-            if self.model != next_model {
+        if let Some(model) = self.core.pending_turn_model.take() {
+            self.core.configured_model = model;
+            self.runtime.provider_runtime.openai_previous_response_id = None;
+            let next_model = self.core.configured_model.clone();
+            if self.core.model != next_model {
                 self.set_active_model(next_model);
             }
         }
-        if let Some(pending) = self.pending_turn_ui_options.take() {
-            self.view.ui_options = pending;
+        if let Some(pending) = self.core.pending_turn_ui_options.take() {
+            self.ui.view.ui_options = pending;
             if pending.reduced_motion {
-                self.view.modal_effect = None;
-                self.view.files_panel_effect = None;
+                self.ui.view.modal_effect = None;
+                self.ui.view.files_panel_effect = None;
             }
         }
     }
 
     /// Toggle visibility of thinking/reasoning content in the UI.
     pub fn toggle_thinking(&mut self) {
-        self.view.ui_options.show_thinking = !self.view.ui_options.show_thinking;
+        self.ui.view.ui_options.show_thinking = !self.ui.view.ui_options.show_thinking;
     }
 
     /// Toggle visibility of the files panel.
     pub fn toggle_files_panel(&mut self) {
-        let panel = &mut self.view.files_panel;
-        if self.view.ui_options.reduced_motion {
-            self.view.files_panel_effect = None;
+        let panel = &mut self.ui.view.files_panel;
+        if self.ui.view.ui_options.reduced_motion {
+            self.ui.view.files_panel_effect = None;
             panel.visible = !panel.visible;
             if !panel.visible {
                 panel.expanded = None;
@@ -1076,66 +1088,66 @@ impl App {
         }
 
         if panel.visible {
-            self.view.files_panel_effect =
+            self.ui.view.files_panel_effect =
                 Some(PanelEffect::slide_out_right(Duration::from_millis(180)));
-            self.view.last_frame = Instant::now();
+            self.ui.view.last_frame = Instant::now();
         } else {
             panel.visible = true;
-            self.view.files_panel_effect =
+            self.ui.view.files_panel_effect =
                 Some(PanelEffect::slide_in_right(Duration::from_millis(180)));
-            self.view.last_frame = Instant::now();
+            self.ui.view.last_frame = Instant::now();
         }
     }
 
     /// Close the files panel (no-op if already hidden).
     pub fn close_files_panel(&mut self) {
-        if !self.view.files_panel.visible {
+        if !self.ui.view.files_panel.visible {
             return;
         }
-        if self.view.ui_options.reduced_motion {
-            self.view.files_panel_effect = None;
-            let panel = &mut self.view.files_panel;
+        if self.ui.view.ui_options.reduced_motion {
+            self.ui.view.files_panel_effect = None;
+            let panel = &mut self.ui.view.files_panel;
             panel.visible = false;
             panel.expanded = None;
             panel.diff_scroll = 0;
             return;
         }
-        self.view.files_panel_effect =
+        self.ui.view.files_panel_effect =
             Some(PanelEffect::slide_out_right(Duration::from_millis(180)));
-        self.view.last_frame = Instant::now();
+        self.ui.view.last_frame = Instant::now();
     }
 
     pub fn files_panel_visible(&self) -> bool {
-        self.view.files_panel.visible
+        self.ui.view.files_panel.visible
     }
 
     pub fn files_panel_effect_mut(&mut self) -> Option<&mut PanelEffect> {
-        self.view.files_panel_effect.as_mut()
+        self.ui.view.files_panel_effect.as_mut()
     }
 
     pub fn clear_files_panel_effect(&mut self) {
-        self.view.files_panel_effect = None;
+        self.ui.view.files_panel_effect = None;
     }
 
     pub fn finish_files_panel_effect(&mut self) {
-        if let Some(effect) = &self.view.files_panel_effect
+        if let Some(effect) = &self.ui.view.files_panel_effect
             && effect.kind() == PanelEffectKind::SlideOutRight
         {
-            let panel = &mut self.view.files_panel;
+            let panel = &mut self.ui.view.files_panel;
             panel.visible = false;
             panel.expanded = None;
             panel.diff_scroll = 0;
         }
-        self.view.files_panel_effect = None;
+        self.ui.view.files_panel_effect = None;
     }
 
     pub fn session_changes(&self) -> &SessionChangeLog {
-        &self.session_changes
+        &self.core.session_changes
     }
 
     /// Filters out files that no longer exist on disk.
     pub fn ordered_files(&self) -> Vec<(std::path::PathBuf, ChangeKind)> {
-        let changes = &self.session_changes;
+        let changes = &self.core.session_changes;
         changes
             .modified
             .iter()
@@ -1160,13 +1172,13 @@ impl App {
         if count == 0 {
             return;
         }
-        let new_selected = (self.view.files_panel.selected + 1) % count;
+        let new_selected = (self.ui.view.files_panel.selected + 1) % count;
         let expanded_path = self
             .ordered_files()
             .get(new_selected)
             .map(|(p, _)| p.clone());
 
-        let panel = &mut self.view.files_panel;
+        let panel = &mut self.ui.view.files_panel;
         panel.selected = new_selected;
         panel.diff_scroll = 0;
         panel.expanded = expanded_path;
@@ -1178,44 +1190,45 @@ impl App {
         if count == 0 {
             return;
         }
-        let new_selected = if self.view.files_panel.selected == 0 {
+        let new_selected = if self.ui.view.files_panel.selected == 0 {
             count - 1
         } else {
-            self.view.files_panel.selected - 1
+            self.ui.view.files_panel.selected - 1
         };
         let expanded_path = self
             .ordered_files()
             .get(new_selected)
             .map(|(p, _)| p.clone());
 
-        let panel = &mut self.view.files_panel;
+        let panel = &mut self.ui.view.files_panel;
         panel.selected = new_selected;
         panel.diff_scroll = 0;
         panel.expanded = expanded_path;
     }
 
     pub fn files_panel_expanded(&self) -> bool {
-        self.view.files_panel.expanded.is_some()
+        self.ui.view.files_panel.expanded.is_some()
     }
 
     pub fn files_panel_state(&self) -> &FilesPanelState {
-        &self.view.files_panel
+        &self.ui.view.files_panel
     }
 
     /// Collapse the expanded diff.
     pub fn files_panel_collapse(&mut self) {
-        self.view.files_panel.expanded = None;
-        self.view.files_panel.diff_scroll = 0;
+        self.ui.view.files_panel.expanded = None;
+        self.ui.view.files_panel.diff_scroll = 0;
     }
 
     pub fn files_panel_sync_selection(&mut self) {
-        let panel = &mut self.view.files_panel;
+        let panel = &mut self.ui.view.files_panel;
         let files = self
+            .core
             .session_changes
             .modified
             .iter()
             .cloned()
-            .chain(self.session_changes.created.iter().cloned())
+            .chain(self.core.session_changes.created.iter().cloned())
             .filter(|p| p.exists())
             .collect::<Vec<_>>();
 
@@ -1234,15 +1247,16 @@ impl App {
 
     /// Scroll the diff view down.
     pub fn files_panel_scroll_diff_down(&mut self) {
-        self.view.files_panel.diff_scroll += 10;
+        self.ui.view.files_panel.diff_scroll += 10;
     }
 
     pub fn files_panel_scroll_diff_up(&mut self) {
-        self.view.files_panel.diff_scroll = self.view.files_panel.diff_scroll.saturating_sub(10);
+        self.ui.view.files_panel.diff_scroll =
+            self.ui.view.files_panel.diff_scroll.saturating_sub(10);
     }
 
     pub fn files_panel_diff(&self) -> Option<FileDiff> {
-        let path = self.view.files_panel.expanded.as_ref()?;
+        let path = self.ui.view.files_panel.expanded.as_ref()?;
 
         let current = match std::fs::read(path) {
             Ok(bytes) => bytes,
@@ -1258,9 +1272,10 @@ impl App {
         }
 
         let baseline = self
+            .core
             .checkpoints
             .find_baseline_for_file(path)
-            .and_then(|proof| self.checkpoints.baseline_content(proof, path));
+            .and_then(|proof| self.core.checkpoints.baseline_content(proof, path));
 
         if let Some(old_bytes) = baseline {
             let diff = forge_utils::format_unified_diff(
@@ -1278,44 +1293,54 @@ impl App {
     }
 
     pub fn provider(&self) -> Provider {
-        self.model.provider()
+        self.core.model.provider()
     }
 
     pub fn model(&self) -> &str {
-        self.model.as_str()
+        self.core.model.as_str()
     }
 
     pub(crate) fn openai_options_for_model(&self, model: &ModelName) -> OpenAIRequestOptions {
         if model.provider() != Provider::OpenAI {
-            return self.provider_runtime.openai_options;
+            return self.runtime.provider_runtime.openai_options;
         }
 
         if model.as_str() == "gpt-5.2-pro"
-            && !self.provider_runtime.openai_reasoning_effort_explicit
-            && self.provider_runtime.openai_options.reasoning_effort()
+            && !self
+                .runtime
+                .provider_runtime
+                .openai_reasoning_effort_explicit
+            && self
+                .runtime
+                .provider_runtime
+                .openai_options
+                .reasoning_effort()
                 != OpenAIReasoningEffort::XHigh
         {
             return OpenAIRequestOptions::new(
                 OpenAIReasoningEffort::XHigh,
-                self.provider_runtime.openai_options.reasoning_summary(),
-                self.provider_runtime.openai_options.verbosity(),
-                self.provider_runtime.openai_options.truncation(),
+                self.runtime
+                    .provider_runtime
+                    .openai_options
+                    .reasoning_summary(),
+                self.runtime.provider_runtime.openai_options.verbosity(),
+                self.runtime.provider_runtime.openai_options.truncation(),
             );
         }
 
-        self.provider_runtime.openai_options
+        self.runtime.provider_runtime.openai_options
     }
 
     pub fn tick_count(&self) -> usize {
-        self.tick
+        self.runtime.tick
     }
 
     pub fn history(&self) -> &forge_context::FullHistory {
-        self.context_manager.history()
+        self.core.context_manager.history()
     }
 
     pub fn streaming(&self) -> Option<&StreamingMessage> {
-        match &self.state {
+        match &self.core.state {
             OperationState::Streaming(active) => Some(active.message()),
             _ => None,
         }
@@ -1325,7 +1350,7 @@ impl App {
 
     #[inline]
     fn tool_loop_state(&self) -> Option<&state::ToolLoopState> {
-        match &self.state {
+        match &self.core.state {
             OperationState::ToolLoop(state) => Some(state.as_ref()),
             _ => None,
         }
@@ -1333,7 +1358,7 @@ impl App {
 
     #[inline]
     fn tool_loop_state_mut(&mut self) -> Option<&mut state::ToolLoopState> {
-        match &mut self.state {
+        match &mut self.core.state {
             OperationState::ToolLoop(state) => Some(state.as_mut()),
             _ => None,
         }
@@ -1398,7 +1423,7 @@ impl App {
         Some(&self.tool_approval_ref()?.data().requests)
     }
 
-    pub fn tool_approval_selected(&self) -> Option<&[bool]> {
+    pub fn tool_approval_selected(&self) -> Option<&[crate::ApprovalSelection]> {
         Some(&self.tool_approval_ref()?.data().selected)
     }
 
@@ -1406,8 +1431,10 @@ impl App {
         Some(self.tool_approval_ref()?.data().cursor)
     }
 
-    pub fn tool_approval_expanded(&self) -> Option<usize> {
-        self.tool_approval_ref()?.data().expanded
+    pub fn tool_approval_expanded(&self) -> crate::ApprovalExpanded {
+        self.tool_approval_ref()
+            .map(|s| s.data().expanded)
+            .unwrap_or(crate::ApprovalExpanded::Collapsed)
     }
 
     pub fn tool_approval_scroll_offset(&self) -> usize {
@@ -1421,13 +1448,13 @@ impl App {
     }
 
     pub fn plan_state(&self) -> &PlanState {
-        &self.plan_state
+        &self.core.plan_state
     }
 
     // Plan approval accessors
 
     pub fn plan_approval_kind(&self) -> Option<&'static str> {
-        match &self.state {
+        match &self.core.state {
             OperationState::PlanApproval(state) => match &state.kind {
                 state::PlanApprovalKind::Create => Some("create"),
                 state::PlanApprovalKind::Edit { .. } => Some("edit"),
@@ -1437,14 +1464,14 @@ impl App {
     }
 
     pub fn plan_approval_rendered(&self) -> Option<String> {
-        if !matches!(self.state, OperationState::PlanApproval(_)) {
+        if !matches!(self.core.state, OperationState::PlanApproval(_)) {
             return None;
         }
-        self.plan_state.plan().map(forge_types::Plan::render)
+        self.core.plan_state.plan().map(forge_types::Plan::render)
     }
 
     pub fn plan_status_line(&self) -> Option<String> {
-        match &self.plan_state {
+        match &self.core.plan_state {
             PlanState::Active(plan) => {
                 if let Some(step) = plan.active_step() {
                     let phase_idx = plan.phase_of(step.id).unwrap_or(0);
@@ -1467,14 +1494,14 @@ impl App {
     }
 
     pub fn tool_recovery_calls(&self) -> Option<&[ToolCall]> {
-        match &self.state {
+        match &self.core.state {
             OperationState::ToolRecovery(state) => Some(&state.batch.calls),
             _ => None,
         }
     }
 
     pub fn tool_recovery_results(&self) -> Option<&[ToolResult]> {
-        match &self.state {
+        match &self.core.state {
             OperationState::ToolRecovery(state) => Some(&state.batch.results),
             _ => None,
         }
@@ -1484,11 +1511,12 @@ impl App {
         // Check if there are no History items (real conversation content)
         // Local items (notifications) don't count towards "empty"
         !self
+            .ui
             .display
             .iter()
             .any(|item| matches!(item, DisplayItem::History(_)))
             && !matches!(
-                self.state,
+                self.core.state,
                 OperationState::Streaming(_)
                     | OperationState::ToolLoop(_)
                     | OperationState::PlanApproval(_)
@@ -1498,24 +1526,24 @@ impl App {
     }
 
     pub fn display_items(&self) -> &[DisplayItem] {
-        self.display.items()
+        self.ui.display.items()
     }
 
     pub fn is_tool_hidden(&self, name: &str) -> bool {
-        self.hidden_tools.contains(name)
+        self.core.hidden_tools.contains(name)
     }
 
     /// Version counter for display changes - used for render caching.
     pub fn display_version(&self) -> usize {
-        self.display.revision()
+        self.ui.display.revision()
     }
 
     pub fn has_api_key(&self, provider: Provider) -> bool {
-        self.api_keys.contains_key(&provider)
+        self.runtime.api_keys.contains_key(&provider)
     }
 
     pub fn current_api_key(&self) -> Option<&SecretString> {
-        self.api_keys.get(&self.model.provider())
+        self.runtime.api_keys.get(&self.core.model.provider())
     }
 
     pub fn is_loading(&self) -> bool {
@@ -1558,7 +1586,7 @@ impl App {
         if self.settings_surface() != Some(SettingsSurface::Resolve) {
             return;
         }
-        if let Some(modal) = self.input.settings_modal_mut()
+        if let Some(modal) = self.ui.input.settings_modal_mut()
             && modal.selected > 0
         {
             modal.selected -= 1;
@@ -1573,7 +1601,7 @@ impl App {
         if len == 0 {
             return;
         }
-        if let Some(modal) = self.input.settings_modal_mut()
+        if let Some(modal) = self.ui.input.settings_modal_mut()
             && modal.selected + 1 < len
         {
             modal.selected += 1;
@@ -1602,7 +1630,7 @@ impl App {
         let Some(category) = Self::settings_category_for_resolve_setting(setting) else {
             return;
         };
-        if let Some(modal) = self.input.settings_modal_mut() {
+        if let Some(modal) = self.ui.input.settings_modal_mut() {
             modal.surface = SettingsSurface::Root;
             modal.filter = DraftInput::default();
             modal.filter_active = false;
@@ -1619,12 +1647,15 @@ impl App {
 
     /// If present, tools are disabled for safety due to a tool journal error.
     pub fn tool_journal_disabled_reason(&self) -> Option<&str> {
-        self.tool_gate.reason()
+        match self.core.tool_gate.status() {
+            tool_gate::ToolGateStatus::Enabled => None,
+            tool_gate::ToolGateStatus::Disabled { reason } => Some(reason),
+        }
     }
 
     /// Human-readable reason for a recovery block (if recovery is blocked).
     pub fn recovery_blocked_reason(&self) -> Option<String> {
-        match &self.state {
+        match &self.core.state {
             OperationState::RecoveryBlocked(state) => Some(state.reason.message()),
             _ => None,
         }
@@ -1633,7 +1664,7 @@ impl App {
     /// Centralizes busy-state checks to ensure consistency across
     /// `start_streaming`, `start_distillation`, and UI queries.
     fn busy_reason(&self) -> Option<&'static str> {
-        match &self.state {
+        match &self.core.state {
             OperationState::Idle => None,
             OperationState::Streaming(_) => Some("streaming a response"),
             OperationState::ToolLoop(_) => Some("tool execution in progress"),
@@ -1646,22 +1677,22 @@ impl App {
 
     /// Uses cached value when available to avoid recomputing every frame.
     pub fn context_usage_status(&mut self) -> ContextUsageStatus {
-        if let Some(cached) = &self.cached_usage_status {
+        if let Some(cached) = &self.core.cached_usage_status {
             return cached.clone();
         }
-        let status = self.context_manager.usage_status();
-        self.cached_usage_status = Some(status.clone());
+        let status = self.core.context_manager.usage_status();
+        self.core.cached_usage_status = Some(status.clone());
         status
     }
 
     /// Invalidate cached context usage status.
     /// Call this when history, model, or output limits change.
     fn invalidate_usage_cache(&mut self) {
-        self.cached_usage_status = None;
+        self.core.cached_usage_status = None;
     }
 
     pub fn memory_enabled(&self) -> bool {
-        self.memory_enabled
+        self.core.memory_enabled
     }
 
     /// Queue a system notification to be injected into the next API request.
@@ -1669,12 +1700,12 @@ impl App {
     /// Notifications are injected as assistant messages, which cannot be forged
     /// by user input, providing a secure channel for system-level communication.
     pub fn queue_notification(&mut self, notification: crate::notifications::SystemNotification) {
-        self.notification_queue.push(notification);
+        self.core.notification_queue.push(notification);
     }
 
     /// API usage from the last completed turn (for status bar display).
     pub fn last_turn_usage(&self) -> Option<&TurnUsage> {
-        self.last_turn_usage.as_ref()
+        self.core.last_turn_usage.as_ref()
     }
     #[allow(clippy::unused_self)]
     fn idle_state(&self) -> OperationState {
@@ -1683,7 +1714,7 @@ impl App {
 
     fn replace_with_idle(&mut self) -> OperationState {
         let idle = self.idle_state();
-        std::mem::replace(&mut self.state, idle)
+        std::mem::replace(&mut self.core.state, idle)
     }
 
     /// Emit an operation edge without changing `OperationState`.
@@ -1692,7 +1723,7 @@ impl App {
     /// rules force us into "take + restore" implementation patterns.
     #[track_caller]
     fn op_edge(&mut self, edge: OperationEdge) {
-        let state = self.state.tag();
+        let state = self.core.state.tag();
         let loc = std::panic::Location::caller();
         let legal = Self::op_is_legal_transition(state, edge, state);
         if !legal {
@@ -1772,12 +1803,12 @@ impl App {
     /// Authoritative `OperationState` transition point.
     ///
     /// Phase-0 of the OperationState/FocusState overhaul:
-    /// - stop scattering `self.state = ...` across the codebase,
+    /// - stop scattering `self.core.state = ...` across the codebase,
     /// - log variant-level edges once,
     /// - provide a single hook for future cross-cutting effects (metrics, UI sync, etc).
     #[track_caller]
     fn op_transition(&mut self, next: OperationState) {
-        let from = self.state.tag();
+        let from = self.core.state.tag();
         let to = next.tag();
         let edge = Self::op_transition_edge(from, to);
         if let Some(edge) = edge {
@@ -1816,12 +1847,12 @@ impl App {
         if let Some(edge) = edge {
             self.op_apply_edge_effects(from, edge, to);
         }
-        self.state = next;
+        self.core.state = next;
     }
 
     /// Like [`Self::op_transition`], but forces the `from` tag.
     ///
-    /// Useful when a method temporarily takes `self.state` (via `mem::replace`) and
+    /// Useful when a method temporarily takes `self.core.state` (via `mem::replace`) and
     /// needs to emit a semantically correct edge that would otherwise read as `Idle -> X`.
     #[track_caller]
     fn op_transition_from(&mut self, from: OperationTag, next: OperationState) {
@@ -1863,7 +1894,7 @@ impl App {
         if let Some(edge) = edge {
             self.op_apply_edge_effects(from, edge, to);
         }
-        self.state = next;
+        self.core.state = next;
     }
 
     /// Internal state write used for "take + restore" patterns.
@@ -1872,7 +1903,7 @@ impl App {
     /// temporary `Idle` slots to satisfy Rust move/borrow rules.
     /// Logging those internal hops would drown out real lifecycle edges.
     fn op_restore(&mut self, next: OperationState) {
-        self.state = next;
+        self.core.state = next;
     }
 
     /// Central dispatch for cross-cutting effects keyed off a named operation edge.
@@ -1898,8 +1929,8 @@ impl App {
 
     fn focus_start_execution(&mut self) {
         if self.view_mode() == crate::ui::ViewMode::Focus {
-            self.view.focus_state = crate::ui::FocusState::Executing {
-                step_started_at: Some(std::time::Instant::now()),
+            self.ui.view.focus_state = crate::ui::FocusState::Executing {
+                step_started_at: std::time::Instant::now(),
             };
         }
     }
@@ -1907,11 +1938,11 @@ impl App {
     fn focus_finish_execution(&mut self) {
         if self.view_mode() == crate::ui::ViewMode::Focus
             && matches!(
-                self.view.focus_state,
+                self.ui.view.focus_state,
                 crate::ui::FocusState::Executing { .. }
             )
         {
-            self.view.focus_state = crate::ui::FocusState::Reviewing {
+            self.ui.view.focus_state = crate::ui::FocusState::Reviewing {
                 active_index: 0,
                 auto_advance: true,
             };
@@ -1920,11 +1951,12 @@ impl App {
 
     fn build_basic_api_messages(&mut self, reserved_overhead: u32) -> Vec<Message> {
         let budget = self
+            .core
             .context_manager
             .current_limits()
             .effective_input_budget()
             .saturating_sub(reserved_overhead);
-        let entries = self.context_manager.history().entries();
+        let entries = self.core.context_manager.history().entries();
         if entries.is_empty() {
             return Vec::new();
         }
@@ -1962,14 +1994,14 @@ impl App {
     }
 
     fn reconcile_output_limits_with_model(&mut self) {
-        let model_max_output = self.context_manager.current_limits().max_output();
-        let current = self.output_limits;
+        let model_max_output = self.core.context_manager.current_limits().max_output();
+        let current = self.core.output_limits;
 
         // Try to restore configured limits if the new model has enough headroom.
         // This handles the case where thinking was dropped for a smaller model
         // and needs to be restored when switching back to a larger one.
         let target = if current.max_output_tokens() <= model_max_output {
-            let configured = self.configured_output_limits;
+            let configured = self.core.configured_output_limits;
             match configured.thinking() {
                 ThinkingState::Enabled(budget) if !current.has_thinking() => {
                     let budget_tokens = budget.as_u32();
@@ -1978,7 +2010,7 @@ impl App {
                             .unwrap_or(OutputLimits::new(model_max_output));
                         tracing::info!(
                             "Restored thinking budget ({budget_tokens}) for {}",
-                            self.model
+                            self.core.model
                         );
                         restored
                     } else {
@@ -2009,42 +2041,45 @@ impl App {
                     "Clamped max_output_tokens {} → {} for {}; disabled thinking budget",
                     current.max_output_tokens(),
                     target.max_output_tokens(),
-                    self.model
+                    self.core.model
                 );
             } else if current.max_output_tokens() != target.max_output_tokens() {
                 tracing::warn!(
                     "Adjusted max_output_tokens {} → {} for {}",
                     current.max_output_tokens(),
                     target.max_output_tokens(),
-                    self.model
+                    self.core.model
                 );
             }
 
-            self.output_limits = target;
-            self.context_manager
+            self.core.output_limits = target;
+            self.core
+                .context_manager
                 .set_output_limit(target.max_output_tokens());
         }
     }
 
     fn set_active_model(&mut self, model: ModelName) {
-        self.model = model;
+        self.core.model = model;
         if self.memory_enabled() {
             self.handle_context_adaptation();
         } else {
-            self.context_manager
-                .set_model_without_adaptation(self.model.clone());
+            self.core
+                .context_manager
+                .set_model_without_adaptation(self.core.model.clone());
             self.invalidate_usage_cache();
         }
         self.reconcile_output_limits_with_model();
     }
 
     fn set_model_internal(&mut self, model: ModelName, persist: bool) {
-        self.provider_runtime.openai_previous_response_id = None;
+        self.runtime.provider_runtime.openai_previous_response_id = None;
         self.set_active_model(model.clone());
-        self.configured_model = model.clone();
-        self.pending_turn_model = None;
+        self.core.configured_model = model.clone();
+        self.core.pending_turn_model = None;
         if persist
-            && let Err(e) = config::ForgeConfig::persist_model(&self.config_path, model.as_str())
+            && let Err(e) =
+                config::ForgeConfig::persist_model(&self.runtime.config_path, model.as_str())
         {
             tracing::warn!("Failed to persist model to config: {e}");
         }
@@ -2056,13 +2091,13 @@ impl App {
     }
 
     fn set_context_memory_enabled_internal(&mut self, enabled: bool, persist: bool) {
-        self.memory_enabled = enabled;
-        self.configured_context_memory_enabled = enabled;
-        self.pending_turn_context_memory_enabled = None;
+        self.core.memory_enabled = enabled;
+        self.core.configured_context_memory_enabled = enabled;
+        self.core.pending_turn_context_memory_enabled = None;
         self.invalidate_usage_cache();
         if persist
             && let Err(err) = config::ForgeConfig::persist_context_settings(
-                &self.config_path,
+                &self.runtime.config_path,
                 config::ContextSettings { memory: enabled },
             )
         {
@@ -2076,7 +2111,10 @@ impl App {
     /// - If shrinking with `needs_distillation`, starts background distillation
     /// - If expanding, attempts to restore previously distilled messages
     fn handle_context_adaptation(&mut self) {
-        let adaptation = self.context_manager.switch_model(self.model.clone());
+        let adaptation = self
+            .core
+            .context_manager
+            .switch_model(self.core.model.clone());
         self.invalidate_usage_cache();
 
         match adaptation {
@@ -2119,74 +2157,74 @@ impl App {
         let now = Instant::now();
 
         // Preserve prior spinner cadence (~10Hz), independent of render FPS.
-        if now.duration_since(self.last_ui_tick) >= Duration::from_millis(100) {
-            self.last_ui_tick = now;
-            self.tick = self.tick.wrapping_add(1);
+        if now.duration_since(self.ui.last_ui_tick) >= Duration::from_millis(100) {
+            self.ui.last_ui_tick = now;
+            self.runtime.tick = self.runtime.tick.wrapping_add(1);
         }
 
         // Preserve prior autosave cadence (~3s), independent of render FPS.
-        if now.duration_since(self.last_session_autosave) >= Duration::from_secs(3) {
-            self.last_session_autosave = now;
+        if now.duration_since(self.runtime.last_session_autosave) >= Duration::from_secs(3) {
+            self.runtime.last_session_autosave = now;
             self.autosave_session();
         }
     }
 
     pub fn frame_elapsed(&mut self) -> Duration {
         let now = Instant::now();
-        let elapsed = now.duration_since(self.view.last_frame);
-        self.view.last_frame = now;
+        let elapsed = now.duration_since(self.ui.view.last_frame);
+        self.ui.view.last_frame = now;
         elapsed
     }
 
     pub fn modal_effect_mut(&mut self) -> Option<&mut ModalEffect> {
-        self.view.modal_effect.as_mut()
+        self.ui.view.modal_effect.as_mut()
     }
 
     pub fn clear_modal_effect(&mut self) {
-        self.view.modal_effect = None;
+        self.ui.view.modal_effect = None;
     }
 
     pub fn input_mode(&self) -> InputMode {
-        self.input.mode()
+        self.ui.input.mode()
     }
 
     pub fn enter_insert_mode_at_end(&mut self) {
-        self.input.draft_mut().move_cursor_end();
+        self.ui.input.draft_mut().move_cursor_end();
         self.enter_insert_mode();
     }
 
     pub fn enter_insert_mode_with_clear(&mut self) {
-        self.input.draft_mut().clear();
+        self.ui.input.draft_mut().clear();
         self.enter_insert_mode();
     }
 
     pub fn enter_normal_mode(&mut self) {
-        self.input = std::mem::take(&mut self.input).into_normal();
+        self.ui.input = std::mem::take(&mut self.ui.input).into_normal();
         self.reset_settings_detail_editor();
-        self.view.modal_effect = None;
+        self.ui.view.modal_effect = None;
     }
 
     pub fn enter_insert_mode(&mut self) {
-        self.input = std::mem::take(&mut self.input).into_insert();
+        self.ui.input = std::mem::take(&mut self.ui.input).into_insert();
     }
 
     pub fn enter_command_mode(&mut self) {
-        self.input = std::mem::take(&mut self.input).into_command();
+        self.ui.input = std::mem::take(&mut self.ui.input).into_command();
     }
 
     fn enter_settings_surface(&mut self, surface: SettingsSurface) {
-        let current = std::mem::take(&mut self.input);
-        self.input = if surface == SettingsSurface::Root {
+        let current = std::mem::take(&mut self.ui.input);
+        self.ui.input = if surface == SettingsSurface::Root {
             current.into_settings()
         } else {
             current.into_settings_surface(surface)
         };
         self.reset_settings_detail_editor();
-        if self.view.ui_options.reduced_motion {
-            self.view.modal_effect = None;
+        if self.ui.view.ui_options.reduced_motion {
+            self.ui.view.modal_effect = None;
         } else {
-            self.view.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
-            self.view.last_frame = Instant::now();
+            self.ui.view.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
+            self.ui.view.last_frame = Instant::now();
         }
     }
 
@@ -2208,7 +2246,7 @@ impl App {
 
     #[must_use]
     pub fn settings_surface(&self) -> Option<SettingsSurface> {
-        self.input.settings_modal().map(|modal| modal.surface)
+        self.ui.input.settings_modal().map(|modal| modal.surface)
     }
 
     #[must_use]
@@ -2219,26 +2257,31 @@ impl App {
 
     #[must_use]
     pub fn settings_filter_text(&self) -> Option<&str> {
-        self.input.settings_modal().map(|modal| modal.filter.text())
+        self.ui
+            .input
+            .settings_modal()
+            .map(|modal| modal.filter.text())
     }
 
     #[must_use]
     pub fn settings_filter_active(&self) -> bool {
-        self.input
+        self.ui
+            .input
             .settings_modal()
             .is_some_and(|modal| modal.filter_active)
     }
 
     #[must_use]
     pub fn settings_detail_view(&self) -> Option<SettingsCategory> {
-        self.input
+        self.ui
+            .input
             .settings_modal()
             .and_then(|modal| modal.detail_view)
     }
 
     #[must_use]
     pub fn settings_selected_index(&self) -> Option<usize> {
-        self.input.settings_modal().map(|modal| modal.selected)
+        self.ui.input.settings_modal().map(|modal| modal.selected)
     }
 
     #[must_use]
@@ -2251,29 +2294,29 @@ impl App {
     }
 
     fn open_settings_detail(&mut self, category: SettingsCategory) {
-        if let Some(modal) = self.input.settings_modal_mut() {
+        if let Some(modal) = self.ui.input.settings_modal_mut() {
             modal.detail_view = Some(category);
         }
-        self.settings_editor = SettingsEditorState::Inactive;
+        self.ui.settings_editor = SettingsEditorState::Inactive;
         match category {
             SettingsCategory::Models => {
-                self.settings_editor = SettingsEditorState::Model(ModelSettingsEditor::new(
-                    self.configured_model.clone(),
+                self.ui.settings_editor = SettingsEditorState::Model(ModelSettingsEditor::new(
+                    self.core.configured_model.clone(),
                 ));
             }
             SettingsCategory::Tools => {
-                self.settings_editor = SettingsEditorState::Tools(ToolsSettingsEditor::new(
-                    self.configured_tool_approval_mode,
+                self.ui.settings_editor = SettingsEditorState::Tools(ToolsSettingsEditor::new(
+                    self.core.configured_tool_approval_mode,
                 ));
             }
             SettingsCategory::Context => {
-                self.settings_editor = SettingsEditorState::Context(ContextSettingsEditor::new(
-                    self.configured_context_memory_enabled,
+                self.ui.settings_editor = SettingsEditorState::Context(ContextSettingsEditor::new(
+                    self.core.configured_context_memory_enabled,
                 ));
             }
             SettingsCategory::Appearance => {
-                self.settings_editor = SettingsEditorState::Appearance(
-                    AppearanceSettingsEditor::new(self.configured_ui_options),
+                self.ui.settings_editor = SettingsEditorState::Appearance(
+                    AppearanceSettingsEditor::new(self.core.configured_ui_options),
                 );
             }
             _ => {}
@@ -2281,12 +2324,12 @@ impl App {
     }
 
     fn reset_settings_detail_editor(&mut self) {
-        self.settings_editor = SettingsEditorState::Inactive;
+        self.ui.settings_editor = SettingsEditorState::Inactive;
     }
 
     #[must_use]
     pub fn tool_definition_count(&self) -> usize {
-        self.tool_definitions.len()
+        self.core.tool_definitions.len()
     }
 
     pub fn settings_move_up(&mut self) {
@@ -2299,7 +2342,7 @@ impl App {
         if selected == 0 {
             return;
         }
-        if let Some(modal) = self.input.settings_modal_mut() {
+        if let Some(modal) = self.ui.input.settings_modal_mut() {
             modal.selected -= 1;
         }
     }
@@ -2315,7 +2358,7 @@ impl App {
         if len == 0 || selected + 1 >= len {
             return;
         }
-        if let Some(modal) = self.input.settings_modal_mut() {
+        if let Some(modal) = self.ui.input.settings_modal_mut() {
             modal.selected += 1;
         }
     }
@@ -2324,13 +2367,13 @@ impl App {
         if !self.settings_is_root_surface() {
             return;
         }
-        if let Some(modal) = self.input.settings_modal_mut() {
+        if let Some(modal) = self.ui.input.settings_modal_mut() {
             modal.filter_active = true;
         }
     }
 
     pub fn settings_stop_filter(&mut self) {
-        if let Some(modal) = self.input.settings_modal_mut() {
+        if let Some(modal) = self.ui.input.settings_modal_mut() {
             modal.filter_active = false;
         }
     }
@@ -2339,7 +2382,7 @@ impl App {
         if !self.settings_is_root_surface() {
             return;
         }
-        if let Some(modal) = self.input.settings_modal_mut() {
+        if let Some(modal) = self.ui.input.settings_modal_mut() {
             modal.filter.enter_char(c);
         }
         self.settings_clamp_selection();
@@ -2349,14 +2392,14 @@ impl App {
         if !self.settings_is_root_surface() {
             return;
         }
-        if let Some(modal) = self.input.settings_modal_mut() {
+        if let Some(modal) = self.ui.input.settings_modal_mut() {
             modal.filter.delete_char();
         }
         self.settings_clamp_selection();
     }
 
     pub fn settings_detail_move_up(&mut self) {
-        match &mut self.settings_editor {
+        match &mut self.ui.settings_editor {
             SettingsEditorState::Model(editor) if editor.selected > 0 => {
                 editor.selected -= 1;
             }
@@ -2374,7 +2417,7 @@ impl App {
     }
 
     pub fn settings_detail_move_down(&mut self) {
-        match &mut self.settings_editor {
+        match &mut self.ui.settings_editor {
             SettingsEditorState::Model(editor) => {
                 let max_index = ModelSettingsEditor::max_index();
                 if editor.selected < max_index {
@@ -2401,7 +2444,7 @@ impl App {
     }
 
     pub fn settings_detail_toggle_selected(&mut self) {
-        match &mut self.settings_editor {
+        match &mut self.ui.settings_editor {
             SettingsEditorState::Model(editor) => {
                 editor.update_draft_from_selected();
             }
@@ -2425,8 +2468,8 @@ impl App {
     }
 
     pub fn settings_revert_edits(&mut self) {
-        let defaults = self.configured_ui_options;
-        match &mut self.settings_editor {
+        let defaults = self.core.configured_ui_options;
+        match &mut self.ui.settings_editor {
             SettingsEditorState::Model(editor) => {
                 editor.draft = editor.baseline.clone();
                 editor.sync_selected_to_draft();
@@ -2445,22 +2488,23 @@ impl App {
     }
 
     pub fn settings_save_edits(&mut self) {
-        if let SettingsEditorState::Model(editor) = &self.settings_editor {
+        if let SettingsEditorState::Model(editor) = &self.ui.settings_editor {
             if !editor.is_dirty() {
                 self.push_notification("No settings changes to save.");
                 return;
             }
             let draft = editor.draft.clone();
             let draft_provider = draft.provider();
-            if let Err(err) = config::ForgeConfig::persist_model(&self.config_path, draft.as_str())
+            if let Err(err) =
+                config::ForgeConfig::persist_model(&self.runtime.config_path, draft.as_str())
             {
                 tracing::warn!("Failed to persist model setting: {err}");
                 self.push_notification(format!("Failed to save settings: {err}"));
                 return;
             }
-            self.configured_model = draft.clone();
-            self.pending_turn_model = Some(draft.clone());
-            if let SettingsEditorState::Model(editor) = &mut self.settings_editor {
+            self.core.configured_model = draft.clone();
+            self.core.pending_turn_model = Some(draft.clone());
+            if let SettingsEditorState::Model(editor) = &mut self.ui.settings_editor {
                 editor.baseline = draft;
                 editor.sync_selected_to_draft();
             }
@@ -2476,7 +2520,7 @@ impl App {
             return;
         }
 
-        if let SettingsEditorState::Tools(editor) = &self.settings_editor {
+        if let SettingsEditorState::Tools(editor) = &self.ui.settings_editor {
             if !editor.is_dirty() {
                 self.push_notification("No settings changes to save.");
                 return;
@@ -2485,16 +2529,17 @@ impl App {
             let settings = config::ToolApprovalSettings {
                 mode: approval_mode_config_value(draft_approval_mode).to_string(),
             };
-            if let Err(err) =
-                config::ForgeConfig::persist_tool_approval_settings(&self.config_path, &settings)
-            {
+            if let Err(err) = config::ForgeConfig::persist_tool_approval_settings(
+                &self.runtime.config_path,
+                &settings,
+            ) {
                 tracing::warn!("Failed to persist tool approval setting: {err}");
                 self.push_notification(format!("Failed to save settings: {err}"));
                 return;
             }
-            self.configured_tool_approval_mode = draft_approval_mode;
-            self.pending_turn_tool_approval_mode = Some(draft_approval_mode);
-            if let SettingsEditorState::Tools(editor) = &mut self.settings_editor {
+            self.core.configured_tool_approval_mode = draft_approval_mode;
+            self.core.pending_turn_tool_approval_mode = Some(draft_approval_mode);
+            if let SettingsEditorState::Tools(editor) = &mut self.ui.settings_editor {
                 editor.baseline_approval_mode = editor.draft_approval_mode;
             }
             self.push_notification("Tool defaults saved. Changes apply on the next turn.");
@@ -2502,23 +2547,23 @@ impl App {
             return;
         }
 
-        if let SettingsEditorState::Context(editor) = &self.settings_editor {
+        if let SettingsEditorState::Context(editor) = &self.ui.settings_editor {
             if !editor.is_dirty() {
                 self.push_notification("No settings changes to save.");
                 return;
             }
             let draft = editor.draft_memory_enabled;
             if let Err(err) = config::ForgeConfig::persist_context_settings(
-                &self.config_path,
+                &self.runtime.config_path,
                 config::ContextSettings { memory: draft },
             ) {
                 tracing::warn!("Failed to persist context setting: {err}");
                 self.push_notification(format!("Failed to save settings: {err}"));
                 return;
             }
-            self.configured_context_memory_enabled = draft;
-            self.pending_turn_context_memory_enabled = Some(draft);
-            if let SettingsEditorState::Context(editor) = &mut self.settings_editor {
+            self.core.configured_context_memory_enabled = draft;
+            self.core.pending_turn_context_memory_enabled = Some(draft);
+            if let SettingsEditorState::Context(editor) = &mut self.ui.settings_editor {
                 editor.baseline_memory_enabled = draft;
             }
             self.push_notification("Context defaults saved. Changes apply on the next turn.");
@@ -2526,7 +2571,7 @@ impl App {
             return;
         }
 
-        let SettingsEditorState::Appearance(editor) = &self.settings_editor else {
+        let SettingsEditorState::Appearance(editor) = &self.ui.settings_editor else {
             return;
         };
         if !editor.is_dirty() {
@@ -2541,15 +2586,17 @@ impl App {
             reduced_motion: draft.reduced_motion,
             show_thinking: draft.show_thinking,
         };
-        if let Err(err) = config::ForgeConfig::persist_ui_settings(&self.config_path, persist) {
+        if let Err(err) =
+            config::ForgeConfig::persist_ui_settings(&self.runtime.config_path, persist)
+        {
             tracing::warn!("Failed to persist UI settings: {err}");
             self.push_notification(format!("Failed to save settings: {err}"));
             return;
         }
 
-        self.configured_ui_options = draft;
-        self.pending_turn_ui_options = Some(draft);
-        if let SettingsEditorState::Appearance(editor) = &mut self.settings_editor {
+        self.core.configured_ui_options = draft;
+        self.core.pending_turn_ui_options = Some(draft);
+        if let SettingsEditorState::Appearance(editor) = &mut self.ui.settings_editor {
             editor.baseline = draft;
         }
         self.push_notification("Settings saved. Changes apply on the next turn.");
@@ -2561,6 +2608,7 @@ impl App {
             return;
         }
         let Some((filter_active, detail_view, selected)) = self
+            .ui
             .input
             .settings_modal()
             .map(|modal| (modal.filter_active, modal.detail_view, modal.selected))
@@ -2587,6 +2635,7 @@ impl App {
 
     pub fn settings_close_or_exit(&mut self) {
         let Some((filter_active, detail_view)) = self
+            .ui
             .input
             .settings_modal()
             .map(|modal| (modal.filter_active, modal.detail_view))
@@ -2604,7 +2653,7 @@ impl App {
                 self.push_settings_unsaved_edits_notification();
                 return;
             }
-            if let Some(modal) = self.input.settings_modal_mut() {
+            if let Some(modal) = self.ui.input.settings_modal_mut() {
                 modal.detail_view = None;
             }
             self.reset_settings_detail_editor();
@@ -2616,7 +2665,7 @@ impl App {
 
     fn settings_clamp_selection(&mut self) {
         let len = self.settings_categories().len();
-        if let Some(modal) = self.input.settings_modal_mut() {
+        if let Some(modal) = self.ui.input.settings_modal_mut() {
             if len == 0 {
                 modal.selected = 0;
             } else if modal.selected >= len {
@@ -2628,13 +2677,16 @@ impl App {
     #[must_use]
     pub fn session_config_hash(&self) -> String {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.model.as_str().hash(&mut hasher);
-        self.configured_model.as_str().hash(&mut hasher);
+        self.core.model.as_str().hash(&mut hasher);
+        self.core.configured_model.as_str().hash(&mut hasher);
         self.provider().as_str().hash(&mut hasher);
-        self.memory_enabled.hash(&mut hasher);
-        self.cache_enabled.hash(&mut hasher);
-        self.output_limits.max_output_tokens().hash(&mut hasher);
-        match self.output_limits.thinking() {
+        self.core.memory_enabled.hash(&mut hasher);
+        self.core.cache_enabled.hash(&mut hasher);
+        self.core
+            .output_limits
+            .max_output_tokens()
+            .hash(&mut hasher);
+        match self.core.output_limits.thinking() {
             ThinkingState::Disabled => {
                 0u32.hash(&mut hasher);
             }
@@ -2642,22 +2694,26 @@ impl App {
                 budget.as_u32().hash(&mut hasher);
             }
         }
-        self.provider_runtime
+        self.runtime
+            .provider_runtime
             .openai_options
             .reasoning_effort()
             .as_str()
             .hash(&mut hasher);
-        self.provider_runtime
+        self.runtime
+            .provider_runtime
             .openai_options
             .reasoning_summary()
             .as_str()
             .hash(&mut hasher);
-        self.provider_runtime
+        self.runtime
+            .provider_runtime
             .openai_options
             .verbosity()
             .as_str()
             .hash(&mut hasher);
-        self.provider_runtime
+        self.runtime
+            .provider_runtime
             .openai_options
             .truncation()
             .as_str()
@@ -2666,22 +2722,38 @@ impl App {
             provider.as_str().hash(&mut hasher);
             self.has_api_key(*provider).hash(&mut hasher);
         }
-        self.tool_settings
+        self.runtime
+            .tool_settings
             .limits
             .max_tool_calls_per_batch
             .hash(&mut hasher);
-        self.tool_settings
+        self.runtime
+            .tool_settings
             .limits
             .max_tool_iterations_per_user_turn
             .hash(&mut hasher);
-        self.tool_settings
+        self.runtime
+            .tool_settings
             .limits
             .max_tool_args_bytes
             .hash(&mut hasher);
-        self.tool_settings.max_output_bytes.hash(&mut hasher);
-        self.tool_settings.policy.allowlist.len().hash(&mut hasher);
-        self.tool_settings.policy.denylist.len().hash(&mut hasher);
-        match self.tool_settings.policy.mode {
+        self.runtime
+            .tool_settings
+            .max_output_bytes
+            .hash(&mut hasher);
+        self.runtime
+            .tool_settings
+            .policy
+            .allowlist
+            .len()
+            .hash(&mut hasher);
+        self.runtime
+            .tool_settings
+            .policy
+            .denylist
+            .len()
+            .hash(&mut hasher);
+        match self.runtime.tool_settings.policy.mode {
             tools::ApprovalMode::Permissive => "permissive",
             tools::ApprovalMode::Default => "default",
             tools::ApprovalMode::Strict => "strict",
@@ -2742,7 +2814,7 @@ impl App {
         if !self.settings_configured_context_memory_enabled() {
             session_overrides.push("context memory default: off".to_string());
         }
-        if let Some(memory_enabled) = self.pending_turn_context_memory_enabled {
+        if let Some(memory_enabled) = self.core.pending_turn_context_memory_enabled {
             session_overrides.push(format!(
                 "pending context memory: {} (next turn)",
                 on_off(memory_enabled)
@@ -2754,7 +2826,7 @@ impl App {
                 ui_options_display(self.settings_configured_ui_options())
             ));
         }
-        if let Some(pending_ui) = self.pending_turn_ui_options {
+        if let Some(pending_ui) = self.core.pending_turn_ui_options {
             session_overrides.push(format!(
                 "pending ui defaults: {} (next turn)",
                 ui_options_display(pending_ui)
@@ -2782,7 +2854,7 @@ impl App {
     #[must_use]
     pub fn resolve_cascade(&self) -> ResolveCascade {
         let mut settings = Vec::new();
-        let model_pending = self.pending_turn_model.as_ref();
+        let model_pending = self.core.pending_turn_model.as_ref();
         let model_session_is_winner = model_pending.is_some();
         let model_session_value =
             model_pending.map_or_else(|| "unset".to_string(), ToString::to_string);
@@ -2791,7 +2863,7 @@ impl App {
             layers: vec![
                 ResolveLayerValue {
                     layer: "Global",
-                    value: self.configured_model.to_string(),
+                    value: self.core.configured_model.to_string(),
                     is_winner: !model_session_is_winner,
                 },
                 ResolveLayerValue {
@@ -2839,6 +2911,7 @@ impl App {
         });
 
         let context_limit = self
+            .core
             .context_manager
             .current_limits()
             .effective_input_budget();
@@ -2868,7 +2941,7 @@ impl App {
             ],
         });
 
-        let pending_approval_mode = self.pending_turn_tool_approval_mode;
+        let pending_approval_mode = self.core.pending_turn_tool_approval_mode;
         settings.push(ResolveSetting {
             setting: "Tool Approval Mode",
             layers: vec![
@@ -2899,7 +2972,7 @@ impl App {
             ],
         });
 
-        let pending_context_memory = self.pending_turn_context_memory_enabled;
+        let pending_context_memory = self.core.pending_turn_context_memory_enabled;
         settings.push(ResolveSetting {
             setting: "Context Memory",
             layers: vec![
@@ -2927,7 +3000,7 @@ impl App {
             ],
         });
 
-        let pending_ui_options = self.pending_turn_ui_options;
+        let pending_ui_options = self.core.pending_turn_ui_options;
         settings.push(ResolveSetting {
             setting: "UI Defaults",
             layers: vec![
@@ -3031,19 +3104,19 @@ impl App {
     pub fn enter_model_select_mode(&mut self) {
         let index = PredefinedModel::all()
             .iter()
-            .position(|m| m.to_model_name() == self.model)
+            .position(|m| m.to_model_name() == self.core.model)
             .unwrap_or(0);
-        self.input = std::mem::take(&mut self.input).into_model_select(index);
-        if self.view.ui_options.reduced_motion {
-            self.view.modal_effect = None;
+        self.ui.input = std::mem::take(&mut self.ui.input).into_model_select(index);
+        if self.ui.view.ui_options.reduced_motion {
+            self.ui.view.modal_effect = None;
         } else {
-            self.view.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
-            self.view.last_frame = Instant::now();
+            self.ui.view.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
+            self.ui.view.last_frame = Instant::now();
         }
     }
 
     pub fn model_select_index(&self) -> Option<usize> {
-        self.input.model_select_index()
+        self.ui.input.model_select_index()
     }
 
     fn model_select_max_index() -> usize {
@@ -3051,15 +3124,15 @@ impl App {
     }
 
     fn trigger_model_select_shake(&mut self) {
-        if self.view.ui_options.reduced_motion {
+        if self.ui.view.ui_options.reduced_motion {
             return;
         }
-        self.view.modal_effect = Some(ModalEffect::shake(Duration::from_millis(360)));
-        self.view.last_frame = Instant::now();
+        self.ui.view.modal_effect = Some(ModalEffect::shake(Duration::from_millis(360)));
+        self.ui.view.last_frame = Instant::now();
     }
 
     pub fn model_select_move_up(&mut self) {
-        if let InputState::ModelSelect { selected, .. } = &mut self.input
+        if let InputState::ModelSelect { selected, .. } = &mut self.ui.input
             && *selected > 0
         {
             *selected -= 1;
@@ -3067,7 +3140,7 @@ impl App {
     }
 
     pub fn model_select_move_down(&mut self) {
-        if let InputState::ModelSelect { selected, .. } = &mut self.input {
+        if let InputState::ModelSelect { selected, .. } = &mut self.ui.input {
             let max_index = Self::model_select_max_index();
             if *selected < max_index {
                 *selected += 1;
@@ -3076,7 +3149,7 @@ impl App {
     }
 
     pub fn model_select_set_index(&mut self, index: usize) {
-        if let InputState::ModelSelect { selected, .. } = &mut self.input {
+        if let InputState::ModelSelect { selected, .. } = &mut self.ui.input {
             let max_index = Self::model_select_max_index();
             *selected = index.min(max_index);
         }
@@ -3102,38 +3175,39 @@ impl App {
 
     /// Enter file select mode, scanning files from the current directory.
     pub fn enter_file_select_mode(&mut self) {
-        if !self.file_picker.is_scanned() {
-            let root = self.tool_settings.sandbox.working_dir();
-            self.file_picker
-                .scan_files(&root, &self.tool_settings.sandbox);
+        if !self.ui.file_picker.is_scanned() {
+            let root = self.runtime.tool_settings.sandbox.working_dir();
+            self.ui
+                .file_picker
+                .scan_files(&root, &self.runtime.tool_settings.sandbox);
         }
-        self.input = std::mem::take(&mut self.input).into_file_select();
-        if self.view.ui_options.reduced_motion {
-            self.view.modal_effect = None;
+        self.ui.input = std::mem::take(&mut self.ui.input).into_file_select();
+        if self.ui.view.ui_options.reduced_motion {
+            self.ui.view.modal_effect = None;
         } else {
-            self.view.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
-            self.view.last_frame = Instant::now();
+            self.ui.view.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
+            self.ui.view.last_frame = Instant::now();
         }
     }
 
     pub fn file_select_filter(&self) -> Option<&str> {
-        self.input.file_select_filter()
+        self.ui.input.file_select_filter()
     }
 
     pub fn file_select_index(&self) -> Option<usize> {
-        self.input.file_select_index()
+        self.ui.input.file_select_index()
     }
 
     pub fn file_select_files(&self) -> Vec<&ui::FileEntry> {
-        self.file_picker.filtered_files()
+        self.ui.file_picker.filtered_files()
     }
 
     pub fn file_picker(&self) -> &ui::FilePickerState {
-        &self.file_picker
+        &self.ui.file_picker
     }
 
     pub fn file_select_move_up(&mut self) {
-        if let InputState::FileSelect { selected, .. } = &mut self.input
+        if let InputState::FileSelect { selected, .. } = &mut self.ui.input
             && *selected > 0
         {
             *selected -= 1;
@@ -3141,8 +3215,8 @@ impl App {
     }
 
     pub fn file_select_move_down(&mut self) {
-        if let InputState::FileSelect { selected, .. } = &mut self.input {
-            let max_index = self.file_picker.filtered_count().saturating_sub(1);
+        if let InputState::FileSelect { selected, .. } = &mut self.ui.input {
+            let max_index = self.ui.file_picker.filtered_count().saturating_sub(1);
             if *selected < max_index {
                 *selected += 1;
             }
@@ -3151,23 +3225,23 @@ impl App {
 
     /// Update the file select filter and refresh filtered results.
     pub fn file_select_update_filter(&mut self) {
-        let filter = self.input.file_select_filter().unwrap_or("").to_string();
-        self.file_picker.update_filter(&filter);
+        let filter = self.ui.input.file_select_filter().unwrap_or("").to_string();
+        self.ui.file_picker.update_filter(&filter);
         // Reset selection to 0 when filter changes
-        if let InputState::FileSelect { selected, .. } = &mut self.input {
+        if let InputState::FileSelect { selected, .. } = &mut self.ui.input {
             *selected = 0;
         }
     }
 
     pub fn file_select_push_char(&mut self, c: char) {
-        if let Some(filter) = self.input.file_select_filter_mut() {
+        if let Some(filter) = self.ui.input.file_select_filter_mut() {
             filter.enter_char(c);
         }
         self.file_select_update_filter();
     }
 
     pub fn file_select_backspace(&mut self) {
-        if let Some(filter) = self.input.file_select_filter_mut() {
+        if let Some(filter) = self.ui.input.file_select_filter_mut() {
             filter.delete_char();
         }
         self.file_select_update_filter();
@@ -3180,7 +3254,7 @@ impl App {
             return;
         };
 
-        if let Some(entry) = self.file_picker.get_selected(index) {
+        if let Some(entry) = self.ui.file_picker.get_selected(index) {
             let path = if entry.display.chars().any(char::is_whitespace) {
                 let escaped = entry.display.replace('\\', "\\\\").replace('"', "\\\"");
                 format!("\"{escaped}\"")
@@ -3188,7 +3262,7 @@ impl App {
                 entry.display.clone()
             };
             // Insert the file path at cursor position in the draft
-            self.input.draft_mut().enter_text(&path);
+            self.ui.input.draft_mut().enter_text(&path);
         }
 
         self.enter_insert_mode();
@@ -3209,7 +3283,7 @@ impl App {
             return;
         }
         data.cursor -= 1;
-        data.expanded = None;
+        data.expanded = crate::ApprovalExpanded::Collapsed;
     }
 
     pub fn tool_approval_move_down(&mut self) {
@@ -3223,7 +3297,7 @@ impl App {
         if data.cursor < max_cursor {
             data.cursor += 1;
         }
-        data.expanded = None;
+        data.expanded = crate::ApprovalExpanded::Collapsed;
     }
 
     pub fn tool_approval_toggle(&mut self) {
@@ -3235,7 +3309,7 @@ impl App {
         if data.cursor >= data.selected.len() {
             return;
         }
-        data.selected[data.cursor] = !data.selected[data.cursor];
+        data.selected[data.cursor].toggle();
     }
 
     pub fn tool_approval_toggle_details(&mut self) {
@@ -3247,11 +3321,12 @@ impl App {
         if data.cursor >= data.requests.len() {
             return;
         }
-        if data.expanded == Some(data.cursor) {
-            data.expanded = None;
-        } else {
-            data.expanded = Some(data.cursor);
-        }
+        data.expanded = match data.expanded {
+            crate::ApprovalExpanded::Expanded(idx) if idx == data.cursor => {
+                crate::ApprovalExpanded::Collapsed
+            }
+            _ => crate::ApprovalExpanded::Expanded(data.cursor),
+        };
     }
 
     pub fn tool_approval_approve_all(&mut self) {
@@ -3289,7 +3364,7 @@ impl App {
                 data.requests
                     .iter()
                     .zip(data.selected.iter())
-                    .filter(|(_, selected)| **selected)
+                    .filter(|(_, selected)| (**selected).is_approved())
                     .map(|(req, _)| req.tool_call_id.clone())
                     .collect::<Vec<_>>()
             })
@@ -3333,27 +3408,27 @@ impl App {
     }
 
     pub fn draft_text(&self) -> &str {
-        self.input.draft().text()
+        self.ui.input.draft().text()
     }
 
     pub fn draft_cursor(&self) -> usize {
-        self.input.draft().cursor()
+        self.ui.input.draft().cursor()
     }
 
     pub fn draft_cursor_byte_index(&self) -> usize {
-        self.input.draft().byte_index()
+        self.ui.input.draft().byte_index()
     }
 
     pub fn command_text(&self) -> Option<&str> {
-        self.input.command()
+        self.ui.input.command()
     }
 
     pub fn command_cursor(&self) -> Option<usize> {
-        self.input.command_cursor()
+        self.ui.input.command_cursor()
     }
 
     pub fn command_cursor_byte_index(&self) -> Option<usize> {
-        self.input.command_cursor_byte_index()
+        self.ui.input.command_cursor_byte_index()
     }
 
     /// Navigate to previous (older) prompt in Insert mode.
@@ -3361,8 +3436,8 @@ impl App {
     /// On first call, stashes the current draft and shows the most recent prompt.
     /// Subsequent calls show progressively older prompts.
     pub fn navigate_history_up(&mut self) {
-        if let InputState::Insert(ref mut draft) = self.input
-            && let Some(text) = self.input_history.navigate_prompt_up(draft.text())
+        if let InputState::Insert(ref mut draft) = self.ui.input
+            && let Some(text) = self.ui.input_history.navigate_prompt_up(draft.text())
         {
             draft.set_text(text.to_owned());
         }
@@ -3372,8 +3447,8 @@ impl App {
     ///
     /// When at the newest entry, restores the stashed draft.
     pub fn navigate_history_down(&mut self) {
-        if let InputState::Insert(ref mut draft) = self.input
-            && let Some(text) = self.input_history.navigate_prompt_down()
+        if let InputState::Insert(ref mut draft) = self.ui.input
+            && let Some(text) = self.ui.input_history.navigate_prompt_down()
         {
             draft.set_text(text.to_owned());
         }
@@ -3381,8 +3456,8 @@ impl App {
 
     /// Navigate to previous (older) command in Command mode.
     pub fn navigate_command_history_up(&mut self) {
-        if let InputState::Command { command, .. } = &mut self.input
-            && let Some(text) = self.input_history.navigate_command_up(command.text())
+        if let InputState::Command { command, .. } = &mut self.ui.input
+            && let Some(text) = self.ui.input_history.navigate_command_up(command.text())
         {
             command.set_text(text.to_owned());
         }
@@ -3390,8 +3465,8 @@ impl App {
 
     /// Navigate to next (newer) command in Command mode.
     pub fn navigate_command_history_down(&mut self) {
-        if let InputState::Command { command, .. } = &mut self.input
-            && let Some(text) = self.input_history.navigate_command_down()
+        if let InputState::Command { command, .. } = &mut self.ui.input
+            && let Some(text) = self.ui.input_history.navigate_command_down()
         {
             command.set_text(text.to_owned());
         }
@@ -3399,37 +3474,37 @@ impl App {
 
     /// Record a submitted prompt to history.
     pub(crate) fn record_prompt(&mut self, text: &str) {
-        self.input_history.push_prompt(text.to_owned());
-        self.input_history.reset_navigation();
+        self.ui.input_history.push_prompt(text.to_owned());
+        self.ui.input_history.reset_navigation();
     }
 
     /// Record an executed command to history.
     pub(crate) fn record_command(&mut self, text: &str) {
-        self.input_history.push_command(text.to_owned());
-        self.input_history.reset_navigation();
+        self.ui.input_history.push_command(text.to_owned());
+        self.ui.input_history.reset_navigation();
     }
 
     pub fn update_scroll_max(&mut self, max: u16) {
-        self.view.scroll_max = max;
+        self.ui.view.scroll_max = max;
 
-        if let ScrollState::Manual { offset_from_top } = self.view.scroll
+        if let ScrollState::Manual { offset_from_top } = self.ui.view.scroll
             && offset_from_top >= max
         {
-            self.view.scroll = ScrollState::AutoBottom;
+            self.ui.view.scroll = ScrollState::AutoBottom;
         }
     }
 
     pub fn scroll_offset_from_top(&self) -> u16 {
-        match self.view.scroll {
-            ScrollState::AutoBottom => self.view.scroll_max,
-            ScrollState::Manual { offset_from_top } => offset_from_top.min(self.view.scroll_max),
+        match self.ui.view.scroll {
+            ScrollState::AutoBottom => self.ui.view.scroll_max,
+            ScrollState::Manual { offset_from_top } => offset_from_top.min(self.ui.view.scroll_max),
         }
     }
 
     pub fn scroll_up(&mut self) {
-        self.view.scroll = match self.view.scroll {
+        self.ui.view.scroll = match self.ui.view.scroll {
             ScrollState::AutoBottom => ScrollState::Manual {
-                offset_from_top: self.view.scroll_max.saturating_sub(3),
+                offset_from_top: self.ui.view.scroll_max.saturating_sub(3),
             },
             ScrollState::Manual { offset_from_top } => ScrollState::Manual {
                 offset_from_top: offset_from_top.saturating_sub(3),
@@ -3440,9 +3515,9 @@ impl App {
     /// Scroll up by a page.
     pub fn scroll_page_up(&mut self) {
         let delta = 10;
-        self.view.scroll = match self.view.scroll {
+        self.ui.view.scroll = match self.ui.view.scroll {
             ScrollState::AutoBottom => ScrollState::Manual {
-                offset_from_top: self.view.scroll_max.saturating_sub(delta),
+                offset_from_top: self.ui.view.scroll_max.saturating_sub(delta),
             },
             ScrollState::Manual { offset_from_top } => ScrollState::Manual {
                 offset_from_top: offset_from_top.saturating_sub(delta),
@@ -3451,15 +3526,15 @@ impl App {
     }
 
     pub fn scroll_down(&mut self) {
-        let ScrollState::Manual { offset_from_top } = self.view.scroll else {
+        let ScrollState::Manual { offset_from_top } = self.ui.view.scroll else {
             return;
         };
 
         let new_offset = offset_from_top.saturating_add(3);
-        if new_offset >= self.view.scroll_max {
-            self.view.scroll = ScrollState::AutoBottom;
+        if new_offset >= self.ui.view.scroll_max {
+            self.ui.view.scroll = ScrollState::AutoBottom;
         } else {
-            self.view.scroll = ScrollState::Manual {
+            self.ui.view.scroll = ScrollState::Manual {
                 offset_from_top: new_offset,
             };
         }
@@ -3467,35 +3542,35 @@ impl App {
 
     /// Scroll down by a page.
     pub fn scroll_page_down(&mut self) {
-        let ScrollState::Manual { offset_from_top } = self.view.scroll else {
+        let ScrollState::Manual { offset_from_top } = self.ui.view.scroll else {
             return;
         };
 
         let delta = 10;
         let new_offset = offset_from_top.saturating_add(delta);
-        if new_offset >= self.view.scroll_max {
-            self.view.scroll = ScrollState::AutoBottom;
+        if new_offset >= self.ui.view.scroll_max {
+            self.ui.view.scroll = ScrollState::AutoBottom;
         } else {
-            self.view.scroll = ScrollState::Manual {
+            self.ui.view.scroll = ScrollState::Manual {
                 offset_from_top: new_offset,
             };
         }
     }
 
     pub fn scroll_to_top(&mut self) {
-        self.view.scroll = ScrollState::Manual { offset_from_top: 0 };
+        self.ui.view.scroll = ScrollState::Manual { offset_from_top: 0 };
     }
 
     pub fn scroll_to_bottom(&mut self) {
-        self.view.scroll = ScrollState::AutoBottom;
+        self.ui.view.scroll = ScrollState::AutoBottom;
     }
 
     /// Scroll up by 20% of total scrollable content.
     pub fn scroll_up_chunk(&mut self) {
-        let delta = (self.view.scroll_max / 5).max(1);
-        self.view.scroll = match self.view.scroll {
+        let delta = (self.ui.view.scroll_max / 5).max(1);
+        self.ui.view.scroll = match self.ui.view.scroll {
             ScrollState::AutoBottom => ScrollState::Manual {
-                offset_from_top: self.view.scroll_max.saturating_sub(delta),
+                offset_from_top: self.ui.view.scroll_max.saturating_sub(delta),
             },
             ScrollState::Manual { offset_from_top } => ScrollState::Manual {
                 offset_from_top: offset_from_top.saturating_sub(delta),

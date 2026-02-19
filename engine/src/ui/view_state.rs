@@ -55,7 +55,7 @@ pub enum FocusState {
     /// Executing a plan. Vertical carousel.
     Executing {
         /// Visual tracking of the active step's execution time.
-        step_started_at: Option<Instant>,
+        step_started_at: Instant,
     },
     /// Reviewing completed content. Horizontal carousel.
     Reviewing {
