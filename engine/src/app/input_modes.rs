@@ -374,7 +374,10 @@ impl CommandMode<'_> {
                 let next_input = InputState::Command { draft, command }.into_normal();
                 (next_input, raw)
             }
-            CommandStateOwned::Inactive(_) => panic!("CommandMode must hold Command input state"),
+            CommandStateOwned::Inactive(state) => {
+                self.app.ui.input = state;
+                panic!("CommandMode must hold Command input state");
+            }
         };
 
         self.app.ui.input = next_input;
