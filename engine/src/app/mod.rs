@@ -2326,17 +2326,6 @@ impl App {
     }
 
     #[must_use]
-    pub fn settings_is_root_surface(&self) -> bool {
-        matches!(
-            self.settings_access(),
-            SettingsAccess::Active {
-                surface: SettingsSurface::Root,
-                ..
-            }
-        )
-    }
-
-    #[must_use]
     pub fn settings_categories(&self) -> Vec<SettingsCategory> {
         match self.settings_access() {
             SettingsAccess::Active {
@@ -2388,12 +2377,13 @@ impl App {
     }
 
     pub fn settings_move_up(&mut self) {
-        if !self.settings_is_root_surface() {
-            return;
-        }
         let selected = match self.settings_access() {
-            SettingsAccess::Active { selected_index, .. } => selected_index,
-            SettingsAccess::Inactive => return,
+            SettingsAccess::Active {
+                surface: SettingsSurface::Root,
+                selected_index,
+                ..
+            } => selected_index,
+            SettingsAccess::Active { .. } | SettingsAccess::Inactive => return,
         };
         if selected == 0 {
             return;
@@ -2404,12 +2394,13 @@ impl App {
     }
 
     pub fn settings_move_down(&mut self) {
-        if !self.settings_is_root_surface() {
-            return;
-        }
         let selected = match self.settings_access() {
-            SettingsAccess::Active { selected_index, .. } => selected_index,
-            SettingsAccess::Inactive => return,
+            SettingsAccess::Active {
+                surface: SettingsSurface::Root,
+                selected_index,
+                ..
+            } => selected_index,
+            SettingsAccess::Inactive | SettingsAccess::Active { .. } => return,
         };
         let len = self.settings_categories().len();
         if len == 0 || selected + 1 >= len {
@@ -2421,7 +2412,13 @@ impl App {
     }
 
     pub fn settings_start_filter(&mut self) {
-        if !self.settings_is_root_surface() {
+        if !matches!(
+            self.settings_access(),
+            SettingsAccess::Active {
+                surface: SettingsSurface::Root,
+                ..
+            }
+        ) {
             return;
         }
         if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
@@ -2436,7 +2433,13 @@ impl App {
     }
 
     pub fn settings_filter_push_char(&mut self, c: char) {
-        if !self.settings_is_root_surface() {
+        if !matches!(
+            self.settings_access(),
+            SettingsAccess::Active {
+                surface: SettingsSurface::Root,
+                ..
+            }
+        ) {
             return;
         }
         if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
@@ -2446,7 +2449,13 @@ impl App {
     }
 
     pub fn settings_filter_backspace(&mut self) {
-        if !self.settings_is_root_surface() {
+        if !matches!(
+            self.settings_access(),
+            SettingsAccess::Active {
+                surface: SettingsSurface::Root,
+                ..
+            }
+        ) {
             return;
         }
         if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
@@ -2661,17 +2670,15 @@ impl App {
     }
 
     pub fn settings_activate(&mut self) {
-        if !self.settings_is_root_surface() {
-            return;
-        }
         let (filter_active, detail_view, selected) = match self.settings_access() {
             SettingsAccess::Active {
+                surface: SettingsSurface::Root,
                 filter_active,
                 detail_view,
                 selected_index,
                 ..
             } => (filter_active, detail_view, selected_index),
-            SettingsAccess::Inactive => return,
+            SettingsAccess::Active { .. } | SettingsAccess::Inactive => return,
         };
 
         if filter_active {
