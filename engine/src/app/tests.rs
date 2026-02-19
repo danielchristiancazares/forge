@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 
 use super::init::DEFAULT_MAX_TOOL_ARGS_BYTES;
 use super::{
-    App, AppearanceEditorSnapshot, ContextEditorSnapshot, ModelEditorSnapshot,
+    App, AppearanceEditorSnapshot, CommandInputAccess, ContextEditorSnapshot, ModelEditorSnapshot,
     ProviderRuntimeState, QueueMessageResult, QueuedUserMessage, StreamingMessage, SystemPrompts,
     ToolsEditorSnapshot,
 };
@@ -343,7 +343,10 @@ fn process_command_quit_sets_should_quit() {
 
     assert!(app.should_quit());
     assert_eq!(app.input_mode(), InputMode::Normal);
-    assert!(app.command_text().is_none());
+    assert!(matches!(
+        app.command_input_access(),
+        CommandInputAccess::Inactive
+    ));
 }
 
 #[test]
