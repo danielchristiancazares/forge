@@ -756,8 +756,9 @@ impl super::App {
                     return;
                 }
 
-                let Some(proof) = self.prepare_latest_turn_checkpoint() else {
-                    return;
+                let proof = match self.prepare_latest_turn_checkpoint() {
+                    super::checkpoints::PreparedRewindLookup::Prepared(proof) => proof,
+                    super::checkpoints::PreparedRewindLookup::Missing => return,
                 };
 
                 if let Err(msg) =
@@ -772,8 +773,9 @@ impl super::App {
                     return;
                 }
 
-                let Some(proof) = self.prepare_latest_turn_checkpoint() else {
-                    return;
+                let proof = match self.prepare_latest_turn_checkpoint() {
+                    super::checkpoints::PreparedRewindLookup::Prepared(proof) => proof,
+                    super::checkpoints::PreparedRewindLookup::Missing => return,
                 };
 
                 // Capture the user prompt we are about to rewind away (best-effort).

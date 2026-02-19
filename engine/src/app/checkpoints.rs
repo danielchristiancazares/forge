@@ -190,15 +190,33 @@ pub(crate) enum FileSnapshot {
 }
 
 /// Proof that a rewind target exists.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PreparedRewind {
     id: CheckpointId,
 }
 
 /// Proof that a rewind target exists *and* contains a code snapshot.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PreparedCodeRewind {
     id: CheckpointId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckpointIdLookup {
+    Found(CheckpointId),
+    Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreparedRewindLookup {
+    Prepared(PreparedRewind),
+    Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreparedCodeRewindLookup {
+    Prepared(PreparedCodeRewind),
+    MissingCodeSnapshot,
 }
 
 /// Proof that a file baseline exists in a checkpoint.
@@ -231,16 +249,20 @@ impl CheckpointStore {
         self.checkpoints.is_empty()
     }
 
-    pub(crate) fn latest_id(&self) -> Option<CheckpointId> {
-        self.checkpoints.last().map(|c| c.id)
+    pub(crate) fn latest_id(&self) -> CheckpointIdLookup {
+        if let Some(checkpoint) = self.checkpoints.last() {
+            CheckpointIdLookup::Found(checkpoint.id)
+        } else {
+            CheckpointIdLookup::Missing
+        }
     }
 
-    pub(crate) fn latest_id_of_kind(&self, kind: CheckpointKind) -> Option<CheckpointId> {
-        self.checkpoints
-            .iter()
-            .rev()
-            .find(|c| c.kind == kind)
-            .map(|c| c.id)
+    pub(crate) fn latest_id_of_kind(&self, kind: CheckpointKind) -> CheckpointIdLookup {
+        if let Some(checkpoint) = self.checkpoints.iter().rev().find(|c| c.kind == kind) {
+            CheckpointIdLookup::Found(checkpoint.id)
+        } else {
+            CheckpointIdLookup::Missing
+        }
     }
 
     pub(crate) fn summaries(&self) -> Vec<CheckpointSummary> {
@@ -251,22 +273,37 @@ impl CheckpointStore {
         self.checkpoints.iter().find(|c| c.id == id)
     }
 
-    pub(crate) fn prepare(&self, id: CheckpointId) -> Option<PreparedRewind> {
-        self.get(id).map(|_| PreparedRewind { id })
+    pub(crate) fn prepare(&self, id: CheckpointId) -> PreparedRewindLookup {
+        if self.get(id).is_some() {
+            PreparedRewindLookup::Prepared(PreparedRewind { id })
+        } else {
+            PreparedRewindLookup::Missing
+        }
     }
 
-    pub(crate) fn prepare_latest(&self) -> Option<PreparedRewind> {
-        self.latest_id().and_then(|id| self.prepare(id))
+    pub(crate) fn prepare_latest(&self) -> PreparedRewindLookup {
+        match self.latest_id() {
+            CheckpointIdLookup::Found(id) => self.prepare(id),
+            CheckpointIdLookup::Missing => PreparedRewindLookup::Missing,
+        }
     }
 
-    pub(crate) fn prepare_latest_of_kind(&self, kind: CheckpointKind) -> Option<PreparedRewind> {
-        self.latest_id_of_kind(kind).and_then(|id| self.prepare(id))
+    pub(crate) fn prepare_latest_of_kind(&self, kind: CheckpointKind) -> PreparedRewindLookup {
+        match self.latest_id_of_kind(kind) {
+            CheckpointIdLookup::Found(id) => self.prepare(id),
+            CheckpointIdLookup::Missing => PreparedRewindLookup::Missing,
+        }
     }
 
-    pub(crate) fn prepare_code(&self, rewind: PreparedRewind) -> Option<PreparedCodeRewind> {
-        let cp = self.get(rewind.id)?;
-        cp.workspace.as_ref()?;
-        Some(PreparedCodeRewind { id: rewind.id })
+    pub(crate) fn prepare_code(&self, rewind: PreparedRewind) -> PreparedCodeRewindLookup {
+        let cp = self
+            .get(rewind.id)
+            .expect("prepared rewind proof must reference existing checkpoint");
+        if cp.workspace.is_some() {
+            PreparedCodeRewindLookup::Prepared(PreparedCodeRewind { id: rewind.id })
+        } else {
+            PreparedCodeRewindLookup::MissingCodeSnapshot
+        }
     }
 
     pub(crate) fn checkpoint(&self, proof: PreparedRewind) -> &Checkpoint {
@@ -593,16 +630,18 @@ impl crate::App {
     }
 
     /// Obtain a proof for the latest per-turn checkpoint (used by /undo, /retry).
-    pub(crate) fn prepare_latest_turn_checkpoint(&mut self) -> Option<PreparedRewind> {
-        let Some(proof) = self
+    pub(crate) fn prepare_latest_turn_checkpoint(&mut self) -> PreparedRewindLookup {
+        match self
             .core
             .checkpoints
             .prepare_latest_of_kind(CheckpointKind::Turn)
-        else {
-            self.push_notification("No turn checkpoints available");
-            return None;
-        };
-        Some(proof)
+        {
+            PreparedRewindLookup::Prepared(proof) => PreparedRewindLookup::Prepared(proof),
+            PreparedRewindLookup::Missing => {
+                self.push_notification("No turn checkpoints available");
+                PreparedRewindLookup::Missing
+            }
+        }
     }
 
     /// Create an automatic checkpoint if the tool batch includes file edits.
@@ -685,7 +724,9 @@ impl crate::App {
     ) -> CheckpointTargetResolution {
         match target {
             CheckpointTarget::Latest => {
-                if let Some(proof) = self.core.checkpoints.prepare_latest() {
+                if let PreparedRewindLookup::Prepared(proof) =
+                    self.core.checkpoints.prepare_latest()
+                {
                     return CheckpointTargetResolution::Resolved(proof);
                 }
                 self.push_notification("No checkpoints available");
@@ -702,11 +743,14 @@ impl crate::App {
                     }
                 };
 
-                if let Some(p) = self.core.checkpoints.prepare(id) {
-                    CheckpointTargetResolution::Resolved(p)
-                } else {
-                    self.push_notification(format!("Unknown checkpoint id: {id}"));
-                    CheckpointTargetResolution::Rejected
+                match self.core.checkpoints.prepare(id) {
+                    PreparedRewindLookup::Prepared(proof) => {
+                        CheckpointTargetResolution::Resolved(proof)
+                    }
+                    PreparedRewindLookup::Missing => {
+                        self.push_notification(format!("Unknown checkpoint id: {id}"));
+                        CheckpointTargetResolution::Rejected
+                    }
                 }
             }
         }
@@ -731,8 +775,11 @@ impl crate::App {
         }
 
         if scope.includes_code() {
-            let Some(code_proof) = self.core.checkpoints.prepare_code(proof) else {
-                return Err(format!("Checkpoint #{id} does not contain a code snapshot"));
+            let code_proof = match self.core.checkpoints.prepare_code(proof) {
+                PreparedCodeRewindLookup::Prepared(code_proof) => code_proof,
+                PreparedCodeRewindLookup::MissingCodeSnapshot => {
+                    return Err(format!("Checkpoint #{id} does not contain a code snapshot"));
+                }
             };
             let (_cp, ws) = self.core.checkpoints.checkpoint_code(code_proof);
             let report = restore_workspace(ws).map_err(|e| format!("Code rewind failed: {e}"))?;
@@ -816,8 +863,8 @@ impl crate::App {
 #[cfg(test)]
 mod tests {
     use super::{
-        CheckpointId, CheckpointIdParse, CheckpointKind, CheckpointStore, RewindScope,
-        RewindScopeParse, format_bytes,
+        CheckpointId, CheckpointIdLookup, CheckpointIdParse, CheckpointKind, CheckpointStore,
+        PreparedRewindLookup, RewindScope, RewindScopeParse, format_bytes,
     };
     use std::path::PathBuf;
 
@@ -872,16 +919,22 @@ mod tests {
     fn checkpoint_store_basic_ops() {
         let mut store = CheckpointStore::default();
         assert!(store.is_empty());
-        assert!(store.latest_id().is_none());
+        assert_eq!(store.latest_id(), CheckpointIdLookup::Missing);
 
         let created = store.create_for_files(CheckpointKind::Turn, 5, Vec::<PathBuf>::new());
         assert_eq!(created.id, CheckpointId(0));
         assert_eq!(created.file_count, 0);
         assert_eq!(created.total_bytes, 0);
         assert!(!store.is_empty());
-        assert_eq!(store.latest_id(), Some(CheckpointId(0)));
+        assert_eq!(
+            store.latest_id(),
+            CheckpointIdLookup::Found(CheckpointId(0))
+        );
 
-        let proof = store.prepare(CheckpointId(0)).unwrap();
+        let proof = match store.prepare(CheckpointId(0)) {
+            PreparedRewindLookup::Prepared(proof) => proof,
+            PreparedRewindLookup::Missing => panic!("expected prepared rewind proof"),
+        };
         let cp = store.checkpoint(proof);
         assert_eq!(cp.conversation_len(), 5);
     }
@@ -898,7 +951,10 @@ mod tests {
 
         store.prune_after(CheckpointId(1));
         assert_eq!(store.summaries().len(), 2);
-        assert_eq!(store.latest_id(), Some(CheckpointId(1)));
+        assert_eq!(
+            store.latest_id(),
+            CheckpointIdLookup::Found(CheckpointId(1))
+        );
     }
 
     #[test]
