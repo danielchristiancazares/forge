@@ -1714,22 +1714,28 @@ This function is a **mechanism** (reports the fact) per IFA-8. The caller (UI) m
 
 Only flags Latin mixed with Cyrillic, Greek, Armenian, or Cherokee (highest attack surface for English-language tools). Pure non-Latin scripts (legitimate non-English content) are not flagged.
 
-**Fast Path:** ASCII-only strings return `None` immediately without character iteration.
+**Fast Path:** ASCII-only strings return `MixedScriptDetection::Clean` immediately without character iteration.
 
 ```rust
-use forge_types::detect_mixed_script;
+use forge_types::{detect_mixed_script, MixedScriptDetection};
 
 // Cyrillic 'а' (U+0430) looks like Latin 'a'
 // The string below is "pаypal.com" with a Cyrillic 'а'
 let suspicious = format!("p\u{0430}ypal.com");
 let warning = detect_mixed_script(&suspicious, "url");
-assert!(warning.is_some());
+assert!(matches!(warning, MixedScriptDetection::Suspicious(_)));
 
 // Pure Latin is fine
-assert!(detect_mixed_script("paypal.com", "url").is_none());
+assert!(matches!(
+    detect_mixed_script("paypal.com", "url"),
+    MixedScriptDetection::Clean
+));
 
 // Pure Cyrillic is fine (legitimate non-English content)
-assert!(detect_mixed_script("\u{043F}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442}", "text").is_none());
+assert!(matches!(
+    detect_mixed_script("\u{043F}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442}", "text"),
+    MixedScriptDetection::Clean
+));
 ```
 
 ### HomoglyphWarning

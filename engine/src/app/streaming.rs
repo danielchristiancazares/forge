@@ -57,8 +57,9 @@ use crate::thinking::ThinkingPayload;
 /// active — restores plan awareness that would otherwise be lost when the
 /// original tool-call history is summarised.
 fn inject_plan_context(mut messages: Vec<Message>, plan_state: &PlanState) -> Vec<Message> {
-    let Some(plan) = plan_state.plan() else {
-        return messages;
+    let plan = match plan_state {
+        PlanState::Inactive => return messages,
+        PlanState::Proposed(plan) | PlanState::Active(plan) => plan,
     };
     let plan_block = format!("<plan>\n{}</plan>", plan.render());
     if let Some(user_msg) = messages
@@ -311,7 +312,7 @@ impl super::App {
         // retains plan awareness even when earlier tool-call history has been
         // distilled away. Transient — never persisted, no cache slot consumed.
         let api_messages = if self.core.context_manager.history().is_compacted()
-            && self.core.plan_state.is_active()
+            && matches!(self.core.plan_state, PlanState::Active(_))
         {
             inject_plan_context(api_messages, &self.core.plan_state)
         } else {
@@ -1235,13 +1236,12 @@ mod plan_context_injection_tests {
         }])
         .unwrap();
         let state = PlanState::Proposed(plan);
-        // inject_plan_context is only called when is_active(), but let's verify
-        // the function itself is safe with Proposed (plan() returns Some but
-        // the guard in start_streaming would skip it).
+        // inject_plan_context is only called with Active state in start_streaming,
+        // but the helper itself accepts Proposed as well. Verify it remains safe.
         let msgs = messages_with_user("hello");
         let result = inject_plan_context(msgs, &state);
-        // Proposed still has a plan, so inject_plan_context itself will inject.
-        // The start_streaming guard (is_active()) prevents this path.
+        // Proposed still carries a plan, so inject_plan_context itself will inject.
+        // The start_streaming guard (Active-state match) prevents this path.
         assert!(result[0].content().contains("<plan>"));
     }
 

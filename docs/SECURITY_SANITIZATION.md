@@ -313,7 +313,7 @@ assert_eq!(windows.as_str(), "Line 1\r\nLine 2");
 
 ## Homoglyph Detection
 
-**Function**: `detect_mixed_script(input: &str, field_name: &str) -> Option<HomoglyphWarning>`
+**Function**: `detect_mixed_script(input: &str, field_name: &str) -> MixedScriptDetection`
 
 **Location**: `types/src/confusables.rs`
 
@@ -328,7 +328,7 @@ Actual: Cyrillic 'І' (U+0406) instead of Latin 'l'
 
 ### Detection Logic
 
-Only flags Latin mixed with Cyrillic or Greek (highest attack surface for English-language tools). Pure non-Latin scripts (legitimate non-English content) are not flagged.
+Only flags Latin mixed with Cyrillic, Greek, Armenian, or Cherokee (highest attack surface for English-language tools). Pure non-Latin scripts (legitimate non-English content) are not flagged.
 
 | Mixed Scripts | Flagged | Reason |
 |---------------|---------|--------|

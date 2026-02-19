@@ -1,0 +1,87 @@
+version = 1
+last_updated = "2026-02-19"
+
+[[rules]]
+prefix = "cli/src/"
+classification = "boundary"
+rationale = "CLI entry and runtime wiring are boundary concerns."
+
+[[rules]]
+prefix = "config/src/"
+classification = "boundary"
+rationale = "Configuration loading/resolution interacts with environment and files."
+
+[[rules]]
+prefix = "context/src/"
+classification = "boundary"
+rationale = "Context manager and journals interact with persistence and runtime systems."
+
+[[rules]]
+prefix = "core/src/display.rs"
+classification = "core"
+rationale = "Pure display-log data structure and mutation helpers."
+
+[[rules]]
+prefix = "core/src/notifications.rs"
+classification = "core"
+rationale = "Pure notification domain representation and queue behavior."
+
+[[rules]]
+prefix = "core/src/thinking.rs"
+classification = "core"
+rationale = "Pure thinking payload sum type."
+
+[[rules]]
+prefix = "core/src/"
+classification = "boundary"
+rationale = "Remaining core crate modules include boundary concerns pending split."
+
+[[rules]]
+prefix = "engine/src/"
+classification = "boundary"
+rationale = "Engine orchestration coordinates async runtime, IO, and external providers."
+
+[[rules]]
+prefix = "lsp/src/"
+classification = "boundary"
+rationale = "LSP client/server process and protocol integration are boundary concerns."
+
+[[rules]]
+prefix = "providers/src/"
+classification = "boundary"
+rationale = "Provider API clients are external-service boundaries."
+
+[[rules]]
+prefix = "tools/src/"
+classification = "boundary"
+rationale = "Tool execution, shell/process, and webfetch are boundary concerns."
+
+[[rules]]
+prefix = "tui/src/"
+classification = "boundary"
+rationale = "Terminal rendering and input handling are UI boundaries."
+
+[[rules]]
+prefix = "types/src/confusables.rs"
+classification = "core"
+rationale = "Pure text analysis and warning construction."
+
+[[rules]]
+prefix = "types/src/plan.rs"
+classification = "core"
+rationale = "Pure plan-domain model and transitions."
+
+[[rules]]
+prefix = "types/src/text.rs"
+classification = "core"
+rationale = "Pure string truncation helpers."
+
+[[rules]]
+prefix = "types/src/"
+classification = "boundary"
+rationale = "Remaining types modules include boundary-oriented transport and compatibility shapes pending split."
+
+[[rules]]
+prefix = "utils/src/"
+classification = "boundary"
+rationale = "Utility crate includes filesystem writes and security boundary helpers."

@@ -16,6 +16,18 @@ pub enum DisplayItem {
     Local(Message),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum DisplayTail<'a> {
+    NoEntries,
+    Item(&'a DisplayItem),
+}
+
+#[derive(Debug, Clone)]
+pub enum DisplayPop {
+    NoEntries,
+    Item(DisplayItem),
+}
+
 /// Display log with a monotonic revision counter.
 ///
 /// This pairs the display buffer with a revision number that is bumped whenever
@@ -62,8 +74,10 @@ impl DisplayLog {
 
     #[inline]
     #[must_use]
-    pub fn last(&self) -> Option<&DisplayItem> {
-        self.items.last()
+    pub fn last(&self) -> DisplayTail<'_> {
+        self.items
+            .last()
+            .map_or(DisplayTail::NoEntries, DisplayTail::Item)
     }
 
     pub fn clear(&mut self) {
@@ -79,12 +93,13 @@ impl DisplayLog {
         self.bump();
     }
 
-    pub fn pop(&mut self) -> Option<DisplayItem> {
-        let popped = self.items.pop();
-        if popped.is_some() {
+    pub fn pop(&mut self) -> DisplayPop {
+        if let Some(item) = self.items.pop() {
             self.bump();
+            DisplayPop::Item(item)
+        } else {
+            DisplayPop::NoEntries
         }
-        popped
     }
 
     pub fn set_items(&mut self, items: Vec<DisplayItem>) {

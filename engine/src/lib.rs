@@ -5,10 +5,10 @@
 mod ui;
 
 pub use ui::{
-    ChangeKind, DisplayItem, DraftInput, FileEntry, FilePickerState, FilesPanelState, FocusState,
-    InputHistory, InputMode, InputState, ModalEffect, ModalEffectKind, PanelEffect,
-    PanelEffectKind, PredefinedModel, ScrollState, SettingsCategory, SettingsModalState,
-    SettingsSurface, UiOptions, ViewMode, ViewState, find_match_positions,
+    ChangeKind, DisplayItem, DisplayPop, DisplayTail, DraftInput, FileEntry, FilePickerState,
+    FilesPanelState, FocusState, InputHistory, InputMode, InputState, ModalEffect, ModalEffectKind,
+    PanelEffect, PanelEffectKind, PredefinedModel, ScrollState, SettingsCategory,
+    SettingsModalState, SettingsSurface, UiOptions, ViewMode, ViewState, find_match_positions,
 };
 
 mod config;

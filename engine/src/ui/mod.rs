@@ -6,7 +6,7 @@
 mod file_picker;
 
 pub use file_picker::{FileEntry, FilePickerState, find_match_positions};
-pub use forge_core::{DisplayItem, DisplayLog};
+pub use forge_core::{DisplayItem, DisplayLog, DisplayPop, DisplayTail};
 pub use forge_types::PredefinedModel;
 
 // Re-export all UI types from forge_types.

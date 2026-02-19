@@ -14,7 +14,7 @@ mod security;
 pub mod thinking;
 mod util;
 
-pub use display::{DisplayItem, DisplayLog};
+pub use display::{DisplayItem, DisplayLog, DisplayPop, DisplayTail};
 pub use environment::{EnvironmentContext, assemble_prompt};
 pub use notifications::{NotificationQueue, SystemNotification};
 pub use security::sanitize_display_text;

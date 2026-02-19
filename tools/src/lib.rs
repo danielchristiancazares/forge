@@ -30,7 +30,9 @@ use std::time::Duration;
 
 use change_recording::ChangeRecorder;
 use forge_context::Librarian;
-use forge_types::{HomoglyphWarning, Provider, ToolDefinition, detect_mixed_script};
+use forge_types::{
+    HomoglyphWarning, MixedScriptDetection, Provider, ToolDefinition, detect_mixed_script,
+};
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 
@@ -136,11 +138,10 @@ pub fn analyze_tool_arguments(tool_name: &str, args: &Value) -> Vec<HomoglyphWar
 /// Recursively scan a JSON value for homoglyphs in all string leaves.
 fn collect_homoglyph_warnings(value: &Value, field: &str, warnings: &mut Vec<HomoglyphWarning>) {
     match value {
-        Value::String(s) => {
-            if let Some(warning) = detect_mixed_script(s, field) {
-                warnings.push(warning);
-            }
-        }
+        Value::String(s) => match detect_mixed_script(s, field) {
+            MixedScriptDetection::Suspicious(warning) => warnings.push(warning),
+            MixedScriptDetection::Clean => {}
+        },
         Value::Array(arr) => {
             for item in arr {
                 collect_homoglyph_warnings(item, field, warnings);

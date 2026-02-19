@@ -4,6 +4,52 @@
 
 Bring the codebase to strict conformance with `docs/IFA_CONFORMANCE_RULES.md` with no partial measures, no temporary compatibility debt in Core, and no stale Section 17 artifacts.
 
+## Progress Status
+
+Last updated: 2026-02-19
+
+Completed now:
+
+1. Added `ifa/classification_map.toml` with workspace-wide Core/Boundary classification rules.
+2. Upgraded `scripts/ifa_conformance_check.py` to validate:
+3. Classification map coverage for all workspace `src/**/*.rs` files.
+4. Symbol existence for canonical proof, constructor, and transition paths.
+5. Module existence for authority boundary and allowed-caller paths.
+6. Core deterministic bans in Core-classified files:
+7. No `Option<` in function signatures and struct fields.
+8. No struct fields typed as `bool` (lifecycle-flag ban).
+9. No banned enum variants: `None`, `Empty`, `Unknown`, `Default`.
+10. Controlled-type struct unforgeability checks from authority map entries:
+11. No public tuple fields.
+12. No public named fields.
+13. Refreshed stale artifact paths in:
+14. `ifa/invariant_registry.toml`
+15. `ifa/authority_boundary_map.toml`
+16. `ifa/dry_proof_map.toml`
+17. `ifa/move_semantics_rules.toml`
+18. Updated `ifa/README.md` to document the supplemental classification artifact and new checker guarantees.
+19. Hardened plan domain surface by removing public mutable escape hatches:
+20. Removed `Plan::phases_mut()`.
+21. Removed `PlanState::plan_mut()`.
+22. Removed `PlanState::plan()` (`Option<&Plan>`) and migrated call sites to explicit `PlanState` pattern matching.
+23. Removed `PlanState::is_active()` boolean helper and migrated call sites to explicit `PlanState::Active` matching.
+24. Removed `Option` from `DisplayLog` tail/pop operations:
+25. `DisplayLog::last() -> DisplayTail`
+26. `DisplayLog::pop() -> DisplayPop`
+27. Renamed non-conformant `Empty` variants to `NoEntries` in `DisplayTail`/`DisplayPop`.
+28. Migrated engine rollback call sites to the explicit outcome enums.
+29. Completed mixed-script boundary API hardening:
+30. `detect_mixed_script` now returns `MixedScriptDetection` (`Clean` | `Suspicious`).
+31. Updated tool argument analysis to consume explicit detection outcomes.
+32. Updated public docs for the new API in `docs/SECURITY_SANITIZATION.md` and `types/README.md`.
+33. Validation runs completed:
+34. `just verify` passed.
+35. `cargo cov` passed and regenerated `lcov.info`.
+
+In progress:
+
+1. Phase 0 remaining hardening: constructor visibility-rung enforcement for authority-map constructor paths.
+
 ## Non-Negotiable Constraints
 
 1. Every module is classified as either Core or Boundary.
@@ -305,4 +351,3 @@ Bring the codebase to strict conformance with `docs/IFA_CONFORMANCE_RULES.md` wi
 3. All Section 17 artifacts are accurate and symbol-validated.
 4. Public documentation matches implemented architecture.
 5. CI enforces these conditions for all future changes.
-

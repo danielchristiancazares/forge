@@ -16,7 +16,7 @@ use crate::session_state::SessionState;
 use crate::state::{
     OperationState, RecoveryBlockedReason, RecoveryBlockedState, ToolRecoveryState,
 };
-use crate::ui::DisplayItem;
+use crate::ui::{DisplayItem, DisplayTail};
 use crate::util;
 use crate::{App, ContextManager, MessageId};
 
@@ -189,7 +189,7 @@ impl App {
             Ok(data) => match serde_json::from_str::<forge_types::PlanState>(&data) {
                 Ok(state) => {
                     self.core.plan_state = state;
-                    if self.core.plan_state.is_active() {
+                    if matches!(self.core.plan_state, forge_types::PlanState::Active(_)) {
                         tracing::debug!("Loaded active plan from {}", path.display());
                     }
                 }
@@ -838,10 +838,10 @@ impl App {
             .is_some()
         {
             // Remove from display (should be the last History item)
-            if let Some(DisplayItem::History(display_id)) = self.ui.display.last()
+            if let DisplayTail::Item(DisplayItem::History(display_id)) = self.ui.display.last()
                 && *display_id == msg_id
             {
-                self.ui.display.pop();
+                let _ = self.ui.display.pop();
             }
 
             // Restore to input box and enter insert mode for easy retry

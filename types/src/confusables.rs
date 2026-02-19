@@ -17,6 +17,13 @@ use unicode_script::{Script, UnicodeScript};
 
 use crate::text::truncate_preview;
 
+/// Mixed-script detection result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MixedScriptDetection {
+    Clean,
+    Suspicious(HomoglyphWarning),
+}
+
 /// Proof that homoglyph analysis was performed and detected suspicious content.
 ///
 /// The existence of this type proves that the analysis detected a potential
@@ -47,8 +54,8 @@ impl HomoglyphWarning {
 
 /// Analyze a string for mixed-script content (MECHANISM per IFA-8).
 ///
-/// Returns `Some(HomoglyphWarning)` if suspicious mixed-script content is detected,
-/// `None` otherwise. The warning is a proof object that detection occurred.
+/// Returns [`MixedScriptDetection::Suspicious`] if suspicious mixed-script
+/// content is detected, [`MixedScriptDetection::Clean`] otherwise.
 ///
 /// # Detection Logic
 ///
@@ -58,28 +65,34 @@ impl HomoglyphWarning {
 ///
 /// # Fast Path
 ///
-/// ASCII-only strings return `None` immediately without character iteration.
+/// ASCII-only strings return `MixedScriptDetection::Clean` immediately without character iteration.
 ///
 /// # Examples
 ///
 /// ```
-/// use forge_types::detect_mixed_script;
+/// use forge_types::{MixedScriptDetection, detect_mixed_script};
 ///
 /// // Cyrillic 'а' (U+0430) looks like Latin 'a'
 /// let warning = detect_mixed_script("pаypal.com", "url");
-/// assert!(warning.is_some());
+/// assert!(matches!(warning, MixedScriptDetection::Suspicious(_)));
 ///
 /// // Pure Latin is fine
-/// assert!(detect_mixed_script("paypal.com", "url").is_none());
+/// assert!(matches!(
+///     detect_mixed_script("paypal.com", "url"),
+///     MixedScriptDetection::Clean
+/// ));
 ///
 /// // Pure Cyrillic is fine (legitimate Russian content)
-/// assert!(detect_mixed_script("привет", "text").is_none());
+/// assert!(matches!(
+///     detect_mixed_script("привет", "text"),
+///     MixedScriptDetection::Clean
+/// ));
 /// ```
 #[must_use]
-pub fn detect_mixed_script(input: &str, field_name: &str) -> Option<HomoglyphWarning> {
+pub fn detect_mixed_script(input: &str, field_name: &str) -> MixedScriptDetection {
     // Fast path: ASCII-only strings cannot have mixed scripts
     if input.is_ascii() {
-        return None;
+        return MixedScriptDetection::Clean;
     }
 
     let mut has_latin = false;
@@ -103,7 +116,7 @@ pub fn detect_mixed_script(input: &str, field_name: &str) -> Option<HomoglyphWar
     // Pure non-Latin scripts are legitimate (non-English content).
     let suspicious = has_latin && (has_cyrillic || has_greek || has_armenian || has_cherokee);
     if !suspicious {
-        return None;
+        return MixedScriptDetection::Clean;
     }
 
     let mut scripts = vec![Script::Latin];
@@ -120,7 +133,7 @@ pub fn detect_mixed_script(input: &str, field_name: &str) -> Option<HomoglyphWar
         scripts.push(Script::Cherokee);
     }
 
-    Some(HomoglyphWarning {
+    MixedScriptDetection::Suspicious(HomoglyphWarning {
         field_name: field_name.to_string(),
         // Historical behavior: take 40 chars, then append "..." (suffix outside budget).
         snippet: truncate_preview(input, 40, "..."),
@@ -130,14 +143,16 @@ pub fn detect_mixed_script(input: &str, field_name: &str) -> Option<HomoglyphWar
 
 #[cfg(test)]
 mod tests {
-    use super::{HomoglyphWarning, Script, detect_mixed_script};
+    use super::{HomoglyphWarning, MixedScriptDetection, Script, detect_mixed_script};
 
     #[test]
     fn detects_latin_cyrillic_mix() {
         // Cyrillic 'а' (U+0430) looks like Latin 'a'
         let warning = detect_mixed_script("pаypal.com", "url");
-        assert!(warning.is_some());
-        let w = warning.unwrap();
+        let w = match warning {
+            MixedScriptDetection::Suspicious(w) => w,
+            MixedScriptDetection::Clean => panic!("expected suspicious detection"),
+        };
         assert!(w.scripts.contains(&Script::Cyrillic));
         assert!(w.scripts.contains(&Script::Latin));
         assert_eq!(w.field_name, "url");
@@ -147,8 +162,10 @@ mod tests {
     fn detects_latin_greek_mix() {
         // Greek 'ο' (U+03BF) looks like Latin 'o'
         let warning = detect_mixed_script("gοogle.com", "url");
-        assert!(warning.is_some());
-        let w = warning.unwrap();
+        let w = match warning {
+            MixedScriptDetection::Suspicious(w) => w,
+            MixedScriptDetection::Clean => panic!("expected suspicious detection"),
+        };
         assert!(w.scripts.contains(&Script::Greek));
         assert!(w.scripts.contains(&Script::Latin));
     }
@@ -156,25 +173,25 @@ mod tests {
     #[test]
     fn ignores_pure_latin() {
         let warning = detect_mixed_script("google.com", "url");
-        assert!(warning.is_none());
+        assert!(matches!(warning, MixedScriptDetection::Clean));
     }
 
     #[test]
     fn ignores_pure_cyrillic() {
         let warning = detect_mixed_script("привет", "text");
-        assert!(warning.is_none());
+        assert!(matches!(warning, MixedScriptDetection::Clean));
     }
 
     #[test]
     fn ignores_pure_greek() {
         let warning = detect_mixed_script("γεια", "text");
-        assert!(warning.is_none());
+        assert!(matches!(warning, MixedScriptDetection::Clean));
     }
 
     #[test]
     fn ignores_ascii_only_fast_path() {
         let warning = detect_mixed_script("https://example.com/path?q=test", "url");
-        assert!(warning.is_none());
+        assert!(matches!(warning, MixedScriptDetection::Clean));
     }
 
     #[test]
@@ -182,8 +199,10 @@ mod tests {
         // Create a long string with mixed scripts
         let long_input = format!("{}а", "a".repeat(100)); // 100 Latin 'a' + Cyrillic 'а'
         let warning = detect_mixed_script(&long_input, "field");
-        assert!(warning.is_some());
-        let w = warning.unwrap();
+        let w = match warning {
+            MixedScriptDetection::Suspicious(w) => w,
+            MixedScriptDetection::Clean => panic!("expected suspicious detection"),
+        };
         assert!(w.snippet.ends_with("..."));
         assert!(w.snippet.len() <= 43 + 3); // 40 chars + "..."
     }
@@ -204,35 +223,41 @@ mod tests {
     #[test]
     fn handles_empty_string() {
         let warning = detect_mixed_script("", "field");
-        assert!(warning.is_none());
+        assert!(matches!(warning, MixedScriptDetection::Clean));
     }
 
     #[test]
     fn handles_unicode_without_latin() {
         // Japanese + Cyrillic should not warn (no Latin)
         let warning = detect_mixed_script("日本語привет", "text");
-        assert!(warning.is_none());
+        assert!(matches!(warning, MixedScriptDetection::Clean));
     }
 
     #[test]
     fn detects_single_cyrillic_in_latin() {
         // Single Cyrillic 'е' (U+0435) among Latin
         let warning = detect_mixed_script("tеst", "command");
-        assert!(warning.is_some());
+        assert!(matches!(warning, MixedScriptDetection::Suspicious(_)));
     }
 
     #[test]
     fn preserves_field_name() {
-        let warning = detect_mixed_script("t\u{0435}st", "my_custom_field").unwrap();
-        assert_eq!(warning.field_name, "my_custom_field");
+        let warning = detect_mixed_script("t\u{0435}st", "my_custom_field");
+        let w = match warning {
+            MixedScriptDetection::Suspicious(w) => w,
+            MixedScriptDetection::Clean => panic!("expected suspicious detection"),
+        };
+        assert_eq!(w.field_name, "my_custom_field");
     }
 
     #[test]
     fn detects_latin_armenian_mix() {
         // Armenian 'Ա' (U+0531) mixed with Latin
         let warning = detect_mixed_script("p\u{0561}ypal.com", "url");
-        assert!(warning.is_some());
-        let w = warning.unwrap();
+        let w = match warning {
+            MixedScriptDetection::Suspicious(w) => w,
+            MixedScriptDetection::Clean => panic!("expected suspicious detection"),
+        };
         assert!(w.scripts.contains(&Script::Armenian));
         assert!(w.scripts.contains(&Script::Latin));
     }
@@ -241,8 +266,10 @@ mod tests {
     fn detects_latin_cherokee_mix() {
         // Cherokee 'Ꮪ' (U+13DA) mixed with Latin
         let warning = detect_mixed_script("te\u{13DA}t.com", "url");
-        assert!(warning.is_some());
-        let w = warning.unwrap();
+        let w = match warning {
+            MixedScriptDetection::Suspicious(w) => w,
+            MixedScriptDetection::Clean => panic!("expected suspicious detection"),
+        };
         assert!(w.scripts.contains(&Script::Cherokee));
         assert!(w.scripts.contains(&Script::Latin));
     }
@@ -250,12 +277,12 @@ mod tests {
     #[test]
     fn ignores_pure_armenian() {
         let warning = detect_mixed_script("\u{0562}\u{0561}\u{0580}\u{0565}\u{0582}", "text");
-        assert!(warning.is_none());
+        assert!(matches!(warning, MixedScriptDetection::Clean));
     }
 
     #[test]
     fn ignores_pure_cherokee() {
         let warning = detect_mixed_script("\u{13A0}\u{13A1}\u{13A2}", "text");
-        assert!(warning.is_none());
+        assert!(matches!(warning, MixedScriptDetection::Clean));
     }
 }
