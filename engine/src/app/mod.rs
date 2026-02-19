@@ -3282,7 +3282,7 @@ impl App {
     }
 
     pub fn file_select_move_up(&mut self) {
-        if let InputState::FileSelect { selected, .. } = &mut self.ui.input
+        if let ui::FileSelectMut::Active { selected, .. } = self.ui.input.file_select_mut_access()
             && *selected > 0
         {
             *selected -= 1;
@@ -3290,7 +3290,7 @@ impl App {
     }
 
     pub fn file_select_move_down(&mut self) {
-        if let InputState::FileSelect { selected, .. } = &mut self.ui.input {
+        if let ui::FileSelectMut::Active { selected, .. } = self.ui.input.file_select_mut_access() {
             let max_index = self.ui.file_picker.filtered_count().saturating_sub(1);
             if *selected < max_index {
                 *selected += 1;
