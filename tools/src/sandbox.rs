@@ -242,25 +242,6 @@ impl Sandbox {
             message: "path has no parent directory".to_string(),
         })?;
 
-        // Walk the path chain checking for symlinks and reparse points (F-01)
-        let mut current = parent.to_path_buf();
-        loop {
-            if let Ok(meta) = std::fs::symlink_metadata(&current)
-                && (meta.file_type().is_symlink() || is_reparse_point(&meta))
-            {
-                return Err(ToolError::SandboxViolation(
-                    DenialReason::PathOutsideSandbox {
-                        attempted: path.to_path_buf(),
-                        resolved: current,
-                    },
-                ));
-            }
-            match current.parent() {
-                Some(p) if p != current => current = p.to_path_buf(),
-                _ => break,
-            }
-        }
-
         // Re-canonicalize and verify within allowed roots
         let canonical = std::fs::canonicalize(parent).map_err(|_| {
             ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
@@ -268,13 +249,68 @@ impl Sandbox {
                 resolved: parent.to_path_buf(),
             })
         })?;
-        if !self.is_within_allowed_roots(&canonical) {
-            return Err(ToolError::SandboxViolation(
-                DenialReason::PathOutsideSandbox {
+        let allowed_root = self
+            .allowed_roots
+            .iter()
+            .filter(|root| canonical.starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .ok_or_else(|| {
+                ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
                     attempted: path.to_path_buf(),
-                    resolved: canonical,
-                },
-            ));
+                    resolved: canonical.clone(),
+                })
+            })?;
+
+        // Walk the path chain checking for symlinks and reparse points (F-01),
+        // but stop once we reach the nearest allowed root. This avoids false
+        // positives from system-level symlinks above the sandbox root (e.g. macOS
+        // /var -> /private/var).
+        let mut current = parent.to_path_buf();
+        loop {
+            let meta = std::fs::symlink_metadata(&current).map_err(|_| {
+                ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                    attempted: path.to_path_buf(),
+                    resolved: current.clone(),
+                })
+            })?;
+            if meta.file_type().is_symlink() || is_reparse_point(&meta) {
+                return Err(ToolError::SandboxViolation(
+                    DenialReason::PathOutsideSandbox {
+                        attempted: path.to_path_buf(),
+                        resolved: current,
+                    },
+                ));
+            }
+
+            let canonical_current = std::fs::canonicalize(&current).map_err(|_| {
+                ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                    attempted: path.to_path_buf(),
+                    resolved: current.clone(),
+                })
+            })?;
+            if canonical_current == *allowed_root {
+                break;
+            }
+            if !canonical_current.starts_with(allowed_root) {
+                return Err(ToolError::SandboxViolation(
+                    DenialReason::PathOutsideSandbox {
+                        attempted: path.to_path_buf(),
+                        resolved: canonical_current,
+                    },
+                ));
+            }
+
+            current = match current.parent() {
+                Some(next) if next != current => next.to_path_buf(),
+                _ => {
+                    return Err(ToolError::SandboxViolation(
+                        DenialReason::PathOutsideSandbox {
+                            attempted: path.to_path_buf(),
+                            resolved: canonical_current,
+                        },
+                    ));
+                }
+            };
         }
 
         // Re-check deny patterns on the canonical path (F-02)
