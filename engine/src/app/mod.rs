@@ -231,6 +231,16 @@ impl BusyState {
     }
 }
 
+enum ToolJournalGate<'a> {
+    Enabled,
+    Disabled { reason: &'a str },
+}
+
+enum RecoveryGate {
+    Clear,
+    Blocked { reason: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TurnConfig {
     pub(crate) model: ModelName,
@@ -1865,17 +1875,22 @@ impl App {
         self.open_settings_detail(category);
     }
 
-    /// If present, tools are disabled for safety due to a tool journal error.
-    pub fn tool_journal_disabled_reason(&self) -> Option<&str> {
+    /// Tool journal safety-gate status.
+    fn tool_journal_gate(&self) -> ToolJournalGate<'_> {
         match self.core.tool_gate.status() {
-            tool_gate::ToolGateStatus::Enabled => None,
-            tool_gate::ToolGateStatus::Disabled { reason } => Some(reason),
+            tool_gate::ToolGateStatus::Enabled => ToolJournalGate::Enabled,
+            tool_gate::ToolGateStatus::Disabled { reason } => ToolJournalGate::Disabled { reason },
         }
     }
 
-    /// Human-readable reason for a recovery block (if recovery is blocked).
-    pub fn recovery_blocked_reason(&self) -> Option<String> {
-        Some(self.recovery_blocked_state()?.reason.message())
+    /// Recovery-gate status.
+    fn recovery_gate(&self) -> RecoveryGate {
+        match self.recovery_blocked_state() {
+            Some(state) => RecoveryGate::Blocked {
+                reason: state.reason.message(),
+            },
+            None => RecoveryGate::Clear,
+        }
     }
 
     /// Centralizes busy-state checks to ensure consistency across
@@ -2954,10 +2969,13 @@ impl App {
         } else {
             "code".to_string()
         };
-        let last_error = self
-            .tool_journal_disabled_reason()
-            .map(ToString::to_string)
-            .or_else(|| self.recovery_blocked_reason());
+        let last_error = match self.tool_journal_gate() {
+            ToolJournalGate::Disabled { reason } => Some(reason.to_string()),
+            ToolJournalGate::Enabled => match self.recovery_gate() {
+                RecoveryGate::Blocked { reason } => Some(reason),
+                RecoveryGate::Clear => None,
+            },
+        };
         let rate_limit_state = if self.is_loading() {
             "busy".to_string()
         } else {
@@ -3262,18 +3280,21 @@ impl App {
             });
         }
 
-        if self.tool_journal_disabled_reason().is_some() {
-            warnings.push(ValidationFinding {
-                title: "Tool journal safety latch is active".to_string(),
-                detail: "Tool execution is disabled for crash-consistency safety.".to_string(),
-                fix_path: "Run /clear to reset journal state".to_string(),
-            });
-        } else {
-            healthy.push(ValidationFinding {
-                title: "Tool journal safety latch is clear".to_string(),
-                detail: "Tool execution is available.".to_string(),
-                fix_path: "Settings > Tools".to_string(),
-            });
+        match self.tool_journal_gate() {
+            ToolJournalGate::Disabled { .. } => {
+                warnings.push(ValidationFinding {
+                    title: "Tool journal safety latch is active".to_string(),
+                    detail: "Tool execution is disabled for crash-consistency safety.".to_string(),
+                    fix_path: "Run /clear to reset journal state".to_string(),
+                });
+            }
+            ToolJournalGate::Enabled => {
+                healthy.push(ValidationFinding {
+                    title: "Tool journal safety latch is clear".to_string(),
+                    detail: "Tool execution is available.".to_string(),
+                    fix_path: "Settings > Tools".to_string(),
+                });
+            }
         }
 
         ValidationReport {
