@@ -172,7 +172,7 @@ Env fallbacks: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `FORGE_C
 |----------|---------------|---------|--------|
 | Claude | `claude-opus-4-6` | 1M | 128K |
 | OpenAI | `gpt-5.2` | 400K | 128K |
-| Gemini | `gemini-3-pro-preview` | 1M | 65K |
+| Gemini | `gemini-3.1-pro-preview` | 1M | 65K |
 
 ## Pitfalls
 

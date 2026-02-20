@@ -44,7 +44,7 @@ mod tests {
 
     #[test]
     fn parse_model_name_gemini() {
-        let model = parse_model_name_from_string("gemini-3-pro-preview");
+        let model = parse_model_name_from_string("gemini-3.1-pro-preview");
         assert!(model.is_some());
         let model = model.unwrap();
         assert_eq!(model.provider(), Provider::Gemini);

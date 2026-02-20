@@ -187,7 +187,7 @@ const CLAUDE_MODEL_IDS: &[&str] = &[
 
 const OPENAI_MODEL_IDS: &[&str] = &["gpt-5.2-pro", "gpt-5.2"];
 
-const GEMINI_MODEL_IDS: &[&str] = &["gemini-3-pro-preview", "gemini-3-flash-preview"];
+const GEMINI_MODEL_IDS: &[&str] = &["gemini-3.1-pro-preview", "gemini-3.1-flash-preview"];
 
 const ALL_MODEL_IDS: &[&str] = &[
     "claude-opus-4-6",
@@ -195,7 +195,7 @@ const ALL_MODEL_IDS: &[&str] = &[
     "claude-haiku-4-5-20251001",
     "gpt-5.2-pro",
     "gpt-5.2",
-    "gemini-3-pro-preview",
+    "gemini-3.1-pro-preview",
     "gemini-3-flash-preview",
 ];
 
@@ -229,7 +229,7 @@ impl PredefinedModel {
             PredefinedModel::ClaudeHaiku => "Anthropic Claude Haiku 4.5",
             PredefinedModel::Gpt52Pro => "OpenAI GPT 5.2 Pro",
             PredefinedModel::Gpt52 => "OpenAI GPT 5.2",
-            PredefinedModel::GeminiPro => "Google Gemini 3 Pro",
+            PredefinedModel::GeminiPro => "Google Gemini 3.1 Pro",
             PredefinedModel::GeminiFlash => "Google Gemini 3 Flash",
         }
     }
@@ -242,7 +242,7 @@ impl PredefinedModel {
             PredefinedModel::ClaudeHaiku => "Haiku 4.5",
             PredefinedModel::Gpt52Pro => "GPT 5.2 Pro",
             PredefinedModel::Gpt52 => "GPT 5.2",
-            PredefinedModel::GeminiPro => "Gemini 3 Pro",
+            PredefinedModel::GeminiPro => "Gemini 3.1 Pro",
             PredefinedModel::GeminiFlash => "Gemini 3 Flash",
         }
     }
@@ -266,7 +266,7 @@ impl PredefinedModel {
             PredefinedModel::ClaudeHaiku => "claude-haiku-4-5-20251001",
             PredefinedModel::Gpt52Pro => "gpt-5.2-pro",
             PredefinedModel::Gpt52 => "gpt-5.2",
-            PredefinedModel::GeminiPro => "gemini-3-pro-preview",
+            PredefinedModel::GeminiPro => "gemini-3.1-pro-preview",
             PredefinedModel::GeminiFlash => "gemini-3-flash-preview",
         }
     }
@@ -346,7 +346,7 @@ impl InternalModel {
         match self {
             InternalModel::ClaudeDistiller => "claude-haiku-4-5",
             InternalModel::OpenAIDistiller => "gpt-5-nano",
-            InternalModel::GeminiDistiller => "gemini-3-pro-preview",
+            InternalModel::GeminiDistiller => "gemini-3.1-pro-preview",
             InternalModel::GeminiLibrarian => "gemini-3-flash-preview",
         }
     }

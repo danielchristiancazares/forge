@@ -1054,7 +1054,7 @@ mod tests {
         let provider = Provider::Gemini;
         assert!(provider.parse_model("gpt-5.2").is_err());
         assert!(provider.parse_model("claude-opus-4-6").is_err());
-        assert!(provider.parse_model("gemini-3-pro-preview").is_ok());
+        assert!(provider.parse_model("gemini-3.1-pro-preview").is_ok());
     }
 
     #[test]
@@ -1070,7 +1070,7 @@ mod tests {
 
         assert_eq!(
             InternalModel::GeminiDistiller.model_id(),
-            "gemini-3-pro-preview"
+            "gemini-3.1-pro-preview"
         );
         assert_eq!(InternalModel::GeminiDistiller.provider(), Provider::Gemini);
 

@@ -23,7 +23,7 @@ use super::token_counter::TokenCounter;
 /// Models used for distillation (cheaper/faster than main models).
 const CLAUDE_DISTILLATION_MODEL: InternalModel = InternalModel::ClaudeDistiller;
 const OPENAI_DISTILLATION_MODEL: InternalModel = InternalModel::OpenAIDistiller;
-/// Gemini 3 Pro Preview - use the same model for now (no cheaper variant available yet).
+/// Gemini 3.1 Pro Preview - use the same model for now (no cheaper variant available yet).
 const GEMINI_DISTILLATION_MODEL: InternalModel = InternalModel::GeminiDistiller;
 
 /// Context limits for distiller models (conservative to leave room for output + overhead).
