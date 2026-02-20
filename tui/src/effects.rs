@@ -1,5 +1,7 @@
 //! Modal animation effects for TUI overlays.
 
+use std::f32::consts::TAU;
+
 use ratatui::layout::Rect;
 
 use forge_types::ui::{ModalEffect, ModalEffectKind, PanelEffect, PanelEffectKind};
@@ -32,8 +34,7 @@ pub fn apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> R
             let decay = 1.0 - t;
             let oscillations = 4.0;
             let amplitude = 3.0;
-            let offset = (f32::sin(t * std::f32::consts::TAU * oscillations) * amplitude * decay)
-                .round() as i32;
+            let offset = (f32::sin(t * TAU * oscillations) * amplitude * decay).round() as i32;
             let viewport_left = i32::from(viewport.x);
             let viewport_right = i32::from(viewport.x) + i32::from(viewport.width);
             let max_x = (viewport_right - i32::from(base.width)).max(viewport_left);

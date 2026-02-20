@@ -12,7 +12,9 @@
 //! for these inaccuracies. For precise token counts, use the provider's native
 //! token counting endpoint when available.
 
+use std::fmt;
 use std::sync::OnceLock;
+
 use tiktoken_rs::{CoreBPE, o200k_base};
 
 use forge_types::{Message, ThinkingReplayState};
@@ -60,8 +62,8 @@ pub struct TokenCounter {
     encoder: Option<&'static CoreBPE>,
 }
 
-impl std::fmt::Debug for TokenCounter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for TokenCounter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TokenCounter")
             .field("encoder", &self.encoder.as_ref().map(|_| "<CoreBPE>"))
             .finish()

@@ -11,8 +11,9 @@
 //! 4. Engine consumes `TurnContext` via `finish()` to get the report
 
 use std::collections::{BTreeSet, HashMap};
+use std::mem::take;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use forge_types::NonEmptyString;
 
@@ -97,11 +98,8 @@ impl TurnContext {
         self,
         working_dir: &Path,
     ) -> (TurnChangeReport, BTreeSet<PathBuf>, BTreeSet<PathBuf>) {
-        let mut log = self
-            .changes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let log = std::mem::take(&mut *log);
+        let mut log = self.changes.lock().unwrap_or_else(PoisonError::into_inner);
+        let log = take(&mut *log);
         let created = log.created.clone();
         let modified = log.modified.clone();
         let report = log.into_report(working_dir);
@@ -111,26 +109,17 @@ impl TurnContext {
 
 impl ChangeRecorder {
     pub fn record_created(&self, path: PathBuf) {
-        let mut log = self
-            .changes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut log = self.changes.lock().unwrap_or_else(PoisonError::into_inner);
         log.record_created(path);
     }
 
     pub fn record_modified(&self, path: PathBuf) {
-        let mut log = self
-            .changes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut log = self.changes.lock().unwrap_or_else(PoisonError::into_inner);
         log.record_modified(path);
     }
 
     pub fn record_stats(&self, path: PathBuf, additions: u32, deletions: u32) {
-        let mut log = self
-            .changes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut log = self.changes.lock().unwrap_or_else(PoisonError::into_inner);
         let entry = log.stats.entry(path).or_default();
         entry.additions = entry.additions.saturating_add(additions);
         entry.deletions = entry.deletions.saturating_add(deletions);

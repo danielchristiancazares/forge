@@ -1,16 +1,16 @@
-use std::fs::OpenOptions;
-use std::path::Path;
+use std::fs::{self, OpenOptions};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 pub(crate) fn ensure_secure_dir(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path)
+    fs::create_dir_all(path)
         .with_context(|| format!("Failed to create directory: {}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-        let metadata = std::fs::metadata(path)
+        let metadata = metadata(path)
             .with_context(|| format!("Failed to read directory metadata: {}", path.display()))?;
 
         let our_uid = unsafe { libc::getuid() };
@@ -20,9 +20,9 @@ pub(crate) fn ensure_secure_dir(path: &Path) -> Result<()> {
 
         let current_mode = metadata.permissions().mode() & 0o777;
         if current_mode & 0o077 != 0 {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).with_context(
-                || format!("Failed to set directory permissions: {}", path.display()),
-            )?;
+            set_permissions(path, Permissions::from_mode(0o700)).with_context(|| {
+                format!("Failed to set directory permissions: {}", path.display())
+            })?;
         }
     }
     #[cfg(windows)]
@@ -66,12 +66,12 @@ pub(crate) fn ensure_secure_db_files(path: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
 
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        set_permissions(path, Permissions::from_mode(0o600))
             .with_context(|| format!("Failed to set database permissions: {}", path.display()))?;
         for suffix in ["-wal", "-shm"] {
             let sidecar = sqlite_sidecar_path(path, suffix);
             if sidecar.exists() {
-                let _ = std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o600));
+                let _ = set_permissions(&sidecar, Permissions::from_mode(0o600));
             }
         }
     }
@@ -106,10 +106,10 @@ pub(crate) fn prepare_db_path(path: &Path) -> Result<()> {
     ensure_secure_db_files(path)
 }
 
-fn sqlite_sidecar_path(path: &Path, suffix: &str) -> std::path::PathBuf {
+fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
     let file_name = path.file_name().map(|name| name.to_string_lossy());
     match file_name {
         Some(name) => path.with_file_name(format!("{name}{suffix}")),
-        None => std::path::PathBuf::from(format!("{}{suffix}", path.display())),
+        None => PathBuf::from(format!("{}{suffix}", path.display())),
     }
 }

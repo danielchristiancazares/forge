@@ -1,12 +1,17 @@
 //! Tool execution loop for the App.
 
+use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fmt;
 use std::future::Future;
+use std::mem;
+use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::future::{AbortHandle, Abortable, FutureExt};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle};
+use tokio::time::timeout as tokio_timeout;
 
 use forge_context::ContextUsageStatus;
 use forge_types::{ToolBatchId, ToolCall, ToolResult, sanitize_path_for_display};
@@ -16,12 +21,14 @@ use super::{
     CompletedTurnUsage, DEFAULT_TOOL_CAPACITY_BYTES, TOOL_EVENT_CHANNEL_CAPACITY,
     TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
 };
+use crate::security;
 use crate::state::{
     ApprovalState, JournalStatus, OperationEdge, OperationState, PlanApprovalState, ToolBatch,
     ToolCommitPayload, ToolJournalBatch, ToolLoopIngress, ToolLoopPhase, ToolLoopStart,
     ToolLoopState, ToolPlan, ToolRecoveryDecision, ToolRecoveryState,
 };
-use crate::tools::{self, ConfirmationRequest, analyze_tool_arguments};
+use crate::thinking::ThinkingPayload;
+use crate::tools::{self, ConfirmationRequest, analyze_tool_arguments, lp1, sandbox::Sandbox};
 use crate::util;
 use crate::{ApiConfig, App, Message, NonEmptyString, QueuedUserMessage, SystemNotification};
 
@@ -35,7 +42,7 @@ fn run_escalation_reason(tool_name: &str, arguments: &serde_json::Value) -> Opti
         return None;
     }
 
-    let sanitized = crate::security::sanitize_display_text(reason);
+    let sanitized = security::sanitize_display_text(reason);
     Some(util::truncate_with_ellipsis(&sanitized, 200))
 }
 
@@ -57,7 +64,7 @@ pub(crate) struct SpawnedTool {
 #[derive(Debug)]
 pub(crate) struct CompletedTool {
     pub(crate) call: ToolCall,
-    pub(crate) result: Result<ToolResult, tokio::task::JoinError>,
+    pub(crate) result: Result<ToolResult, JoinError>,
     pub(crate) final_events: Vec<tools::ToolEvent>,
 }
 
@@ -178,7 +185,7 @@ impl App {
     pub(crate) fn disable_tools_due_to_tool_journal_error(
         &mut self,
         context: &'static str,
-        error: impl std::fmt::Display,
+        error: impl fmt::Display,
     ) {
         let error = error.to_string();
         tracing::warn!("Tool journal error during {context}: {error}");
@@ -224,7 +231,7 @@ impl App {
 
         // Tool-call assistant text is untrusted external content (LLM output).
         // Sanitize ONCE before journaling and before it can reach persistence/display paths.
-        let assistant_text = crate::security::sanitize_display_text(&assistant_text);
+        let assistant_text = security::sanitize_display_text(&assistant_text);
 
         // Extract replay state for journal persistence (crash recovery needs it).
         let replay_state = thinking.replay_state_for_journal();
@@ -561,7 +568,7 @@ impl App {
             execute_now: plan.execute_now,
             approval_calls: plan.approval_calls,
             turn,
-            batch_start: std::time::Instant::now(),
+            batch_start: Instant::now(),
         };
         let remaining_capacity_bytes = self.remaining_tool_capacity(&batch);
 
@@ -773,7 +780,7 @@ impl App {
                         continue;
                     }
                 };
-                let summary = crate::security::sanitize_display_text(&summary);
+                let summary = security::sanitize_display_text(&summary);
                 let summary = util::truncate_with_ellipsis(&summary, 200);
                 let warnings = analyze_tool_arguments(&call.name, &call.arguments);
                 approval_requests.push(ConfirmationRequest {
@@ -837,7 +844,7 @@ impl App {
         calls: Vec<ToolCall>,
         initial_capacity_bytes: usize,
         turn_recorder: ChangeRecorder,
-        batch_start: std::time::Instant,
+        batch_start: Instant,
     ) -> anyhow::Result<ToolLoopPhase> {
         let queue = ToolQueue::new(calls, initial_capacity_bytes, turn_recorder);
         self.spawn_next_from_queue(batch_id, queue, batch_start)
@@ -853,7 +860,7 @@ impl App {
         &mut self,
         batch_id: ToolBatchId,
         mut queue: ToolQueue,
-        batch_start: std::time::Instant,
+        batch_start: Instant,
     ) -> anyhow::Result<ToolLoopPhase> {
         let max_wall_time = self.runtime.tool_settings.limits.max_batch_wall_time;
         if batch_start.elapsed() > max_wall_time {
@@ -932,9 +939,9 @@ impl App {
 
                 let timeout = exec_ref.timeout().unwrap_or(ctx.default_timeout);
                 let exec_future = exec_ref.execute(call.arguments.clone(), &mut ctx);
-                let exec_future = std::panic::AssertUnwindSafe(exec_future).catch_unwind();
+                let exec_future = AssertUnwindSafe(exec_future).catch_unwind();
 
-                let result = match tokio::time::timeout(timeout, exec_future).await {
+                let result = match tokio_timeout(timeout, exec_future).await {
                     Err(_) => tool_error_result(
                         &call,
                         tools::ToolError::Timeout {
@@ -985,7 +992,7 @@ impl App {
 
     pub(crate) fn poll_tool_loop(&mut self) {
         let idle = self.idle_state();
-        let state = match std::mem::replace(&mut self.core.state, idle) {
+        let state = match mem::replace(&mut self.core.state, idle) {
             OperationState::ToolLoop(state) => *state,
             other => {
                 self.op_restore(other);
@@ -1386,13 +1393,13 @@ impl App {
     fn commit_tool_batch_messages(&mut self, payload: &ToolCommitPayload) -> bool {
         // Defensive: recovered batches and alternate entry points might bypass handle_tool_calls.
         // This is idempotent and ensures we never persist/display raw untrusted assistant text.
-        let assistant_text = crate::security::sanitize_display_text(&payload.assistant_text);
+        let assistant_text = security::sanitize_display_text(&payload.assistant_text);
         let step_id = payload.step_id;
 
         let mut step_id_recorded = false;
         match &payload.thinking {
-            crate::thinking::ThinkingPayload::NotProvided => {}
-            crate::thinking::ThinkingPayload::Provided(thinking_message) => {
+            ThinkingPayload::NotProvided => {}
+            ThinkingPayload::Provided(thinking_message) => {
                 if thinking_message.requires_persistence() {
                     self.push_history_message(Message::Thinking(thinking_message.clone()));
                 } else {
@@ -1406,8 +1413,7 @@ impl App {
             step_id_recorded = true;
         }
 
-        let mut result_map: std::collections::HashMap<String, ToolResult> =
-            std::collections::HashMap::new();
+        let mut result_map: HashMap<String, ToolResult> = HashMap::new();
         for result in payload.results.iter().cloned() {
             result_map
                 .entry(result.tool_call_id.clone())
@@ -1527,7 +1533,7 @@ impl App {
                 return;
             };
 
-            let api_key = crate::util::wrap_api_key(model.provider(), api_key);
+            let api_key = util::wrap_api_key(model.provider(), api_key);
 
             let config = match ApiConfig::new(api_key, model.clone()) {
                 Ok(config) => config
@@ -1600,7 +1606,7 @@ impl App {
                 return;
             };
 
-            let api_key = crate::util::wrap_api_key(model.provider(), api_key);
+            let api_key = util::wrap_api_key(model.provider(), api_key);
 
             let config = match ApiConfig::new(api_key, model.clone()) {
                 Ok(config) => config
@@ -1634,7 +1640,7 @@ impl App {
 
     pub(crate) fn resolve_tool_approval(&mut self, decision: tools::ApprovalDecision) {
         let idle = self.idle_state();
-        let state = match std::mem::replace(&mut self.core.state, idle) {
+        let state = match mem::replace(&mut self.core.state, idle) {
             OperationState::ToolLoop(state) => *state,
             other => {
                 self.op_restore(other);
@@ -1833,7 +1839,7 @@ impl App {
 
     pub(crate) fn resolve_tool_recovery(&mut self, decision: ToolRecoveryDecision) {
         let idle = self.idle_state();
-        let state = match std::mem::replace(&mut self.core.state, idle) {
+        let state = match mem::replace(&mut self.core.state, idle) {
             OperationState::ToolRecovery(state) => state,
             other => {
                 self.op_restore(other);
@@ -1956,10 +1962,7 @@ impl App {
     }
 }
 
-fn preflight_sandbox(
-    sandbox: &tools::sandbox::Sandbox,
-    call: &ToolCall,
-) -> Result<(), tools::ToolError> {
+fn preflight_sandbox(sandbox: &Sandbox, call: &ToolCall) -> Result<(), tools::ToolError> {
     let working_dir = sandbox.working_dir();
     match call.name.as_str() {
         "Read" => {
@@ -1980,10 +1983,9 @@ fn preflight_sandbox(
                 .ok_or_else(|| tools::ToolError::BadArgs {
                     message: "patch must be a string".to_string(),
                 })?;
-            let patch =
-                tools::lp1::parse_patch(patch_str).map_err(|e| tools::ToolError::BadArgs {
-                    message: e.to_string(),
-                })?;
+            let patch = lp1::parse_patch(patch_str).map_err(|e| tools::ToolError::BadArgs {
+                message: e.to_string(),
+            })?;
             for file in patch.files {
                 let _ = sandbox.resolve_path(&file.path, &working_dir)?;
             }
@@ -2060,7 +2062,7 @@ fn apply_tool_event_to_output_lines(
             tool_name,
         } => {
             let lines = output_lines.entry(tool_call_id.clone()).or_default();
-            let safe_tool_call_id = crate::security::sanitize_display_text(&tool_call_id);
+            let safe_tool_call_id = security::sanitize_display_text(&tool_call_id);
             lines.push(format!(
                 "▶ {} ({})",
                 tools::sanitize_output(&tool_name),
@@ -2089,13 +2091,13 @@ fn apply_tool_event_to_output_lines(
         }
         tools::ToolEvent::Completed { tool_call_id } => {
             let lines = output_lines.entry(tool_call_id.clone()).or_default();
-            let safe_tool_call_id = crate::security::sanitize_display_text(&tool_call_id);
+            let safe_tool_call_id = security::sanitize_display_text(&tool_call_id);
             lines.push(format!("✓ Tool completed ({safe_tool_call_id})"));
         }
     }
 }
 
-fn panic_payload_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
+fn panic_payload_to_string(payload: &Box<dyn Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         s.to_string()
     } else if let Some(s) = payload.downcast_ref::<String>() {

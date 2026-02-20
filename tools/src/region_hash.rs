@@ -1,6 +1,9 @@
-use sha2::{Digest, Sha256};
+use std::fmt;
+use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
+
+use sha2::{Digest, Sha256};
 
 use crate::ObservedRegion;
 
@@ -10,7 +13,7 @@ pub fn hash_line_range(path: &Path, start: u32, end: u32) -> io::Result<[u8; 32]
         return Ok(ObservedRegion::EMPTY_HASH);
     }
 
-    let file = std::fs::File::open(path)?;
+    let file = File::open(path)?;
     let reader = io::BufReader::new(file);
     let mut hasher = Sha256::new();
 
@@ -98,8 +101,8 @@ pub enum ValidationError {
     RegionChanged,
 }
 
-impl std::fmt::Display for ValidationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OutsideObservedRegion {
                 target,

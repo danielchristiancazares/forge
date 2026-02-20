@@ -1,12 +1,18 @@
 //! Git tool executors.
 
 use std::collections::HashMap;
+use std::env::temp_dir;
+use std::fs::create_dir_all;
+use std::hash::RandomState;
 use std::path::{Path, PathBuf};
+use std::process::{Stdio, id as process_id};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::AsyncReadExt;
+use tokio::fs::{create_dir_all as async_create_dir_all, write as async_write};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::time;
 
@@ -564,7 +570,7 @@ fn effective_max_bytes(ctx: &ToolCtx) -> usize {
 /// - **Windows**: A per-process empty directory under the system temp dir,
 ///   created lazily and reused for the process lifetime.
 fn git_hooks_disabled_path() -> &'static str {
-    static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    static PATH: OnceLock<String> = OnceLock::new();
     PATH.get_or_init(|| {
         #[cfg(unix)]
         {
@@ -572,17 +578,17 @@ fn git_hooks_disabled_path() -> &'static str {
         }
         #[cfg(not(unix))]
         {
-            let mut path = std::env::temp_dir();
+            let mut path = temp_dir();
             // Use RandomState-seeded hash for an unpredictable directory name,
             // preventing pre-population attacks via PID prediction.
             let unique = {
                 use std::hash::{BuildHasher, Hasher};
-                let mut hasher = std::hash::RandomState::new().build_hasher();
-                hasher.write_u32(std::process::id());
+                let mut hasher = RandomState::new().build_hasher();
+                hasher.write_u32(process_id());
                 hasher.finish()
             };
             path.push(format!("forge-hooks-{unique:016x}"));
-            let _ = std::fs::create_dir_all(&path);
+            let _ = create_dir_all(&path);
             path.display().to_string()
         }
     })
@@ -630,8 +636,8 @@ async fn run_git(
 
     let mut cmd = Command::new(&git_bin);
     cmd.args(&args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .current_dir(working_dir);
 
     super::process::apply_sanitized_env(&mut cmd, &ctx.env_sanitizer);
@@ -717,7 +723,7 @@ async fn run_git(
     })
 }
 
-async fn read_to_end_limited<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
+async fn read_to_end_limited<R: AsyncRead + Unpin + Send + 'static>(
     mut reader: R,
     max_bytes: usize,
 ) -> (Vec<u8>, bool) {
@@ -808,7 +814,7 @@ async fn write_patches_to_dir(
     output_dir: &Path,
     timeout_ms: u64,
 ) -> Result<Value, ToolError> {
-    tokio::fs::create_dir_all(output_dir)
+    async_create_dir_all(output_dir)
         .await
         .map_err(|e| ToolError::ExecutionFailed {
             tool: "Git:diff".to_string(),
@@ -891,7 +897,7 @@ async fn write_patches_to_dir(
             patch_exec.stdout.clone()
         };
 
-        tokio::fs::write(&patch_path, &patch_content)
+        async_write(&patch_path, &patch_content)
             .await
             .map_err(|e| ToolError::ExecutionFailed {
                 tool: "Git:diff".to_string(),
@@ -947,7 +953,7 @@ async fn write_patches_to_dir(
             message: format!("Failed to serialize diff summary: {e}"),
         })?;
     let summary_path = output_dir.join("_summary.json");
-    tokio::fs::write(&summary_path, &summary_json)
+    async_write(&summary_path, &summary_json)
         .await
         .map_err(|e| ToolError::ExecutionFailed {
             tool: "Git:diff".to_string(),

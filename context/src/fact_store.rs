@@ -7,6 +7,7 @@
 //! Source tracking allows facts to be linked to the files they were derived from,
 //! enabling staleness detection when files change externally.
 
+use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -556,7 +557,7 @@ fn day_of_year_to_month_day(day_of_year: i32, leap: bool) -> (i32, i32) {
 /// Compute SHA256 hash of a file.
 fn compute_file_sha256(path: impl AsRef<Path>) -> Result<String> {
     let path = path.as_ref();
-    let mut file = std::fs::File::open(path)
+    let mut file = File::open(path)
         .with_context(|| format!("Failed to open file for hashing: {}", path.display()))?;
 
     let mut hasher = Sha256::new();

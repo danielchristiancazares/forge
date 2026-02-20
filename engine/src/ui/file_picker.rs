@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use forge_tools::sandbox::Sandbox;
 use forge_types::sanitize_path_display;
 use ignore::WalkBuilder;
 
@@ -38,7 +39,7 @@ impl FilePickerState {
     }
 
     /// Scan files from the given root directory, respecting .gitignore and sandbox deny patterns.
-    pub fn scan_files(&mut self, root: &Path, sandbox: &forge_tools::sandbox::Sandbox) {
+    pub fn scan_files(&mut self, root: &Path, sandbox: &Sandbox) {
         self.all_files.clear();
         self.filtered.clear();
         self.scanned = true;

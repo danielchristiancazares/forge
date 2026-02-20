@@ -1,19 +1,29 @@
 //! Application initialization for the App.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::env;
+use std::fmt;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use forge_types::{ModelName, OutputLimits, Provider, SecretString, ToolDefinition};
+use forge_config::RawLspConfig;
+use forge_lsp::DiagnosticsSnapshot;
+use forge_types::{LspConfig, ModelName, OutputLimits, Provider, SecretString, ToolDefinition};
+use tokio::sync::Mutex;
 
 use super::{
     AppCore, AppRuntime, AppUi, LspRuntimeState, ProviderRuntimeState, SystemPrompts, TurnConfig,
     TurnConfigStaging,
 };
 use crate::config::{self, ForgeConfig, OpenAIConfig};
+use crate::notifications::NotificationQueue;
+use crate::session_state::{SessionChangeLog, SessionState};
 use crate::state::{DataDir, DataDirSource, OperationState};
-use crate::tools::{self, builtins};
-use crate::ui::{DisplayLog, InputState};
+use crate::tools::{self, builtins, sandbox, shell};
+use crate::ui::{DisplayLog, FilePickerState, InputHistory, InputState};
 use crate::{
     App, ContextManager, EnvironmentContext, Librarian, OpenAIReasoningEffort,
     OpenAIReasoningSummary, OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation,
@@ -40,12 +50,12 @@ use forge_types::ENV_SECRET_DENYLIST as DEFAULT_ENV_DENYLIST;
 fn default_env_denylist_patterns() -> Vec<String> {
     DEFAULT_ENV_DENYLIST
         .iter()
-        .map(std::string::ToString::to_string)
+        .map(ToString::to_string)
         .collect()
 }
 
 fn default_sandbox_deny_patterns() -> Vec<String> {
-    tools::sandbox::default_sandbox_deny_patterns()
+    sandbox::default_sandbox_deny_patterns()
 }
 
 fn insert_resolved_key(
@@ -66,7 +76,7 @@ fn insert_env_key_if_missing(api_keys: &mut HashMap<Provider, SecretString>, pro
     use std::collections::hash_map::Entry;
 
     if let Entry::Vacant(e) = api_keys.entry(provider)
-        && let Ok(key) = std::env::var(provider.env_var())
+        && let Ok(key) = env::var(provider.env_var())
     {
         let trimmed = key.trim();
         if !trimmed.is_empty() {
@@ -95,13 +105,13 @@ pub(crate) struct AppBuildParts {
     pub(crate) system_prompts: SystemPrompts,
     pub(crate) environment: EnvironmentContext,
     pub(crate) tool_definitions: Vec<ToolDefinition>,
-    pub(crate) hidden_tools: std::collections::HashSet<String>,
-    pub(crate) tool_registry: std::sync::Arc<tools::ToolRegistry>,
+    pub(crate) hidden_tools: HashSet<String>,
+    pub(crate) tool_registry: Arc<tools::ToolRegistry>,
     pub(crate) tool_settings: tools::ToolSettings,
     pub(crate) tool_journal: ToolJournal,
-    pub(crate) tool_file_cache: std::sync::Arc<tokio::sync::Mutex<tools::ToolFileCache>>,
-    pub(crate) librarian: Option<std::sync::Arc<tokio::sync::Mutex<Librarian>>>,
-    pub(crate) lsp_config: Option<forge_types::LspConfig>,
+    pub(crate) tool_file_cache: Arc<Mutex<tools::ToolFileCache>>,
+    pub(crate) librarian: Option<Arc<Mutex<Librarian>>>,
+    pub(crate) lsp_config: Option<LspConfig>,
 }
 
 pub(crate) fn build_app(parts: AppBuildParts) -> App {
@@ -120,9 +130,9 @@ pub(crate) fn build_app(parts: AppBuildParts) -> App {
             should_quit: false,
             view: parts.view,
             settings_editor: super::SettingsEditorState::Inactive,
-            input_history: crate::ui::InputHistory::default(),
+            input_history: InputHistory::default(),
             last_ui_tick: Instant::now(),
-            file_picker: crate::ui::FilePickerState::new(),
+            file_picker: FilePickerState::new(),
         },
         core: AppCore {
             turn_config: TurnConfigStaging {
@@ -144,10 +154,10 @@ pub(crate) fn build_app(parts: AppBuildParts) -> App {
             tool_gate: super::ToolGate::Enabled,
             checkpoints: super::checkpoints::CheckpointStore::default(),
             tool_iterations: 0,
-            session_changes: crate::session_state::SessionChangeLog::default(),
+            session_changes: SessionChangeLog::default(),
             turn_usage: Default::default(),
             last_turn_usage: super::CompletedTurnUsage::NoTurnCompleted,
-            notification_queue: crate::notifications::NotificationQueue::new(),
+            notification_queue: NotificationQueue::new(),
             plan_state: crate::PlanState::Inactive,
         },
         runtime: AppRuntime {
@@ -173,8 +183,8 @@ pub(crate) fn build_app(parts: AppBuildParts) -> App {
             next_journal_cleanup_attempt: Instant::now(),
             lsp_runtime: LspRuntimeState {
                 config: parts.lsp_config,
-                manager: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
-                snapshot: forge_lsp::DiagnosticsSnapshot::default(),
+                manager: Arc::new(Mutex::new(None)),
+                snapshot: DiagnosticsSnapshot::default(),
                 pending_diag_check: None,
             },
         },
@@ -348,7 +358,7 @@ impl App {
             match Librarian::open(&librarian_path) {
                 Ok(lib) => {
                     tracing::info!("Librarian initialized with {} facts", lib.fact_count());
-                    Some(std::sync::Arc::new(tokio::sync::Mutex::new(lib)))
+                    Some(Arc::new(Mutex::new(lib)))
                 }
                 Err(e) => {
                     tracing::warn!("Failed to initialize Librarian: {e}");
@@ -372,14 +382,13 @@ impl App {
 
         let tool_journal_path = data_dir.join("tool_journal.db");
         let tool_journal = ToolJournal::open(&tool_journal_path)?;
-        let tool_file_cache =
-            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let tool_file_cache = Arc::new(Mutex::new(HashMap::new()));
 
         // Store LSP config for lazy start on first tool batch
         let lsp_config = config
             .as_ref()
             .and_then(|cfg| cfg.lsp.clone())
-            .and_then(forge_config::RawLspConfig::resolve);
+            .and_then(RawLspConfig::resolve);
 
         let environment = EnvironmentContext::gather();
 
@@ -409,7 +418,7 @@ impl App {
             provider_runtime: ProviderRuntimeState {
                 openai_options,
                 openai_reasoning_effort_explicit,
-                gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+                gemini_cache: Arc::new(Mutex::new(None)),
                 gemini_thinking_enabled,
                 anthropic_thinking_mode,
                 anthropic_thinking_effort,
@@ -472,7 +481,7 @@ impl App {
     }
 
     pub(crate) fn data_dir() -> anyhow::Result<DataDir> {
-        if let Ok(custom) = std::env::var("FORGE_DATA_DIR") {
+        if let Ok(custom) = env::var("FORGE_DATA_DIR") {
             return Ok(DataDir {
                 path: PathBuf::from(custom),
                 source: DataDirSource::Custom,
@@ -490,12 +499,12 @@ impl App {
         }
     }
 
-    pub(crate) fn ensure_secure_dir(path: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(path)?;
+    pub(crate) fn ensure_secure_dir(path: &Path) -> io::Result<()> {
+        fs::create_dir_all(path)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::{MetadataExt, PermissionsExt};
-            let metadata = std::fs::metadata(path)?;
+            let metadata = fs::metadata(path)?;
 
             // Only modify permissions if we own the directory
             let our_uid = unsafe { libc::getuid() };
@@ -517,7 +526,7 @@ impl App {
                     "Data dir permissions are too open ({:o}); tightening to 0700",
                     mode
                 );
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
             }
         }
         Ok(())
@@ -527,10 +536,8 @@ impl App {
         self.runtime.data_dir.join("history.json")
     }
 
-    pub(crate) fn session_path(&self) -> std::path::PathBuf {
-        self.runtime
-            .data_dir
-            .join(crate::session_state::SessionState::FILENAME)
+    pub(crate) fn session_path(&self) -> PathBuf {
+        self.runtime.data_dir.join(SessionState::FILENAME)
     }
 
     pub(crate) fn plan_path(&self) -> PathBuf {
@@ -538,7 +545,7 @@ impl App {
     }
 
     pub(crate) fn context_infinity_enabled_from_env() -> bool {
-        match std::env::var("FORGE_CONTEXT_INFINITY") {
+        match env::var("FORGE_CONTEXT_INFINITY") {
             Ok(value) => !matches!(
                 value.trim().to_ascii_lowercase().as_str(),
                 "0" | "false" | "off" | "no"
@@ -586,7 +593,7 @@ impl App {
                 .and_then(|cfg| cfg.max_tool_iterations_per_user_turn)
                 .unwrap_or(DEFAULT_MAX_TOOL_ITERATIONS_PER_TURN),
             max_tool_args_bytes: DEFAULT_MAX_TOOL_ARGS_BYTES,
-            max_batch_wall_time: std::time::Duration::from_secs(DEFAULT_MAX_BATCH_WALL_TIME_SECS),
+            max_batch_wall_time: Duration::from_secs(DEFAULT_MAX_BATCH_WALL_TIME_SECS),
         };
 
         let read_limits = tools::ReadFileLimits {
@@ -649,7 +656,7 @@ impl App {
             cache_ttl_days: webfetch_cfg.and_then(|cfg| cfg.cache_ttl_days).unwrap_or(7),
         };
 
-        let shell = tools::shell::detect_shell();
+        let shell = shell::detect_shell();
         tracing::debug!(shell = %shell.name, binary = ?shell.binary, "Detected shell");
 
         let windows_run_cfg = tools_cfg
@@ -780,24 +787,20 @@ impl App {
             tracing::error!(
                 "Sandbox configuration is invalid. Entering fail-closed sandbox mode until config is corrected."
             );
-            tools::sandbox::Sandbox::new(Vec::new(), denied_patterns.clone(), allow_absolute)
+            sandbox::Sandbox::new(Vec::new(), denied_patterns.clone(), allow_absolute)
                 .expect("fail-closed sandbox")
         } else {
-            tools::sandbox::Sandbox::new(allowed_roots, denied_patterns.clone(), allow_absolute)
+            sandbox::Sandbox::new(allowed_roots, denied_patterns.clone(), allow_absolute)
                 .unwrap_or_else(|e| {
                     if sandbox_cfg.is_some() {
                         tracing::error!(
                             "Invalid sandbox config: {e}. Entering fail-closed sandbox mode."
                         );
-                        tools::sandbox::Sandbox::new(
-                            Vec::new(),
-                            denied_patterns.clone(),
-                            allow_absolute,
-                        )
-                        .expect("fail-closed sandbox")
+                        sandbox::Sandbox::new(Vec::new(), denied_patterns.clone(), allow_absolute)
+                            .expect("fail-closed sandbox")
                     } else {
                         tracing::warn!("Invalid sandbox config: {e}. Using defaults.");
-                        tools::sandbox::Sandbox::new(
+                        sandbox::Sandbox::new(
                             vec![PathBuf::from(".")],
                             default_sandbox_deny_patterns(),
                             false,
@@ -838,9 +841,9 @@ impl App {
     pub(crate) fn build_tool_registry(
         tool_settings: &tools::ToolSettings,
     ) -> (
-        std::sync::Arc<tools::ToolRegistry>,
+        Arc<tools::ToolRegistry>,
         Vec<ToolDefinition>,
-        std::collections::HashSet<String>,
+        HashSet<String>,
     ) {
         let mut tool_registry = tools::ToolRegistry::default();
         if let Err(e) = builtins::register_builtins(
@@ -854,7 +857,7 @@ impl App {
         ) {
             tracing::warn!("Failed to register built-in tools: {e}");
         }
-        let tool_registry = std::sync::Arc::new(tool_registry);
+        let tool_registry = Arc::new(tool_registry);
         let tool_definitions = tool_registry.definitions();
         let hidden_tools = tool_definitions
             .iter()
@@ -877,7 +880,7 @@ fn parse_approval_mode(raw: Option<&str>) -> tools::ApprovalMode {
 fn parse_config_enum_or_default<T, E, F>(raw: Option<&str>, field: &str, parse: F) -> T
 where
     T: Default,
-    E: std::fmt::Display,
+    E: fmt::Display,
     F: Fn(&str) -> Result<T, E>,
 {
     raw.map(|value| {
@@ -901,13 +904,15 @@ fn parse_run_fallback_mode(mode: Option<config::RunFallbackMode>) -> tools::RunS
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+
     use crate::App;
     use crate::config::ForgeConfig;
 
     #[test]
     fn tool_settings_use_default_sandbox_when_not_configured() {
         let settings = App::tool_settings_from_config(None);
-        let cwd = std::env::current_dir().expect("cwd");
+        let cwd = env::current_dir().expect("cwd");
         let result = settings.sandbox.resolve_path("Cargo.toml", &cwd);
         assert!(result.is_ok(), "default sandbox should allow cwd files");
     }
@@ -916,7 +921,7 @@ mod tests {
     fn tool_settings_fail_closed_on_empty_expanded_allowed_root() {
         let var_name = "FORGE_TEST_MISSING_ALLOWED_ROOT";
         // SAFETY: Tests run in a single process; this variable name is unique to this test.
-        unsafe { std::env::remove_var(var_name) };
+        unsafe { env::remove_var(var_name) };
 
         let toml = format!(
             r#"
@@ -926,7 +931,7 @@ allowed_roots = ["${{{var_name}}}"]
         );
         let config: ForgeConfig = toml::from_str(&toml).expect("config parse");
         let settings = App::tool_settings_from_config(Some(&config));
-        let cwd = std::env::current_dir().expect("cwd");
+        let cwd = env::current_dir().expect("cwd");
         let result = settings.sandbox.resolve_path("Cargo.toml", &cwd);
         assert!(
             result.is_err(),

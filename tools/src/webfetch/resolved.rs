@@ -20,6 +20,7 @@
 //! // Now use resolved.timeout, request.max_chunk_tokens, etc.
 //! // No Option unwrapping needed in downstream code.
 //! ```
+use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -288,7 +289,7 @@ fn derive_robots_token(user_agent: &str) -> String {
 }
 
 fn env_opt_in_enabled(name: &str) -> bool {
-    is_truthy_env(std::env::var(name).ok().as_deref())
+    is_truthy_env(env::var(name).ok().as_deref())
 }
 
 fn is_truthy_env(value: Option<&str>) -> bool {

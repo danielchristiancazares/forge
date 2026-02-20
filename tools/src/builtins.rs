@@ -1,16 +1,25 @@
 //! Built-in tool executors.
 
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+#[cfg(unix)]
+use std::fs::Permissions;
+use std::fs::{File, create_dir_all, metadata, read};
+use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::str::from_utf8;
 
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use globset::GlobBuilder;
 use ignore::WalkBuilder;
 use serde::Deserialize;
 use serde_json::json;
 
-use tokio::io::AsyncReadExt;
+use tokio::fs::create_dir_all as async_create_dir_all;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
+use tokio::sync::mpsc::Sender;
+use tokio::task::spawn_blocking;
 
 use super::{
     FileCacheEntry, ObservedRegion, PatchLimits, ReadFileLimits, RiskLevel, RunSandboxPolicy,
@@ -21,6 +30,7 @@ use crate::default_true;
 use crate::git;
 use crate::normalize_cache_key;
 use crate::region_hash;
+use crate::sandbox::Sandbox;
 
 /// Display a path without the Windows extended-length prefix (`\\?\`).
 fn display_path(path: &Path) -> String {
@@ -431,7 +441,7 @@ impl ToolExecutor for ReadFileTool {
             }
 
             let resolved = ctx.sandbox.resolve_path(&typed.path, &ctx.working_dir)?;
-            let meta = std::fs::metadata(&resolved).map_err(|e| ToolError::ExecutionFailed {
+            let meta = metadata(&resolved).map_err(|e| ToolError::ExecutionFailed {
                 tool: "Read".to_string(),
                 message: e.to_string(),
             })?;
@@ -454,11 +464,10 @@ impl ToolExecutor for ReadFileTool {
                 .max_file_read_bytes
                 .min(ctx.available_capacity_bytes);
 
-            let mut file =
-                std::fs::File::open(&resolved).map_err(|e| ToolError::ExecutionFailed {
-                    tool: "Read".to_string(),
-                    message: e.to_string(),
-                })?;
+            let mut file = File::open(&resolved).map_err(|e| ToolError::ExecutionFailed {
+                tool: "Read".to_string(),
+                message: e.to_string(),
+            })?;
             ctx.sandbox.validate_opened_file(&resolved, &file)?;
             let is_binary = sniff_binary(&mut file).map_err(|e| ToolError::ExecutionFailed {
                 tool: "Read".to_string(),
@@ -620,8 +629,8 @@ impl ToolExecutor for ApplyPatchTool {
 
                 // Check if file exists FIRST (before stale check)
                 #[cfg(unix)]
-                let mut permissions: Option<std::fs::Permissions> = None;
-                let existed = match std::fs::metadata(&resolved) {
+                let mut permissions: Option<Permissions> = None;
+                let existed = match metadata(&resolved) {
                     Ok(meta) => {
                         if meta.is_dir() {
                             return Err(ToolError::PatchFailed {
@@ -635,7 +644,7 @@ impl ToolExecutor for ApplyPatchTool {
                         }
                         true
                     }
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(err) if err.kind() == ErrorKind::NotFound => false,
                     Err(err) => {
                         return Err(ToolError::PatchFailed {
                             file: resolved.clone(),
@@ -646,7 +655,7 @@ impl ToolExecutor for ApplyPatchTool {
 
                 // Read file once to avoid TOCTOU between hash check and patch application
                 let original_bytes = if existed {
-                    std::fs::read(&resolved).map_err(|e| ToolError::PatchFailed {
+                    read(&resolved).map_err(|e| ToolError::PatchFailed {
                         file: resolved.clone(),
                         message: e.to_string(),
                     })?
@@ -779,11 +788,8 @@ impl ToolExecutor for ApplyPatchTool {
                 .iter()
                 .filter(|s| s.changed)
                 .map(|s| {
-                    let old_lines = std::str::from_utf8(&s.original_bytes)
-                        .unwrap_or("")
-                        .lines()
-                        .count();
-                    let new_lines = std::str::from_utf8(&s.bytes).unwrap_or("").lines().count();
+                    let old_lines = from_utf8(&s.original_bytes).unwrap_or("").lines().count();
+                    let new_lines = from_utf8(&s.bytes).unwrap_or("").lines().count();
                     old_lines.max(new_lines)
                 })
                 .max()
@@ -842,9 +848,8 @@ impl ToolExecutor for ApplyPatchTool {
                         }
                     } else {
                         // New file: create region covering entire file
-                        let line_count = std::io::BufRead::lines(file.bytes.as_slice())
-                            .count()
-                            .max(1) as u32;
+                        let line_count =
+                            BufRead::lines(file.bytes.as_slice()).count().max(1) as u32;
                         FileCacheEntry {
                             observed: ObservedRegion {
                                 start_line: 1,
@@ -944,15 +949,15 @@ impl ToolExecutor for WriteFileTool {
                 && !parent.as_os_str().is_empty()
                 && !parent.exists()
             {
-                tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                    ToolError::ExecutionFailed {
+                async_create_dir_all(parent)
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed {
                         tool: "Write".to_string(),
                         message: format!(
                             "failed to create parent directories for {}: {e}",
                             resolved.display()
                         ),
-                    }
-                })?;
+                    })?;
                 // TOCTOU mitigation: revalidate after directory creation
                 ctx.sandbox.validate_created_parent(&resolved)?;
             }
@@ -966,7 +971,7 @@ impl ToolExecutor for WriteFileTool {
                 + u32::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
 
             let write_path = resolved.clone();
-            let write_result = tokio::task::spawn_blocking(move || {
+            let write_result = spawn_blocking(move || {
                 forge_utils::atomic_write_new_with_options(
                     &write_path,
                     &bytes,
@@ -981,7 +986,7 @@ impl ToolExecutor for WriteFileTool {
 
             match write_result {
                 Ok(Ok(())) => {}
-                Ok(Err(err)) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                Ok(Err(err)) if err.kind() == ErrorKind::AlreadyExists => {
                     return Err(ToolError::ExecutionFailed {
                         tool: "Write".to_string(),
                         message: format!(
@@ -1108,9 +1113,9 @@ impl ToolExecutor for RunCommandTool {
                 command.arg(arg);
             }
             command
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .current_dir(&ctx.working_dir);
 
             super::process::apply_sanitized_env(&mut command, &ctx.env_sanitizer);
@@ -1120,9 +1125,8 @@ impl ToolExecutor for RunCommandTool {
             #[cfg(windows)]
             if requires_host_sandbox {
                 use std::os::windows::process::CommandExt;
-                command
-                    .as_std_mut()
-                    .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+                use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+                command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
             }
 
             #[cfg(unix)]
@@ -1431,7 +1435,7 @@ pub fn register_builtins(
     Ok(())
 }
 
-fn sniff_binary(file: &mut std::fs::File) -> Result<bool, std::io::Error> {
+fn sniff_binary(file: &mut File) -> Result<bool, IoError> {
     file.seek(SeekFrom::Start(0))?;
     let mut buf = [0u8; 8192];
     let n = file.read(&mut buf)?;
@@ -1468,11 +1472,7 @@ fn is_crash_dump_artifact(path: &Path) -> bool {
         })
 }
 
-fn read_binary(
-    file: &mut std::fs::File,
-    file_len: u64,
-    output_limit: usize,
-) -> Result<String, ToolError> {
+fn read_binary(file: &mut File, file_len: u64, output_limit: usize) -> Result<String, ToolError> {
     let mut header = "[binary:base64]".to_string();
     let mut truncated = false;
     let mut available = output_limit.saturating_sub(header.len() + 1); // +1 for newline
@@ -1505,7 +1505,7 @@ fn read_binary(
         })?;
     buf.truncate(n);
 
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&buf);
+    let encoded = BASE64_STANDARD.encode(&buf);
     let mut out = String::new();
     out.push_str(&header);
     out.push('\n');
@@ -1535,7 +1535,7 @@ fn format_with_line_numbers(content: &str, start_line: usize) -> String {
 }
 
 fn read_text_range(
-    file: &mut std::fs::File,
+    file: &mut File,
     start: usize,
     end: usize,
     max_scan_bytes: usize,
@@ -1582,7 +1582,7 @@ fn read_text_range(
     Ok(output)
 }
 
-fn read_text_lossy(file: &mut std::fs::File) -> Result<String, ToolError> {
+fn read_text_lossy(file: &mut File) -> Result<String, ToolError> {
     file.seek(SeekFrom::Start(0))
         .map_err(|e| ToolError::ExecutionFailed {
             tool: "Read".to_string(),
@@ -1605,13 +1605,10 @@ struct StagedFile {
     original_bytes: Vec<u8>,
     /// Original file permissions, used to preserve mode on Unix after atomic write.
     #[cfg(unix)]
-    permissions: Option<std::fs::Permissions>,
+    permissions: Option<Permissions>,
 }
 
-fn apply_staged_files(
-    staged: &[StagedFile],
-    sandbox: &crate::sandbox::Sandbox,
-) -> Result<(), ToolError> {
+fn apply_staged_files(staged: &[StagedFile], sandbox: &Sandbox) -> Result<(), ToolError> {
     for file in staged.iter().filter(|s| s.changed) {
         let parent = file.path.parent().ok_or_else(|| ToolError::PatchFailed {
             file: file.path.clone(),
@@ -1620,7 +1617,7 @@ fn apply_staged_files(
 
         // Ensure parent directories exist for new files
         if !file.existed && !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|e| ToolError::PatchFailed {
+            create_dir_all(parent).map_err(|e| ToolError::PatchFailed {
                 file: file.path.clone(),
                 message: format!("Failed to create parent directories: {e}"),
             })?;
@@ -1659,9 +1656,9 @@ fn apply_staged_files(
     Ok(())
 }
 
-async fn read_stream<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
+async fn read_stream<R: AsyncRead + Unpin + Send + 'static>(
     mut reader: R,
-    tx: tokio::sync::mpsc::Sender<super::ToolEvent>,
+    tx: Sender<super::ToolEvent>,
     tool_call_id: String,
     is_stdout: bool,
     max_collect: usize,
@@ -1702,6 +1699,8 @@ use super::process::ChildGuard;
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use super::{
         GlobArgs, GlobTool, ReadFileLimits, ReadFileTool, RiskLevel, RunCommandTool, ToolExecutor,
         WriteFileTool, expand_braces, expand_single_brace, format_with_line_numbers,
@@ -1712,7 +1711,7 @@ mod tests {
     fn run_tool() -> RunCommandTool {
         RunCommandTool::new(
             DetectedShell {
-                binary: std::path::PathBuf::from("pwsh"),
+                binary: PathBuf::from("pwsh"),
                 args: vec!["-NoProfile".to_string(), "-Command".to_string()],
                 name: "pwsh".to_string(),
             },
@@ -1722,27 +1721,19 @@ mod tests {
 
     #[test]
     fn detects_crash_dump_artifacts() {
-        assert!(is_crash_dump_artifact(std::path::Path::new("core")));
-        assert!(is_crash_dump_artifact(std::path::Path::new("core.1234")));
-        assert!(is_crash_dump_artifact(std::path::Path::new("dump.dmp")));
-        assert!(is_crash_dump_artifact(std::path::Path::new("dump.mdmp")));
-        assert!(is_crash_dump_artifact(std::path::Path::new(
-            "panic.stackdump"
-        )));
-        assert!(is_crash_dump_artifact(std::path::Path::new(
-            "snapshot.core"
-        )));
+        assert!(is_crash_dump_artifact(Path::new("core")));
+        assert!(is_crash_dump_artifact(Path::new("core.1234")));
+        assert!(is_crash_dump_artifact(Path::new("dump.dmp")));
+        assert!(is_crash_dump_artifact(Path::new("dump.mdmp")));
+        assert!(is_crash_dump_artifact(Path::new("panic.stackdump")));
+        assert!(is_crash_dump_artifact(Path::new("snapshot.core")));
     }
 
     #[test]
     fn allows_non_dump_file_names() {
-        assert!(!is_crash_dump_artifact(std::path::Path::new("src/main.rs")));
-        assert!(!is_crash_dump_artifact(std::path::Path::new(
-            "docs/core-concepts.md"
-        )));
-        assert!(!is_crash_dump_artifact(std::path::Path::new(
-            "notes.dmp.txt"
-        )));
+        assert!(!is_crash_dump_artifact(Path::new("src/main.rs")));
+        assert!(!is_crash_dump_artifact(Path::new("docs/core-concepts.md")));
+        assert!(!is_crash_dump_artifact(Path::new("notes.dmp.txt")));
     }
 
     #[test]

@@ -4,9 +4,11 @@
 //! memory tools. Fact extraction/retrieval model calls are intentionally
 //! out of scope here.
 
+use std::fmt;
+use std::path::Path;
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 
 use super::fact_store::{FactStore, FactWithStaleness};
 
@@ -97,8 +99,8 @@ impl Librarian {
     }
 }
 
-impl std::fmt::Debug for Librarian {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Librarian {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Librarian")
             .field("turn_counter", &self.turn_counter)
             .field("fact_count", &self.store.fact_count())

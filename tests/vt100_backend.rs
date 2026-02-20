@@ -6,9 +6,11 @@
 use std::fmt;
 use std::io::{self, Write};
 
-use ratatui::backend::Backend;
+use crossterm::style::Color as CrosstermColor;
+use ratatui::backend::{Backend, ClearType, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
+use ratatui::style::{Color as RatatuiColor, Style};
 
 /// A test backend that uses vt100 to simulate a real terminal.
 ///
@@ -65,7 +67,7 @@ impl Backend for VT100Backend {
 
         let mut buf = String::new();
         let mut last_pos: Option<(u16, u16)> = None;
-        let mut last_style: Option<ratatui::style::Style> = None;
+        let mut last_style: Option<Style> = None;
 
         for (x, y, cell) in content {
             // Move cursor if needed
@@ -127,7 +129,7 @@ impl Backend for VT100Backend {
         Ok(())
     }
 
-    fn clear_region(&mut self, _clear_type: ratatui::backend::ClearType) -> io::Result<()> {
+    fn clear_region(&mut self, _clear_type: ClearType) -> io::Result<()> {
         // For snapshot testing, we can just clear the whole screen
         self.clear()
     }
@@ -136,8 +138,8 @@ impl Backend for VT100Backend {
         Ok(Size::new(self.width, self.height))
     }
 
-    fn window_size(&mut self) -> io::Result<ratatui::backend::WindowSize> {
-        Ok(ratatui::backend::WindowSize {
+    fn window_size(&mut self) -> io::Result<WindowSize> {
+        Ok(WindowSize {
             columns_rows: Size::new(self.width, self.height),
             pixels: Size::new(self.width * 8, self.height * 16), // Approximate pixel size
         })
@@ -148,29 +150,28 @@ impl Backend for VT100Backend {
     }
 }
 
-fn to_crossterm_color(color: Option<ratatui::style::Color>) -> Option<crossterm::style::Color> {
+fn to_crossterm_color(color: Option<RatatuiColor>) -> Option<CrosstermColor> {
     use crossterm::style::Color as CColor;
-    use ratatui::style::Color as RColor;
 
     match color? {
-        RColor::Reset => None,
-        RColor::Black => Some(CColor::Black),
-        RColor::Red => Some(CColor::DarkRed),
-        RColor::Green => Some(CColor::DarkGreen),
-        RColor::Yellow => Some(CColor::DarkYellow),
-        RColor::Blue => Some(CColor::DarkBlue),
-        RColor::Magenta => Some(CColor::DarkMagenta),
-        RColor::Cyan => Some(CColor::DarkCyan),
-        RColor::Gray => Some(CColor::Grey),
-        RColor::DarkGray => Some(CColor::DarkGrey),
-        RColor::LightRed => Some(CColor::Red),
-        RColor::LightGreen => Some(CColor::Green),
-        RColor::LightYellow => Some(CColor::Yellow),
-        RColor::LightBlue => Some(CColor::Blue),
-        RColor::LightMagenta => Some(CColor::Magenta),
-        RColor::LightCyan => Some(CColor::Cyan),
-        RColor::White => Some(CColor::White),
-        RColor::Rgb(r, g, b) => Some(CColor::Rgb { r, g, b }),
-        RColor::Indexed(i) => Some(CColor::AnsiValue(i)),
+        RatatuiColor::Reset => None,
+        RatatuiColor::Black => Some(CColor::Black),
+        RatatuiColor::Red => Some(CColor::DarkRed),
+        RatatuiColor::Green => Some(CColor::DarkGreen),
+        RatatuiColor::Yellow => Some(CColor::DarkYellow),
+        RatatuiColor::Blue => Some(CColor::DarkBlue),
+        RatatuiColor::Magenta => Some(CColor::DarkMagenta),
+        RatatuiColor::Cyan => Some(CColor::DarkCyan),
+        RatatuiColor::Gray => Some(CColor::Grey),
+        RatatuiColor::DarkGray => Some(CColor::DarkGrey),
+        RatatuiColor::LightRed => Some(CColor::Red),
+        RatatuiColor::LightGreen => Some(CColor::Green),
+        RatatuiColor::LightYellow => Some(CColor::Yellow),
+        RatatuiColor::LightBlue => Some(CColor::Blue),
+        RatatuiColor::LightMagenta => Some(CColor::Magenta),
+        RatatuiColor::LightCyan => Some(CColor::Cyan),
+        RatatuiColor::White => Some(CColor::White),
+        RatatuiColor::Rgb(r, g, b) => Some(CColor::Rgb { r, g, b }),
+        RatatuiColor::Indexed(i) => Some(CColor::AnsiValue(i)),
     }
 }

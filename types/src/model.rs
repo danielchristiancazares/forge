@@ -1,7 +1,9 @@
 //! Core model domain types and provider enumeration.
 
 use std::borrow::Cow;
+use std::fmt;
 
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -47,8 +49,8 @@ impl EnumKind {
     }
 }
 
-impl std::fmt::Display for EnumKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for EnumKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
@@ -434,8 +436,8 @@ impl ModelName {
     }
 }
 
-impl std::fmt::Display for ModelName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ModelName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.name.fmt(f)
     }
 }
@@ -453,6 +455,6 @@ impl<'de> Deserialize<'de> for ModelName {
         }
 
         let raw = RawModelName::deserialize(deserializer)?;
-        ModelName::parse(raw.provider, &raw.model).map_err(serde::de::Error::custom)
+        ModelName::parse(raw.provider, &raw.model).map_err(D::Error::custom)
     }
 }

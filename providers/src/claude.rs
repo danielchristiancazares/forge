@@ -1,13 +1,14 @@
 use crate::{
-    ApiUsage, CacheHint, CacheableMessage, Message, OutputLimits, Result, SendMessageRequest,
-    SseParseAction, SseParser, StreamEvent, ThinkingReplayState, ThoughtSignatureState,
-    ToolDefinition, emit_or_continue, http_client, parse_sse_payload, retry::RetryConfig,
-    send_retried_sse_request,
+    ApiUsage, CLAUDE_MESSAGES_API_URL, CacheHint, CacheableMessage, Message, OutputLimits, Result,
+    SendMessageRequest, SseParseAction, SseParser, StreamEvent, ThinkingReplayState,
+    ThoughtSignatureState, ToolDefinition, emit_or_continue, http_client, parse_sse_payload,
+    retry::RetryConfig, send_retried_sse_request, stream_idle_timeout,
 };
 use forge_types::ThinkingState;
 use serde_json::json;
+use std::mem;
 
-const API_URL: &str = crate::CLAUDE_MESSAGES_API_URL;
+const API_URL: &str = CLAUDE_MESSAGES_API_URL;
 
 fn is_4_6_model(model: &str) -> bool {
     let lower = model.to_ascii_lowercase();
@@ -97,7 +98,7 @@ fn build_request_body(input: ClaudeRequestBodyInput<'_>) -> serde_json::Value {
             }
             messages.push(json!({
                 "role": "assistant",
-                "content": std::mem::take(content)
+                "content": mem::take(content)
             }));
             *cached = false;
         }
@@ -439,7 +440,7 @@ pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
         &retry_config,
         &request.tx,
         &mut parser,
-        crate::stream_idle_timeout(),
+        stream_idle_timeout(),
     )
     .await
 }

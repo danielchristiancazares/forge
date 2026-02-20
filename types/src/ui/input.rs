@@ -1,5 +1,6 @@
 //! Input mode and draft state for the editor.
 
+use core::mem;
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -156,7 +157,7 @@ impl DraftInput {
 
     pub fn take_text(&mut self) -> String {
         self.cursor = 0;
-        std::mem::take(&mut self.text)
+        mem::take(&mut self.text)
     }
 
     pub fn move_cursor_left(&mut self) {

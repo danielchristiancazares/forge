@@ -1,4 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::fs::{File, Metadata, canonicalize, metadata, symlink_metadata};
+use std::path::{Component, Path, PathBuf};
 
 use super::{DenialReason, ToolError};
 
@@ -37,7 +39,7 @@ pub const DEFAULT_SANDBOX_DENY_PATTERNS: &[&str] = &[
 pub fn default_sandbox_deny_patterns() -> Vec<String> {
     DEFAULT_SANDBOX_DENY_PATTERNS
         .iter()
-        .map(std::string::ToString::to_string)
+        .map(ToString::to_string)
         .collect()
 }
 
@@ -77,7 +79,7 @@ impl Sandbox {
     ) -> Result<Self, ToolError> {
         let mut roots = Vec::new();
         for root in allowed_roots {
-            let canonical = std::fs::canonicalize(&root).map_err(|_e| {
+            let canonical = canonicalize(&root).map_err(|_e| {
                 ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
                     attempted: root.clone(),
                     resolved: root.clone(),
@@ -155,7 +157,7 @@ impl Sandbox {
 
     /// Validate a resolved path (absolute) against sandbox rules.
     pub fn ensure_path_allowed(&self, path: &Path) -> Result<PathBuf, ToolError> {
-        let canonical = std::fs::canonicalize(path).map_err(|_| {
+        let canonical = canonicalize(path).map_err(|_| {
             ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
                 attempted: path.to_path_buf(),
                 resolved: path.to_path_buf(),
@@ -186,7 +188,7 @@ impl Sandbox {
         }
         if input
             .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
+            .any(|c| matches!(c, Component::ParentDir))
         {
             return Err(ToolError::SandboxViolation(
                 DenialReason::PathOutsideSandbox {
@@ -249,7 +251,7 @@ impl Sandbox {
         })?;
 
         // Re-canonicalize and verify within allowed roots
-        let canonical = std::fs::canonicalize(parent).map_err(|_| {
+        let canonical = canonicalize(parent).map_err(|_| {
             ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
                 attempted: path.to_path_buf(),
                 resolved: parent.to_path_buf(),
@@ -273,7 +275,7 @@ impl Sandbox {
         // /var -> /private/var).
         let mut current = parent.to_path_buf();
         loop {
-            let meta = std::fs::symlink_metadata(&current).map_err(|_| {
+            let meta = symlink_metadata(&current).map_err(|_| {
                 ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
                     attempted: path.to_path_buf(),
                     resolved: current.clone(),
@@ -288,7 +290,7 @@ impl Sandbox {
                 ));
             }
 
-            let canonical_current = std::fs::canonicalize(&current).map_err(|_| {
+            let canonical_current = canonicalize(&current).map_err(|_| {
                 ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
                     attempted: path.to_path_buf(),
                     resolved: current.clone(),
@@ -336,8 +338,8 @@ impl Sandbox {
     ///
     /// Revalidates the path after opening to ensure no symlink/reparse swap
     /// occurred between path resolution and open.
-    pub fn validate_opened_file(&self, path: &Path, file: &std::fs::File) -> Result<(), ToolError> {
-        let path_meta = std::fs::symlink_metadata(path).map_err(|_| {
+    pub fn validate_opened_file(&self, path: &Path, file: &File) -> Result<(), ToolError> {
+        let path_meta = symlink_metadata(path).map_err(|_| {
             ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
                 attempted: path.to_path_buf(),
                 resolved: path.to_path_buf(),
@@ -352,7 +354,7 @@ impl Sandbox {
             ));
         }
 
-        let canonical = std::fs::canonicalize(path).map_err(|_| {
+        let canonical = canonicalize(path).map_err(|_| {
             ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
                 attempted: path.to_path_buf(),
                 resolved: path.to_path_buf(),
@@ -366,7 +368,7 @@ impl Sandbox {
                 resolved: canonical.clone(),
             })
         })?;
-        let current_meta = std::fs::metadata(&canonical).map_err(|_| {
+        let current_meta = metadata(&canonical).map_err(|_| {
             ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
                 attempted: path.to_path_buf(),
                 resolved: canonical.clone(),
@@ -413,7 +415,7 @@ impl Sandbox {
 /// Canonicalize a path that should exist, or whose parent must exist.
 fn canonicalize_existing(resolved: &Path) -> Result<PathBuf, ToolError> {
     if resolved.exists() {
-        std::fs::canonicalize(resolved).map_err(|_| {
+        canonicalize(resolved).map_err(|_| {
             ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
                 attempted: resolved.to_path_buf(),
                 resolved: resolved.to_path_buf(),
@@ -426,7 +428,7 @@ fn canonicalize_existing(resolved: &Path) -> Result<PathBuf, ToolError> {
                 resolved: resolved.to_path_buf(),
             })
         })?;
-        let parent_canon = std::fs::canonicalize(parent).map_err(|_| {
+        let parent_canon = canonicalize(parent).map_err(|_| {
             ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
                 attempted: resolved.to_path_buf(),
                 resolved: resolved.to_path_buf(),
@@ -439,7 +441,7 @@ fn canonicalize_existing(resolved: &Path) -> Result<PathBuf, ToolError> {
 /// Canonicalize for creation: walk up to the nearest existing ancestor.
 fn canonicalize_for_create(resolved: &Path) -> Result<PathBuf, ToolError> {
     if resolved.exists() {
-        return std::fs::canonicalize(resolved).map_err(|_| {
+        return canonicalize(resolved).map_err(|_| {
             ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
                 attempted: resolved.to_path_buf(),
                 resolved: resolved.to_path_buf(),
@@ -448,7 +450,7 @@ fn canonicalize_for_create(resolved: &Path) -> Result<PathBuf, ToolError> {
     }
 
     let mut existing_ancestor = resolved.parent();
-    let mut non_existent_parts: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut non_existent_parts: Vec<&OsStr> = Vec::new();
 
     if let Some(file_name) = resolved.file_name() {
         non_existent_parts.push(file_name);
@@ -471,7 +473,7 @@ fn canonicalize_for_create(resolved: &Path) -> Result<PathBuf, ToolError> {
         })
     })?;
 
-    let canon_existing = std::fs::canonicalize(existing).map_err(|_| {
+    let canon_existing = canonicalize(existing).map_err(|_| {
         ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
             attempted: resolved.to_path_buf(),
             resolved: resolved.to_path_buf(),
@@ -538,31 +540,31 @@ fn contains_ntfs_ads(input: &str) -> bool {
     }
     Path::new(input)
         .components()
-        .any(|c| matches!(c, std::path::Component::Normal(s) if s.to_string_lossy().contains(':')))
+        .any(|c| matches!(c, Component::Normal(s) if s.to_string_lossy().contains(':')))
 }
 
 /// Detect NTFS reparse points (junctions, mount points) that `is_symlink()`
 /// misses on Windows. On non-Windows this always returns `false`.
 #[cfg(windows)]
-fn is_reparse_point(meta: &std::fs::Metadata) -> bool {
+fn is_reparse_point(meta: &Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
     meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 #[cfg(not(windows))]
-fn is_reparse_point(_meta: &std::fs::Metadata) -> bool {
+fn is_reparse_point(_meta: &Metadata) -> bool {
     false
 }
 
 #[cfg(unix)]
-fn same_opened_file(opened: &std::fs::Metadata, current: &std::fs::Metadata) -> bool {
+fn same_opened_file(opened: &Metadata, current: &Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     opened.dev() == current.dev() && opened.ino() == current.ino()
 }
 
 #[cfg(windows)]
-fn same_opened_file(opened: &std::fs::Metadata, current: &std::fs::Metadata) -> bool {
+fn same_opened_file(opened: &Metadata, current: &Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     opened.file_attributes() == current.file_attributes()
         && opened.file_size() == current.file_size()
@@ -573,7 +575,7 @@ fn same_opened_file(opened: &std::fs::Metadata, current: &std::fs::Metadata) -> 
 #[cfg(windows)]
 fn contains_windows_reserved_name(path: &Path) -> bool {
     path.components().any(|c| {
-        if let std::path::Component::Normal(s) = c {
+        if let Component::Normal(s) = c {
             let upper = s.to_string_lossy().to_ascii_uppercase();
             let base = upper.split('.').next().unwrap_or("");
             matches!(
@@ -629,8 +631,14 @@ fn is_unsafe_path_char(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::{File, create_dir, write};
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir;
+
     use super::{
-        DenialReason, Path, PathBuf, Sandbox, ToolError, contains_ntfs_ads,
+        DenialReason, Path, PathBuf, Sandbox, ToolError, canonicalize, contains_ntfs_ads,
         contains_unsafe_path_chars, is_unsafe_path_char, normalize_path, strip_ads_suffixes,
     };
     use tempfile::tempdir;
@@ -790,10 +798,7 @@ mod tests {
     fn sandbox_working_dir_returns_first_root() {
         let temp = tempdir().unwrap();
         let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], false).unwrap();
-        assert_eq!(
-            sandbox.working_dir(),
-            std::fs::canonicalize(temp.path()).unwrap()
-        );
+        assert_eq!(sandbox.working_dir(), canonicalize(temp.path()).unwrap());
     }
 
     #[test]
@@ -813,7 +818,7 @@ mod tests {
     #[test]
     fn resolve_path_relative_path_within_sandbox() {
         let temp = tempdir().unwrap();
-        std::fs::write(temp.path().join("test.txt"), "content").unwrap();
+        write(temp.path().join("test.txt"), "content").unwrap();
         let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], false).unwrap();
 
         let result = sandbox.resolve_path("test.txt", temp.path());
@@ -853,11 +858,11 @@ mod tests {
     #[test]
     fn resolve_path_truncates_absolute_within_roots() {
         let temp = tempdir().unwrap();
-        std::fs::write(temp.path().join("file.txt"), "content").unwrap();
+        write(temp.path().join("file.txt"), "content").unwrap();
         let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], false).unwrap();
 
         // LLM passes the canonical absolute path — should be truncated, not rejected
-        let canonical_root = std::fs::canonicalize(temp.path()).unwrap();
+        let canonical_root = canonicalize(temp.path()).unwrap();
         let abs_file = canonical_root.join("file.txt");
         let result = sandbox.resolve_path(abs_file.to_str().unwrap(), temp.path());
         assert!(result.is_ok());
@@ -869,7 +874,7 @@ mod tests {
         let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], false).unwrap();
 
         // LLM passes the root directory as an absolute path
-        let canonical_root = std::fs::canonicalize(temp.path()).unwrap();
+        let canonical_root = canonicalize(temp.path()).unwrap();
         let result = sandbox.resolve_path(canonical_root.to_str().unwrap(), temp.path());
         assert!(result.is_ok());
     }
@@ -877,7 +882,7 @@ mod tests {
     #[test]
     fn resolve_path_allows_absolute_when_allowed() {
         let temp = tempdir().unwrap();
-        std::fs::write(temp.path().join("file.txt"), "content").unwrap();
+        write(temp.path().join("file.txt"), "content").unwrap();
         let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], true).unwrap();
 
         let abs_path = temp.path().join("file.txt");
@@ -888,7 +893,7 @@ mod tests {
     #[test]
     fn resolve_path_rejects_denied_pattern() {
         let temp = tempdir().unwrap();
-        std::fs::write(temp.path().join("secret.env"), "content").unwrap();
+        write(temp.path().join("secret.env"), "content").unwrap();
         let sandbox = Sandbox::new(
             vec![temp.path().to_path_buf()],
             vec!["*.env".to_string()],
@@ -923,7 +928,7 @@ mod tests {
     fn ensure_path_allowed_within_sandbox() {
         let temp = tempdir().unwrap();
         let file_path = temp.path().join("allowed.txt");
-        std::fs::write(&file_path, "content").unwrap();
+        write(&file_path, "content").unwrap();
         let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], false).unwrap();
 
         let result = sandbox.ensure_path_allowed(&file_path);
@@ -935,7 +940,7 @@ mod tests {
         let temp1 = tempdir().unwrap();
         let temp2 = tempdir().unwrap();
         let file_path = temp2.path().join("outside.txt");
-        std::fs::write(&file_path, "content").unwrap();
+        write(&file_path, "content").unwrap();
         let sandbox = Sandbox::new(vec![temp1.path().to_path_buf()], vec![], false).unwrap();
 
         let result = sandbox.ensure_path_allowed(&file_path);
@@ -946,7 +951,7 @@ mod tests {
     fn ensure_path_allowed_rejects_denied_pattern() {
         let temp = tempdir().unwrap();
         let file_path = temp.path().join(".secret");
-        std::fs::write(&file_path, "content").unwrap();
+        write(&file_path, "content").unwrap();
         let sandbox = Sandbox::new(
             vec![temp.path().to_path_buf()],
             vec!["*.secret".to_string()],
@@ -988,7 +993,7 @@ mod tests {
     #[test]
     fn resolve_path_rejects_ntfs_ads() {
         let temp = tempdir().unwrap();
-        std::fs::write(temp.path().join(".env"), "SECRET=x").unwrap();
+        write(temp.path().join(".env"), "SECRET=x").unwrap();
         let sandbox = Sandbox::new(
             vec![temp.path().to_path_buf()],
             vec!["**/.env".to_string()],
@@ -1017,7 +1022,7 @@ mod tests {
     #[test]
     fn deny_pattern_matches_glob() {
         let temp = tempdir().unwrap();
-        std::fs::write(temp.path().join("test.log"), "content").unwrap();
+        write(temp.path().join("test.log"), "content").unwrap();
         let sandbox = Sandbox::new(
             vec![temp.path().to_path_buf()],
             vec!["**/*.log".to_string()],
@@ -1033,8 +1038,8 @@ mod tests {
     fn deny_pattern_double_star_matches_nested() {
         let temp = tempdir().unwrap();
         let nested = temp.path().join("sub");
-        std::fs::create_dir(&nested).unwrap();
-        std::fs::write(nested.join("deep.log"), "content").unwrap();
+        create_dir(&nested).unwrap();
+        write(nested.join("deep.log"), "content").unwrap();
         let sandbox = Sandbox::new(
             vec![temp.path().to_path_buf()],
             vec!["**/*.log".to_string()],
@@ -1066,7 +1071,7 @@ mod tests {
     fn validate_created_parent_allows_normal_path() {
         let temp = tempdir().unwrap();
         let sub = temp.path().join("sub");
-        std::fs::create_dir(&sub).unwrap();
+        create_dir(&sub).unwrap();
         let sandbox = Sandbox::new(
             vec![temp.path().to_path_buf()],
             vec!["**/.ssh/**".to_string()],
@@ -1082,13 +1087,13 @@ mod tests {
     fn validate_created_parent_rejects_symlink_in_chain() {
         let temp = tempdir().unwrap();
         let real_dir = temp.path().join("real");
-        std::fs::create_dir(&real_dir).unwrap();
+        create_dir(&real_dir).unwrap();
         let link = temp.path().join("link");
 
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&real_dir, &link).unwrap();
+        symlink(&real_dir, &link).unwrap();
         #[cfg(windows)]
-        std::os::windows::fs::symlink_dir(&real_dir, &link).unwrap();
+        symlink_dir(&real_dir, &link).unwrap();
 
         let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], false).unwrap();
 
@@ -1100,9 +1105,9 @@ mod tests {
     fn validate_opened_file_allows_normal_file() {
         let temp = tempdir().unwrap();
         let file = temp.path().join("ok.txt");
-        std::fs::write(&file, "ok").unwrap();
+        write(&file, "ok").unwrap();
         let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], false).unwrap();
-        let opened = std::fs::File::open(&file).unwrap();
+        let opened = File::open(&file).unwrap();
         assert!(sandbox.validate_opened_file(&file, &opened).is_ok());
     }
 
@@ -1112,13 +1117,13 @@ mod tests {
         let temp = tempdir().unwrap();
         let file = temp.path().join("allowed.txt");
         let outside = temp.path().join("outside.txt");
-        std::fs::write(&file, "allowed").unwrap();
-        std::fs::write(&outside, "outside").unwrap();
+        write(&file, "allowed").unwrap();
+        write(&outside, "outside").unwrap();
 
         let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], false).unwrap();
-        let opened = std::fs::File::open(&file).unwrap();
+        let opened = File::open(&file).unwrap();
 
-        std::fs::remove_file(&file).unwrap();
+        remove_file(&file).unwrap();
         std::os::unix::fs::symlink(&outside, &file).unwrap();
 
         assert!(sandbox.validate_opened_file(&file, &opened).is_err());
@@ -1131,7 +1136,7 @@ mod tests {
         // matches a deny pattern.
         let temp = tempdir().unwrap();
         let ssh_dir = temp.path().join(".ssh");
-        std::fs::create_dir(&ssh_dir).unwrap();
+        create_dir(&ssh_dir).unwrap();
         let sandbox = Sandbox::new(
             vec![temp.path().to_path_buf()],
             vec!["**/.ssh/**".to_string()],

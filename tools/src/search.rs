@@ -1,7 +1,11 @@
 //! Local search tool backed by ugrep or ripgrep.
 
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::fs::{canonicalize, metadata as fs_metadata, read};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::str::from_utf8;
 use std::time::{Duration, Instant};
 
 use crate::default_true;
@@ -11,6 +15,7 @@ use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
+use tokio::time::timeout;
 use unicode_normalization::UnicodeNormalization;
 
 use super::{
@@ -266,11 +271,10 @@ impl ToolExecutor for SearchTool {
 
             let path_raw = typed.path.unwrap_or_else(|| ".".to_string());
             let resolved = ctx.sandbox.resolve_path(&path_raw, &ctx.working_dir)?;
-            let metadata =
-                std::fs::metadata(&resolved).map_err(|e| ToolError::ExecutionFailed {
-                    tool: SEARCH_TOOL_NAME.to_string(),
-                    message: e.to_string(),
-                })?;
+            let metadata = fs_metadata(&resolved).map_err(|e| ToolError::ExecutionFailed {
+                tool: SEARCH_TOOL_NAME.to_string(),
+                message: e.to_string(),
+            })?;
             if !metadata.is_dir() && !metadata.is_file() {
                 return Err(ToolError::ExecutionFailed {
                     tool: SEARCH_TOOL_NAME.to_string(),
@@ -350,7 +354,7 @@ impl ToolExecutor for SearchTool {
             } else {
                 resolved
                     .parent()
-                    .map_or_else(|| resolved.clone(), std::path::Path::to_path_buf)
+                    .map_or_else(|| resolved.clone(), Path::to_path_buf)
             };
 
             let deadline = Instant::now() + Duration::from_millis(timeout_ms);
@@ -461,7 +465,7 @@ impl ToolExecutor for SearchTool {
                                 }
                             };
 
-                            let meta = dirent.metadata().or_else(|_| std::fs::metadata(path));
+                            let meta = dirent.metadata().or_else(|_| fs_metadata(path));
                             let meta = match meta {
                                 Ok(meta) => meta,
                                 Err(err) => {
@@ -820,23 +824,21 @@ impl SearchAccumulator {
     fn finish(&mut self) -> Vec<SearchEvent> {
         self.events.sort_by(|a, b| {
             let by_path = a.sort_key.cmp(&b.sort_key);
-            if by_path != std::cmp::Ordering::Equal {
+            if by_path != Ordering::Equal {
                 return by_path;
             }
             let by_line = a.line_number.cmp(&b.line_number);
-            if by_line != std::cmp::Ordering::Equal {
+            if by_line != Ordering::Equal {
                 return by_line;
             }
             let by_type = match (&a.kind, &b.kind) {
-                (ParsedEventKind::Context { .. }, ParsedEventKind::Match { .. }) => {
-                    std::cmp::Ordering::Less
-                }
+                (ParsedEventKind::Context { .. }, ParsedEventKind::Match { .. }) => Ordering::Less,
                 (ParsedEventKind::Match { .. }, ParsedEventKind::Context { .. }) => {
-                    std::cmp::Ordering::Greater
+                    Ordering::Greater
                 }
-                _ => std::cmp::Ordering::Equal,
+                _ => Ordering::Equal,
             };
-            if by_type != std::cmp::Ordering::Equal {
+            if by_type != Ordering::Equal {
                 return by_type;
             }
             a.parse_index.cmp(&b.parse_index)
@@ -1011,13 +1013,11 @@ fn determine_order_root(resolved: &Path, working_dir: &Path, raw_path: &Path) ->
     let is_abs = raw_path.is_absolute();
     if is_abs {
         if resolved.is_dir() {
-            return std::fs::canonicalize(resolved).ok();
+            return canonicalize(resolved).ok();
         }
-        return resolved
-            .parent()
-            .and_then(|p| std::fs::canonicalize(p).ok());
+        return resolved.parent().and_then(|p| canonicalize(p).ok());
     }
-    std::fs::canonicalize(working_dir).ok()
+    canonicalize(working_dir).ok()
 }
 
 fn normalize_walk_path(path: &Path) -> String {
@@ -1048,7 +1048,7 @@ fn relativize_path(path: &Path, root: &Path) -> Option<String> {
 }
 
 fn path_sort_key(path: &Path, order_root: &Path) -> Vec<u8> {
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let canonical = canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let rel = canonical.strip_prefix(order_root).unwrap_or(&canonical);
     let mut s = rel.to_string_lossy().replace('\\', "/");
     if cfg!(windows)
@@ -1133,7 +1133,7 @@ fn inject_fuzzy_context(
         }
 
         let abs_path = search_root.join(&path);
-        let bytes = match std::fs::read(&abs_path) {
+        let bytes = match read(&abs_path) {
             Ok(bytes) => bytes,
             Err(err) => {
                 errors.push(SearchFileError {
@@ -1207,8 +1207,7 @@ async fn execute_backend_batch<F>(
 where
     F: FnMut(&str) -> Result<(), ToolError>,
 {
-    cmd.stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     #[cfg(unix)]
     super::process::set_new_session(&mut cmd);
@@ -1252,7 +1251,7 @@ where
             let _ = guard.child_mut().kill().await;
             break;
         }
-        let line = match tokio::time::timeout(remaining, stdout_reader.next_line()).await {
+        let line = match timeout(remaining, stdout_reader.next_line()).await {
             Ok(Ok(line)) => line,
             Ok(Err(err)) => {
                 return Err(ToolError::ExecutionFailed {
@@ -1566,7 +1565,7 @@ fn extract_match_text(line_text: &str, start: usize, end: usize) -> String {
     line_text
         .as_bytes()
         .get(start..end)
-        .and_then(|s| std::str::from_utf8(s).ok())
+        .and_then(|s| from_utf8(s).ok())
         .unwrap_or("")
         .to_string()
 }

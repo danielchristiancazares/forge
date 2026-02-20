@@ -3,10 +3,25 @@
 //! This module provides borrow-scoped mode guards that ensure operations
 //! are only performed when the app is in the correct mode.
 
+use std::collections::HashSet;
+use std::fs;
+use std::io::Read;
+use std::mem;
+use std::path::Path;
+use std::str::{self, from_utf8};
+use std::sync::Arc;
+
+use std::time::SystemTime;
+
+use forge_tools::ToolFileCache;
+use forge_tools::sandbox::Sandbox;
+use tokio::sync::Mutex;
+
+use crate::util;
+
 use super::ui::{
     CommandDraftMut, CommandStateOwned, DraftInput, InputMode, InputState, InsertDraftMut,
 };
-use std::time::SystemTime;
 
 use super::{ApiConfig, App, Message, NonEmptyString};
 
@@ -263,7 +278,7 @@ impl InsertMode<'_> {
         self.app.scroll_to_bottom();
         self.app.core.tool_iterations = 0;
 
-        let api_key = crate::util::wrap_api_key(self.app.core.model.provider(), api_key);
+        let api_key = util::wrap_api_key(self.app.core.model.provider(), api_key);
 
         let config = match ApiConfig::new(api_key, self.app.core.model.clone()) {
             Ok(config) => config
@@ -373,7 +388,7 @@ impl CommandMode<'_> {
 
     #[must_use]
     pub fn take_command(self) -> EnteredCommand {
-        let input = std::mem::take(&mut self.app.ui.input);
+        let input = mem::take(&mut self.app.ui.input);
         let (next_input, raw) = match input.into_command_state() {
             CommandStateOwned::Active { draft, mut command } => {
                 let raw = command.take_text();
@@ -564,16 +579,16 @@ struct FileExpansionResult {
 /// that subsequent edits get stale-file protection.
 fn expand_file_references(
     text: &str,
-    sandbox: &forge_tools::sandbox::Sandbox,
+    sandbox: &Sandbox,
     max_read_bytes: usize,
-    file_cache: &std::sync::Arc<tokio::sync::Mutex<forge_tools::ToolFileCache>>,
+    file_cache: &Arc<Mutex<ToolFileCache>>,
 ) -> FileExpansionResult {
     let working_dir = sandbox.working_dir();
     let mut file_sections = Vec::new();
     let mut expanded_files = Vec::new();
     let mut denied = Vec::new();
     let mut failed = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
 
     for path_str in parse_file_references(text) {
         if seen.contains(&path_str) {
@@ -589,7 +604,7 @@ fn expand_file_references(
             }
         };
 
-        let meta = match std::fs::metadata(&resolved) {
+        let meta = match fs::metadata(&resolved) {
             Ok(m) if m.is_file() => m,
             Ok(_) => {
                 failed.push((path_str, "not a file".to_string()));
@@ -775,10 +790,8 @@ enum FileReferenceContent {
     NonTextOrUnreadable,
 }
 
-fn read_file_reference_content(path: &std::path::Path, max_bytes: usize) -> FileReferenceContent {
-    use std::io::Read;
-
-    let file = match std::fs::File::open(path) {
+fn read_file_reference_content(path: &Path, max_bytes: usize) -> FileReferenceContent {
+    let file = match fs::File::open(path) {
         Ok(file) => file,
         Err(_) => return FileReferenceContent::NonTextOrUnreadable,
     };
@@ -795,11 +808,11 @@ fn read_file_reference_content(path: &std::path::Path, max_bytes: usize) -> File
         bytes.as_slice()
     };
 
-    let content = match std::str::from_utf8(bytes) {
+    let content = match from_utf8(bytes) {
         Ok(content) => content.to_string(),
         Err(err) if truncated && err.error_len().is_none() => {
             let valid_up_to = err.valid_up_to();
-            match std::str::from_utf8(&bytes[..valid_up_to]) {
+            match from_utf8(&bytes[..valid_up_to]) {
                 Ok(content) => content.to_string(),
                 Err(_) => return FileReferenceContent::NonTextOrUnreadable,
             }
@@ -842,6 +855,14 @@ fn longest_common_prefix(strings: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use forge_tools::ToolFileCache;
+    use forge_tools::sandbox::Sandbox;
+    use tokio::sync::Mutex;
+
     use super::{
         CommandCompletion, FileReferenceContent, complete_command_name, expand_file_references,
         longest_common_prefix, parse_file_references, read_file_reference_content,
@@ -963,7 +984,7 @@ mod tests {
         let mut content = "a".repeat(TEST_MAX_BYTES - 1);
         content.push('é');
         content.push('b');
-        std::fs::write(&path, content).expect("write file");
+        fs::write(&path, content).expect("write file");
 
         let loaded = match read_file_reference_content(&path, TEST_MAX_BYTES) {
             FileReferenceContent::Text(content) => content,
@@ -977,8 +998,8 @@ mod tests {
         assert!(prefix.chars().all(|c| c == 'a'));
     }
 
-    fn test_sandbox(dir: &std::path::Path) -> forge_tools::sandbox::Sandbox {
-        forge_tools::sandbox::Sandbox::new(
+    fn test_sandbox(dir: &Path) -> Sandbox {
+        Sandbox::new(
             vec![dir.to_path_buf()],
             vec![
                 "**/.env".to_string(),
@@ -990,17 +1011,15 @@ mod tests {
         .unwrap()
     }
 
-    fn test_file_cache() -> std::sync::Arc<tokio::sync::Mutex<forge_tools::ToolFileCache>> {
-        std::sync::Arc::new(tokio::sync::Mutex::new(
-            forge_tools::ToolFileCache::default(),
-        ))
+    fn test_file_cache() -> Arc<Mutex<ToolFileCache>> {
+        Arc::new(Mutex::new(ToolFileCache::default()))
     }
 
     #[test]
     fn expand_file_references_reads_quoted_paths() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("My File.md");
-        std::fs::write(&path, "hello world").expect("write file");
+        fs::write(&path, "hello world").expect("write file");
 
         let sandbox = test_sandbox(dir.path());
         let cache = test_file_cache();
@@ -1017,7 +1036,7 @@ mod tests {
     #[test]
     fn expand_file_references_denies_env_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join(".env"), "SECRET=123").expect("write file");
+        fs::write(dir.path().join(".env"), "SECRET=123").expect("write file");
 
         let sandbox = test_sandbox(dir.path());
         let cache = test_file_cache();
@@ -1048,7 +1067,7 @@ mod tests {
     fn expand_file_references_populates_file_cache() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("cached.rs");
-        std::fs::write(&path, "fn main() {}\n").expect("write file");
+        fs::write(&path, "fn main() {}\n").expect("write file");
 
         let sandbox = test_sandbox(dir.path());
         let cache = test_file_cache();

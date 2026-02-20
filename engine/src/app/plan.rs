@@ -3,6 +3,8 @@
 //! The Plan tool is schema-only (no `ToolExecutor`). The engine resolves all
 //! Plan subcommands here and returns `ToolResult` directly.
 
+use std::mem::take;
+
 use forge_types::plan::editor::StepTransitionError;
 use forge_types::plan::{ActiveStepQuery, CompletionStatus, editor};
 use forge_types::{
@@ -12,7 +14,7 @@ use forge_types::{
 use serde_json::Value;
 
 use crate::App;
-use crate::state::PlanApprovalKind;
+use crate::state::{OperationTag, PlanApprovalKind};
 
 /// Name of the Plan tool (must match the schema registration in builtins).
 pub(crate) const PLAN_TOOL_NAME: &str = "Plan";
@@ -429,7 +431,7 @@ impl App {
         let result = if approved {
             match kind {
                 PlanApprovalKind::Create => {
-                    let plan = match std::mem::take(&mut self.core.plan_state) {
+                    let plan = match take(&mut self.core.plan_state) {
                         PlanState::Proposed(plan) => plan,
                         other => {
                             self.core.plan_state = other;
@@ -485,7 +487,7 @@ impl App {
         if !pending_tool_approvals.is_empty() {
             let approval = ApprovalState::new(pending_tool_approvals);
             self.op_transition_from(
-                crate::state::OperationTag::PlanApproval,
+                OperationTag::PlanApproval,
                 OperationState::ToolLoop(Box::new(ToolLoopState {
                     batch,
                     phase: ToolLoopPhase::AwaitingApproval(approval),
@@ -517,7 +519,7 @@ impl App {
             }
         };
         self.op_transition_from(
-            crate::state::OperationTag::PlanApproval,
+            OperationTag::PlanApproval,
             OperationState::ToolLoop(Box::new(ToolLoopState { batch, phase })),
         );
     }

@@ -2,7 +2,7 @@
 //!
 //! Pure data + rendering. All I/O happens in the boundary `environment` module.
 
-use std::fmt::Write;
+use std::{fmt::Write, mem};
 
 /// Runtime environment facts gathered once at application startup.
 ///
@@ -40,7 +40,7 @@ impl EnvironmentContext {
     /// Takes the AGENTS.md content, leaving an empty string behind.
     /// Empty after first call — the content is consumed on first user message.
     pub fn take_agents_md(&mut self) -> String {
-        std::mem::take(&mut self.agents_md)
+        mem::take(&mut self.agents_md)
     }
 
     /// Restores AGENTS.md content after a rollback (e.g. stream cancel on first message).

@@ -3,9 +3,10 @@
 //! Pure domain types with no IO and no async. Invariants enforced at
 //! construction time (IFA §2.1): invalid plans are unrepresentable.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -68,7 +69,7 @@ impl<'de> Deserialize<'de> for PlanStepId {
         D: serde::Deserializer<'de>,
     {
         let raw = u32::deserialize(deserializer)?;
-        Self::try_new(raw).map_err(serde::de::Error::custom)
+        Self::try_new(raw).map_err(D::Error::custom)
     }
 }
 
@@ -277,15 +278,15 @@ impl<'de> Deserialize<'de> for PlanStep {
                     LegacyStatus::Active => Self::Active(ActiveStep(data)),
                     LegacyStatus::Complete(outcome) => Self::Complete(CompletedStep {
                         data,
-                        outcome: NonEmptyString::new(outcome).map_err(serde::de::Error::custom)?,
+                        outcome: NonEmptyString::new(outcome).map_err(D::Error::custom)?,
                     }),
                     LegacyStatus::Failed(reason) => Self::Failed(FailedStep {
                         data,
-                        reason: NonEmptyString::new(reason).map_err(serde::de::Error::custom)?,
+                        reason: NonEmptyString::new(reason).map_err(D::Error::custom)?,
                     }),
                     LegacyStatus::Skipped(reason) => Self::Skipped(SkippedStep {
                         data,
-                        reason: NonEmptyString::new(reason).map_err(serde::de::Error::custom)?,
+                        reason: NonEmptyString::new(reason).map_err(D::Error::custom)?,
                     }),
                 })
             }
@@ -641,8 +642,7 @@ impl Plan {
         }
 
         // Build a fast lookup: step_id → phase_index.
-        let phase_of: std::collections::HashMap<PlanStepId, usize> =
-            step_phase.into_iter().collect();
+        let phase_of: HashMap<PlanStepId, usize> = step_phase.into_iter().collect();
 
         // Validate dependency edges.
         for (phase_idx, phase) in self.phases.iter().enumerate() {

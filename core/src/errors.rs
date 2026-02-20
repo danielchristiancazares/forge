@@ -30,7 +30,7 @@ pub fn extract_error_message(raw: &str) -> Option<String> {
         })
         .or_else(|| payload.pointer("/message").and_then(|value| value.as_str()))
         .or_else(|| payload.as_str())
-        .map(std::string::ToString::to_string)
+        .map(ToString::to_string)
 }
 
 #[must_use]

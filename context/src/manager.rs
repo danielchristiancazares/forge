@@ -1,8 +1,11 @@
 //! Context Manager - orchestrates all context management components.
 
-use anyhow::Result;
+use std::cmp::Ordering;
+use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
+
+use anyhow::Result;
 
 #[cfg(test)]
 use forge_types::PredefinedModel;
@@ -200,16 +203,16 @@ impl ContextManager {
         let new_budget = self.effective_budget();
 
         match new_budget.cmp(&old_budget) {
-            std::cmp::Ordering::Less => ContextAdaptation::Shrinking {
+            Ordering::Less => ContextAdaptation::Shrinking {
                 old_budget,
                 new_budget,
                 needs_compaction: self.build_working_context(0).is_err(),
             },
-            std::cmp::Ordering::Greater => ContextAdaptation::Expanding {
+            Ordering::Greater => ContextAdaptation::Expanding {
                 old_budget,
                 new_budget,
             },
-            std::cmp::Ordering::Equal => ContextAdaptation::NoChange,
+            Ordering::Equal => ContextAdaptation::NoChange,
         }
     }
 
@@ -395,7 +398,7 @@ impl ContextManager {
 
     /// Load history from a JSON file.
     pub fn load(path: impl AsRef<Path>, model: ModelName) -> Result<Self> {
-        let json = std::fs::read_to_string(path)?;
+        let json = fs::read_to_string(path)?;
         let history: FullHistory = serde_json::from_str(&json)?;
 
         let registry = ModelRegistry::new();
@@ -425,6 +428,9 @@ impl ContextManager {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+    use std::fs;
+    use std::process;
     use std::time::SystemTime;
 
     use super::{
@@ -618,8 +624,8 @@ mod tests {
 
         assert_eq!(manager.history().len(), 2);
 
-        let tmp_dir = std::env::temp_dir();
-        let tmp_path = tmp_dir.join(format!("forge_test_{}.json", std::process::id()));
+        let tmp_dir = env::temp_dir();
+        let tmp_path = tmp_dir.join(format!("forge_test_{}.json", process::id()));
 
         manager.save(&tmp_path).expect("save should succeed");
 
@@ -638,7 +644,7 @@ mod tests {
         assert_eq!(entries[0].message().content(), "Hello");
         assert_eq!(entries[1].message().content(), "World");
 
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = fs::remove_file(&tmp_path);
     }
 
     #[test]
@@ -646,8 +652,8 @@ mod tests {
         let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
         manager.push_message(Message::try_user("Test", SystemTime::now()).expect("non-empty"));
 
-        let tmp_dir = std::env::temp_dir();
-        let tmp_path = tmp_dir.join(format!("forge_test_model_{}.json", std::process::id()));
+        let tmp_dir = env::temp_dir();
+        let tmp_path = tmp_dir.join(format!("forge_test_model_{}.json", process::id()));
 
         manager.save(&tmp_path).expect("save");
 
@@ -660,7 +666,7 @@ mod tests {
             PredefinedModel::Gpt52.model_id()
         );
 
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = fs::remove_file(&tmp_path);
     }
 
     #[test]
@@ -676,18 +682,18 @@ mod tests {
             "line1\rline2",
         )));
 
-        let tmp_dir = std::env::temp_dir();
+        let tmp_dir = env::temp_dir();
         let tmp_path = tmp_dir.join(format!(
             "forge_test_normalized_history_{}.json",
-            std::process::id()
+            process::id()
         ));
 
         manager.save(&tmp_path).expect("save");
-        let json = std::fs::read_to_string(&tmp_path).expect("read saved json");
+        let json = fs::read_to_string(&tmp_path).expect("read saved json");
         assert!(!json.contains("\\r"));
         assert!(json.contains("\\n"));
 
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = fs::remove_file(&tmp_path);
     }
 
     #[test]

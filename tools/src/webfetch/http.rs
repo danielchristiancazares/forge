@@ -10,11 +10,13 @@ use super::resolved::{ResolvedConfig, TimeoutSetting};
 use super::types::{ErrorCode, Note, SsrfBlockReason, TimeoutPhase, WebFetchError};
 use futures_util::StreamExt;
 use reqwest::Method;
-use reqwest::header::{CONTENT_TYPE, LOCATION};
+use reqwest::header::{CONTENT_TYPE, HeaderName, HeaderValue, LOCATION};
 use reqwest::redirect::Policy;
 use std::cmp::Ordering;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
+use tokio::net::lookup_host;
+use tokio::time::timeout;
 use url::{Host, Url};
 
 /// Default blocked CIDR ranges for SSRF protection (FR-WF-05).
@@ -179,7 +181,7 @@ async fn resolve_and_validate(
     port: u16,
     config: &ResolvedConfig,
 ) -> Result<Vec<IpAddr>, WebFetchError> {
-    let mut addrs = tokio::net::lookup_host((host, port)).await.map_err(|e| {
+    let mut addrs = lookup_host((host, port)).await.map_err(|e| {
         WebFetchError::new(
             ErrorCode::DnsFailed,
             format!("dns lookup failed: {e}"),
@@ -365,7 +367,7 @@ pub async fn fetch(
                 if remaining.is_zero() {
                     return Err(timeout_error(TimeoutPhase::Response, config));
                 }
-                let next = tokio::time::timeout(remaining, stream.next())
+                let next = timeout(remaining, stream.next())
                     .await
                     .map_err(|_| timeout_error(TimeoutPhase::Response, config))?;
                 let Some(chunk) = next else {
@@ -731,15 +733,15 @@ pub(crate) async fn send_with_pinning(
 
         for (k, v) in headers {
             if let (Ok(name), Ok(value)) = (
-                reqwest::header::HeaderName::from_bytes(k.as_bytes()),
-                reqwest::header::HeaderValue::from_str(v),
+                HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(v),
             ) {
                 request = request.header(name, value);
             }
         }
 
         let send_future = request.send();
-        let response = match tokio::time::timeout(remaining, send_future).await {
+        let response = match timeout(remaining, send_future).await {
             Ok(res) => res,
             Err(_) => return Err(timeout_error(TimeoutPhase::Request, config)),
         };
@@ -981,7 +983,7 @@ pub(crate) fn ssrf_block_to_error(
                 .security
                 .allowed_ports
                 .iter()
-                .map(std::string::ToString::to_string)
+                .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(","),
         ),
@@ -1038,6 +1040,7 @@ fn timeout_phase_label(phase: TimeoutPhase) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Once;
 
@@ -1050,7 +1053,7 @@ mod tests {
         INIT.call_once(|| {
             // SAFETY: test-only global opt-in set once and never mutated.
             unsafe {
-                std::env::set_var("FORGE_WEBFETCH_ALLOW_INSECURE_OVERRIDES", "1");
+                env::set_var("FORGE_WEBFETCH_ALLOW_INSECURE_OVERRIDES", "1");
             }
         });
     }

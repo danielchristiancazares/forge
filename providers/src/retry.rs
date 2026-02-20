@@ -23,6 +23,7 @@
 //! - `X-Stainless-Timeout`: request timeout in seconds (non-streaming only)
 
 use std::time::Duration;
+use tokio::time;
 
 use reqwest::{RequestBuilder, Response, StatusCode, header::HeaderMap};
 use uuid::Uuid;
@@ -257,7 +258,7 @@ where
                         delay_ms = delay.as_millis(),
                         "Retrying request after error status"
                     );
-                    tokio::time::sleep(delay).await;
+                    time::sleep(delay).await;
                     continue;
                 }
 
@@ -273,7 +274,7 @@ where
                         delay_ms = delay.as_millis(),
                         "Retrying request after connection error"
                     );
-                    tokio::time::sleep(delay).await;
+                    time::sleep(delay).await;
                     continue;
                 }
 
@@ -451,6 +452,7 @@ mod tests {
 mod integration_tests {
     use super::{Duration, RetryConfig, RetryOutcome, StatusCode, send_with_retry};
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -717,8 +719,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_idempotency_key_consistent_across_retries() {
         let server = MockServer::start().await;
-        let keys: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let keys: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let keys_clone = keys.clone();
 
         Mock::given(method("GET"))

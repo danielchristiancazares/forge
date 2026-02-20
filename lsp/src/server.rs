@@ -1,12 +1,17 @@
 //! Server handle — owns a child process and manages the LSP lifecycle.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::env;
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::task::JoinHandle;
+use tokio::time;
 
 use crate::codec::{FrameReader, FrameWriter};
 use crate::protocol::{self, Notification, PublishDiagnosticsParams, Request};
@@ -50,10 +55,10 @@ fn normalize_path(path: &Path) -> PathBuf {
     let mut out = Vec::new();
     for c in path.components() {
         match c {
-            std::path::Component::ParentDir => {
+            Component::ParentDir => {
                 out.pop();
             }
-            std::path::Component::CurDir => {}
+            Component::CurDir => {}
             other => out.push(other),
         }
     }
@@ -91,13 +96,13 @@ pub(crate) struct RunningServer {
     child: Child,
     writer_tx: mpsc::Sender<WriterCommand>,
     next_id: u64,
-    pending: std::sync::Arc<tokio::sync::Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
     /// URIs of documents we've sent didOpen for (to distinguish didOpen vs didChange).
     opened_docs: HashSet<String>,
     /// Per-document version counter for didChange.
     doc_versions: HashMap<String, i32>,
-    _reader_handle: tokio::task::JoinHandle<()>,
-    _writer_handle: tokio::task::JoinHandle<()>,
+    _reader_handle: JoinHandle<()>,
+    _writer_handle: JoinHandle<()>,
 }
 
 impl RunningServer {
@@ -124,7 +129,7 @@ impl RunningServer {
             .kill_on_drop(true);
 
         // Strip secret-bearing env vars using the canonical denylist from forge-types.
-        for (key, _) in std::env::vars() {
+        for (key, _) in env::vars() {
             let upper = key.to_uppercase();
             if forge_types::ENV_SECRET_DENYLIST
                 .iter()
@@ -141,9 +146,8 @@ impl RunningServer {
         let stdout = child.stdout.take().context("no stdout from child")?;
         let stdin = child.stdin.take().context("no stdin from child")?;
 
-        let pending: std::sync::Arc<
-            tokio::sync::Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>,
-        > = std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
         let (writer_tx, mut writer_rx) = mpsc::channel::<WriterCommand>(WRITER_CHANNEL_CAPACITY);
         let writer_handle = tokio::spawn(async move {
@@ -225,7 +229,7 @@ impl RunningServer {
 
     async fn dispatch_frame(
         frame: &serde_json::Value,
-        pending: &tokio::sync::Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>,
+        pending: &Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>,
         event_tx: &mpsc::Sender<LspEvent>,
         writer_tx: &mpsc::Sender<WriterCommand>,
         server_name: &str,
@@ -354,21 +358,19 @@ impl RunningServer {
             bail!("writer channel closed");
         }
 
-        let response =
-            match tokio::time::timeout(std::time::Duration::from_secs(INIT_TIMEOUT_SECS), rx).await
-            {
-                Ok(Ok(response)) => response,
-                Ok(Err(_)) => {
-                    // Reader task dropped / server exited; avoid leaking pending entry.
-                    self.pending.lock().await.remove(&id);
-                    bail!("response channel dropped");
-                }
-                Err(_) => {
-                    // Timeout: remove the pending entry so repeated failures don't grow the map.
-                    self.pending.lock().await.remove(&id);
-                    bail!("request timed out");
-                }
-            };
+        let response = match time::timeout(Duration::from_secs(INIT_TIMEOUT_SECS), rx).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => {
+                // Reader task dropped / server exited; avoid leaking pending entry.
+                self.pending.lock().await.remove(&id);
+                bail!("response channel dropped");
+            }
+            Err(_) => {
+                // Timeout: remove the pending entry so repeated failures don't grow the map.
+                self.pending.lock().await.remove(&id);
+                bail!("request timed out");
+            }
+        };
 
         Ok(response)
     }
@@ -418,8 +420,8 @@ impl RunningServer {
 
         let _ = self.writer_tx.send(WriterCommand::Shutdown).await;
 
-        let kill_result = tokio::time::timeout(
-            std::time::Duration::from_secs(SHUTDOWN_TIMEOUT_SECS),
+        let kill_result = time::timeout(
+            Duration::from_secs(SHUTDOWN_TIMEOUT_SECS),
             self.child.wait(),
         )
         .await;
@@ -435,15 +437,15 @@ impl RunningServer {
 mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
-    use tokio::sync::{mpsc, oneshot};
+    use tokio::sync::{Mutex, mpsc, oneshot};
 
     use crate::types::LspEvent;
 
     use super::{RunningServer, WriterCommand, env_glob_matches};
 
-    type PendingMap =
-        std::sync::Arc<tokio::sync::Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>;
+    type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>;
 
     fn test_channels() -> (
         PendingMap,
@@ -452,7 +454,7 @@ mod tests {
         mpsc::Sender<WriterCommand>,
         mpsc::Receiver<WriterCommand>,
     ) {
-        let pending: PendingMap = std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
         let (event_tx, event_rx) = mpsc::channel(32);
         let (writer_tx, writer_rx) = mpsc::channel(32);
         (pending, event_tx, event_rx, writer_tx, writer_rx)
@@ -519,9 +521,9 @@ mod tests {
         match event {
             LspEvent::Diagnostics { path, items } => {
                 #[cfg(windows)]
-                assert_eq!(path, std::path::PathBuf::from(r"C:\test\main.rs"));
+                assert_eq!(path, PathBuf::from(r"C:\test\main.rs"));
                 #[cfg(not(windows))]
-                assert_eq!(path, std::path::PathBuf::from("/test/main.rs"));
+                assert_eq!(path, PathBuf::from("/test/main.rs"));
                 assert_eq!(items.len(), 1);
                 assert_eq!(items[0].message(), "expected `;`");
                 assert!(items[0].severity().is_error());

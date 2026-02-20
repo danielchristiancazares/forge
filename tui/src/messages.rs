@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::iter::repeat_n;
 
 use ratatui::{
     Frame,
@@ -339,7 +340,7 @@ fn tool_output_window(output_lines: Option<&[String]>, max_lines: usize) -> Vec<
         lines = lines.split_off(lines.len() - max_lines);
     }
     if lines.len() < max_lines {
-        lines.extend(std::iter::repeat_n(String::new(), max_lines - lines.len()));
+        lines.extend(repeat_n(String::new(), max_lines - lines.len()));
     }
 
     lines

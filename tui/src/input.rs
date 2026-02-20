@@ -10,6 +10,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
+use tokio::task::{JoinHandle, spawn_blocking};
+use tokio::time::timeout;
 use tracing::debug;
 
 use forge_engine::{App, FileSelectAccess, SettingsAccess};
@@ -116,7 +118,7 @@ impl PasteDetector {
 pub struct InputPump {
     rx: mpsc::Receiver<InputMsg>,
     stop: Arc<AtomicBool>,
-    join: Option<tokio::task::JoinHandle<()>>,
+    join: Option<JoinHandle<()>>,
     paste: PasteDetector,
     phase: PastePhase,
 }
@@ -128,7 +130,7 @@ impl InputPump {
         let stop = Arc::new(AtomicBool::new(false));
         let stop2 = stop.clone();
 
-        let join = tokio::task::spawn_blocking(move || input_loop(stop2, tx));
+        let join = spawn_blocking(move || input_loop(stop2, tx));
         let now = Instant::now();
         Self {
             rx,
@@ -146,7 +148,7 @@ impl InputPump {
 
         self.stop.store(true, Ordering::Release);
         if let Some(join) = self.join.take() {
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), join).await;
+            let _ = timeout(Duration::from_secs(2), join).await;
         }
     }
 }

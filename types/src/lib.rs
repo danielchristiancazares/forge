@@ -140,6 +140,7 @@ env_denylist! {
 }
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 use proofs::normalize_string_for_persistence;
 
@@ -168,8 +169,8 @@ impl SecretString {
     }
 }
 
-impl std::fmt::Debug for SecretString {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "SecretString(<redacted>)")
     }
 }
@@ -186,8 +187,8 @@ pub enum ApiKey {
     Gemini(SecretString),
 }
 
-impl std::fmt::Debug for ApiKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ApiKey::Claude(_) => write!(f, "ApiKey::Claude(<redacted>)"),
             ApiKey::OpenAI(_) => write!(f, "ApiKey::OpenAI(<redacted>)"),

@@ -1,5 +1,7 @@
 //! Display items for the message view.
 
+use std::slice;
+
 use forge_types::Message;
 
 use forge_types::MessageId;
@@ -68,7 +70,7 @@ impl DisplayLog {
     }
 
     #[inline]
-    pub fn iter(&self) -> std::slice::Iter<'_, DisplayItem> {
+    pub fn iter(&self) -> slice::Iter<'_, DisplayItem> {
         self.items.iter()
     }
 
@@ -115,7 +117,7 @@ impl DisplayLog {
 
 impl<'a> IntoIterator for &'a DisplayLog {
     type Item = &'a DisplayItem;
-    type IntoIter = std::slice::Iter<'a, DisplayItem>;
+    type IntoIter = slice::Iter<'a, DisplayItem>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()

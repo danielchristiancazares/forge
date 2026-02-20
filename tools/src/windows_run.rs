@@ -4,6 +4,7 @@
 //! - Mechanism: classify shell and command content
 //! - Policy: decide allow/deny/fallback behavior
 
+use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -494,7 +495,7 @@ fn handle_unsandboxed_fallback_with_opt_in(
 }
 
 fn run_unsandboxed_opt_in_enabled() -> bool {
-    std::env::var(ENV_RUN_ALLOW_UNSANDBOXED)
+    env::var(ENV_RUN_ALLOW_UNSANDBOXED)
         .ok()
         .is_some_and(|value| {
             matches!(
@@ -600,6 +601,7 @@ fn escape_seatbelt_literal(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use std::path::PathBuf;
     use std::sync::Once;
 
@@ -627,7 +629,7 @@ mod tests {
         INIT.call_once(|| {
             // SAFETY: test-only global opt-in set once and never mutated.
             unsafe {
-                std::env::set_var("FORGE_RUN_ALLOW_UNSANDBOXED", "1");
+                env::set_var("FORGE_RUN_ALLOW_UNSANDBOXED", "1");
             }
         });
     }

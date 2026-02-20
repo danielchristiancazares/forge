@@ -1,6 +1,7 @@
 //! Unified diff formatting and stats.
 
 use std::fmt::Write as _;
+use std::str;
 
 use similar::{ChangeTag, TextDiff};
 
@@ -33,8 +34,8 @@ pub fn format_unified_diff_width(
     _existed: bool,
     min_line_num_width: usize,
 ) -> String {
-    let old_text = std::str::from_utf8(old_bytes).unwrap_or("");
-    let new_text = std::str::from_utf8(new_bytes).unwrap_or("");
+    let old_text = str::from_utf8(old_bytes).unwrap_or("");
+    let new_text = str::from_utf8(new_bytes).unwrap_or("");
 
     let diff = TextDiff::from_lines(old_text, new_text);
 
@@ -128,8 +129,8 @@ pub fn format_unified_diff_width(
 /// Compute diff stats (additions and deletions) between old and new content.
 #[must_use]
 pub fn compute_diff_stats(old_bytes: &[u8], new_bytes: &[u8]) -> (u32, u32) {
-    let old_text = std::str::from_utf8(old_bytes).unwrap_or("");
-    let new_text = std::str::from_utf8(new_bytes).unwrap_or("");
+    let old_text = str::from_utf8(old_bytes).unwrap_or("");
+    let new_text = str::from_utf8(new_bytes).unwrap_or("");
 
     let diff = TextDiff::from_lines(old_text, new_text);
 

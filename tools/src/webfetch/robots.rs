@@ -7,12 +7,14 @@
 //! - Origin-scoped in-memory caching with TTL
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::str::from_utf8;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use reqwest::header::LOCATION;
 use tokio::sync::RwLock;
+use tokio::time::timeout;
 use url::Url;
 
 use super::http;
@@ -44,8 +46,7 @@ enum CachedRobots {
     AllowAll,
 }
 
-static CACHE: std::sync::OnceLock<Arc<RwLock<HashMap<String, CacheEntry>>>> =
-    std::sync::OnceLock::new();
+static CACHE: OnceLock<Arc<RwLock<HashMap<String, CacheEntry>>>> = OnceLock::new();
 
 fn cache() -> &'static Arc<RwLock<HashMap<String, CacheEntry>>> {
     CACHE.get_or_init(|| Arc::new(RwLock::new(HashMap::new())))
@@ -260,7 +261,7 @@ async fn fetch_robots(url: &Url, config: &ResolvedConfig) -> Result<FetchResult,
                 if remaining.is_zero() {
                     return Err(robots_timeout(&origin, config));
                 }
-                let next = tokio::time::timeout(remaining, stream.next())
+                let next = timeout(remaining, stream.next())
                     .await
                     .map_err(|_| robots_timeout(&origin, config))?;
                 let Some(chunk) = next else {
@@ -302,7 +303,7 @@ async fn fetch_robots(url: &Url, config: &ResolvedConfig) -> Result<FetchResult,
                 body.drain(0..3);
             }
 
-            let text = match std::str::from_utf8(&body) {
+            let text = match from_utf8(&body) {
                 Ok(text) => text,
                 Err(_) => return Ok(FetchResult::AllowAll),
             };
@@ -411,7 +412,7 @@ fn has_non_utf8_bom(bytes: &[u8]) -> bool {
 }
 
 fn trim_incomplete_utf8(bytes: &mut Vec<u8>) {
-    while !bytes.is_empty() && std::str::from_utf8(bytes).is_err() {
+    while !bytes.is_empty() && from_utf8(bytes).is_err() {
         bytes.pop();
     }
 }

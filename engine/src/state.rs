@@ -1,6 +1,7 @@
 //! Operation state machine types.
 
 use std::collections::{HashMap, HashSet};
+use std::mem;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -8,6 +9,7 @@ use futures_util::future::AbortHandle;
 
 use forge_context::RecoveredToolBatch;
 use forge_types::{ModelName, Plan, StepId, ToolBatchId, ToolCall, ToolResult};
+use tokio::task::JoinHandle;
 
 use crate::StreamingMessage;
 use crate::TurnContext;
@@ -69,7 +71,7 @@ pub(crate) enum JournalCleanup<Id> {
 
 impl<Id: PartialEq> JournalCleanup<Id> {
     pub(crate) fn set_pending(&mut self, new_id: Id) {
-        *self = match std::mem::take(self) {
+        *self = match mem::take(self) {
             Self::Pending { id, failures } if id == new_id => Self::Pending {
                 id,
                 failures: failures.saturating_add(1),
@@ -184,7 +186,7 @@ impl ToolArgsJournalBuffer {
         if self.pending_by_call.is_empty() {
             return Vec::new();
         }
-        let pending = std::mem::take(&mut self.pending_by_call);
+        let pending = mem::take(&mut self.pending_by_call);
         self.pending_bytes = 0;
         self.last_flush = Instant::now();
 
@@ -385,7 +387,7 @@ impl ActiveStream {
 #[derive(Debug)]
 pub struct DistillationTask {
     pub(crate) generated_by: String,
-    pub(crate) handle: tokio::task::JoinHandle<anyhow::Result<String>>,
+    pub(crate) handle: JoinHandle<anyhow::Result<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -436,7 +438,7 @@ pub(crate) struct ToolBatch {
     pub(crate) execute_now: Vec<ToolCall>,
     pub(crate) approval_calls: Vec<ToolCall>,
     pub(crate) turn: TurnContext,
-    pub(crate) batch_start: std::time::Instant,
+    pub(crate) batch_start: Instant,
 }
 
 impl ToolBatch {
@@ -546,7 +548,7 @@ impl ApprovalState {
 
     /// Transition: Selecting -> ConfirmingDeny.
     pub(crate) fn enter_deny_confirmation(&mut self) {
-        *self = match std::mem::replace(self, Self::Selecting(ApprovalData::new(vec![]))) {
+        *self = match mem::replace(self, Self::Selecting(ApprovalData::new(vec![]))) {
             Self::Selecting(data) | Self::ConfirmingDeny(data) => Self::ConfirmingDeny(data),
         };
     }
@@ -554,7 +556,7 @@ impl ApprovalState {
     /// Transition: ConfirmingDeny -> Selecting (no-op if already Selecting).
     pub(crate) fn cancel_deny_confirmation(&mut self) {
         if matches!(self, Self::ConfirmingDeny(_)) {
-            *self = match std::mem::replace(self, Self::Selecting(ApprovalData::new(vec![]))) {
+            *self = match mem::replace(self, Self::Selecting(ApprovalData::new(vec![]))) {
                 Self::ConfirmingDeny(data) | Self::Selecting(data) => Self::Selecting(data),
             };
         }

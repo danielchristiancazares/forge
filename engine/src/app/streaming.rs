@@ -1,10 +1,12 @@
 //! Streaming response handling for the App.
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::env;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use futures_util::future::{AbortHandle, Abortable};
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 
 const STREAM_EVENT_CHANNEL_CAPACITY: usize = 1024;
 const STREAM_EVENT_FRAME_BUDGET: usize = 64;
@@ -16,7 +18,7 @@ const DEFAULT_TOOL_ARGS_JOURNAL_FLUSH_INTERVAL_MS: u64 = 250;
 fn tool_args_journal_flush_bytes() -> usize {
     static THRESHOLD: OnceLock<usize> = OnceLock::new();
     *THRESHOLD.get_or_init(|| {
-        std::env::var("FORGE_TOOL_JOURNAL_FLUSH_BYTES")
+        env::var("FORGE_TOOL_JOURNAL_FLUSH_BYTES")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
@@ -27,7 +29,7 @@ fn tool_args_journal_flush_bytes() -> usize {
 fn tool_args_journal_flush_interval() -> Duration {
     static INTERVAL: OnceLock<Duration> = OnceLock::new();
     *INTERVAL.get_or_init(|| {
-        std::env::var("FORGE_TOOL_JOURNAL_FLUSH_INTERVAL_MS")
+        env::var("FORGE_TOOL_JOURNAL_FLUSH_INTERVAL_MS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .filter(|value| *value > 0)
@@ -39,6 +41,7 @@ fn tool_args_journal_flush_interval() -> Duration {
 }
 
 use forge_context::{BeginSessionError, TokenCounter};
+use forge_providers::gemini;
 use forge_types::{CacheBudget, CacheBudgetTake, CacheHint, ModelName, Provider, ToolDefinition};
 
 use super::{
@@ -49,6 +52,7 @@ use super::{
     sanitize_terminal_text, security,
 };
 use crate::errors::format_stream_error;
+use crate::state::{ToolJournalBatch, ToolLoopIngress};
 use crate::thinking::ThinkingPayload;
 
 /// Prepend a rendered plan block to the last user message in the API payload.
@@ -389,7 +393,7 @@ impl super::App {
             journal,
             abort_handle,
             tool_call_seq: 0,
-            tool_args_journal_bytes: std::collections::HashMap::new(),
+            tool_args_journal_bytes: HashMap::new(),
             turn,
         };
 
@@ -750,7 +754,7 @@ impl super::App {
                 abort_handle.abort();
 
                 // Discard any in-progress tool batch to prevent stale recovery
-                if let crate::state::ToolJournalBatch::Present(batch_id) = tool_batch_journal
+                if let ToolJournalBatch::Present(batch_id) = tool_batch_journal
                     && let Err(e) = self.runtime.tool_journal.discard_batch(batch_id)
                 {
                     tracing::warn!("Failed to discard tool batch on stream error: {e}");
@@ -869,7 +873,7 @@ impl super::App {
         // which could happen if partial tool call data accumulated before the error.
         if let StreamFinishReason::Error(err) = finish_reason {
             // Discard any pending tool batch - do NOT execute tools on error
-            if let crate::state::ToolJournalBatch::Present(batch_id) = tool_batch_journal
+            if let ToolJournalBatch::Present(batch_id) = tool_batch_journal
                 && let Err(e) = self.runtime.tool_journal.discard_batch(batch_id)
             {
                 tracing::warn!("Failed to discard tool batch on stream error: {e}");
@@ -904,7 +908,7 @@ impl super::App {
             let assistant_text = message.content().to_string();
             // NOTE: turn_rollback stays Pending here — it will be committed
             // at finish_turn() after the full tool loop completes.
-            self.handle_tool_calls(crate::state::ToolLoopIngress {
+            self.handle_tool_calls(ToolLoopIngress {
                 assistant_text,
                 thinking,
                 calls: parsed.calls,
@@ -999,7 +1003,7 @@ impl super::App {
         // Sanitize before injection — DiagnosticsFound contains workspace-derived
         // content (file paths, error messages) that could carry escape sequences
         // or bidi controls from malicious filenames.
-        let combined = crate::security::sanitize_display_text(&combined);
+        let combined = security::sanitize_display_text(&combined);
 
         if let Ok(content) = NonEmptyString::new(combined) {
             let msg = Message::assistant(self.core.model.clone(), content, SystemTime::now());
@@ -1016,7 +1020,7 @@ impl super::App {
 /// Note: Tools must be included in the cache because Gemini's API doesn't allow
 /// specifying `tools` in `GenerateContent` when using cached content.
 async fn get_or_create_gemini_cache(
-    cache_arc: &std::sync::Arc<tokio::sync::Mutex<Option<GeminiCache>>>,
+    cache_arc: &Arc<Mutex<Option<GeminiCache>>>,
     config: &GeminiCacheConfig,
     api_key: &str,
     model: &str,
@@ -1041,15 +1045,7 @@ async fn get_or_create_gemini_cache(
 
     // Cache is invalid or doesn't exist - create a new one
     tracing::info!("Creating new Gemini cache for system prompt and tools");
-    match forge_providers::gemini::create_cache(
-        api_key,
-        model,
-        system_prompt,
-        tools,
-        config.ttl_seconds,
-    )
-    .await
-    {
+    match gemini::create_cache(api_key, model, system_prompt, tools, config.ttl_seconds).await {
         Ok(new_cache) => {
             tracing::info!(
                 "Created Gemini cache: {} (expires: {})",

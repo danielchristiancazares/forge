@@ -31,12 +31,15 @@
 use anyhow::anyhow;
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
+use std::borrow::Cow;
+use std::env;
 use std::path::Path;
+use std::result::Result as StdResult;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
 #[cfg(test)]
 use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Instant, SystemTime};
 use thiserror::Error;
 
 use crate::sqlite_security::prepare_db_path;
@@ -120,7 +123,7 @@ const DEFAULT_FLUSH_INTERVAL_MS: u128 = 200;
 fn journal_flush_threshold() -> usize {
     static THRESHOLD: OnceLock<usize> = OnceLock::new();
     *THRESHOLD.get_or_init(|| {
-        std::env::var("FORGE_STREAM_JOURNAL_FLUSH_THRESHOLD")
+        env::var("FORGE_STREAM_JOURNAL_FLUSH_THRESHOLD")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
@@ -131,7 +134,7 @@ fn journal_flush_threshold() -> usize {
 fn journal_flush_interval_ms() -> u128 {
     static INTERVAL: OnceLock<u128> = OnceLock::new();
     *INTERVAL.get_or_init(|| {
-        std::env::var("FORGE_STREAM_JOURNAL_FLUSH_INTERVAL_MS")
+        env::var("FORGE_STREAM_JOURNAL_FLUSH_INTERVAL_MS")
             .ok()
             .and_then(|value| value.parse::<u128>().ok())
             .filter(|value| *value > 0)
@@ -146,7 +149,7 @@ const DEFAULT_BUFFER_FLUSH_BYTES: usize = 65_536;
 fn journal_flush_byte_threshold() -> usize {
     static THRESHOLD: OnceLock<usize> = OnceLock::new();
     *THRESHOLD.get_or_init(|| {
-        std::env::var("FORGE_STREAM_JOURNAL_FLUSH_BYTES")
+        env::var("FORGE_STREAM_JOURNAL_FLUSH_BYTES")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value > 0)
@@ -183,7 +186,7 @@ pub struct ActiveJournal {
     /// Whether we've flushed at least once (ensures first content is persisted).
     has_flushed: bool,
     /// Timestamp of last flush for time-based persistence.
-    last_flush: std::time::Instant,
+    last_flush: Instant,
 }
 
 impl ActiveJournal {
@@ -241,7 +244,7 @@ impl ActiveJournal {
         self.pending_deltas.clear();
         self.pending_bytes = 0;
         self.has_flushed = true;
-        self.last_flush = std::time::Instant::now();
+        self.last_flush = Instant::now();
         Ok(())
     }
 
@@ -405,7 +408,7 @@ impl StreamJournal {
     pub fn begin_session(
         &mut self,
         model_name: impl Into<String>,
-    ) -> std::result::Result<ActiveJournal, BeginSessionError> {
+    ) -> StdResult<ActiveJournal, BeginSessionError> {
         if let Some(step_id) = self.active_step {
             return Err(BeginSessionError::AlreadyStreaming(step_id));
         }
@@ -439,7 +442,7 @@ impl StreamJournal {
             pending_deltas: Vec::new(),
             pending_bytes: 0,
             has_flushed: false,
-            last_flush: std::time::Instant::now(),
+            last_flush: Instant::now(),
         })
     }
 
@@ -816,14 +819,14 @@ fn append_delta(db: &Connection, delta: &StreamDelta) -> Result<()> {
     Ok(())
 }
 
-fn normalize_persistable_borrowed(input: &str) -> std::borrow::Cow<'_, str> {
+fn normalize_persistable_borrowed(input: &str) -> Cow<'_, str> {
     PersistableContent::normalize_borrowed(input)
 }
 
 fn normalize_persistable_owned(input: String) -> String {
     match normalize_persistable_borrowed(&input) {
-        std::borrow::Cow::Borrowed(_) => input,
-        std::borrow::Cow::Owned(normalized) => normalized,
+        Cow::Borrowed(_) => input,
+        Cow::Owned(normalized) => normalized,
     }
 }
 
@@ -839,7 +842,7 @@ fn collect_text(db: &Connection, step_id: StepId) -> Result<String> {
     let contents: Vec<String> = stmt
         .query_map(params![step_id.value()], |row| row.get(0))
         .context("Failed to query text deltas")?
-        .collect::<std::result::Result<Vec<_>, _>>()
+        .collect::<StdResult<Vec<_>, _>>()
         .context("Failed to collect text deltas")?;
 
     Ok(contents.join(""))
@@ -989,12 +992,13 @@ mod tests {
     use super::{BeginSessionError, RecoveredStream, StreamJournal, iso8601_to_system_time};
     use crate::time_utils::system_time_to_iso8601_millis;
     use forge_types::StepId;
+    use std::env;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn unique_db_path(label: &str) -> PathBuf {
-        let mut path = std::env::temp_dir();
+        let mut path = env::temp_dir();
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()

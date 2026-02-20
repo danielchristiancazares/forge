@@ -464,6 +464,8 @@ impl Message {
 
 #[cfg(test)]
 mod tests {
+    use std::time::UNIX_EPOCH;
+
     use super::{ClaudeSignatureRef, ThinkingMessage, UserMessage};
     use crate::{NonEmptyString, Provider};
 
@@ -473,7 +475,7 @@ mod tests {
 
     #[test]
     fn user_message_without_override_omits_display_content_field() {
-        let message = UserMessage::new(non_empty("hello"), std::time::UNIX_EPOCH);
+        let message = UserMessage::new(non_empty("hello"), UNIX_EPOCH);
         let json = serde_json::to_value(&message).unwrap();
         let object = json.as_object().unwrap();
         assert!(!object.contains_key("display_content"));
@@ -495,7 +497,7 @@ mod tests {
         let unsigned = ThinkingMessage::new(
             Provider::Claude.default_model(),
             non_empty("thinking"),
-            std::time::UNIX_EPOCH,
+            UNIX_EPOCH,
         );
         assert!(matches!(
             unsigned.claude_signature(),
@@ -506,7 +508,7 @@ mod tests {
             Provider::Claude.default_model(),
             non_empty("thinking"),
             "abc".to_string(),
-            std::time::UNIX_EPOCH,
+            UNIX_EPOCH,
         );
         assert!(matches!(
             signed.claude_signature(),

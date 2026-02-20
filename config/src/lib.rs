@@ -1,8 +1,15 @@
+use forge_types::{LspConfig, ServerConfig, ToolDefinition};
+use forge_utils::{
+    AtomicWriteOptions, atomic_write_with_options, recover_bak_file, set_owner_only_dir_acl,
+    set_owner_only_file_acl,
+};
 use serde::Deserialize;
 use std::{
-    env, fs,
+    collections::HashMap,
+    env, fmt, fs, io,
     path::{Path, PathBuf},
 };
+use toml::de;
 
 /// Serde helper for fields that default to `true`.
 #[must_use]
@@ -29,14 +36,8 @@ pub struct ForgeConfig {
 
 #[derive(Debug)]
 pub enum ConfigError {
-    Read {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-    Parse {
-        path: PathBuf,
-        source: toml::de::Error,
-    },
+    Read { path: PathBuf, source: io::Error },
+    Parse { path: PathBuf, source: de::Error },
 }
 
 impl ConfigError {
@@ -94,8 +95,8 @@ pub struct ApiKeys {
 }
 
 // Manual Debug impl to prevent leaking API keys in logs.
-impl std::fmt::Debug for ApiKeys {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for ApiKeys {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fn mask(opt: Option<&String>) -> &'static str {
             if opt.is_some() { "[REDACTED]" } else { "None" }
         }
@@ -257,7 +258,7 @@ pub struct RawLspConfig {
     #[serde(default)]
     enabled: bool,
     #[serde(default)]
-    servers: std::collections::HashMap<String, forge_types::ServerConfig>,
+    servers: HashMap<String, ServerConfig>,
 }
 
 impl RawLspConfig {
@@ -266,9 +267,9 @@ impl RawLspConfig {
     /// This is the boundary conversion: the `enabled` bool is consumed here
     /// and never leaks into the resolved type.
     #[must_use]
-    pub fn resolve(self) -> Option<forge_types::LspConfig> {
+    pub fn resolve(self) -> Option<LspConfig> {
         if self.enabled {
-            Some(forge_types::LspConfig::new(self.servers))
+            Some(LspConfig::new(self.servers))
         } else {
             None
         }
@@ -444,9 +445,9 @@ impl Default for MacOsRunConfig {
 }
 
 impl ToolDefinitionConfig {
-    pub fn to_tool_definition(&self) -> Result<forge_types::ToolDefinition, String> {
+    pub fn to_tool_definition(&self) -> Result<ToolDefinition, String> {
         let params_json = toml_to_json(&self.parameters)?;
-        Ok(forge_types::ToolDefinition::new(
+        Ok(ToolDefinition::new(
             self.name.clone(),
             self.description.clone(),
             params_json,
@@ -514,12 +515,12 @@ impl ForgeConfig {
             Some(path) => path,
             None => return Ok(None),
         };
-        forge_utils::recover_bak_file(&path);
+        recover_bak_file(&path);
         if !path.exists() {
             return Ok(None);
         }
 
-        let content = match std::fs::read_to_string(&path) {
+        let content = match fs::read_to_string(&path) {
             Ok(content) => content,
             Err(err) => {
                 tracing::warn!("Failed to read config at {:?}: {}", path, err);
@@ -541,7 +542,7 @@ impl ForgeConfig {
         config_path()
     }
 
-    pub fn persist_model(path: &Path, model: &str) -> std::io::Result<()> {
+    pub fn persist_model(path: &Path, model: &str) -> io::Result<()> {
         update_app_section(path, |app| {
             app["model"] = toml_edit::value(model);
             app.remove("chat_model");
@@ -550,7 +551,7 @@ impl ForgeConfig {
         })
     }
 
-    pub fn persist_ui_settings(path: &Path, settings: AppUiSettings) -> std::io::Result<()> {
+    pub fn persist_ui_settings(path: &Path, settings: AppUiSettings) -> io::Result<()> {
         update_app_section(path, |app| {
             app["ascii_only"] = toml_edit::value(settings.ascii_only);
             app["high_contrast"] = toml_edit::value(settings.high_contrast);
@@ -560,7 +561,7 @@ impl ForgeConfig {
         })
     }
 
-    pub fn persist_context_settings(path: &Path, settings: ContextSettings) -> std::io::Result<()> {
+    pub fn persist_context_settings(path: &Path, settings: ContextSettings) -> io::Result<()> {
         update_context_section(path, |context| {
             context["memory"] = toml_edit::value(settings.memory);
             Ok(())
@@ -570,14 +571,14 @@ impl ForgeConfig {
     pub fn persist_tool_approval_settings(
         path: &Path,
         settings: &ToolApprovalSettings,
-    ) -> std::io::Result<()> {
+    ) -> io::Result<()> {
         update_tools_section(path, |tools| {
             if !tools.contains_key("approval") {
                 tools["approval"] = toml_edit::Item::Table(toml_edit::Table::new());
             }
             let Some(approval) = tools["approval"].as_table_mut() else {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
                     "[tools.approval] must be a table",
                 ));
             };
@@ -587,30 +588,30 @@ impl ForgeConfig {
     }
 }
 
-fn update_app_section<F>(path: &Path, mut update: F) -> std::io::Result<()>
+fn update_app_section<F>(path: &Path, mut update: F) -> io::Result<()>
 where
-    F: FnMut(&mut toml_edit::Table) -> std::io::Result<()>,
+    F: FnMut(&mut toml_edit::Table) -> io::Result<()>,
 {
     update_named_section(path, "app", &mut update)
 }
 
-fn update_context_section<F>(path: &Path, mut update: F) -> std::io::Result<()>
+fn update_context_section<F>(path: &Path, mut update: F) -> io::Result<()>
 where
-    F: FnMut(&mut toml_edit::Table) -> std::io::Result<()>,
+    F: FnMut(&mut toml_edit::Table) -> io::Result<()>,
 {
     update_named_section(path, "context", &mut update)
 }
 
-fn update_tools_section<F>(path: &Path, mut update: F) -> std::io::Result<()>
+fn update_tools_section<F>(path: &Path, mut update: F) -> io::Result<()>
 where
-    F: FnMut(&mut toml_edit::Table) -> std::io::Result<()>,
+    F: FnMut(&mut toml_edit::Table) -> io::Result<()>,
 {
     update_named_section(path, "tools", &mut update)
 }
 
-fn update_named_section<F>(path: &Path, section: &str, mut update: F) -> std::io::Result<()>
+fn update_named_section<F>(path: &Path, section: &str, mut update: F) -> io::Result<()>
 where
-    F: FnMut(&mut toml_edit::Table) -> std::io::Result<()>,
+    F: FnMut(&mut toml_edit::Table) -> io::Result<()>,
 {
     ensure_config_parent_secure(path)?;
 
@@ -622,15 +623,15 @@ where
 
     let mut doc = content
         .parse::<toml_edit::DocumentMut>()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     if !doc.contains_key(section) {
         doc[section] = toml_edit::Item::Table(toml_edit::Table::new());
     }
 
     let Some(section_table) = doc[section].as_table_mut() else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
             format!("[{section}] must be a table"),
         ));
     };
@@ -639,7 +640,7 @@ where
     persist_config_doc(path, &doc)
 }
 
-fn ensure_config_parent_secure(path: &Path) -> std::io::Result<()> {
+fn ensure_config_parent_secure(path: &Path) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
         #[cfg(unix)]
@@ -655,7 +656,7 @@ fn ensure_config_parent_secure(path: &Path) -> std::io::Result<()> {
             }
         }
         #[cfg(windows)]
-        if let Err(e) = forge_utils::set_owner_only_dir_acl(parent) {
+        if let Err(e) = set_owner_only_dir_acl(parent) {
             tracing::warn!(
                 path = %parent.display(),
                 "Failed to apply owner-only ACL to config directory (best-effort): {e}"
@@ -665,13 +666,13 @@ fn ensure_config_parent_secure(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn persist_config_doc(path: &Path, doc: &toml_edit::DocumentMut) -> std::io::Result<()> {
+fn persist_config_doc(path: &Path, doc: &toml_edit::DocumentMut) -> io::Result<()> {
     let serialized = doc.to_string();
 
-    forge_utils::atomic_write_with_options(
+    atomic_write_with_options(
         path,
         serialized.as_bytes(),
-        forge_utils::AtomicWriteOptions {
+        AtomicWriteOptions {
             sync_all: true,
             dir_sync: true,
             unix_mode: None,
@@ -693,7 +694,7 @@ fn persist_config_doc(path: &Path, doc: &toml_edit::DocumentMut) -> std::io::Res
 
     #[cfg(windows)]
     {
-        if let Err(e) = forge_utils::set_owner_only_file_acl(path) {
+        if let Err(e) = set_owner_only_file_acl(path) {
             tracing::warn!(
                 path = %path.display(),
                 "Failed to apply owner-only ACL to config file (best-effort): {e}"
@@ -727,6 +728,9 @@ pub fn config_path() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::{env, io};
+    use toml::value::Table as TomlTable;
+
     use super::{
         AnthropicEffort, AnthropicThinkingMode, ApiKeys, ConfigError, ForgeConfig, PathBuf,
         RunFallbackMode, ToolDefinitionConfig, WindowsRunConfig, expand_env_vars, toml_to_json,
@@ -743,19 +747,19 @@ mod tests {
     #[test]
     fn expand_env_vars_single_var() {
         unsafe {
-            std::env::set_var("TEST_CONFIG_VAR", "replaced");
+            env::set_var("TEST_CONFIG_VAR", "replaced");
         }
         let result = expand_env_vars("prefix ${TEST_CONFIG_VAR} suffix");
         assert_eq!(result, "prefix replaced suffix");
         unsafe {
-            std::env::remove_var("TEST_CONFIG_VAR");
+            env::remove_var("TEST_CONFIG_VAR");
         }
     }
 
     #[test]
     fn expand_env_vars_missing_var_becomes_empty() {
         unsafe {
-            std::env::remove_var("MISSING_VAR_FOR_TEST");
+            env::remove_var("MISSING_VAR_FOR_TEST");
         }
         let result = expand_env_vars("before ${MISSING_VAR_FOR_TEST} after");
         assert_eq!(result, "before  after");
@@ -764,14 +768,14 @@ mod tests {
     #[test]
     fn expand_env_vars_multiple_vars() {
         unsafe {
-            std::env::set_var("VAR_A", "alpha");
-            std::env::set_var("VAR_B", "beta");
+            env::set_var("VAR_A", "alpha");
+            env::set_var("VAR_B", "beta");
         }
         let result = expand_env_vars("${VAR_A}-${VAR_B}");
         assert_eq!(result, "alpha-beta");
         unsafe {
-            std::env::remove_var("VAR_A");
-            std::env::remove_var("VAR_B");
+            env::remove_var("VAR_A");
+            env::remove_var("VAR_B");
         }
     }
 
@@ -790,26 +794,26 @@ mod tests {
     #[test]
     fn expand_env_vars_adjacent_vars() {
         unsafe {
-            std::env::set_var("ADJ_A", "X");
-            std::env::set_var("ADJ_B", "Y");
+            env::set_var("ADJ_A", "X");
+            env::set_var("ADJ_B", "Y");
         }
         let result = expand_env_vars("${ADJ_A}${ADJ_B}");
         assert_eq!(result, "XY");
         unsafe {
-            std::env::remove_var("ADJ_A");
-            std::env::remove_var("ADJ_B");
+            env::remove_var("ADJ_A");
+            env::remove_var("ADJ_B");
         }
     }
 
     #[test]
     fn expand_env_vars_unicode_content() {
         unsafe {
-            std::env::set_var("UNICODE_VAR", "🦀");
+            env::set_var("UNICODE_VAR", "🦀");
         }
         let result = expand_env_vars("Hello ${UNICODE_VAR} Rust");
         assert_eq!(result, "Hello 🦀 Rust");
         unsafe {
-            std::env::remove_var("UNICODE_VAR");
+            env::remove_var("UNICODE_VAR");
         }
     }
 
@@ -856,7 +860,7 @@ mod tests {
 
     #[test]
     fn toml_to_json_table() {
-        let mut table = toml::value::Table::new();
+        let mut table = TomlTable::new();
         table.insert("key".to_string(), toml::Value::String("value".to_string()));
         table.insert("num".to_string(), toml::Value::Integer(123));
         let toml_val = toml::Value::Table(table);
@@ -867,9 +871,9 @@ mod tests {
 
     #[test]
     fn toml_to_json_nested() {
-        let mut inner = toml::value::Table::new();
+        let mut inner = TomlTable::new();
         inner.insert("nested".to_string(), toml::Value::Boolean(true));
-        let mut outer = toml::value::Table::new();
+        let mut outer = TomlTable::new();
         outer.insert("inner".to_string(), toml::Value::Table(inner));
         let toml_val = toml::Value::Table(outer);
         let json = toml_to_json(&toml_val).unwrap();
@@ -1260,7 +1264,7 @@ type = "string"
         let path = PathBuf::from("/test/path");
         let err = ConfigError::Read {
             path: path.clone(),
-            source: std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+            source: io::Error::new(io::ErrorKind::NotFound, "not found"),
         };
         assert_eq!(err.path(), &path);
 
@@ -1280,16 +1284,16 @@ fn persist_model_creates_new_config() {
     let config_path = tmp_dir.path().join("config.toml");
 
     let content = "";
-    std::fs::write(&config_path, content).unwrap();
+    fs::write(&config_path, content).unwrap();
 
     let mut doc = content.parse::<toml_edit::DocumentMut>().unwrap();
     if !doc.contains_key("app") {
         doc["app"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
     doc["app"]["model"] = toml_edit::value("gpt-4o");
-    std::fs::write(&config_path, doc.to_string()).unwrap();
+    fs::write(&config_path, doc.to_string()).unwrap();
 
-    let result = std::fs::read_to_string(&config_path).unwrap();
+    let result = fs::read_to_string(&config_path).unwrap();
     assert!(result.contains("[app]"));
     assert!(result.contains("model = \"gpt-4o\""));
 }
@@ -1308,13 +1312,13 @@ ascii_only = true
 [api_keys]
 anthropic = "sk-test"
 "#;
-    std::fs::write(&config_path, original).unwrap();
+    fs::write(&config_path, original).unwrap();
 
     let mut doc = original.parse::<toml_edit::DocumentMut>().unwrap();
     doc["app"]["model"] = toml_edit::value("new-model");
-    std::fs::write(&config_path, doc.to_string()).unwrap();
+    fs::write(&config_path, doc.to_string()).unwrap();
 
-    let result = std::fs::read_to_string(&config_path).unwrap();
+    let result = fs::read_to_string(&config_path).unwrap();
     assert!(
         result.contains("# My config"),
         "Comment should be preserved"

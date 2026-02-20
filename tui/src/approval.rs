@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ratatui::{
     Frame,
     layout::Rect,
@@ -296,8 +298,7 @@ pub(crate) fn draw_tool_recovery_prompt(
         return;
     };
 
-    let mut results_map: std::collections::HashMap<&str, &ToolResult> =
-        std::collections::HashMap::new();
+    let mut results_map: HashMap<&str, &ToolResult> = HashMap::new();
     for result in results {
         results_map.insert(result.tool_call_id.as_str(), result);
     }

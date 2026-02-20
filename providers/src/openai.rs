@@ -7,6 +7,7 @@ use crate::{
 
 use forge_types::{OpenAIReasoningEffort, OpenAIReasoningSummary, OpenAIReasoningSummaryPart};
 use serde_json::{Value, json};
+use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -660,7 +661,7 @@ pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
     };
 
     let idle_timeout = if is_pro {
-        std::cmp::max(
+        cmp::max(
             crate::stream_idle_timeout(),
             Duration::from_secs(PRO_IDLE_TIMEOUT_SECS),
         )

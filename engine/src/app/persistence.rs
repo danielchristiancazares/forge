@@ -7,15 +7,21 @@
 //! - Journal commit/discard operations
 //! - Message rollback after errors
 
+use std::collections::HashSet;
+use std::fs::{read_to_string, remove_file, rename};
+use std::mem::take;
 use std::time::{Duration, Instant, SystemTime};
 
 use forge_context::RecoveredStream;
 use forge_types::{Message, NonEmptyStaticStr, NonEmptyString, PersistableContent, StepId};
 
+use super::{TurnOrigin, TurnRollback};
+use crate::security;
 use crate::session_state::SessionState;
 use crate::state::{
     OperationState, RecoveryBlockedReason, RecoveryBlockedState, ToolRecoveryState,
 };
+use crate::tools::process;
 use crate::ui::{DisplayItem, DisplayTail};
 use crate::util;
 use crate::{App, ContextManager, MessageId};
@@ -53,7 +59,7 @@ impl App {
                     "History file missing but .bak exists at {}; recovering",
                     bak_path.display()
                 );
-                if let Err(e) = std::fs::rename(&bak_path, &path) {
+                if let Err(e) = rename(&bak_path, &path) {
                     tracing::warn!("Failed to recover .bak file: {e}");
                     return;
                 }
@@ -148,7 +154,7 @@ impl App {
         match &self.core.plan_state {
             PlanState::Inactive => {
                 if path.exists()
-                    && let Err(e) = std::fs::remove_file(&path)
+                    && let Err(e) = remove_file(&path)
                 {
                     tracing::warn!("Failed to remove plan.json: {e}");
                 }
@@ -184,7 +190,7 @@ impl App {
             return;
         }
 
-        match std::fs::read_to_string(&path) {
+        match read_to_string(&path) {
             Ok(data) => match serde_json::from_str::<forge_types::PlanState>(&data) {
                 Ok(state) => {
                     self.core.plan_state = state;
@@ -241,7 +247,7 @@ impl App {
             return;
         }
 
-        match std::fs::read_to_string(&path) {
+        match read_to_string(&path) {
             Ok(data) => match serde_json::from_str::<SessionState>(&data) {
                 Ok(state) if state.is_compatible() => {
                     let SessionState {
@@ -562,7 +568,7 @@ impl App {
                 // Recovery safety: if a prior `Run` call has no result, it may still be running
                 // (crash prevents Drop-based cleanup). When we have durable PID metadata, attempt
                 // best-effort termination with PID reuse guards.
-                let existing_results: std::collections::HashSet<&str> = recovered_batch
+                let existing_results: HashSet<&str> = recovered_batch
                     .results
                     .iter()
                     .map(|r| r.tool_call_id.as_str())
@@ -593,9 +599,7 @@ impl App {
                         continue;
                     };
 
-                    let observed_start = match crate::tools::process::process_started_at_unix_ms(
-                        pid,
-                    ) {
+                    let observed_start = match process::process_started_at_unix_ms(pid) {
                         Ok(ts) => ts,
                         Err(e) => {
                             self.push_notification(format!(
@@ -614,9 +618,9 @@ impl App {
                         continue;
                     }
 
-                    match crate::tools::process::try_kill_process_group(pid) {
-                        Ok(crate::tools::process::KillOutcome::NotRunning) => {}
-                        Ok(crate::tools::process::KillOutcome::Killed) => {
+                    match process::try_kill_process_group(pid) {
+                        Ok(process::KillOutcome::NotRunning) => {}
+                        Ok(process::KillOutcome::Killed) => {
                             self.push_notification(format!(
                                 "Terminated orphaned `Run` process (pid {pid}) from before the crash."
                             ));
@@ -728,14 +732,14 @@ impl App {
         if !partial_text.is_empty() {
             // Sanitize recovered untrusted assistant text to prevent stored terminal injection,
             // invisible prompt injection, and secret leaks from older journals.
-            let sanitized = crate::security::sanitize_display_text(partial_text);
+            let sanitized = security::sanitize_display_text(partial_text);
             recovered_content = recovered_content.append("\n\n").append(&sanitized);
         }
         if let Some(error) = error_text
             && !error.is_empty()
         {
             // Sanitize error text as well (older journals may contain raw API errors).
-            let sanitized_error = crate::security::sanitize_stream_error(error);
+            let sanitized_error = security::sanitize_stream_error(error);
             let error_line = format!("Error: {sanitized_error}");
             recovered_content = recovered_content.append("\n\n").append(error_line.as_str());
         }
@@ -840,9 +844,9 @@ impl App {
     ///
     /// If the turn is already committed, this is a no-op.
     pub(crate) fn rollback_pending_user_message(&mut self) {
-        match std::mem::take(&mut self.core.turn_rollback) {
-            super::TurnRollback::Pending(origin) => self.rollback_turn_origin(origin),
-            super::TurnRollback::Committed => {}
+        match take(&mut self.core.turn_rollback) {
+            TurnRollback::Pending(origin) => self.rollback_turn_origin(origin),
+            TurnRollback::Committed => {}
         }
     }
 
@@ -850,8 +854,8 @@ impl App {
     /// and display, then restores the original text to the input box for retry.
     ///
     /// Takes `TurnOrigin` as proof that there IS data to roll back.
-    pub(crate) fn rollback_turn_origin(&mut self, origin: super::TurnOrigin) {
-        let super::TurnOrigin {
+    pub(crate) fn rollback_turn_origin(&mut self, origin: TurnOrigin) {
+        let TurnOrigin {
             message_id,
             original_draft,
             consumed_agents_md,
@@ -872,7 +876,7 @@ impl App {
 
             // Restore to input box and enter insert mode for easy retry
             self.ui.input.draft_mut().set_text(original_draft);
-            self.ui.input = std::mem::take(&mut self.ui.input).into_insert();
+            self.ui.input = take(&mut self.ui.input).into_insert();
 
             // Restore consumed AGENTS.md so the next message gets it
             self.core.environment.restore_agents_md(consumed_agents_md);

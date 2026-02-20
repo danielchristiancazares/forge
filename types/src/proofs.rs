@@ -4,6 +4,8 @@
 //! you know it satisfies all required constraints.
 
 use std::borrow::Cow;
+use std::fmt;
+use std::ops::Deref;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -89,7 +91,7 @@ impl From<NonEmptyString> for String {
     }
 }
 
-impl std::ops::Deref for NonEmptyString {
+impl Deref for NonEmptyString {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
@@ -250,7 +252,7 @@ impl From<PersistableContent> for String {
     }
 }
 
-impl std::ops::Deref for PersistableContent {
+impl Deref for PersistableContent {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
@@ -258,8 +260,8 @@ impl std::ops::Deref for PersistableContent {
     }
 }
 
-impl std::fmt::Display for PersistableContent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for PersistableContent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
 }

@@ -3,7 +3,10 @@
 //! All filesystem, clock, and env-var access lives here.
 //! The pure `EnvironmentContext` struct and its rendering are in `env_context`.
 
-use std::path::PathBuf;
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 use crate::env_context::EnvironmentContext;
 
@@ -18,15 +21,15 @@ impl EnvironmentContext {
         let now = chrono::Local::now();
         let date = now.format("%Y-%m-%d").to_string();
 
-        let cwd_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let cwd_path = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let is_git_repo = has_git_ancestor(&cwd_path);
         let cwd = cwd_path.display().to_string();
         let agents_md = discover_agents_md(&cwd_path);
 
         Self::new(
             date,
-            std::env::consts::OS,
-            std::env::consts::ARCH,
+            env::consts::OS,
+            env::consts::ARCH,
             cwd,
             is_git_repo,
             agents_md,
@@ -51,14 +54,14 @@ const MAX_AGENTS_MD_BYTES: usize = 64 * 1024;
 /// 2. Ancestor directories from root down to `cwd`, each `<dir>/AGENTS.md`
 ///
 /// Total injected content is capped at [`MAX_AGENTS_MD_BYTES`] (64 KB).
-fn discover_agents_md(cwd: &std::path::Path) -> String {
+fn discover_agents_md(cwd: &Path) -> String {
     let mut sections = Vec::new();
     let mut sources: Vec<String> = Vec::new();
     let mut total_bytes: usize = 0;
 
     if let Some(home) = dirs::home_dir() {
         let global_path = home.join(".forge").join("AGENTS.md");
-        if let Ok(content) = std::fs::read_to_string(&global_path) {
+        if let Ok(content) = fs::read_to_string(&global_path) {
             let trimmed = content.trim();
             if !trimmed.is_empty() {
                 total_bytes += trimmed.len();
@@ -74,7 +77,7 @@ fn discover_agents_md(cwd: &std::path::Path) -> String {
     loop {
         let agents_path = dir.join("AGENTS.md");
         if agents_path.is_file()
-            && let Ok(content) = std::fs::read_to_string(&agents_path)
+            && let Ok(content) = fs::read_to_string(&agents_path)
         {
             let trimmed = content.trim();
             if !trimmed.is_empty() {
@@ -117,7 +120,7 @@ fn discover_agents_md(cwd: &std::path::Path) -> String {
     result
 }
 
-fn has_git_ancestor(start: &std::path::Path) -> bool {
+fn has_git_ancestor(start: &Path) -> bool {
     let mut dir = start.to_path_buf();
     loop {
         if dir.join(".git").exists() {
@@ -131,6 +134,8 @@ fn has_git_ancestor(start: &std::path::Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::{env, fs};
+
     use super::{discover_agents_md, has_git_ancestor};
     use crate::env_context::EnvironmentContext;
 
@@ -147,7 +152,7 @@ mod tests {
     fn discover_agents_md_reads_from_cwd() {
         let dir = tempfile::tempdir().unwrap();
         let agents_path = dir.path().join("AGENTS.md");
-        std::fs::write(&agents_path, "project rules here").unwrap();
+        fs::write(&agents_path, "project rules here").unwrap();
 
         let result = discover_agents_md(dir.path());
         assert!(result.contains("project rules here"));
@@ -157,9 +162,9 @@ mod tests {
     fn discover_agents_md_walks_ancestors() {
         let parent = tempfile::tempdir().unwrap();
         let child = parent.path().join("subdir");
-        std::fs::create_dir(&child).unwrap();
-        std::fs::write(parent.path().join("AGENTS.md"), "parent rules").unwrap();
-        std::fs::write(child.join("AGENTS.md"), "child rules").unwrap();
+        fs::create_dir(&child).unwrap();
+        fs::write(parent.path().join("AGENTS.md"), "parent rules").unwrap();
+        fs::write(child.join("AGENTS.md"), "child rules").unwrap();
 
         let result = discover_agents_md(&child);
         assert!(result.contains("parent rules"));
@@ -179,7 +184,7 @@ mod tests {
     #[test]
     fn discover_agents_md_skips_empty_files() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("AGENTS.md"), "   \n  \n  ").unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "   \n  \n  ").unwrap();
 
         let result = discover_agents_md(dir.path());
         assert!(result.is_empty());
@@ -187,7 +192,7 @@ mod tests {
 
     #[test]
     fn has_git_ancestor_finds_repo() {
-        let cwd = std::env::current_dir().unwrap();
+        let cwd = env::current_dir().unwrap();
         assert!(has_git_ancestor(&cwd) || !cwd.join(".git").exists());
     }
 }

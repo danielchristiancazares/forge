@@ -472,6 +472,8 @@ fn apply_final_newline(content: &mut FileContent, value: bool) {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+
     use super::{
         EolKind, FileContent, Op, PatchError, apply_ops, emit_file, parse_file, parse_patch,
     };
@@ -1161,7 +1163,7 @@ mod tests {
 
     #[test]
     fn patch_error_is_error() {
-        let err: Box<dyn std::error::Error> = Box::new(PatchError {
+        let err: Box<dyn Error> = Box::new(PatchError {
             message: "error".to_string(),
         });
         assert_eq!(err.to_string(), "error");

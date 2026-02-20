@@ -15,6 +15,7 @@
 //! history) MUST be sanitized before display.
 
 use std::borrow::Cow;
+use std::iter::Peekable;
 use std::path::Path;
 
 /// ASCII escape character that starts ANSI sequences.
@@ -168,7 +169,7 @@ fn is_c1_csi(c: char) -> bool {
     c == '\u{009b}'
 }
 
-fn skip_escape_sequence<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>) {
+fn skip_escape_sequence<I: Iterator<Item = char>>(chars: &mut Peekable<I>) {
     let Some(&next) = chars.peek() else {
         return;
     };
@@ -205,7 +206,7 @@ fn skip_escape_sequence<I: Iterator<Item = char>>(chars: &mut std::iter::Peekabl
 }
 
 /// Skip CSI parameters until final byte (0x40-0x7E).
-fn skip_csi_params<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>) {
+fn skip_csi_params<I: Iterator<Item = char>>(chars: &mut Peekable<I>) {
     // CSI format: parameter bytes (0x30-0x3F) + intermediate bytes (0x20-0x2F) + final byte (0x40-0x7E)
     // We skip until we see a final byte or run out of valid sequence chars
     while let Some(&c) = chars.peek() {
@@ -221,7 +222,7 @@ fn skip_csi_params<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>)
 }
 
 /// Skip OSC sequence until BEL or ST (ESC \).
-fn skip_osc_sequence<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>) {
+fn skip_osc_sequence<I: Iterator<Item = char>>(chars: &mut Peekable<I>) {
     while let Some(c) = chars.next() {
         if c == BEL {
             return;
@@ -234,7 +235,7 @@ fn skip_osc_sequence<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I
 }
 
 /// Skip until ST (string terminator: ESC \) for DCS/PM/APC sequences.
-fn skip_until_st<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>) {
+fn skip_until_st<I: Iterator<Item = char>>(chars: &mut Peekable<I>) {
     while let Some(c) = chars.next() {
         if c == ESC && chars.peek() == Some(&'\\') {
             chars.next();

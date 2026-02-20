@@ -5,6 +5,8 @@ use std::path::Path;
 use std::ffi::OsStr;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+use std::ptr;
 
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
@@ -48,7 +50,7 @@ fn to_wide_null(value: &OsStr) -> Vec<u16> {
 
 #[cfg(windows)]
 fn current_user_sid_copy() -> io::Result<Vec<u8>> {
-    let mut raw_token: HANDLE = std::ptr::null_mut();
+    let mut raw_token: HANDLE = ptr::null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut raw_token) } == 0 {
         return Err(io::Error::last_os_error());
     }
@@ -56,13 +58,7 @@ fn current_user_sid_copy() -> io::Result<Vec<u8>> {
 
     let mut needed = 0u32;
     unsafe {
-        let _ = GetTokenInformation(
-            raw_token,
-            TokenUser,
-            std::ptr::null_mut(),
-            0,
-            &raw mut needed,
-        );
+        let _ = GetTokenInformation(raw_token, TokenUser, ptr::null_mut(), 0, &raw mut needed);
     }
     if needed == 0 {
         return Err(io::Error::last_os_error());
@@ -82,7 +78,7 @@ fn current_user_sid_copy() -> io::Result<Vec<u8>> {
         return Err(io::Error::last_os_error());
     }
 
-    let token_user = unsafe { std::ptr::read_unaligned(token_buf.as_ptr().cast::<TOKEN_USER>()) };
+    let token_user = unsafe { ptr::read_unaligned(token_buf.as_ptr().cast::<TOKEN_USER>()) };
     let sid_len = unsafe { GetLengthSid(token_user.User.Sid) };
     if sid_len == 0 {
         return Err(io::Error::last_os_error());
@@ -108,7 +104,7 @@ fn set_owner_only_acl(path: &Path, is_directory: bool) -> io::Result<()> {
             NO_INHERITANCE
         },
         Trustee: TRUSTEE_W {
-            pMultipleTrustee: std::ptr::null_mut(),
+            pMultipleTrustee: ptr::null_mut(),
             MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
             TrusteeForm: TRUSTEE_IS_SID,
             TrusteeType: TRUSTEE_IS_USER,
@@ -116,15 +112,9 @@ fn set_owner_only_acl(path: &Path, is_directory: bool) -> io::Result<()> {
         },
     };
 
-    let mut acl: *mut ACL = std::ptr::null_mut();
-    let acl_status = unsafe {
-        SetEntriesInAclW(
-            1,
-            &raw const explicit_access,
-            std::ptr::null_mut(),
-            &raw mut acl,
-        )
-    };
+    let mut acl: *mut ACL = ptr::null_mut();
+    let acl_status =
+        unsafe { SetEntriesInAclW(1, &raw const explicit_access, ptr::null_mut(), &raw mut acl) };
     if acl_status != 0 {
         return Err(io::Error::from_raw_os_error(acl_status as i32));
     }
@@ -135,10 +125,10 @@ fn set_owner_only_acl(path: &Path, is_directory: bool) -> io::Result<()> {
             wide_path.as_mut_ptr(),
             SE_FILE_OBJECT,
             DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
             acl,
-            std::ptr::null_mut(),
+            ptr::null_mut(),
         )
     };
 

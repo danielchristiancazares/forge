@@ -18,7 +18,10 @@ pub use types::{
 };
 
 use serde::Deserialize;
+use std::io;
+use std::net::IpAddr;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use super::{
     RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, parse_args, redact_distillate,
@@ -61,7 +64,7 @@ pub async fn fetch(
 
     let chunks = chunk::chunk(&extracted.markdown, max_chunk_tokens);
 
-    let mut fetched_at = cache::format_rfc3339(std::time::SystemTime::now());
+    let mut fetched_at = cache::format_rfc3339(SystemTime::now());
     if let CachePolicy::Enabled(settings) = &resolved.cache {
         let cache_entry = CacheEntry::new(
             canonicalize_url(&final_url),
@@ -153,7 +156,7 @@ async fn check_robots(
 async fn fetch_content(
     input: &ResolvedRequest,
     config: &ResolvedConfig,
-    resolved_ips: &[std::net::IpAddr],
+    resolved_ips: &[IpAddr],
     notes: &mut Vec<Note>,
 ) -> Result<(String, url::Url, bool), WebFetchError> {
     let response = http::fetch(&input.url, resolved_ips, config, notes).await?;
@@ -187,7 +190,7 @@ fn write_to_cache(
     settings: &resolved::CacheSettings,
 ) -> Result<(), CacheWriteError> {
     let mut cache =
-        Cache::new(settings).map_err(|e| CacheWriteError::Io(std::io::Error::other(e.message)))?;
+        Cache::new(settings).map_err(|e| CacheWriteError::Io(io::Error::other(e.message)))?;
     cache.put(url, entry)
 }
 

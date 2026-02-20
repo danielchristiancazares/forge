@@ -8,6 +8,8 @@ use super::{
     NonEmptyString, OperationState, QueuedUserMessage, TokenCounter, distillation_model,
     generate_distillation,
 };
+use crate::security;
+use crate::util;
 
 impl super::App {
     /// Trigger compaction when context is near capacity.
@@ -88,7 +90,7 @@ impl super::App {
             (queued.config.api_key_owned(), queued.config.model().clone())
         } else {
             let key = if let Some(key) = self.current_api_key().cloned() {
-                crate::util::wrap_api_key(self.core.model.provider(), key)
+                util::wrap_api_key(self.core.model.provider(), key)
             } else {
                 self.push_notification("Cannot compact: no API key configured");
                 return DistillationStart::Failed;
@@ -165,7 +167,7 @@ impl super::App {
                 // Sanitize output before storing — summaries are injected as system
                 // messages and must not contain escape sequences, bidi controls, or
                 // leaked API keys from the summarized conversation.
-                let distillation_text = crate::security::sanitize_display_text(&distillation_text);
+                let distillation_text = security::sanitize_display_text(&distillation_text);
                 let distillation_text = if let Ok(text) = NonEmptyString::new(distillation_text) {
                     text
                 } else {

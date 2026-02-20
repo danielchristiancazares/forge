@@ -1,6 +1,6 @@
 //! Public types consumed by the engine.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub use forge_types::{LspConfig, ServerConfig};
 
@@ -104,7 +104,7 @@ impl ForgeDiagnostic {
     /// Path is sanitized to neutralize embedded newlines, tabs, and carriage
     /// returns that could break TUI layout or be used for UI spoofing.
     #[must_use]
-    pub fn display_with_path(&self, path: &std::path::Path) -> String {
+    pub fn display_with_path(&self, path: &Path) -> String {
         let path_str = path.display().to_string();
         let safe_path = forge_types::sanitize_path_display(&path_str);
         format!(

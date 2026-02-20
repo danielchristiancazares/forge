@@ -16,13 +16,25 @@ pub enum ChangeKind {
 
 /// Interactive state for the files panel.
 #[derive(Debug, Clone, Default)]
-pub struct FilesPanelState {
-    pub visible: bool,
+pub enum FilesPanelState {
+    #[default]
+    Hidden,
+    Visible(ActiveFilesPanel),
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveFilesPanel {
     /// Index into the flattened file list (modified first, then created).
     pub selected: usize,
     /// Which file's diff is currently expanded (None = collapsed).
-    pub expanded: Option<PathBuf>,
+    pub expansion: DiffExpansion,
     pub diff_scroll: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffExpansion {
+    Collapsed,
+    Expanded(PathBuf),
 }
 
 /// UI configuration options derived from config/environment.

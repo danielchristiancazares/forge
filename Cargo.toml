@@ -169,6 +169,7 @@ unnecessary_wraps = "allow"
 
 # Import hygiene
 wildcard_imports = "deny"
+absolute_paths = "deny"
 
 [profile.release]
 lto = true

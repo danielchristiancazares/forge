@@ -27,10 +27,13 @@
 //! The [`RecoveredToolBatch`] contains all persisted state, allowing the user
 //! to resume execution or discard the batch.
 
-use anyhow::{Context, Result, bail};
-use rusqlite::{Connection, OptionalExtension, params};
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::SystemTime;
+
+use anyhow::{Context, Result, bail};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::sqlite_security::prepare_db_path;
 use crate::time_utils::system_time_to_iso8601_millis;
@@ -75,7 +78,7 @@ pub struct RecoveredToolBatch {
     /// Tool calls whose arguments failed to parse (substituted with {})
     pub corrupted_args: Vec<CorruptedToolArgs>,
     /// Best-effort execution metadata keyed by tool_call_id.
-    pub call_execution: std::collections::HashMap<String, RecoveredToolCallExecution>,
+    pub call_execution: HashMap<String, RecoveredToolCallExecution>,
     /// Thinking replay state recovered from the journal.
     /// `Unsigned` when the column was NULL or unparseable (IFA §11.2: no optionality in core).
     pub thinking_replay: ThinkingReplayState,
@@ -669,8 +672,7 @@ impl ToolJournal {
         let thinking_replay = deserialize_replay(thinking_replay_json.as_deref());
 
         let mut calls: Vec<ToolCall> = Vec::new();
-        let mut call_execution: std::collections::HashMap<String, RecoveredToolCallExecution> =
-            std::collections::HashMap::new();
+        let mut call_execution: HashMap<String, RecoveredToolCallExecution> = HashMap::new();
         let mut corrupted_args: Vec<CorruptedToolArgs> = Vec::new();
         let mut stmt = self
             .db
@@ -1038,14 +1040,14 @@ fn deserialize_replay(json: Option<&str>) -> ThinkingReplayState {
     }
 }
 
-fn normalize_persistable_borrowed(input: &str) -> std::borrow::Cow<'_, str> {
+fn normalize_persistable_borrowed(input: &str) -> Cow<'_, str> {
     PersistableContent::normalize_borrowed(input)
 }
 
 fn normalize_persistable_owned(input: String) -> String {
     match normalize_persistable_borrowed(&input) {
-        std::borrow::Cow::Borrowed(_) => input,
-        std::borrow::Cow::Owned(normalized) => normalized,
+        Cow::Borrowed(_) => input,
+        Cow::Owned(normalized) => normalized,
     }
 }
 

@@ -27,11 +27,17 @@ pub(crate) const fn default_true() -> bool {
 }
 
 use std::collections::{HashMap, HashSet};
+use std::convert::AsRef;
+use std::fmt;
 use std::future::Future;
-use std::path::PathBuf;
+use std::io::Result as IoResult;
+use std::panic::UnwindSafe;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+
+use serde::de::DeserializeOwned;
 
 use change_recording::ChangeRecorder;
 use forge_context::Librarian;
@@ -236,8 +242,8 @@ pub enum DenialReason {
     },
 }
 
-impl std::fmt::Display for DenialReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for DenialReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DenialReason::Denylisted { tool } => write!(f, "Tool '{tool}' is denylisted"),
             DenialReason::PathOutsideSandbox {
@@ -264,7 +270,7 @@ impl std::fmt::Display for DenialReason {
 }
 
 /// Proof that a tool executor is safe for dynamic dispatch.
-pub trait ToolExecutor: Send + Sync + std::panic::UnwindSafe {
+pub trait ToolExecutor: Send + Sync + UnwindSafe {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn schema(&self) -> Value;
@@ -300,7 +306,7 @@ pub trait ToolExecutor: Send + Sync + std::panic::UnwindSafe {
     fn execute<'a>(&'a self, args: Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
 }
 
-pub(crate) fn parse_args<T: serde::de::DeserializeOwned>(args: &Value) -> Result<T, ToolError> {
+pub(crate) fn parse_args<T: DeserializeOwned>(args: &Value) -> Result<T, ToolError> {
     serde_json::from_value(args.clone()).map_err(|e| ToolError::BadArgs {
         message: e.to_string(),
     })
@@ -342,7 +348,7 @@ impl ToolRegistry {
     pub fn lookup(&self, name: &str) -> Result<&dyn ToolExecutor, ToolError> {
         self.executors
             .get(name)
-            .map(std::convert::AsRef::as_ref)
+            .map(AsRef::as_ref)
             .ok_or_else(|| ToolError::UnknownTool {
                 name: name.to_string(),
             })
@@ -409,12 +415,12 @@ pub type ToolFileCache = HashMap<PathBuf, FileCacheEntry>;
 /// This normalizes to lowercase to prevent cache misses due to casing differences
 /// in canonicalized paths (e.g., `C:\Users\Danie` vs `C:\Users\danie`).
 #[cfg(windows)]
-pub(crate) fn normalize_cache_key(path: &std::path::Path) -> PathBuf {
+pub(crate) fn normalize_cache_key(path: &Path) -> PathBuf {
     PathBuf::from(path.to_string_lossy().to_lowercase())
 }
 
 #[cfg(not(windows))]
-pub(crate) fn normalize_cache_key(path: &std::path::Path) -> PathBuf {
+pub(crate) fn normalize_cache_key(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
@@ -422,11 +428,7 @@ pub(crate) fn normalize_cache_key(path: &std::path::Path) -> PathBuf {
 ///
 /// Creates or merges an `ObservedRegion` covering lines `1..=line_count`,
 /// enabling stale-edit protection for files read via `@path` expansion.
-pub fn record_file_read(
-    cache: &mut ToolFileCache,
-    path: &std::path::Path,
-    line_count: u32,
-) -> std::io::Result<()> {
+pub fn record_file_read(cache: &mut ToolFileCache, path: &Path, line_count: u32) -> IoResult<()> {
     let key = normalize_cache_key(path);
     if let Some(entry) = cache.get(&key) {
         if let Ok(merged) = region_hash::merge_regions(path, &entry.observed, 1, line_count) {

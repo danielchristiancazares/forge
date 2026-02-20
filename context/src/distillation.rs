@@ -4,8 +4,8 @@
 //! into compact distillates using a cheaper/faster LLM model. Distillation
 //! preserves key facts, decisions, and context while reducing token count.
 
+use std::collections::BTreeSet;
 use std::fmt::Write;
-
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -81,7 +81,7 @@ pub fn build_distillation_prompt(messages: &[Message]) -> (String, String) {
     let system_instruction = DISTILLATION_PROMPT_TEMPLATE.to_string();
 
     let mut conversation_log = String::new();
-    let mut file_paths = std::collections::BTreeSet::new();
+    let mut file_paths = BTreeSet::new();
 
     for (i, message) in messages.iter().enumerate() {
         let role = match message {
@@ -124,7 +124,7 @@ pub fn build_distillation_prompt(messages: &[Message]) -> (String, String) {
 }
 
 /// Extract file paths from tool call arguments.
-fn extract_file_paths(args: &serde_json::Value, paths: &mut std::collections::BTreeSet<String>) {
+fn extract_file_paths(args: &serde_json::Value, paths: &mut BTreeSet<String>) {
     if let Some(obj) = args.as_object() {
         for key in ["path", "file_path", "source", "destination"] {
             if let Some(serde_json::Value::String(p)) = obj.get(key)

@@ -755,7 +755,7 @@ fn convert_table(output: &mut String, element: ElementRef<'_>, ctx: &mut Convers
     }
 
     // Find max column count
-    let col_count = rows.iter().map(std::vec::Vec::len).max().unwrap_or(0);
+    let col_count = rows.iter().map(Vec::len).max().unwrap_or(0);
     if col_count == 0 {
         return;
     }
@@ -771,7 +771,7 @@ fn convert_table(output: &mut String, element: ElementRef<'_>, ctx: &mut Convers
     let col_widths: Vec<usize> = (0..col_count)
         .map(|col| {
             rows.iter()
-                .map(|row| row.get(col).map_or(0, std::string::String::len))
+                .map(|row| row.get(col).map_or(0, String::len))
                 .max()
                 .unwrap_or(3)
                 .max(3)

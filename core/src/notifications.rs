@@ -14,6 +14,8 @@
 //! This creates a clean trust boundary: the small, finite set of notification
 //! variants defined here are trusted; everything else is untrusted.
 
+use std::mem;
+
 /// A system notification that Forge can inject into the conversation.
 ///
 /// This is a closed enum - only Forge code can construct these variants.
@@ -80,7 +82,7 @@ impl NotificationQueue {
 
     /// Returns the notifications in the order they were added.
     pub fn take(&mut self) -> Vec<SystemNotification> {
-        std::mem::take(&mut self.pending)
+        mem::take(&mut self.pending)
     }
 
     #[cfg(test)]

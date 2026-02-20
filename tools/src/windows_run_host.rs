@@ -10,6 +10,8 @@ use std::ffi::c_void;
 #[cfg(windows)]
 use std::io;
 #[cfg(windows)]
+use std::mem;
+#[cfg(windows)]
 use std::ptr;
 
 #[cfg(windows)]
@@ -55,12 +57,12 @@ fn sandbox_preflight_inner() -> Result<(), String> {
 fn probe_assign_process_to_job(job_handle: HANDLE) -> Result<(), String> {
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
-    use std::process::Stdio;
+    use std::process::{Command, Stdio};
 
     const CREATE_SUSPENDED: u32 = 0x0000_0004;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-    let mut child = std::process::Command::new("cmd")
+    let mut child = Command::new("cmd")
         .arg("/C")
         .arg("exit 0")
         .creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW)
@@ -244,14 +246,14 @@ fn set_job_information<T>(
     info_class: JOBOBJECTINFOCLASS,
     value: &T,
 ) -> Result<(), String> {
-    let info_len = u32::try_from(std::mem::size_of::<T>())
+    let info_len = u32::try_from(mem::size_of::<T>())
         .map_err(|_| "job information payload exceeded u32 size".to_string())?;
     // SAFETY: `value` points to a valid initialized payload of `info_len` bytes.
     let ok = unsafe {
         SetInformationJobObject(
             job_handle,
             info_class,
-            std::ptr::from_ref(value).cast::<c_void>(),
+            ptr::from_ref(value).cast::<c_void>(),
             info_len,
         )
     };
@@ -268,6 +270,12 @@ fn last_os_error(operation: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use std::process::Stdio;
+
+    #[cfg(windows)]
+    use tokio::process::Command;
+
     #[cfg(windows)]
     use super::{
         JOB_OBJECT_UILIMIT_DESKTOP, JOB_OBJECT_UILIMIT_READCLIPBOARD,
@@ -292,12 +300,12 @@ mod tests {
             return;
         }
 
-        let mut child = tokio::process::Command::new("cmd")
+        let mut child = Command::new("cmd")
             .arg("/C")
             .arg("ping -n 3 127.0.0.1 >NUL")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .expect("spawn child");
 

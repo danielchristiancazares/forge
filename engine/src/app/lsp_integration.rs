@@ -9,6 +9,10 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use tokio::fs;
+
+use forge_lsp::LspManager;
+
 use crate::App;
 use crate::notifications::SystemNotification;
 
@@ -107,13 +111,13 @@ impl App {
         tokio::spawn(async move {
             // Lazy start: construct manager on first call.
             if let Some(config) = config {
-                let mgr = forge_lsp::LspManager::start(config, &workspace_root).await;
+                let mgr = LspManager::start(config, &workspace_root).await;
                 let mut guard = lsp.lock().await;
                 *guard = Some(mgr);
             }
 
             for path in task_paths {
-                match tokio::fs::metadata(&path).await {
+                match fs::metadata(&path).await {
                     Ok(meta) if meta.len() > 1_048_576 => {
                         tracing::debug!(
                             "Skipping LSP notification for large file: {}",
@@ -125,7 +129,7 @@ impl App {
                     _ => {}
                 }
 
-                let text = match tokio::fs::read_to_string(&path).await {
+                let text = match fs::read_to_string(&path).await {
                     Ok(text) => text,
                     Err(e) => {
                         tracing::debug!(

@@ -27,11 +27,19 @@
 //! - [`QueuedUserMessage`]: Proof that a message is validated and ready to send
 //! - [`PreparedContext`]: Proof that context was built within token budget
 
+use std::cmp::Ordering as CmpOrdering;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::ErrorKind;
+use std::mem;
+use std::panic::Location;
+use std::path::PathBuf;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 
 use crate::ui::InputState;
 use crate::ui::{
@@ -41,18 +49,20 @@ use crate::ui::{
 };
 
 use forge_context::{
-    ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus, Librarian,
-    ModelLimitsSource, StreamJournal, TokenCounter, ToolJournal, distillation_model,
+    ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus, FullHistory,
+    Librarian, ModelLimitsSource, StreamJournal, TokenCounter, ToolJournal, distillation_model,
     generate_distillation,
 };
+use forge_lsp::{DiagnosticsSnapshot, LspManager};
 use forge_providers::{self, ApiConfig, gemini::GeminiCache, gemini::GeminiCacheConfig};
 use forge_types::{
-    ApiUsage, CacheableMessage, Message, MessageId, ModelName, NonEmptyString,
-    OpenAIReasoningEffort, OpenAIReasoningItem, OpenAIRequestOptions, OutputLimits, PlanState,
-    Provider, SecretString, StepId, StreamEvent, StreamFinishReason, ThinkingReplayState,
-    ThinkingState, ThoughtSignature, ThoughtSignatureState, ToolBatchId, ToolCall, ToolDefinition,
-    ToolResult, sanitize_terminal_text,
+    ApiUsage, CacheableMessage, EmptyStringError, LspConfig, Message, MessageId, ModelName,
+    NonEmptyString, OpenAIReasoningEffort, OpenAIReasoningItem, OpenAIRequestOptions, OutputLimits,
+    PlanState, Provider, SecretString, StepId, StreamEvent, StreamFinishReason,
+    ThinkingReplayState, ThinkingState, ThoughtSignature, ThoughtSignatureState, ToolBatchId,
+    ToolCall, ToolDefinition, ToolResult, plan::ActiveStepQuery, sanitize_terminal_text,
 };
+use forge_utils::format_unified_diff;
 
 use crate::tools;
 use crate::{EnvironmentContext, SessionChangeLog};
@@ -60,9 +70,11 @@ use crate::{EnvironmentContext, SessionChangeLog};
 // Module aliases so app submodules can keep using `super::state`, `super::ui`, etc.
 use crate::config;
 use crate::notifications;
+use crate::notifications::{NotificationQueue, SystemNotification};
 use crate::operation;
 use crate::security;
 use crate::state;
+use crate::state::{ApprovalExpanded, ApprovalSelection, JournalCleanup};
 use crate::ui;
 
 pub(crate) mod checkpoints;
@@ -170,16 +182,16 @@ pub enum ToolLoopAccess<'a> {
 pub enum ToolApprovalAccess<'a> {
     Selecting {
         requests: &'a [tools::ConfirmationRequest],
-        selected: &'a [crate::ApprovalSelection],
+        selected: &'a [ApprovalSelection],
         cursor: usize,
-        expanded: crate::ApprovalExpanded,
+        expanded: ApprovalExpanded,
         scroll_offset: usize,
     },
     ConfirmingDeny {
         requests: &'a [tools::ConfirmationRequest],
-        selected: &'a [crate::ApprovalSelection],
+        selected: &'a [ApprovalSelection],
         cursor: usize,
-        expanded: crate::ApprovalExpanded,
+        expanded: ApprovalExpanded,
         scroll_offset: usize,
     },
     Inactive,
@@ -258,13 +270,13 @@ pub(crate) struct TurnConfigStaging {
 #[derive(Debug, Clone)]
 pub(crate) enum LibrarianState {
     Disabled,
-    Enabled(std::sync::Arc<tokio::sync::Mutex<Librarian>>),
+    Enabled(Arc<Mutex<Librarian>>),
 }
 
 impl LibrarianState {
     /// Cross-crate boundary shim — tools::ToolCtx.librarian still takes Option.
     // TODO(IFA): Push LibrarianState into tools crate to eliminate this bridge.
-    fn to_tool_handle(&self) -> Option<std::sync::Arc<tokio::sync::Mutex<Librarian>>> {
+    fn to_tool_handle(&self) -> Option<Arc<Mutex<Librarian>>> {
         match self {
             Self::Enabled(arc) => Some(arc.clone()),
             Self::Disabled => None,
@@ -335,7 +347,7 @@ impl ActiveTurnUsage {
 
     /// Transfer into completed form. Resets self to Inactive.
     fn finalize(&mut self) -> CompletedTurnUsage {
-        match std::mem::take(self) {
+        match mem::take(self) {
             Self::Inactive => CompletedTurnUsage::NoTurnCompleted,
             Self::Accumulating(u) => CompletedTurnUsage::Available(u),
         }
@@ -865,11 +877,11 @@ impl StreamingMessage {
         }
     }
 
-    pub fn into_message(self) -> Result<Message, forge_types::EmptyStringError> {
+    pub fn into_message(self) -> Result<Message, EmptyStringError> {
         // Persisted assistant content is untrusted external text; sanitize before it can
         // reach history/context storage to prevent terminal injection, invisible prompt
         // injection, and secret leaks.
-        let sanitized = crate::security::sanitize_display_text(&self.content);
+        let sanitized = security::sanitize_display_text(&self.content);
         let content = NonEmptyString::new(sanitized)?;
         Ok(Message::assistant(self.model, content, SystemTime::now()))
     }
@@ -903,7 +915,7 @@ pub(crate) struct ProviderRuntimeState {
     openai_reasoning_effort_explicit: bool,
     /// Active Gemini cache (if caching enabled and cache created).
     /// Uses `Arc<Mutex>` because cache is created/updated inside async streaming tasks.
-    gemini_cache: std::sync::Arc<tokio::sync::Mutex<Option<GeminiCache>>>,
+    gemini_cache: Arc<Mutex<Option<GeminiCache>>>,
     /// Whether Gemini thinking mode is enabled via config.
     gemini_thinking_enabled: bool,
     anthropic_thinking_mode: config::AnthropicThinkingMode,
@@ -917,14 +929,14 @@ pub(crate) struct ProviderRuntimeState {
 
 struct LspRuntimeState {
     /// LSP config, consumed on first start. `None` once started or if LSP is disabled.
-    config: Option<forge_types::LspConfig>,
+    config: Option<LspConfig>,
     /// LSP client manager. Populated lazily on first tool batch via `LspManager::start()`.
     /// `Arc<Mutex<Option<>>>` so the spawned startup task can populate it.
-    manager: std::sync::Arc<tokio::sync::Mutex<Option<forge_lsp::LspManager>>>,
+    manager: Arc<Mutex<Option<LspManager>>>,
     /// Cached diagnostics snapshot for UI display and agent feedback.
-    snapshot: forge_lsp::DiagnosticsSnapshot,
+    snapshot: DiagnosticsSnapshot,
     /// Pending diagnostics check: edited files + deadline for deferred error injection.
-    pending_diag_check: Option<(Vec<std::path::PathBuf>, Instant)>,
+    pending_diag_check: Option<(Vec<PathBuf>, Instant)>,
 }
 
 struct AppUi {
@@ -990,7 +1002,7 @@ struct AppCore {
     /// API usage from the last completed turn (for status bar display).
     last_turn_usage: CompletedTurnUsage,
     /// Queue of pending system notifications to inject into next API request.
-    notification_queue: crate::notifications::NotificationQueue,
+    notification_queue: NotificationQueue,
     /// Plan lifecycle state (Inactive / Proposed / Active).
     plan_state: PlanState,
 }
@@ -998,13 +1010,13 @@ struct AppCore {
 struct AppRuntime {
     api_keys: HashMap<Provider, SecretString>,
     /// Path to the config file for persist operations.
-    config_path: std::path::PathBuf,
+    config_path: PathBuf,
     tick: usize,
     data_dir: DataDir,
     stream_journal: StreamJournal,
     provider_runtime: ProviderRuntimeState,
     /// Tool registry for executors.
-    tool_registry: std::sync::Arc<tools::ToolRegistry>,
+    tool_registry: Arc<tools::ToolRegistry>,
     /// Tool settings derived from config.
     tool_settings: tools::ToolSettings,
     /// Tool journal for crash recovery.
@@ -1013,14 +1025,14 @@ struct AppRuntime {
     ///
     /// Best-effort retries run during `tick()` when idle. If this remains uncleared,
     /// `StreamJournal::begin_session()` will refuse to start new streams.
-    stream_cleanup: crate::state::JournalCleanup<StepId>,
+    stream_cleanup: JournalCleanup<StepId>,
     /// Tool journal batch that needs pruning cleanup.
     ///
     /// Best-effort retries run during `tick()` when idle. If this remains uncleared,
     /// `ToolJournal::begin_*batch()` will refuse to start new batches.
-    tool_cleanup: crate::state::JournalCleanup<ToolBatchId>,
+    tool_cleanup: JournalCleanup<ToolBatchId>,
     /// File hash cache for tool safety checks.
-    tool_file_cache: std::sync::Arc<tokio::sync::Mutex<tools::ToolFileCache>>,
+    tool_file_cache: Arc<Mutex<tools::ToolFileCache>>,
     /// Whether we've already warned about a failed history load.
     history_load_warning_shown: bool,
     /// Whether we've already warned about autosave failures.
@@ -1065,7 +1077,7 @@ impl App {
     }
 
     pub fn take_clear_transcript(&mut self) -> bool {
-        std::mem::take(&mut self.ui.view.clear_transcript)
+        mem::take(&mut self.ui.view.clear_transcript)
     }
 
     pub fn ui_options(&self) -> UiOptions {
@@ -1231,23 +1243,33 @@ impl App {
 
     /// Toggle visibility of the files panel.
     pub fn toggle_files_panel(&mut self) {
-        let panel = &mut self.ui.view.files_panel;
+        let is_visible = matches!(self.ui.view.files_panel, FilesPanelState::Visible(_));
         if self.ui.view.ui_options.reduced_motion {
             self.ui.view.files_panel_effect = None;
-            panel.visible = !panel.visible;
-            if !panel.visible {
-                panel.expanded = None;
-                panel.diff_scroll = 0;
+            if is_visible {
+                self.ui.view.files_panel = FilesPanelState::Hidden;
+            } else {
+                self.ui.view.files_panel = FilesPanelState::Visible(ui::ActiveFilesPanel {
+                    selected: 0,
+                    expansion: ui::DiffExpansion::Collapsed,
+                    diff_scroll: 0,
+                });
+                self.files_panel_sync_selection();
             }
             return;
         }
 
-        if panel.visible {
+        if is_visible {
             self.ui.view.files_panel_effect =
                 Some(PanelEffect::slide_out_right(Duration::from_millis(180)));
             self.ui.view.last_frame = Instant::now();
         } else {
-            panel.visible = true;
+            self.ui.view.files_panel = FilesPanelState::Visible(ui::ActiveFilesPanel {
+                selected: 0,
+                expansion: ui::DiffExpansion::Collapsed,
+                diff_scroll: 0,
+            });
+            self.files_panel_sync_selection();
             self.ui.view.files_panel_effect =
                 Some(PanelEffect::slide_in_right(Duration::from_millis(180)));
             self.ui.view.last_frame = Instant::now();
@@ -1256,15 +1278,12 @@ impl App {
 
     /// Close the files panel (no-op if already hidden).
     pub fn close_files_panel(&mut self) {
-        if !self.ui.view.files_panel.visible {
+        if matches!(self.ui.view.files_panel, FilesPanelState::Hidden) {
             return;
         }
         if self.ui.view.ui_options.reduced_motion {
             self.ui.view.files_panel_effect = None;
-            let panel = &mut self.ui.view.files_panel;
-            panel.visible = false;
-            panel.expanded = None;
-            panel.diff_scroll = 0;
+            self.ui.view.files_panel = FilesPanelState::Hidden;
             return;
         }
         self.ui.view.files_panel_effect =
@@ -1273,7 +1292,7 @@ impl App {
     }
 
     pub fn files_panel_visible(&self) -> bool {
-        self.ui.view.files_panel.visible
+        matches!(self.ui.view.files_panel, FilesPanelState::Visible(_))
     }
 
     pub fn files_panel_effect_mut(&mut self) -> Option<&mut PanelEffect> {
@@ -1288,10 +1307,7 @@ impl App {
         if let Some(effect) = &self.ui.view.files_panel_effect
             && effect.kind() == PanelEffectKind::SlideOutRight
         {
-            let panel = &mut self.ui.view.files_panel;
-            panel.visible = false;
-            panel.expanded = None;
-            panel.diff_scroll = 0;
+            self.ui.view.files_panel = FilesPanelState::Hidden;
         }
         self.ui.view.files_panel_effect = None;
     }
@@ -1301,7 +1317,7 @@ impl App {
     }
 
     /// Filters out files that no longer exist on disk.
-    pub fn ordered_files(&self) -> Vec<(std::path::PathBuf, ChangeKind)> {
+    pub fn ordered_files(&self) -> Vec<(PathBuf, ChangeKind)> {
         let changes = &self.core.session_changes;
         changes
             .modified
@@ -1327,16 +1343,18 @@ impl App {
         if count == 0 {
             return;
         }
-        let new_selected = (self.ui.view.files_panel.selected + 1) % count;
-        let expanded_path = self
-            .ordered_files()
-            .get(new_selected)
-            .map(|(p, _)| p.clone());
-
-        let panel = &mut self.ui.view.files_panel;
-        panel.selected = new_selected;
-        panel.diff_scroll = 0;
-        panel.expanded = expanded_path;
+        let files = self.ordered_files();
+        if let FilesPanelState::Visible(ref mut active) = self.ui.view.files_panel {
+            active.selected = (active.selected + 1) % count;
+            active.diff_scroll = 0;
+            if matches!(active.expansion, ui::DiffExpansion::Expanded(_)) {
+                if let Some((path, _)) = files.get(active.selected) {
+                    active.expansion = ui::DiffExpansion::Expanded(path.clone());
+                } else {
+                    active.expansion = ui::DiffExpansion::Collapsed;
+                }
+            }
+        }
     }
 
     /// Cycle to the previous file in the panel (wrapping).
@@ -1345,24 +1363,31 @@ impl App {
         if count == 0 {
             return;
         }
-        let new_selected = if self.ui.view.files_panel.selected == 0 {
-            count - 1
-        } else {
-            self.ui.view.files_panel.selected - 1
-        };
-        let expanded_path = self
-            .ordered_files()
-            .get(new_selected)
-            .map(|(p, _)| p.clone());
-
-        let panel = &mut self.ui.view.files_panel;
-        panel.selected = new_selected;
-        panel.diff_scroll = 0;
-        panel.expanded = expanded_path;
+        let files = self.ordered_files();
+        if let FilesPanelState::Visible(ref mut active) = self.ui.view.files_panel {
+            active.selected = if active.selected == 0 {
+                count - 1
+            } else {
+                active.selected - 1
+            };
+            active.diff_scroll = 0;
+            if matches!(active.expansion, ui::DiffExpansion::Expanded(_)) {
+                if let Some((path, _)) = files.get(active.selected) {
+                    active.expansion = ui::DiffExpansion::Expanded(path.clone());
+                } else {
+                    active.expansion = ui::DiffExpansion::Collapsed;
+                }
+            }
+        }
     }
 
     pub fn files_panel_expanded(&self) -> bool {
-        self.ui.view.files_panel.expanded.is_some()
+        match &self.ui.view.files_panel {
+            FilesPanelState::Visible(active) => {
+                matches!(active.expansion, ui::DiffExpansion::Expanded(_))
+            }
+            FilesPanelState::Hidden => false,
+        }
     }
 
     pub fn files_panel_state(&self) -> &FilesPanelState {
@@ -1371,12 +1396,16 @@ impl App {
 
     /// Collapse the expanded diff.
     pub fn files_panel_collapse(&mut self) {
-        self.ui.view.files_panel.expanded = None;
-        self.ui.view.files_panel.diff_scroll = 0;
+        if let FilesPanelState::Visible(ref mut active) = self.ui.view.files_panel {
+            active.expansion = ui::DiffExpansion::Collapsed;
+            active.diff_scroll = 0;
+        }
     }
 
     pub fn files_panel_sync_selection(&mut self) {
-        let panel = &mut self.ui.view.files_panel;
+        let FilesPanelState::Visible(ref mut active) = self.ui.view.files_panel else {
+            return;
+        };
         let files = self
             .core
             .session_changes
@@ -1387,35 +1416,44 @@ impl App {
             .filter(|p| p.exists())
             .collect::<Vec<_>>();
 
-        if let Some(expanded_path) = &panel.expanded {
+        if let ui::DiffExpansion::Expanded(expanded_path) = &active.expansion {
             if let Some(new_idx) = files.iter().position(|p| p == expanded_path) {
-                panel.selected = new_idx;
+                active.selected = new_idx;
             } else {
-                panel.expanded = None;
-                panel.diff_scroll = 0;
-                panel.selected = panel.selected.min(files.len().saturating_sub(1));
+                active.expansion = ui::DiffExpansion::Collapsed;
+                active.diff_scroll = 0;
+                active.selected = active.selected.min(files.len().saturating_sub(1));
             }
         } else {
-            panel.selected = panel.selected.min(files.len().saturating_sub(1));
+            active.selected = active.selected.min(files.len().saturating_sub(1));
         }
     }
 
     /// Scroll the diff view down.
     pub fn files_panel_scroll_diff_down(&mut self) {
-        self.ui.view.files_panel.diff_scroll += 10;
+        if let FilesPanelState::Visible(ref mut active) = self.ui.view.files_panel {
+            active.diff_scroll += 10;
+        }
     }
 
     pub fn files_panel_scroll_diff_up(&mut self) {
-        self.ui.view.files_panel.diff_scroll =
-            self.ui.view.files_panel.diff_scroll.saturating_sub(10);
+        if let FilesPanelState::Visible(ref mut active) = self.ui.view.files_panel {
+            active.diff_scroll = active.diff_scroll.saturating_sub(10);
+        }
     }
 
     pub fn files_panel_diff(&self) -> Option<FileDiff> {
-        let path = self.ui.view.files_panel.expanded.as_ref()?;
+        let path = match &self.ui.view.files_panel {
+            FilesPanelState::Visible(active) => match &active.expansion {
+                ui::DiffExpansion::Expanded(p) => p,
+                ui::DiffExpansion::Collapsed => return None,
+            },
+            FilesPanelState::Hidden => return None,
+        };
 
-        let current = match std::fs::read(path) {
+        let current = match fs::read(path) {
             Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(e) if e.kind() == ErrorKind::NotFound => {
                 return Some(FileDiff::Deleted);
             }
             Err(e) => return Some(FileDiff::Error(e.to_string())),
@@ -1428,26 +1466,22 @@ impl App {
 
         let baseline = self.core.checkpoints.find_baseline_for_file(path);
         match baseline {
-            crate::app::checkpoints::FileBaselineLookup::Found(proof) => {
+            checkpoints::FileBaselineLookup::Found(proof) => {
                 match self.core.checkpoints.baseline_content(proof, path) {
-                    crate::app::checkpoints::BaselineContentLookup::Existed(old_bytes) => {
-                        let diff = forge_utils::format_unified_diff(
-                            &path.to_string_lossy(),
-                            old_bytes,
-                            &current,
-                            true,
-                        );
+                    checkpoints::BaselineContentLookup::Existed(old_bytes) => {
+                        let diff =
+                            format_unified_diff(&path.to_string_lossy(), old_bytes, &current, true);
                         Some(FileDiff::Diff(diff))
                     }
-                    crate::app::checkpoints::BaselineContentLookup::MissingAtCheckpoint
-                    | crate::app::checkpoints::BaselineContentLookup::MissingBaseline => {
+                    checkpoints::BaselineContentLookup::MissingAtCheckpoint
+                    | checkpoints::BaselineContentLookup::MissingBaseline => {
                         let content = String::from_utf8_lossy(&current);
                         let lines: Vec<_> = content.lines().map(|l| format!("+{l}")).collect();
                         Some(FileDiff::Created(lines.join("\n")))
                     }
                 }
             }
-            crate::app::checkpoints::FileBaselineLookup::Missing => {
+            checkpoints::FileBaselineLookup::Missing => {
                 let content = String::from_utf8_lossy(&current);
                 let lines: Vec<_> = content.lines().map(|l| format!("+{l}")).collect();
                 Some(FileDiff::Created(lines.join("\n")))
@@ -1498,7 +1532,7 @@ impl App {
         self.runtime.tick
     }
 
-    pub fn history(&self) -> &forge_context::FullHistory {
+    pub fn history(&self) -> &FullHistory {
         self.core.context_manager.history()
     }
 
@@ -1622,7 +1656,7 @@ impl App {
         Some(&self.tool_approval_ref()?.data().requests)
     }
 
-    pub fn tool_approval_selected(&self) -> Option<&[crate::ApprovalSelection]> {
+    pub fn tool_approval_selected(&self) -> Option<&[ApprovalSelection]> {
         Some(&self.tool_approval_ref()?.data().selected)
     }
 
@@ -1630,10 +1664,10 @@ impl App {
         Some(self.tool_approval_ref()?.data().cursor)
     }
 
-    pub fn tool_approval_expanded(&self) -> crate::ApprovalExpanded {
+    pub fn tool_approval_expanded(&self) -> ApprovalExpanded {
         self.tool_approval_ref()
             .map(|s| s.data().expanded)
-            .unwrap_or(crate::ApprovalExpanded::Collapsed)
+            .unwrap_or(ApprovalExpanded::Collapsed)
     }
 
     pub fn tool_approval_scroll_offset(&self) -> usize {
@@ -1670,7 +1704,7 @@ impl App {
     pub fn plan_status_line(&self) -> Option<String> {
         match &self.core.plan_state {
             PlanState::Active(plan) => {
-                if let forge_types::plan::ActiveStepQuery::Active(active) = plan.active_step() {
+                if let ActiveStepQuery::Active(active) = plan.active_step() {
                     let phase_name = plan.phases()[active.phase_index()].name();
                     Some(format!(
                         "Plan: {phase_name} — {}",
@@ -1701,8 +1735,7 @@ impl App {
     }
 
     pub fn tool_loop_access(&self) -> ToolLoopAccess<'_> {
-        static EMPTY_OUTPUT: std::sync::LazyLock<HashMap<String, Vec<String>>> =
-            std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_OUTPUT: LazyLock<HashMap<String, Vec<String>>> = LazyLock::new(HashMap::new);
         let Some(tl) = self.tool_loop_state() else {
             return ToolLoopAccess::Inactive;
         };
@@ -1985,7 +2018,7 @@ impl App {
     ///
     /// Notifications are injected as assistant messages, which cannot be forged
     /// by user input, providing a secure channel for system-level communication.
-    pub fn queue_notification(&mut self, notification: crate::notifications::SystemNotification) {
+    pub fn queue_notification(&mut self, notification: SystemNotification) {
         self.core.notification_queue.push(notification);
     }
 
@@ -2000,7 +2033,7 @@ impl App {
 
     fn op_take(&mut self) -> OperationState {
         let idle = self.idle_state();
-        std::mem::replace(&mut self.core.state, idle)
+        mem::replace(&mut self.core.state, idle)
     }
 
     fn op_take_streaming(&mut self) -> OperationTake<ActiveStream> {
@@ -2048,7 +2081,7 @@ impl App {
     #[track_caller]
     fn op_edge(&mut self, edge: OperationEdge) {
         let state = self.core.state.tag();
-        let loc = std::panic::Location::caller();
+        let loc = Location::caller();
         let legal = Self::op_is_legal_transition(state, edge, state);
         if !legal {
             tracing::warn!(
@@ -2100,7 +2133,7 @@ impl App {
         let to = next.tag();
         let edge = Self::op_transition_edge(from, to);
         if let Some(edge) = edge {
-            let loc = std::panic::Location::caller();
+            let loc = Location::caller();
             let legal = Self::op_is_legal_transition(from, edge, to);
             if !legal {
                 tracing::warn!(
@@ -2122,7 +2155,7 @@ impl App {
             }
         }
         if from != to {
-            let loc = std::panic::Location::caller();
+            let loc = Location::caller();
             tracing::debug!(
                 from = ?from,
                 to = ?to,
@@ -2147,7 +2180,7 @@ impl App {
         let to = next.tag();
         let edge = Self::op_transition_edge(from, to);
         if let Some(edge) = edge {
-            let loc = std::panic::Location::caller();
+            let loc = Location::caller();
             let legal = Self::op_is_legal_transition(from, edge, to);
             if !legal {
                 tracing::warn!(
@@ -2169,7 +2202,7 @@ impl App {
             }
         }
         if from != to {
-            let loc = std::panic::Location::caller();
+            let loc = Location::caller();
             tracing::debug!(
                 from = ?from,
                 to = ?to,
@@ -2449,21 +2482,21 @@ impl App {
     }
 
     pub fn enter_normal_mode(&mut self) {
-        self.ui.input = std::mem::take(&mut self.ui.input).into_normal();
+        self.ui.input = mem::take(&mut self.ui.input).into_normal();
         self.reset_settings_detail_editor();
         self.ui.view.modal_effect = None;
     }
 
     pub fn enter_insert_mode(&mut self) {
-        self.ui.input = std::mem::take(&mut self.ui.input).into_insert();
+        self.ui.input = mem::take(&mut self.ui.input).into_insert();
     }
 
     pub fn enter_command_mode(&mut self) {
-        self.ui.input = std::mem::take(&mut self.ui.input).into_command();
+        self.ui.input = mem::take(&mut self.ui.input).into_command();
     }
 
     fn enter_settings_surface(&mut self, surface: SettingsSurface) {
-        let current = std::mem::take(&mut self.ui.input);
+        let current = mem::take(&mut self.ui.input);
         self.ui.input = if surface == SettingsSurface::Root {
             current.into_settings()
         } else {
@@ -2920,7 +2953,7 @@ impl App {
 
     #[must_use]
     pub fn session_config_hash(&self) -> String {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut hasher = DefaultHasher::new();
         self.core.model.as_str().hash(&mut hasher);
         self.core
             .turn_config
@@ -3369,7 +3402,7 @@ impl App {
             .iter()
             .position(|m| m.to_model_name() == self.core.model)
             .unwrap_or(0);
-        self.ui.input = std::mem::take(&mut self.ui.input).into_model_select(index);
+        self.ui.input = mem::take(&mut self.ui.input).into_model_select(index);
         if self.ui.view.ui_options.reduced_motion {
             self.ui.view.modal_effect = None;
         } else {
@@ -3452,7 +3485,7 @@ impl App {
                 .file_picker
                 .scan_files(&root, &self.runtime.tool_settings.sandbox);
         }
-        self.ui.input = std::mem::take(&mut self.ui.input).into_file_select();
+        self.ui.input = mem::take(&mut self.ui.input).into_file_select();
         if self.ui.view.ui_options.reduced_motion {
             self.ui.view.modal_effect = None;
         } else {
@@ -3560,7 +3593,7 @@ impl App {
             return;
         }
         data.cursor -= 1;
-        data.expanded = crate::ApprovalExpanded::Collapsed;
+        data.expanded = ApprovalExpanded::Collapsed;
     }
 
     pub fn tool_approval_move_down(&mut self) {
@@ -3572,7 +3605,7 @@ impl App {
         if data.cursor < max_cursor {
             data.cursor += 1;
         }
-        data.expanded = crate::ApprovalExpanded::Collapsed;
+        data.expanded = ApprovalExpanded::Collapsed;
     }
 
     pub fn tool_approval_toggle(&mut self) {
@@ -3595,10 +3628,8 @@ impl App {
             return;
         }
         data.expanded = match data.expanded {
-            crate::ApprovalExpanded::Expanded(idx) if idx == data.cursor => {
-                crate::ApprovalExpanded::Collapsed
-            }
-            _ => crate::ApprovalExpanded::Expanded(data.cursor),
+            ApprovalExpanded::Expanded(idx) if idx == data.cursor => ApprovalExpanded::Collapsed,
+            _ => ApprovalExpanded::Expanded(data.cursor),
         };
     }
 
@@ -3623,9 +3654,9 @@ impl App {
         let num_tools = data.requests.len();
 
         match cursor.cmp(&num_tools) {
-            std::cmp::Ordering::Less => self.tool_approval_toggle(),
-            std::cmp::Ordering::Equal => self.tool_approval_confirm_selected(),
-            std::cmp::Ordering::Greater => self.tool_approval_request_deny_all(),
+            CmpOrdering::Less => self.tool_approval_toggle(),
+            CmpOrdering::Equal => self.tool_approval_confirm_selected(),
+            CmpOrdering::Greater => self.tool_approval_request_deny_all(),
         }
     }
 

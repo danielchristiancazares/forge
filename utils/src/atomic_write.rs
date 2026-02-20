@@ -3,7 +3,8 @@
 //! Uses a temp file + rename pattern. On Windows, rename-over-existing fails, so we
 //! use a backup-and-restore fallback to avoid data loss when overwriting.
 
-use std::io::Write;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::Path;
 
 use tempfile::NamedTempFile;
@@ -47,7 +48,7 @@ impl Default for AtomicWriteOptions {
 pub fn recover_bak_file(path: &Path) {
     let backup = path.with_extension("bak");
     if !path.exists() && backup.exists() {
-        match std::fs::rename(&backup, path) {
+        match fs::rename(&backup, path) {
             Ok(()) => {
                 tracing::warn!(
                     path = %path.display(),
@@ -64,7 +65,7 @@ pub fn recover_bak_file(path: &Path) {
     }
 }
 
-pub fn atomic_write(path: impl AsRef<Path>, bytes: &[u8]) -> std::io::Result<()> {
+pub fn atomic_write(path: impl AsRef<Path>, bytes: &[u8]) -> io::Result<()> {
     atomic_write_with_options(path, bytes, AtomicWriteOptions::default())
 }
 
@@ -72,7 +73,7 @@ pub fn atomic_write_new_with_options(
     path: impl AsRef<Path>,
     bytes: &[u8],
     options: AtomicWriteOptions,
-) -> std::io::Result<()> {
+) -> io::Result<()> {
     let path = path.as_ref();
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let parent = if parent.as_os_str().is_empty() {
@@ -85,7 +86,7 @@ pub fn atomic_write_new_with_options(
     #[cfg(unix)]
     if let Some(mode) = options.unix_mode {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(mode))?;
+        fs::set_permissions(tmp.path(), Permissions::from_mode(mode))?;
     }
 
     tmp.write_all(bytes)?;
@@ -101,7 +102,7 @@ pub fn atomic_write_new_with_options(
     #[cfg(unix)]
     if let Some(mode) = options.unix_mode {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        fs::set_permissions(path, Permissions::from_mode(mode))?;
     }
 
     if options.dir_sync {
@@ -120,7 +121,7 @@ fn best_effort_sync_parent_dir(parent: &Path) {
 
     #[cfg(unix)]
     {
-        if let Err(e) = std::fs::File::open(parent).and_then(|d| d.sync_all()) {
+        if let Err(e) = File::open(parent).and_then(|d| d.sync_all()) {
             debug!(path = %parent.display(), "Parent directory sync_all failed (best-effort): {e}");
         }
     }
@@ -132,7 +133,7 @@ fn best_effort_sync_parent_dir(parent: &Path) {
         // From winbase.h. Required to open a directory handle on Windows.
         const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 
-        let mut opts = std::fs::OpenOptions::new();
+        let mut opts = OpenOptions::new();
         opts.read(true)
             .write(true)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
@@ -147,7 +148,7 @@ pub fn atomic_write_with_options(
     path: impl AsRef<Path>,
     bytes: &[u8],
     options: AtomicWriteOptions,
-) -> std::io::Result<()> {
+) -> io::Result<()> {
     let path = path.as_ref();
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let parent = if parent.as_os_str().is_empty() {
@@ -160,7 +161,7 @@ pub fn atomic_write_with_options(
     #[cfg(unix)]
     if let Some(mode) = options.unix_mode {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(mode))?;
+        fs::set_permissions(tmp.path(), Permissions::from_mode(mode))?;
     }
 
     tmp.write_all(bytes)?;
@@ -173,14 +174,14 @@ pub fn atomic_write_with_options(
         if path.exists() {
             // Windows fallback: backup and restore.
             let backup_path = path.with_extension("bak");
-            let _ = std::fs::remove_file(&backup_path);
-            std::fs::rename(path, &backup_path)?;
+            let _ = fs::remove_file(&backup_path);
+            fs::rename(path, &backup_path)?;
 
             if let Err(rename_err) = err.file.persist(path) {
-                let _ = std::fs::rename(&backup_path, path);
+                let _ = fs::rename(&backup_path, path);
                 return Err(rename_err.error);
             }
-            if let Err(e) = std::fs::remove_file(&backup_path) {
+            if let Err(e) = fs::remove_file(&backup_path) {
                 tracing::warn!(
                     path = %backup_path.display(),
                     "Failed to remove .bak after atomic write: {e}"
@@ -194,7 +195,7 @@ pub fn atomic_write_with_options(
     #[cfg(unix)]
     if let Some(mode) = options.unix_mode {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        fs::set_permissions(path, Permissions::from_mode(mode))?;
     }
 
     if options.dir_sync {
@@ -206,6 +207,8 @@ pub fn atomic_write_with_options(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::{AtomicWriteOptions, atomic_write_with_options};
 
     #[test]
@@ -221,7 +224,7 @@ mod tests {
         atomic_write_with_options(&path, b"one", opts).expect("write one");
         atomic_write_with_options(&path, b"two", opts).expect("write two");
 
-        let content = std::fs::read_to_string(&path).expect("read");
+        let content = fs::read_to_string(&path).expect("read");
         assert_eq!(content, "two");
         assert!(!path.with_extension("bak").exists());
     }
@@ -241,11 +244,7 @@ mod tests {
 
         atomic_write_with_options(&path, b"secret", opts).expect("write");
 
-        let mode = std::fs::metadata(&path)
-            .expect("metadata")
-            .permissions()
-            .mode()
-            & 0o777;
+        let mode = fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }
 }

@@ -4,9 +4,13 @@
 //! PowerShell command string without executing it.
 
 use std::path::Path;
+use std::process::Stdio;
+use std::time::Duration;
 
+use futures_util::future::join;
 use serde::Deserialize;
 use tokio::process::Command;
+use tokio::time::timeout;
 
 use super::process::ChildGuard;
 use super::{DenialReason, EnvSanitizer, ToolError};
@@ -186,7 +190,7 @@ const AST_PROBE_SCRIPT: &str = r"& {
   $out | ConvertTo-Json -Compress -Depth 6
 }";
 
-const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PROBE_OUTPUT: usize = 64 * 1024;
 
 pub(crate) async fn policy_text_for_command(
@@ -203,9 +207,9 @@ pub(crate) async fn policy_text_for_command(
         .arg("-NonInteractive")
         .arg("-Command")
         .arg(AST_PROBE_SCRIPT)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     #[cfg(unix)]
     super::process::set_new_session(&mut cmd);
@@ -241,7 +245,7 @@ pub(crate) async fn policy_text_for_command(
         let mut stderr_buf = Vec::with_capacity(1024);
         let mut stdout_bounded = stdout_pipe.take(MAX_PROBE_OUTPUT as u64);
         let mut stderr_bounded = stderr_pipe.take(MAX_PROBE_OUTPUT as u64);
-        let (r1, r2) = futures_util::future::join(
+        let (r1, r2) = join(
             stdout_bounded.read_to_end(&mut stdout_buf),
             stderr_bounded.read_to_end(&mut stderr_buf),
         )
@@ -257,12 +261,13 @@ pub(crate) async fn policy_text_for_command(
         Ok::<_, ToolError>((stdout_buf, stderr_buf))
     };
 
-    let (stdout_buf, stderr_buf) = tokio::time::timeout(PROBE_TIMEOUT, io_future)
-        .await
-        .map_err(|_| ToolError::ExecutionFailed {
-            tool: "Run".to_string(),
-            message: "PowerShell AST probe timed out (10s)".to_string(),
-        })??;
+    let (stdout_buf, stderr_buf) =
+        timeout(PROBE_TIMEOUT, io_future)
+            .await
+            .map_err(|_| ToolError::ExecutionFailed {
+                tool: "Run".to_string(),
+                message: "PowerShell AST probe timed out (10s)".to_string(),
+            })??;
 
     let status = guard
         .child_mut()

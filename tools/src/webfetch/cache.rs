@@ -11,6 +11,7 @@
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -92,8 +93,8 @@ impl CacheEntry {
             + self.expires_at.len()
             + self.last_accessed_at.len()
             + self.final_url.len()
-            + self.title.as_ref().map_or(0, std::string::String::len)
-            + self.language.as_ref().map_or(0, std::string::String::len)
+            + self.title.as_ref().map_or(0, String::len)
+            + self.language.as_ref().map_or(0, String::len)
             + self.markdown.len();
 
         (base_overhead + content_size) as u64
@@ -367,7 +368,7 @@ pub enum CacheWriteError {
     SerializationFailed(String),
     /// IO error.
     #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(#[from] io::Error),
 }
 
 /// Derive cache key from URL.
@@ -491,6 +492,8 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::thread::sleep;
+
     use super::{
         Cache, CacheEntry, CacheSettings, Duration, SystemTime, Url, cache_key, format_rfc3339,
         parse_rfc3339,
@@ -566,7 +569,7 @@ mod tests {
         );
 
         // Should be expired immediately (or very soon)
-        std::thread::sleep(Duration::from_millis(10));
+        sleep(Duration::from_millis(10));
         assert!(entry.is_expired());
     }
 }

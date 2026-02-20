@@ -1,21 +1,30 @@
 //! Shared subprocess management utilities.
 
+use std::env::vars as env_vars;
+use std::io::Error as IoError;
+
+use tokio::process::{Child, Command};
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::FILETIME;
+
+use crate::EnvSanitizer;
+
 /// RAII guard that kills a child process (and its process group on Unix) on drop.
 ///
 /// Wrap a spawned `tokio::process::Child` immediately after `spawn()` to ensure
 /// cleanup if the owning future is cancelled. Call `disarm()` after the process
 /// exits normally to prevent the kill.
 pub struct ChildGuard {
-    child: Option<tokio::process::Child>,
+    child: Option<Child>,
 }
 
 impl ChildGuard {
     #[must_use]
-    pub fn new(child: tokio::process::Child) -> Self {
+    pub fn new(child: Child) -> Self {
         Self { child: Some(child) }
     }
 
-    pub fn child_mut(&mut self) -> &mut tokio::process::Child {
+    pub fn child_mut(&mut self) -> &mut Child {
         self.child.as_mut().expect("child present")
     }
 
@@ -53,11 +62,8 @@ impl Drop for ChildGuard {
     }
 }
 
-pub(crate) fn apply_sanitized_env(
-    cmd: &mut tokio::process::Command,
-    env_sanitizer: &crate::EnvSanitizer,
-) {
-    let env: Vec<(String, String)> = std::env::vars().collect();
+pub(crate) fn apply_sanitized_env(cmd: &mut Command, env_sanitizer: &EnvSanitizer) {
+    let env: Vec<(String, String)> = env_vars().collect();
     let sanitized = env_sanitizer.sanitize_env(&env);
     cmd.env_clear();
     cmd.envs(sanitized);
@@ -75,7 +81,7 @@ pub enum ProcessStartTimeError {
     #[error("unsupported platform")]
     UnsupportedPlatform,
     #[error("OS error: {0}")]
-    Os(#[from] std::io::Error),
+    Os(#[from] IoError),
     #[error("proc_pidinfo returned {got} bytes, expected {expected}")]
     PartialRead { expected: i32, got: i32 },
     #[error("sysconf(_SC_CLK_TCK) returned non-positive value")]
@@ -119,11 +125,11 @@ pub fn process_started_at_unix_ms(pid: u32) -> Result<i64, ProcessStartTimeError
 ///
 /// On Unix this targets the process group id matching `pid` (Forge creates a new session
 /// for `Run`, making pid == process group id).
-pub fn try_kill_process_group(pid: u32) -> std::io::Result<KillOutcome> {
+pub fn try_kill_process_group(pid: u32) -> Result<KillOutcome, IoError> {
     #[cfg(unix)]
     unsafe {
         if libc::killpg(pid as i32, libc::SIGKILL) == -1 {
-            let err = std::io::Error::last_os_error();
+            let err = IoError::last_os_error();
             if err.raw_os_error() == Some(libc::ESRCH) {
                 return Ok(KillOutcome::NotRunning);
             }
@@ -281,7 +287,7 @@ fn macos_process_started_at_unix_ms(pid: u32) -> Result<i64, ProcessStartTimeErr
 #[cfg(windows)]
 fn windows_process_started_at_unix_ms(pid: u32) -> Result<i64, ProcessStartTimeError> {
     use std::mem::MaybeUninit;
-    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
@@ -289,7 +295,7 @@ fn windows_process_started_at_unix_ms(pid: u32) -> Result<i64, ProcessStartTimeE
     // SAFETY: Win32 API call.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) } as HANDLE;
     if handle.is_null() {
-        return Err(std::io::Error::last_os_error().into());
+        return Err(IoError::last_os_error().into());
     }
     let mut creation = MaybeUninit::<FILETIME>::uninit();
     let mut exit = MaybeUninit::<FILETIME>::uninit();
@@ -305,7 +311,7 @@ fn windows_process_started_at_unix_ms(pid: u32) -> Result<i64, ProcessStartTimeE
             user.as_mut_ptr(),
         )
     };
-    let err = std::io::Error::last_os_error();
+    let err = IoError::last_os_error();
     // SAFETY: always close handle.
     unsafe {
         CloseHandle(handle);
@@ -319,7 +325,7 @@ fn windows_process_started_at_unix_ms(pid: u32) -> Result<i64, ProcessStartTimeE
 }
 
 #[cfg(windows)]
-fn windows_try_kill_process(pid: u32) -> std::io::Result<KillOutcome> {
+fn windows_try_kill_process(pid: u32) -> Result<KillOutcome, IoError> {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
@@ -340,7 +346,7 @@ fn windows_try_kill_process(pid: u32) -> std::io::Result<KillOutcome> {
     }
     // SAFETY: handle is valid.
     let ok = unsafe { TerminateProcess(handle, 1) };
-    let err = std::io::Error::last_os_error();
+    let err = IoError::last_os_error();
     unsafe {
         CloseHandle(handle);
     }
@@ -351,9 +357,7 @@ fn windows_try_kill_process(pid: u32) -> std::io::Result<KillOutcome> {
 }
 
 #[cfg(windows)]
-fn filetime_to_unix_ms(
-    filetime: windows_sys::Win32::Foundation::FILETIME,
-) -> Result<i64, ProcessStartTimeError> {
+fn filetime_to_unix_ms(filetime: FILETIME) -> Result<i64, ProcessStartTimeError> {
     // FILETIME is 100-nanosecond intervals since 1601-01-01.
     const UNIX_EPOCH_AS_FILETIME_100NS: u64 = 116_444_736_000_000_000;
     let high = u64::from(filetime.dwHighDateTime);
@@ -369,18 +373,18 @@ fn filetime_to_unix_ms(
 /// Put the child process in its own session (Unix only) so the entire process
 /// group can be killed via `killpg` in `ChildGuard::drop`.
 #[cfg(unix)]
-pub fn set_new_session(cmd: &mut tokio::process::Command) {
+pub fn set_new_session(cmd: &mut Command) {
     use std::os::unix::process::CommandExt;
     unsafe {
         cmd.as_std_mut().pre_exec(|| {
             if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
+                return Err(IoError::last_os_error());
             }
             // Linux-only: ensure the child dies if Forge dies (kill -9 / crash / power loss).
             // This reduces the "orphaned runaway process" failure mode for long-lived tools.
             #[cfg(target_os = "linux")]
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
-                return Err(std::io::Error::last_os_error());
+                return Err(IoError::last_os_error());
             }
             Ok(())
         });
@@ -395,10 +399,12 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_process_start_time_returns_ok() {
-        let pid = std::process::id();
+        use std::process::id as process_id;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let pid = process_id();
         let ms = process_started_at_unix_ms(pid).expect("should return start time for own process");
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64;
         let diff = (now_ms - ms).abs();

@@ -16,6 +16,7 @@ pub use effects::apply_modal_effect;
 pub use input::{InputPump, handle_events};
 pub use theme::{Glyphs, Palette, glyphs, palette, spinner_frame, styles};
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ratatui::{
@@ -30,11 +31,11 @@ use unicode_width::UnicodeWidthStr;
 
 use forge_core::sanitize_display_text;
 use forge_engine::{
-    App, ContextUsageStatus, FileDiff, FileSelectAccess, ModelSelectAccess, PredefinedModel,
-    Provider, SettingsAccess, command_specs, find_match_positions,
+    App, ContextUsageStatus, FileDiff, FileSelectAccess, FilesPanelState, ModelSelectAccess,
+    PredefinedModel, Provider, SettingsAccess, command_specs, find_match_positions,
 };
 use forge_types::sanitize_path_for_display;
-use forge_types::ui::{ChangeKind, InputMode, SettingsCategory, SettingsSurface};
+use forge_types::ui::{ChangeKind, DiffExpansion, InputMode, SettingsCategory, SettingsSurface};
 
 use self::diff_render::render_tool_result_lines;
 use self::format::{format_api_usage, format_token_count, highlight_file_refs};
@@ -613,7 +614,7 @@ fn draw_command_palette(frame: &mut Frame, app: &App, palette: &Palette) {
 fn draw_files_panel(frame: &mut Frame, app: &App, area: Rect, palette: &Palette, glyphs: &Glyphs) {
     let files = app.ordered_files();
     let panel = app.files_panel_state().clone();
-    let is_expanded = panel.expanded.is_some();
+    let is_expanded = app.files_panel_expanded();
 
     let hint = if is_expanded {
         " Tab/S-Tab │ Enter: collapse │ C-D/U "
@@ -670,20 +671,30 @@ fn draw_files_panel(frame: &mut Frame, app: &App, area: Rect, palette: &Palette,
 fn draw_file_list(
     frame: &mut Frame,
     area: Rect,
-    files: &[(std::path::PathBuf, ChangeKind)],
-    panel: &forge_engine::FilesPanelState,
+    files: &[(PathBuf, ChangeKind)],
+    panel: &FilesPanelState,
     palette: &Palette,
     _glyphs: &Glyphs,
 ) {
     let inner_width = area.width.saturating_sub(2) as usize;
+    let (selected, expanded_path) = match panel {
+        FilesPanelState::Visible(active) => {
+            let expanded = match &active.expansion {
+                DiffExpansion::Expanded(p) => Some(p),
+                DiffExpansion::Collapsed => None,
+            };
+            (active.selected, expanded)
+        }
+        FilesPanelState::Hidden => (0, None),
+    };
 
     let lines: Vec<Line> = files
         .iter()
         .enumerate()
         .map(|(i, (path, kind))| {
             let display = truncate_path_display(path, inner_width.saturating_sub(4));
-            let is_selected = i == panel.selected;
-            let is_file_expanded = panel.expanded.as_ref() == Some(path);
+            let is_selected = i == selected;
+            let is_file_expanded = expanded_path == Some(path);
 
             let prefix = if is_selected {
                 if is_file_expanded {
@@ -723,7 +734,7 @@ fn draw_diff_view(
     frame: &mut Frame,
     area: Rect,
     app: &App,
-    panel: &forge_engine::FilesPanelState,
+    panel: &FilesPanelState,
     palette: &Palette,
 ) {
     // Horizontal divider at top
@@ -744,8 +755,13 @@ fn draw_diff_view(
             let lines = render_tool_result_lines(&text, Style::default(), palette, " ");
             let total_lines = lines.len();
 
+            let diff_scroll = match panel {
+                FilesPanelState::Visible(active) => active.diff_scroll,
+                FilesPanelState::Hidden => 0,
+            };
+
             let max_scroll = total_lines.saturating_sub(diff_area.height as usize);
-            let scroll = panel.diff_scroll.min(max_scroll);
+            let scroll = diff_scroll.min(max_scroll);
 
             let visible: Vec<Line> = lines
                 .into_iter()
@@ -781,7 +797,7 @@ fn draw_diff_view(
 }
 
 /// Truncate a path for display, keeping the filename and as much of the parent as fits.
-fn truncate_path_display(path: &std::path::Path, max_width: usize) -> String {
+fn truncate_path_display(path: &Path, max_width: usize) -> String {
     let display = sanitize_path_for_display(path);
     if display.width() <= max_width {
         return display;

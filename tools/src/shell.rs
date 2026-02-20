@@ -1,5 +1,7 @@
 //! Shell detection for command execution.
 
+use std::env;
+use std::fmt;
 use std::path::PathBuf;
 
 /// Detected shell for command execution.
@@ -13,8 +15,8 @@ pub struct DetectedShell {
     pub name: String,
 }
 
-impl std::fmt::Display for DetectedShell {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for DetectedShell {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.name)
     }
 }
@@ -43,7 +45,7 @@ fn detect_platform_shell() -> DetectedShell {
         };
     }
 
-    let comspec = std::env::var("ComSpec")
+    let comspec = env::var("ComSpec")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(r"C:\Windows\System32\cmd.exe"));
     DetectedShell {
@@ -55,8 +57,8 @@ fn detect_platform_shell() -> DetectedShell {
 
 #[cfg(not(windows))]
 fn detect_platform_shell() -> DetectedShell {
-    if let Ok(shell) = std::env::var("SHELL") {
-        let path = std::path::Path::new(&shell);
+    if let Ok(shell) = env::var("SHELL") {
+        let path = Path::new(&shell);
         if path.exists() {
             let name = path
                 .file_name()

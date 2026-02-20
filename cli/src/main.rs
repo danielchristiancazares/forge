@@ -31,15 +31,21 @@ use crossterm::{
 use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
 use std::{
-    fs::{self, OpenOptions},
-    io::{Stdout, Write, stdout},
+    fs::{self, File, OpenOptions},
+    io::{self, Stdout, Write, stdout},
+    panic,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
+use tokio::signal::ctrl_c;
+use tokio::time::{MissedTickBehavior, interval};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-use forge_engine::App;
+use forge_engine::{App, ForgeConfig};
 use forge_tui::{InputPump, draw, handle_events};
 
 fn init_tracing() {
@@ -67,7 +73,7 @@ fn init_tracing() {
     tracing_subscriber::registry().with(env_filter).init();
 }
 
-fn open_forge_log_file() -> (Option<(PathBuf, std::fs::File)>, Vec<String>) {
+fn open_forge_log_file() -> (Option<(PathBuf, File)>, Vec<String>) {
     let candidates = forge_log_file_candidates();
     let mut warnings = Vec::new();
 
@@ -120,7 +126,7 @@ fn open_forge_log_file() -> (Option<(PathBuf, std::fs::File)>, Vec<String>) {
 }
 
 /// Open a log file with secure permissions on Unix (0600).
-fn open_log_file_secure(path: &Path) -> std::io::Result<std::fs::File> {
+fn open_log_file_secure(path: &Path) -> io::Result<File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -142,7 +148,7 @@ fn forge_log_file_candidates() -> Vec<PathBuf> {
     // Only use ~/.forge/logs/forge.log — no CWD fallback.
     // A CWD fallback is dangerous: untrusted repos can place symlinks at
     // .forge/logs/forge.log to hijack log writes to arbitrary files.
-    if let Some(config_path) = forge_engine::ForgeConfig::path()
+    if let Some(config_path) = ForgeConfig::path()
         && let Some(config_dir) = config_path.parent()
     {
         candidates.push(config_dir.join("logs").join("forge.log"));
@@ -216,7 +222,7 @@ impl Drop for TerminalSession {
         let _ = disable_raw_mode();
         // Disable alternate scroll mode: CSI ? 1007 l
         let _ = self.terminal.backend_mut().write_all(b"\x1b[?1007l");
-        let _ = std::io::Write::flush(&mut *self.terminal.backend_mut());
+        let _ = Write::flush(&mut *self.terminal.backend_mut());
         // Clear the alternate screen before leaving it. iTerm2 (and some other
         // macOS terminals) can copy the final alternate-screen frame into the
         // main scrollback buffer on LeaveAlternateScreen; blanking first
@@ -239,8 +245,8 @@ async fn main() -> Result<()> {
     // Install a panic hook that restores the terminal before printing the
     // backtrace. Without this, a panic leaves the terminal in raw mode with
     // the alternate screen active, making the error invisible.
-    let original_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
+    let original_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
         let mut out = stdout();
         // Disable alternate scroll mode
@@ -287,20 +293,20 @@ where
     B::Error: Send + Sync + 'static,
 {
     let mut input = InputPump::new();
-    let mut frames = tokio::time::interval(FRAME_DURATION);
-    frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut frames = interval(FRAME_DURATION);
+    frames.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-    let signal_quit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let signal_quit = Arc::new(AtomicBool::new(false));
     let sq = signal_quit.clone();
     tokio::spawn(async move {
         shutdown_signal().await;
-        sq.store(true, std::sync::atomic::Ordering::Release);
+        sq.store(true, Ordering::Release);
     });
 
     let result: Result<()> = loop {
         frames.tick().await;
 
-        if signal_quit.load(std::sync::atomic::Ordering::Acquire) {
+        if signal_quit.load(Ordering::Acquire) {
             break Ok(());
         }
 
@@ -344,6 +350,6 @@ async fn shutdown_signal() {
     }
     #[cfg(windows)]
     {
-        let _ = tokio::signal::ctrl_c().await;
+        let _ = ctrl_c().await;
     }
 }

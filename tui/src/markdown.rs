@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::mem::take;
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use ratatui::{
@@ -364,12 +365,11 @@ impl MarkdownRenderer {
             }
             TagEnd::TableHead | TagEnd::TableRow => {
                 if !self.current_row.is_empty() {
-                    self.table_rows.push(std::mem::take(&mut self.current_row));
+                    self.table_rows.push(take(&mut self.current_row));
                 }
             }
             TagEnd::TableCell => {
-                self.current_row
-                    .push(std::mem::take(&mut self.current_cell));
+                self.current_row.push(take(&mut self.current_cell));
             }
             _ => {}
         }
@@ -489,12 +489,7 @@ impl MarkdownRenderer {
         }
 
         // Calculate natural column widths from content
-        let num_cols = self
-            .table_rows
-            .iter()
-            .map(std::vec::Vec::len)
-            .max()
-            .unwrap_or(0);
+        let num_cols = self.table_rows.iter().map(Vec::len).max().unwrap_or(0);
         let mut col_widths: Vec<usize> = vec![0; num_cols];
 
         for row in &self.table_rows {
@@ -678,7 +673,7 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
                 for ch in word.chars() {
                     let ch_width = UnicodeWidthStr::width(ch.encode_utf8(&mut [0; 4]) as &str);
                     if current_width + ch_width > max_width && !current.is_empty() {
-                        lines.push(std::mem::take(&mut current));
+                        lines.push(take(&mut current));
                         current_width = 0;
                     }
                     current.push(ch);
@@ -692,7 +687,7 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
             current_width += 1 + word_width;
         } else {
             // Doesn't fit — start a new line
-            lines.push(std::mem::take(&mut current));
+            lines.push(take(&mut current));
             current_width = 0;
 
             if word_width <= max_width {
@@ -703,7 +698,7 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
                 for ch in word.chars() {
                     let ch_width = UnicodeWidthStr::width(ch.encode_utf8(&mut [0; 4]) as &str);
                     if current_width + ch_width > max_width && !current.is_empty() {
-                        lines.push(std::mem::take(&mut current));
+                        lines.push(take(&mut current));
                         current_width = 0;
                     }
                     current.push(ch);

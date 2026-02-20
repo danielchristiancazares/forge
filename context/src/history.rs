@@ -4,8 +4,11 @@
 //! When context is exhausted, a compaction point is set: messages before
 //! it become display-only, and a summary replaces them for API calls.
 
-use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::time::SystemTime;
+
+use serde::de::Error as SerdeDeError;
+use serde::{Deserialize, Serialize};
 
 use forge_types::{Message, MessageId, NonEmptyString, PersistableContent, StepId};
 
@@ -158,8 +161,8 @@ impl CompactionSummary {
 
     fn normalized_for_persistence(&self) -> Self {
         let content = match PersistableContent::normalize_borrowed(self.content.as_str()) {
-            std::borrow::Cow::Borrowed(_) => self.content.clone(),
-            std::borrow::Cow::Owned(normalized) => {
+            Cow::Borrowed(_) => self.content.clone(),
+            Cow::Owned(normalized) => {
                 NonEmptyString::new(normalized).unwrap_or_else(|_| self.content.clone())
             }
         };
@@ -225,7 +228,7 @@ impl<'de> Deserialize<'de> for FullHistory {
         D: serde::Deserializer<'de>,
     {
         let serde = FullHistorySerde::deserialize(deserializer)?;
-        serde.into_history().map_err(serde::de::Error::custom)
+        serde.into_history().map_err(SerdeDeError::custom)
     }
 }
 

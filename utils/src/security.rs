@@ -14,6 +14,10 @@
 //! and cached in a `OnceLock`. Pattern ownership lives in `forge_types::ENV_CREDENTIAL_PATTERNS`
 //! per IFA-7 (single point of encoding).
 
+use std::borrow::Cow;
+use std::env;
+use std::fmt;
+use std::path::Path;
 use std::sync::OnceLock;
 
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
@@ -34,8 +38,8 @@ pub struct SecretRedactor {
     automaton: Option<AhoCorasick>,
 }
 
-impl std::fmt::Debug for SecretRedactor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for SecretRedactor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SecretRedactor")
             .field("secret_count", &self.secrets.len())
             .finish_non_exhaustive() // Omit automaton contents
@@ -50,7 +54,7 @@ impl SecretRedactor {
     #[must_use]
     pub fn from_env() -> Self {
         let matcher = build_var_name_matcher();
-        let mut secrets: Vec<String> = std::env::vars()
+        let mut secrets: Vec<String> = env::vars()
             .filter(|(name, _)| matcher.is_match(name))
             .map(|(_, value)| value.trim().to_string())
             .filter(|v| v.len() >= MIN_SECRET_LENGTH)
@@ -88,9 +92,9 @@ impl SecretRedactor {
     ///
     /// Returns the input with all detected secrets replaced by `[REDACTED]`.
     #[must_use]
-    pub fn redact<'a>(&self, input: &'a str) -> std::borrow::Cow<'a, str> {
+    pub fn redact<'a>(&self, input: &'a str) -> Cow<'a, str> {
         if self.secrets.is_empty() {
-            return std::borrow::Cow::Borrowed(input);
+            return Cow::Borrowed(input);
         }
 
         if let Some(ac) = &self.automaton {
@@ -99,7 +103,7 @@ impl SecretRedactor {
                 dst.push_str("[REDACTED]");
                 true
             });
-            return std::borrow::Cow::Owned(result);
+            return Cow::Owned(result);
         }
 
         // Fail-closed fallback: sequential replacement (longest-first order already ensured).
@@ -112,10 +116,7 @@ impl SecretRedactor {
             output = Some(haystack.replace(secret, "[REDACTED]"));
         }
 
-        output.map_or_else(
-            || std::borrow::Cow::Borrowed(input),
-            std::borrow::Cow::Owned,
-        )
+        output.map_or_else(|| Cow::Borrowed(input), Cow::Owned)
     }
 
     #[cfg(test)]
@@ -156,7 +157,7 @@ fn looks_like_non_secret(value: &str) -> bool {
         bytes.len() >= 3 && bytes[1] == b':' && bytes[2] == b'\\' && bytes[0].is_ascii_alphabetic();
 
     if value.starts_with('/') || is_windows_drive_path {
-        return std::path::Path::new(value).exists();
+        return Path::new(value).exists();
     }
 
     // Plain URLs without credentials — case-insensitive parameter matching
@@ -207,9 +208,7 @@ fn looks_like_non_secret(value: &str) -> bool {
     false
 }
 
-fn normalize_untrusted(input: &str) -> std::borrow::Cow<'_, str> {
-    use std::borrow::Cow;
-
+fn normalize_untrusted(input: &str) -> Cow<'_, str> {
     let terminal_safe = sanitize_terminal_text(input);
     match strip_steganographic_chars(terminal_safe.as_ref()) {
         Cow::Borrowed(_) => terminal_safe,
@@ -221,8 +220,8 @@ fn sanitize_impl(raw: &str) -> String {
     let normalized = normalize_untrusted(raw);
     let pattern_redacted = redact_api_keys(normalized.as_ref());
     match secret_redactor().redact(&pattern_redacted) {
-        std::borrow::Cow::Borrowed(_) => pattern_redacted,
-        std::borrow::Cow::Owned(v) => v,
+        Cow::Borrowed(_) => pattern_redacted,
+        Cow::Owned(v) => v,
     }
 }
 

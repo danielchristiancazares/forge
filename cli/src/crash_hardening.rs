@@ -1,6 +1,7 @@
 #[cfg(windows)]
 use anyhow::bail;
 use anyhow::{Context, Result};
+use std::env;
 
 const FORGE_ALLOW_COREDUMPS: &str = "FORGE_ALLOW_COREDUMPS";
 
@@ -19,7 +20,7 @@ pub fn apply() -> Result<()> {
 }
 
 fn coredumps_allowed_by_override() -> bool {
-    match std::env::var(FORGE_ALLOW_COREDUMPS) {
+    match env::var(FORGE_ALLOW_COREDUMPS) {
         Ok(raw) => is_truthy(raw.as_str()),
         Err(_) => false,
     }
@@ -45,7 +46,7 @@ fn apply_platform_hardening() -> Result<()> {
 }
 
 #[cfg(unix)]
-fn set_rlimit_core_zero() -> std::io::Result<()> {
+fn set_rlimit_core_zero() -> io::Result<()> {
     let limit = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
@@ -54,17 +55,17 @@ fn set_rlimit_core_zero() -> std::io::Result<()> {
     if rc == 0 {
         Ok(())
     } else {
-        Err(std::io::Error::last_os_error())
+        Err(io::Error::last_os_error())
     }
 }
 
 #[cfg(target_os = "linux")]
-fn set_linux_dumpable_zero() -> std::io::Result<()> {
+fn set_linux_dumpable_zero() -> io::Result<()> {
     let rc = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
     if rc == 0 {
         Ok(())
     } else {
-        Err(std::io::Error::last_os_error())
+        Err(io::Error::last_os_error())
     }
 }
 

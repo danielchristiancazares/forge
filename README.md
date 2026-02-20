@@ -13,15 +13,15 @@ Forge brings the efficiency of vim-style modal editing to AI conversation, letti
 | 62-71 | Requirements |
 | 72-97 | Installation |
 | 98-148 | Quick Start: First Run, Basic Usage |
-| 149-292 | Configuration: Full Reference |
-| 293-385 | Keyboard Shortcuts: All Modes |
-| 386-403 | Commands Reference |
-| 404-436 | Workspace Structure |
-| 437-471 | Development |
-| 472-541 | Troubleshooting |
-| 542-578 | Documentation Index |
-| 579-588 | Contributing and License |
-| 589-591 | License |
+| 149-290 | Configuration: Full Reference |
+| 291-383 | Keyboard Shortcuts: All Modes |
+| 384-401 | Commands Reference |
+| 402-434 | Workspace Structure |
+| 435-469 | Development |
+| 470-539 | Troubleshooting |
+| 540-576 | Documentation Index |
+| 577-586 | Contributing and License |
+| 587-589 | License |
 <!-- toc:end -->
 
 ## Features

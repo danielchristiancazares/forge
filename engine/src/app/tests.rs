@@ -1,5 +1,7 @@
 //! Unit tests for the engine crate.
 
+use std::fs::{read_dir, read_to_string};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -13,29 +15,37 @@ use std::collections::HashMap;
 
 use tokio::sync::mpsc;
 
-use super::init::DEFAULT_MAX_TOOL_ARGS_BYTES;
+use super::init::{self, AppBuildParts, DEFAULT_MAX_TOOL_ARGS_BYTES};
 use super::{
-    App, AppearanceEditorSnapshot, CommandInputAccess, ContextEditorSnapshot, ModelEditorSnapshot,
-    ProviderRuntimeState, QueueMessageResult, QueuedUserMessage, SettingsAccess, StreamingMessage,
-    SystemPrompts, ToolsEditorSnapshot,
+    App, AppearanceEditorSnapshot, CommandInputAccess, CommandMode, CommandModeAccess,
+    ContextEditorSnapshot, InsertMode, InsertModeAccess, ModelEditorSnapshot, ProviderRuntimeState,
+    QueueMessageResult, QueuedUserMessage, SettingsAccess, StreamingMessage, SystemPrompts,
+    ToolsEditorSnapshot, TurnContext, TurnOrigin, TurnRollback, checkpoints::CheckpointKind,
 };
 use crate::EnvironmentContext;
+use crate::GeminiCacheConfig;
+use crate::config::{AnthropicEffort, AnthropicThinkingMode};
 use crate::state::{
     ActiveStream, DataDir, DataDirSource, DistillationStart, DistillationState, DistillationTask,
-    OperationState, ToolLoopPhase,
+    OperationState, ToolJournalBatch, ToolLoopIngress, ToolLoopPhase,
 };
-use crate::tools;
+use crate::thinking::ThinkingPayload;
+use crate::tools::{self, sandbox::Sandbox};
 use crate::ui::{
     DisplayItem, DraftInput, InputMode, InputState, PredefinedModel, ScrollState, SettingsCategory,
     SettingsSurface, UiOptions, ViewState,
 };
 use forge_context::{ContextManager, StreamJournal, ToolJournal};
 use forge_providers::ApiConfig;
+use forge_types::plan::{self, editor};
 use forge_types::{
     ApiKey, Message, ModelName, NonEmptyString, OpenAIReasoningEffort, OpenAIRequestOptions,
-    OutputLimits, PlanState, Provider, SecretString, StreamEvent, StreamFinishReason,
-    ThinkingReplayState, ThoughtSignatureState, ToolCall, ToolResult,
+    OutputLimits, PhaseInput, Plan, PlanState, PlanStepId, Provider, SecretString, StepInput,
+    StreamEvent, StreamFinishReason, ThinkingMessage, ThinkingReplayState, ThoughtSignatureState,
+    ToolCall, ToolResult,
 };
+use tokio::sync::Mutex as TokioMutex;
+use tokio::task::yield_now;
 
 /// Test system prompts for unit tests.
 const TEST_SYSTEM_PROMPTS: SystemPrompts = SystemPrompts {
@@ -60,9 +70,9 @@ fn test_app() -> App {
     let tool_settings = App::tool_settings_from_config(None);
     let (tool_registry, tool_definitions, hidden_tools) = App::build_tool_registry(&tool_settings);
     let tool_journal = ToolJournal::open_in_memory().expect("in-memory tool journal");
-    let tool_file_cache = std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let tool_file_cache = Arc::new(TokioMutex::new(HashMap::new()));
 
-    super::init::build_app(super::init::AppBuildParts {
+    init::build_app(AppBuildParts {
         view: ViewState::default(),
         configured_model: model.clone(),
         configured_tool_approval_mode: tools::ApprovalMode::Default,
@@ -84,11 +94,11 @@ fn test_app() -> App {
         provider_runtime: ProviderRuntimeState {
             openai_options: OpenAIRequestOptions::default(),
             openai_reasoning_effort_explicit: false,
-            gemini_cache: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            gemini_cache: Arc::new(TokioMutex::new(None)),
             gemini_thinking_enabled: false,
-            anthropic_thinking_mode: crate::config::AnthropicThinkingMode::default(),
-            anthropic_thinking_effort: crate::config::AnthropicEffort::default(),
-            gemini_cache_config: crate::GeminiCacheConfig::default(),
+            anthropic_thinking_mode: AnthropicThinkingMode::default(),
+            anthropic_thinking_effort: AnthropicEffort::default(),
+            gemini_cache_config: GeminiCacheConfig::default(),
             openai_previous_response_id: None,
         },
         system_prompts: TEST_SYSTEM_PROMPTS,
@@ -111,17 +121,17 @@ fn expect_queued_message(result: QueueMessageResult) -> QueuedUserMessage {
     }
 }
 
-fn insert_mode(app: &mut App) -> super::InsertMode<'_> {
+fn insert_mode(app: &mut App) -> InsertMode<'_> {
     match app.insert_mode_mut() {
-        super::InsertModeAccess::InInsert(mode) => mode,
-        super::InsertModeAccess::NotInsert => panic!("insert mode"),
+        InsertModeAccess::InInsert(mode) => mode,
+        InsertModeAccess::NotInsert => panic!("insert mode"),
     }
 }
 
-fn command_mode(app: &mut App) -> super::CommandMode<'_> {
+fn command_mode(app: &mut App) -> CommandMode<'_> {
     match app.command_mode_mut() {
-        super::CommandModeAccess::InCommand(mode) => mode,
-        super::CommandModeAccess::NotCommand => panic!("command mode"),
+        CommandModeAccess::InCommand(mode) => mode,
+        CommandModeAccess::NotCommand => panic!("command mode"),
     }
 }
 
@@ -136,8 +146,8 @@ fn last_notification(app: &App) -> Option<&str> {
     None
 }
 
-fn plan_step_id(value: u32) -> forge_types::PlanStepId {
-    forge_types::PlanStepId::try_new(value).expect("test fixture must use non-zero plan step ids")
+fn plan_step_id(value: u32) -> PlanStepId {
+    PlanStepId::try_new(value).expect("test fixture must use non-zero plan step ids")
 }
 
 fn set_streaming_state(app: &mut App) {
@@ -158,8 +168,8 @@ fn set_streaming_state(app: &mut App) {
         journal,
         abort_handle,
         tool_call_seq: 0,
-        tool_args_journal_bytes: std::collections::HashMap::new(),
-        turn: super::TurnContext::new_for_tests(),
+        tool_args_journal_bytes: HashMap::new(),
+        turn: TurnContext::new_for_tests(),
     });
 }
 
@@ -304,7 +314,7 @@ async fn drive_tool_loop_to_idle(app: &mut App) {
         match app.core.state {
             OperationState::ToolLoop(_) => {
                 app.poll_tool_loop();
-                tokio::task::yield_now().await;
+                yield_now().await;
             }
             _ => panic!("unexpected state while driving tool loop"),
         }
@@ -1077,8 +1087,8 @@ fn process_stream_events_applies_deltas_and_done() {
         journal,
         abort_handle,
         tool_call_seq: 0,
-        tool_args_journal_bytes: std::collections::HashMap::new(),
-        turn: super::TurnContext::new_for_tests(),
+        tool_args_journal_bytes: HashMap::new(),
+        turn: TurnContext::new_for_tests(),
     });
     assert!(app.is_loading());
 
@@ -1116,8 +1126,8 @@ fn process_stream_events_persists_thinking_signature_when_hidden() {
         journal,
         abort_handle,
         tool_call_seq: 0,
-        tool_args_journal_bytes: std::collections::HashMap::new(),
-        turn: super::TurnContext::new_for_tests(),
+        tool_args_journal_bytes: HashMap::new(),
+        turn: TurnContext::new_for_tests(),
     });
 
     tx.try_send(StreamEvent::ThinkingSignature("sig".to_string()))
@@ -1167,8 +1177,8 @@ fn process_stream_events_respects_budget() {
         journal,
         abort_handle,
         tool_call_seq: 0,
-        tool_args_journal_bytes: std::collections::HashMap::new(),
-        turn: super::TurnContext::new_for_tests(),
+        tool_args_journal_bytes: HashMap::new(),
+        turn: TurnContext::new_for_tests(),
     });
 
     for _ in 0..10_000 {
@@ -1203,8 +1213,8 @@ fn process_stream_events_starts_tool_journal_on_first_tool_call() {
         journal,
         abort_handle,
         tool_call_seq: 0,
-        tool_args_journal_bytes: std::collections::HashMap::new(),
-        turn: super::TurnContext::new_for_tests(),
+        tool_args_journal_bytes: HashMap::new(),
+        turn: TurnContext::new_for_tests(),
     });
 
     tx.try_send(StreamEvent::ToolCallStart {
@@ -1266,7 +1276,7 @@ fn queue_message_sets_turn_rollback() {
     let queued = insert_mode(&mut app).queue_message();
     let _ = expect_queued_message(queued);
 
-    let super::TurnRollback::Pending(ref origin) = app.core.turn_rollback else {
+    let TurnRollback::Pending(ref origin) = app.core.turn_rollback else {
         panic!("expected TurnRollback::Pending");
     };
     assert_eq!(origin.message_id.value(), 0);
@@ -1293,7 +1303,7 @@ fn rollback_turn_origin_restores_input() {
 
     let content = NonEmptyString::new("my message").expect("non-empty");
     let msg_id = app.push_history_message(Message::user(content, SystemTime::now()));
-    app.core.turn_rollback = super::TurnRollback::Pending(super::TurnOrigin {
+    app.core.turn_rollback = TurnRollback::Pending(TurnOrigin {
         message_id: msg_id,
         original_draft: "my message".to_string(),
         consumed_agents_md: String::new(),
@@ -1308,28 +1318,19 @@ fn rollback_turn_origin_restores_input() {
     assert_eq!(app.ui.display.len(), 0);
     assert_eq!(app.draft_text(), "my message");
     assert_eq!(app.input_mode(), InputMode::Insert);
-    assert!(matches!(
-        app.core.turn_rollback,
-        super::TurnRollback::Committed
-    ));
+    assert!(matches!(app.core.turn_rollback, TurnRollback::Committed));
 }
 
 #[test]
 fn rollback_committed_is_no_op() {
     let mut app = test_app();
 
-    assert!(matches!(
-        app.core.turn_rollback,
-        super::TurnRollback::Committed
-    ));
+    assert!(matches!(app.core.turn_rollback, TurnRollback::Committed));
 
     app.rollback_pending_user_message();
 
     assert!(app.draft_text().is_empty());
-    assert!(matches!(
-        app.core.turn_rollback,
-        super::TurnRollback::Committed
-    ));
+    assert!(matches!(app.core.turn_rollback, TurnRollback::Committed));
 }
 
 #[test]
@@ -1527,22 +1528,21 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
             "patch": "LP1\nF foo.txt\nT\nhello\n.\nEND\n"
         }),
     );
-    let thinking =
-        crate::thinking::ThinkingPayload::Provided(forge_types::ThinkingMessage::with_signature(
-            app.core.model.clone(),
-            NonEmptyString::new("thinking").expect("non-empty"),
-            "sig".to_string(),
-            SystemTime::now(),
-        ));
-    app.handle_tool_calls(crate::state::ToolLoopIngress {
+    let thinking = ThinkingPayload::Provided(ThinkingMessage::with_signature(
+        app.core.model.clone(),
+        NonEmptyString::new("thinking").expect("non-empty"),
+        "sig".to_string(),
+        SystemTime::now(),
+    ));
+    app.handle_tool_calls(ToolLoopIngress {
         assistant_text: "assistant".to_string(),
         thinking,
         calls: vec![call],
         pre_resolved: Vec::new(),
         model: app.core.model.clone(),
         step_id: StepId::new(1),
-        tool_journal: crate::state::ToolJournalBatch::Absent,
-        turn: super::TurnContext::new_for_tests(),
+        tool_journal: ToolJournalBatch::Absent,
+        turn: TurnContext::new_for_tests(),
     });
 
     match &app.core.state {
@@ -1589,15 +1589,15 @@ async fn run_approval_request_captures_reason_without_changing_summary() {
             "reason": "Need to verify the local build toolchain."
         }),
     );
-    app.handle_tool_calls(crate::state::ToolLoopIngress {
+    app.handle_tool_calls(ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking: crate::thinking::ThinkingPayload::NotProvided,
+        thinking: ThinkingPayload::NotProvided,
         calls: vec![call],
         pre_resolved: Vec::new(),
         model: app.core.model.clone(),
         step_id: StepId::new(1),
-        tool_journal: crate::state::ToolJournalBatch::Absent,
-        turn: super::TurnContext::new_for_tests(),
+        tool_journal: ToolJournalBatch::Absent,
+        turn: TurnContext::new_for_tests(),
     });
 
     let requests = app
@@ -1617,8 +1617,7 @@ async fn tool_loop_preserves_order_after_approval() {
     app.runtime.api_keys.clear();
 
     let log = Arc::new(Mutex::new(Vec::new()));
-    let registry =
-        std::sync::Arc::get_mut(&mut app.runtime.tool_registry).expect("unique registry");
+    let registry = Arc::get_mut(&mut app.runtime.tool_registry).expect("unique registry");
     registry
         .register(Box::new(MockTool::new("mock_a", true, Arc::clone(&log))))
         .expect("register mock_a");
@@ -1631,15 +1630,15 @@ async fn tool_loop_preserves_order_after_approval() {
         ToolCall::new("call-a", "mock_a", json!({})),
         ToolCall::new("call-b", "mock_b", json!({})),
     ];
-    app.handle_tool_calls(crate::state::ToolLoopIngress {
+    app.handle_tool_calls(ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking: crate::thinking::ThinkingPayload::NotProvided,
+        thinking: ThinkingPayload::NotProvided,
         calls,
         pre_resolved: Vec::new(),
         model: app.core.model.clone(),
         step_id: StepId::new(1),
-        tool_journal: crate::state::ToolJournalBatch::Absent,
-        turn: super::TurnContext::new_for_tests(),
+        tool_journal: ToolJournalBatch::Absent,
+        turn: TurnContext::new_for_tests(),
     });
 
     match &app.core.state {
@@ -1669,8 +1668,7 @@ async fn tool_loop_write_then_read_same_batch() {
 
     let temp_dir = tempdir().expect("temp dir");
     app.runtime.tool_settings.sandbox =
-        tools::sandbox::Sandbox::new(vec![temp_dir.path().to_path_buf()], Vec::new(), false)
-            .expect("sandbox");
+        Sandbox::new(vec![temp_dir.path().to_path_buf()], Vec::new(), false).expect("sandbox");
 
     let calls = vec![
         ToolCall::new(
@@ -1681,15 +1679,15 @@ async fn tool_loop_write_then_read_same_batch() {
         ToolCall::new("call-read", "Read", json!({ "path": "test.txt" })),
     ];
 
-    app.handle_tool_calls(crate::state::ToolLoopIngress {
+    app.handle_tool_calls(ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking: crate::thinking::ThinkingPayload::NotProvided,
+        thinking: ThinkingPayload::NotProvided,
         calls,
         pre_resolved: Vec::new(),
         model: app.core.model.clone(),
         step_id: StepId::new(1),
-        tool_journal: crate::state::ToolJournalBatch::Absent,
-        turn: super::TurnContext::new_for_tests(),
+        tool_journal: ToolJournalBatch::Absent,
+        turn: TurnContext::new_for_tests(),
     });
 
     // In Permissive mode, neither write_file nor read_file requires approval,
@@ -1737,11 +1735,11 @@ async fn compaction_failure_goes_to_idle_no_retry() {
         task,
         message: QueuedUserMessage {
             config: config.clone(),
-            turn: super::TurnContext::new_for_tests(),
+            turn: TurnContext::new_for_tests(),
         },
     });
 
-    tokio::task::yield_now().await;
+    yield_now().await;
     app.poll_distillation();
 
     // With transport-layer retries handling transient failures, compaction errors
@@ -1764,15 +1762,15 @@ fn tool_loop_max_iterations_short_circuits() {
         "Edit",
         json!({ "patch": "LP1\nF foo.txt\nT\nhello\n.\nEND\n" }),
     );
-    app.handle_tool_calls(crate::state::ToolLoopIngress {
+    app.handle_tool_calls(ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking: crate::thinking::ThinkingPayload::NotProvided,
+        thinking: ThinkingPayload::NotProvided,
         calls: vec![call],
         pre_resolved: Vec::new(),
         model: app.core.model.clone(),
         step_id: StepId::new(1),
-        tool_journal: crate::state::ToolJournalBatch::Absent,
-        turn: super::TurnContext::new_for_tests(),
+        tool_journal: ToolJournalBatch::Absent,
+        turn: TurnContext::new_for_tests(),
     });
 
     assert!(matches!(app.core.state, OperationState::Idle));
@@ -1817,15 +1815,15 @@ fn plan_edit_call() -> ToolCall {
 }
 
 fn submit_plan_call(app: &mut App, call: ToolCall) {
-    app.handle_tool_calls(crate::state::ToolLoopIngress {
+    app.handle_tool_calls(ToolLoopIngress {
         assistant_text: "assistant".to_string(),
-        thinking: crate::thinking::ThinkingPayload::NotProvided,
+        thinking: ThinkingPayload::NotProvided,
         calls: vec![call],
         pre_resolved: Vec::new(),
         model: app.core.model.clone(),
         step_id: StepId::new(1),
-        tool_journal: crate::state::ToolJournalBatch::Absent,
-        turn: super::TurnContext::new_for_tests(),
+        tool_journal: ToolJournalBatch::Absent,
+        turn: TurnContext::new_for_tests(),
     });
 }
 
@@ -1856,7 +1854,7 @@ fn plan_create_approve_activates_plan() {
     };
     assert!(matches!(
         plan.active_step(),
-        forge_types::plan::ActiveStepQuery::Active(_)
+        plan::ActiveStepQuery::Active(_)
     ));
 }
 
@@ -1877,14 +1875,14 @@ fn plan_edit_approve_applies_edit() {
     let mut app = test_app();
     app.runtime.api_keys.clear();
 
-    let plan = forge_types::Plan::from_input(vec![forge_types::PhaseInput {
+    let plan = Plan::from_input(vec![PhaseInput {
         name: "Phase 1".to_string(),
         steps: vec![
-            forge_types::StepInput {
+            StepInput {
                 description: "Step A".to_string(),
                 depends_on: vec![],
             },
-            forge_types::StepInput {
+            StepInput {
                 description: "Step B".to_string(),
                 depends_on: vec![],
             },
@@ -1892,7 +1890,7 @@ fn plan_edit_approve_applies_edit() {
     }])
     .unwrap();
     let mut plan = plan;
-    forge_types::plan::editor::activate_step(&mut plan, plan_step_id(1)).unwrap();
+    editor::activate_step(&mut plan, plan_step_id(1)).unwrap();
     app.core.plan_state = PlanState::Active(plan);
 
     submit_plan_call(&mut app, plan_edit_call());
@@ -1920,14 +1918,14 @@ fn plan_edit_reject_reverts() {
     let mut app = test_app();
     app.runtime.api_keys.clear();
 
-    let plan = forge_types::Plan::from_input(vec![forge_types::PhaseInput {
+    let plan = Plan::from_input(vec![PhaseInput {
         name: "Phase 1".to_string(),
         steps: vec![
-            forge_types::StepInput {
+            StepInput {
                 description: "Step A".to_string(),
                 depends_on: vec![],
             },
-            forge_types::StepInput {
+            StepInput {
                 description: "Step B".to_string(),
                 depends_on: vec![],
             },
@@ -1935,7 +1933,7 @@ fn plan_edit_reject_reverts() {
     }])
     .unwrap();
     let mut plan = plan;
-    forge_types::plan::editor::activate_step(&mut plan, plan_step_id(1)).unwrap();
+    editor::activate_step(&mut plan, plan_step_id(1)).unwrap();
     let original_step_count = plan.step_count();
     app.core.plan_state = PlanState::Active(plan);
 
@@ -1970,21 +1968,21 @@ fn plan_advance_creates_checkpoint() {
     let mut app = test_app();
 
     // Set up an active plan with step 1 Active.
-    let mut plan = forge_types::Plan::from_input(vec![forge_types::PhaseInput {
+    let mut plan = Plan::from_input(vec![PhaseInput {
         name: "Phase 1".to_string(),
         steps: vec![
-            forge_types::StepInput {
+            StepInput {
                 description: "Step A".to_string(),
                 depends_on: vec![],
             },
-            forge_types::StepInput {
+            StepInput {
                 description: "Step B".to_string(),
                 depends_on: vec![],
             },
         ],
     }])
     .unwrap();
-    forge_types::plan::editor::activate_step(&mut plan, plan_step_id(1)).unwrap();
+    editor::activate_step(&mut plan, plan_step_id(1)).unwrap();
     app.core.plan_state = PlanState::Active(plan);
 
     let step_id = plan_step_id(1);
@@ -2006,7 +2004,7 @@ fn plan_advance_creates_checkpoint() {
     assert!(
         summaries
             .iter()
-            .any(|s| s.kind == super::checkpoints::CheckpointKind::PlanStep(step_id)),
+            .any(|s| s.kind == CheckpointKind::PlanStep(step_id)),
         "Expected a PlanStep checkpoint for step {step_id:?}"
     );
 }
@@ -2016,21 +2014,21 @@ fn plan_skip_creates_checkpoint() {
     let mut app = test_app();
 
     // Set up an active plan with step 1 Active.
-    let mut plan = forge_types::Plan::from_input(vec![forge_types::PhaseInput {
+    let mut plan = Plan::from_input(vec![PhaseInput {
         name: "Phase 1".to_string(),
         steps: vec![
-            forge_types::StepInput {
+            StepInput {
                 description: "Step A".to_string(),
                 depends_on: vec![],
             },
-            forge_types::StepInput {
+            StepInput {
                 description: "Step B".to_string(),
                 depends_on: vec![],
             },
         ],
     }])
     .unwrap();
-    forge_types::plan::editor::activate_step(&mut plan, plan_step_id(1)).unwrap();
+    editor::activate_step(&mut plan, plan_step_id(1)).unwrap();
     app.core.plan_state = PlanState::Active(plan);
 
     let step_id = plan_step_id(1);
@@ -2052,7 +2050,7 @@ fn plan_skip_creates_checkpoint() {
     assert!(
         summaries
             .iter()
-            .any(|s| s.kind == super::checkpoints::CheckpointKind::PlanStep(step_id)),
+            .any(|s| s.kind == CheckpointKind::PlanStep(step_id)),
         "Expected a PlanStep checkpoint for step {step_id:?}"
     );
 }
@@ -2284,18 +2282,18 @@ fn commit_tool_batch_requires_journal_proof() {
 /// when scanning its own source file.
 #[test]
 fn self_state_assignment_only_in_authorized_locations() {
-    let app_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
+    let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
     // Runtime-constructed needle avoids self-matching when this file is scanned.
     let needle = ["self", ".core.state", " ="].concat();
 
-    for entry in std::fs::read_dir(&app_dir).expect("read app dir") {
+    for entry in read_dir(&app_dir).expect("read app dir") {
         let entry = entry.expect("dir entry");
         let path = entry.path();
         if path.extension().is_none_or(|ext| ext != "rs") {
             continue;
         }
         let filename = path.file_name().unwrap().to_str().unwrap();
-        let source = std::fs::read_to_string(&path).expect("read source file");
+        let source = read_to_string(&path).expect("read source file");
 
         let count = source
             .lines()
@@ -2334,17 +2332,17 @@ fn self_state_assignment_only_in_authorized_locations() {
 /// The search needle is built at runtime to prevent this test from self-matching.
 #[test]
 fn idle_swap_helper_removed() {
-    let app_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
+    let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
     let needle = ["replace", "_with_idle("].concat();
 
-    for entry in std::fs::read_dir(&app_dir).expect("read app dir") {
+    for entry in read_dir(&app_dir).expect("read app dir") {
         let entry = entry.expect("dir entry");
         let path = entry.path();
         if path.extension().is_none_or(|ext| ext != "rs") {
             continue;
         }
         let filename = path.file_name().unwrap().to_str().unwrap();
-        let source = std::fs::read_to_string(&path).expect("read source file");
+        let source = read_to_string(&path).expect("read source file");
 
         let count = source.matches(&*needle).count();
 
@@ -2360,17 +2358,17 @@ fn idle_swap_helper_removed() {
 /// The search needle is built at runtime to prevent this test from self-matching.
 #[test]
 fn busy_state_usage_baseline() {
-    let app_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
+    let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
     let needle = ["busy", "_state("].concat();
 
-    for entry in std::fs::read_dir(&app_dir).expect("read app dir") {
+    for entry in read_dir(&app_dir).expect("read app dir") {
         let entry = entry.expect("dir entry");
         let path = entry.path();
         if path.extension().is_none_or(|ext| ext != "rs") {
             continue;
         }
         let filename = path.file_name().unwrap().to_str().unwrap();
-        let source = std::fs::read_to_string(&path).expect("read source file");
+        let source = read_to_string(&path).expect("read source file");
 
         let count = source.matches(&*needle).count();
 

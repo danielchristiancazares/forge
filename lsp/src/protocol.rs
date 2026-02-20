@@ -1,6 +1,7 @@
 //! Internal LSP message serde types for JSON-RPC communication.
 
 use std::path::{Path, PathBuf};
+use std::process;
 
 use serde::{Deserialize, Serialize};
 
@@ -52,7 +53,7 @@ impl Notification {
 
 pub(crate) fn initialize_params(root_uri: &str) -> serde_json::Value {
     serde_json::json!({
-        "processId": std::process::id(),
+        "processId": process::id(),
         "rootUri": root_uri,
         "capabilities": {
             "textDocument": {
@@ -149,7 +150,7 @@ pub(crate) fn path_to_file_uri(path: &Path) -> Result<url::Url, PathToUriError> 
     })
 }
 
-pub(crate) fn file_uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
     url::Url::parse(uri)
         .ok()
         .and_then(|u| u.to_file_path().ok())
@@ -157,6 +158,8 @@ pub(crate) fn file_uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use crate::types::DiagnosticSeverity;
 
     use super::{
@@ -255,9 +258,9 @@ mod tests {
     #[test]
     fn test_path_to_file_uri_and_back() {
         #[cfg(windows)]
-        let path = std::path::PathBuf::from(r"C:\Users\test\src\main.rs");
+        let path = PathBuf::from(r"C:\Users\test\src\main.rs");
         #[cfg(not(windows))]
-        let path = std::path::PathBuf::from("/home/test/src/main.rs");
+        let path = PathBuf::from("/home/test/src/main.rs");
 
         let uri = path_to_file_uri(&path).expect("should create URI");
         let roundtrip = file_uri_to_path(uri.as_str()).expect("should parse back to path");

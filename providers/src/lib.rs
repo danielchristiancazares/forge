@@ -49,9 +49,13 @@ pub(crate) use forge_types::{
     OutputLimits, Provider, StreamEvent, ThinkingReplayState, ThoughtSignature,
     ThoughtSignatureState, ToolDefinition,
 };
+use reqwest::redirect::Policy;
+use serde::de::DeserializeOwned;
 use std::sync::OnceLock;
 use std::time::Duration;
+use std::{env, str};
 pub(crate) use tokio::sync::mpsc;
+use tokio::time;
 
 pub use forge_types;
 
@@ -88,7 +92,7 @@ pub fn http_client() -> &'static reqwest::Client {
             );
             reqwest::Client::builder()
                 .https_only(true)
-                .redirect(reqwest::redirect::Policy::none())
+                .redirect(Policy::none())
                 .build()
                 .expect("Minimal hardened HTTP client must build; cannot proceed without TLS")
         })
@@ -102,19 +106,16 @@ fn base_client_builder() -> reqwest::ClientBuilder {
     let mut default_headers = HeaderMap::new();
     // REQ-6: Platform headers
     default_headers.insert("X-Stainless-Lang", HeaderValue::from_static("rust"));
-    default_headers.insert(
-        "X-Stainless-OS",
-        HeaderValue::from_static(std::env::consts::OS),
-    );
+    default_headers.insert("X-Stainless-OS", HeaderValue::from_static(env::consts::OS));
     default_headers.insert(
         "X-Stainless-Arch",
-        HeaderValue::from_static(std::env::consts::ARCH),
+        HeaderValue::from_static(env::consts::ARCH),
     );
 
     reqwest::Client::builder()
         // Basic settings
         .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(Policy::none())
         .https_only(true)
         // REQ-1: TCP keepalive
         .tcp_keepalive(Some(Duration::from_secs(TCP_KEEPALIVE_SECS)))
@@ -191,7 +192,7 @@ pub(crate) trait SseParser {
 pub(crate) fn stream_idle_timeout() -> Duration {
     static TIMEOUT: OnceLock<Duration> = OnceLock::new();
     *TIMEOUT.get_or_init(|| {
-        let timeout = std::env::var("FORGE_STREAM_IDLE_TIMEOUT_SECS")
+        let timeout = env::var("FORGE_STREAM_IDLE_TIMEOUT_SECS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .filter(|value| *value > 0)
@@ -209,7 +210,7 @@ pub(crate) fn parse_sse_payload<T>(
     provider_name: &'static str,
 ) -> Option<T>
 where
-    T: serde::de::DeserializeOwned,
+    T: DeserializeOwned,
 {
     match serde_json::from_value(json.clone()) {
         Ok(event) => Some(event),
@@ -250,7 +251,7 @@ pub(crate) async fn process_sse_stream<P: SseParser>(
     let mut parse_errors = 0usize;
 
     loop {
-        let Ok(next) = tokio::time::timeout(idle_timeout, stream.next()).await else {
+        let Ok(next) = time::timeout(idle_timeout, stream.next()).await else {
             let _ = send_event(tx, StreamEvent::Error("Stream idle timeout".to_string())).await;
             return Ok(());
         };
@@ -274,7 +275,7 @@ pub(crate) async fn process_sse_stream<P: SseParser>(
                 continue;
             }
 
-            let Ok(event) = std::str::from_utf8(&event) else {
+            let Ok(event) = str::from_utf8(&event) else {
                 let _ = send_event(
                     tx,
                     StreamEvent::Error("Received invalid UTF-8 from SSE stream".to_string()),

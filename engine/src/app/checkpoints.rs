@@ -11,12 +11,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::fs::{self, Permissions};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use chrono::Local;
 
-use crate::tools::{self, lp1};
+use crate::tools::{self, lp1, sandbox::Sandbox};
 
 /// Opaque identifier for a checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -197,7 +199,7 @@ pub(crate) enum FileSnapshot {
 
 #[derive(Debug)]
 pub(crate) enum SnapshotPermissions {
-    Captured(std::fs::Permissions),
+    Captured(Permissions),
 }
 
 /// Proof that a rewind target exists.
@@ -528,7 +530,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 /// resolution, returning canonical paths suitable for snapshotting.
 pub(crate) fn collect_edit_targets<'a>(
     calls: impl IntoIterator<Item = &'a forge_types::ToolCall>,
-    sandbox: &tools::sandbox::Sandbox,
+    sandbox: &Sandbox,
     working_dir: &Path,
 ) -> Result<Vec<PathBuf>, tools::ToolError> {
     let mut out: BTreeSet<PathBuf> = BTreeSet::new();
@@ -574,7 +576,7 @@ pub(crate) struct WorkspaceRestoreReport {
 /// concurrent modifications, etc.
 pub(crate) fn restore_workspace(
     snapshot: &WorkspaceSnapshot,
-) -> std::io::Result<WorkspaceRestoreReport> {
+) -> io::Result<WorkspaceRestoreReport> {
     let mut restored_files: usize = 0;
     let mut removed_files: usize = 0;
 
@@ -596,10 +598,10 @@ pub(crate) fn restore_workspace(
     })
 }
 
-fn snapshot_file(path: &Path) -> std::io::Result<(FileSnapshot, usize)> {
-    match std::fs::metadata(path) {
+fn snapshot_file(path: &Path) -> io::Result<(FileSnapshot, usize)> {
+    match fs::metadata(path) {
         Ok(meta) => {
-            let bytes = std::fs::read(path)?;
+            let bytes = fs::read(path)?;
             let perms = SnapshotPermissions::Captured(meta.permissions());
             let len = bytes.len();
             Ok((
@@ -610,46 +612,42 @@ fn snapshot_file(path: &Path) -> std::io::Result<(FileSnapshot, usize)> {
                 len,
             ))
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((FileSnapshot::Missing, 0)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok((FileSnapshot::Missing, 0)),
         Err(e) => Err(e),
     }
 }
 
-fn restore_file(
-    path: &Path,
-    bytes: &[u8],
-    permissions: &SnapshotPermissions,
-) -> std::io::Result<()> {
-    if let Ok(meta) = std::fs::metadata(path)
+fn restore_file(path: &Path, bytes: &[u8], permissions: &SnapshotPermissions) -> io::Result<()> {
+    if let Ok(meta) = fs::metadata(path)
         && meta.is_dir()
     {
-        return Err(std::io::Error::other(format!(
+        return Err(io::Error::other(format!(
             "Refusing to overwrite directory: {}",
             path.display()
         )));
     }
 
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent)?;
     }
 
-    std::fs::write(path, bytes)?;
+    fs::write(path, bytes)?;
     let SnapshotPermissions::Captured(perms) = permissions;
-    std::fs::set_permissions(path, perms.clone())?;
+    fs::set_permissions(path, perms.clone())?;
     Ok(())
 }
 
-fn remove_if_exists(path: &Path) -> std::io::Result<usize> {
-    match std::fs::metadata(path) {
-        Ok(meta) if meta.is_dir() => Err(std::io::Error::other(format!(
+fn remove_if_exists(path: &Path) -> io::Result<usize> {
+    match fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => Err(io::Error::other(format!(
             "Refusing to remove directory: {}",
             path.display()
         ))),
         Ok(_meta) => {
-            std::fs::remove_file(path)?;
+            fs::remove_file(path)?;
             Ok(1)
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(0),
         Err(e) => Err(e),
     }
 }

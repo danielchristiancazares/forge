@@ -1,6 +1,7 @@
 //! LspManager facade — public API consumed by the engine.
 
 use std::collections::HashMap;
+use std::mem;
 use std::path::{Path, PathBuf};
 
 use tokio::sync::mpsc;
@@ -174,7 +175,7 @@ impl LspManager {
     }
 
     pub async fn shutdown(&mut self) {
-        let servers = std::mem::take(&mut self.servers);
+        let servers = mem::take(&mut self.servers);
         for (name, server) in servers {
             tracing::info!("Shutting down LSP server '{name}'...");
             server.shutdown().await;

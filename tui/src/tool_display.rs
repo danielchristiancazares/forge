@@ -1,5 +1,7 @@
 //! Compact tool call display formatting.
 
+use std::borrow::Cow;
+
 use forge_types::truncate_to_fit;
 use serde_json::Value;
 
@@ -22,9 +24,7 @@ pub fn format_tool_call_compact(name: &str, args: &Value) -> String {
     }
 }
 
-pub(crate) fn canonical_tool_name(name: &str) -> std::borrow::Cow<'static, str> {
-    use std::borrow::Cow;
-
+pub(crate) fn canonical_tool_name(name: &str) -> Cow<'static, str> {
     match name {
         "Read" => Cow::Borrowed("Read"),
         "Write" => Cow::Borrowed("Write"),

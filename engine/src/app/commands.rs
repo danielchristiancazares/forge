@@ -1,10 +1,13 @@
 //! Command processing for the App.
 
+use std::mem;
+use std::path::PathBuf;
+
 use super::{
     ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, PlanState,
     state::{
-        ActiveStream, DistillationStart, OperationState, ToolLoopPhase, ToolLoopState,
-        ToolRecoveryDecision,
+        ActiveStream, DistillationStart, JournalCleanup, OperationState, PlanApprovalKind,
+        ToolLoopPhase, ToolLoopState, ToolRecoveryDecision,
     },
 };
 
@@ -469,10 +472,10 @@ impl super::App {
             }
             OperationState::PlanApproval(state) => {
                 match &state.kind {
-                    crate::state::PlanApprovalKind::Create => {
+                    PlanApprovalKind::Create => {
                         self.core.plan_state = PlanState::Inactive;
                     }
-                    crate::state::PlanApprovalKind::Edit { .. } => {}
+                    PlanApprovalKind::Edit { .. } => {}
                 }
                 self.cancel_tool_batch(state.batch);
                 self.push_notification("Plan approval cancelled");
@@ -546,10 +549,10 @@ impl super::App {
                     }
                     OperationState::PlanApproval(state) => {
                         match &state.kind {
-                            crate::state::PlanApprovalKind::Create => {
+                            PlanApprovalKind::Create => {
                                 self.core.plan_state = PlanState::Inactive;
                             }
-                            crate::state::PlanApprovalKind::Edit { .. } => {}
+                            PlanApprovalKind::Edit { .. } => {}
                         }
                         if let Err(e) = self
                             .runtime
@@ -586,19 +589,19 @@ impl super::App {
                 self.core
                     .context_manager
                     .set_output_limit(self.core.output_limits.max_output_tokens());
-                match std::mem::take(&mut self.runtime.stream_cleanup) {
-                    crate::state::JournalCleanup::Pending { id, .. } => {
+                match mem::take(&mut self.runtime.stream_cleanup) {
+                    JournalCleanup::Pending { id, .. } => {
                         self.discard_journal_step(id);
                     }
-                    crate::state::JournalCleanup::Clean => {}
+                    JournalCleanup::Clean => {}
                 }
-                match std::mem::take(&mut self.runtime.tool_cleanup) {
-                    crate::state::JournalCleanup::Pending { id, .. } => {
+                match mem::take(&mut self.runtime.tool_cleanup) {
+                    JournalCleanup::Pending { id, .. } => {
                         if let Err(e) = self.runtime.tool_journal.discard_batch(id) {
                             tracing::warn!("Failed to discard pending tool batch on clear: {e}");
                         }
                     }
-                    crate::state::JournalCleanup::Clean => {}
+                    JournalCleanup::Clean => {}
                 }
                 self.core.tool_gate.clear();
                 self.runtime.provider_runtime.openai_previous_response_id = None;
@@ -852,7 +855,7 @@ impl super::App {
 
                 if let RetryPromptCapture::Found(text) = prompt {
                     self.ui.input.draft_mut().set_text(text);
-                    self.ui.input = std::mem::take(&mut self.ui.input).into_insert();
+                    self.ui.input = mem::take(&mut self.ui.input).into_insert();
                 }
             }
             Command::Problems => {
@@ -898,10 +901,10 @@ impl super::App {
             },
             Command::Export(export_destination) => {
                 let path = match export_destination {
-                    ExportDestination::ExplicitPath(path) => std::path::PathBuf::from(path),
+                    ExportDestination::ExplicitPath(path) => PathBuf::from(path),
                     ExportDestination::TimestampedDefault => {
                         let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
-                        std::path::PathBuf::from(format!("forge-export-{ts}.json"))
+                        PathBuf::from(format!("forge-export-{ts}.json"))
                     }
                 };
 
