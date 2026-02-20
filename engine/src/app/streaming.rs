@@ -1165,8 +1165,7 @@ mod token_cache_planner_tests {
     fn shifts_at_step_boundary() {
         // 10 messages × 2048 tokens, last excluded → 9 eligible
         // Cumulative: 2048, 4096, 6144, 8192, 10240, 12288, 14336, 16384, 18432
-        // Boundaries at: index 1 (4096), 2 (→8192? no, 6144<8192), 3 (8192), 5 (12288→12288=3×4096), etc.
-        // Let's be precise: boundary crossing at multiples of 4096
+        // Boundary crossing at multiples of 4096:
         // idx0: 2048 (<4096)
         // idx1: 4096 (>=4096) → breakpoint, next_boundary=8192
         // idx2: 6144 (<8192)

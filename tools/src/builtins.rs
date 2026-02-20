@@ -1225,10 +1225,13 @@ impl ToolExecutor for RunCommandTool {
                     })?;
             guard.disarm();
 
-            let stdout_content = stdout_task.await.unwrap_or_default();
-            let stderr_content = stderr_task.await.unwrap_or_default();
+            let stdout_content = stdout_task
+                .await
+                .unwrap_or_else(|e| format!("[stdout task failed: {e}]"));
+            let stderr_content = stderr_task
+                .await
+                .unwrap_or_else(|e| format!("[stderr task failed: {e}]"));
 
-            // Build combined output (stdout + stderr if present)
             let mut output = String::new();
             if let Some(warning) = prepared.warning() {
                 output.push_str("[sandbox warning]\n");

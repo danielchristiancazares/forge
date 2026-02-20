@@ -41,7 +41,7 @@ fn run_escalation_reason(tool_name: &str, arguments: &serde_json::Value) -> Opti
 fn now_unix_ms() -> i64 {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
+        .expect("system time before UNIX epoch");
     i64::try_from(duration.as_millis()).unwrap_or(0)
 }
 

@@ -662,7 +662,7 @@ impl App {
 
         let shell_cfg = tools_cfg.and_then(|cfg| cfg.shell.as_ref());
         let shell = tools::shell::detect_shell(shell_cfg);
-        tracing::info!(shell = %shell.name, binary = ?shell.binary, "Detected shell");
+        tracing::debug!(shell = %shell.name, binary = ?shell.binary, "Detected shell");
 
         let windows_run_cfg = tools_cfg
             .and_then(|cfg| cfg.run.as_ref())

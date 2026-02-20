@@ -269,12 +269,6 @@ pub(crate) fn prepare_run_command(
                 || Ok(()), // Host probe always succeeds
             );
         }
-        // This part is unreachable if cfg!(windows) is true because of the early return at the top of the function,
-        // but the compiler needs a path for the `if cfg!(windows)` check above to logically flow if the cfg was different.
-        // Actually, since we have an early return for `if cfg!(windows)` at line 188, this block is only reached
-        // if !windows. So the check `if !cfg!(windows)` above is redundant but safe.
-        // Let's Just Return the shared logic.
-
         Ok(PreparedRunCommand::passthrough(shell, command.raw()))
     }
 }

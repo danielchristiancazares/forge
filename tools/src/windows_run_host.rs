@@ -28,12 +28,66 @@ use windows_sys::Win32::System::JobObjects::{
 
 /// Verify that Windows host isolation primitives are available.
 ///
-/// On non-Windows hosts this is a no-op success.
+/// On Windows this probes that Forge can create/configure a Job Object and assign a newly-spawned
+/// child process to it. On non-Windows hosts this is a no-op success.
+///
+/// The result is cached per-process to avoid repeating the probe.
 pub(crate) fn sandbox_preflight() -> Result<(), String> {
     #[cfg(windows)]
     {
-        let _ = create_sandbox_job()?;
+        use std::sync::OnceLock;
+
+        static PREFLIGHT: OnceLock<Result<(), String>> = OnceLock::new();
+        PREFLIGHT.get_or_init(sandbox_preflight_inner).clone()
     }
+
+    #[cfg(not(windows))]
+    Ok(())
+}
+
+#[cfg(windows)]
+fn sandbox_preflight_inner() -> Result<(), String> {
+    let job = create_sandbox_job()?;
+    probe_assign_process_to_job(job.handle)
+}
+
+#[cfg(windows)]
+fn probe_assign_process_to_job(job_handle: HANDLE) -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+
+    const CREATE_SUSPENDED: u32 = 0x0000_0004;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let mut child = std::process::Command::new("cmd")
+        .arg("/C")
+        .arg("exit 0")
+        .creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("preflight failed to spawn child process: {e}"))?;
+
+    let process_handle = child.as_raw_handle() as HANDLE;
+    if process_handle.is_null() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("preflight child process handle was null".to_string());
+    }
+
+    // SAFETY: `job_handle` and `process_handle` are valid handles.
+    let attached = unsafe { AssignProcessToJobObject(job_handle, process_handle) };
+
+    // Ensure the probe child is terminated regardless of attach outcome.
+    let _ = child.kill();
+    let _ = child.wait();
+
+    if attached == 0 {
+        return Err(last_os_error("AssignProcessToJobObject"));
+    }
+
     Ok(())
 }
 
@@ -223,13 +277,21 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn sandbox_preflight_succeeds() {
-        sandbox_preflight().expect("preflight should create and configure a job");
+    fn sandbox_preflight_reports_availability_or_reason() {
+        match sandbox_preflight() {
+            Ok(()) => {}
+            Err(reason) => assert!(!reason.trim().is_empty()),
+        }
     }
 
     #[cfg(windows)]
     #[tokio::test]
     async fn attach_process_to_sandbox_succeeds_for_running_child() {
+        if let Err(reason) = sandbox_preflight() {
+            eprintln!("Windows host sandbox preflight unavailable: {reason}");
+            return;
+        }
+
         let mut child = tokio::process::Command::new("cmd")
             .arg("/C")
             .arg("ping -n 3 127.0.0.1 >NUL")

@@ -503,11 +503,11 @@ impl FactStore {
     }
 }
 
-/// Convert SystemTime to ISO 8601 string.
 fn system_time_to_iso8601(time: SystemTime) -> String {
-    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let duration = time
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before UNIX epoch");
     let secs = duration.as_secs();
-    // Format as ISO 8601: 2024-01-15T10:30:00Z
     let days_since_epoch = secs / 86400;
     let secs_in_day = secs % 86400;
     let hours = secs_in_day / 3600;

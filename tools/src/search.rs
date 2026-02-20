@@ -1285,7 +1285,9 @@ where
         })?;
     guard.disarm();
 
-    let stderr_text = stderr_task.await.unwrap_or_default();
+    let stderr_text = stderr_task
+        .await
+        .unwrap_or_else(|e| format!("[stderr task failed: {e}]"));
     let stderr = if stderr_text.trim().is_empty() {
         None
     } else {

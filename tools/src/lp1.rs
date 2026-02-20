@@ -410,8 +410,8 @@ fn find_match(lines: &[String], block: &[String], occ: Option<usize>) -> Result<
         return Err(err("Empty match requires occurrence"));
     }
 
-    for i in 0..=lines.len().saturating_sub(block.len()) {
-        if lines[i..i + block.len()] == *block {
+    for (i, window) in lines.windows(block.len()).enumerate() {
+        if *window == *block {
             matches.push(i);
         }
     }
@@ -435,8 +435,6 @@ fn find_match(lines: &[String], block: &[String], occ: Option<usize>) -> Result<
     Ok(matches[0])
 }
 
-/// Public wrapper for find_match, used for validation before applying patches.
-/// Returns the 0-indexed line number where the match starts.
 pub fn find_match_line(
     lines: &[String],
     block: &[String],

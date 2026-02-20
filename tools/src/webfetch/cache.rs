@@ -75,7 +75,6 @@ impl CacheEntry {
         }
     }
 
-    /// Check if entry is expired.
     pub fn is_expired(&self) -> bool {
         parse_rfc3339(&self.expires_at).is_none_or(|exp| SystemTime::now() > exp)
     }
@@ -385,9 +384,10 @@ pub fn cache_key(url: &Url) -> String {
     hex_encode(&result)
 }
 
-/// Format `SystemTime` as RFC3339 with second precision.
 pub fn format_rfc3339(time: SystemTime) -> String {
-    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let duration = time
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before UNIX epoch");
     let secs = duration.as_secs();
 
     let days = secs / 86400;

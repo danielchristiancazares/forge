@@ -50,7 +50,6 @@ pub(crate) fn format_token_count(value: u32) -> String {
     }
 }
 
-/// Returns a compact string like "Tokens 12.3k in / 1.2k out (85% cached)" or empty if no data.
 pub(crate) fn format_api_usage(usage: Option<&TurnUsage>) -> String {
     let Some(usage) = usage else {
         return String::new();

@@ -21,7 +21,6 @@ use forge_types::{Message, ThinkingReplayState};
 /// so we create it once and reuse it across all `TokenCounter` instances.
 static ENCODER: OnceLock<Option<CoreBPE>> = OnceLock::new();
 
-/// Returns the shared encoder, initializing on first call.
 fn get_encoder() -> Option<&'static CoreBPE> {
     ENCODER.get_or_init(|| o200k_base().ok()).as_ref()
 }

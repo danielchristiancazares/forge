@@ -1,7 +1,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) fn system_time_to_iso8601_millis(time: SystemTime) -> String {
-    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let duration = time
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before UNIX epoch");
     let secs = duration.as_secs();
     let millis = duration.subsec_millis();
     chrono_lite_format(secs, millis)

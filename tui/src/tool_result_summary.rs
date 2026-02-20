@@ -114,12 +114,10 @@ pub(crate) fn tool_result_render_decision(
         _ => {}
     }
 
-    // For other tools, check if content looks like a diff
     if looks_like_diff(content) {
         return ToolResultRender::Full { diff_aware: true };
     }
 
-    // Otherwise, generate tool-specific Summary
     let summary = format_tool_result_summary(tool_meta, content, is_error, max_width);
     ToolResultRender::Summary(summary)
 }
@@ -179,12 +177,12 @@ fn distill_search(content: &str) -> Option<String> {
     let match_label = pluralize(match_count, "match", "matches");
     if file_count > 0 {
         let file_label = pluralize(file_count, "file", "files");
-        return Some(format!(
+        Some(format!(
             "{match_count} {match_label} in {file_count} {file_label}"
-        ));
+        ))
+    } else {
+        Some(format!("{match_count} {match_label}"))
     }
-
-    Some(format!("{match_count} {match_label}"))
 }
 
 fn distill_glob(content: &str) -> String {

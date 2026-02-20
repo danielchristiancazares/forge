@@ -129,7 +129,6 @@ pub fn sanitize_path_for_display(path: &Path) -> String {
     sanitize_path_display(strip_windows_extended_prefix(&raw)).into_owned()
 }
 
-/// Check if text contains any characters that need sanitization.
 fn needs_sanitization(input: &str) -> bool {
     input.chars().any(|c| {
         c == ESC
@@ -141,25 +140,19 @@ fn needs_sanitization(input: &str) -> bool {
     })
 }
 
-/// Check if character is a C0 control character (0x00-0x1F).
 fn is_c0_control(c: char) -> bool {
     c <= '\x1f'
 }
 
-/// Check if character is an allowed control character.
 fn is_allowed_control(c: char) -> bool {
     matches!(c, '\n' | '\t' | '\r')
 }
 
-/// Check if character is a C1 control character (0x80-0x9F).
 fn is_c1_control(c: char) -> bool {
     ('\u{0080}'..='\u{009f}').contains(&c)
 }
 
-/// Check if character is a Unicode bidirectional control character.
-///
-/// These characters can be used for text spoofing attacks (Trojan Source)
-/// by manipulating how text is displayed vs. how it's interpreted.
+/// Trojan Source attack vectors: bidi overrides manipulate display vs. interpretation.
 fn is_bidi_control(c: char) -> bool {
     matches!(
         c,
@@ -171,12 +164,10 @@ fn is_bidi_control(c: char) -> bool {
     )
 }
 
-/// Check if C1 character is the CSI equivalent (0x9B).
 fn is_c1_csi(c: char) -> bool {
     c == '\u{009b}'
 }
 
-/// Skip an escape sequence starting after ESC.
 fn skip_escape_sequence<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>) {
     let Some(&next) = chars.peek() else {
         return;
