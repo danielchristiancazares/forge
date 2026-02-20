@@ -164,8 +164,8 @@ impl Sandbox {
         self.check_allowed(path, canonical)
     }
 
-    /// Shared validation prefix: unsafe chars, NTFS ADS, `..` rejection, absolute
-    /// path handling. Returns the resolved-but-not-yet-canonicalized path.
+    /// Shared validation prefix: unsafe chars, NTFS ADS, reserved names, `..`
+    /// rejection, absolute path handling. Returns the resolved-but-not-yet-canonicalized path.
     fn validate_and_resolve(&self, path: &str, working_dir: &Path) -> Result<PathBuf, ToolError> {
         if contains_unsafe_path_chars(path) {
             return Err(ToolError::BadArgs {
@@ -178,6 +178,12 @@ impl Sandbox {
             });
         }
         let input = PathBuf::from(path);
+        #[cfg(windows)]
+        if contains_windows_reserved_name(&input) {
+            return Err(ToolError::BadArgs {
+                message: "path contains a Windows reserved device name".to_string(),
+            });
+        }
         if input
             .components()
             .any(|c| matches!(c, std::path::Component::ParentDir))
@@ -494,6 +500,45 @@ fn is_reparse_point(meta: &std::fs::Metadata) -> bool {
 #[cfg(not(windows))]
 fn is_reparse_point(_meta: &std::fs::Metadata) -> bool {
     false
+}
+
+#[cfg(windows)]
+fn contains_windows_reserved_name(path: &Path) -> bool {
+    path.components().any(|c| {
+        if let std::path::Component::Normal(s) = c {
+            let upper = s.to_string_lossy().to_ascii_uppercase();
+            let base = upper.split('.').next().unwrap_or("");
+            matches!(
+                base,
+                "CON"
+                    | "PRN"
+                    | "AUX"
+                    | "NUL"
+                    | "COM0"
+                    | "COM1"
+                    | "COM2"
+                    | "COM3"
+                    | "COM4"
+                    | "COM5"
+                    | "COM6"
+                    | "COM7"
+                    | "COM8"
+                    | "COM9"
+                    | "LPT0"
+                    | "LPT1"
+                    | "LPT2"
+                    | "LPT3"
+                    | "LPT4"
+                    | "LPT5"
+                    | "LPT6"
+                    | "LPT7"
+                    | "LPT8"
+                    | "LPT9"
+            )
+        } else {
+            false
+        }
+    })
 }
 
 fn contains_unsafe_path_chars(input: &str) -> bool {

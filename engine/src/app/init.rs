@@ -22,6 +22,7 @@ pub(crate) const DEFAULT_MAX_TOOL_CALLS_PER_BATCH: usize = 8;
 pub(crate) const DEFAULT_MAX_TOOL_ITERATIONS_PER_TURN: u32 = 4;
 pub(crate) const DEFAULT_MAX_TOOL_ARGS_BYTES: usize = 256 * 1024;
 pub(crate) const DEFAULT_MAX_TOOL_OUTPUT_BYTES: usize = 102_400;
+pub(crate) const DEFAULT_MAX_BATCH_WALL_TIME_SECS: u64 = 600;
 pub(crate) const DEFAULT_MAX_PATCH_BYTES: usize = 512 * 1024;
 pub(crate) const DEFAULT_MAX_READ_FILE_BYTES: usize = 200 * 1024;
 pub(crate) const DEFAULT_MAX_READ_FILE_SCAN_BYTES: usize = 2 * 1024 * 1024;
@@ -599,6 +600,7 @@ impl App {
                 .and_then(|cfg| cfg.max_tool_iterations_per_user_turn)
                 .unwrap_or(DEFAULT_MAX_TOOL_ITERATIONS_PER_TURN),
             max_tool_args_bytes: DEFAULT_MAX_TOOL_ARGS_BYTES,
+            max_batch_wall_time: std::time::Duration::from_secs(DEFAULT_MAX_BATCH_WALL_TIME_SECS),
         };
 
         let read_limits = tools::ReadFileLimits {

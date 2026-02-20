@@ -323,6 +323,12 @@ impl FactStore {
         self.db
             .execute_batch("DELETE FROM fact_entities; DELETE FROM facts;")
             .context("Failed to clear fact store")?;
+
+        let _ = self
+            .db
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .inspect_err(|e| tracing::debug!("WAL checkpoint after fact store clear failed: {e}"));
+
         Ok(())
     }
 

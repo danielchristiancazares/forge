@@ -43,25 +43,34 @@ impl EnvironmentContext {
     }
 }
 
+const MAX_AGENTS_MD_BYTES: usize = 64 * 1024;
+
 /// Discovers and concatenates AGENTS.md files from the user's environment.
 ///
 /// Search order (all concatenated, global first, most-specific last):
 /// 1. `~/.forge/AGENTS.md` — global user-level instructions
 /// 2. Ancestor directories from root down to `cwd`, each `<dir>/AGENTS.md`
+///
+/// Total injected content is capped at [`MAX_AGENTS_MD_BYTES`] (64 KB).
 fn discover_agents_md(cwd: &std::path::Path) -> String {
     let mut sections = Vec::new();
+    let mut sources: Vec<String> = Vec::new();
+    let mut total_bytes: usize = 0;
 
     if let Some(home) = dirs::home_dir() {
         let global_path = home.join(".forge").join("AGENTS.md");
         if let Ok(content) = std::fs::read_to_string(&global_path) {
             let trimmed = content.trim();
             if !trimmed.is_empty() {
+                total_bytes += trimmed.len();
+                sources.push(global_path.display().to_string());
                 sections.push(trimmed.to_string());
             }
         }
     }
 
     let mut ancestors = Vec::new();
+    let mut ancestor_sources = Vec::new();
     let mut dir = cwd.to_path_buf();
     loop {
         let agents_path = dir.join("AGENTS.md");
@@ -70,6 +79,8 @@ fn discover_agents_md(cwd: &std::path::Path) -> String {
         {
             let trimmed = content.trim();
             if !trimmed.is_empty() {
+                total_bytes += trimmed.len();
+                ancestor_sources.push(agents_path.display().to_string());
                 ancestors.push(trimmed.to_string());
             }
         }
@@ -78,13 +89,33 @@ fn discover_agents_md(cwd: &std::path::Path) -> String {
         }
     }
     ancestors.reverse();
+    ancestor_sources.reverse();
     sections.extend(ancestors);
+    sources.extend(ancestor_sources);
+
+    if !sources.is_empty() {
+        tracing::info!(
+            count = sources.len(),
+            total_bytes,
+            sources = ?sources,
+            "Discovered AGENTS.md instruction files"
+        );
+    }
 
     if sections.is_empty() {
-        String::new()
-    } else {
-        sections.join("\n\n")
+        return String::new();
     }
+
+    let mut result = sections.join("\n\n");
+    if result.len() > MAX_AGENTS_MD_BYTES {
+        tracing::warn!(
+            total_bytes = result.len(),
+            cap = MAX_AGENTS_MD_BYTES,
+            "AGENTS.md content exceeds {MAX_AGENTS_MD_BYTES} byte cap; truncating"
+        );
+        result.truncate(result.floor_char_boundary(MAX_AGENTS_MD_BYTES));
+    }
+    result
 }
 
 fn has_git_ancestor(start: &std::path::Path) -> bool {

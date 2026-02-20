@@ -31,7 +31,35 @@ impl Default for AtomicWriteOptions {
         Self {
             sync_all: true,
             dir_sync: false,
+            #[cfg(unix)]
+            unix_mode: Some(0o600),
+            #[cfg(not(unix))]
             unix_mode: None,
+        }
+    }
+}
+
+/// Recover from incomplete atomic writes by restoring `.bak` files.
+///
+/// If `path` does not exist but `path.bak` does, it means a crash occurred
+/// during the backup-rename window in [`atomic_write_with_options`]. Rename
+/// the backup back to the canonical path so the caller can proceed.
+pub fn recover_bak_file(path: &Path) {
+    let backup = path.with_extension("bak");
+    if !path.exists() && backup.exists() {
+        match std::fs::rename(&backup, path) {
+            Ok(()) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    "Recovered .bak file from interrupted atomic write"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    "Failed to recover .bak file: {e}"
+                );
+            }
         }
     }
 }

@@ -1,6 +1,6 @@
 use crate::theme::Palette;
 use forge_engine::App;
-use forge_types::{PlanState, PlanStep, StepStatus};
+use forge_types::{PlanState, PlanStep};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
@@ -25,12 +25,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, palette: &Palette) {
     // Default to the first pending step if no active step, or last step if all done
     let active_index = steps
         .iter()
-        .position(|s| matches!(s.status, StepStatus::Active))
-        .or_else(|| {
-            steps
-                .iter()
-                .position(|s| matches!(s.status, StepStatus::Pending))
-        })
+        .position(|s| s.is_active())
+        .or_else(|| steps.iter().position(|s| s.is_pending()))
         .unwrap_or(steps.len().saturating_sub(1));
 
     let center_y = area.y + (area.height / 2);
@@ -54,7 +50,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, palette: &Palette) {
         }
 
         let distance = (i as isize - active_index as isize).abs();
-        let (style, icon) = step_appearance(&step.status, distance, palette);
+        let (style, icon) = step_appearance(step, distance, palette);
 
         // Draw Step Text
         // Center vertically within the step slot? No, top align for consistency
@@ -65,7 +61,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, palette: &Palette) {
             height: 1,
         };
 
-        let content = format!("{}  {}", icon, step.description);
+        let content = format!("{}  {}", icon, step.description());
         frame.render_widget(
             Paragraph::new(content)
                 .style(style)
@@ -74,7 +70,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, palette: &Palette) {
         );
 
         // Draw Timer (only for active step)
-        if i == active_index && matches!(step.status, StepStatus::Active) {
+        if i == active_index && step.is_active() {
             let timer_area = Rect {
                 x: area.x,
                 y: (step_top_y + 1) as u16,
@@ -92,21 +88,17 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, palette: &Palette) {
     }
 }
 
-fn step_appearance(
-    status: &StepStatus,
-    distance: isize,
-    palette: &Palette,
-) -> (Style, &'static str) {
+fn step_appearance(step: &PlanStep, distance: isize, palette: &Palette) -> (Style, &'static str) {
     let base_style = Style::default();
 
-    match status {
-        StepStatus::Active => (
+    match step {
+        PlanStep::Active(_) => (
             base_style
                 .fg(palette.text_primary)
                 .add_modifier(Modifier::BOLD),
             "⠸", // Spinner placeholder
         ),
-        StepStatus::Pending => {
+        PlanStep::Pending(_) => {
             let color = match distance {
                 0 => palette.text_primary, // Should be unreachable if active exists
                 1 => palette.text_secondary,
@@ -115,8 +107,8 @@ fn step_appearance(
             };
             (base_style.fg(color), "○")
         }
-        StepStatus::Complete(_) => (base_style.fg(palette.text_disabled), "✓"),
-        StepStatus::Failed(_) => (base_style.fg(palette.error), "✗"),
-        StepStatus::Skipped(_) => (base_style.fg(palette.text_disabled), "⊘"),
+        PlanStep::Complete(_) => (base_style.fg(palette.text_disabled), "✓"),
+        PlanStep::Failed(_) => (base_style.fg(palette.error), "✗"),
+        PlanStep::Skipped(_) => (base_style.fg(palette.text_disabled), "⊘"),
     }
 }

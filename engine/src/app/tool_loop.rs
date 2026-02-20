@@ -566,6 +566,7 @@ impl App {
             execute_now: plan.execute_now,
             approval_calls: plan.approval_calls,
             turn,
+            batch_start: std::time::Instant::now(),
         };
         let remaining_capacity_bytes = self.remaining_tool_capacity(&batch);
 
@@ -604,6 +605,7 @@ impl App {
             calls_to_execute,
             remaining_capacity_bytes,
             batch.turn.recorder(),
+            batch.batch_start,
         ) {
             Ok(phase) => phase,
             Err(e) => {
@@ -840,9 +842,10 @@ impl App {
         calls: Vec<ToolCall>,
         initial_capacity_bytes: usize,
         turn_recorder: ChangeRecorder,
+        batch_start: std::time::Instant,
     ) -> anyhow::Result<ToolLoopPhase> {
         let queue = ToolQueue::new(calls, initial_capacity_bytes, turn_recorder);
-        self.spawn_next_from_queue(batch_id, queue)
+        self.spawn_next_from_queue(batch_id, queue, batch_start)
     }
 
     /// Spawn the next tool from the queue, transitioning to Executing if possible.
@@ -855,7 +858,23 @@ impl App {
         &mut self,
         batch_id: ToolBatchId,
         mut queue: ToolQueue,
+        batch_start: std::time::Instant,
     ) -> anyhow::Result<ToolLoopPhase> {
+        let max_wall_time = self.runtime.tool_settings.limits.max_batch_wall_time;
+        if batch_start.elapsed() > max_wall_time {
+            let remaining = queue.queue.len();
+            queue.queue.clear();
+            if remaining > 0 {
+                tracing::warn!(
+                    elapsed_secs = batch_start.elapsed().as_secs(),
+                    max_secs = max_wall_time.as_secs(),
+                    dropped_count = remaining,
+                    "Batch wall-time limit exceeded; dropping remaining tools"
+                );
+            }
+            return Ok(ToolLoopPhase::Processing(queue));
+        }
+
         let Some(call) = queue.queue.pop_front() else {
             return Ok(ToolLoopPhase::Processing(queue));
         };
@@ -1043,45 +1062,48 @@ impl App {
                     );
                 } else {
                     // Spawn next tool
-                    let phase =
-                        match self.spawn_next_from_queue(batch.journal_status.batch_id(), queue) {
-                            Ok(phase) => phase,
-                            Err(e) => {
-                                self.disable_tools_due_to_tool_journal_error(
-                                    "mark tool call started",
-                                    e,
-                                );
+                    let phase = match self.spawn_next_from_queue(
+                        batch.journal_status.batch_id(),
+                        queue,
+                        batch.batch_start,
+                    ) {
+                        Ok(phase) => phase,
+                        Err(e) => {
+                            self.disable_tools_due_to_tool_journal_error(
+                                "mark tool call started",
+                                e,
+                            );
 
-                                let mut results = batch.results;
-                                let existing: HashSet<String> =
-                                    results.iter().map(|r| r.tool_call_id.clone()).collect();
-                                for call in &batch.calls {
-                                    if existing.contains(&call.id) {
-                                        continue;
-                                    }
-                                    results.push(ToolResult::error(
-                                        call.id.clone(),
-                                        call.name.clone(),
-                                        "Tool execution stopped: tool journal error",
-                                    ));
+                            let mut results = batch.results;
+                            let existing: HashSet<String> =
+                                results.iter().map(|r| r.tool_call_id.clone()).collect();
+                            for call in &batch.calls {
+                                if existing.contains(&call.id) {
+                                    continue;
                                 }
-
-                                self.commit_tool_batch(
-                                    ToolCommitPayload {
-                                        assistant_text: batch.assistant_text,
-                                        thinking: batch.thinking,
-                                        calls: batch.calls,
-                                        results,
-                                        model: batch.model,
-                                        step_id: batch.step_id,
-                                        turn: batch.turn,
-                                    },
-                                    batch.journal_status,
-                                    true,
-                                );
-                                return;
+                                results.push(ToolResult::error(
+                                    call.id.clone(),
+                                    call.name.clone(),
+                                    "Tool execution stopped: tool journal error",
+                                ));
                             }
-                        };
+
+                            self.commit_tool_batch(
+                                ToolCommitPayload {
+                                    assistant_text: batch.assistant_text,
+                                    thinking: batch.thinking,
+                                    calls: batch.calls,
+                                    results,
+                                    model: batch.model,
+                                    step_id: batch.step_id,
+                                    turn: batch.turn,
+                                },
+                                batch.journal_status,
+                                true,
+                            );
+                            return;
+                        }
+                    };
                     self.op_restore(OperationState::ToolLoop(Box::new(ToolLoopState {
                         batch,
                         phase,
@@ -1285,9 +1307,11 @@ impl App {
                         }
 
                         // Spawn next tool
-                        let phase = match self
-                            .spawn_next_from_queue(batch.journal_status.batch_id(), new_queue)
-                        {
+                        let phase = match self.spawn_next_from_queue(
+                            batch.journal_status.batch_id(),
+                            new_queue,
+                            batch.batch_start,
+                        ) {
                             Ok(phase) => phase,
                             Err(e) => {
                                 self.disable_tools_due_to_tool_journal_error(
@@ -1767,6 +1791,7 @@ impl App {
             queue,
             remaining_capacity,
             batch.turn.recorder(),
+            batch.batch_start,
         ) {
             Ok(phase) => phase,
             Err(e) => {

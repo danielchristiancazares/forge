@@ -459,6 +459,7 @@ pub struct ToolLimits {
     pub max_tool_calls_per_batch: usize,
     pub max_tool_iterations_per_user_turn: u32,
     pub max_tool_args_bytes: usize,
+    pub max_batch_wall_time: Duration,
 }
 
 /// Tool-specific limits for `read_file`.

@@ -586,6 +586,12 @@ impl ToolJournal {
         .with_context(|| format!("Failed to delete tool batch {batch_id}"))?;
 
         tx.commit().context("Failed to commit tool batch pruning")?;
+
+        let _ = self
+            .db
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .inspect_err(|e| tracing::debug!("WAL checkpoint after batch commit failed: {e}"));
+
         Ok(())
     }
 
@@ -615,6 +621,12 @@ impl ToolJournal {
         .with_context(|| format!("Failed to delete tool batch {batch_id}"))?;
 
         tx.commit().context("Failed to commit tool batch discard")?;
+
+        let _ = self
+            .db
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .inspect_err(|e| tracing::debug!("WAL checkpoint after batch discard failed: {e}"));
+
         Ok(())
     }
 

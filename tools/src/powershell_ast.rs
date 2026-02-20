@@ -28,6 +28,7 @@ impl PowerShellPolicyText {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProbeOutput {
     ok: bool,
     violation: Option<String>,

@@ -30,6 +30,7 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use forge_core::sanitize_display_text;
 use forge_engine::{
     App, ContextUsageStatus, FileDiff, FileSelectAccess, ModelSelectAccess, PredefinedModel,
     Provider, SettingsAccess, command_specs, find_match_positions,
@@ -507,7 +508,7 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
                 let mut spans = Vec::new();
                 if let Some(plan_line) = app.plan_status_line() {
                     spans.push(Span::styled(
-                        plan_line,
+                        sanitize_display_text(&plan_line),
                         Style::default().fg(palette.primary),
                     ));
                     spans.push(Span::styled("  ", Style::default()));

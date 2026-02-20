@@ -571,6 +571,11 @@ impl StreamJournal {
         tx.commit()
             .context("Failed to commit commit-prune transaction")?;
 
+        let _ = self
+            .db
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .inspect_err(|e| tracing::debug!("WAL checkpoint after commit-prune failed: {e}"));
+
         Ok(deleted as u64)
     }
 
@@ -601,6 +606,11 @@ impl StreamJournal {
 
         tx.commit()
             .context("Failed to commit discard transaction")?;
+
+        let _ = self
+            .db
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .inspect_err(|e| tracing::debug!("WAL checkpoint after discard failed: {e}"));
 
         Ok(deleted as u64)
     }

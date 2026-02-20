@@ -25,6 +25,13 @@ pub(crate) fn ensure_secure_dir(path: &Path) -> Result<()> {
             )?;
         }
     }
+    #[cfg(windows)]
+    if let Err(e) = forge_utils::set_owner_only_dir_acl(path) {
+        tracing::warn!(
+            path = %path.display(),
+            "Failed to apply owner-only ACL to directory (best-effort): {e}"
+        );
+    }
     Ok(())
 }
 
@@ -68,6 +75,26 @@ pub(crate) fn ensure_secure_db_files(path: &Path) -> Result<()> {
             }
         }
     }
+    #[cfg(windows)]
+    {
+        if let Err(e) = forge_utils::set_owner_only_file_acl(path) {
+            tracing::warn!(
+                path = %path.display(),
+                "Failed to apply owner-only ACL to database file (best-effort): {e}"
+            );
+        }
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = sqlite_sidecar_path(path, suffix);
+            if sidecar.exists()
+                && let Err(e) = forge_utils::set_owner_only_file_acl(&sidecar)
+            {
+                tracing::warn!(
+                    path = %sidecar.display(),
+                    "Failed to apply owner-only ACL to sidecar file (best-effort): {e}"
+                );
+            }
+        }
+    }
 
     Ok(())
 }
@@ -79,7 +106,6 @@ pub(crate) fn prepare_db_path(path: &Path) -> Result<()> {
     ensure_secure_db_files(path)
 }
 
-#[cfg(unix)]
 fn sqlite_sidecar_path(path: &Path, suffix: &str) -> std::path::PathBuf {
     let file_name = path.file_name().map(|name| name.to_string_lossy());
     match file_name {

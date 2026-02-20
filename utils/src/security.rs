@@ -244,6 +244,13 @@ pub fn sanitize_display_text(input: &str) -> String {
     sanitize_impl(input)
 }
 
+/// **Snapshot semantics**: The secret set is captured from `std::env::vars()` at
+/// the first call to [`secret_redactor()`]. Any secrets set via
+/// `std::env::set_var()` after this point are NOT captured. This is acceptable
+/// for the current architecture where all secrets are established at startup
+/// from `~/.forge/config.toml` + the process environment. If dynamic secrets
+/// are added in the future, introduce a `SecretRedactor::add_secret` method
+/// that rebuilds the automaton under a `RwLock`.
 static SECRET_REDACTOR: OnceLock<SecretRedactor> = OnceLock::new();
 
 /// Initializes on first call by scanning environment variables.

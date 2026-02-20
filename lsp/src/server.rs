@@ -38,26 +38,12 @@ enum IncomingFrame {
     },
 }
 
-/// Minimal glob matcher for env var denylist patterns.
-/// Handles `*_SUFFIX`, `PREFIX_*`, `*_INFIX*`, and exact match.
-/// Both pattern and key are compared in uppercase.
-fn env_glob_matches(pattern: &str, key_upper: &str) -> bool {
-    let pat = pattern.to_uppercase();
-    match (pat.starts_with('*'), pat.ends_with('*')) {
-        (true, true) => {
-            let inner = &pat[1..pat.len() - 1];
-            key_upper.contains(inner)
-        }
-        (true, false) => {
-            let suffix = &pat[1..];
-            key_upper.ends_with(suffix)
-        }
-        (false, true) => {
-            let prefix = &pat[..pat.len() - 1];
-            key_upper.starts_with(prefix)
-        }
-        (false, false) => key_upper == pat,
-    }
+fn env_glob_matches(pattern: &str, key: &str) -> bool {
+    globset::GlobBuilder::new(pattern)
+        .case_insensitive(true)
+        .build()
+        .map(|g| g.compile_matcher().is_match(key))
+        .unwrap_or(false)
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -123,6 +109,13 @@ impl RunningServer {
     ) -> Result<Self> {
         let resolved_cmd = which::which(config.command())
             .with_context(|| format!("{} not found in PATH", config.command()))?;
+        if !config.command().contains('/') && !config.command().contains('\\') {
+            tracing::info!(
+                command = config.command(),
+                resolved = %resolved_cmd.display(),
+                "LSP binary resolved via PATH"
+            );
+        }
         let mut cmd = Command::new(&resolved_cmd);
         cmd.args(config.args())
             .stdin(Stdio::piped())

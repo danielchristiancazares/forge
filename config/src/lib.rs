@@ -493,6 +493,7 @@ impl ForgeConfig {
             Some(path) => path,
             None => return Ok(None),
         };
+        forge_utils::recover_bak_file(&path);
         if !path.exists() {
             return Ok(None);
         }
@@ -632,6 +633,13 @@ fn ensure_config_parent_secure(path: &Path) -> std::io::Result<()> {
                 }
             }
         }
+        #[cfg(windows)]
+        if let Err(e) = forge_utils::set_owner_only_dir_acl(parent) {
+            tracing::warn!(
+                path = %parent.display(),
+                "Failed to apply owner-only ACL to config directory (best-effort): {e}"
+            );
+        }
     }
     Ok(())
 }
@@ -664,6 +672,12 @@ fn persist_config_doc(path: &Path, doc: &toml_edit::DocumentMut) -> std::io::Res
 
     #[cfg(windows)]
     {
+        if let Err(e) = forge_utils::set_owner_only_file_acl(path) {
+            tracing::warn!(
+                path = %path.display(),
+                "Failed to apply owner-only ACL to config file (best-effort): {e}"
+            );
+        }
         if let Ok(parsed) = serialized.parse::<toml::Value>()
             && let Some(api_keys) = parsed.get("api_keys").and_then(|v| v.as_table())
         {

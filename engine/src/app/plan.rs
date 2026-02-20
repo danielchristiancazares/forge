@@ -511,6 +511,7 @@ impl App {
             calls_to_execute,
             remaining_capacity,
             batch.turn.recorder(),
+            batch.batch_start,
         ) {
             Ok(phase) => phase,
             Err(e) => {

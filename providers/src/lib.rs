@@ -83,10 +83,14 @@ pub fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         base_client_builder().build().unwrap_or_else(|e| {
-            // This should never fail in practice (only fails if TLS backend unavailable),
-            // but if it does, log and fall back to a default client rather than panicking.
-            tracing::error!("Failed to build custom HTTP client: {e}. Using default.");
-            reqwest::Client::new()
+            tracing::error!(
+                "Failed to build hardened HTTP client: {e}. Attempting minimal hardened fallback."
+            );
+            reqwest::Client::builder()
+                .https_only(true)
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("Minimal hardened HTTP client must build; cannot proceed without TLS")
         })
     })
 }

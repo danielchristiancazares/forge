@@ -407,6 +407,7 @@ pub(crate) struct ToolBatch {
     pub(crate) execute_now: Vec<ToolCall>,
     pub(crate) approval_calls: Vec<ToolCall>,
     pub(crate) turn: TurnContext,
+    pub(crate) batch_start: std::time::Instant,
 }
 
 impl ToolBatch {

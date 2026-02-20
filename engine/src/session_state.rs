@@ -62,6 +62,7 @@ impl SessionChangeLog {
 /// Forge writes session state with a higher version number, older versions
 /// will ignore the persisted state and start fresh.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionState {
     /// Draft input state (text + cursor + mode).
     ///

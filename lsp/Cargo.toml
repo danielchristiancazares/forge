@@ -18,6 +18,7 @@ url.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
+globset.workspace = true
 which = "8"
 
 [dev-dependencies]

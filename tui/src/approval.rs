@@ -38,10 +38,11 @@ pub(crate) fn draw_plan_approval_prompt(frame: &mut Frame, app: &App, palette: &
     ];
 
     for text_line in rendered.lines() {
-        let display_line = if text_line.len() > max_content_width {
-            &text_line[..text_line.floor_char_boundary(max_content_width)]
+        let sanitized = sanitize_display_text(text_line);
+        let display_line = if sanitized.len() > max_content_width {
+            sanitized[..sanitized.floor_char_boundary(max_content_width)].to_string()
         } else {
-            text_line
+            sanitized
         };
         lines.push(Line::from(Span::styled(
             format!(" {display_line}"),

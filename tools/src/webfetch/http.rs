@@ -773,6 +773,9 @@ fn build_client(
     }
 
     if config.security.allow_insecure_tls {
+        tracing::warn!(
+            "allow_insecure_tls is enabled: TLS certificate validation is disabled for all WebFetch calls"
+        );
         builder = builder
             .danger_accept_invalid_certs(true)
             .danger_accept_invalid_hostnames(true);

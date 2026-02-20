@@ -181,6 +181,7 @@ impl App {
     /// Load plan state from disk (called during init alongside history).
     pub(crate) fn load_plan_if_exists(&mut self) {
         let path = self.plan_path();
+        forge_utils::recover_bak_file(&path);
         if !path.exists() {
             return;
         }
@@ -237,6 +238,7 @@ impl App {
     /// Load session state from disk (called during init if file exists).
     pub(crate) fn load_session(&mut self) {
         let path = self.session_path();
+        forge_utils::recover_bak_file(&path);
         if !path.exists() {
             return;
         }

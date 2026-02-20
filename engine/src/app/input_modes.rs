@@ -603,7 +603,8 @@ fn expand_file_references(
         }
 
         match read_file_reference_content(&resolved, max_read_bytes) {
-            FileReferenceContent::Text(content) => {
+            FileReferenceContent::Text(raw_content) => {
+                let content = forge_types::strip_steganographic_chars(&raw_content);
                 let byte_count = content.len();
                 let line_count = content.lines().count() as u32;
                 if let Ok(mut cache) = file_cache.try_lock() {

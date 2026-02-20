@@ -32,9 +32,14 @@ impl Drop for ChildGuard {
         #[cfg(unix)]
         {
             if let Some(pid) = child.id() {
-                unsafe {
-                    if libc::killpg(pid as i32, libc::SIGKILL) == -1 {
-                        let _ = child.start_kill();
+                // Verify the child has not already exited (PGID may have been
+                // recycled). kill(pid, 0) returns Ok if the process still exists.
+                let still_alive = unsafe { libc::kill(pid as i32, 0) } == 0;
+                if still_alive {
+                    unsafe {
+                        if libc::killpg(pid as i32, libc::SIGKILL) == -1 {
+                            let _ = child.start_kill();
+                        }
                     }
                 }
             }

@@ -10,7 +10,10 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect, palette: &Palette) {
-    if app.plan_state().is_active() {
+    if matches!(
+        app.plan_state(),
+        forge_types::PlanState::Proposed(_) | forge_types::PlanState::Active(_)
+    ) {
         executing::draw(frame, app, area, palette);
         return;
     }
