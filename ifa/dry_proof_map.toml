@@ -42,11 +42,6 @@ canonical_proof_type_path = "context::ToolBatchId"
 authority_boundary_module_path = "context::tool_journal"
 
 [[entries]]
-invariant_id = "APP-INV-9"
-canonical_proof_type_path = "types::ui::view_state::FocusState"
-authority_boundary_module_path = "types::ui::view_state"
-
-[[entries]]
 invariant_id = "APP-INV-10"
 canonical_proof_type_path = "types::model::ModelName"
 authority_boundary_module_path = "types::model"

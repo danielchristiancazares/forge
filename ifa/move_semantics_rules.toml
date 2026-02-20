@@ -10,14 +10,6 @@ consumes_self = true
 post_move_unusability_guarantee = "Transient state value is moved and cannot be reused after transition to Journaled."
 
 [[state_bearing_types]]
-type_path = "types::ui::view_state::FocusState"
-
-[[state_bearing_types.consumed_transition_methods]]
-method_path = "engine::app::mod::App::focus_start_execution"
-consumes_self = true
-post_move_unusability_guarantee = "Prior focus-state variant is replaced atomically; stale variant data is no longer reachable."
-
-[[state_bearing_types]]
 type_path = "engine::state::ToolLoopStart"
 
 [[state_bearing_types.consumed_transition_methods]]

@@ -13,8 +13,6 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use forge_engine::{App, FileSelectAccess, SettingsAccess};
-#[cfg(feature = "focus-view")]
-use forge_types::ui::{FocusState, ViewMode};
 use forge_types::ui::{InputMode, SettingsSurface};
 
 const INPUT_POLL_TIMEOUT: Duration = Duration::from_millis(25); // shutdown responsiveness
@@ -432,26 +430,6 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    #[cfg(feature = "focus-view")]
-    {
-        // Focus review carousel navigation (h/l/Left/Right)
-        if app.view_mode() == ViewMode::Focus
-            && matches!(app.focus_state(), FocusState::Reviewing { .. })
-        {
-            match key.code {
-                KeyCode::Char('h') | KeyCode::Left => {
-                    app.focus_review_prev();
-                    return;
-                }
-                KeyCode::Char('l') | KeyCode::Right => {
-                    app.focus_review_next();
-                    return;
-                }
-                _ => {}
-            }
-        }
-    }
-
     match key.code {
         KeyCode::Char('q') => {
             app.request_quit();
@@ -520,11 +498,6 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Tab => {
             if app.files_panel_visible() {
                 app.files_panel_next();
-            } else {
-                #[cfg(feature = "focus-view")]
-                {
-                    app.toggle_view_mode();
-                }
             }
         }
         // Files panel: Shift+Tab cycles to previous file

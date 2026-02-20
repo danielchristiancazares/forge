@@ -35,9 +35,9 @@ use tokio::sync::mpsc;
 
 use crate::ui::InputState;
 use crate::ui::{
-    ChangeKind, DisplayItem, DisplayLog, DraftInput, FilesPanelState, FocusState, InputMode,
-    ModalEffect, PanelEffect, PanelEffectKind, PredefinedModel, ScrollState, SettingsCategory,
-    SettingsSurface, UiOptions, ViewMode, ViewState,
+    ChangeKind, DisplayItem, DisplayLog, DraftInput, FilesPanelState, InputMode, ModalEffect,
+    PanelEffect, PanelEffectKind, PredefinedModel, ScrollState, SettingsCategory, SettingsSurface,
+    UiOptions, ViewState,
 };
 
 use forge_context::{
@@ -900,60 +900,6 @@ impl App {
 
     pub fn request_quit(&mut self) {
         self.ui.should_quit = true;
-    }
-    pub fn view_mode(&self) -> ViewMode {
-        #[cfg(feature = "focus-view")]
-        {
-            self.ui.view.view_mode
-        }
-        #[cfg(not(feature = "focus-view"))]
-        {
-            ViewMode::Classic
-        }
-    }
-
-    pub fn focus_state(&self) -> &FocusState {
-        &self.ui.view.focus_state
-    }
-
-    pub fn focus_state_mut(&mut self) -> &mut FocusState {
-        &mut self.ui.view.focus_state
-    }
-
-    pub fn focus_review_next(&mut self) {
-        if let FocusState::Reviewing {
-            ref mut active_index,
-            ref mut auto_advance,
-        } = self.ui.view.focus_state
-        {
-            *active_index = active_index.saturating_add(1);
-            *auto_advance = false;
-        }
-    }
-
-    pub fn focus_review_prev(&mut self) {
-        if let FocusState::Reviewing {
-            ref mut active_index,
-            ref mut auto_advance,
-        } = self.ui.view.focus_state
-        {
-            *active_index = active_index.saturating_sub(1);
-            *auto_advance = false;
-        }
-    }
-
-    pub fn toggle_view_mode(&mut self) {
-        #[cfg(feature = "focus-view")]
-        {
-            self.ui.view.view_mode = match self.ui.view.view_mode {
-                ViewMode::Focus => ViewMode::Classic,
-                ViewMode::Classic => ViewMode::Focus,
-            };
-        }
-        #[cfg(not(feature = "focus-view"))]
-        {
-            self.ui.view.view_mode = ViewMode::Classic;
-        }
     }
 
     pub fn take_clear_transcript(&mut self) -> bool {
@@ -1889,7 +1835,7 @@ impl App {
 
     /// Authoritative `OperationState` transition point.
     ///
-    /// Phase-0 of the OperationState/FocusState overhaul:
+    /// Phase-0 of the OperationState transition overhaul:
     /// - stop scattering `self.core.state = ...` across the codebase,
     /// - log variant-level edges once,
     /// - provide a single hook for future cross-cutting effects (metrics, UI sync, etc).
@@ -1993,47 +1939,13 @@ impl App {
         self.core.state = next;
     }
 
-    /// Central dispatch for cross-cutting effects keyed off a named operation edge.
-    ///
-    /// This is the synchronization point between `OperationState` and UI `FocusState`
-    /// (until FocusState becomes fully derived).
+    #[allow(clippy::unused_self)]
     fn op_apply_edge_effects(
         &mut self,
         _from: OperationTag,
-        edge: OperationEdge,
+        _edge: OperationEdge,
         _to: OperationTag,
     ) {
-        match edge {
-            OperationEdge::StartStreaming | OperationEdge::StartDistillation => {
-                self.focus_start_execution();
-            }
-            OperationEdge::FinishTurn => {
-                self.focus_finish_execution();
-            }
-            _ => {}
-        }
-    }
-
-    fn focus_start_execution(&mut self) {
-        if self.view_mode() == crate::ui::ViewMode::Focus {
-            self.ui.view.focus_state = crate::ui::FocusState::Executing {
-                step_started_at: std::time::Instant::now(),
-            };
-        }
-    }
-
-    fn focus_finish_execution(&mut self) {
-        if self.view_mode() == crate::ui::ViewMode::Focus
-            && matches!(
-                self.ui.view.focus_state,
-                crate::ui::FocusState::Executing { .. }
-            )
-        {
-            self.ui.view.focus_state = crate::ui::FocusState::Reviewing {
-                active_index: 0,
-                auto_advance: true,
-            };
-        }
     }
 
     fn build_basic_api_messages(&mut self, reserved_overhead: u32) -> Vec<Message> {

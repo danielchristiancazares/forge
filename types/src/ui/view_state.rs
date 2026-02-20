@@ -3,10 +3,9 @@
 //! This struct groups all state related to rendering and UI display,
 //! separating it from orchestration concerns.
 
+use super::{ModalEffect, PanelEffect, ScrollState};
 use std::path::PathBuf;
 use std::time::Instant;
-
-use super::{ModalEffect, PanelEffect, ScrollState};
 
 /// Classification of file changes for display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,28 +35,6 @@ pub struct UiOptions {
     pub show_thinking: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ViewMode {
-    Focus,
-    #[default]
-    Classic,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum FocusState {
-    /// No active operation. Shows "Ready".
-    #[default]
-    Idle,
-    /// Executing a plan. Vertical carousel.
-    Executing { step_started_at: Instant },
-    /// Reviewing completed content. Horizontal carousel.
-    Reviewing {
-        /// Index of the active content block (Thought/Response/ToolResult).
-        active_index: usize,
-        auto_advance: bool,
-    },
-}
-
 /// Separates view concerns from orchestration state, making it
 /// clearer what state is used for rendering vs. what drives the
 /// application logic.
@@ -75,9 +52,6 @@ pub struct ViewState {
     /// Timestamp of last frame (for animation timing).
     pub last_frame: Instant,
     pub files_panel: FilesPanelState,
-    pub view_mode: ViewMode,
-    /// Focus view state (only relevant when `view_mode` == Focus).
-    pub focus_state: FocusState,
 }
 
 impl Default for ViewState {
@@ -91,8 +65,6 @@ impl Default for ViewState {
             ui_options: UiOptions::default(),
             last_frame: Instant::now(),
             files_panel: FilesPanelState::default(),
-            view_mode: ViewMode::default(),
-            focus_state: FocusState::default(),
         }
     }
 }

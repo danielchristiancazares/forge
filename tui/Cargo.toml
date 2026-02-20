@@ -11,7 +11,6 @@ workspace = true
 
 [features]
 default = []
-focus-view = ["forge-engine/focus-view"]
 
 [dependencies]
 forge-engine.workspace = true

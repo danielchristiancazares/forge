@@ -14,7 +14,7 @@ use crate::ui::{DisplayLog, InputState};
 use crate::{
     App, ContextManager, EnvironmentContext, Librarian, OpenAIReasoningEffort,
     OpenAIReasoningSummary, OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation,
-    StreamJournal, ToolJournal, UiOptions, ViewMode, ViewState,
+    StreamJournal, ToolJournal, UiOptions, ViewState,
 };
 
 pub(crate) const DEFAULT_MAX_TOOL_CALLS_PER_BATCH: usize = 8;
@@ -379,7 +379,6 @@ impl App {
         let ui_options = Self::ui_options_from_config(config.as_ref());
         let view = ViewState {
             ui_options,
-            view_mode: Self::view_mode_from_config(config.as_ref()),
             ..ViewState::default()
         };
         let configured_tool_approval_mode = tool_settings.policy.mode;
@@ -462,23 +461,6 @@ impl App {
             high_contrast: app.is_some_and(|cfg| cfg.high_contrast),
             reduced_motion: app.is_some_and(|cfg| cfg.reduced_motion),
             show_thinking: app.is_some_and(|cfg| cfg.show_thinking),
-        }
-    }
-
-    fn view_mode_from_config(config: Option<&ForgeConfig>) -> ViewMode {
-        let app = config.and_then(|cfg| cfg.app.as_ref());
-        #[cfg(feature = "focus-view")]
-        {
-            if app.is_some_and(|cfg| cfg.focus_view) {
-                ViewMode::Focus
-            } else {
-                ViewMode::Classic
-            }
-        }
-        #[cfg(not(feature = "focus-view"))]
-        {
-            let _ = app;
-            ViewMode::Classic
         }
     }
 

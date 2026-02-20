@@ -3,8 +3,6 @@
 mod approval;
 mod diff_render;
 mod effects;
-#[cfg(feature = "focus-view")]
-mod focus;
 mod format;
 mod input;
 pub mod markdown;
@@ -101,16 +99,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(1), Constraint::Length(input_height)])
         .split(main_area);
 
-    #[cfg(feature = "focus-view")]
-    match app.view_mode() {
-        forge_engine::ViewMode::Focus => {
-            focus::draw(frame, app, chunks[0], &palette);
-        }
-        forge_engine::ViewMode::Classic => {
-            messages::draw_messages(frame, app, chunks[0], &palette, &glyphs);
-        }
-    }
-    #[cfg(not(feature = "focus-view"))]
     messages::draw_messages(frame, app, chunks[0], &palette, &glyphs);
     draw_input(frame, app, chunks[1], &palette, &glyphs);
 

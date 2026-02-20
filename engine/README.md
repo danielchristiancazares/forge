@@ -91,7 +91,7 @@ Exported for UI crates to render and manage interaction:
 
 - Input: `InputMode`, `InputState`, `DraftInput`
 - Display: `DisplayItem`
-- View: `ViewState`, `ViewMode`, `FocusState`, `ScrollState`, `UiOptions`
+- View: `ViewState`, `ScrollState`, `UiOptions`
 - Settings modal state: `SettingsSurface`, `SettingsCategory`, `SettingsModalState`
 - File picker state: `FilePickerState`, `FileEntry`, `find_match_positions`
 

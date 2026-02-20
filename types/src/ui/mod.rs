@@ -20,4 +20,4 @@ pub use input::{
 pub use modal::{ModalEffect, ModalEffectKind};
 pub use panel::{PanelEffect, PanelEffectKind};
 pub use scroll::ScrollState;
-pub use view_state::{ChangeKind, FilesPanelState, FocusState, UiOptions, ViewMode, ViewState};
+pub use view_state::{ChangeKind, FilesPanelState, UiOptions, ViewState};

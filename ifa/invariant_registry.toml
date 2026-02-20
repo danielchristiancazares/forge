@@ -50,12 +50,6 @@ canonical_proof_type_path = "context::ToolBatchId"
 authority_boundary_module_path = "context::tool_journal"
 
 [[invariants]]
-id = "APP-INV-9"
-predicate = "Focus view lifecycle is represented by explicit focus-state variants with state-owned fields."
-canonical_proof_type_path = "types::ui::view_state::FocusState"
-authority_boundary_module_path = "types::ui::view_state"
-
-[[invariants]]
 id = "APP-INV-10"
 predicate = "Provider request/response model name selection is represented by strongly typed model names."
 canonical_proof_type_path = "types::model::ModelName"

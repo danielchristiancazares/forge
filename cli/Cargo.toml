@@ -12,7 +12,6 @@ workspace = true
 
 [features]
 default = []
-focus-view = ["forge-engine/focus-view", "forge-tui/focus-view"]
 
 [[bin]]
 name = "forge"

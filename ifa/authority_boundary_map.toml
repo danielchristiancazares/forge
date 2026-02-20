@@ -58,13 +58,6 @@ allowed_caller_module_paths = ["engine::app::init", "engine", "config"]
 max_constructor_visibility_rung = "pub"
 
 [[entries]]
-controlled_type_path = "types::ui::view_state::FocusState"
-boundary_module_path = "types::ui::view_state"
-constructor_paths = ["types::ui::view_state::FocusState::*"]
-allowed_caller_module_paths = ["engine::app", "engine::ui"]
-max_constructor_visibility_rung = "pub"
-
-[[entries]]
 controlled_type_path = "types::plan::Plan"
 boundary_module_path = "types::plan"
 constructor_paths = ["types::plan::Plan::from_input", "types::plan::Plan::new"]
