@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::config::default_true;
+use crate::default_true;
 
 use globset::{GlobBuilder, GlobSet};
 use ignore::WalkBuilder;

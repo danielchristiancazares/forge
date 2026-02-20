@@ -21,7 +21,7 @@ const DEFAULT_GIT_STDOUT_BYTES: usize = 200_000;
 const DEFAULT_GIT_STDERR_BYTES: usize = 100_000;
 const MAX_OUTPUT_BYTES: usize = 5_000_000;
 
-use crate::config::default_true;
+use crate::default_true;
 
 #[derive(Debug, Clone, Copy)]
 enum GitToolKind {

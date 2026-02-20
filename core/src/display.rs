@@ -2,7 +2,7 @@
 
 use forge_types::Message;
 
-use forge_context::MessageId;
+use forge_types::MessageId;
 
 /// An item to display in the message view.
 ///

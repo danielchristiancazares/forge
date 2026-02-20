@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 use url::Url;
 
-use crate::config::default_true;
+use crate::default_true;
 
 /// Input parameters for a `WebFetch` request.
 ///

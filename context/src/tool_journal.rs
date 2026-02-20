@@ -32,16 +32,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::time::SystemTime;
 
-use crate::StepId;
 use crate::sqlite_security::prepare_db_path;
 use crate::time_utils::system_time_to_iso8601_millis;
 use forge_types::{
-    PersistableContent, ThinkingReplayState, ThoughtSignature, ThoughtSignatureState, ToolCall,
-    ToolResult,
+    PersistableContent, StepId, ThinkingReplayState, ThoughtSignature, ThoughtSignatureState,
+    ToolBatchId, ToolCall, ToolResult,
 };
-
-/// Unique identifier for a tool batch.
-pub type ToolBatchId = i64;
 
 /// Per-tool-call execution metadata captured for crash recovery.
 ///
@@ -190,7 +186,7 @@ impl ToolJournal {
             "INSERT INTO tool_batches (stream_step_id, model_name, assistant_text, committed, created_at, thinking_replay_json)
              VALUES (?1, ?2, ?3, 0, ?4, ?5)",
             params![
-                stream_step_id,
+                stream_step_id.value(),
                 model_name,
                 assistant_text.as_ref(),
                 created_at,
@@ -199,7 +195,7 @@ impl ToolJournal {
         )
         .context("Failed to insert tool batch")?;
 
-        let batch_id = tx.last_insert_rowid();
+        let batch_id = ToolBatchId::new(tx.last_insert_rowid());
 
         for (seq, call) in calls.iter().enumerate() {
             let args_json = serde_json::to_string(&call.arguments)
@@ -214,7 +210,7 @@ impl ToolJournal {
                 "INSERT INTO tool_calls (batch_id, seq, tool_call_id, tool_name, arguments_json, thought_signature)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
-                    batch_id,
+                    batch_id.value(),
                     seq as i64,
                     &call.id,
                     &call.name,
@@ -254,11 +250,11 @@ impl ToolJournal {
         tx.execute(
             "INSERT INTO tool_batches (stream_step_id, model_name, assistant_text, committed, created_at)
              VALUES (?1, ?2, ?3, 0, ?4)",
-            params![stream_step_id, model_name, "", created_at],
+            params![stream_step_id.value(), model_name, "", created_at],
         )
         .context("Failed to insert streaming tool batch")?;
 
-        let batch_id = tx.last_insert_rowid();
+        let batch_id = ToolBatchId::new(tx.last_insert_rowid());
         tx.commit()
             .context("Failed to commit streaming tool batch transaction")?;
 
@@ -282,7 +278,7 @@ impl ToolJournal {
             .execute(
                 "INSERT INTO tool_calls (batch_id, seq, tool_call_id, tool_name, arguments_json, thought_signature)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![batch_id, seq as i64, tool_call_id, tool_name, "", thought_signature],
+                params![batch_id.value(), seq as i64, tool_call_id, tool_name, "", thought_signature],
             )
             .with_context(|| format!("Failed to insert tool call {tool_call_id}"))?;
         Ok(())
@@ -303,7 +299,7 @@ impl ToolJournal {
                 "UPDATE tool_calls
                  SET arguments_json = arguments_json || ?1
                  WHERE batch_id = ?2 AND tool_call_id = ?3",
-                params![delta.as_str(), batch_id, tool_call_id],
+                params![delta.as_str(), batch_id.value(), tool_call_id],
             )
             .with_context(|| format!("Failed to append tool args {tool_call_id}"))?;
         if updated == 0 {
@@ -339,7 +335,7 @@ impl ToolJournal {
                     "UPDATE tool_calls
                      SET arguments_json = arguments_json || ?1
                      WHERE batch_id = ?2 AND tool_call_id = ?3",
-                    params![delta, batch_id, tool_call_id],
+                    params![delta, batch_id.value(), tool_call_id],
                 )
                 .with_context(|| format!("Failed to append tool args {tool_call_id}"))?;
             if updated == 0 {
@@ -368,7 +364,7 @@ impl ToolJournal {
                 "UPDATE tool_calls
                  SET started_at_unix_ms = COALESCE(started_at_unix_ms, ?1)
                  WHERE batch_id = ?2 AND tool_call_id = ?3",
-                params![started_at_unix_ms, batch_id, tool_call_id],
+                params![started_at_unix_ms, batch_id.value(), tool_call_id],
             )
             .with_context(|| format!("Failed to mark tool call started {tool_call_id}"))?;
         if updated == 0 {
@@ -394,7 +390,7 @@ impl ToolJournal {
                 "SELECT process_id, process_started_at_unix_ms
                  FROM tool_calls
                  WHERE batch_id = ?1 AND tool_call_id = ?2",
-                params![batch_id, tool_call_id],
+                params![batch_id.value(), tool_call_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .with_context(|| format!("Failed to load tool call {tool_call_id} for PID update"))?;
@@ -422,7 +418,7 @@ impl ToolJournal {
                 params![
                     process_id,
                     process_started_at_unix_ms,
-                    batch_id,
+                    batch_id.value(),
                     tool_call_id
                 ],
             )
@@ -446,7 +442,7 @@ impl ToolJournal {
             .db
             .execute(
                 "UPDATE tool_batches SET assistant_text = ?1 WHERE batch_id = ?2",
-                params![assistant_text.as_ref(), batch_id],
+                params![assistant_text.as_ref(), batch_id.value()],
             )
             .with_context(|| format!("Failed to update assistant text for batch {batch_id}"))?;
         if updated == 0 {
@@ -465,7 +461,7 @@ impl ToolJournal {
             .db
             .execute(
                 "UPDATE tool_batches SET assistant_text = assistant_text || ?1 WHERE batch_id = ?2",
-                params![delta.as_ref(), batch_id],
+                params![delta.as_ref(), batch_id.value()],
             )
             .with_context(|| format!("Failed to append assistant delta for batch {batch_id}"))?;
         if updated == 0 {
@@ -490,7 +486,7 @@ impl ToolJournal {
             .db
             .execute(
                 "UPDATE tool_batches SET thinking_replay_json = ?1 WHERE batch_id = ?2",
-                params![json, batch_id],
+                params![json, batch_id.value()],
             )
             .with_context(|| format!("Failed to update thinking replay for batch {batch_id}"))?;
         if updated == 0 {
@@ -510,7 +506,7 @@ impl ToolJournal {
                 "INSERT OR IGNORE INTO tool_results (batch_id, tool_call_id, tool_name, content, is_error, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
-                    batch_id,
+                    batch_id.value(),
                     &result.tool_call_id,
                     &result.tool_name,
                     &content,
@@ -533,7 +529,7 @@ impl ToolJournal {
                 "SELECT tool_name, content, is_error
                      FROM tool_results
                      WHERE batch_id = ?1 AND tool_call_id = ?2",
-                params![batch_id, &result.tool_call_id],
+                params![batch_id.value(), &result.tool_call_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .with_context(|| {
@@ -567,25 +563,25 @@ impl ToolJournal {
 
         tx.execute(
             "UPDATE tool_batches SET committed = 1 WHERE batch_id = ?1",
-            params![batch_id],
+            params![batch_id.value()],
         )
         .with_context(|| format!("Failed to mark tool batch {batch_id} committed"))?;
 
         tx.execute(
             "DELETE FROM tool_calls WHERE batch_id = ?1",
-            params![batch_id],
+            params![batch_id.value()],
         )
         .with_context(|| format!("Failed to delete tool calls for batch {batch_id}"))?;
 
         tx.execute(
             "DELETE FROM tool_results WHERE batch_id = ?1",
-            params![batch_id],
+            params![batch_id.value()],
         )
         .with_context(|| format!("Failed to delete tool results for batch {batch_id}"))?;
 
         tx.execute(
             "DELETE FROM tool_batches WHERE batch_id = ?1",
-            params![batch_id],
+            params![batch_id.value()],
         )
         .with_context(|| format!("Failed to delete tool batch {batch_id}"))?;
 
@@ -608,19 +604,19 @@ impl ToolJournal {
 
         tx.execute(
             "DELETE FROM tool_calls WHERE batch_id = ?1",
-            params![batch_id],
+            params![batch_id.value()],
         )
         .with_context(|| format!("Failed to delete tool calls for batch {batch_id}"))?;
 
         tx.execute(
             "DELETE FROM tool_results WHERE batch_id = ?1",
-            params![batch_id],
+            params![batch_id.value()],
         )
         .with_context(|| format!("Failed to delete tool results for batch {batch_id}"))?;
 
         tx.execute(
             "DELETE FROM tool_batches WHERE batch_id = ?1",
-            params![batch_id],
+            params![batch_id.value()],
         )
         .with_context(|| format!("Failed to delete tool batch {batch_id}"))?;
 
@@ -644,7 +640,7 @@ impl ToolJournal {
             .query_row(
                 "SELECT batch_id FROM tool_batches WHERE committed = 0 ORDER BY batch_id DESC LIMIT 1",
                 [],
-                |row| row.get(0),
+                |row| row.get::<_, i64>(0).map(ToolBatchId::new),
             )
             .optional()
             .context("Failed to query pending tool batch")?;
@@ -662,8 +658,11 @@ impl ToolJournal {
             .db
             .query_row(
                 "SELECT stream_step_id, model_name, assistant_text, thinking_replay_json FROM tool_batches WHERE batch_id = ?1",
-                params![batch_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                params![batch_id.value()],
+                |row| {
+                    let step_id: Option<i64> = row.get(0)?;
+                    Ok((step_id.map(StepId::new), row.get(1)?, row.get(2)?, row.get(3)?))
+                },
             )
             .context("Failed to load tool batch metadata")?;
 
@@ -682,7 +681,7 @@ impl ToolJournal {
             )
             .context("Failed to prepare tool calls query")?;
         let rows = stmt
-            .query_map(params![batch_id], |row| {
+            .query_map(params![batch_id.value()], |row| {
                 let id: String = row.get(0)?;
                 let name: String = row.get(1)?;
                 let args_json: String = row.get(2)?;
@@ -777,7 +776,7 @@ impl ToolJournal {
             )
             .context("Failed to prepare tool results query")?;
         let rows = stmt
-            .query_map(params![batch_id], |row| {
+            .query_map(params![batch_id.value()], |row| {
                 let id: String = row.get(0)?;
                 let tool_name: String = row.get(1)?;
                 let content: String = row.get(2)?;
@@ -815,7 +814,7 @@ impl ToolJournal {
             .query_row(
                 "SELECT batch_id FROM tool_batches WHERE committed = 0 ORDER BY batch_id DESC LIMIT 1",
                 [],
-                |row| row.get(0),
+                |row| row.get::<_, i64>(0).map(ToolBatchId::new),
             )
             .optional()
             .context("Failed to query pending tool batch")?;
@@ -1053,8 +1052,8 @@ fn normalize_persistable_owned(input: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::{RecoveredToolCallExecution, ToolJournal};
-    use crate::StepId;
     use crate::time_utils::system_time_to_iso8601_millis;
+    use forge_types::StepId;
     use forge_types::{ThinkingReplayState, ThoughtSignatureState, ToolCall, ToolResult};
     use rusqlite::params;
     use std::time::SystemTime;
@@ -1484,7 +1483,7 @@ mod tests {
         let mut journal = ToolJournal::open_in_memory().unwrap();
 
         // Try to update a non-existent batch
-        let result = journal.update_assistant_text(999, "text");
+        let result = journal.update_assistant_text(forge_types::ToolBatchId::new(999), "text");
         assert!(result.is_err());
     }
 

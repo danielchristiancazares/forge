@@ -31,6 +31,8 @@
 //! | Plan | [`Plan`], [`Phase`], [`PlanStep`], [`PlanStepId`], [`PlanState`], [`CompletedPlan`], [`EditOp`] |
 //! | Security | [`sanitize_terminal_text`], [`strip_steganographic_chars`], [`detect_mixed_script`], [`MixedScriptDetection`], [`HomoglyphWarning`] |
 
+pub mod ids;
+pub mod settings;
 pub mod ui;
 
 mod budget;
@@ -47,6 +49,7 @@ pub use budget::{
     ThinkingState,
 };
 pub use confusables::{HomoglyphWarning, MixedScriptDetection, detect_mixed_script};
+pub use ids::{MessageId, StepId, ToolBatchId};
 pub use message::{
     AssistantMessage, ClaudeSignatureRef, Message, SystemMessage, ThinkingMessage, UserMessage,
 };
@@ -62,6 +65,7 @@ pub use sanitize::{
     is_steganographic_char, sanitize_path_display, sanitize_path_for_display,
     sanitize_terminal_text, strip_steganographic_chars, strip_windows_extended_prefix,
 };
+pub use settings::{LspConfig, ServerConfig, ServerConfigError};
 pub use text::{truncate_to_fit, truncate_with_ellipsis};
 
 /// Single point of encoding for sensitive environment variable patterns (IFA-7).

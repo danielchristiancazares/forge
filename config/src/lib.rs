@@ -4,7 +4,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) use forge_tools::config::default_true;
+/// Serde helper for fields that default to `true`.
+#[must_use]
+pub(crate) const fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Default, Deserialize)]
 #[allow(clippy::unsafe_derive_deserialize)] // unsafe is for Unix permission checks, unrelated to serde
@@ -20,7 +24,7 @@ pub struct ForgeConfig {
     /// Tool configurations for function calling.
     pub tools: Option<ToolsConfig>,
     /// LSP client configuration for language server diagnostics.
-    pub lsp: Option<forge_lsp::LspConfig>,
+    pub lsp: Option<RawLspConfig>,
 }
 
 #[derive(Debug)]
@@ -244,6 +248,33 @@ pub struct GeminiConfig {
     pub cache_ttl_seconds: Option<u32>,
 }
 
+/// Raw LSP configuration as deserialized from TOML.
+///
+/// The `enabled` flag is resolved at the parse boundary: when `enabled = false`
+/// or the section is absent, no `forge_types::LspConfig` is produced.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RawLspConfig {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    servers: std::collections::HashMap<String, forge_types::ServerConfig>,
+}
+
+impl RawLspConfig {
+    /// Resolve into a `forge_types::LspConfig` if LSP is enabled.
+    ///
+    /// This is the boundary conversion: the `enabled` bool is consumed here
+    /// and never leaks into the resolved type.
+    #[must_use]
+    pub fn resolve(self) -> Option<forge_types::LspConfig> {
+        if self.enabled {
+            Some(forge_types::LspConfig::new(self.servers))
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct ToolsConfig {
     /// Maximum tool calls per batch.
@@ -262,8 +293,6 @@ pub struct ToolsConfig {
     pub webfetch: Option<WebFetchConfig>,
     /// Run tool hardening controls.
     pub run: Option<RunConfig>,
-    /// Shell configuration for `run_command`.
-    pub shell: Option<ShellConfig>,
 }
 
 /// Configuration for a single tool definition.
@@ -413,11 +442,6 @@ impl Default for MacOsRunConfig {
         }
     }
 }
-
-/// Shell configuration for `run_command` tool.
-///
-/// ```toml
-pub use forge_tools::config::ShellConfig;
 
 impl ToolDefinitionConfig {
     pub fn to_tool_definition(&self) -> Result<forge_types::ToolDefinition, String> {
@@ -1108,22 +1132,6 @@ denylist = ["Run"]
         assert_eq!(approval.mode, Some("default".to_string()));
         assert_eq!(approval.allowlist, vec!["Read", "ListDir"]);
         assert_eq!(approval.denylist, vec!["Run"]);
-    }
-
-    #[test]
-    fn parse_shell_config() {
-        let toml_str = r#"
-[tools.shell]
-binary = "pwsh"
-args = ["-NoProfile", "-Command"]
-"#;
-        let config: ForgeConfig = toml::from_str(toml_str).unwrap();
-        let shell = config.tools.unwrap().shell.unwrap();
-        assert_eq!(shell.binary, Some("pwsh".to_string()));
-        assert_eq!(
-            shell.args,
-            Some(vec!["-NoProfile".to_string(), "-Command".to_string()])
-        );
     }
 
     #[test]

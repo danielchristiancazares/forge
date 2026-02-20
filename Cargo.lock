@@ -966,8 +966,6 @@ name = "forge-config"
 version = "0.0.0"
 dependencies = [
  "dirs",
- "forge-lsp",
- "forge-tools",
  "forge-types",
  "forge-utils",
  "libc",

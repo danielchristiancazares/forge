@@ -7,27 +7,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
-use forge_types::{Message, NonEmptyString, PersistableContent};
-
-use crate::StepId;
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct MessageId(u64);
-
-impl MessageId {
-    const fn new(id: u64) -> Self {
-        Self(id)
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn new_for_test(id: u64) -> Self {
-        Self(id)
-    }
-
-    #[must_use]
-    pub fn as_u64(&self) -> u64 {
-        self.0
-    }
-}
+use forge_types::{Message, MessageId, NonEmptyString, PersistableContent, StepId};
 
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
@@ -261,10 +241,10 @@ impl FullHistorySerde {
 
         for (index, entry) in self.entries.iter().enumerate() {
             let expected_id = index as u64;
-            if entry.id.as_u64() != expected_id {
+            if entry.id.value() != expected_id {
                 return Err(format!(
                     "entry id {} does not match position {}",
-                    entry.id.as_u64(),
+                    entry.id.value(),
                     expected_id
                 ));
             }
@@ -352,7 +332,7 @@ impl FullHistory {
 
     #[must_use]
     pub fn get_entry(&self, id: MessageId) -> &HistoryEntry {
-        let index = id.as_u64() as usize;
+        let index = id.value() as usize;
         &self.entries[index]
     }
 
@@ -409,8 +389,8 @@ impl FullHistory {
 mod tests {
     use std::time::SystemTime;
 
-    use super::{CompactionSummary, FullHistory, MessageId};
-    use forge_types::{Message, NonEmptyString};
+    use super::{CompactionSummary, FullHistory};
+    use forge_types::{Message, MessageId, NonEmptyString};
 
     fn make_test_message(content: &str) -> Message {
         Message::try_user(content, SystemTime::now()).expect("non-empty test message")
@@ -419,7 +399,7 @@ mod tests {
     #[test]
     fn test_message_id() {
         let id = MessageId::new(42);
-        assert_eq!(id.as_u64(), 42);
+        assert_eq!(id.value(), 42);
     }
 
     #[test]
@@ -429,8 +409,8 @@ mod tests {
         let id1 = history.push(make_test_message("Hello"), 10);
         let id2 = history.push(make_test_message("World"), 10);
 
-        assert_eq!(id1.as_u64(), 0);
-        assert_eq!(id2.as_u64(), 1);
+        assert_eq!(id1.value(), 0);
+        assert_eq!(id2.value(), 1);
         assert_eq!(history.len(), 2);
         assert_eq!(history.total_tokens(), 20);
     }
@@ -485,7 +465,7 @@ mod tests {
     fn test_pop_if_last_empty_history() {
         let mut history = FullHistory::new();
 
-        let popped = history.pop_if_last(MessageId::new_for_test(0));
+        let popped = history.pop_if_last(MessageId::new(0));
         assert!(popped.is_none());
         assert_eq!(history.len(), 0);
     }
@@ -500,7 +480,7 @@ mod tests {
         history.pop_if_last(id2);
 
         let id3 = history.push(make_test_message("Third"), 30);
-        assert_eq!(id3.as_u64(), 1);
+        assert_eq!(id3.value(), 1);
     }
 
     #[test]

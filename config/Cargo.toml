@@ -11,8 +11,6 @@ workspace = true
 
 [dependencies]
 forge-types.workspace = true
-forge-lsp.workspace = true
-forge-tools.workspace = true
 forge-utils.workspace = true
 
 serde.workspace = true

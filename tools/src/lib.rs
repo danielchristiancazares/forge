@@ -3,7 +3,6 @@
 pub mod builtins;
 pub mod change_recording;
 pub mod command_blacklist;
-pub mod config;
 pub mod git;
 pub mod lp1;
 pub mod memory;
@@ -20,6 +19,12 @@ pub mod windows_run;
 pub mod windows_run_host;
 
 pub use command_blacklist::CommandBlacklist;
+
+/// Serde helper for fields that default to `true`.
+#[must_use]
+pub(crate) const fn default_true() -> bool {
+    true
+}
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;

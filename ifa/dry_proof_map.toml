@@ -38,7 +38,7 @@ authority_boundary_module_path = "types::proofs"
 
 [[entries]]
 invariant_id = "APP-INV-8"
-canonical_proof_type_path = "context::ToolBatchId"
+canonical_proof_type_path = "types::ToolBatchId"
 authority_boundary_module_path = "context::tool_journal"
 
 [[entries]]

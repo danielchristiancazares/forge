@@ -196,30 +196,32 @@ mod tests {
 
     use crate::diagnostics::DiagnosticsStore;
     use crate::types::{
-        DiagnosticSeverity, ForgeDiagnostic, LspConfig, LspEvent, ServerStopReason,
+        DiagnosticSeverity, ForgeDiagnostic, LspConfig, LspEvent, ServerConfig, ServerStopReason,
     };
 
     use super::{EVENT_CHANNEL_CAPACITY, LspManager, build_extension_map};
 
-    fn test_config() -> LspConfig {
+    fn server(cmd: &str, lang: &str, exts: &[&str], markers: &[&str]) -> ServerConfig {
         serde_json::from_value(serde_json::json!({
-            "enabled": true,
-            "servers": {
-                "rust": {
-                    "command": "rust-analyzer",
-                    "language_id": "rust",
-                    "file_extensions": ["rs"],
-                    "root_markers": ["Cargo.toml"]
-                },
-                "python": {
-                    "command": "pyright",
-                    "language_id": "python",
-                    "file_extensions": ["py", "pyi"],
-                    "root_markers": ["pyproject.toml"]
-                }
-            }
+            "command": cmd,
+            "language_id": lang,
+            "file_extensions": exts,
+            "root_markers": markers,
         }))
         .unwrap()
+    }
+
+    fn test_config() -> LspConfig {
+        let mut servers = HashMap::new();
+        servers.insert(
+            "rust".to_string(),
+            server("rust-analyzer", "rust", &["rs"], &["Cargo.toml"]),
+        );
+        servers.insert(
+            "python".to_string(),
+            server("pyright", "python", &["py", "pyi"], &["pyproject.toml"]),
+        );
+        LspConfig::new(servers)
     }
 
     ///
@@ -254,15 +256,10 @@ mod tests {
 
     #[test]
     fn test_extension_overlap_is_deterministic() {
-        let config: LspConfig = serde_json::from_value(serde_json::json!({
-            "enabled": true,
-            "servers": {
-                "b": { "command": "b-ls", "language_id": "b", "file_extensions": ["rs"] },
-                "a": { "command": "a-ls", "language_id": "a", "file_extensions": ["rs"] }
-            }
-        }))
-        .unwrap();
-        let manager = test_manager(config);
+        let mut servers = HashMap::new();
+        servers.insert("b".to_string(), server("b-ls", "b", &["rs"], &[]));
+        servers.insert("a".to_string(), server("a-ls", "a", &["rs"], &[]));
+        let manager = test_manager(LspConfig::new(servers));
         assert_eq!(manager.extension_map.get("rs"), Some(&"a".to_string()));
     }
 

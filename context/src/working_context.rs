@@ -12,7 +12,9 @@ use std::time::SystemTime;
 
 use forge_types::Message;
 
-use super::history::{FullHistory, MessageId};
+use forge_types::MessageId;
+
+use super::history::FullHistory;
 
 /// A message selected for inclusion in the API context.
 #[derive(Debug, Clone)]
@@ -177,7 +179,7 @@ impl ContextUsage {
 #[cfg(test)]
 mod tests {
     use super::{ContextSegment, ContextUsage, WorkingContext};
-    use crate::history::MessageId;
+    use forge_types::MessageId;
 
     #[test]
     fn test_working_context_new() {
@@ -192,9 +194,9 @@ mod tests {
     fn test_push_segments() {
         let mut ctx = WorkingContext::new(1000);
 
-        ctx.push(MessageId::new_for_test(0), 100);
-        ctx.push(MessageId::new_for_test(1), 150);
-        ctx.push(MessageId::new_for_test(2), 50);
+        ctx.push(MessageId::new(0), 100);
+        ctx.push(MessageId::new(1), 150);
+        ctx.push(MessageId::new(2), 50);
 
         assert_eq!(ctx.total_tokens(), 300);
         assert_eq!(ctx.remaining_budget(), 700);
@@ -298,7 +300,7 @@ mod tests {
 
     #[test]
     fn test_context_segment_tokens() {
-        let segment = ContextSegment::new(MessageId::new_for_test(0), 150);
+        let segment = ContextSegment::new(MessageId::new(0), 150);
         assert_eq!(segment.tokens(), 150);
     }
 

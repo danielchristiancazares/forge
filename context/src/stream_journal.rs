@@ -30,11 +30,7 @@
 #[cfg(test)]
 use anyhow::anyhow;
 use anyhow::{Context, Result, bail};
-use rusqlite::{
-    Connection, OptionalExtension, params,
-    types::{FromSql, FromSqlResult, ToSql, ToSqlOutput, ValueRef},
-};
-use serde::{Deserialize, Serialize};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,54 +41,7 @@ use thiserror::Error;
 
 use crate::sqlite_security::prepare_db_path;
 use crate::time_utils::system_time_to_iso8601_millis;
-use forge_types::PersistableContent;
-
-/// Unique identifier for a streaming step/session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct StepId(i64);
-
-impl StepId {
-    #[must_use]
-    pub const fn new(value: i64) -> Self {
-        Self(value)
-    }
-
-    #[must_use]
-    pub const fn value(self) -> i64 {
-        self.0
-    }
-}
-
-impl std::fmt::Display for StepId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<i64> for StepId {
-    fn from(value: i64) -> Self {
-        Self(value)
-    }
-}
-
-impl From<StepId> for i64 {
-    fn from(value: StepId) -> Self {
-        value.0
-    }
-}
-
-impl ToSql for StepId {
-    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-        Ok(ToSqlOutput::from(self.0))
-    }
-}
-
-impl FromSql for StepId {
-    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-        i64::column_result(value).map(Self)
-    }
-}
+use forge_types::{PersistableContent, StepId};
 
 /// Typed error for `StreamJournal::begin_session`.
 ///
@@ -476,7 +425,7 @@ impl StreamJournal {
             .execute(
                 "INSERT INTO step_metadata (step_id, model_name, committed, created_at)
                  VALUES (?1, ?2, 0, ?3)",
-                params![step_id, &model_name, created_at],
+                params![step_id.value(), &model_name, created_at],
             )
             .context("Failed to insert step metadata")
             .map_err(BeginSessionError::Db)?;
@@ -508,7 +457,7 @@ impl StreamJournal {
                     SELECT step_id FROM step_metadata WHERE committed = 0
                  ) ORDER BY step_id DESC LIMIT 1",
                 [],
-                |row| row.get(0),
+                |row| row.get::<_, i64>(0).map(StepId::new),
             )
             .optional()
             .context("Failed to query recoverable step")?;
@@ -543,7 +492,7 @@ impl StreamJournal {
         // Mark as committed
         tx.execute(
             "UPDATE step_metadata SET committed = 1 WHERE step_id = ?1",
-            params![step_id],
+            params![step_id.value()],
         )
         .with_context(|| format!("Failed to mark step {step_id} as committed"))?;
 
@@ -551,14 +500,14 @@ impl StreamJournal {
         let deleted = tx
             .execute(
                 "DELETE FROM stream_journal WHERE step_id = ?1",
-                params![step_id],
+                params![step_id.value()],
             )
             .with_context(|| format!("Failed to delete journal entries for step {step_id}"))?;
 
         // Delete metadata (now that it's committed)
         tx.execute(
             "DELETE FROM step_metadata WHERE step_id = ?1",
-            params![step_id],
+            params![step_id.value()],
         )
         .with_context(|| format!("Failed to delete metadata for step {step_id}"))?;
 
@@ -587,14 +536,14 @@ impl StreamJournal {
         let deleted = tx
             .execute(
                 "DELETE FROM stream_journal WHERE step_id = ?1",
-                params![step_id],
+                params![step_id.value()],
             )
             .with_context(|| format!("Failed to delete journal entries for step {step_id}"))?;
 
         // Delete metadata
         tx.execute(
             "DELETE FROM step_metadata WHERE step_id = ?1",
-            params![step_id],
+            params![step_id.value()],
         )
         .with_context(|| format!("Failed to delete metadata for step {step_id}"))?;
 
@@ -614,7 +563,7 @@ impl StreamJournal {
             .db
             .query_row(
                 "SELECT model_name FROM step_metadata WHERE step_id = ?1",
-                params![step_id],
+                params![step_id.value()],
                 |row| row.get(0),
             )
             .optional()
@@ -645,7 +594,7 @@ impl StreamJournal {
             .query_row(
                 "SELECT next_step_id FROM step_counter WHERE id = 1",
                 [],
-                |row| row.get(0),
+                |row| row.get::<_, i64>(0).map(StepId::new),
             )
             .context("Failed to read next step ID")?;
 
@@ -688,7 +637,7 @@ impl StreamJournal {
                 "INSERT INTO stream_journal (step_id, seq, event_type, content, created_at, sealed)
                  VALUES (?1, ?2, ?3, ?4, ?5, 0)",
                 params![
-                    delta.step_id,
+                    delta.step_id.value(),
                     seq_i64,
                     delta.event.event_type(),
                     normalize_persistable_borrowed(delta.event.content()).as_ref(),
@@ -765,7 +714,7 @@ impl StreamJournal {
             .db
             .query_row(
                 "SELECT COALESCE(MAX(seq), 0) FROM stream_journal WHERE step_id = ?1",
-                params![step_id],
+                params![step_id.value()],
                 |row| row.get::<_, i64>(0).map(|v| v as u64),
             )
             .context("Failed to query last sequence")?;
@@ -790,7 +739,7 @@ impl StreamJournal {
                 "SELECT 1 FROM stream_journal
                  WHERE step_id = ?1 AND event_type = 'done'
                  LIMIT 1",
-                params![step_id],
+                params![step_id.value()],
                 |_| Ok(true),
             )
             .optional()
@@ -850,7 +799,7 @@ fn append_delta(db: &Connection, delta: &StreamDelta) -> Result<()> {
         "INSERT INTO stream_journal (step_id, seq, event_type, content, created_at, sealed)
          VALUES (?1, ?2, ?3, ?4, ?5, 0)",
         params![
-            delta.step_id,
+            delta.step_id.value(),
             seq_i64,
             delta.event.event_type(),
             normalize_persistable_borrowed(delta.event.content()).as_ref(),
@@ -888,7 +837,7 @@ fn collect_text(db: &Connection, step_id: StepId) -> Result<String> {
         .context("Failed to prepare text collection query")?;
 
     let contents: Vec<String> = stmt
-        .query_map(params![step_id], |row| row.get(0))
+        .query_map(params![step_id.value()], |row| row.get(0))
         .context("Failed to query text deltas")?
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("Failed to collect text deltas")?;
@@ -914,7 +863,7 @@ fn latest_error(db: &Connection, step_id: StepId) -> Result<Option<String>> {
         .context("Failed to prepare error query")?;
 
     let error = stmt
-        .query_row(params![step_id], |row| row.get(0))
+        .query_row(params![step_id.value()], |row| row.get(0))
         .optional()
         .context("Failed to query error event")?;
 
@@ -924,7 +873,7 @@ fn latest_error(db: &Connection, step_id: StepId) -> Result<Option<String>> {
 fn seal_step(db: &Connection, step_id: StepId) -> Result<()> {
     db.execute(
         "UPDATE stream_journal SET sealed = 1 WHERE step_id = ?1 AND sealed = 0",
-        params![step_id],
+        params![step_id.value()],
     )
     .with_context(|| format!("Failed to seal step {step_id}"))?;
 
@@ -935,14 +884,14 @@ fn discard_step(db: &Connection, step_id: StepId) -> Result<u64> {
     let deleted = db
         .execute(
             "DELETE FROM stream_journal WHERE step_id = ?1 AND sealed = 0",
-            params![step_id],
+            params![step_id.value()],
         )
         .with_context(|| format!("Failed to discard unsealed entries for step {step_id}"))?;
 
     // Also clean up the metadata entry for this discarded step
     db.execute(
         "DELETE FROM step_metadata WHERE step_id = ?1",
-        params![step_id],
+        params![step_id.value()],
     )
     .with_context(|| format!("Failed to delete metadata for discarded step {step_id}"))?;
 
@@ -968,7 +917,7 @@ fn stats_for_db(db: &Connection) -> Result<JournalStats> {
         .query_row(
             "SELECT next_step_id - 1 FROM step_counter WHERE id = 1",
             [],
-            |row| row.get(0),
+            |row| row.get::<_, i64>(0).map(StepId::new),
         )
         .context("Failed to get current step ID")?;
 
@@ -1037,10 +986,9 @@ fn ymd_to_days(year: i32, month: u32, day: u32) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BeginSessionError, RecoveredStream, StepId, StreamJournal, iso8601_to_system_time,
-    };
+    use super::{BeginSessionError, RecoveredStream, StreamJournal, iso8601_to_system_time};
     use crate::time_utils::system_time_to_iso8601_millis;
+    use forge_types::StepId;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};

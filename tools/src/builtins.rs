@@ -17,7 +17,7 @@ use super::{
     SearchToolConfig, ToolCtx, ToolError, ToolExecutor, ToolFut, ToolRegistry, WebFetchToolConfig,
     parse_args, redact_distillate, sanitize_output,
 };
-use crate::config::default_true;
+use crate::default_true;
 use crate::git;
 use crate::normalize_cache_key;
 use crate::region_hash;

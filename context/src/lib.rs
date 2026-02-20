@@ -35,7 +35,7 @@ mod working_context;
 
 pub use distillation::{distillation_model, generate_distillation};
 pub use fact_store::{FactId, FactStore, FactWithStaleness, StoredFact};
-pub use history::{CompactionSummary, FullHistory, HistoryEntry, MessageId};
+pub use history::{CompactionSummary, FullHistory, HistoryEntry};
 pub use librarian::{Fact, FactType, Librarian};
 pub use manager::{
     CompactionPlan, ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus,
@@ -43,10 +43,10 @@ pub use manager::{
 };
 pub use model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry, ResolvedModelLimits};
 pub use stream_journal::{
-    ActiveJournal, BeginSessionError, JournalStats, RecoveredStream, StepId, StreamJournal,
+    ActiveJournal, BeginSessionError, JournalStats, RecoveredStream, StreamJournal,
 };
 pub use token_counter::TokenCounter;
 pub use tool_journal::{
-    CorruptedToolArgs, RecoveredToolBatch, RecoveredToolCallExecution, ToolBatchId, ToolJournal,
+    CorruptedToolArgs, RecoveredToolBatch, RecoveredToolCallExecution, ToolJournal,
 };
 pub use working_context::{ContextSegment, ContextUsage, WorkingContext};
