@@ -1259,17 +1259,18 @@ fn submit_message_without_key_sets_status_and_does_not_queue() {
 }
 
 #[test]
-fn queue_message_sets_pending_user_message() {
+fn queue_message_sets_turn_rollback() {
     let mut app = test_app();
     app.ui.input = InputState::Insert(DraftInput::new("test message".to_string(), 12));
 
     let queued = insert_mode(&mut app).queue_message();
     let _ = expect_queued_message(queued);
 
-    assert!(app.core.pending_user_message.is_some());
-    let (msg_id, original_text, _agents_md) = app.core.pending_user_message.as_ref().unwrap();
-    assert_eq!(msg_id.value(), 0);
-    assert_eq!(original_text, "test message");
+    let super::TurnRollback::Pending(ref origin) = app.core.turn_rollback else {
+        panic!("expected TurnRollback::Pending");
+    };
+    assert_eq!(origin.message_id.value(), 0);
+    assert_eq!(origin.original_draft, "test message");
 }
 
 #[tokio::test]
@@ -1287,12 +1288,16 @@ async fn distillation_not_needed_starts_queued_request() {
 }
 
 #[test]
-fn rollback_pending_user_message_restores_input() {
+fn rollback_turn_origin_restores_input() {
     let mut app = test_app();
 
     let content = NonEmptyString::new("my message").expect("non-empty");
     let msg_id = app.push_history_message(Message::user(content, SystemTime::now()));
-    app.core.pending_user_message = Some((msg_id, "my message".to_string(), String::new()));
+    app.core.turn_rollback = super::TurnRollback::Pending(super::TurnOrigin {
+        message_id: msg_id,
+        original_draft: "my message".to_string(),
+        consumed_agents_md: String::new(),
+    });
 
     assert_eq!(app.history().len(), 1);
     assert_eq!(app.ui.display.len(), 1);
@@ -1303,19 +1308,28 @@ fn rollback_pending_user_message_restores_input() {
     assert_eq!(app.ui.display.len(), 0);
     assert_eq!(app.draft_text(), "my message");
     assert_eq!(app.input_mode(), InputMode::Insert);
-    assert!(app.core.pending_user_message.is_none());
+    assert!(matches!(
+        app.core.turn_rollback,
+        super::TurnRollback::Committed
+    ));
 }
 
 #[test]
-fn rollback_pending_user_message_no_op_when_empty() {
+fn rollback_committed_is_no_op() {
     let mut app = test_app();
 
-    assert!(app.core.pending_user_message.is_none());
+    assert!(matches!(
+        app.core.turn_rollback,
+        super::TurnRollback::Committed
+    ));
 
     app.rollback_pending_user_message();
 
     assert!(app.draft_text().is_empty());
-    assert!(app.core.pending_user_message.is_none());
+    assert!(matches!(
+        app.core.turn_rollback,
+        super::TurnRollback::Committed
+    ));
 }
 
 #[test]

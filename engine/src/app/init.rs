@@ -101,7 +101,7 @@ pub(crate) struct AppBuildParts {
     pub(crate) tool_journal: ToolJournal,
     pub(crate) tool_file_cache: std::sync::Arc<tokio::sync::Mutex<tools::ToolFileCache>>,
     pub(crate) librarian: Option<std::sync::Arc<tokio::sync::Mutex<Librarian>>>,
-    pub(crate) lsp_config: Option<forge_lsp::LspConfig>,
+    pub(crate) lsp_config: Option<forge_types::LspConfig>,
 }
 
 pub(crate) fn build_app(parts: AppBuildParts) -> App {
@@ -138,16 +138,15 @@ pub(crate) fn build_app(parts: AppBuildParts) -> App {
             cache_enabled: parts.cache_enabled,
             system_prompts: parts.system_prompts,
             environment: parts.environment,
-            cached_usage_status: None,
-            pending_user_message: None,
+            turn_rollback: Default::default(),
             tool_definitions: parts.tool_definitions,
             hidden_tools: parts.hidden_tools,
             tool_gate: super::ToolGate::Enabled,
             checkpoints: super::checkpoints::CheckpointStore::default(),
             tool_iterations: 0,
             session_changes: crate::session_state::SessionChangeLog::default(),
-            turn_usage: None,
-            last_turn_usage: None,
+            turn_usage: Default::default(),
+            last_turn_usage: super::CompletedTurnUsage::NoTurnCompleted,
             notification_queue: crate::notifications::NotificationQueue::new(),
             plan_state: crate::PlanState::Inactive,
         },
@@ -161,14 +160,15 @@ pub(crate) fn build_app(parts: AppBuildParts) -> App {
             tool_registry: parts.tool_registry,
             tool_settings: parts.tool_settings,
             tool_journal: parts.tool_journal,
-            pending_stream_cleanup: None,
-            pending_stream_cleanup_failures: 0,
-            pending_tool_cleanup: None,
-            pending_tool_cleanup_failures: 0,
+            stream_cleanup: Default::default(),
+            tool_cleanup: Default::default(),
             tool_file_cache: parts.tool_file_cache,
             history_load_warning_shown: false,
             autosave_warning_shown: false,
-            librarian: parts.librarian,
+            librarian: match parts.librarian {
+                Some(arc) => super::LibrarianState::Enabled(arc),
+                None => super::LibrarianState::Disabled,
+            },
             last_session_autosave: Instant::now(),
             next_journal_cleanup_attempt: Instant::now(),
             lsp_runtime: LspRuntimeState {
@@ -379,7 +379,7 @@ impl App {
         let lsp_config = config
             .as_ref()
             .and_then(|cfg| cfg.lsp.clone())
-            .filter(forge_lsp::LspConfig::enabled);
+            .and_then(forge_config::RawLspConfig::resolve);
 
         let environment = EnvironmentContext::gather();
 
@@ -649,8 +649,7 @@ impl App {
             cache_ttl_days: webfetch_cfg.and_then(|cfg| cfg.cache_ttl_days).unwrap_or(7),
         };
 
-        let shell_cfg = tools_cfg.and_then(|cfg| cfg.shell.as_ref());
-        let shell = tools::shell::detect_shell(shell_cfg);
+        let shell = tools::shell::detect_shell();
         tracing::debug!(shell = %shell.name, binary = ?shell.binary, "Detected shell");
 
         let windows_run_cfg = tools_cfg

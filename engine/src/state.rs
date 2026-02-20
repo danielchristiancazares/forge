@@ -53,6 +53,35 @@ impl JournalStatus {
     }
 }
 
+/// Journal cleanup state for post-commit/prune operations.
+///
+/// Replaces `Option<Id> + u8 failures` pairs in `AppRuntime`.
+/// Callers pattern-match directly — no bool accessors, no Option returns.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum JournalCleanup<Id> {
+    #[default]
+    Clean,
+    Pending {
+        id: Id,
+        failures: u8,
+    },
+}
+
+impl<Id: PartialEq> JournalCleanup<Id> {
+    pub(crate) fn set_pending(&mut self, new_id: Id) {
+        *self = match std::mem::take(self) {
+            Self::Pending { id, failures } if id == new_id => Self::Pending {
+                id,
+                failures: failures.saturating_add(1),
+            },
+            _ => Self::Pending {
+                id: new_id,
+                failures: 1,
+            },
+        };
+    }
+}
+
 /// Presence of a tool journal batch for this turn.
 ///
 /// This replaces `Option<ToolBatchId>` in core payloads.

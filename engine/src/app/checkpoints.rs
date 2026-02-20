@@ -902,8 +902,8 @@ impl crate::App {
         }
 
         self.rebuild_display_from_history();
-        self.invalidate_usage_cache();
-        self.core.pending_user_message = None;
+        self.core.context_manager.invalidate_usage_cache();
+        self.core.turn_rollback = super::TurnRollback::Committed;
         self.scroll_to_bottom();
         Ok(())
     }

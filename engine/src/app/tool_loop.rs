@@ -8,12 +8,13 @@ use futures_util::future::{AbortHandle, Abortable, FutureExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use forge_context::{ContextUsageStatus, ToolBatchId};
-use forge_types::{ToolCall, ToolResult, sanitize_path_for_display};
+use forge_context::ContextUsageStatus;
+use forge_types::{ToolBatchId, ToolCall, ToolResult, sanitize_path_for_display};
 
 use super::input_modes::{ChangeRecorder, TurnChangeReport, TurnContext};
 use super::{
-    DEFAULT_TOOL_CAPACITY_BYTES, TOOL_EVENT_CHANNEL_CAPACITY, TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
+    CompletedTurnUsage, DEFAULT_TOOL_CAPACITY_BYTES, TOOL_EVENT_CHANNEL_CAPACITY,
+    TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
 };
 use crate::state::{
     ApprovalState, JournalStatus, OperationEdge, OperationState, PlanApprovalState, ToolBatch,
@@ -884,7 +885,7 @@ impl App {
         let registry = self.runtime.tool_registry.clone();
         let settings = self.runtime.tool_settings.clone();
         let file_cache = self.runtime.tool_file_cache.clone();
-        let librarian = self.runtime.librarian.clone();
+        let librarian = self.runtime.librarian.to_tool_handle();
         let working_dir = settings.sandbox.working_dir();
 
         let spawned = SpawnedTool::spawn(call.clone(), |event_tx, _abort_handle| {
@@ -1469,15 +1470,18 @@ impl App {
                 tool_cleanup_failed = true;
                 self.disable_tools_due_to_tool_journal_error("tool batch commit", &e);
 
-                if self.runtime.pending_tool_cleanup == Some(id) {
-                    self.runtime.pending_tool_cleanup_failures =
-                        self.runtime.pending_tool_cleanup_failures.saturating_add(1);
-                } else {
-                    self.runtime.pending_tool_cleanup = Some(id);
-                    self.runtime.pending_tool_cleanup_failures = 1;
-                    self.push_notification(format!(
-                        "Tool journal cleanup failed; will retry. If tools get stuck, run /clear. ({e})"
-                    ));
+                {
+                    use crate::state::JournalCleanup;
+                    let is_new = !matches!(
+                        self.runtime.tool_cleanup,
+                        JournalCleanup::Pending { id: existing, .. } if existing == id
+                    );
+                    self.runtime.tool_cleanup.set_pending(id);
+                    if is_new {
+                        self.push_notification(format!(
+                            "Tool journal cleanup failed; will retry. If tools get stuck, run /clear. ({e})"
+                        ));
+                    }
                 }
 
                 let after = Instant::now() + Duration::from_secs(1);
@@ -1488,7 +1492,7 @@ impl App {
         }
 
         if !auto_resume {
-            self.core.pending_user_message = None;
+            self.core.turn_rollback = super::TurnRollback::Committed;
         }
 
         // Only auto_resume if autosave succeeded - otherwise the journal step
@@ -1573,7 +1577,7 @@ impl App {
         }
 
         if !auto_resume {
-            self.core.pending_user_message = None;
+            self.core.turn_rollback = super::TurnRollback::Committed;
         }
 
         // Only auto_resume if autosave succeeded - otherwise the journal step
@@ -1939,11 +1943,14 @@ impl App {
             let msg = distillate.into_message();
             self.push_local_message(Message::system(msg, SystemTime::now()));
         }
-        self.core.pending_user_message = None;
+        self.core.turn_rollback = super::TurnRollback::Committed;
 
         // Transfer turn usage to last_turn_usage for display, reset for next turn
-        if self.core.turn_usage.is_some() {
-            self.core.last_turn_usage = self.core.turn_usage.take();
+        match self.core.turn_usage.finalize() {
+            completed @ CompletedTurnUsage::Available(_) => {
+                self.core.last_turn_usage = completed;
+            }
+            CompletedTurnUsage::NoTurnCompleted => {} // preserve previous turn's display
         }
         self.core.tool_iterations = 0;
     }

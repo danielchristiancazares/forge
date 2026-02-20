@@ -49,12 +49,13 @@ mod app;
 // Public app facade.
 pub use app::{
     App, AppearanceEditorSnapshot, CommandInputAccess, CommandMode, CommandModeAccess, CommandSpec,
-    ContextEditorSnapshot, DEFAULT_STREAM_EVENT_BUDGET, EnteredCommand, FileDiff, FileSelectAccess,
-    InsertMode, InsertModeAccess, ModelEditorSnapshot, ModelSelectAccess, PlanApprovalAccess,
-    QueueMessageResult, QueuedUserMessage, ResolveCascade, ResolveLayerValue, ResolveSetting,
-    RuntimeSnapshot, SettingsAccess, StreamingAccess, StreamingMessage, SystemPrompts,
-    ToolApprovalAccess, ToolLoopAccess, ToolLoopExecution, ToolRecoveryAccess, ToolsEditorSnapshot,
-    TurnUsage, ValidationFinding, ValidationReport, command_specs,
+    CompletedTurnUsage, ContextEditorSnapshot, DEFAULT_STREAM_EVENT_BUDGET, EnteredCommand,
+    FileDiff, FileSelectAccess, InsertMode, InsertModeAccess, ModelEditorSnapshot,
+    ModelSelectAccess, PlanApprovalAccess, QueueMessageResult, QueuedUserMessage, ResolveCascade,
+    ResolveLayerValue, ResolveSetting, RuntimeSnapshot, SettingsAccess, StreamingAccess,
+    StreamingMessage, SystemPrompts, ToolApprovalAccess, ToolLoopAccess, ToolLoopExecution,
+    ToolRecoveryAccess, ToolsEditorSnapshot, TurnUsage, ValidationFinding, ValidationReport,
+    command_specs,
 };
 
 // Crate-internal cross-layer glue.

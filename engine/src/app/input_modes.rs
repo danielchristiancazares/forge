@@ -243,7 +243,11 @@ impl InsertMode<'_> {
 
         // Store original draft text (not expanded) for rollback on cancel.
         // Also stash consumed agents_md so it can be restored on rollback.
-        self.app.core.pending_user_message = Some((msg_id, draft_text, agents_md));
+        self.app.core.turn_rollback = super::TurnRollback::Pending(super::TurnOrigin {
+            message_id: msg_id,
+            original_draft: draft_text,
+            consumed_agents_md: agents_md,
+        });
 
         // Persist user message immediately for crash durability.
         // If persistence fails, rollback — streaming without a durable user

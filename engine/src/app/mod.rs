@@ -255,6 +255,23 @@ pub(crate) struct TurnConfigStaging {
     pub(crate) staged: TurnConfig,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum LibrarianState {
+    Disabled,
+    Enabled(std::sync::Arc<tokio::sync::Mutex<Librarian>>),
+}
+
+impl LibrarianState {
+    /// Cross-crate boundary shim — tools::ToolCtx.librarian still takes Option.
+    // TODO(IFA): Push LibrarianState into tools crate to eliminate this bridge.
+    fn to_tool_handle(&self) -> Option<std::sync::Arc<tokio::sync::Mutex<Librarian>>> {
+        match self {
+            Self::Enabled(arc) => Some(arc.clone()),
+            Self::Disabled => None,
+        }
+    }
+}
+
 /// Aggregated API usage for a user turn (may include multiple API calls).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TurnUsage {
@@ -271,6 +288,62 @@ impl TurnUsage {
         self.api_calls = self.api_calls.saturating_add(1);
         self.total.merge(&usage);
         self.last_call = usage;
+    }
+}
+
+/// API usage from the last completed turn (replaces `Option<TurnUsage>`).
+#[derive(Debug, Clone, Copy, Default)]
+pub enum CompletedTurnUsage {
+    #[default]
+    NoTurnCompleted,
+    Available(TurnUsage),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TurnOrigin {
+    pub(crate) message_id: MessageId,
+    pub(crate) original_draft: String,
+    pub(crate) consumed_agents_md: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) enum TurnRollback {
+    #[default]
+    Committed,
+    Pending(TurnOrigin),
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) enum ActiveTurnUsage {
+    #[default]
+    Inactive,
+    Accumulating(TurnUsage),
+}
+
+impl ActiveTurnUsage {
+    /// Accumulate usage from an API call. Auto-initializes on first call.
+    fn record_call(&mut self, usage: ApiUsage) {
+        match self {
+            Self::Inactive => {
+                let mut turn = TurnUsage::default();
+                turn.record_call(usage);
+                *self = Self::Accumulating(turn);
+            }
+            Self::Accumulating(acc) => acc.record_call(usage),
+        }
+    }
+
+    /// Transfer into completed form. Resets self to Inactive.
+    fn finalize(&mut self) -> CompletedTurnUsage {
+        match std::mem::take(self) {
+            Self::Inactive => CompletedTurnUsage::NoTurnCompleted,
+            Self::Accumulating(u) => CompletedTurnUsage::Available(u),
+        }
+    }
+
+    /// Reset without producing a value (abort/cancel paths).
+    fn reset(&mut self) {
+        *self = Self::Inactive;
     }
 }
 
@@ -844,7 +917,7 @@ pub(crate) struct ProviderRuntimeState {
 
 struct LspRuntimeState {
     /// LSP config, consumed on first start. `None` once started or if LSP is disabled.
-    config: Option<forge_lsp::LspConfig>,
+    config: Option<forge_types::LspConfig>,
     /// LSP client manager. Populated lazily on first tool batch via `LspManager::start()`.
     /// `Arc<Mutex<Option<>>>` so the spawned startup task can populate it.
     manager: std::sync::Arc<tokio::sync::Mutex<Option<forge_lsp::LspManager>>>,
@@ -893,15 +966,11 @@ struct AppCore {
     /// Runtime environment context gathered at startup.
     /// Used to inject date, platform, cwd, and git status into system prompts.
     environment: EnvironmentContext,
-    /// Cached context usage status (invalidated when history/model changes).
-    cached_usage_status: Option<ContextUsageStatus>,
-    /// Pending user message awaiting stream completion.
+    /// Turn rollback state: tracks whether the current user message can be undone.
     ///
-    /// When a user message is queued, we store its ID and original text here.
-    /// If the stream fails with no content, we rollback the message from history
-    /// and restore this text to the input box for easy retry.
-    /// Fields: (`message_id`, `original_draft_text`, `consumed_agents_md`).
-    pending_user_message: Option<(MessageId, String, String)>,
+    /// When `Pending`, the user message can be rolled back from history on stream
+    /// failure. When `Committed`, the message is finalized and cannot be undone.
+    turn_rollback: TurnRollback,
     /// Tool definitions to send with each request.
     tool_definitions: Vec<ToolDefinition>,
     /// Tool names hidden from UI rendering (source-of-truth: `ToolExecutor::is_hidden()`).
@@ -917,9 +986,9 @@ struct AppCore {
     /// Session-wide log of files created and modified.
     session_changes: SessionChangeLog,
     /// API usage for the current user turn (reset when turn completes).
-    turn_usage: Option<TurnUsage>,
+    turn_usage: ActiveTurnUsage,
     /// API usage from the last completed turn (for status bar display).
-    last_turn_usage: Option<TurnUsage>,
+    last_turn_usage: CompletedTurnUsage,
     /// Queue of pending system notifications to inject into next API request.
     notification_queue: crate::notifications::NotificationQueue,
     /// Plan lifecycle state (Inactive / Proposed / Active).
@@ -940,18 +1009,16 @@ struct AppRuntime {
     tool_settings: tools::ToolSettings,
     /// Tool journal for crash recovery.
     tool_journal: ToolJournal,
-    /// Pending stream journal step ID that needs commit+prune cleanup.
+    /// Stream journal step that needs commit+prune cleanup.
     ///
     /// Best-effort retries run during `tick()` when idle. If this remains uncleared,
     /// `StreamJournal::begin_session()` will refuse to start new streams.
-    pending_stream_cleanup: Option<StepId>,
-    pending_stream_cleanup_failures: u8,
-    /// Pending tool journal batch ID that needs pruning cleanup.
+    stream_cleanup: crate::state::JournalCleanup<StepId>,
+    /// Tool journal batch that needs pruning cleanup.
     ///
     /// Best-effort retries run during `tick()` when idle. If this remains uncleared,
     /// `ToolJournal::begin_*batch()` will refuse to start new batches.
-    pending_tool_cleanup: Option<ToolBatchId>,
-    pending_tool_cleanup_failures: u8,
+    tool_cleanup: crate::state::JournalCleanup<ToolBatchId>,
     /// File hash cache for tool safety checks.
     tool_file_cache: std::sync::Arc<tokio::sync::Mutex<tools::ToolFileCache>>,
     /// Whether we've already warned about a failed history load.
@@ -960,8 +1027,7 @@ struct AppRuntime {
     autosave_warning_shown: bool,
     /// The Librarian for fact extraction and retrieval (Long-term Memory).
     /// Uses `Arc<Mutex>` because it's accessed from async tasks for extraction.
-    /// None if long-term memory is disabled or no Gemini API key.
-    librarian: Option<std::sync::Arc<tokio::sync::Mutex<Librarian>>>,
+    librarian: LibrarianState,
     /// Wall-clock timestamp for session autosave cadence (~3s).
     last_session_autosave: Instant,
     /// Earliest time to attempt journal cleanup retries.
@@ -1907,20 +1973,8 @@ impl App {
         }
     }
 
-    /// Uses cached value when available to avoid recomputing every frame.
     pub fn context_usage_status(&mut self) -> ContextUsageStatus {
-        if let Some(cached) = &self.core.cached_usage_status {
-            return cached.clone();
-        }
-        let status = self.core.context_manager.usage_status();
-        self.core.cached_usage_status = Some(status.clone());
-        status
-    }
-
-    /// Invalidate cached context usage status.
-    /// Call this when history, model, or output limits change.
-    fn invalidate_usage_cache(&mut self) {
-        self.core.cached_usage_status = None;
+        self.core.context_manager.usage_status()
     }
 
     pub fn memory_enabled(&self) -> bool {
@@ -1936,8 +1990,8 @@ impl App {
     }
 
     /// API usage from the last completed turn (for status bar display).
-    pub fn last_turn_usage(&self) -> Option<&TurnUsage> {
-        self.core.last_turn_usage.as_ref()
+    pub fn last_turn_usage(&self) -> &CompletedTurnUsage {
+        &self.core.last_turn_usage
     }
     #[allow(clippy::unused_self)]
     fn idle_state(&self) -> OperationState {
@@ -2267,7 +2321,6 @@ impl App {
             self.core
                 .context_manager
                 .set_model_without_adaptation(self.core.model.clone());
-            self.invalidate_usage_cache();
         }
         self.reconcile_output_limits_with_model();
     }
@@ -2292,7 +2345,7 @@ impl App {
 
     fn set_context_memory_enabled_internal(&mut self, enabled: bool, persist: bool) {
         self.core.memory_enabled = enabled;
-        self.invalidate_usage_cache();
+        self.core.context_manager.invalidate_usage_cache();
         if persist
             && let Err(err) = config::ForgeConfig::persist_context_settings(
                 &self.runtime.config_path,
@@ -2313,7 +2366,6 @@ impl App {
             .core
             .context_manager
             .switch_model(self.core.model.clone());
-        self.invalidate_usage_cache();
 
         match adaptation {
             ContextAdaptation::NoChange
@@ -2991,12 +3043,10 @@ impl App {
         } else {
             "healthy".to_string()
         };
-        let last_api_call = if self.last_turn_usage().is_some() {
-            "recent_success".to_string()
-        } else if self.is_loading() {
-            "in_progress".to_string()
-        } else {
-            "none".to_string()
+        let last_api_call = match self.last_turn_usage() {
+            CompletedTurnUsage::Available(_) => "recent_success".to_string(),
+            CompletedTurnUsage::NoTurnCompleted if self.is_loading() => "in_progress".to_string(),
+            CompletedTurnUsage::NoTurnCompleted => "none".to_string(),
         };
         let mut session_overrides = Vec::new();
         if self.settings_pending_model_apply_next_turn() {

@@ -9,8 +9,8 @@
 
 use std::time::{Duration, Instant, SystemTime};
 
-use forge_context::{RecoveredStream, StepId};
-use forge_types::{Message, NonEmptyStaticStr, NonEmptyString, PersistableContent};
+use forge_context::RecoveredStream;
+use forge_types::{Message, NonEmptyStaticStr, NonEmptyString, PersistableContent, StepId};
 
 use crate::session_state::SessionState;
 use crate::state::{
@@ -99,7 +99,6 @@ impl App {
     pub(crate) fn push_history_message(&mut self, message: Message) -> MessageId {
         let id = self.core.context_manager.push_message(message);
         self.ui.display.push(DisplayItem::History(id));
-        self.invalidate_usage_cache();
         id
     }
 
@@ -116,7 +115,6 @@ impl App {
             .context_manager
             .push_message_with_step_id(message, step_id);
         self.ui.display.push(DisplayItem::History(id));
-        self.invalidate_usage_cache();
         id
     }
 
@@ -286,6 +284,8 @@ impl App {
     ///
     /// This runs only while the app is idle to avoid interfering with streaming/tool execution.
     pub(crate) fn poll_journal_cleanup(&mut self) {
+        use crate::state::JournalCleanup;
+
         if self.is_loading() {
             return;
         }
@@ -297,20 +297,26 @@ impl App {
 
         let mut attempted_any = false;
 
-        if let Some(step_id) = self.runtime.pending_stream_cleanup {
+        if let JournalCleanup::Pending {
+            id: step_id,
+            failures,
+        } = &self.runtime.stream_cleanup
+        {
+            let step_id = *step_id;
+            let failures = *failures;
             attempted_any = true;
             match self.runtime.stream_journal.commit_and_prune_step(step_id) {
                 Ok(_) => {
-                    self.runtime.pending_stream_cleanup = None;
-                    self.runtime.pending_stream_cleanup_failures = 0;
+                    self.runtime.stream_cleanup = JournalCleanup::Clean;
                 }
                 Err(e) => {
-                    self.runtime.pending_stream_cleanup_failures = self
-                        .runtime
-                        .pending_stream_cleanup_failures
-                        .saturating_add(1);
+                    if let JournalCleanup::Pending { failures: f, .. } =
+                        &mut self.runtime.stream_cleanup
+                    {
+                        *f = f.saturating_add(1);
+                    }
                     tracing::warn!("Failed to retry commit/prune journal step {step_id}: {e}");
-                    if self.runtime.pending_stream_cleanup_failures == 3 {
+                    if failures + 1 == 3 {
                         self.push_notification(
                             "Stream journal cleanup failed repeatedly; run /clear to reset.",
                         );
@@ -319,18 +325,26 @@ impl App {
             }
         }
 
-        if let Some(batch_id) = self.runtime.pending_tool_cleanup {
+        if let JournalCleanup::Pending {
+            id: batch_id,
+            failures,
+        } = &self.runtime.tool_cleanup
+        {
+            let batch_id = *batch_id;
+            let failures = *failures;
             attempted_any = true;
             match self.runtime.tool_journal.commit_batch(batch_id) {
                 Ok(()) => {
-                    self.runtime.pending_tool_cleanup = None;
-                    self.runtime.pending_tool_cleanup_failures = 0;
+                    self.runtime.tool_cleanup = JournalCleanup::Clean;
                 }
                 Err(e) => {
-                    self.runtime.pending_tool_cleanup_failures =
-                        self.runtime.pending_tool_cleanup_failures.saturating_add(1);
+                    if let JournalCleanup::Pending { failures: f, .. } =
+                        &mut self.runtime.tool_cleanup
+                    {
+                        *f = f.saturating_add(1);
+                    }
                     tracing::warn!("Failed to retry commit tool batch {batch_id}: {e}");
-                    if self.runtime.pending_tool_cleanup_failures == 3 {
+                    if failures + 1 == 3 {
                         self.push_notification(
                             "Tool journal cleanup failed repeatedly; run /clear to reset.",
                         );
@@ -340,8 +354,8 @@ impl App {
         }
 
         if attempted_any
-            && (self.runtime.pending_stream_cleanup.is_some()
-                || self.runtime.pending_tool_cleanup.is_some())
+            && (matches!(self.runtime.stream_cleanup, JournalCleanup::Pending { .. })
+                || matches!(self.runtime.tool_cleanup, JournalCleanup::Pending { .. }))
         {
             self.runtime.next_journal_cleanup_attempt = now + Duration::from_secs(1);
         }
@@ -773,18 +787,16 @@ impl App {
     ///
     /// Called ONLY after history has been successfully persisted to disk.
     pub(crate) fn finalize_journal_commit(&mut self, step_id: StepId) {
+        use crate::state::JournalCleanup;
+
         if let Err(e) = self.runtime.stream_journal.commit_and_prune_step(step_id) {
             tracing::warn!("Failed to commit/prune journal step {}: {e}", step_id);
-
-            // Record pending cleanup so we can retry in-session.
-            if self.runtime.pending_stream_cleanup == Some(step_id) {
-                self.runtime.pending_stream_cleanup_failures = self
-                    .runtime
-                    .pending_stream_cleanup_failures
-                    .saturating_add(1);
-            } else {
-                self.runtime.pending_stream_cleanup = Some(step_id);
-                self.runtime.pending_stream_cleanup_failures = 1;
+            let is_new = !matches!(
+                self.runtime.stream_cleanup,
+                JournalCleanup::Pending { id, .. } if id == step_id
+            );
+            self.runtime.stream_cleanup.set_pending(step_id);
+            if is_new {
                 self.push_notification(format!(
                     "Stream journal cleanup failed; will retry. If sending gets stuck, run /clear. ({e})"
                 ));
@@ -824,48 +836,56 @@ impl App {
         }
     }
 
-    /// Rollback a pending user message after stream error with no content.
+    /// Extract any pending turn origin and roll it back.
     ///
-    /// This removes the user message from history and display, then restores
-    /// the original text to the input box for easy retry.
+    /// If the turn is already committed, this is a no-op.
     pub(crate) fn rollback_pending_user_message(&mut self) {
-        let Some((msg_id, original_text, agents_md)) = self.core.pending_user_message.take() else {
-            return;
-        };
+        match std::mem::take(&mut self.core.turn_rollback) {
+            super::TurnRollback::Pending(origin) => self.rollback_turn_origin(origin),
+            super::TurnRollback::Committed => {}
+        }
+    }
+
+    /// Unconditional rollback mechanism: removes the user message from history
+    /// and display, then restores the original text to the input box for retry.
+    ///
+    /// Takes `TurnOrigin` as proof that there IS data to roll back.
+    pub(crate) fn rollback_turn_origin(&mut self, origin: super::TurnOrigin) {
+        let super::TurnOrigin {
+            message_id,
+            original_draft,
+            consumed_agents_md,
+        } = origin;
 
         if self
             .core
             .context_manager
-            .rollback_last_message(msg_id)
+            .rollback_last_message(message_id)
             .is_some()
         {
             // Remove from display (should be the last History item)
             if let DisplayTail::Item(DisplayItem::History(display_id)) = self.ui.display.last()
-                && *display_id == msg_id
+                && *display_id == message_id
             {
                 let _ = self.ui.display.pop();
             }
 
             // Restore to input box and enter insert mode for easy retry
-            self.ui.input.draft_mut().set_text(original_text);
+            self.ui.input.draft_mut().set_text(original_draft);
             self.ui.input = std::mem::take(&mut self.ui.input).into_insert();
 
             // Restore consumed AGENTS.md so the next message gets it
-            self.core.environment.restore_agents_md(agents_md);
-
-            // Invalidate usage cache since we modified history
-            self.invalidate_usage_cache();
+            self.core.environment.restore_agents_md(consumed_agents_md);
 
             // Persist the rollback
             if let Err(e) = self.save_history() {
                 tracing::warn!("Failed to save history after rollback: {e}");
             }
 
-            tracing::debug!("Rolled back user message {:?} after stream error", msg_id);
+            tracing::debug!("Rolled back user message {message_id:?} after stream error");
         } else {
             tracing::warn!(
-                "Failed to rollback user message {:?} - not the last message in history",
-                msg_id
+                "Failed to rollback user message {message_id:?} - not the last message in history"
             );
         }
     }

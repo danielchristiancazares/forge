@@ -1,6 +1,6 @@
 use ratatui::{style::Style, text::Span};
 
-use forge_engine::TurnUsage;
+use forge_engine::CompletedTurnUsage;
 
 use crate::theme::Palette;
 
@@ -50,8 +50,8 @@ pub(crate) fn format_token_count(value: u32) -> String {
     }
 }
 
-pub(crate) fn format_api_usage(usage: Option<&TurnUsage>) -> String {
-    let Some(usage) = usage else {
+pub(crate) fn format_api_usage(usage: &CompletedTurnUsage) -> String {
+    let CompletedTurnUsage::Available(usage) = usage else {
         return String::new();
     };
     if !usage.total.has_data() {

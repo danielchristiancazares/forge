@@ -410,7 +410,9 @@ impl App {
     }
 
     pub(crate) fn resolve_plan_approval(&mut self, approved: bool) {
-        use crate::state::{ApprovalState, ToolLoopPhase, ToolLoopState};
+        use crate::state::{
+            ApprovalState, OperationState, PlanApprovalState, ToolLoopPhase, ToolLoopState,
+        };
 
         let state = match self.op_take_plan_approval() {
             super::OperationTake::Taken(state) => *state,

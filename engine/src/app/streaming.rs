@@ -861,8 +861,7 @@ impl super::App {
 
         // Aggregate API usage for this turn
         if stream_usage.has_data() {
-            let turn_usage = self.core.turn_usage.get_or_insert_with(Default::default);
-            turn_usage.record_call(stream_usage);
+            self.core.turn_usage.record_call(stream_usage);
         }
 
         // SECURITY: Check finish_reason FIRST before processing tool calls.
@@ -881,7 +880,7 @@ impl super::App {
 
             if let Some(message) = message {
                 // Partial content received - keep both user message and partial response
-                self.core.pending_user_message = None;
+                self.core.turn_rollback = super::TurnRollback::Committed;
                 self.commit_history_message(message, step_id);
             } else {
                 // No message content - rollback user message for easy retry
@@ -903,10 +902,8 @@ impl super::App {
             let thinking = build_thinking_message(model.clone(), thinking_content, thinking_replay);
             let parsed = message.take_tool_calls();
             let assistant_text = message.content().to_string();
-            // NOTE: We do NOT clear pending_user_message here because:
-            // 1. The user message was already committed to history
-            // 2. We need the user query for Librarian extraction when the turn completes
-            // 3. rollback_pending_user_message() safely fails if it's not the last message
+            // NOTE: turn_rollback stays Pending here — it will be committed
+            // at finish_turn() after the full tool loop completes.
             self.handle_tool_calls(crate::state::ToolLoopIngress {
                 assistant_text,
                 thinking,
@@ -924,7 +921,7 @@ impl super::App {
         let thinking_replay = message.thinking_replay_state().clone();
 
         let Some(assistant_message) = message.into_message().ok() else {
-            self.core.pending_user_message = None;
+            self.core.turn_rollback = super::TurnRollback::Committed;
             let empty_badge = NonEmptyString::try_from(EMPTY_RESPONSE_BADGE)
                 .expect("EMPTY_RESPONSE_BADGE must be non-empty");
             let empty_msg = Message::assistant(model.clone(), empty_badge, SystemTime::now());
@@ -958,7 +955,7 @@ impl super::App {
             return;
         };
 
-        self.core.pending_user_message = None;
+        self.core.turn_rollback = super::TurnRollback::Committed;
 
         let thinking = build_thinking_message(model, thinking_content, thinking_replay);
         match thinking {

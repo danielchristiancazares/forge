@@ -453,7 +453,7 @@ impl super::App {
 
                 // Discard any partial usage from the cancelled stream so it
                 // doesn't leak into the next turn's accounting.
-                self.core.turn_usage = None;
+                self.core.turn_usage.reset();
 
                 self.push_notification("Streaming cancelled");
                 true
@@ -580,25 +580,28 @@ impl super::App {
                 }
 
                 self.ui.display.clear();
-                self.core.pending_user_message = None;
+                self.core.turn_rollback = super::TurnRollback::Committed;
                 self.core.session_changes = crate::SessionChangeLog::default();
                 self.core.context_manager = ContextManager::new(self.core.model.clone());
                 self.core
                     .context_manager
                     .set_output_limit(self.core.output_limits.max_output_tokens());
-                if let Some(step_id) = self.runtime.pending_stream_cleanup.take() {
-                    self.discard_journal_step(step_id);
+                match std::mem::take(&mut self.runtime.stream_cleanup) {
+                    crate::state::JournalCleanup::Pending { id, .. } => {
+                        self.discard_journal_step(id);
+                    }
+                    crate::state::JournalCleanup::Clean => {}
                 }
-                self.runtime.pending_stream_cleanup_failures = 0;
-                if let Some(batch_id) = self.runtime.pending_tool_cleanup.take()
-                    && let Err(e) = self.runtime.tool_journal.discard_batch(batch_id)
-                {
-                    tracing::warn!("Failed to discard pending tool batch on clear: {e}");
+                match std::mem::take(&mut self.runtime.tool_cleanup) {
+                    crate::state::JournalCleanup::Pending { id, .. } => {
+                        if let Err(e) = self.runtime.tool_journal.discard_batch(id) {
+                            tracing::warn!("Failed to discard pending tool batch on clear: {e}");
+                        }
+                    }
+                    crate::state::JournalCleanup::Clean => {}
                 }
-                self.runtime.pending_tool_cleanup_failures = 0;
                 self.core.tool_gate.clear();
                 self.runtime.provider_runtime.openai_previous_response_id = None;
-                self.invalidate_usage_cache();
                 self.autosave_history();
                 self.ui.view.clear_transcript = true;
                 self.op_transition(self.idle_state());

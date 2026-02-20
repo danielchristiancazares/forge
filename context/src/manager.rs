@@ -8,8 +8,9 @@ use std::time::SystemTime;
 use forge_types::PredefinedModel;
 use forge_types::{Message, ModelName, NonEmptyString};
 
-use super::StepId;
-use super::history::{CompactionSummary, FullHistory, MessageId};
+use forge_types::{MessageId, StepId};
+
+use super::history::{CompactionSummary, FullHistory};
 use super::model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry};
 use super::token_counter::TokenCounter;
 use super::working_context::{ContextUsage, WorkingContext};
@@ -97,6 +98,13 @@ pub enum ContextUsageStatus {
     },
 }
 
+/// Internal cache state for the O(N) `usage_status` computation.
+#[derive(Debug)]
+enum UsageCache {
+    Stale,
+    Fresh(ContextUsageStatus),
+}
+
 #[derive(Debug)]
 pub struct ContextManager {
     history: FullHistory,
@@ -107,6 +115,8 @@ pub struct ContextManager {
     current_limits_source: ModelLimitsSource,
     /// Configured output limit (if set, allows more input context).
     configured_output_limit: Option<u32>,
+    /// Cached usage status (auto-invalidated on mutation).
+    usage_cache: UsageCache,
 }
 
 impl ContextManager {
@@ -125,12 +135,14 @@ impl ContextManager {
             current_limits: limits,
             current_limits_source: limits_source,
             configured_output_limit: None,
+            usage_cache: UsageCache::Stale,
         }
     }
 
     /// This allows more input context when users configure smaller output limits.
     pub fn set_output_limit(&mut self, limit: u32) {
         self.configured_output_limit = Some(limit);
+        self.usage_cache = UsageCache::Stale;
     }
 
     fn effective_budget(&self) -> u32 {
@@ -144,6 +156,7 @@ impl ContextManager {
 
     pub fn push_message(&mut self, message: Message) -> MessageId {
         let token_count = self.counter.count_message(&message);
+        self.usage_cache = UsageCache::Stale;
         self.history.push(message, token_count)
     }
 
@@ -153,6 +166,7 @@ impl ContextManager {
         stream_step_id: StepId,
     ) -> MessageId {
         let token_count = self.counter.count_message(&message);
+        self.usage_cache = UsageCache::Stale;
         self.history
             .push_with_step_id(message, token_count, stream_step_id)
     }
@@ -165,7 +179,11 @@ impl ContextManager {
 
     /// This is used for transactional rollback when a stream fails...
     pub fn rollback_last_message(&mut self, id: MessageId) -> Option<Message> {
-        self.history.pop_if_last(id)
+        let result = self.history.pop_if_last(id);
+        if result.is_some() {
+            self.usage_cache = UsageCache::Stale;
+        }
+        result
     }
 
     pub fn switch_model(&mut self, new_model: ModelName) -> ContextAdaptation {
@@ -177,6 +195,7 @@ impl ContextManager {
         self.current_model = new_model;
         self.current_limits = new_limits;
         self.current_limits_source = new_source;
+        self.usage_cache = UsageCache::Stale;
 
         let new_budget = self.effective_budget();
 
@@ -200,6 +219,7 @@ impl ContextManager {
         self.current_model = new_model;
         self.current_limits = resolved.limits();
         self.current_limits_source = resolved.source();
+        self.usage_cache = UsageCache::Stale;
     }
 
     ///
@@ -269,6 +289,7 @@ impl ContextManager {
             .count_message(&Message::system(content.clone(), SystemTime::now()));
         let summary = CompactionSummary::new(content, token_count, generated_by);
         self.history.compact(summary);
+        self.usage_cache = UsageCache::Stale;
     }
 
     pub fn prepare(&self, overhead: u32) -> Result<PreparedContext<'_>, ContextBuildError> {
@@ -296,15 +317,18 @@ impl ContextManager {
             .collect()
     }
 
-    #[must_use]
-    pub fn usage_status(&self) -> ContextUsageStatus {
+    pub fn usage_status(&mut self) -> ContextUsageStatus {
+        if let UsageCache::Fresh(ref status) = self.usage_cache {
+            return status.clone();
+        }
+
         let fallback_usage = || ContextUsage {
             used_tokens: self.history.total_tokens(),
             budget_tokens: self.effective_budget(),
             compacted: self.history.is_compacted(),
         };
 
-        match self.prepare(0) {
+        let status = match self.prepare(0) {
             Ok(prepared) => ContextUsageStatus::Ready(prepared.usage()),
             Err(ContextBuildError::CompactionNeeded) => ContextUsageStatus::NeedsCompaction {
                 usage: fallback_usage(),
@@ -318,7 +342,15 @@ impl ContextManager {
                 required_tokens,
                 budget_tokens,
             },
-        }
+        };
+        self.usage_cache = UsageCache::Fresh(status.clone());
+        status
+    }
+
+    /// Explicitly invalidate the usage cache (for edge cases where engine
+    /// knows about context changes that don't go through ContextManager mutations).
+    pub fn invalidate_usage_cache(&mut self) {
+        self.usage_cache = UsageCache::Stale;
     }
 
     #[must_use]
@@ -379,6 +411,7 @@ impl ContextManager {
             current_limits: limits,
             current_limits_source: limits_source,
             configured_output_limit: None,
+            usage_cache: UsageCache::Stale,
         })
     }
 }
@@ -425,8 +458,8 @@ mod tests {
             Message::try_user("World", SystemTime::now()).expect("non-empty test message"),
         );
 
-        assert_eq!(id1.as_u64(), 0);
-        assert_eq!(id2.as_u64(), 1);
+        assert_eq!(id1.value(), 0);
+        assert_eq!(id2.value(), 1);
         assert_eq!(manager.history().len(), 2);
     }
 
@@ -668,7 +701,7 @@ mod tests {
 
     #[test]
     fn test_usage_status_ready_when_empty() {
-        let manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
+        let mut manager = ContextManager::new(model(PredefinedModel::ClaudeOpus));
         let status = manager.usage_status();
 
         assert!(matches!(status, ContextUsageStatus::Ready(_)));
@@ -708,8 +741,8 @@ mod tests {
         let id2 = manager.push_message(Message::tool_result(result));
 
         assert_eq!(manager.history().len(), 2);
-        assert_eq!(id1.as_u64(), 0);
-        assert_eq!(id2.as_u64(), 1);
+        assert_eq!(id1.value(), 0);
+        assert_eq!(id2.value(), 1);
 
         let entries: Vec<_> = manager.history().entries().iter().collect();
         assert_eq!(entries[0].message().role_str(), "assistant");

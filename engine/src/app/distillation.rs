@@ -179,7 +179,6 @@ impl super::App {
                 self.core
                     .context_manager
                     .complete_compaction(distillation_text, generated_by);
-                self.invalidate_usage_cache();
                 self.push_notification("Compaction complete");
                 self.autosave_history();
 
