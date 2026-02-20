@@ -36,6 +36,8 @@ sha256.txt
 CONTEXT.md
 DIGEST.md
 /gemini-review/
+/review/
+review_paste.md
 
 # Test artifacts
 /engine/forge-test/history.json
