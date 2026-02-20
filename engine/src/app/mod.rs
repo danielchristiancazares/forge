@@ -1969,6 +1969,16 @@ impl App {
         }
     }
 
+    fn op_take_plan_approval(&mut self) -> OperationTake<Box<state::PlanApprovalState>> {
+        match self.op_take() {
+            OperationState::PlanApproval(state) => OperationTake::Taken(state),
+            other => {
+                self.op_restore(other);
+                OperationTake::Skipped
+            }
+        }
+    }
+
     fn op_restore_streaming(&mut self, active: ActiveStream) {
         self.op_restore(OperationState::Streaming(active));
     }

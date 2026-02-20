@@ -410,17 +410,11 @@ impl App {
     }
 
     pub(crate) fn resolve_plan_approval(&mut self, approved: bool) {
-        use crate::state::{
-            ApprovalState, OperationState, PlanApprovalState, ToolLoopPhase, ToolLoopState,
-        };
+        use crate::state::{ApprovalState, ToolLoopPhase, ToolLoopState};
 
-        let idle = self.idle_state();
-        let state = match std::mem::replace(&mut self.core.state, idle) {
-            OperationState::PlanApproval(state) => *state,
-            other => {
-                self.op_restore(other);
-                return;
-            }
+        let state = match self.op_take_plan_approval() {
+            super::OperationTake::Taken(state) => *state,
+            super::OperationTake::Skipped => return,
         };
 
         let PlanApprovalState {
