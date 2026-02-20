@@ -18,7 +18,6 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, palette: &Palette) {
         return;
     }
 
-    // Default dispatch
     match app.focus_state() {
         FocusState::Idle => idle::draw(frame, app, area, palette),
         FocusState::Executing { .. } => executing::draw(frame, app, area, palette),
