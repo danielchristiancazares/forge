@@ -2315,11 +2315,11 @@ fn self_state_assignment_only_in_authorized_locations() {
     }
 }
 
-/// Source guardrail: `replace_with_idle` usage baseline across `app/` files.
+/// Source guardrail: legacy idle-swap helper sites must be removed from `app/` files.
 ///
 /// The search needle is built at runtime to prevent this test from self-matching.
 #[test]
-fn replace_with_idle_usage_baseline() {
+fn idle_swap_helper_removed() {
     let app_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
     let needle = ["replace", "_with_idle("].concat();
 
@@ -2334,33 +2334,10 @@ fn replace_with_idle_usage_baseline() {
 
         let count = source.matches(&*needle).count();
 
-        match filename {
-            "mod.rs" => {
-                assert_eq!(
-                    count, 1,
-                    "mod.rs: expected 1 replace-with-idle (definition), found {count}"
-                );
-            }
-            "commands.rs" => {
-                assert_eq!(
-                    count, 2,
-                    "commands.rs: expected 2 replace-with-idle (cancel + /clear), found {count}"
-                );
-            }
-            "streaming.rs" => {
-                assert_eq!(
-                    count, 2,
-                    "streaming.rs: expected 2 replace-with-idle \
-                     (journal abort + finish_streaming), found {count}"
-                );
-            }
-            _ => {
-                assert_eq!(
-                    count, 0,
-                    "{filename}: expected 0 replace-with-idle, found {count}"
-                );
-            }
-        }
+        assert_eq!(
+            count, 0,
+            "{filename}: expected 0 legacy idle-swap helper sites, found {count}"
+        );
     }
 }
 

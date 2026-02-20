@@ -136,16 +136,13 @@ impl super::App {
             return;
         }
 
-        let idle = self.idle_state();
-        let (task, queued_request) = match std::mem::replace(&mut self.core.state, idle) {
-            OperationState::Distilling(state) => match state {
-                DistillationState::Running(task) => (task, None),
-                DistillationState::CompletedWithQueued { task, message } => (task, Some(message)),
-            },
-            other => {
-                self.op_restore(other);
-                return;
-            }
+        let state = match self.op_take_distilling() {
+            super::OperationTake::Taken(state) => state,
+            super::OperationTake::Skipped => return,
+        };
+        let (task, queued_request) = match state {
+            DistillationState::Running(task) => (task, None),
+            DistillationState::CompletedWithQueued { task, message } => (task, Some(message)),
         };
 
         let DistillationTask {
@@ -195,10 +192,10 @@ impl super::App {
                     generated_by,
                     handle,
                 };
-                self.op_restore(OperationState::Distilling(match queued_request {
+                self.op_restore_distilling(match queued_request {
                     Some(message) => DistillationState::CompletedWithQueued { task, message },
                     None => DistillationState::Running(task),
-                }));
+                });
             }
         }
     }

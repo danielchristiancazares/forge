@@ -201,6 +201,11 @@ pub enum ToolRecoveryAccess<'a> {
     Inactive,
 }
 
+enum OperationTake<T> {
+    Taken(T),
+    Skipped,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TurnConfig {
     pub(crate) model: ModelName,
@@ -1887,9 +1892,37 @@ impl App {
         OperationState::Idle
     }
 
-    fn replace_with_idle(&mut self) -> OperationState {
+    fn op_take(&mut self) -> OperationState {
         let idle = self.idle_state();
         std::mem::replace(&mut self.core.state, idle)
+    }
+
+    fn op_take_streaming(&mut self) -> OperationTake<ActiveStream> {
+        match self.op_take() {
+            OperationState::Streaming(active) => OperationTake::Taken(active),
+            other => {
+                self.op_restore(other);
+                OperationTake::Skipped
+            }
+        }
+    }
+
+    fn op_take_distilling(&mut self) -> OperationTake<DistillationState> {
+        match self.op_take() {
+            OperationState::Distilling(state) => OperationTake::Taken(state),
+            other => {
+                self.op_restore(other);
+                OperationTake::Skipped
+            }
+        }
+    }
+
+    fn op_restore_streaming(&mut self, active: ActiveStream) {
+        self.op_restore(OperationState::Streaming(active));
+    }
+
+    fn op_restore_distilling(&mut self, state: DistillationState) {
+        self.op_restore(OperationState::Distilling(state));
     }
 
     /// Emit an operation edge without changing `OperationState`.

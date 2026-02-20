@@ -431,7 +431,7 @@ struct ConversationExport<'a> {
 
 impl super::App {
     pub fn cancel_active_operation(&mut self) -> bool {
-        match self.replace_with_idle() {
+        match self.op_take() {
             OperationState::Streaming(active) => {
                 active.abort_handle().abort();
 
@@ -514,7 +514,7 @@ impl super::App {
                 self.request_quit();
             }
             Command::Clear => {
-                let state = self.replace_with_idle();
+                let state = self.op_take();
                 match state {
                     OperationState::Streaming(active) => {
                         active.abort_handle().abort();

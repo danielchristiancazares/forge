@@ -612,13 +612,9 @@ impl super::App {
             let mut journal_error: Option<String> = None;
             let mut finish_reason: Option<StreamFinishReason> = None;
 
-            let idle = self.idle_state();
-            let mut active = match std::mem::replace(&mut self.core.state, idle) {
-                OperationState::Streaming(active) => active,
-                other => {
-                    self.op_restore(other);
-                    return;
-                }
+            let mut active = match self.op_take_streaming() {
+                super::OperationTake::Taken(active) => active,
+                super::OperationTake::Skipped => return,
             };
 
             let persist_result = match &event {
@@ -731,16 +727,13 @@ impl super::App {
                 finish_reason = active.message_mut().apply_event(event);
             }
 
-            self.op_restore(OperationState::Streaming(active));
+            self.op_restore_streaming(active);
 
             if let Some(err) = journal_error {
                 // Abort streaming without applying the unpersisted event.
-                let active = match self.replace_with_idle() {
-                    OperationState::Streaming(active) => active,
-                    other => {
-                        self.op_restore(other);
-                        return;
-                    }
+                let active = match self.op_take_streaming() {
+                    super::OperationTake::Taken(active) => active,
+                    super::OperationTake::Skipped => return,
                 };
 
                 let (message, journal, abort_handle, tool_batch_journal, turn) =
@@ -809,12 +802,9 @@ impl super::App {
     /// will find the uncommitted step. If history already has that `step_id`,
     /// recovery will skip it (idempotent).
     pub(crate) fn finish_streaming(&mut self, finish_reason: StreamFinishReason) {
-        let mut active = match self.replace_with_idle() {
-            OperationState::Streaming(active) => active,
-            other => {
-                self.op_restore(other);
-                return;
-            }
+        let mut active = match self.op_take_streaming() {
+            super::OperationTake::Taken(active) => active,
+            super::OperationTake::Skipped => return,
         };
 
         // Flush any buffered tool-argument deltas before we can execute tools.
