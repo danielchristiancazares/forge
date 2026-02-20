@@ -111,7 +111,10 @@ pub(crate) fn draw_messages(
     let cache_key = MessageCacheKey::new(display_version, cache_width, options);
 
     let tool_statuses = collect_tool_statuses(app, 80);
-    let is_streaming = app.streaming().is_some();
+    let is_streaming = matches!(
+        app.streaming_access(),
+        forge_engine::StreamingAccess::Active(_)
+    );
     let has_tool_activity = tool_statuses.is_some();
     let has_dynamic = is_streaming || has_tool_activity;
     let static_message_count = app.display_items().len();
@@ -353,7 +356,7 @@ fn build_dynamic_message_lines(
     let mut lines: Vec<Line> = Vec::new();
     let has_static = static_message_count > 0;
 
-    if let Some(streaming) = app.streaming() {
+    if let forge_engine::StreamingAccess::Active(streaming) = app.streaming_access() {
         if has_static {
             lines.push(Line::from(""));
         }
@@ -465,15 +468,23 @@ fn build_dynamic_message_lines(
     }
 
     if let Some(statuses) = tool_statuses {
-        if has_static || app.streaming().is_some() {
+        if has_static
+            || matches!(
+                app.streaming_access(),
+                forge_engine::StreamingAccess::Active(_)
+            )
+        {
             lines.push(Line::from(""));
         }
 
         let mut rendered_shell_view = false;
-        if let Some(current_id) = app.tool_loop_current_call_id()
-            && let Some(call) = app
-                .tool_loop_calls()
-                .and_then(|calls| calls.iter().find(|call| call.id == current_id))
+        if let forge_engine::ToolLoopAccess::Active {
+            calls: tl_calls,
+            output_lines: tl_output,
+            execution: forge_engine::ToolLoopExecution::Active { current_call_id },
+            ..
+        } = app.tool_loop_access()
+            && let Some(call) = tl_calls.iter().find(|c| c.id == current_call_id)
         {
             let canonical = tool_display::canonical_tool_name(&call.name);
             if matches!(canonical.as_ref(), "Run" | "Pwsh") {
@@ -496,8 +507,8 @@ fn build_dynamic_message_lines(
                     ),
                 ]));
 
-                let output_window =
-                    tool_output_window(app.tool_loop_output_lines(), TOOL_OUTPUT_WINDOW_LINES);
+                let current_output = tl_output.get(current_call_id).map(Vec::as_slice);
+                let output_window = tool_output_window(current_output, TOOL_OUTPUT_WINDOW_LINES);
                 let connector_style = Style::default().fg(palette.text_muted);
                 let output_style = Style::default().fg(palette.text_secondary);
                 for (index, line) in output_window.iter().enumerate() {
@@ -519,7 +530,10 @@ fn build_dynamic_message_lines(
 
         if !rendered_shell_view {
             let spinner = spinner_frame(app.tick_count(), app.ui_options());
-            let approval_pending = app.tool_approval_requests().is_some();
+            let approval_pending = !matches!(
+                app.tool_approval_access(),
+                forge_engine::ToolApprovalAccess::Inactive
+            );
             let header = if approval_pending {
                 format!("{spinner} Tool approval required")
             } else {
@@ -592,7 +606,13 @@ fn build_dynamic_message_lines(
                     )));
                 }
 
-                if let Some(output_lines) = app.tool_loop_output_lines_for(&status.id)
+                let per_call_output = match app.tool_loop_access() {
+                    forge_engine::ToolLoopAccess::Active { output_lines, .. } => {
+                        output_lines.get(&status.id).map(Vec::as_slice)
+                    }
+                    forge_engine::ToolLoopAccess::Inactive => None,
+                };
+                if let Some(output_lines) = per_call_output
                     && !output_lines.is_empty()
                 {
                     let is_running = matches!(status.status, ToolCallStatusKind::Running);

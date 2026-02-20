@@ -356,9 +356,18 @@ fn apply_event(app: &mut App, event: Event, paste_active: bool) -> bool {
                 && app.is_loading()
                 && app.input_mode() == InputMode::Normal
                 && !app.files_panel_expanded()
-                && app.tool_approval_requests().is_none()
-                && app.tool_recovery_calls().is_none()
-                && app.plan_approval_kind().is_none()
+                && matches!(
+                    app.tool_approval_access(),
+                    forge_engine::ToolApprovalAccess::Inactive
+                )
+                && matches!(
+                    app.tool_recovery_access(),
+                    forge_engine::ToolRecoveryAccess::Inactive
+                )
+                && matches!(
+                    app.plan_approval_access(),
+                    forge_engine::PlanApprovalAccess::Inactive
+                )
             {
                 app.cancel_active_operation();
                 return app.should_quit();
@@ -375,10 +384,16 @@ fn apply_event(app: &mut App, event: Event, paste_active: bool) -> bool {
         }
         Event::Paste(text) => {
             // Preserve existing paste gating + insert-mode guard flow exactly
-            if app.tool_approval_requests().is_some()
-                || app.tool_recovery_calls().is_some()
-                || app.plan_approval_kind().is_some()
-            {
+            if !matches!(
+                app.tool_approval_access(),
+                forge_engine::ToolApprovalAccess::Inactive
+            ) || !matches!(
+                app.tool_recovery_access(),
+                forge_engine::ToolRecoveryAccess::Inactive
+            ) || !matches!(
+                app.plan_approval_access(),
+                forge_engine::PlanApprovalAccess::Inactive
+            ) {
                 return app.should_quit();
             }
             if app.input_mode() == InputMode::Insert {
@@ -396,7 +411,10 @@ fn apply_event(app: &mut App, event: Event, paste_active: bool) -> bool {
 }
 
 fn handle_normal_mode(app: &mut App, key: KeyEvent) {
-    if app.plan_approval_kind().is_some() {
+    if !matches!(
+        app.plan_approval_access(),
+        forge_engine::PlanApprovalAccess::Inactive
+    ) {
         match key.code {
             KeyCode::Enter | KeyCode::Char('a') => app.plan_approval_approve(),
             KeyCode::Char('d') | KeyCode::Esc => app.plan_approval_reject(),
@@ -407,7 +425,10 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    if app.tool_approval_requests().is_some() {
+    if !matches!(
+        app.tool_approval_access(),
+        forge_engine::ToolApprovalAccess::Inactive
+    ) {
         match key.code {
             KeyCode::Char('k') | KeyCode::Up => app.tool_approval_move_up(),
             KeyCode::Char('j') | KeyCode::Down => app.tool_approval_move_down(),
@@ -421,7 +442,10 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    if app.tool_recovery_calls().is_some() {
+    if !matches!(
+        app.tool_recovery_access(),
+        forge_engine::ToolRecoveryAccess::Inactive
+    ) {
         match key.code {
             KeyCode::Char('r' | 'R') => app.tool_recovery_resume(),
             KeyCode::Char('d' | 'D') | KeyCode::Esc => app.tool_recovery_discard(),
@@ -525,8 +549,10 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
-    // Plan approval modal takes priority over insert mode
-    if app.plan_approval_kind().is_some() {
+    if !matches!(
+        app.plan_approval_access(),
+        forge_engine::PlanApprovalAccess::Inactive
+    ) {
         match key.code {
             KeyCode::Enter | KeyCode::Char('a') => app.plan_approval_approve(),
             KeyCode::Char('d') | KeyCode::Esc => app.plan_approval_reject(),
@@ -537,8 +563,10 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
         return;
     }
 
-    // Tool approval modal takes priority over insert mode
-    if app.tool_approval_requests().is_some() {
+    if !matches!(
+        app.tool_approval_access(),
+        forge_engine::ToolApprovalAccess::Inactive
+    ) {
         match key.code {
             KeyCode::Char('k') | KeyCode::Up => app.tool_approval_move_up(),
             KeyCode::Char('j') | KeyCode::Down => app.tool_approval_move_down(),
@@ -552,8 +580,10 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
         return;
     }
 
-    // Tool recovery modal takes priority over insert mode
-    if app.tool_recovery_calls().is_some() {
+    if !matches!(
+        app.tool_recovery_access(),
+        forge_engine::ToolRecoveryAccess::Inactive
+    ) {
         match key.code {
             KeyCode::Char('r' | 'R') => app.tool_recovery_resume(),
             KeyCode::Char('d' | 'D') | KeyCode::Esc => app.tool_recovery_discard(),
@@ -665,7 +695,10 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent, paste_active: bool) {
 
 fn handle_command_mode(app: &mut App, key: KeyEvent) {
     // Tool approval modal takes priority over command mode
-    if app.tool_approval_requests().is_some() {
+    if !matches!(
+        app.tool_approval_access(),
+        forge_engine::ToolApprovalAccess::Inactive
+    ) {
         match key.code {
             KeyCode::Char('k') | KeyCode::Up => app.tool_approval_move_up(),
             KeyCode::Char('j') | KeyCode::Down => app.tool_approval_move_down(),
@@ -679,8 +712,10 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    // Tool recovery modal takes priority over command mode
-    if app.tool_recovery_calls().is_some() {
+    if !matches!(
+        app.tool_recovery_access(),
+        forge_engine::ToolRecoveryAccess::Inactive
+    ) {
         match key.code {
             KeyCode::Char('r' | 'R') => app.tool_recovery_resume(),
             KeyCode::Char('d' | 'D') | KeyCode::Esc => app.tool_recovery_discard(),
@@ -690,7 +725,6 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) {
     }
 
     match key.code {
-        // Exit command mode
         KeyCode::Esc => {
             app.enter_normal_mode();
         }

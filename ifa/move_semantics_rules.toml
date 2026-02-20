@@ -26,6 +26,19 @@ consumes_self = true
 post_move_unusability_guarantee = "PendingStep value is consumed. Cannot activate twice."
 
 [[state_bearing_types]]
+type_path = "engine::state::ApprovalState"
+
+[[state_bearing_types.consumed_transition_methods]]
+method_path = "engine::state::ApprovalState::enter_deny_confirmation"
+consumes_self = true
+post_move_unusability_guarantee = "Transitions Selecting -> ConfirmingDeny via mem::replace; old variant is consumed internally."
+
+[[state_bearing_types.consumed_transition_methods]]
+method_path = "engine::state::ApprovalState::cancel_deny_confirmation"
+consumes_self = true
+post_move_unusability_guarantee = "Transitions ConfirmingDeny -> Selecting via mem::replace; old variant is consumed internally."
+
+[[state_bearing_types]]
 type_path = "types::plan::ActiveStep"
 
 [[state_bearing_types.consumed_transition_methods]]

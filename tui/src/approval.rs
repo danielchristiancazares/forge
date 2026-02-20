@@ -14,10 +14,13 @@ use crate::shared::collect_approval_view;
 use crate::theme::{Glyphs, Palette, styles};
 
 pub(crate) fn draw_plan_approval_prompt(frame: &mut Frame, app: &App, palette: &Palette) {
-    let Some(kind_label) = app.plan_approval_kind() else {
+    let forge_engine::PlanApprovalAccess::Active {
+        kind: kind_label,
+        rendered,
+    } = app.plan_approval_access()
+    else {
         return;
     };
-    let rendered = app.plan_approval_rendered().unwrap_or_default();
 
     let title = if kind_label == "create" {
         " Plan approval required "
@@ -288,10 +291,10 @@ pub(crate) fn draw_tool_recovery_prompt(
     palette: &Palette,
     glyphs: &Glyphs,
 ) {
-    let Some(calls) = app.tool_recovery_calls() else {
+    let forge_engine::ToolRecoveryAccess::Active { calls, results } = app.tool_recovery_access()
+    else {
         return;
     };
-    let results = app.tool_recovery_results().unwrap_or(&[]);
 
     let mut results_map: std::collections::HashMap<&str, &ToolResult> =
         std::collections::HashMap::new();

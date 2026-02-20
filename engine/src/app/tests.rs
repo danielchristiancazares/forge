@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::anyhow;
-use forge_context::StepId;
+use forge_types::StepId;
 use futures_util::future::AbortHandle;
 use serde_json::json;
 use tempfile::tempdir;
@@ -578,14 +578,14 @@ fn settings_resolve_move_down_clamps_to_last_setting() {
 #[test]
 fn runtime_snapshot_lists_pending_next_turn_settings() {
     let mut app = test_app();
-    app.core.pending_turn_model = Some(ModelName::from_predefined(PredefinedModel::Gpt52Pro));
-    app.core.pending_turn_context_memory_enabled = Some(false);
-    app.core.pending_turn_ui_options = Some(UiOptions {
+    app.core.turn_config.staged.model = ModelName::from_predefined(PredefinedModel::Gpt52Pro);
+    app.core.turn_config.staged.context_memory_enabled = false;
+    app.core.turn_config.staged.ui_options = UiOptions {
         ascii_only: true,
         high_contrast: true,
         reduced_motion: false,
         show_thinking: false,
-    });
+    };
 
     let snapshot = app.runtime_snapshot();
 
@@ -612,13 +612,13 @@ fn runtime_snapshot_lists_pending_next_turn_settings() {
 #[test]
 fn resolve_cascade_includes_context_memory_and_ui_defaults_layers() {
     let mut app = test_app();
-    app.core.pending_turn_context_memory_enabled = Some(false);
-    app.core.pending_turn_ui_options = Some(UiOptions {
+    app.core.turn_config.staged.context_memory_enabled = false;
+    app.core.turn_config.staged.ui_options = UiOptions {
         ascii_only: false,
         high_contrast: true,
         reduced_motion: true,
         show_thinking: false,
-    });
+    };
 
     let cascade = app.resolve_cascade();
 
@@ -652,7 +652,7 @@ fn resolve_cascade_includes_context_memory_and_ui_defaults_layers() {
 #[test]
 fn resolve_cascade_uses_pending_model_for_session_layer() {
     let mut app = test_app();
-    app.core.pending_turn_model = Some(ModelName::from_predefined(PredefinedModel::Gpt52Pro));
+    app.core.turn_config.staged.model = ModelName::from_predefined(PredefinedModel::Gpt52Pro);
 
     let cascade = app.resolve_cascade();
 
@@ -982,7 +982,7 @@ fn apply_pending_turn_settings_consumes_staged_defaults() {
         reduced_motion: true,
         show_thinking: true,
     };
-    app.core.pending_turn_ui_options = Some(pending);
+    app.core.turn_config.staged.ui_options = pending;
 
     app.apply_pending_turn_settings();
 
@@ -994,7 +994,7 @@ fn apply_pending_turn_settings_consumes_staged_defaults() {
 fn queue_message_applies_pending_model_before_request_config() {
     let mut app = test_app();
     let pending_model = ModelName::from_predefined(PredefinedModel::ClaudeHaiku);
-    app.core.pending_turn_model = Some(pending_model.clone());
+    app.core.turn_config.staged.model = pending_model.clone();
     app.ui.input = InputState::Insert(DraftInput::new("pending model".to_string(), 13));
 
     let queued = insert_mode(&mut app).queue_message();
@@ -1008,7 +1008,7 @@ fn queue_message_applies_pending_model_before_request_config() {
 #[test]
 fn queue_message_applies_pending_context_before_request_config() {
     let mut app = test_app();
-    app.core.pending_turn_context_memory_enabled = Some(false);
+    app.core.turn_config.staged.context_memory_enabled = false;
     app.ui.input = InputState::Insert(DraftInput::new("pending context".to_string(), 15));
 
     let queued = insert_mode(&mut app).queue_message();
@@ -1021,7 +1021,7 @@ fn queue_message_applies_pending_context_before_request_config() {
 #[test]
 fn queue_message_applies_pending_tools_before_request_config() {
     let mut app = test_app();
-    app.core.pending_turn_tool_approval_mode = Some(tools::ApprovalMode::Strict);
+    app.core.turn_config.staged.tool_approval_mode = tools::ApprovalMode::Strict;
     app.ui.input = InputState::Insert(DraftInput::new("pending tools".to_string(), 13));
 
     let queued = insert_mode(&mut app).queue_message();
@@ -1268,7 +1268,7 @@ fn queue_message_sets_pending_user_message() {
 
     assert!(app.core.pending_user_message.is_some());
     let (msg_id, original_text, _agents_md) = app.core.pending_user_message.as_ref().unwrap();
-    assert_eq!(msg_id.as_u64(), 0);
+    assert_eq!(msg_id.value(), 0);
     assert_eq!(original_text, "test message");
 }
 
@@ -2358,6 +2358,54 @@ fn replace_with_idle_usage_baseline() {
                 assert_eq!(
                     count, 0,
                     "{filename}: expected 0 replace-with-idle, found {count}"
+                );
+            }
+        }
+    }
+}
+
+/// Source guardrail: `busy_reason` usage baseline across `app/` files.
+///
+/// The search needle is built at runtime to prevent this test from self-matching.
+#[test]
+fn busy_reason_usage_baseline() {
+    let app_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
+    let needle = ["busy", "_reason("].concat();
+
+    for entry in std::fs::read_dir(&app_dir).expect("read app dir") {
+        let entry = entry.expect("dir entry");
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        let source = std::fs::read_to_string(&path).expect("read source file");
+
+        let count = source.matches(&*needle).count();
+
+        match filename {
+            "mod.rs" => {
+                assert_eq!(
+                    count, 3,
+                    "mod.rs: expected 3 busy_reason sites (2 call sites + definition), found {count}"
+                );
+            }
+            "commands.rs" => {
+                assert_eq!(
+                    count, 4,
+                    "commands.rs: expected 4 busy_reason call sites (model, rewind, undo, retry), found {count}"
+                );
+            }
+            "distillation.rs" | "streaming.rs" => {
+                assert_eq!(
+                    count, 1,
+                    "{filename}: expected 1 busy_reason call site, found {count}"
+                );
+            }
+            _ => {
+                assert_eq!(
+                    count, 0,
+                    "{filename}: expected 0 busy_reason sites, found {count}"
                 );
             }
         }

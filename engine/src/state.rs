@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use futures_util::future::AbortHandle;
 
-use forge_context::{RecoveredToolBatch, StepId, ToolBatchId};
-use forge_types::{ModelName, Plan, ToolCall, ToolResult};
+use forge_context::RecoveredToolBatch;
+use forge_types::{ModelName, Plan, StepId, ToolBatchId, ToolCall, ToolResult};
 
 use crate::StreamingMessage;
 use crate::TurnContext;
@@ -485,45 +485,50 @@ impl ApprovalData {
 ///                                              v
 ///                                    [Execute denial - consume state]
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ApprovalPhase {
-    Selecting,
-    ConfirmingDeny,
-}
-
 #[derive(Debug)]
-pub(crate) struct ApprovalState {
-    phase: ApprovalPhase,
-    data: ApprovalData,
+pub(crate) enum ApprovalState {
+    Selecting(ApprovalData),
+    ConfirmingDeny(ApprovalData),
 }
 
 impl ApprovalState {
     pub(crate) fn new(requests: Vec<ConfirmationRequest>) -> Self {
-        Self {
-            phase: ApprovalPhase::Selecting,
-            data: ApprovalData::new(requests),
+        Self::Selecting(ApprovalData::new(requests))
+    }
+
+    pub(crate) fn data(&self) -> &ApprovalData {
+        match self {
+            Self::Selecting(data) | Self::ConfirmingDeny(data) => data,
         }
     }
 
-    /// Read-only access to data (allowed in any phase).
-    pub(crate) fn data(&self) -> &ApprovalData {
-        &self.data
-    }
-
-    /// Mutable access to data with automatic cancel of deny confirmation.
-    /// Any mutation cancels the `ConfirmingDeny` state.
-    pub(crate) fn data_mut(&mut self) -> &mut ApprovalData {
-        self.phase = ApprovalPhase::Selecting;
-        &mut self.data
+    /// Mutable access to data, transitioning to `Selecting` if in `ConfirmingDeny`.
+    pub(crate) fn selecting_data_mut(&mut self) -> &mut ApprovalData {
+        self.cancel_deny_confirmation();
+        match self {
+            Self::Selecting(data) => data,
+            Self::ConfirmingDeny(_) => unreachable!(),
+        }
     }
 
     pub(crate) fn is_confirming_deny(&self) -> bool {
-        self.phase == ApprovalPhase::ConfirmingDeny
+        matches!(self, Self::ConfirmingDeny(_))
     }
 
-    /// Transition: enter deny confirmation (Selecting -> `ConfirmingDeny`).
+    /// Transition: Selecting -> ConfirmingDeny.
     pub(crate) fn enter_deny_confirmation(&mut self) {
-        self.phase = ApprovalPhase::ConfirmingDeny;
+        *self = match std::mem::replace(self, Self::Selecting(ApprovalData::new(vec![]))) {
+            Self::Selecting(data) | Self::ConfirmingDeny(data) => Self::ConfirmingDeny(data),
+        };
+    }
+
+    /// Transition: ConfirmingDeny -> Selecting (no-op if already Selecting).
+    pub(crate) fn cancel_deny_confirmation(&mut self) {
+        if matches!(self, Self::ConfirmingDeny(_)) {
+            *self = match std::mem::replace(self, Self::Selecting(ApprovalData::new(vec![]))) {
+                Self::ConfirmingDeny(data) | Self::Selecting(data) => Self::Selecting(data),
+            };
+        }
     }
 }
 

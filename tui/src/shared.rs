@@ -45,19 +45,29 @@ pub(crate) fn collect_tool_statuses(
     app: &App,
     reason_max_len: usize,
 ) -> Option<Vec<ToolCallStatus>> {
-    let calls = app.tool_loop_calls()?;
+    let forge_engine::ToolLoopAccess::Active {
+        calls,
+        execute_calls,
+        results,
+        execution,
+        ..
+    } = app.tool_loop_access()
+    else {
+        return None;
+    };
     let mut results_map: HashMap<&str, &ToolResult> = HashMap::new();
-    if let Some(results) = app.tool_loop_results() {
-        for result in results {
-            results_map.insert(result.tool_call_id.as_str(), result);
-        }
+    for result in results {
+        results_map.insert(result.tool_call_id.as_str(), result);
     }
-    let execute_ids: HashSet<&str> = app
-        .tool_loop_execute_calls()
-        .map(|exec_calls| exec_calls.iter().map(|c| c.id.as_str()).collect())
-        .unwrap_or_default();
-    let current_id = app.tool_loop_current_call_id();
-    let approval_pending = app.tool_approval_requests().is_some();
+    let execute_ids: HashSet<&str> = execute_calls.iter().map(|c| c.id.as_str()).collect();
+    let current_call_id = match execution {
+        forge_engine::ToolLoopExecution::Active { current_call_id } => Some(current_call_id),
+        forge_engine::ToolLoopExecution::Idle => None,
+    };
+    let approval_pending = !matches!(
+        app.tool_approval_access(),
+        forge_engine::ToolApprovalAccess::Inactive
+    );
 
     let mut statuses = Vec::with_capacity(calls.len());
     for call in calls {
@@ -75,7 +85,7 @@ pub(crate) fn collect_tool_statuses(
             } else {
                 ToolCallStatusKind::Ok
             }
-        } else if current_id == Some(call.id.as_str()) {
+        } else if current_call_id == Some(call.id.as_str()) {
             ToolCallStatusKind::Running
         } else if approval_pending && !execute_ids.contains(call.id.as_str()) {
             ToolCallStatusKind::Approval
@@ -228,16 +238,28 @@ fn extract_tool_details(_tool_name: &str, args: &Value, _max_width: usize) -> Ve
 }
 
 pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<ApprovalView> {
-    let requests = app.tool_approval_requests()?;
-    let selected = app.tool_approval_selected().unwrap_or(&[]);
-    let cursor = app.tool_approval_cursor().unwrap_or(0);
-    let deny_confirm = app.tool_approval_deny_confirm();
+    let (requests, selected, cursor, expanded, scroll_offset, deny_confirm) =
+        match app.tool_approval_access() {
+            forge_engine::ToolApprovalAccess::Selecting {
+                requests,
+                selected,
+                cursor,
+                expanded,
+                scroll_offset,
+            } => (requests, selected, cursor, expanded, scroll_offset, false),
+            forge_engine::ToolApprovalAccess::ConfirmingDeny {
+                requests,
+                selected,
+                cursor,
+                expanded,
+                scroll_offset,
+            } => (requests, selected, cursor, expanded, scroll_offset, true),
+            forge_engine::ToolApprovalAccess::Inactive => return None,
+        };
     let any_selected = selected
         .iter()
         .copied()
         .any(forge_engine::ApprovalSelection::is_approved);
-
-    let expanded = app.tool_approval_expanded();
 
     let mut items = Vec::with_capacity(requests.len());
     for (i, req) in requests.iter().enumerate() {
@@ -258,7 +280,6 @@ pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<Appro
             Vec::new()
         };
 
-        // Format homoglyph warnings for display
         let homoglyph_warnings: Vec<String> = req
             .warnings
             .iter()
@@ -286,7 +307,7 @@ pub(crate) fn collect_approval_view(app: &App, max_width: usize) -> Option<Appro
         cursor,
         any_selected,
         deny_confirm,
-        scroll_offset: app.tool_approval_scroll_offset(),
+        scroll_offset,
     })
 }
 

@@ -6,7 +6,10 @@ use std::time::{Duration, Instant};
 
 use forge_types::{ModelName, OutputLimits, Provider, SecretString, ToolDefinition};
 
-use super::{AppCore, AppRuntime, AppUi, LspRuntimeState, ProviderRuntimeState, SystemPrompts};
+use super::{
+    AppCore, AppRuntime, AppUi, LspRuntimeState, ProviderRuntimeState, SystemPrompts, TurnConfig,
+    TurnConfigStaging,
+};
 use crate::config::{self, ForgeConfig, OpenAIConfig};
 use crate::state::{DataDir, DataDirSource, OperationState};
 use crate::tools::{self, builtins};
@@ -102,6 +105,14 @@ pub(crate) struct AppBuildParts {
 }
 
 pub(crate) fn build_app(parts: AppBuildParts) -> App {
+    let active_turn_config = TurnConfig {
+        model: parts.configured_model,
+        tool_approval_mode: parts.configured_tool_approval_mode,
+        context_memory_enabled: parts.configured_context_memory_enabled,
+        ui_options: parts.configured_ui_options,
+    };
+    let staged_turn_config = active_turn_config.clone();
+
     App {
         ui: AppUi {
             input: InputState::default(),
@@ -114,14 +125,10 @@ pub(crate) fn build_app(parts: AppBuildParts) -> App {
             file_picker: crate::ui::FilePickerState::new(),
         },
         core: AppCore {
-            configured_model: parts.configured_model,
-            configured_tool_approval_mode: parts.configured_tool_approval_mode,
-            configured_context_memory_enabled: parts.configured_context_memory_enabled,
-            configured_ui_options: parts.configured_ui_options,
-            pending_turn_model: None,
-            pending_turn_tool_approval_mode: None,
-            pending_turn_context_memory_enabled: None,
-            pending_turn_ui_options: None,
+            turn_config: TurnConfigStaging {
+                active: active_turn_config,
+                staged: staged_turn_config,
+            },
             model: parts.model,
             context_manager: parts.context_manager,
             state: OperationState::Idle,

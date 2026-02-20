@@ -38,6 +38,8 @@ pub use forge_core::{
 mod session_state;
 pub use session_state::SessionChangeLog;
 
+mod operation;
+
 mod state;
 pub use state::DistillationTask;
 pub use state::{ApprovalExpanded, ApprovalSelection};
@@ -48,10 +50,11 @@ mod app;
 pub use app::{
     App, AppearanceEditorSnapshot, CommandInputAccess, CommandMode, CommandModeAccess, CommandSpec,
     ContextEditorSnapshot, DEFAULT_STREAM_EVENT_BUDGET, EnteredCommand, FileDiff, FileSelectAccess,
-    InsertMode, InsertModeAccess, ModelEditorSnapshot, ModelSelectAccess, QueueMessageResult,
-    QueuedUserMessage, ResolveCascade, ResolveLayerValue, ResolveSetting, RuntimeSnapshot,
-    SettingsAccess, StreamingMessage, SystemPrompts, ToolsEditorSnapshot, TurnUsage,
-    ValidationFinding, ValidationReport, command_specs,
+    InsertMode, InsertModeAccess, ModelEditorSnapshot, ModelSelectAccess, PlanApprovalAccess,
+    QueueMessageResult, QueuedUserMessage, ResolveCascade, ResolveLayerValue, ResolveSetting,
+    RuntimeSnapshot, SettingsAccess, StreamingAccess, StreamingMessage, SystemPrompts,
+    ToolApprovalAccess, ToolLoopAccess, ToolLoopExecution, ToolRecoveryAccess, ToolsEditorSnapshot,
+    TurnUsage, ValidationFinding, ValidationReport, command_specs,
 };
 
 // Crate-internal cross-layer glue.
@@ -59,10 +62,9 @@ pub(crate) use app::{ActiveExecution, ToolQueue, TurnContext};
 
 pub use forge_context::{
     ActiveJournal, BeginSessionError, CompactionPlan, ContextAdaptation, ContextBuildError,
-    ContextManager, ContextUsageStatus, Fact, FactType, FullHistory, Librarian, MessageId,
-    ModelLimits, ModelLimitsSource, ModelRegistry, PreparedContext, RecoveredStream,
-    RecoveredToolBatch, StreamJournal, TokenCounter, ToolBatchId, ToolJournal, distillation_model,
-    generate_distillation,
+    ContextManager, ContextUsageStatus, Fact, FactType, FullHistory, Librarian, ModelLimits,
+    ModelLimitsSource, ModelRegistry, PreparedContext, RecoveredStream, RecoveredToolBatch,
+    StreamJournal, TokenCounter, ToolJournal, distillation_model, generate_distillation,
 };
 
 pub use forge_tools as tools;
@@ -70,10 +72,11 @@ pub use forge_tools as tools;
 pub use forge_providers::{self, ApiConfig, gemini::GeminiCache, gemini::GeminiCacheConfig};
 
 pub use forge_types::{
-    ApiKey, CacheHint, CacheableMessage, Message, ModelName, NonEmptyString, OpenAIReasoningEffort,
-    OpenAIReasoningSummary, OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation,
-    OutputLimits, PlanState, Provider, SecretString, StreamEvent, StreamFinishReason,
-    ThinkingReplayState, ToolCall, ToolDefinition, ToolResult, sanitize_terminal_text,
+    ApiKey, CacheHint, CacheableMessage, Message, MessageId, ModelName, NonEmptyString,
+    OpenAIReasoningEffort, OpenAIReasoningSummary, OpenAIRequestOptions, OpenAITextVerbosity,
+    OpenAITruncation, OutputLimits, PlanState, Provider, SecretString, StepId, StreamEvent,
+    StreamFinishReason, ThinkingReplayState, ToolBatchId, ToolCall, ToolDefinition, ToolResult,
+    sanitize_terminal_text,
 };
 
 pub use forge_config::{self, ConfigError};

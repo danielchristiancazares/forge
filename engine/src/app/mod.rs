@@ -41,16 +41,17 @@ use crate::ui::{
 };
 
 use forge_context::{
-    ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus, Librarian, MessageId,
-    ModelLimitsSource, StreamJournal, TokenCounter, ToolBatchId, ToolJournal, distillation_model,
+    ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus, Librarian,
+    ModelLimitsSource, StreamJournal, TokenCounter, ToolJournal, distillation_model,
     generate_distillation,
 };
 use forge_providers::{self, ApiConfig, gemini::GeminiCache, gemini::GeminiCacheConfig};
 use forge_types::{
-    ApiUsage, CacheableMessage, Message, ModelName, NonEmptyString, OpenAIReasoningEffort,
-    OpenAIReasoningItem, OpenAIRequestOptions, OutputLimits, PlanState, Provider, SecretString,
-    StreamEvent, StreamFinishReason, ThinkingReplayState, ThinkingState, ThoughtSignature,
-    ThoughtSignatureState, ToolCall, ToolDefinition, ToolResult, sanitize_terminal_text,
+    ApiUsage, CacheableMessage, Message, MessageId, ModelName, NonEmptyString,
+    OpenAIReasoningEffort, OpenAIReasoningItem, OpenAIRequestOptions, OutputLimits, PlanState,
+    Provider, SecretString, StepId, StreamEvent, StreamFinishReason, ThinkingReplayState,
+    ThinkingState, ThoughtSignature, ThoughtSignatureState, ToolBatchId, ToolCall, ToolDefinition,
+    ToolResult, sanitize_terminal_text,
 };
 
 use crate::tools;
@@ -59,6 +60,7 @@ use crate::{EnvironmentContext, SessionChangeLog};
 // Module aliases so app submodules can keep using `super::state`, `super::ui`, etc.
 use crate::config;
 use crate::notifications;
+use crate::operation;
 use crate::security;
 use crate::state;
 use crate::ui;
@@ -142,6 +144,75 @@ pub enum SettingsAccess<'a> {
         selected_index: usize,
     },
     Inactive,
+}
+
+pub enum StreamingAccess<'a> {
+    Active(&'a StreamingMessage),
+    Inactive,
+}
+
+pub enum ToolLoopExecution<'a> {
+    Idle,
+    Active { current_call_id: &'a str },
+}
+
+pub enum ToolLoopAccess<'a> {
+    Active {
+        calls: &'a [ToolCall],
+        execute_calls: &'a [ToolCall],
+        results: &'a [ToolResult],
+        output_lines: &'a HashMap<String, Vec<String>>,
+        execution: ToolLoopExecution<'a>,
+    },
+    Inactive,
+}
+
+pub enum ToolApprovalAccess<'a> {
+    Selecting {
+        requests: &'a [tools::ConfirmationRequest],
+        selected: &'a [crate::ApprovalSelection],
+        cursor: usize,
+        expanded: crate::ApprovalExpanded,
+        scroll_offset: usize,
+    },
+    ConfirmingDeny {
+        requests: &'a [tools::ConfirmationRequest],
+        selected: &'a [crate::ApprovalSelection],
+        cursor: usize,
+        expanded: crate::ApprovalExpanded,
+        scroll_offset: usize,
+    },
+    Inactive,
+}
+
+pub enum PlanApprovalAccess {
+    Active {
+        kind: &'static str,
+        rendered: String,
+    },
+    Inactive,
+}
+
+pub enum ToolRecoveryAccess<'a> {
+    Active {
+        calls: &'a [ToolCall],
+        results: &'a [ToolResult],
+    },
+    Inactive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnConfig {
+    pub(crate) model: ModelName,
+    pub(crate) tool_approval_mode: tools::ApprovalMode,
+    pub(crate) context_memory_enabled: bool,
+    pub(crate) ui_options: UiOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnConfigStaging {
+    pub(crate) active: TurnConfig,
+    pub(crate) staged: TurnConfig,
 }
 
 /// Aggregated API usage for a user turn (may include multiple API calls).
@@ -760,22 +831,7 @@ struct AppUi {
 }
 
 struct AppCore {
-    /// Configured model (resolved from config at init).
-    configured_model: ModelName,
-    /// Persisted tool approval mode loaded from config and edited in `/settings`.
-    configured_tool_approval_mode: tools::ApprovalMode,
-    /// Persisted context defaults loaded from config and edited in `/settings`.
-    configured_context_memory_enabled: bool,
-    /// Persisted UI defaults loaded from config and edited in `/settings`.
-    configured_ui_options: UiOptions,
-    /// Saved model staged to take effect at the start of the next turn.
-    pending_turn_model: Option<ModelName>,
-    /// Saved tool approval mode staged to take effect at the start of the next turn.
-    pending_turn_tool_approval_mode: Option<tools::ApprovalMode>,
-    /// Saved context defaults staged to take effect at the start of the next turn.
-    pending_turn_context_memory_enabled: Option<bool>,
-    /// Saved UI defaults staged to take effect at the start of the next turn.
-    pending_turn_ui_options: Option<UiOptions>,
+    turn_config: TurnConfigStaging,
     model: ModelName,
     context_manager: ContextManager,
     state: OperationState,
@@ -848,7 +904,7 @@ struct AppRuntime {
     ///
     /// Best-effort retries run during `tick()` when idle. If this remains uncleared,
     /// `StreamJournal::begin_session()` will refuse to start new streams.
-    pending_stream_cleanup: Option<forge_context::StepId>,
+    pending_stream_cleanup: Option<StepId>,
     pending_stream_cleanup_failures: u8,
     /// Pending tool journal batch ID that needs pruning cleanup.
     ///
@@ -920,55 +976,74 @@ impl App {
 
     #[must_use]
     pub fn settings_configured_model(&self) -> &ModelName {
-        &self.core.configured_model
+        &self.core.turn_config.staged.model
     }
 
     #[must_use]
     pub fn settings_configured_tool_approval_mode(&self) -> tools::ApprovalMode {
-        self.core.configured_tool_approval_mode
+        self.core.turn_config.staged.tool_approval_mode
     }
 
     #[must_use]
     pub fn settings_configured_tool_approval_mode_label(&self) -> &'static str {
-        approval_mode_display(self.core.configured_tool_approval_mode)
+        approval_mode_display(self.core.turn_config.staged.tool_approval_mode)
     }
 
     #[must_use]
     pub fn settings_configured_context_memory_enabled(&self) -> bool {
-        self.core.configured_context_memory_enabled
+        self.core.turn_config.staged.context_memory_enabled
     }
 
     #[must_use]
     pub fn settings_configured_ui_options(&self) -> UiOptions {
-        self.core.configured_ui_options
+        self.core.turn_config.staged.ui_options
+    }
+
+    #[must_use]
+    pub fn settings_staged_model(&self) -> &ModelName {
+        &self.core.turn_config.staged.model
+    }
+
+    #[must_use]
+    pub fn settings_staged_tool_approval_mode(&self) -> tools::ApprovalMode {
+        self.core.turn_config.staged.tool_approval_mode
+    }
+
+    #[must_use]
+    pub fn settings_staged_context_memory_enabled(&self) -> bool {
+        self.core.turn_config.staged.context_memory_enabled
+    }
+
+    #[must_use]
+    pub fn settings_staged_ui_options(&self) -> UiOptions {
+        self.core.turn_config.staged.ui_options
     }
 
     #[must_use]
     pub fn settings_pending_model_apply_next_turn(&self) -> bool {
-        self.core.pending_turn_model.is_some()
+        self.core.turn_config.staged.model != self.core.turn_config.active.model
     }
 
     #[must_use]
     pub fn settings_pending_tools_apply_next_turn(&self) -> bool {
-        self.core.pending_turn_tool_approval_mode.is_some()
+        self.core.turn_config.staged.tool_approval_mode
+            != self.core.turn_config.active.tool_approval_mode
     }
 
     #[must_use]
     pub fn settings_pending_ui_apply_next_turn(&self) -> bool {
-        self.core.pending_turn_ui_options.is_some()
+        self.core.turn_config.staged.ui_options != self.core.turn_config.active.ui_options
     }
 
     #[must_use]
     pub fn settings_pending_context_apply_next_turn(&self) -> bool {
-        self.core.pending_turn_context_memory_enabled.is_some()
+        self.core.turn_config.staged.context_memory_enabled
+            != self.core.turn_config.active.context_memory_enabled
     }
 
     #[must_use]
     pub fn settings_pending_apply_next_turn(&self) -> bool {
-        self.settings_pending_model_apply_next_turn()
-            || self.settings_pending_tools_apply_next_turn()
-            || self.settings_pending_context_apply_next_turn()
-            || self.settings_pending_ui_apply_next_turn()
+        self.core.turn_config.staged != self.core.turn_config.active
     }
 
     #[must_use]
@@ -1031,28 +1106,16 @@ impl App {
     }
 
     pub(crate) fn apply_pending_turn_settings(&mut self) {
-        if let Some(approval_mode) = self.core.pending_turn_tool_approval_mode.take() {
-            self.core.configured_tool_approval_mode = approval_mode;
-            self.runtime.tool_settings.policy.mode = approval_mode;
+        let staged = self.core.turn_config.staged.clone();
+        self.runtime.tool_settings.policy.mode = staged.tool_approval_mode;
+        self.set_context_memory_enabled_internal(staged.context_memory_enabled, false);
+        self.set_active_model(staged.model.clone());
+        self.ui.view.ui_options = staged.ui_options;
+        if staged.ui_options.reduced_motion {
+            self.ui.view.modal_effect = None;
+            self.ui.view.files_panel_effect = None;
         }
-        if let Some(memory_enabled) = self.core.pending_turn_context_memory_enabled.take() {
-            self.set_context_memory_enabled_internal(memory_enabled, false);
-        }
-        if let Some(model) = self.core.pending_turn_model.take() {
-            self.core.configured_model = model;
-            self.runtime.provider_runtime.openai_previous_response_id = None;
-            let next_model = self.core.configured_model.clone();
-            if self.core.model != next_model {
-                self.set_active_model(next_model);
-            }
-        }
-        if let Some(pending) = self.core.pending_turn_ui_options.take() {
-            self.ui.view.ui_options = pending;
-            if pending.reduced_motion {
-                self.ui.view.modal_effect = None;
-                self.ui.view.files_panel_effect = None;
-            }
-        }
+        self.core.turn_config.active = staged;
     }
 
     /// Toggle visibility of thinking/reasoning content in the UI.
@@ -1345,6 +1408,13 @@ impl App {
         }
     }
 
+    pub fn streaming_access(&self) -> StreamingAccess<'_> {
+        match self.operation_state() {
+            OperationState::Streaming(active) => StreamingAccess::Active(active.message()),
+            _ => StreamingAccess::Inactive,
+        }
+    }
+
     // Tool loop state helpers (private, inline)
 
     #[inline]
@@ -1522,6 +1592,78 @@ impl App {
 
     pub fn tool_recovery_results(&self) -> Option<&[ToolResult]> {
         Some(&self.tool_recovery_state()?.batch.results)
+    }
+
+    pub fn tool_loop_access(&self) -> ToolLoopAccess<'_> {
+        static EMPTY_OUTPUT: std::sync::LazyLock<HashMap<String, Vec<String>>> =
+            std::sync::LazyLock::new(HashMap::new);
+        let Some(tl) = self.tool_loop_state() else {
+            return ToolLoopAccess::Inactive;
+        };
+        let execution = match &tl.phase {
+            ToolLoopPhase::Executing(exec) => ToolLoopExecution::Active {
+                current_call_id: exec.spawned.call().id.as_str(),
+            },
+            _ => ToolLoopExecution::Idle,
+        };
+        ToolLoopAccess::Active {
+            calls: &tl.batch.calls,
+            execute_calls: &tl.batch.execute_now,
+            results: &tl.batch.results,
+            output_lines: match &tl.phase {
+                ToolLoopPhase::Executing(exec) => &exec.output_lines,
+                _ => &EMPTY_OUTPUT,
+            },
+            execution,
+        }
+    }
+
+    pub fn tool_approval_access(&self) -> ToolApprovalAccess<'_> {
+        let Some(approval) = self.tool_approval_ref() else {
+            return ToolApprovalAccess::Inactive;
+        };
+        let data = approval.data();
+        match approval {
+            state::ApprovalState::Selecting(_) => ToolApprovalAccess::Selecting {
+                requests: &data.requests,
+                selected: &data.selected,
+                cursor: data.cursor,
+                expanded: data.expanded,
+                scroll_offset: data.scroll_offset,
+            },
+            state::ApprovalState::ConfirmingDeny(_) => ToolApprovalAccess::ConfirmingDeny {
+                requests: &data.requests,
+                selected: &data.selected,
+                cursor: data.cursor,
+                expanded: data.expanded,
+                scroll_offset: data.scroll_offset,
+            },
+        }
+    }
+
+    pub fn plan_approval_access(&self) -> PlanApprovalAccess {
+        let Some(pa) = self.plan_approval_state() else {
+            return PlanApprovalAccess::Inactive;
+        };
+        let kind = match &pa.kind {
+            state::PlanApprovalKind::Create => "create",
+            state::PlanApprovalKind::Edit { .. } => "edit",
+        };
+        let rendered = match &self.core.plan_state {
+            PlanState::Proposed(plan) | PlanState::Active(plan) => plan.render(),
+            PlanState::Inactive => String::new(),
+        };
+        PlanApprovalAccess::Active { kind, rendered }
+    }
+
+    pub fn tool_recovery_access(&self) -> ToolRecoveryAccess<'_> {
+        let Some(tr) = self.tool_recovery_state() else {
+            return ToolRecoveryAccess::Inactive;
+        };
+        ToolRecoveryAccess::Active {
+            calls: &tr.batch.calls,
+            results: &tr.batch.results,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1790,47 +1932,11 @@ impl App {
     }
 
     fn op_transition_edge(from: OperationTag, to: OperationTag) -> Option<OperationEdge> {
-        use OperationEdge::{
-            EnterToolLoopAwaitingApproval, EnterToolLoopExecuting, FinishToolBatch,
-            ResolvePlanApproval, StartDistillation, StartStreaming,
-        };
-        use OperationTag::{Distilling, Idle, PlanApproval, Streaming, ToolLoop};
-
-        match (from, to) {
-            (Idle, Streaming) => Some(StartStreaming),
-            (Idle, Distilling) => Some(StartDistillation),
-            (Streaming, PlanApproval) => Some(EnterToolLoopAwaitingApproval),
-            (Streaming, ToolLoop) => Some(EnterToolLoopExecuting),
-            (PlanApproval, ToolLoop) => Some(ResolvePlanApproval),
-            (ToolLoop | PlanApproval | Idle, Idle) => Some(FinishToolBatch),
-            _ => None,
-        }
+        operation::transition_edge(from, to)
     }
 
     fn op_is_legal_transition(from: OperationTag, edge: OperationEdge, to: OperationTag) -> bool {
-        use OperationEdge::{
-            EnterToolLoopAwaitingApproval, EnterToolLoopExecuting, FinishToolBatch, FinishTurn,
-            ResolvePlanApproval, StartDistillation, StartStreaming,
-        };
-        use OperationTag::{Distilling, Idle, PlanApproval, Streaming, ToolLoop};
-
-        match edge {
-            StartStreaming => from == Idle && to == Streaming,
-
-            StartDistillation => from == Idle && to == Distilling,
-
-            EnterToolLoopAwaitingApproval => {
-                from == Streaming && matches!(to, PlanApproval | ToolLoop)
-            }
-
-            EnterToolLoopExecuting => matches!(to, ToolLoop) && matches!(from, Streaming),
-
-            ResolvePlanApproval => from == PlanApproval && matches!(to, ToolLoop),
-
-            FinishToolBatch => to == Idle && matches!(from, ToolLoop | PlanApproval | Idle),
-
-            FinishTurn => from == to && from == Idle,
-        }
+        operation::is_legal_transition(from, edge, to)
     }
 
     /// Authoritative `OperationState` transition point.
@@ -2074,8 +2180,8 @@ impl App {
     fn set_model_internal(&mut self, model: ModelName, persist: bool) {
         self.runtime.provider_runtime.openai_previous_response_id = None;
         self.set_active_model(model.clone());
-        self.core.configured_model = model.clone();
-        self.core.pending_turn_model = None;
+        self.core.turn_config.active.model = model.clone();
+        self.core.turn_config.staged.model = model.clone();
         if persist
             && let Err(e) =
                 config::ForgeConfig::persist_model(&self.runtime.config_path, model.as_str())
@@ -2091,8 +2197,6 @@ impl App {
 
     fn set_context_memory_enabled_internal(&mut self, enabled: bool, persist: bool) {
         self.core.memory_enabled = enabled;
-        self.core.configured_context_memory_enabled = enabled;
-        self.core.pending_turn_context_memory_enabled = None;
         self.invalidate_usage_cache();
         if persist
             && let Err(err) = config::ForgeConfig::persist_context_settings(
@@ -2277,22 +2381,22 @@ impl App {
         match category {
             SettingsCategory::Models => {
                 self.ui.settings_editor = SettingsEditorState::Model(ModelSettingsEditor::new(
-                    self.core.configured_model.clone(),
+                    self.core.turn_config.staged.model.clone(),
                 ));
             }
             SettingsCategory::Tools => {
                 self.ui.settings_editor = SettingsEditorState::Tools(ToolsSettingsEditor::new(
-                    self.core.configured_tool_approval_mode,
+                    self.core.turn_config.staged.tool_approval_mode,
                 ));
             }
             SettingsCategory::Context => {
                 self.ui.settings_editor = SettingsEditorState::Context(ContextSettingsEditor::new(
-                    self.core.configured_context_memory_enabled,
+                    self.core.turn_config.staged.context_memory_enabled,
                 ));
             }
             SettingsCategory::Appearance => {
                 self.ui.settings_editor = SettingsEditorState::Appearance(
-                    AppearanceSettingsEditor::new(self.core.configured_ui_options),
+                    AppearanceSettingsEditor::new(self.core.turn_config.staged.ui_options),
                 );
             }
             _ => {}
@@ -2466,7 +2570,7 @@ impl App {
     }
 
     pub fn settings_revert_edits(&mut self) {
-        let defaults = self.core.configured_ui_options;
+        let defaults = self.core.turn_config.staged.ui_options;
         match &mut self.ui.settings_editor {
             SettingsEditorState::Model(editor) => {
                 editor.draft = editor.baseline.clone();
@@ -2500,8 +2604,7 @@ impl App {
                 self.push_notification(format!("Failed to save settings: {err}"));
                 return;
             }
-            self.core.configured_model = draft.clone();
-            self.core.pending_turn_model = Some(draft.clone());
+            self.core.turn_config.staged.model = draft.clone();
             if let SettingsEditorState::Model(editor) = &mut self.ui.settings_editor {
                 editor.baseline = draft;
                 editor.sync_selected_to_draft();
@@ -2535,8 +2638,7 @@ impl App {
                 self.push_notification(format!("Failed to save settings: {err}"));
                 return;
             }
-            self.core.configured_tool_approval_mode = draft_approval_mode;
-            self.core.pending_turn_tool_approval_mode = Some(draft_approval_mode);
+            self.core.turn_config.staged.tool_approval_mode = draft_approval_mode;
             if let SettingsEditorState::Tools(editor) = &mut self.ui.settings_editor {
                 editor.baseline_approval_mode = editor.draft_approval_mode;
             }
@@ -2559,8 +2661,7 @@ impl App {
                 self.push_notification(format!("Failed to save settings: {err}"));
                 return;
             }
-            self.core.configured_context_memory_enabled = draft;
-            self.core.pending_turn_context_memory_enabled = Some(draft);
+            self.core.turn_config.staged.context_memory_enabled = draft;
             if let SettingsEditorState::Context(editor) = &mut self.ui.settings_editor {
                 editor.baseline_memory_enabled = draft;
             }
@@ -2592,8 +2693,7 @@ impl App {
             return;
         }
 
-        self.core.configured_ui_options = draft;
-        self.core.pending_turn_ui_options = Some(draft);
+        self.core.turn_config.staged.ui_options = draft;
         if let SettingsEditorState::Appearance(editor) = &mut self.ui.settings_editor {
             editor.baseline = draft;
         }
@@ -2675,7 +2775,12 @@ impl App {
     pub fn session_config_hash(&self) -> String {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.core.model.as_str().hash(&mut hasher);
-        self.core.configured_model.as_str().hash(&mut hasher);
+        self.core
+            .turn_config
+            .active
+            .model
+            .as_str()
+            .hash(&mut hasher);
         self.provider().as_str().hash(&mut hasher);
         self.core.memory_enabled.hash(&mut hasher);
         self.core.cache_enabled.hash(&mut hasher);
@@ -2811,10 +2916,10 @@ impl App {
         if !self.settings_configured_context_memory_enabled() {
             session_overrides.push("context memory default: off".to_string());
         }
-        if let Some(memory_enabled) = self.core.pending_turn_context_memory_enabled {
+        if self.settings_pending_context_apply_next_turn() {
             session_overrides.push(format!(
                 "pending context memory: {} (next turn)",
-                on_off(memory_enabled)
+                on_off(self.core.turn_config.staged.context_memory_enabled)
             ));
         }
         if self.settings_configured_ui_options() != UiOptions::default() {
@@ -2823,10 +2928,10 @@ impl App {
                 ui_options_display(self.settings_configured_ui_options())
             ));
         }
-        if let Some(pending_ui) = self.core.pending_turn_ui_options {
+        if self.settings_pending_ui_apply_next_turn() {
             session_overrides.push(format!(
                 "pending ui defaults: {} (next turn)",
-                ui_options_display(pending_ui)
+                ui_options_display(self.core.turn_config.staged.ui_options)
             ));
         }
 
@@ -2851,16 +2956,18 @@ impl App {
     #[must_use]
     pub fn resolve_cascade(&self) -> ResolveCascade {
         let mut settings = Vec::new();
-        let model_pending = self.core.pending_turn_model.as_ref();
-        let model_session_is_winner = model_pending.is_some();
-        let model_session_value =
-            model_pending.map_or_else(|| "unset".to_string(), ToString::to_string);
+        let model_session_is_winner = self.settings_pending_model_apply_next_turn();
+        let model_session_value = if model_session_is_winner {
+            self.core.turn_config.staged.model.to_string()
+        } else {
+            "unset".to_string()
+        };
         settings.push(ResolveSetting {
             setting: "Model",
             layers: vec![
                 ResolveLayerValue {
                     layer: "Global",
-                    value: self.core.configured_model.to_string(),
+                    value: self.core.turn_config.active.model.to_string(),
                     is_winner: !model_session_is_winner,
                 },
                 ResolveLayerValue {
@@ -2938,15 +3045,15 @@ impl App {
             ],
         });
 
-        let pending_approval_mode = self.core.pending_turn_tool_approval_mode;
+        let tools_pending = self.settings_pending_tools_apply_next_turn();
         settings.push(ResolveSetting {
             setting: "Tool Approval Mode",
             layers: vec![
                 ResolveLayerValue {
                     layer: "Global",
-                    value: approval_mode_display(self.settings_configured_tool_approval_mode())
+                    value: approval_mode_display(self.core.turn_config.active.tool_approval_mode)
                         .to_string(),
-                    is_winner: pending_approval_mode.is_none(),
+                    is_winner: !tools_pending,
                 },
                 ResolveLayerValue {
                     layer: "Project",
@@ -2960,23 +3067,25 @@ impl App {
                 },
                 ResolveLayerValue {
                     layer: "Session",
-                    value: pending_approval_mode.map_or_else(
-                        || "unset".to_string(),
-                        |mode| approval_mode_display(mode).to_string(),
-                    ),
-                    is_winner: pending_approval_mode.is_some(),
+                    value: if tools_pending {
+                        approval_mode_display(self.core.turn_config.staged.tool_approval_mode)
+                            .to_string()
+                    } else {
+                        "unset".to_string()
+                    },
+                    is_winner: tools_pending,
                 },
             ],
         });
 
-        let pending_context_memory = self.core.pending_turn_context_memory_enabled;
+        let context_pending = self.settings_pending_context_apply_next_turn();
         settings.push(ResolveSetting {
             setting: "Context Memory",
             layers: vec![
                 ResolveLayerValue {
                     layer: "Global",
-                    value: on_off(self.settings_configured_context_memory_enabled()).to_string(),
-                    is_winner: pending_context_memory.is_none(),
+                    value: on_off(self.core.turn_config.active.context_memory_enabled).to_string(),
+                    is_winner: !context_pending,
                 },
                 ResolveLayerValue {
                     layer: "Project",
@@ -2990,21 +3099,24 @@ impl App {
                 },
                 ResolveLayerValue {
                     layer: "Session",
-                    value: pending_context_memory
-                        .map_or_else(|| "unset".to_string(), |value| on_off(value).to_string()),
-                    is_winner: pending_context_memory.is_some(),
+                    value: if context_pending {
+                        on_off(self.core.turn_config.staged.context_memory_enabled).to_string()
+                    } else {
+                        "unset".to_string()
+                    },
+                    is_winner: context_pending,
                 },
             ],
         });
 
-        let pending_ui_options = self.core.pending_turn_ui_options;
+        let ui_pending = self.settings_pending_ui_apply_next_turn();
         settings.push(ResolveSetting {
             setting: "UI Defaults",
             layers: vec![
                 ResolveLayerValue {
                     layer: "Global",
-                    value: ui_options_display(self.settings_configured_ui_options()),
-                    is_winner: pending_ui_options.is_none(),
+                    value: ui_options_display(self.core.turn_config.active.ui_options),
+                    is_winner: !ui_pending,
                 },
                 ResolveLayerValue {
                     layer: "Project",
@@ -3018,9 +3130,12 @@ impl App {
                 },
                 ResolveLayerValue {
                     layer: "Session",
-                    value: pending_ui_options
-                        .map_or_else(|| "unset".to_string(), ui_options_display),
-                    is_winner: pending_ui_options.is_some(),
+                    value: if ui_pending {
+                        ui_options_display(self.core.turn_config.staged.ui_options)
+                    } else {
+                        "unset".to_string()
+                    },
+                    is_winner: ui_pending,
                 },
             ],
         });
@@ -3289,8 +3404,7 @@ impl App {
         let Some(approval) = self.tool_approval_mut() else {
             return;
         };
-        // data_mut() auto-cancels deny confirmation
-        let data = approval.data_mut();
+        let data = approval.selecting_data_mut();
         if data.cursor == 0 {
             return;
         }
@@ -3302,9 +3416,7 @@ impl App {
         let Some(approval) = self.tool_approval_mut() else {
             return;
         };
-        // data_mut() auto-cancels deny confirmation
-        let data = approval.data_mut();
-        // Allow cursor to move to Submit (N) and Deny (N+1) buttons
+        let data = approval.selecting_data_mut();
         let max_cursor = data.requests.len() + 1;
         if data.cursor < max_cursor {
             data.cursor += 1;
@@ -3316,8 +3428,7 @@ impl App {
         let Some(approval) = self.tool_approval_mut() else {
             return;
         };
-        // data_mut() auto-cancels deny confirmation
-        let data = approval.data_mut();
+        let data = approval.selecting_data_mut();
         if data.cursor >= data.selected.len() {
             return;
         }
@@ -3328,8 +3439,7 @@ impl App {
         let Some(approval) = self.tool_approval_mut() else {
             return;
         };
-        // data_mut() auto-cancels deny confirmation
-        let data = approval.data_mut();
+        let data = approval.selecting_data_mut();
         if data.cursor >= data.requests.len() {
             return;
         }
@@ -3391,14 +3501,11 @@ impl App {
 
     pub fn tool_approval_request_deny_all(&mut self) {
         let should_deny = if let Some(approval) = self.tool_approval_mut() {
-            // Check if already confirming BEFORE any mutations
             if approval.is_confirming_deny() {
-                // Second 'd' press - execute denial
                 true
             } else {
-                // First 'd' press - move cursor and enter confirmation
                 let deny_cursor = approval.data().requests.len() + 1;
-                approval.data_mut().cursor = deny_cursor;
+                approval.selecting_data_mut().cursor = deny_cursor;
                 approval.enter_deny_confirmation();
                 false
             }

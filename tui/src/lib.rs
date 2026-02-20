@@ -122,15 +122,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_settings_modal(frame, app, &palette, &glyphs, elapsed);
     }
 
-    if app.plan_approval_kind().is_some() {
+    if !matches!(
+        app.plan_approval_access(),
+        forge_engine::PlanApprovalAccess::Inactive
+    ) {
         approval::draw_plan_approval_prompt(frame, app, &palette);
     }
 
-    if app.tool_approval_requests().is_some() {
+    if !matches!(
+        app.tool_approval_access(),
+        forge_engine::ToolApprovalAccess::Inactive
+    ) {
         approval::draw_tool_approval_prompt(frame, app, &palette);
     }
 
-    if app.tool_recovery_calls().is_some() {
+    if !matches!(
+        app.tool_recovery_access(),
+        forge_engine::ToolRecoveryAccess::Inactive
+    ) {
         approval::draw_tool_recovery_prompt(frame, app, &palette, &glyphs);
     }
 }
