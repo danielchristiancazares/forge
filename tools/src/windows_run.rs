@@ -8,6 +8,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use super::{DenialReason, DetectedShell, ToolError};
+use unicode_normalization::UnicodeNormalization;
 
 /// Command text views for Windows `Run` sandbox evaluation.
 ///
@@ -199,6 +200,28 @@ const PROCESS_ESCAPE_BLOCKLIST: &[&str] = &[
     "wscript",
 ];
 
+const PROCESS_ESCAPE_COMMAND_NAMES: &[&str] = &[
+    "powershell",
+    "pwsh",
+    "cmd",
+    "wsl",
+    "bash",
+    "python",
+    "python3",
+    "py",
+    "node",
+    "perl",
+    "ruby",
+    "java",
+    "javaw",
+    "php",
+    "rundll32",
+    "mshta",
+    "regsvr32",
+    "cscript",
+    "wscript",
+];
+
 /// Prepare a command for execution under run sandbox policy.
 ///
 /// On non-Windows hosts, this is a no-op passthrough.
@@ -282,6 +305,14 @@ where
         );
     }
 
+    if let Some(command_name) = blocked_process_escape_command_name(command.policy_text()) {
+        return Err(ToolError::SandboxViolation(DenialReason::LimitsExceeded {
+            message: format!(
+                "Windows Run sandbox blocked potential process escape command '{command_name}'"
+            ),
+        }));
+    }
+
     if let Some(token) = blocked_token(command.policy_text(), PROCESS_ESCAPE_BLOCKLIST) {
         return Err(ToolError::SandboxViolation(DenialReason::LimitsExceeded {
             message: format!(
@@ -329,12 +360,54 @@ where
     ))
 }
 
-fn blocked_token<'a>(command: &str, tokens: &'a [&str]) -> Option<&'a str> {
-    let normalized = command.to_ascii_lowercase();
-    tokens
+fn blocked_process_escape_command_name(policy_text: &str) -> Option<&'static str> {
+    let normalized = normalize_policy_text(policy_text);
+    let command_name = normalized.split_whitespace().next()?;
+    let command_leaf = command_name
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(command_name);
+    let command_leaf = command_leaf.strip_suffix(".exe").unwrap_or(command_leaf);
+    PROCESS_ESCAPE_COMMAND_NAMES
         .iter()
         .copied()
-        .find(|token| normalized.contains(token))
+        .find(|candidate| *candidate == command_leaf)
+}
+
+fn blocked_token<'a>(command: &str, tokens: &'a [&str]) -> Option<&'a str> {
+    let normalized = normalize_policy_text(command);
+    tokens.iter().copied().find(|token| {
+        let normalized_token = normalize_policy_text(token);
+        if should_match_on_token_boundaries(&normalized_token) {
+            contains_token_with_boundaries(&normalized, &normalized_token)
+        } else {
+            normalized.contains(&normalized_token)
+        }
+    })
+}
+
+fn normalize_policy_text(text: &str) -> String {
+    text.nfkc().collect::<String>().to_ascii_lowercase()
+}
+
+fn should_match_on_token_boundaries(token: &str) -> bool {
+    !token.is_empty()
+        && token
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+}
+
+fn is_policy_token_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')
+}
+
+fn contains_token_with_boundaries(haystack: &str, needle: &str) -> bool {
+    haystack.match_indices(needle).any(|(start, _)| {
+        let before = haystack[..start].chars().next_back();
+        let end = start + needle.len();
+        let after = haystack[end..].chars().next();
+        !before.is_some_and(is_policy_token_char) && !after.is_some_and(is_policy_token_char)
+    })
 }
 
 pub(crate) fn is_powershell_shell(shell: &DetectedShell) -> bool {
@@ -533,7 +606,7 @@ mod tests {
         .unwrap_err();
         match err {
             ToolError::SandboxViolation(DenialReason::LimitsExceeded { message }) => {
-                assert!(message.contains("process escape token"));
+                assert!(message.contains("process escape"));
             }
             _ => panic!("expected sandbox violation"),
         }
@@ -549,7 +622,55 @@ mod tests {
         .unwrap_err();
         match err {
             ToolError::SandboxViolation(DenialReason::LimitsExceeded { message }) => {
-                assert!(message.contains("process escape token"));
+                assert!(message.contains("process escape"));
+            }
+            _ => panic!("expected sandbox violation"),
+        }
+    }
+
+    #[test]
+    fn blocks_bare_process_escape_command_names() {
+        let err = prepare_windows_run_command(
+            cmd("powershell -NoProfile"),
+            &shell("pwsh"),
+            WindowsRunSandboxPolicy::default(),
+        )
+        .unwrap_err();
+        match err {
+            ToolError::SandboxViolation(DenialReason::LimitsExceeded { message }) => {
+                assert!(message.contains("process escape command"));
+            }
+            _ => panic!("expected sandbox violation"),
+        }
+    }
+
+    #[test]
+    fn blocks_process_escape_command_paths() {
+        let err = prepare_windows_run_command(
+            cmd("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile"),
+            &shell("pwsh"),
+            WindowsRunSandboxPolicy::default(),
+        )
+        .unwrap_err();
+        match err {
+            ToolError::SandboxViolation(DenialReason::LimitsExceeded { message }) => {
+                assert!(message.contains("process escape command"));
+            }
+            _ => panic!("expected sandbox violation"),
+        }
+    }
+
+    #[test]
+    fn blocked_tokens_apply_nfkc_normalization() {
+        let err = prepare_windows_run_command(
+            cmd("ｐｙｔｈｏｎ -c \"print('owned')\""),
+            &shell("pwsh"),
+            WindowsRunSandboxPolicy::default(),
+        )
+        .unwrap_err();
+        match err {
+            ToolError::SandboxViolation(DenialReason::LimitsExceeded { message }) => {
+                assert!(message.contains("process escape command"));
             }
             _ => panic!("expected sandbox violation"),
         }

@@ -33,7 +33,7 @@ forge-tui.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time"] }
 
 anyhow.workspace = true
 

@@ -241,10 +241,11 @@ pub(crate) async fn policy_text_for_command(
         let mut stderr_buf = Vec::with_capacity(1024);
         let mut stdout_bounded = stdout_pipe.take(MAX_PROBE_OUTPUT as u64);
         let mut stderr_bounded = stderr_pipe.take(MAX_PROBE_OUTPUT as u64);
-        let (r1, r2) = tokio::join!(
+        let (r1, r2) = futures_util::future::join(
             stdout_bounded.read_to_end(&mut stdout_buf),
             stderr_bounded.read_to_end(&mut stderr_buf),
-        );
+        )
+        .await;
         r1.map_err(|e| ToolError::ExecutionFailed {
             tool: "Run".to_string(),
             message: format!("failed to read PowerShell AST probe stdout: {e}"),

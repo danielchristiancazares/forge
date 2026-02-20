@@ -661,7 +661,10 @@ async fn test_ssrf_localhost_blocked() {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.code, ErrorCode::SsrfBlocked);
+    assert!(matches!(
+        err.code,
+        ErrorCode::PortBlocked | ErrorCode::SsrfBlocked
+    ));
 }
 
 #[tokio::test]
@@ -674,7 +677,37 @@ async fn test_ssrf_private_ip_blocked() {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
+    assert!(matches!(
+        err.code,
+        ErrorCode::PortBlocked | ErrorCode::SsrfBlocked
+    ));
+}
+
+#[tokio::test]
+async fn test_insecure_overrides_still_block_private_ips() {
+    let input = WebFetchInput::new("http://10.0.0.10/").expect("valid URL");
+    let config = test_config(); // allow_insecure_overrides = true
+
+    let result = forge_tools::webfetch::fetch(input, &config).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
     assert_eq!(err.code, ErrorCode::SsrfBlocked);
+}
+
+#[tokio::test]
+async fn test_insecure_overrides_do_not_open_non_loopback_non_default_ports() {
+    let input = WebFetchInput::new("http://93.184.216.34:8080/").expect("valid URL");
+    let config = test_config(); // allow_insecure_overrides = true
+
+    let result = forge_tools::webfetch::fetch(input, &config).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(matches!(
+        err.code,
+        ErrorCode::PortBlocked | ErrorCode::SsrfBlocked
+    ));
 }
 
 #[tokio::test]

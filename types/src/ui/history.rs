@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(history.navigate_prompt_up("draft"), Some("third"));
         assert_eq!(history.navigate_prompt_up(""), Some("second"));
         assert_eq!(history.navigate_prompt_up(""), Some("first"));
-        assert!(history.navigate_prompt_up("").is_none()); // At oldest
+        assert!(history.navigate_prompt_up("").is_none());
     }
 
     #[test]
@@ -302,12 +302,10 @@ mod tests {
         history.push_prompt("second".to_owned());
         history.push_prompt("third".to_owned());
 
-        // Go to oldest
         history.navigate_prompt_up("draft");
         history.navigate_prompt_up("");
         history.navigate_prompt_up("");
 
-        // Navigate back
         assert_eq!(history.navigate_prompt_down(), Some("second"));
         assert_eq!(history.navigate_prompt_down(), Some("third"));
         assert_eq!(history.navigate_prompt_down(), Some("draft"));
@@ -364,7 +362,6 @@ mod tests {
         history.push_prompt("prompt2".to_owned());
         history.push_command("cmd1".to_owned());
 
-        // Simulate navigation state (should be skipped in serialization)
         history.navigate_prompt_up("draft");
 
         let json = serde_json::to_string(&history).unwrap();

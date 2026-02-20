@@ -90,8 +90,6 @@ pub async fn validate_url(
             .with_detail("url", raw_url)
     })?;
     let port = port_for_url(url);
-    let allowed_ports = &config.security.allowed_ports;
-    let allow_all_ports = config.security.allow_insecure_overrides;
 
     match host {
         Host::Ipv4(ip) => {
@@ -102,7 +100,7 @@ pub async fn validate_url(
                     config,
                 ));
             }
-            if !allow_all_ports && !allowed_ports.contains(&port) {
+            if !is_port_allowed(port, config, &[ip_addr]) {
                 return Err(ssrf_block_to_error(
                     SsrfBlockReason::BlockedPort { port },
                     config,
@@ -118,7 +116,7 @@ pub async fn validate_url(
                     config,
                 ));
             }
-            if !allow_all_ports && !allowed_ports.contains(&port) {
+            if !is_port_allowed(port, config, &[ip_addr]) {
                 return Err(ssrf_block_to_error(
                     SsrfBlockReason::BlockedPort { port },
                     config,
@@ -127,13 +125,14 @@ pub async fn validate_url(
             Ok(vec![ip_addr])
         }
         Host::Domain(name) => {
-            if !allow_all_ports && !allowed_ports.contains(&port) {
+            let resolved_ips = resolve_and_validate(name, port, config).await?;
+            if !is_port_allowed(port, config, &resolved_ips) {
                 return Err(ssrf_block_to_error(
                     SsrfBlockReason::BlockedPort { port },
                     config,
                 ));
             }
-            resolve_and_validate(name, port, config).await
+            Ok(resolved_ips)
         }
     }
 }
@@ -622,12 +621,14 @@ fn prefix_match(ip: &[u8], net: &[u8], prefix: u8) -> bool {
 }
 
 fn check_ip_blocked(ip: IpAddr, config: &ResolvedConfig) -> Result<Option<String>, WebFetchError> {
+    if config.security.allow_insecure_overrides && is_loopback_ip(ip) {
+        return Ok(None);
+    }
+
     let mut cidrs = Vec::new();
-    if !config.security.allow_insecure_overrides {
-        for entry in DEFAULT_BLOCKED_CIDRS {
-            if let Some(cidr) = parse_cidr(entry) {
-                cidrs.push(cidr);
-            }
+    for entry in DEFAULT_BLOCKED_CIDRS {
+        if let Some(cidr) = parse_cidr(entry) {
+            cidrs.push(cidr);
         }
     }
 
@@ -668,6 +669,23 @@ fn check_ip_blocked(ip: IpAddr, config: &ResolvedConfig) -> Result<Option<String
     }
 
     Ok(None)
+}
+
+fn is_loopback_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback(),
+        IpAddr::V6(v6) => v6.is_loopback() || v6.to_ipv4().is_some_and(|v4| v4.is_loopback()),
+    }
+}
+
+fn is_port_allowed(port: u16, config: &ResolvedConfig, resolved_ips: &[IpAddr]) -> bool {
+    if config.security.allowed_ports.contains(&port) {
+        return true;
+    }
+
+    config.security.allow_insecure_overrides
+        && !resolved_ips.is_empty()
+        && resolved_ips.iter().copied().all(is_loopback_ip)
 }
 
 fn sort_ips(ips: &mut [IpAddr]) {
@@ -1018,8 +1036,22 @@ fn timeout_phase_label(phase: TimeoutPhase) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::super::resolved::DEFAULT_ALLOWED_PORTS;
-    use super::DEFAULT_BLOCKED_CIDRS;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use super::super::resolved::{DEFAULT_ALLOWED_PORTS, ResolvedConfig};
+    use super::super::types::{SecurityConfig, WebFetchConfig};
+    use super::{DEFAULT_BLOCKED_CIDRS, check_ip_blocked, is_port_allowed};
+
+    fn config_with_insecure_overrides(allow_insecure_overrides: bool) -> ResolvedConfig {
+        ResolvedConfig::from_config(&WebFetchConfig {
+            security: Some(SecurityConfig {
+                allow_insecure_overrides,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .expect("resolved config")
+    }
 
     #[test]
     fn test_default_blocked_cidrs() {
@@ -1030,5 +1062,36 @@ mod tests {
     fn test_default_allowed_ports() {
         assert!(DEFAULT_ALLOWED_PORTS.contains(&80));
         assert!(DEFAULT_ALLOWED_PORTS.contains(&443));
+    }
+
+    #[test]
+    fn test_insecure_overrides_do_not_unblock_private_ips() {
+        let config = config_with_insecure_overrides(true);
+        let blocked = check_ip_blocked(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), &config)
+            .expect("cidr evaluation");
+        assert!(blocked.is_some());
+    }
+
+    #[test]
+    fn test_insecure_overrides_allow_loopback_only() {
+        let config = config_with_insecure_overrides(true);
+        let blocked =
+            check_ip_blocked(IpAddr::V4(Ipv4Addr::LOCALHOST), &config).expect("cidr evaluation");
+        assert!(blocked.is_none());
+    }
+
+    #[test]
+    fn test_non_default_ports_allowed_only_for_loopback_with_insecure_overrides() {
+        let config = config_with_insecure_overrides(true);
+        assert!(is_port_allowed(
+            3000,
+            &config,
+            &[IpAddr::V4(Ipv4Addr::LOCALHOST)]
+        ));
+        assert!(!is_port_allowed(
+            3000,
+            &config,
+            &[IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]
+        ));
     }
 }

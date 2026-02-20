@@ -94,6 +94,12 @@ impl ConversionContext {
         href.to_string()
     }
 
+    fn resolve_http_url(&self, href: &str) -> Option<String> {
+        let resolved = self.resolve_url(href.trim());
+        let parsed = Url::parse(&resolved).ok()?;
+        is_allowed_web_scheme(parsed.scheme()).then_some(parsed.to_string())
+    }
+
     /// Get indent string for current list depth.
     fn list_indent(&self) -> String {
         "  ".repeat(self.list_depth.saturating_sub(1))
@@ -214,7 +220,11 @@ fn extract_base_url(document: &Html, final_url: &Url) -> Option<Url> {
     let href = base_elem.value().attr("href")?;
 
     // If href is relative, resolve against final_url
-    final_url.join(href).ok().or_else(|| Url::parse(href).ok())
+    let base = final_url
+        .join(href)
+        .ok()
+        .or_else(|| Url::parse(href).ok())?;
+    is_allowed_web_scheme(base.scheme()).then_some(base)
 }
 
 ///
@@ -650,13 +660,15 @@ fn convert_pre(output: &mut String, element: ElementRef<'_>, ctx: &mut Conversio
 fn convert_link(output: &mut String, element: ElementRef<'_>, ctx: &mut ConversionContext) {
     let href = element.value().attr("href").unwrap_or("");
 
-    // Skip empty or javascript: links
-    if href.is_empty() || href.starts_with("javascript:") {
+    if href.is_empty() {
         convert_children(output, element, ctx);
         return;
     }
 
-    let resolved_href = ctx.resolve_url(href);
+    let Some(resolved_href) = ctx.resolve_http_url(href) else {
+        convert_children(output, element, ctx);
+        return;
+    };
 
     // Collect link text
     let mut text = String::new();
@@ -681,7 +693,9 @@ fn convert_image(output: &mut String, element: ElementRef<'_>, ctx: &ConversionC
     }
 
     let alt = element.value().attr("alt").unwrap_or("");
-    let resolved_src = ctx.resolve_url(src);
+    let Some(resolved_src) = ctx.resolve_http_url(src) else {
+        return;
+    };
 
     // FR-WF-EXT-IMG-01: Only include if alt is non-empty
     if !alt.is_empty() {
@@ -981,6 +995,10 @@ fn normalize_whitespace_final(s: &str) -> String {
     result
 }
 
+fn is_allowed_web_scheme(scheme: &str) -> bool {
+    scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1103,5 +1121,72 @@ mod tests {
     fn test_table_pipe_escaping() {
         let escaped = "a|b".replace('|', "\\|");
         assert_eq!(escaped, "a\\|b");
+    }
+
+    #[test]
+    fn test_mixed_case_javascript_links_are_not_emitted() {
+        let html = r#"
+            <html>
+              <body>
+                <main>
+                  <p>
+                    <a href="JaVaScRiPt:alert(1)">Click me</a>
+                    This filler text ensures extraction clears the minimum character threshold.
+                  </p>
+                </main>
+              </body>
+            </html>
+        "#;
+        let final_url = Url::parse("https://example.com/").unwrap();
+        let extracted = extract(html, &final_url).expect("extract");
+        assert!(extracted.markdown.contains("Click me"));
+        assert!(!extracted.markdown.contains("javascript:"));
+        assert!(!extracted.markdown.contains("]("));
+    }
+
+    #[test]
+    fn test_non_http_base_href_is_ignored_for_resolution() {
+        let html = r#"
+            <html>
+              <head>
+                <base href="file:///etc/">
+              </head>
+              <body>
+                <main>
+                  <p>
+                    <a href="passwd">passwd link</a>
+                    This filler text ensures extraction clears the minimum character threshold.
+                  </p>
+                </main>
+              </body>
+            </html>
+        "#;
+        let final_url = Url::parse("https://example.com/docs/").unwrap();
+        let extracted = extract(html, &final_url).expect("extract");
+        assert!(
+            extracted
+                .markdown
+                .contains("[passwd link](https://example.com/docs/passwd)")
+        );
+        assert!(!extracted.markdown.contains("file:///"));
+    }
+
+    #[test]
+    fn test_non_http_image_sources_are_not_emitted() {
+        let html = r#"
+            <html>
+              <body>
+                <main>
+                  <p>
+                    <img alt="badge" src="DaTa:text/plain;base64,Zm9v">
+                    This filler text ensures extraction clears the minimum character threshold.
+                  </p>
+                </main>
+              </body>
+            </html>
+        "#;
+        let final_url = Url::parse("https://example.com/").unwrap();
+        let extracted = extract(html, &final_url).expect("extract");
+        assert!(!extracted.markdown.contains("![badge]("));
     }
 }

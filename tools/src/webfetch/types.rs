@@ -341,7 +341,10 @@ pub struct SecurityConfig {
     #[serde(default)]
     pub allow_insecure_tls: bool,
 
-    /// Require explicit override for security relaxations.
+    /// Allow local testing relaxations (loopback CIDR and loopback non-default ports).
+    ///
+    /// This does **not** disable private-network SSRF protections for non-loopback
+    /// addresses.
     #[serde(default)]
     pub allow_insecure_overrides: bool,
 }

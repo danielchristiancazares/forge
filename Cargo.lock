@@ -1017,7 +1017,6 @@ dependencies = [
 name = "forge-engine"
 version = "0.0.0"
 dependencies = [
- "aho-corasick",
  "anyhow",
  "chrono",
  "dirs",
@@ -1030,19 +1029,14 @@ dependencies = [
  "forge-types",
  "forge-utils",
  "futures-util",
- "globset",
  "ignore",
  "libc",
- "regex",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.18",
  "tokio",
  "toml",
- "toml_edit",
  "tracing",
- "unicode-segmentation",
 ]
 
 [[package]]
@@ -1084,7 +1078,6 @@ dependencies = [
 name = "forge-tools"
 version = "0.0.0"
 dependencies = [
- "aho-corasick",
  "anyhow",
  "base64",
  "chrono",
@@ -1105,10 +1098,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 2.0.18",
- "tiktoken-rs",
  "tokio",
- "toml",
- "toml_edit",
  "tracing",
  "unicode-normalization",
  "unicode-segmentation",
