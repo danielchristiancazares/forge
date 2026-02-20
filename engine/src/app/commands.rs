@@ -604,11 +604,15 @@ impl super::App {
                 self.op_transition(self.idle_state());
             }
             Command::Model(model_cmd) => {
-                if let Some(reason) = self.busy_reason() {
-                    self.push_notification(format!(
-                        "Cannot change model while {reason}. Cancel or wait for it to finish."
-                    ));
-                    return;
+                match self.busy_state() {
+                    super::BusyState::Idle => {}
+                    busy => {
+                        let reason = busy.reason();
+                        self.push_notification(format!(
+                            "Cannot change model while {reason}. Cancel or wait for it to finish."
+                        ));
+                        return;
+                    }
                 }
                 match model_cmd {
                     ModelCommand::SetByName(model_name) => {
@@ -736,9 +740,13 @@ impl super::App {
                 self.cancel_active_operation();
             }
             Command::Rewind { target, scope } => {
-                if let Some(reason) = self.busy_reason() {
-                    self.push_notification(format!("Cannot rewind while {reason}."));
-                    return;
+                match self.busy_state() {
+                    super::BusyState::Idle => {}
+                    busy => {
+                        let reason = busy.reason();
+                        self.push_notification(format!("Cannot rewind while {reason}."));
+                        return;
+                    }
                 }
 
                 let scope = match scope {
@@ -775,9 +783,13 @@ impl super::App {
                 }
             }
             Command::Undo => {
-                if let Some(reason) = self.busy_reason() {
-                    self.push_notification(format!("Cannot undo while {reason}."));
-                    return;
+                match self.busy_state() {
+                    super::BusyState::Idle => {}
+                    busy => {
+                        let reason = busy.reason();
+                        self.push_notification(format!("Cannot undo while {reason}."));
+                        return;
+                    }
                 }
 
                 let proof = match self.prepare_latest_turn_checkpoint() {
@@ -792,9 +804,13 @@ impl super::App {
                 }
             }
             Command::Retry => {
-                if let Some(reason) = self.busy_reason() {
-                    self.push_notification(format!("Cannot retry while {reason}."));
-                    return;
+                match self.busy_state() {
+                    super::BusyState::Idle => {}
+                    busy => {
+                        let reason = busy.reason();
+                        self.push_notification(format!("Cannot retry while {reason}."));
+                        return;
+                    }
                 }
 
                 let proof = match self.prepare_latest_turn_checkpoint() {

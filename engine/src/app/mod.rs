@@ -206,6 +206,31 @@ enum OperationTake<T> {
     Skipped,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BusyState {
+    Idle,
+    StreamingResponse,
+    ToolExecution,
+    PlanApproval,
+    ToolRecovery,
+    RecoveryBlocked,
+    Distillation,
+}
+
+impl BusyState {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::StreamingResponse => "streaming a response",
+            Self::ToolExecution => "tool execution in progress",
+            Self::PlanApproval => "plan approval pending",
+            Self::ToolRecovery => "tool recovery pending",
+            Self::RecoveryBlocked => "recovery blocked",
+            Self::Distillation => "distillation in progress",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TurnConfig {
     pub(crate) model: ModelName,
@@ -1711,14 +1736,26 @@ impl App {
     }
 
     pub fn is_loading(&self) -> bool {
-        self.busy_reason().is_some()
+        match self.busy_state() {
+            BusyState::Idle => false,
+            BusyState::StreamingResponse
+            | BusyState::ToolExecution
+            | BusyState::PlanApproval
+            | BusyState::ToolRecovery
+            | BusyState::RecoveryBlocked
+            | BusyState::Distillation => true,
+        }
     }
 
     fn push_settings_next_turn_guardrail(&mut self) {
-        if let Some(reason) = self.busy_reason() {
-            self.push_notification(format!(
-                "Settings edits apply on the next turn. Active turn remains unchanged while {reason}."
-            ));
+        match self.busy_state() {
+            BusyState::Idle => {}
+            busy => {
+                let reason = busy.reason();
+                self.push_notification(format!(
+                    "Settings edits apply on the next turn. Active turn remains unchanged while {reason}."
+                ));
+            }
         }
     }
 
@@ -1843,15 +1880,15 @@ impl App {
 
     /// Centralizes busy-state checks to ensure consistency across
     /// `start_streaming`, `start_distillation`, and UI queries.
-    fn busy_reason(&self) -> Option<&'static str> {
+    fn busy_state(&self) -> BusyState {
         match self.operation_state() {
-            OperationState::Idle => None,
-            OperationState::Streaming(_) => Some("streaming a response"),
-            OperationState::ToolLoop(_) => Some("tool execution in progress"),
-            OperationState::PlanApproval(_) => Some("plan approval pending"),
-            OperationState::ToolRecovery(_) => Some("tool recovery pending"),
-            OperationState::RecoveryBlocked(_) => Some("recovery blocked"),
-            OperationState::Distilling(_) => Some("distillation in progress"),
+            OperationState::Idle => BusyState::Idle,
+            OperationState::Streaming(_) => BusyState::StreamingResponse,
+            OperationState::ToolLoop(_) => BusyState::ToolExecution,
+            OperationState::PlanApproval(_) => BusyState::PlanApproval,
+            OperationState::ToolRecovery(_) => BusyState::ToolRecovery,
+            OperationState::RecoveryBlocked(_) => BusyState::RecoveryBlocked,
+            OperationState::Distilling(_) => BusyState::Distillation,
         }
     }
 

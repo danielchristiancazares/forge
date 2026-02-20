@@ -266,8 +266,16 @@ impl super::App {
     }
 
     pub fn start_streaming(&mut self, queued: QueuedUserMessage) {
-        if self.busy_reason().is_some() {
-            return;
+        match self.busy_state() {
+            super::BusyState::Idle => {}
+            super::BusyState::StreamingResponse
+            | super::BusyState::ToolExecution
+            | super::BusyState::PlanApproval
+            | super::BusyState::ToolRecovery
+            | super::BusyState::RecoveryBlocked
+            | super::BusyState::Distillation => {
+                return;
+            }
         }
 
         let QueuedUserMessage { config, turn } = queued;

@@ -34,8 +34,16 @@ impl super::App {
             DistillationStart::Failed
         };
 
-        if self.busy_reason().is_some() {
-            return fail_with_rollback(self, queued_request);
+        match self.busy_state() {
+            super::BusyState::Idle => {}
+            super::BusyState::StreamingResponse
+            | super::BusyState::ToolExecution
+            | super::BusyState::PlanApproval
+            | super::BusyState::ToolRecovery
+            | super::BusyState::RecoveryBlocked
+            | super::BusyState::Distillation => {
+                return fail_with_rollback(self, queued_request);
+            }
         }
 
         // Use the same overhead that start_streaming will use, so both agree on

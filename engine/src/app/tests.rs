@@ -2341,13 +2341,13 @@ fn idle_swap_helper_removed() {
     }
 }
 
-/// Source guardrail: `busy_reason` usage baseline across `app/` files.
+/// Source guardrail: `busy_state` usage baseline across `app/` files.
 ///
 /// The search needle is built at runtime to prevent this test from self-matching.
 #[test]
-fn busy_reason_usage_baseline() {
+fn busy_state_usage_baseline() {
     let app_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
-    let needle = ["busy", "_reason("].concat();
+    let needle = ["busy", "_state("].concat();
 
     for entry in std::fs::read_dir(&app_dir).expect("read app dir") {
         let entry = entry.expect("dir entry");
@@ -2364,25 +2364,25 @@ fn busy_reason_usage_baseline() {
             "mod.rs" => {
                 assert_eq!(
                     count, 3,
-                    "mod.rs: expected 3 busy_reason sites (2 call sites + definition), found {count}"
+                    "mod.rs: expected 3 busy_state sites (2 call sites + definition), found {count}"
                 );
             }
             "commands.rs" => {
                 assert_eq!(
                     count, 4,
-                    "commands.rs: expected 4 busy_reason call sites (model, rewind, undo, retry), found {count}"
+                    "commands.rs: expected 4 busy_state call sites (model, rewind, undo, retry), found {count}"
                 );
             }
             "distillation.rs" | "streaming.rs" => {
                 assert_eq!(
                     count, 1,
-                    "{filename}: expected 1 busy_reason call site, found {count}"
+                    "{filename}: expected 1 busy_state call site, found {count}"
                 );
             }
             _ => {
                 assert_eq!(
                     count, 0,
-                    "{filename}: expected 0 busy_reason sites, found {count}"
+                    "{filename}: expected 0 busy_state sites, found {count}"
                 );
             }
         }
