@@ -456,6 +456,55 @@ let assistant_content = sanitize_display_text(msg.content());
 let safe_line = sanitize_display_text(line);
 ```
 
+### Read Tool TOCTOU Revalidation
+
+**Locations**: `tools/src/builtins.rs`, `tools/src/sandbox.rs`
+
+`Read` now performs post-open revalidation to close the race window between
+path resolution and file open:
+
+1. Resolve path via sandbox rules.
+2. Open file handle.
+3. Revalidate opened handle with `Sandbox::validate_opened_file`:
+   - Reject final-component symlink/reparse swaps.
+   - Re-canonicalize and re-check allowed roots + deny patterns.
+   - Compare opened-handle metadata with current path metadata (inode/dev on Unix, file ID on Windows).
+
+If any mismatch is detected, `Read` fails with a sandbox violation.
+
+### Tool Journal Redaction at Persistence Boundary
+
+**Location**: `context/src/tool_journal.rs`
+
+Tool call arguments and tool results are sanitized before SQLite persistence:
+
+- `begin_batch`: redacts/sanitizes serialized `arguments_json`.
+- `append_call_args` / `append_call_args_batch`: sanitize streamed JSON deltas.
+- `record_result`: sanitizes stored `content`.
+
+This applies the same secret-redaction pipeline used for display paths and
+reduces plaintext credential exposure in journal files.
+
+### WebFetch Redirect Robots Enforcement
+
+**Locations**: `tools/src/webfetch/mod.rs`, `tools/src/webfetch/http.rs`
+
+`robots.txt` checks now run on each redirect hop, not only the initial URL.
+When a redirect target is disallowed by robots policy, fetch fails with
+`robots_disallowed` before content download.
+
+### Runtime Opt-In Gates for Insecure Modes
+
+**Locations**: `tools/src/webfetch/resolved.rs`, `tools/src/windows_run.rs`
+
+Dangerous config toggles are fail-closed unless explicitly enabled at runtime:
+
+- `webfetch.security.allow_insecure_tls` requires `FORGE_WEBFETCH_ALLOW_INSECURE_TLS=1` (or `true/yes/on`).
+- `webfetch.security.allow_insecure_overrides` requires `FORGE_WEBFETCH_ALLOW_INSECURE_OVERRIDES=1` (or `true/yes/on`).
+- `run.fallback_mode = \"allow_with_warning\"` requires `FORGE_RUN_ALLOW_UNSANDBOXED=1` (or `true/yes/on`).
+
+Without these runtime opt-ins, Forge logs a warning and denies the insecure behavior.
+
 ## Threat Model
 
 ### Terminal Escape Injection
@@ -526,15 +575,15 @@ Actual: Cyrillic 'І' (U+0406) instead of Latin 'l'
 
 **Mitigation**: `detect_mixed_script` warns users in tool approval UI when mixed scripts are detected.
 
-### Windows Network Policy (`block_network`)
+### Network Egress Heuristic (`block_network`)
 
 **Scope**: Best-effort heuristic, not an enforcement boundary.
 
-The `block_network` run policy on Windows uses a token blocklist (`NETWORK_BLOCKLIST`) to reject commands containing known network-capable utilities (`Invoke-WebRequest`, `curl.exe`, `wget.exe`, etc.). This is a convenience mechanism that catches common cases.
+The `block_network` run policy uses a token blocklist (`NETWORK_BLOCKLIST`) over a normalized policy view of the command to reject common network-capable utilities (PowerShell: `Invoke-WebRequest`, `Invoke-RestMethod`, `Start-BitsTransfer`; cross-platform: `curl`, `wget`, `ssh`, `scp`, `sftp`; and URL substrings like `https://`). On Windows when the configured shell is PowerShell, the policy view is derived from a PowerShell AST probe to resolve aliases and reject unsafe syntax; on other shells/platforms it is applied to the raw command string.
 
-**Limitations**: A token blocklist cannot prevent all network egress. Commands not in the blocklist (DNS utilities like `nslookup` or `Resolve-DnsName`, SSH, custom binaries, .NET networking APIs invoked inline) bypass the check. PowerShell AST normalization helps detect aliased forms of blocked commands but cannot cover arbitrary network-capable code.
+**Limitations**: A token blocklist cannot prevent all network egress. Tools not in the list (e.g., `git`, package managers, `openssl s_client`, `nc`/`socat` variants), custom binaries, or inline networking via language runtimes can bypass this check. On Linux/BSD there is no OS-level sandbox today, so `block_network` is purely heuristic.
 
-**Not an isolation boundary**: True network isolation requires OS-level enforcement (Windows AppContainer, WFP firewall rules, or restricted tokens with network deny ACLs). The `block_network` policy does not implement OS-level controls and should not be relied upon as a security boundary for untrusted code execution.
+**Not an isolation boundary**: True network isolation requires OS-level enforcement (macOS Seatbelt profiles, Windows AppContainer/WFP firewall rules, container/VM isolation). The `block_network` policy does not implement OS-level controls and should not be relied upon as a security boundary for untrusted code execution.
 
 ### DoS Considerations
 

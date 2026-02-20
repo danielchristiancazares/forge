@@ -55,7 +55,7 @@ pub async fn fetch(
     check_robots(&request.url, &resolved, &mut notes).await?;
 
     let (html, final_url, charset_fallback) =
-        fetch_content(&request, &resolved, &resolved_ips).await?;
+        fetch_content(&request, &resolved, &resolved_ips, &mut notes).await?;
 
     let extracted = extract::extract(&html, &final_url)?;
 
@@ -154,8 +154,9 @@ async fn fetch_content(
     input: &ResolvedRequest,
     config: &ResolvedConfig,
     resolved_ips: &[std::net::IpAddr],
+    notes: &mut Vec<Note>,
 ) -> Result<(String, url::Url, bool), WebFetchError> {
-    let response = http::fetch(&input.url, resolved_ips, config).await?;
+    let response = http::fetch(&input.url, resolved_ips, config, notes).await?;
     let charset_fallback = response.charset_fallback;
     let html = decode_body(&response.body, response.charset.as_deref())?;
     Ok((html, response.final_url, charset_fallback))

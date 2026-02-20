@@ -7,6 +7,7 @@ use forge_tools::webfetch::{
     ErrorCode, HttpConfig, Note, RobotsConfig, SecurityConfig, WebFetchConfig, WebFetchInput,
 };
 use std::path::Path;
+use std::sync::Once;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -23,7 +24,18 @@ const GZIP_BOMB_PAYLOAD: &[u8] = &[
     0x00, 0x00, 0x00, 0x6a, 0x80, 0x06, 0x9b, 0xa0, 0x00, 0x00, 0x01, 0x00,
 ];
 
+fn enable_insecure_webfetch_opt_in_for_tests() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        // SAFETY: integration tests require loopback fetch; set once and never mutate.
+        unsafe {
+            std::env::set_var("FORGE_WEBFETCH_ALLOW_INSECURE_OVERRIDES", "1");
+        }
+    });
+}
+
 fn test_config() -> WebFetchConfig {
+    enable_insecure_webfetch_opt_in_for_tests();
     WebFetchConfig {
         enabled: true,
         user_agent: Some("forge-test/1.0".to_string()),
@@ -888,6 +900,44 @@ async fn test_redirect_followed() {
         "final_url should be redirect target"
     );
     assert_eq!(output.title, Some("New Page".to_string()));
+}
+
+#[tokio::test]
+async fn test_redirect_target_robots_disallowed() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/robots.txt"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("User-agent: *\nAllow: /start\nDisallow: /blocked"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/start"))
+        .respond_with(ResponseTemplate::new(301).insert_header("Location", "/blocked"))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/blocked"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/html")
+                .set_body_string(simple_html("Blocked", "This should not be fetched")),
+        )
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/start", server.uri());
+    let input = WebFetchInput::new(&url).expect("valid URL");
+    let config = test_config();
+    let err = forge_tools::webfetch::fetch(input, &config)
+        .await
+        .expect_err("redirect target should be blocked by robots");
+    assert_eq!(err.code, ErrorCode::RobotsDisallowed);
 }
 
 #[tokio::test]

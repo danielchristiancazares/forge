@@ -205,6 +205,7 @@ impl ToolJournal {
             let args_json = serde_json::to_string(&call.arguments)
                 .context("Failed to serialize tool call arguments")?;
             let args_json = normalize_persistable_owned(args_json);
+            let args_json = forge_utils::sanitize_display_text(&args_json);
             let thought_signature = match call.signature_state() {
                 ThoughtSignatureState::Signed(signature) => Some(signature.as_str()),
                 ThoughtSignatureState::Unsigned => None,
@@ -295,13 +296,14 @@ impl ToolJournal {
         delta: &str,
     ) -> Result<()> {
         let delta = normalize_persistable_borrowed(delta);
+        let delta = forge_utils::sanitize_display_text(delta.as_ref());
         let updated = self
             .db
             .execute(
                 "UPDATE tool_calls
                  SET arguments_json = arguments_json || ?1
                  WHERE batch_id = ?2 AND tool_call_id = ?3",
-                params![delta.as_ref(), batch_id, tool_call_id],
+                params![delta.as_str(), batch_id, tool_call_id],
             )
             .with_context(|| format!("Failed to append tool args {tool_call_id}"))?;
         if updated == 0 {
@@ -331,6 +333,7 @@ impl ToolJournal {
 
         for (tool_call_id, delta) in deltas {
             let delta = normalize_persistable_owned(delta);
+            let delta = forge_utils::sanitize_display_text(&delta);
             let updated = tx
                 .execute(
                     "UPDATE tool_calls
@@ -500,6 +503,7 @@ impl ToolJournal {
     pub fn record_result(&mut self, batch_id: ToolBatchId, result: &ToolResult) -> Result<()> {
         let created_at = system_time_to_iso8601_millis(SystemTime::now());
         let content = normalize_persistable_borrowed(&result.content);
+        let content = forge_utils::sanitize_display_text(content.as_ref());
         let inserted = self
             .db
             .execute(
@@ -509,7 +513,7 @@ impl ToolJournal {
                     batch_id,
                     &result.tool_call_id,
                     &result.tool_name,
-                    content.as_ref(),
+                    &content,
                     i32::from(result.is_error),
                     created_at,
                 ],
@@ -541,7 +545,7 @@ impl ToolJournal {
 
         let tool_name_matches =
             existing_tool_name.is_empty() || existing_tool_name == result.tool_name;
-        let content_matches = existing_content == result.content;
+        let content_matches = existing_content == content;
         let is_error_matches = existing_is_error == i32::from(result.is_error);
 
         if tool_name_matches && content_matches && is_error_matches {
@@ -1170,6 +1174,61 @@ mod tests {
             &ToolResult::success("1", "Read", "different content"),
         );
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn tool_journal_redacts_secrets_in_args() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+        let secret = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let calls = vec![ToolCall::new(
+            "1",
+            "Read",
+            serde_json::json!({ "api_key": secret }),
+        )];
+        journal
+            .begin_batch(
+                StepId::new(1),
+                "test-model",
+                "assistant",
+                &calls,
+                &ThinkingReplayState::default(),
+            )
+            .unwrap();
+
+        let recovered = journal.recover().unwrap().expect("should recover");
+        let stored = recovered.calls[0].arguments["api_key"]
+            .as_str()
+            .expect("string api_key");
+        assert_ne!(stored, secret);
+        assert!(stored.contains("***") || stored.contains("REDACTED"));
+    }
+
+    #[test]
+    fn tool_journal_redacts_secrets_in_results() {
+        let mut journal = ToolJournal::open_in_memory().unwrap();
+        let calls = vec![ToolCall::new(
+            "1",
+            "Read",
+            serde_json::json!({ "path": "foo" }),
+        )];
+        let batch_id = journal
+            .begin_batch(
+                StepId::new(1),
+                "test-model",
+                "assistant",
+                &calls,
+                &ThinkingReplayState::default(),
+            )
+            .unwrap();
+
+        let secret = "sk-ant-api03-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+        let result = ToolResult::success("1", "Read", format!("token={secret}"));
+        journal.record_result(batch_id, &result).unwrap();
+
+        let recovered = journal.recover().unwrap().expect("should recover");
+        let stored = &recovered.results[0].content;
+        assert!(!stored.contains(secret));
+        assert!(stored.contains("***") || stored.contains("REDACTED"));
     }
 
     #[test]

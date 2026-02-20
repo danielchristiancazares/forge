@@ -7,7 +7,7 @@
 //! - HTTP fetching with redirect handling (FR-WF-07)
 //! - Content-Type detection and validation (FR-WF-10)
 use super::resolved::{ResolvedConfig, TimeoutSetting};
-use super::types::{ErrorCode, SsrfBlockReason, TimeoutPhase, WebFetchError};
+use super::types::{ErrorCode, Note, SsrfBlockReason, TimeoutPhase, WebFetchError};
 use futures_util::StreamExt;
 use reqwest::Method;
 use reqwest::header::{CONTENT_TYPE, LOCATION};
@@ -235,6 +235,7 @@ pub async fn fetch(
     url: &Url,
     resolved_ips: &[IpAddr],
     config: &ResolvedConfig,
+    notes: &mut Vec<Note>,
 ) -> Result<HttpResponse, WebFetchError> {
     let mut current_url = url.clone();
     let mut current_ips = if !resolved_ips.is_empty() {
@@ -320,6 +321,7 @@ pub async fn fetch(
 
             current_ips = validate_url(raw_for_validation, &next_url, config).await?;
             current_url = next_url;
+            super::check_robots(&current_url, config, notes).await?;
             continue;
         }
 
@@ -1037,12 +1039,26 @@ fn timeout_phase_label(phase: TimeoutPhase) -> &'static str {
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::Once;
 
     use super::super::resolved::{DEFAULT_ALLOWED_PORTS, ResolvedConfig};
     use super::super::types::{SecurityConfig, WebFetchConfig};
     use super::{DEFAULT_BLOCKED_CIDRS, check_ip_blocked, is_port_allowed};
 
+    fn enable_insecure_overrides_opt_in_for_tests() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            // SAFETY: test-only global opt-in set once and never mutated.
+            unsafe {
+                std::env::set_var("FORGE_WEBFETCH_ALLOW_INSECURE_OVERRIDES", "1");
+            }
+        });
+    }
+
     fn config_with_insecure_overrides(allow_insecure_overrides: bool) -> ResolvedConfig {
+        if allow_insecure_overrides {
+            enable_insecure_overrides_opt_in_for_tests();
+        }
         ResolvedConfig::from_config(&WebFetchConfig {
             security: Some(SecurityConfig {
                 allow_insecure_overrides,

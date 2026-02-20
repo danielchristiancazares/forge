@@ -29,6 +29,8 @@ use super::types::{WebFetchConfig, WebFetchError, WebFetchInput};
 
 pub(crate) const DEFAULT_USER_AGENT: &str = "forge-webfetch/1.0";
 pub(crate) const DEFAULT_ALLOWED_PORTS: &[u16] = &[80, 443];
+const ENV_ALLOW_INSECURE_TLS: &str = "FORGE_WEBFETCH_ALLOW_INSECURE_TLS";
+const ENV_ALLOW_INSECURE_OVERRIDES: &str = "FORGE_WEBFETCH_ALLOW_INSECURE_OVERRIDES";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedRequest {
@@ -122,12 +124,29 @@ impl ResolvedSecurityConfig {
             .and_then(|s| s.allowed_ports.clone())
             .filter(|ports| !ports.is_empty())
             .unwrap_or_else(|| DEFAULT_ALLOWED_PORTS.to_vec());
+        let requested_insecure_tls = security.is_some_and(|s| s.allow_insecure_tls);
+        let requested_insecure_overrides = security.is_some_and(|s| s.allow_insecure_overrides);
+        let insecure_tls_opt_in = env_opt_in_enabled(ENV_ALLOW_INSECURE_TLS);
+        let insecure_overrides_opt_in = env_opt_in_enabled(ENV_ALLOW_INSECURE_OVERRIDES);
+
+        if requested_insecure_tls && !insecure_tls_opt_in {
+            tracing::warn!(
+                "WebFetch allow_insecure_tls requested in config but disabled: set {}=1 to opt in",
+                ENV_ALLOW_INSECURE_TLS
+            );
+        }
+        if requested_insecure_overrides && !insecure_overrides_opt_in {
+            tracing::warn!(
+                "WebFetch allow_insecure_overrides requested in config but disabled: set {}=1 to opt in",
+                ENV_ALLOW_INSECURE_OVERRIDES
+            );
+        }
 
         Self {
             blocked_cidrs,
             allowed_ports,
-            allow_insecure_tls: security.is_some_and(|s| s.allow_insecure_tls),
-            allow_insecure_overrides: security.is_some_and(|s| s.allow_insecure_overrides),
+            allow_insecure_tls: requested_insecure_tls && insecure_tls_opt_in,
+            allow_insecure_overrides: requested_insecure_overrides && insecure_overrides_opt_in,
         }
     }
 }
@@ -265,5 +284,36 @@ fn derive_robots_token(user_agent: &str) -> String {
         "forge-webfetch".to_string()
     } else {
         filtered
+    }
+}
+
+fn env_opt_in_enabled(name: &str) -> bool {
+    is_truthy_env(std::env::var(name).ok().as_deref())
+}
+
+fn is_truthy_env(value: Option<&str>) -> bool {
+    value.is_some_and(|raw| {
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_truthy_env;
+
+    #[test]
+    fn insecure_flags_ignored_without_env_var() {
+        assert!(!is_truthy_env(None));
+    }
+
+    #[test]
+    fn insecure_flags_accept_truthy_env_values() {
+        assert!(is_truthy_env(Some("1")));
+        assert!(is_truthy_env(Some("true")));
+        assert!(is_truthy_env(Some("YES")));
+        assert!(is_truthy_env(Some("on")));
     }
 }

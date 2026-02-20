@@ -459,6 +459,7 @@ impl ToolExecutor for ReadFileTool {
                     tool: "Read".to_string(),
                     message: e.to_string(),
                 })?;
+            ctx.sandbox.validate_opened_file(&resolved, &file)?;
             let is_binary = sniff_binary(&mut file).map_err(|e| ToolError::ExecutionFailed {
                 tool: "Read".to_string(),
                 message: e.to_string(),

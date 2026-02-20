@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use super::{DenialReason, DetectedShell, ToolError};
 use unicode_normalization::UnicodeNormalization;
 
+const ENV_RUN_ALLOW_UNSANDBOXED: &str = "FORGE_RUN_ALLOW_UNSANDBOXED";
+
 /// Command text views for Windows `Run` sandbox evaluation.
 ///
 /// - `raw`: what will be executed (after wrapping).
@@ -154,14 +156,19 @@ const NETWORK_BLOCKLIST: &[&str] = &[
     "invoke-webrequest",
     "invoke-restmethod",
     "start-bitstransfer",
+    "curl",
     "curl.exe",
+    "wget",
     "wget.exe",
     "bitsadmin",
     "nslookup",
     "resolve-dnsname",
     "certutil",
+    "ssh",
     "ssh.exe",
+    "scp",
     "scp.exe",
+    "sftp",
     "sftp.exe",
     "net.webclient",
     "http://",
@@ -206,6 +213,11 @@ const PROCESS_ESCAPE_COMMAND_NAMES: &[&str] = &[
     "cmd",
     "wsl",
     "bash",
+    "sh",
+    "dash",
+    "zsh",
+    "fish",
+    "ksh",
     "python",
     "python3",
     "py",
@@ -224,7 +236,9 @@ const PROCESS_ESCAPE_COMMAND_NAMES: &[&str] = &[
 
 /// Prepare a command for execution under run sandbox policy.
 ///
-/// On non-Windows hosts, this is a no-op passthrough.
+/// On Windows this enforces `WindowsRunSandboxPolicy`. On macOS it may wrap the shell in
+/// `sandbox-exec` (Seatbelt). On Linux/BSD it applies the token-based policy checks as a
+/// baseline (no OS-level sandbox yet).
 pub(crate) fn prepare_run_command(
     command: RunCommandText<'_>,
     shell: &DetectedShell,
@@ -436,6 +450,20 @@ fn handle_unsandboxed_fallback(
     mode: RunSandboxFallbackMode,
     reason: String,
 ) -> Result<PreparedRunCommand, ToolError> {
+    handle_unsandboxed_fallback_with_opt_in(
+        passthrough,
+        mode,
+        reason,
+        run_unsandboxed_opt_in_enabled(),
+    )
+}
+
+fn handle_unsandboxed_fallback_with_opt_in(
+    passthrough: PreparedRunCommand,
+    mode: RunSandboxFallbackMode,
+    reason: String,
+    allow_unsandboxed: bool,
+) -> Result<PreparedRunCommand, ToolError> {
     match mode {
         RunSandboxFallbackMode::Deny => Err(ToolError::ExecutionFailed {
             tool: "Run".to_string(),
@@ -447,14 +475,39 @@ fn handle_unsandboxed_fallback(
                 "Sandbox unavailable: {reason}. Fallback mode is prompt but per-call unsandboxed override is disabled."
             ),
         }),
-        RunSandboxFallbackMode::AllowWithWarning => Ok(PreparedRunCommand {
-            warning: Some(format!(
-                "WARNING: sandbox unavailable ({reason}); running unsandboxed."
-            )),
-            requires_host_sandbox: false,
-            ..passthrough
-        }),
+        RunSandboxFallbackMode::AllowWithWarning => {
+            if !allow_unsandboxed {
+                tracing::warn!(
+                    "Run allow_with_warning requested but {} is not set; denying unsandboxed fallback",
+                    ENV_RUN_ALLOW_UNSANDBOXED
+                );
+                return Err(ToolError::ExecutionFailed {
+                    tool: "Run".to_string(),
+                    message: format!(
+                        "Sandbox unavailable: {reason}. Fallback mode is allow_with_warning but runtime opt-in is missing ({ENV_RUN_ALLOW_UNSANDBOXED}=1)."
+                    ),
+                });
+            }
+            Ok(PreparedRunCommand {
+                warning: Some(format!(
+                    "WARNING: sandbox unavailable ({reason}); running unsandboxed."
+                )),
+                requires_host_sandbox: false,
+                ..passthrough
+            })
+        }
     }
+}
+
+fn run_unsandboxed_opt_in_enabled() -> bool {
+    std::env::var(ENV_RUN_ALLOW_UNSANDBOXED)
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -554,12 +607,13 @@ fn escape_seatbelt_literal(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Once;
 
     use super::{
         DenialReason, DetectedShell, MacOsRunSandboxPolicy, Path, PreparedRunCommand,
         RunCommandText, RunSandboxFallbackMode, ToolError, WindowsRunSandboxPolicy,
-        escape_seatbelt_literal, is_powershell_shell, prepare_windows_run_command,
-        prepare_windows_run_command_with_host_probe,
+        escape_seatbelt_literal, handle_unsandboxed_fallback_with_opt_in, is_powershell_shell,
+        prepare_windows_run_command, prepare_windows_run_command_with_host_probe,
     };
 
     fn shell(binary: &str) -> DetectedShell {
@@ -572,6 +626,16 @@ mod tests {
 
     fn cmd(command: &str) -> RunCommandText<'_> {
         RunCommandText::new(command, command)
+    }
+
+    fn enable_unsandboxed_opt_in_for_tests() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            // SAFETY: test-only global opt-in set once and never mutated.
+            unsafe {
+                std::env::set_var("FORGE_RUN_ALLOW_UNSANDBOXED", "1");
+            }
+        });
     }
 
     #[test]
@@ -661,6 +725,37 @@ mod tests {
     }
 
     #[test]
+    fn blocks_posix_shell_escape_command_names() {
+        let cases = [
+            ("sh -c whoami", "sh"),
+            ("dash -c whoami", "dash"),
+            ("zsh -c whoami", "zsh"),
+            ("fish -c whoami", "fish"),
+            ("ksh -c whoami", "ksh"),
+            ("sh.exe -c whoami", "sh"),
+            ("C:\\Git\\bin\\sh.exe -c whoami", "sh"),
+        ];
+
+        for (command, expected) in cases {
+            let err = prepare_windows_run_command(
+                cmd(command),
+                &shell("pwsh"),
+                WindowsRunSandboxPolicy::default(),
+            )
+            .unwrap_err();
+            match err {
+                ToolError::SandboxViolation(DenialReason::LimitsExceeded { message }) => {
+                    assert!(
+                        message.contains("process escape command") && message.contains(expected),
+                        "cmd={command} msg={message}"
+                    );
+                }
+                _ => panic!("expected sandbox violation for {command}"),
+            }
+        }
+    }
+
+    #[test]
     fn blocked_tokens_apply_nfkc_normalization() {
         let err = prepare_windows_run_command(
             cmd("ｐｙｔｈｏｎ -c \"print('owned')\""),
@@ -709,6 +804,35 @@ mod tests {
     }
 
     #[test]
+    fn blocks_bare_posix_network_tools_when_enabled() {
+        let cases = [
+            ("curl https://example.com", "curl"),
+            ("wget https://example.com", "wget"),
+            ("ssh user@example.com", "ssh"),
+            ("scp file.txt user@example.com:/tmp/file.txt", "scp"),
+            ("sftp user@example.com", "sftp"),
+        ];
+
+        for (network_cmd, expected_token) in cases {
+            let err = prepare_windows_run_command(
+                cmd(network_cmd),
+                &shell("pwsh"),
+                WindowsRunSandboxPolicy::default(),
+            )
+            .unwrap_err();
+            match err {
+                ToolError::SandboxViolation(DenialReason::LimitsExceeded { message }) => {
+                    assert!(
+                        message.contains("network token") && message.contains(expected_token),
+                        "cmd={network_cmd} msg={message}"
+                    );
+                }
+                _ => panic!("expected sandbox violation for {network_cmd}"),
+            }
+        }
+    }
+
+    #[test]
     fn prompt_fallback_denies_when_shell_is_not_powershell() {
         let err = prepare_windows_run_command(
             cmd("Get-ChildItem"),
@@ -731,6 +855,7 @@ mod tests {
 
     #[test]
     fn allow_with_warning_fallback_allows_when_shell_is_not_powershell() {
+        enable_unsandboxed_opt_in_for_tests();
         let prepared = prepare_windows_run_command(
             cmd("Get-ChildItem"),
             &shell("cmd.exe"),
@@ -747,11 +872,32 @@ mod tests {
     }
 
     #[test]
+    fn allow_with_warning_denied_without_env_var() {
+        let err = handle_unsandboxed_fallback_with_opt_in(
+            PreparedRunCommand::passthrough(&shell("pwsh"), "Get-ChildItem"),
+            RunSandboxFallbackMode::AllowWithWarning,
+            "host isolation unavailable".to_string(),
+            false,
+        )
+        .unwrap_err();
+
+        match err {
+            ToolError::ExecutionFailed { message, .. } => {
+                assert!(message.contains("allow_with_warning"));
+                assert!(message.contains("FORGE_RUN_ALLOW_UNSANDBOXED"));
+            }
+            _ => panic!("expected execution failure"),
+        }
+    }
+
+    #[test]
     fn wraps_command_for_constrained_language() {
-        let prepared = prepare_windows_run_command(
+        let prepared = prepare_windows_run_command_with_host_probe(
             cmd("Get-ChildItem"),
             &shell("pwsh"),
             WindowsRunSandboxPolicy::default(),
+            true,
+            || Ok(()),
         )
         .expect("wrapped command");
         let last_arg = prepared.args().last().unwrap().to_string_lossy();
@@ -780,6 +926,7 @@ mod tests {
 
     #[test]
     fn host_probe_failure_allow_with_warning_keeps_constrained_language_wrapper() {
+        enable_unsandboxed_opt_in_for_tests();
         let prepared = prepare_windows_run_command_with_host_probe(
             cmd("Get-ChildItem"),
             &shell("pwsh"),

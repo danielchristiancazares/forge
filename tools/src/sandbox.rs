@@ -332,6 +332,59 @@ impl Sandbox {
         Ok(())
     }
 
+    /// Post-open validation for read TOCTOU mitigation.
+    ///
+    /// Revalidates the path after opening to ensure no symlink/reparse swap
+    /// occurred between path resolution and open.
+    pub fn validate_opened_file(&self, path: &Path, file: &std::fs::File) -> Result<(), ToolError> {
+        let path_meta = std::fs::symlink_metadata(path).map_err(|_| {
+            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                attempted: path.to_path_buf(),
+                resolved: path.to_path_buf(),
+            })
+        })?;
+        if path_meta.file_type().is_symlink() || is_reparse_point(&path_meta) {
+            return Err(ToolError::SandboxViolation(
+                DenialReason::PathOutsideSandbox {
+                    attempted: path.to_path_buf(),
+                    resolved: path.to_path_buf(),
+                },
+            ));
+        }
+
+        let canonical = std::fs::canonicalize(path).map_err(|_| {
+            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                attempted: path.to_path_buf(),
+                resolved: path.to_path_buf(),
+            })
+        })?;
+        self.check_allowed(path, canonical.clone())?;
+
+        let opened_meta = file.metadata().map_err(|_| {
+            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                attempted: path.to_path_buf(),
+                resolved: canonical.clone(),
+            })
+        })?;
+        let current_meta = std::fs::metadata(&canonical).map_err(|_| {
+            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
+                attempted: path.to_path_buf(),
+                resolved: canonical.clone(),
+            })
+        })?;
+
+        if !same_opened_file(&opened_meta, &current_meta) {
+            return Err(ToolError::SandboxViolation(
+                DenialReason::PathOutsideSandbox {
+                    attempted: path.to_path_buf(),
+                    resolved: canonical,
+                },
+            ));
+        }
+
+        Ok(())
+    }
+
     fn is_within_allowed_roots(&self, path: &Path) -> bool {
         self.allowed_roots.iter().any(|root| path.starts_with(root))
     }
@@ -500,6 +553,21 @@ fn is_reparse_point(meta: &std::fs::Metadata) -> bool {
 #[cfg(not(windows))]
 fn is_reparse_point(_meta: &std::fs::Metadata) -> bool {
     false
+}
+
+#[cfg(unix)]
+fn same_opened_file(opened: &std::fs::Metadata, current: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    opened.dev() == current.dev() && opened.ino() == current.ino()
+}
+
+#[cfg(windows)]
+fn same_opened_file(opened: &std::fs::Metadata, current: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    opened.file_attributes() == current.file_attributes()
+        && opened.file_size() == current.file_size()
+        && opened.creation_time() == current.creation_time()
+        && opened.last_write_time() == current.last_write_time()
 }
 
 #[cfg(windows)]
@@ -1026,6 +1094,34 @@ mod tests {
 
         let file = link.join("file.txt");
         assert!(sandbox.validate_created_parent(&file).is_err());
+    }
+
+    #[test]
+    fn validate_opened_file_allows_normal_file() {
+        let temp = tempdir().unwrap();
+        let file = temp.path().join("ok.txt");
+        std::fs::write(&file, "ok").unwrap();
+        let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], false).unwrap();
+        let opened = std::fs::File::open(&file).unwrap();
+        assert!(sandbox.validate_opened_file(&file, &opened).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_opened_file_rejects_symlink_replacement() {
+        let temp = tempdir().unwrap();
+        let file = temp.path().join("allowed.txt");
+        let outside = temp.path().join("outside.txt");
+        std::fs::write(&file, "allowed").unwrap();
+        std::fs::write(&outside, "outside").unwrap();
+
+        let sandbox = Sandbox::new(vec![temp.path().to_path_buf()], vec![], false).unwrap();
+        let opened = std::fs::File::open(&file).unwrap();
+
+        std::fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink(&outside, &file).unwrap();
+
+        assert!(sandbox.validate_opened_file(&file, &opened).is_err());
     }
 
     #[test]
