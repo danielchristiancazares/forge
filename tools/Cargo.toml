@@ -14,17 +14,13 @@ forge-types.workspace = true
 forge-context.workspace = true
 forge-utils.workspace = true
 
-tokio = { workspace = true, features = ["sync", "rt", "time", "process", "io-util", "fs", "net", "macros"] }
+tokio = { workspace = true, features = ["sync", "rt", "time", "process", "io-util", "fs", "net"] }
 reqwest = { workspace = true, features = ["gzip", "brotli", "deflate"] }
 url.workspace = true
 scraper.workspace = true
-tiktoken-rs.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
-toml.workspace = true
-toml_edit.workspace = true
-aho-corasick.workspace = true
 base64.workspace = true
 globset.workspace = true
 jsonschema.workspace = true
@@ -50,7 +46,6 @@ libc.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
-    "Win32_Security",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
