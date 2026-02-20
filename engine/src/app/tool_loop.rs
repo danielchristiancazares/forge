@@ -45,8 +45,6 @@ fn now_unix_ms() -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(0)
 }
 
-// SpawnedTool: Proof object for spawned tool execution (IFA §8.1)
-
 #[derive(Debug)]
 pub(crate) struct SpawnedTool {
     call: ToolCall,
@@ -140,8 +138,6 @@ impl SpawnedTool {
     }
 }
 
-// ToolQueue: Queue state without active execution
-
 #[derive(Debug)]
 pub(crate) struct ToolQueue {
     pub(crate) queue: VecDeque<ToolCall>,
@@ -168,8 +164,6 @@ impl ToolQueue {
         self.queue.is_empty()
     }
 }
-
-// ActiveExecution: State with a spawned tool (requires SpawnedTool)
 
 #[derive(Debug)]
 pub(crate) struct ActiveExecution {

@@ -17,7 +17,6 @@ use crate::{
     StreamJournal, ToolJournal, UiOptions, ViewMode, ViewState,
 };
 
-// Tool limit defaults
 pub(crate) const DEFAULT_MAX_TOOL_CALLS_PER_BATCH: usize = 8;
 pub(crate) const DEFAULT_MAX_TOOL_ITERATIONS_PER_TURN: u32 = 4;
 pub(crate) const DEFAULT_MAX_TOOL_ARGS_BYTES: usize = 256 * 1024;
@@ -251,7 +250,6 @@ impl App {
 
         let anthropic_config = config.as_ref().and_then(|cfg| cfg.anthropic.as_ref());
 
-        // Load cache config (default: enabled)
         let cache_enabled = anthropic_config
             .map(|cfg| cfg.cache_enabled)
             .or_else(|| {
@@ -425,7 +423,6 @@ impl App {
         });
 
         app.reconcile_output_limits_with_model();
-        // Sync output limit to context manager for accurate budget calculation
         app.core
             .context_manager
             .set_output_limit(app.core.output_limits.max_output_tokens());
@@ -822,7 +819,6 @@ impl App {
                 })
         };
 
-        // Command blacklist initialization (patterns defined in command_blacklist module)
         let command_blacklist = tools::CommandBlacklist::with_defaults().unwrap_or_else(|e| {
             tracing::error!(
                 "Failed to compile command blacklist: {e}. Entering fail-closed mode for Run."

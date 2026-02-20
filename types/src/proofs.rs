@@ -39,7 +39,7 @@ impl NonEmptyString {
         }
     }
 
-    /// The `content` argument already satisfies the trim invariant...
+    /// Build a `NonEmptyString` by concatenating a static prefix, separator, and existing content.
     #[must_use]
     pub fn prefixed(prefix: NonEmptyStaticStr, separator: &str, content: &NonEmptyString) -> Self {
         let mut value =
@@ -103,7 +103,8 @@ impl AsRef<str> for NonEmptyString {
     }
 }
 
-/// **Note**: This only validates non-emptiness, not whitespace...
+/// Like [`NonEmptyString`], but for `'static` string literals. Validates non-emptiness at
+/// compile time via `const` assertion. Does not trim whitespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NonEmptyStaticStr(&'static str);
 

@@ -267,11 +267,6 @@ impl ActiveJournal {
         let delta = StreamDelta::new(self.step_id, seq, StreamDeltaEvent::TextDelta(content));
         self.pending_deltas.push(delta);
 
-        // Flush conditions:
-        // 1. First write (ensure crash recovery has content)
-        // 2. Buffer full by count (prevent unbounded delta accumulation)
-        // 3. Buffer full by bytes (prevent unbounded memory from large deltas)
-        // 4. Time elapsed (bound the data loss window)
         let flush_threshold = journal_flush_threshold();
         let flush_byte_threshold = journal_flush_byte_threshold();
         let flush_interval_ms = journal_flush_interval_ms();
@@ -326,7 +321,6 @@ impl ActiveJournal {
     }
 
     pub fn discard(mut self, journal: &mut StreamJournal) -> Result<u64> {
-        // Discard buffered deltas - no need to flush since we're discarding
         self.pending_deltas.clear();
         journal.discard_active(self)
     }
@@ -749,13 +743,10 @@ impl StreamJournal {
         Ok(())
     }
 
-    ///
     /// Looks for recoverable entries in the journal (unsealed OR sealed but uncommitted)
     /// and reconstructs the partial stream state.
     ///
-    /// # Returns
-    ///
-    /// `Some(RecoveredStream)` if there are recoverable entries, `None` otherwise.
+    /// Returns `Some(RecoveredStream)` if there are recoverable entries, `None` otherwise.
     pub fn recover(&self) -> Result<Option<RecoveredStream>> {
         if self.active_step.is_some() {
             return Ok(None);

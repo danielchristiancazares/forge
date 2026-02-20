@@ -289,8 +289,6 @@ impl super::App {
             .cloned()
             .collect();
 
-        // When memory enabled, use distillation-based context management.
-        // Otherwise, use basic mode.
         let api_messages = if memory_enabled {
             match self.core.context_manager.prepare(overhead) {
                 Ok(prepared) => prepared.api_messages(),
@@ -459,14 +457,12 @@ impl super::App {
             .clone();
 
         let task = async move {
-            // Convert tools to Option<&[ToolDefinition]>
             let tools_ref = if tools.is_empty() {
                 None
             } else {
                 Some(tools.as_slice())
             };
 
-            // Handle Gemini cache lifecycle
             let gemini_cache = if is_gemini && gemini_cache_config.enabled {
                 get_or_create_gemini_cache(
                     &gemini_cache_arc,

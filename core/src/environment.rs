@@ -37,7 +37,6 @@ impl EnvironmentContext {
     #[must_use]
     pub fn gather_without_agents_md() -> Self {
         let mut ctx = Self::gather();
-        // Clear agents_md by taking and discarding.
         let _ = ctx.take_agents_md();
         ctx
     }
