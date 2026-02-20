@@ -6,6 +6,55 @@
 
 use crate::state::{OperationEdge, OperationTag};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanApprovalDecision {
+    Approve,
+    Reject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolBatchContinuation {
+    ResumeStreaming,
+    FinishTurn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TransitionReceipt {
+    from: OperationTag,
+    edge: OperationEdge,
+    to: OperationTag,
+}
+
+impl TransitionReceipt {
+    #[must_use]
+    pub(crate) const fn from(self) -> OperationTag {
+        self.from
+    }
+
+    #[must_use]
+    pub(crate) const fn edge(self) -> OperationEdge {
+        self.edge
+    }
+
+    #[must_use]
+    pub(crate) const fn to(self) -> OperationTag {
+        self.to
+    }
+}
+
+#[must_use]
+pub(crate) fn transition_receipt(
+    from: OperationTag,
+    to: OperationTag,
+) -> Option<TransitionReceipt> {
+    transition_edge(from, to).map(|edge| TransitionReceipt { from, edge, to })
+}
+
+#[must_use]
+pub(crate) fn receipt_is_legal(receipt: TransitionReceipt) -> bool {
+    is_legal_transition(receipt.from, receipt.edge, receipt.to)
+}
+
 #[must_use]
 pub(crate) fn transition_edge(from: OperationTag, to: OperationTag) -> Option<OperationEdge> {
     use OperationEdge::{

@@ -42,7 +42,7 @@ use forge_types::{
     ApiKey, Message, ModelName, NonEmptyString, OpenAIReasoningEffort, OpenAIRequestOptions,
     OutputLimits, PhaseInput, Plan, PlanState, PlanStepId, Provider, SecretString, StepInput,
     StreamEvent, StreamFinishReason, ThinkingMessage, ThinkingReplayState, ThoughtSignatureState,
-    ToolCall, ToolResult,
+    ToolCall, ToolResult, ToolResultOutcome,
 };
 use tokio::sync::Mutex as TokioMutex;
 use tokio::task::yield_now;
@@ -1458,7 +1458,7 @@ fn tool_call_args_overflow_pre_resolved_error() {
     assert_eq!(parsed.pre_resolved.len(), 1);
     let result = &parsed.pre_resolved[0];
     assert_eq!(result.tool_call_id, "call-1");
-    assert!(result.is_error);
+    assert!(matches!(result.outcome(), ToolResultOutcome::Error));
     assert_eq!(result.content, "Tool arguments exceeded maximum size");
     assert_eq!(parsed.calls[0].arguments, json!({}));
 }
@@ -1708,14 +1708,14 @@ async fn tool_loop_write_then_read_same_batch() {
         .iter()
         .find(|result| result.tool_call_id == "call-write")
         .expect("write result");
-    assert!(!write_result.is_error);
+    assert!(matches!(write_result.outcome(), ToolResultOutcome::Success));
     assert!(write_result.content.contains("Created"));
 
     let read_result = results
         .iter()
         .find(|result| result.tool_call_id == "call-read")
         .expect("read result");
-    assert!(!read_result.is_error);
+    assert!(matches!(read_result.outcome(), ToolResultOutcome::Success));
     assert_eq!(read_result.content, "1| hello");
 }
 
@@ -1998,7 +1998,10 @@ fn plan_advance_creates_checkpoint() {
 
     let resolution = app.resolve_plan_tool_calls(&[advance_call], Vec::new());
     assert_eq!(resolution.pre_resolved.len(), 1);
-    assert!(!resolution.pre_resolved[0].is_error);
+    assert!(matches!(
+        resolution.pre_resolved[0].outcome(),
+        ToolResultOutcome::Success
+    ));
 
     let summaries = app.core.checkpoints.summaries();
     assert!(
@@ -2044,7 +2047,10 @@ fn plan_skip_creates_checkpoint() {
 
     let resolution = app.resolve_plan_tool_calls(&[skip_call], Vec::new());
     assert_eq!(resolution.pre_resolved.len(), 1);
-    assert!(!resolution.pre_resolved[0].is_error);
+    assert!(matches!(
+        resolution.pre_resolved[0].outcome(),
+        ToolResultOutcome::Success
+    ));
 
     let summaries = app.core.checkpoints.summaries();
     assert!(
@@ -2241,7 +2247,9 @@ async fn tool_gate_disabled_blocks_tool_execution() {
 
     assert!(!results.is_empty(), "Expected at least one tool result");
     assert!(
-        results.iter().all(|r| r.is_error),
+        results
+            .iter()
+            .all(|r| matches!(r.outcome(), ToolResultOutcome::Error)),
         "All tool results should be errors"
     );
 }

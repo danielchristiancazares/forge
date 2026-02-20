@@ -16,7 +16,7 @@ use forge_providers::{
     http_client_with_timeout, read_capped_error_body,
     retry::{RetryConfig, RetryOutcome, send_with_retry},
 };
-use forge_types::{InternalModel, Message, Provider};
+use forge_types::{InternalModel, Message, Provider, ToolResultOutcome};
 
 use super::token_counter::TokenCounter;
 
@@ -100,7 +100,10 @@ pub fn build_distillation_prompt(messages: &[Message]) -> (String, String) {
                 continue;
             }
             Message::ToolResult(result) => {
-                let status = if result.is_error { "Error" } else { "Result" };
+                let status = match result.outcome() {
+                    ToolResultOutcome::Error => "Error",
+                    ToolResultOutcome::Success => "Result",
+                };
                 let _ = write!(
                     conversation_log,
                     "[{i}] Tool {status}: {}\n\n",
@@ -567,7 +570,7 @@ mod tests {
             tool_call_id: "call_123".to_string(),
             tool_name: "Read".to_string(),
             content: "File contents here".to_string(),
-            is_error: false,
+            outcome: forge_types::ToolResultOutcome::Success,
         };
         let messages = vec![Message::ToolResult(result)];
 
@@ -584,7 +587,7 @@ mod tests {
             tool_call_id: "call_456".to_string(),
             tool_name: "Read".to_string(),
             content: "File not found".to_string(),
-            is_error: true,
+            outcome: forge_types::ToolResultOutcome::Error,
         };
         let messages = vec![Message::ToolResult(result)];
 

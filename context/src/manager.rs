@@ -16,7 +16,7 @@ use forge_types::{MessageId, StepId};
 use super::history::{CompactionSummary, FullHistory};
 use super::model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry};
 use super::token_counter::TokenCounter;
-use super::working_context::{ContextUsage, WorkingContext};
+use super::working_context::{ContextCompactionState, ContextUsage, WorkingContext};
 
 #[derive(Debug)]
 pub enum ContextBuildError {
@@ -73,7 +73,12 @@ impl PreparedContext<'_> {
 
     #[must_use]
     pub fn usage(&self) -> ContextUsage {
-        ContextUsage::from_context(&self.working_context, self.manager.history.is_compacted())
+        let compaction_state = if self.manager.history.is_compacted() {
+            ContextCompactionState::Compacted
+        } else {
+            ContextCompactionState::Uncompacted
+        };
+        ContextUsage::from_context(&self.working_context, compaction_state)
     }
 }
 
@@ -325,10 +330,14 @@ impl ContextManager {
             return status.clone();
         }
 
-        let fallback_usage = || ContextUsage {
-            used_tokens: self.history.total_tokens(),
-            budget_tokens: self.effective_budget(),
-            compacted: self.history.is_compacted(),
+        let fallback_usage = || {
+            let used_tokens = self.history.total_tokens();
+            let budget_tokens = self.effective_budget();
+            if self.history.is_compacted() {
+                ContextUsage::compacted(used_tokens, budget_tokens)
+            } else {
+                ContextUsage::uncompacted(used_tokens, budget_tokens)
+            }
         };
 
         let status = match self.prepare(0) {

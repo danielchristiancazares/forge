@@ -4,19 +4,23 @@ use std::f32::consts::TAU;
 
 use ratatui::layout::Rect;
 
-use forge_types::ui::{ModalEffect, ModalEffectKind, PanelEffect, PanelEffectKind};
+use forge_types::ui::{AnimPhase, ModalEffect, ModalEffectKind, PanelEffect, PanelEffectKind};
 
 /// Apply a modal effect to transform the base rectangle.
 #[must_use]
 pub fn apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> Rect {
+    let progress = match effect.phase() {
+        AnimPhase::Running { progress } => progress,
+        AnimPhase::Completed => 1.0,
+    };
     match effect.kind() {
         ModalEffectKind::PopScale => {
-            let t = ease_out_cubic(effect.progress());
+            let t = ease_out_cubic(progress);
             let scale = 0.6 + 0.4 * t;
             scale_rect(base, scale)
         }
         ModalEffectKind::SlideUp => {
-            let t = ease_out_cubic(effect.progress());
+            let t = ease_out_cubic(progress);
             let viewport_bottom = viewport.y.saturating_add(viewport.height);
             let base_bottom = base.y.saturating_add(base.height);
             let max_offset = viewport_bottom.saturating_sub(base_bottom);
@@ -30,7 +34,7 @@ pub fn apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> R
             }
         }
         ModalEffectKind::Shake => {
-            let t = effect.progress().clamp(0.0, 1.0);
+            let t = progress.clamp(0.0, 1.0);
             let decay = 1.0 - t;
             let oscillations = 4.0;
             let amplitude = 3.0;
@@ -48,9 +52,13 @@ pub fn apply_modal_effect(effect: &ModalEffect, base: Rect, viewport: Rect) -> R
 /// Apply a panel effect to the files panel.
 #[must_use]
 pub fn apply_files_panel_effect(effect: &PanelEffect, base: Rect) -> Rect {
+    let progress = match effect.phase() {
+        AnimPhase::Running { progress } => progress,
+        AnimPhase::Completed => 1.0,
+    };
     match effect.kind() {
-        PanelEffectKind::SlideOutRight => slide_panel_right(base, 1.0 - effect.progress()),
-        PanelEffectKind::SlideInRight => slide_panel_right(base, effect.progress()),
+        PanelEffectKind::SlideOutRight => slide_panel_right(base, 1.0 - progress),
+        PanelEffectKind::SlideInRight => slide_panel_right(base, progress),
     }
 }
 

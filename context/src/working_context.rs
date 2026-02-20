@@ -109,31 +109,95 @@ impl WorkingContext {
 }
 
 /// Usage statistics for display in UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextCompactionState {
+    Uncompacted,
+    Compacted,
+}
+
+/// Usage statistics for display in UI.
 #[derive(Debug, Clone, Copy)]
-pub struct ContextUsage {
-    /// Tokens currently used in working context.
-    pub used_tokens: u32,
-    /// Token budget for current model.
-    pub budget_tokens: u32,
-    pub compacted: bool,
+pub enum ContextUsage {
+    Uncompacted {
+        /// Tokens currently used in working context.
+        used_tokens: u32,
+        /// Token budget for current model.
+        budget_tokens: u32,
+    },
+    Compacted {
+        /// Tokens currently used in working context.
+        used_tokens: u32,
+        /// Token budget for current model.
+        budget_tokens: u32,
+    },
 }
 
 impl ContextUsage {
     #[must_use]
-    pub fn from_context(ctx: &WorkingContext, compacted: bool) -> Self {
-        Self {
-            used_tokens: ctx.total_tokens(),
-            budget_tokens: ctx.token_budget(),
-            compacted,
+    pub fn from_context(ctx: &WorkingContext, compaction_state: ContextCompactionState) -> Self {
+        let used_tokens = ctx.total_tokens();
+        let budget_tokens = ctx.token_budget();
+        match compaction_state {
+            ContextCompactionState::Uncompacted => Self::Uncompacted {
+                used_tokens,
+                budget_tokens,
+            },
+            ContextCompactionState::Compacted => Self::Compacted {
+                used_tokens,
+                budget_tokens,
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn uncompacted(used_tokens: u32, budget_tokens: u32) -> Self {
+        Self::Uncompacted {
+            used_tokens,
+            budget_tokens,
+        }
+    }
+
+    #[must_use]
+    pub const fn compacted(used_tokens: u32, budget_tokens: u32) -> Self {
+        Self::Compacted {
+            used_tokens,
+            budget_tokens,
+        }
+    }
+
+    #[must_use]
+    pub const fn used_tokens(&self) -> u32 {
+        match *self {
+            Self::Uncompacted { used_tokens, .. } | Self::Compacted { used_tokens, .. } => {
+                used_tokens
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn budget_tokens(&self) -> u32 {
+        match *self {
+            Self::Uncompacted { budget_tokens, .. } | Self::Compacted { budget_tokens, .. } => {
+                budget_tokens
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn compaction_state(&self) -> ContextCompactionState {
+        match self {
+            Self::Uncompacted { .. } => ContextCompactionState::Uncompacted,
+            Self::Compacted { .. } => ContextCompactionState::Compacted,
         }
     }
 
     #[must_use]
     pub fn percentage(&self) -> f32 {
-        if self.budget_tokens == 0 {
+        let budget_tokens = self.budget_tokens();
+        if budget_tokens == 0 {
             0.0
         } else {
-            (self.used_tokens as f32 / self.budget_tokens as f32) * 100.0
+            (self.used_tokens() as f32 / budget_tokens as f32) * 100.0
         }
     }
 
@@ -152,18 +216,18 @@ impl ContextUsage {
 
         let pct = self.percentage();
 
-        if self.compacted {
+        if matches!(self, Self::Compacted { .. }) {
             format!(
                 "{} / {} ({:.0}%) [C]",
-                format_k(self.used_tokens),
-                format_k(self.budget_tokens),
+                format_k(self.used_tokens()),
+                format_k(self.budget_tokens()),
                 pct,
             )
         } else {
             format!(
                 "{} / {} ({:.0}%)",
-                format_k(self.used_tokens),
-                format_k(self.budget_tokens),
+                format_k(self.used_tokens()),
+                format_k(self.budget_tokens()),
                 pct
             )
         }
@@ -205,11 +269,7 @@ mod tests {
 
     #[test]
     fn test_context_usage_format() {
-        let usage = ContextUsage {
-            used_tokens: 2100,
-            budget_tokens: 200_000,
-            compacted: false,
-        };
+        let usage = ContextUsage::uncompacted(2100, 200_000);
 
         let formatted = usage.format_compact();
         assert!(formatted.contains("2.1k"));
@@ -220,11 +280,7 @@ mod tests {
 
     #[test]
     fn test_context_usage_compacted() {
-        let usage = ContextUsage {
-            used_tokens: 50_000,
-            budget_tokens: 200_000,
-            compacted: true,
-        };
+        let usage = ContextUsage::compacted(50_000, 200_000);
 
         let formatted = usage.format_compact();
         assert!(formatted.contains("[C]"));
@@ -232,55 +288,31 @@ mod tests {
 
     #[test]
     fn test_severity_levels() {
-        let low = ContextUsage {
-            used_tokens: 10_000,
-            budget_tokens: 200_000,
-            compacted: false,
-        };
+        let low = ContextUsage::uncompacted(10_000, 200_000);
         assert_eq!(low.severity(), 0);
 
-        let medium = ContextUsage {
-            used_tokens: 160_000,
-            budget_tokens: 200_000,
-            compacted: false,
-        };
+        let medium = ContextUsage::uncompacted(160_000, 200_000);
         assert_eq!(medium.severity(), 1);
 
-        let high = ContextUsage {
-            used_tokens: 190_000,
-            budget_tokens: 200_000,
-            compacted: false,
-        };
+        let high = ContextUsage::uncompacted(190_000, 200_000);
         assert_eq!(high.severity(), 2);
     }
 
     #[test]
     fn test_percentage_zero_budget() {
-        let usage = ContextUsage {
-            used_tokens: 1000,
-            budget_tokens: 0,
-            compacted: false,
-        };
+        let usage = ContextUsage::uncompacted(1000, 0);
         assert!(usage.percentage().abs() < 0.01);
     }
 
     #[test]
     fn test_percentage_full_usage() {
-        let usage = ContextUsage {
-            used_tokens: 100_000,
-            budget_tokens: 100_000,
-            compacted: false,
-        };
+        let usage = ContextUsage::uncompacted(100_000, 100_000);
         assert!((usage.percentage() - 100.0).abs() < 0.01);
     }
 
     #[test]
     fn test_format_compact_small_tokens() {
-        let usage = ContextUsage {
-            used_tokens: 500,
-            budget_tokens: 900,
-            compacted: false,
-        };
+        let usage = ContextUsage::uncompacted(500, 900);
         let formatted = usage.format_compact();
         assert!(formatted.contains("500"));
         assert!(formatted.contains("900"));
@@ -288,11 +320,7 @@ mod tests {
 
     #[test]
     fn test_format_compact_million_tokens() {
-        let usage = ContextUsage {
-            used_tokens: 1_500_000,
-            budget_tokens: 2_000_000,
-            compacted: false,
-        };
+        let usage = ContextUsage::uncompacted(1_500_000, 2_000_000);
         let formatted = usage.format_compact();
         assert!(formatted.contains("1.5M"));
         assert!(formatted.contains("2.0M"));
@@ -306,41 +334,25 @@ mod tests {
 
     #[test]
     fn test_severity_boundary_exactly_70_percent() {
-        let usage = ContextUsage {
-            used_tokens: 70_000,
-            budget_tokens: 100_000,
-            compacted: false,
-        };
+        let usage = ContextUsage::uncompacted(70_000, 100_000);
         assert_eq!(usage.severity(), 0);
     }
 
     #[test]
     fn test_severity_boundary_just_over_70_percent() {
-        let usage = ContextUsage {
-            used_tokens: 70_001,
-            budget_tokens: 100_000,
-            compacted: false,
-        };
+        let usage = ContextUsage::uncompacted(70_001, 100_000);
         assert_eq!(usage.severity(), 1);
     }
 
     #[test]
     fn test_severity_boundary_exactly_90_percent() {
-        let usage = ContextUsage {
-            used_tokens: 90_000,
-            budget_tokens: 100_000,
-            compacted: false,
-        };
+        let usage = ContextUsage::uncompacted(90_000, 100_000);
         assert_eq!(usage.severity(), 1);
     }
 
     #[test]
     fn test_severity_boundary_just_over_90_percent() {
-        let usage = ContextUsage {
-            used_tokens: 90_001,
-            budget_tokens: 100_000,
-            compacted: false,
-        };
+        let usage = ContextUsage::uncompacted(90_001, 100_000);
         assert_eq!(usage.severity(), 2);
     }
 }

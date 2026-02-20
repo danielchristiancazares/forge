@@ -1719,11 +1719,11 @@ impl App {
     }
 
     pub fn plan_approval_approve(&mut self) {
-        self.resolve_plan_approval(true);
+        self.resolve_plan_approval(operation::PlanApprovalDecision::Approve);
     }
 
     pub fn plan_approval_reject(&mut self) {
-        self.resolve_plan_approval(false);
+        self.resolve_plan_approval(operation::PlanApprovalDecision::Reject);
     }
 
     pub fn tool_recovery_calls(&self) -> Option<&[ToolCall]> {
@@ -2113,8 +2113,16 @@ impl App {
         self.op_apply_edge_effects(state, edge, state);
     }
 
+    #[cfg(test)]
     fn op_transition_edge(from: OperationTag, to: OperationTag) -> Option<OperationEdge> {
         operation::transition_edge(from, to)
+    }
+
+    fn op_transition_receipt(
+        from: OperationTag,
+        to: OperationTag,
+    ) -> Option<operation::TransitionReceipt> {
+        operation::transition_receipt(from, to)
     }
 
     fn op_is_legal_transition(from: OperationTag, edge: OperationEdge, to: OperationTag) -> bool {
@@ -2131,15 +2139,15 @@ impl App {
     fn op_transition(&mut self, next: OperationState) {
         let from = self.core.state.tag();
         let to = next.tag();
-        let edge = Self::op_transition_edge(from, to);
-        if let Some(edge) = edge {
+        let receipt = Self::op_transition_receipt(from, to);
+        if let Some(receipt) = receipt {
             let loc = Location::caller();
-            let legal = Self::op_is_legal_transition(from, edge, to);
+            let legal = operation::receipt_is_legal(receipt);
             if !legal {
                 tracing::warn!(
                     from = ?from,
                     to = ?to,
-                    edge = edge.as_str(),
+                    edge = receipt.edge().as_str(),
                     file = loc.file(),
                     line = loc.line(),
                     column = loc.column(),
@@ -2147,7 +2155,8 @@ impl App {
                 );
                 debug_assert!(
                     legal,
-                    "Illegal OperationState transition: {from:?} --{edge:?}--> {to:?} at {}:{}:{}",
+                    "Illegal OperationState transition: {from:?} --{:?}--> {to:?} at {}:{}:{}",
+                    receipt.edge(),
                     loc.file(),
                     loc.line(),
                     loc.column()
@@ -2165,8 +2174,8 @@ impl App {
                 "OperationState transition",
             );
         }
-        if let Some(edge) = edge {
-            self.op_apply_edge_effects(from, edge, to);
+        if let Some(receipt) = receipt {
+            self.op_apply_edge_effects(receipt.from(), receipt.edge(), receipt.to());
         }
         self.core.state = next;
     }
@@ -2178,15 +2187,15 @@ impl App {
     #[track_caller]
     fn op_transition_from(&mut self, from: OperationTag, next: OperationState) {
         let to = next.tag();
-        let edge = Self::op_transition_edge(from, to);
-        if let Some(edge) = edge {
+        let receipt = Self::op_transition_receipt(from, to);
+        if let Some(receipt) = receipt {
             let loc = Location::caller();
-            let legal = Self::op_is_legal_transition(from, edge, to);
+            let legal = operation::receipt_is_legal(receipt);
             if !legal {
                 tracing::warn!(
                     from = ?from,
                     to = ?to,
-                    edge = edge.as_str(),
+                    edge = receipt.edge().as_str(),
                     file = loc.file(),
                     line = loc.line(),
                     column = loc.column(),
@@ -2194,7 +2203,8 @@ impl App {
                 );
                 debug_assert!(
                     legal,
-                    "Illegal OperationState transition: {from:?} --{edge:?}--> {to:?} at {}:{}:{}",
+                    "Illegal OperationState transition: {from:?} --{:?}--> {to:?} at {}:{}:{}",
+                    receipt.edge(),
                     loc.file(),
                     loc.line(),
                     loc.column()
@@ -2212,8 +2222,8 @@ impl App {
                 "OperationState transition",
             );
         }
-        if let Some(edge) = edge {
-            self.op_apply_edge_effects(from, edge, to);
+        if let Some(receipt) = receipt {
+            self.op_apply_edge_effects(receipt.from(), receipt.edge(), receipt.to());
         }
         self.core.state = next;
     }
@@ -3052,7 +3062,7 @@ impl App {
             | ContextUsageStatus::NeedsCompaction { usage, .. }
             | ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => usage,
         };
-        let distill_threshold_tokens = usage.budget_tokens.saturating_mul(8) / 10;
+        let distill_threshold_tokens = usage.budget_tokens().saturating_mul(8) / 10;
         let provider = self.provider();
         let provider_status = if self.has_api_key(provider) {
             "configured".to_string()
@@ -3123,8 +3133,8 @@ impl App {
             active_model: self.model().to_string(),
             provider,
             provider_status,
-            context_used_tokens: usage.used_tokens,
-            context_budget_tokens: usage.budget_tokens,
+            context_used_tokens: usage.used_tokens(),
+            context_budget_tokens: usage.budget_tokens(),
             distill_threshold_tokens,
             auto_attached: vec!["AGENTS.md".to_string()],
             rate_limit_state,
@@ -3736,10 +3746,11 @@ impl App {
     /// On first call, stashes the current draft and shows the most recent prompt.
     /// Subsequent calls show progressively older prompts.
     pub fn navigate_history_up(&mut self) {
-        if let ui::InsertDraftMut::Active(draft) = self.ui.input.insert_mut_access()
-            && let Some(text) = self.ui.input_history.navigate_prompt_up(draft.text())
-        {
-            draft.set_text(text.to_owned());
+        if let ui::InsertDraftMut::Active(draft) = self.ui.input.insert_mut_access() {
+            match self.ui.input_history.navigate_prompt_up(draft.text()) {
+                ui::NavOutcome::Moved(text) => draft.set_text(text),
+                ui::NavOutcome::AtBoundary => {}
+            }
         }
     }
 
@@ -3747,40 +3758,47 @@ impl App {
     ///
     /// When at the newest entry, restores the stashed draft.
     pub fn navigate_history_down(&mut self) {
-        if let ui::InsertDraftMut::Active(draft) = self.ui.input.insert_mut_access()
-            && let Some(text) = self.ui.input_history.navigate_prompt_down()
-        {
-            draft.set_text(text.to_owned());
+        if let ui::InsertDraftMut::Active(draft) = self.ui.input.insert_mut_access() {
+            match self.ui.input_history.navigate_prompt_down() {
+                ui::NavOutcome::Moved(text) => draft.set_text(text),
+                ui::NavOutcome::AtBoundary => {}
+            }
         }
     }
 
     /// Navigate to previous (older) command in Command mode.
     pub fn navigate_command_history_up(&mut self) {
-        if let ui::CommandDraftMut::Active(command) = self.ui.input.command_mut_access()
-            && let Some(text) = self.ui.input_history.navigate_command_up(command.text())
-        {
-            command.set_text(text.to_owned());
+        if let ui::CommandDraftMut::Active(command) = self.ui.input.command_mut_access() {
+            match self.ui.input_history.navigate_command_up(command.text()) {
+                ui::NavOutcome::Moved(text) => command.set_text(text),
+                ui::NavOutcome::AtBoundary => {}
+            }
         }
     }
 
     /// Navigate to next (newer) command in Command mode.
     pub fn navigate_command_history_down(&mut self) {
-        if let ui::CommandDraftMut::Active(command) = self.ui.input.command_mut_access()
-            && let Some(text) = self.ui.input_history.navigate_command_down()
-        {
-            command.set_text(text.to_owned());
+        if let ui::CommandDraftMut::Active(command) = self.ui.input.command_mut_access() {
+            match self.ui.input_history.navigate_command_down() {
+                ui::NavOutcome::Moved(text) => command.set_text(text),
+                ui::NavOutcome::AtBoundary => {}
+            }
         }
     }
 
     /// Record a submitted prompt to history.
     pub(crate) fn record_prompt(&mut self, text: &str) {
-        self.ui.input_history.push_prompt(text.to_owned());
+        if let Ok(ne) = NonEmptyString::new(text) {
+            self.ui.input_history.push_prompt(ne);
+        }
         self.ui.input_history.reset_navigation();
     }
 
     /// Record an executed command to history.
     pub(crate) fn record_command(&mut self, text: &str) {
-        self.ui.input_history.push_command(text.to_owned());
+        if let Ok(ne) = NonEmptyString::new(text) {
+            self.ui.input_history.push_command(ne);
+        }
         self.ui.input_history.reset_navigation();
     }
 

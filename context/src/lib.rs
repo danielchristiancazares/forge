@@ -49,4 +49,4 @@ pub use token_counter::TokenCounter;
 pub use tool_journal::{
     CorruptedToolArgs, RecoveredToolBatch, RecoveredToolCallExecution, ToolJournal,
 };
-pub use working_context::{ContextSegment, ContextUsage, WorkingContext};
+pub use working_context::{ContextCompactionState, ContextSegment, ContextUsage, WorkingContext};

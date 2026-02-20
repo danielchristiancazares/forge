@@ -1,13 +1,15 @@
 use std::time::Duration;
 
-pub(crate) fn normalized_progress(elapsed: Duration, duration: Duration) -> f32 {
-    if duration.is_zero() {
-        return 1.0;
-    }
-
-    let elapsed = elapsed.as_secs_f32();
-    let total = duration.as_secs_f32();
-    (elapsed / total).clamp(0.0, 1.0)
+/// Phase of a timed animation effect.
+///
+/// `Running` embeds the current progress, eliminating separate `progress()`
+/// and `is_finished()` queries. Zero-duration timers satisfy `0 >= 0` and
+/// return `Completed` immediately, so the division-by-zero guard is
+/// eliminated by construction.
+#[derive(Debug, Clone, Copy)]
+pub enum AnimPhase {
+    Running { progress: f32 },
+    Completed,
 }
 
 #[derive(Debug, Clone)]
@@ -30,12 +32,15 @@ impl EffectTimer {
     }
 
     #[must_use]
-    pub(crate) fn progress(&self) -> f32 {
-        normalized_progress(self.elapsed, self.duration)
-    }
-
-    #[must_use]
-    pub(crate) fn is_finished(&self) -> bool {
-        self.elapsed >= self.duration
+    pub(crate) fn phase(&self) -> AnimPhase {
+        if self.elapsed >= self.duration {
+            AnimPhase::Completed
+        } else {
+            // Safety: duration > 0 because elapsed >= 0 and elapsed < duration implies duration > 0
+            let p = self.elapsed.as_secs_f32() / self.duration.as_secs_f32();
+            AnimPhase::Running {
+                progress: p.clamp(0.0, 1.0),
+            }
+        }
     }
 }

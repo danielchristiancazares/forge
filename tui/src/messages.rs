@@ -13,7 +13,7 @@ use ratatui::{
 use forge_core::{DisplayItem, sanitize_display_text};
 use forge_engine::App;
 use forge_types::ui::UiOptions;
-use forge_types::{Message, Provider, sanitize_terminal_text};
+use forge_types::{Message, Provider, ToolResultOutcome, sanitize_terminal_text};
 
 use crate::diff_render::render_tool_result_lines;
 use crate::markdown::{render_markdown, render_markdown_preserve_newlines};
@@ -726,10 +726,12 @@ fn render_message_static(msg: &Message, ctx: RenderMessageStaticCtx<'_>) {
         }
         Message::ToolResult(result) => {
             let content = sanitize_display_text(&result.content);
+            let outcome = result.outcome();
+            let is_error = matches!(outcome, ToolResultOutcome::Error);
 
-            match tool_result_render_decision(tool_call_meta, &content, result.is_error, 80) {
+            match tool_result_render_decision(tool_call_meta, &content, outcome, 80) {
                 ToolResultRender::Full { diff_aware } => {
-                    let content_style = if result.is_error {
+                    let content_style = if is_error {
                         Style::default().fg(palette.error)
                     } else {
                         Style::default().fg(palette.text_secondary)
@@ -751,7 +753,7 @@ fn render_message_static(msg: &Message, ctx: RenderMessageStaticCtx<'_>) {
                     }
                 }
                 ToolResultRender::Summary(summary) => {
-                    let style = if result.is_error {
+                    let style = if is_error {
                         Style::default().fg(palette.error)
                     } else {
                         Style::default().fg(palette.text_muted)

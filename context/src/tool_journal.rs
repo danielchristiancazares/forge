@@ -39,7 +39,7 @@ use crate::sqlite_security::prepare_db_path;
 use crate::time_utils::system_time_to_iso8601_millis;
 use forge_types::{
     PersistableContent, StepId, ThinkingReplayState, ThoughtSignature, ThoughtSignatureState,
-    ToolBatchId, ToolCall, ToolResult,
+    ToolBatchId, ToolCall, ToolResult, ToolResultOutcome,
 };
 
 /// Per-tool-call execution metadata captured for crash recovery.
@@ -513,7 +513,10 @@ impl ToolJournal {
                     &result.tool_call_id,
                     &result.tool_name,
                     &content,
-                    i32::from(result.is_error),
+                    match result.outcome() {
+                        ToolResultOutcome::Success => 0,
+                        ToolResultOutcome::Error => 1,
+                    },
                     created_at,
                 ],
             )
@@ -545,7 +548,11 @@ impl ToolJournal {
         let tool_name_matches =
             existing_tool_name.is_empty() || existing_tool_name == result.tool_name;
         let content_matches = existing_content == content;
-        let is_error_matches = existing_is_error == i32::from(result.is_error);
+        let expected_is_error = match result.outcome() {
+            ToolResultOutcome::Success => 0,
+            ToolResultOutcome::Error => 1,
+        };
+        let is_error_matches = existing_is_error == expected_is_error;
 
         if tool_name_matches && content_matches && is_error_matches {
             return Ok(());
@@ -1056,7 +1063,9 @@ mod tests {
     use super::{RecoveredToolCallExecution, ToolJournal};
     use crate::time_utils::system_time_to_iso8601_millis;
     use forge_types::StepId;
-    use forge_types::{ThinkingReplayState, ThoughtSignatureState, ToolCall, ToolResult};
+    use forge_types::{
+        ThinkingReplayState, ThoughtSignatureState, ToolCall, ToolResult, ToolResultOutcome,
+    };
     use rusqlite::params;
     use std::time::SystemTime;
 
@@ -1462,7 +1471,10 @@ mod tests {
 
         let recovered = journal.recover().unwrap().expect("should recover");
         assert_eq!(recovered.results.len(), 1);
-        assert!(recovered.results[0].is_error);
+        assert!(matches!(
+            recovered.results[0].outcome(),
+            ToolResultOutcome::Error
+        ));
         assert_eq!(recovered.results[0].tool_name, "test");
         assert_eq!(recovered.results[0].content, "Something went wrong");
     }

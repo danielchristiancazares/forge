@@ -19,7 +19,7 @@
 
 use std::collections::HashSet;
 
-use forge_types::ToolCall;
+use forge_types::{ToolCall, ToolResultOutcome};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -102,7 +102,7 @@ pub(crate) enum ToolResultRender {
 pub(crate) fn tool_result_render_decision(
     tool_meta: Option<&ToolCallMeta>,
     content: &str,
-    is_error: bool,
+    outcome: ToolResultOutcome,
     max_width: usize,
 ) -> ToolResultRender {
     let kind = tool_meta.map(|m| m.kind);
@@ -118,7 +118,7 @@ pub(crate) fn tool_result_render_decision(
         return ToolResultRender::Full { diff_aware: true };
     }
 
-    let summary = format_tool_result_summary(tool_meta, content, is_error, max_width);
+    let summary = format_tool_result_summary(tool_meta, content, outcome, max_width);
     ToolResultRender::Summary(summary)
 }
 
@@ -134,10 +134,10 @@ fn looks_like_diff(content: &str) -> bool {
 pub(crate) fn format_tool_result_summary(
     tool_call_meta: Option<&ToolCallMeta>,
     content: &str,
-    is_error: bool,
+    outcome: ToolResultOutcome,
     max_width: usize,
 ) -> String {
-    if is_error {
+    if matches!(outcome, ToolResultOutcome::Error) {
         return truncate_to(first_line(content).unwrap_or_default(), max_width);
     }
 
@@ -149,7 +149,7 @@ pub(crate) fn format_tool_result_summary(
             distill_search(content).unwrap_or_else(|| distill_generic(content, max_width))
         }
         Some(ToolKind::Glob) => distill_glob(content),
-        Some(ToolKind::Shell) => distill_shell(content, is_error, max_width),
+        Some(ToolKind::Shell) => distill_shell(content, outcome, max_width),
         Some(ToolKind::GitStatus) => {
             distill_git_status(content).unwrap_or_else(|| distill_generic(content, max_width))
         }
@@ -191,13 +191,13 @@ fn distill_glob(content: &str) -> String {
     format!("{count} {label}")
 }
 
-fn distill_shell(content: &str, is_error: bool, max_width: usize) -> String {
+fn distill_shell(content: &str, outcome: ToolResultOutcome, max_width: usize) -> String {
     let (stdout, exit_code) = parse_command_output(content);
     let first = first_non_empty_line(stdout.as_deref().unwrap_or(content));
     let fallback_line = first_line(content);
     let exit_code = exit_code.or_else(|| extract_exit_code_from_text(content));
 
-    let summary = if is_error {
+    let summary = if matches!(outcome, ToolResultOutcome::Error) {
         if let Some(code) = exit_code {
             match first.or(fallback_line) {
                 Some(line) if !line.is_empty() && !is_exit_code_message(line) => {
@@ -527,7 +527,7 @@ impl CommandOutput {
 
 #[cfg(test)]
 mod tests {
-    use forge_types::ToolCall;
+    use forge_types::{ToolCall, ToolResultOutcome};
     use serde_json::json;
 
     use super::{
@@ -542,7 +542,7 @@ mod tests {
             json!({"path": "src/lib.rs", "start_line": 1, "end_line": 50}),
         );
         let meta = ToolCallMeta::from_call(&call);
-        let summary = format_tool_result_summary(Some(&meta), "", false, 80);
+        let summary = format_tool_result_summary(Some(&meta), "", ToolResultOutcome::Success, 80);
         assert_eq!(summary, "lines 1-50");
     }
 
@@ -551,7 +551,8 @@ mod tests {
         let call = ToolCall::new("call_2", "Search", json!({"pattern": "foo"}));
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"{"count":3,"matches":[{"type":"match","data":{"path":{"text":"a.rs"}}},{"type":"context","data":{"path":{"text":"b.rs"}}},{"type":"match","data":{"path":{"text":"a.rs"}}}]}"#;
-        let summary = format_tool_result_summary(Some(&meta), content, false, 80);
+        let summary =
+            format_tool_result_summary(Some(&meta), content, ToolResultOutcome::Success, 80);
         assert_eq!(summary, "3 matches in 2 files");
     }
 
@@ -560,7 +561,8 @@ mod tests {
         let call = ToolCall::new("call_3", "Glob", json!({"pattern": "*.rs"}));
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"["a.rs","b.rs"]"#;
-        let summary = format_tool_result_summary(Some(&meta), content, false, 80);
+        let summary =
+            format_tool_result_summary(Some(&meta), content, ToolResultOutcome::Success, 80);
         assert_eq!(summary, "2 files");
     }
 
@@ -568,7 +570,8 @@ mod tests {
     fn summary_bash_reports_exit_and_first_line() {
         let call = ToolCall::new("call_4", "Run", json!({"command": "echo hi"}));
         let meta = ToolCallMeta::from_call(&call);
-        let summary = format_tool_result_summary(Some(&meta), "hello\nworld", false, 80);
+        let summary =
+            format_tool_result_summary(Some(&meta), "hello\nworld", ToolResultOutcome::Success, 80);
         assert_eq!(summary, "exit 0: hello");
     }
 
@@ -581,7 +584,8 @@ mod tests {
         );
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"{"stdout":" M file1\nA  file2\n?? file3\n"}"#;
-        let summary = format_tool_result_summary(Some(&meta), content, false, 80);
+        let summary =
+            format_tool_result_summary(Some(&meta), content, ToolResultOutcome::Success, 80);
         assert_eq!(summary, "1 staged, 1 modified, 1 untracked");
     }
 
@@ -593,7 +597,8 @@ mod tests {
         let meta = ToolCallMeta::from_call(&call);
         // Content has no diff markers (Summary lines only)
         let content = "modified: a\nmodified: b\n";
-        let result = tool_result_render_decision(Some(&meta), content, false, 80);
+        let result =
+            tool_result_render_decision(Some(&meta), content, ToolResultOutcome::Success, 80);
         assert!(matches!(
             result,
             ToolResultRender::Full { diff_aware: true }
@@ -605,7 +610,8 @@ mod tests {
         let call = ToolCall::new("call_2", "Write", json!({}));
         let meta = ToolCallMeta::from_call(&call);
         let content = "Created /path/to/file.rs (1024 bytes)";
-        let result = tool_result_render_decision(Some(&meta), content, false, 80);
+        let result =
+            tool_result_render_decision(Some(&meta), content, ToolResultOutcome::Success, 80);
         assert!(matches!(
             result,
             ToolResultRender::Full { diff_aware: false }
@@ -617,7 +623,8 @@ mod tests {
         let call = ToolCall::new("call_3", "Run", json!({}));
         let meta = ToolCallMeta::from_call(&call);
         let content = "--- old\n+++ new\n@@ -1 +1 @@\n-foo\n+bar";
-        let result = tool_result_render_decision(Some(&meta), content, false, 80);
+        let result =
+            tool_result_render_decision(Some(&meta), content, ToolResultOutcome::Success, 80);
         assert!(matches!(
             result,
             ToolResultRender::Full { diff_aware: true }
@@ -629,7 +636,8 @@ mod tests {
         let call = ToolCall::new("call_4", "Run", json!({}));
         let meta = ToolCallMeta::from_call(&call);
         let content = "hello\nworld";
-        let result = tool_result_render_decision(Some(&meta), content, false, 80);
+        let result =
+            tool_result_render_decision(Some(&meta), content, ToolResultOutcome::Success, 80);
         assert!(matches!(result, ToolResultRender::Summary(_)));
     }
 
@@ -643,7 +651,8 @@ mod tests {
                        modified: f9\nmodified: f10\nmodified: f11\nmodified: f12\n\
                        modified: f13\nmodified: f14\nmodified: f15\n\n\
                        --- old\n+++ new\n@@ -1 +1 @@\n-foo\n+bar";
-        let result = tool_result_render_decision(Some(&meta), content, false, 80);
+        let result =
+            tool_result_render_decision(Some(&meta), content, ToolResultOutcome::Success, 80);
         // Even though diff markers are past line 10, Edit always gets Full
         assert!(matches!(
             result,
@@ -660,7 +669,8 @@ mod tests {
         );
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"{"commit_hash":"abc1234","commit_message":"feat: add feature","exit_code":0,"stdout":"[main abc1234] feat: add feature\n 1 file changed","stderr":"","isError":false}"#;
-        let summary = format_tool_result_summary(Some(&meta), content, false, 80);
+        let summary =
+            format_tool_result_summary(Some(&meta), content, ToolResultOutcome::Success, 80);
         assert_eq!(summary, "abc1234 feat: add feature");
     }
 
@@ -673,7 +683,8 @@ mod tests {
         );
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"{"commit_hash":"abc1234def5678","commit_message":"fix: bug","exit_code":0,"stdout":"","stderr":"","isError":false}"#;
-        let summary = format_tool_result_summary(Some(&meta), content, false, 80);
+        let summary =
+            format_tool_result_summary(Some(&meta), content, ToolResultOutcome::Success, 80);
         assert_eq!(summary, "abc1234 fix: bug");
     }
 
@@ -686,7 +697,8 @@ mod tests {
         );
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"{"commit_hash":null,"commit_message":"fix: bug","exit_code":0,"stdout":"","stderr":"","isError":false}"#;
-        let summary = format_tool_result_summary(Some(&meta), content, false, 80);
+        let summary =
+            format_tool_result_summary(Some(&meta), content, ToolResultOutcome::Success, 80);
         assert_eq!(summary, "failed: fix: bug");
     }
 
@@ -699,7 +711,8 @@ mod tests {
         );
         let meta = ToolCallMeta::from_call(&call);
         let content = "nothing to commit, working tree clean";
-        let summary = format_tool_result_summary(Some(&meta), content, true, 80);
+        let summary =
+            format_tool_result_summary(Some(&meta), content, ToolResultOutcome::Error, 80);
         assert_eq!(summary, "nothing to commit, working tree clean");
     }
 
@@ -712,7 +725,8 @@ mod tests {
         );
         let meta = ToolCallMeta::from_call(&call);
         let content = r#"{"commit_hash":"9562496","commit_message":"refactor(docs): update documentation\n\nThis commit contains:\n- Comprehensive rewrite","exit_code":0,"stdout":"","stderr":"","isError":false}"#;
-        let summary = format_tool_result_summary(Some(&meta), content, false, 80);
+        let summary =
+            format_tool_result_summary(Some(&meta), content, ToolResultOutcome::Success, 80);
         assert_eq!(summary, "9562496 refactor(docs): update documentation");
     }
 }

@@ -9,7 +9,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 use forge_core::sanitize_display_text;
 use forge_engine::App;
 use forge_types::truncate_with_ellipsis;
-use forge_types::{Message, Provider, ToolResult};
+use forge_types::{Message, Provider, ToolResult, ToolResultOutcome};
 use serde_json::Value;
 
 use crate::theme::{Glyphs, Palette, styles};
@@ -79,7 +79,7 @@ pub(crate) fn collect_tool_statuses(
             if !execute_ids.contains(call.id.as_str()) {
                 reason = first_result_line(result, reason_max_len);
                 ToolCallStatusKind::Denied
-            } else if result.is_error {
+            } else if matches!(result.outcome(), ToolResultOutcome::Error) {
                 reason = first_result_line(result, reason_max_len);
                 ToolCallStatusKind::Error
             } else {
@@ -175,7 +175,7 @@ pub(crate) fn message_header_parts(
             )
         }
         Message::ToolResult(result) => {
-            let (icon, style, label) = if result.is_error {
+            let (icon, style, label) = if matches!(result.outcome(), ToolResultOutcome::Error) {
                 (
                     glyphs.tool_result_err,
                     Style::default()

@@ -14,6 +14,7 @@ use forge_types::{
 use serde_json::Value;
 
 use crate::App;
+use crate::operation::{PlanApprovalDecision, ToolBatchContinuation};
 use crate::state::{OperationTag, PlanApprovalKind};
 
 /// Name of the Plan tool (must match the schema registration in builtins).
@@ -411,7 +412,7 @@ impl App {
         ToolResult::success(&call.id, PLAN_TOOL_NAME, content)
     }
 
-    pub(crate) fn resolve_plan_approval(&mut self, approved: bool) {
+    pub(crate) fn resolve_plan_approval(&mut self, decision: PlanApprovalDecision) {
         use crate::state::{
             ApprovalState, OperationState, PlanApprovalState, ToolLoopPhase, ToolLoopState,
         };
@@ -428,51 +429,46 @@ impl App {
             pending_tool_approvals,
         } = state;
 
-        let result = if approved {
-            match kind {
-                PlanApprovalKind::Create => {
-                    let plan = match take(&mut self.core.plan_state) {
-                        PlanState::Proposed(plan) => plan,
-                        other => {
-                            self.core.plan_state = other;
-                            batch.results.push(ToolResult::error(
-                                &tool_call_id,
-                                PLAN_TOOL_NAME,
-                                "Plan state inconsistency: expected Proposed.",
-                            ));
-                            self.cancel_tool_batch(batch);
-                            return;
-                        }
-                    };
-                    let rendered = plan.render();
-                    let mut plan = plan;
-                    editor::activate_next_eligible(&mut plan);
-                    self.core.plan_state = PlanState::Active(plan);
-                    ToolResult::success(
-                        &tool_call_id,
-                        PLAN_TOOL_NAME,
-                        format!("Plan approved and activated.\n\n{rendered}"),
-                    )
-                }
-                PlanApprovalKind::Edit { edited_plan } => {
-                    let rendered = edited_plan.render();
-                    self.core.plan_state = PlanState::Active(edited_plan);
-                    ToolResult::success(
-                        &tool_call_id,
-                        PLAN_TOOL_NAME,
-                        format!("Plan edit approved.\n\n{rendered}"),
-                    )
-                }
+        let result = match (decision, kind) {
+            (PlanApprovalDecision::Approve, PlanApprovalKind::Create) => {
+                let plan = match take(&mut self.core.plan_state) {
+                    PlanState::Proposed(plan) => plan,
+                    other => {
+                        self.core.plan_state = other;
+                        batch.results.push(ToolResult::error(
+                            &tool_call_id,
+                            PLAN_TOOL_NAME,
+                            "Plan state inconsistency: expected Proposed.",
+                        ));
+                        self.cancel_tool_batch(batch);
+                        return;
+                    }
+                };
+                let rendered = plan.render();
+                let mut plan = plan;
+                editor::activate_next_eligible(&mut plan);
+                self.core.plan_state = PlanState::Active(plan);
+                ToolResult::success(
+                    &tool_call_id,
+                    PLAN_TOOL_NAME,
+                    format!("Plan approved and activated.\n\n{rendered}"),
+                )
             }
-        } else {
-            match kind {
-                PlanApprovalKind::Create => {
-                    self.core.plan_state = PlanState::Inactive;
-                    ToolResult::error(&tool_call_id, PLAN_TOOL_NAME, "Plan rejected by user.")
-                }
-                PlanApprovalKind::Edit { .. } => {
-                    ToolResult::error(&tool_call_id, PLAN_TOOL_NAME, "Plan edit rejected by user.")
-                }
+            (PlanApprovalDecision::Approve, PlanApprovalKind::Edit { edited_plan }) => {
+                let rendered = edited_plan.render();
+                self.core.plan_state = PlanState::Active(edited_plan);
+                ToolResult::success(
+                    &tool_call_id,
+                    PLAN_TOOL_NAME,
+                    format!("Plan edit approved.\n\n{rendered}"),
+                )
+            }
+            (PlanApprovalDecision::Reject, PlanApprovalKind::Create) => {
+                self.core.plan_state = PlanState::Inactive;
+                ToolResult::error(&tool_call_id, PLAN_TOOL_NAME, "Plan rejected by user.")
+            }
+            (PlanApprovalDecision::Reject, PlanApprovalKind::Edit { .. }) => {
+                ToolResult::error(&tool_call_id, PLAN_TOOL_NAME, "Plan edit rejected by user.")
             }
         };
 
@@ -499,7 +495,11 @@ impl App {
         let calls_to_execute = batch.execute_now.clone();
         if calls_to_execute.is_empty() {
             let journal_status = batch.journal_status.clone();
-            self.commit_tool_batch(batch.into_commit(), journal_status, true);
+            self.commit_tool_batch(
+                batch.into_commit(),
+                journal_status,
+                ToolBatchContinuation::ResumeStreaming,
+            );
             return;
         }
 
@@ -670,7 +670,7 @@ mod tests {
     use forge_types::plan::editor;
     use forge_types::{
         EditOp, NonEmptyString, PhaseInput, Plan, PlanStepId, StepInput, ThoughtSignatureState,
-        ToolCall,
+        ToolCall, ToolResultOutcome,
     };
     use serde_json::json;
 
@@ -695,28 +695,28 @@ mod tests {
     fn parse_step_id_and_text_missing_step_id() {
         let call = tool_call(json!({ "outcome": "Did the thing" }));
         let err = parse_step_id_and_text(&call, "outcome").unwrap_err();
-        assert!(err.is_error);
+        assert!(matches!(err.outcome(), ToolResultOutcome::Error));
     }
 
     #[test]
     fn parse_step_id_and_text_empty_text() {
         let call = tool_call(json!({ "step_id": 1, "outcome": "" }));
         let err = parse_step_id_and_text(&call, "outcome").unwrap_err();
-        assert!(err.is_error);
+        assert!(matches!(err.outcome(), ToolResultOutcome::Error));
     }
 
     #[test]
     fn parse_step_id_and_text_whitespace_text() {
         let call = tool_call(json!({ "step_id": 1, "outcome": "   " }));
         let err = parse_step_id_and_text(&call, "outcome").unwrap_err();
-        assert!(err.is_error);
+        assert!(matches!(err.outcome(), ToolResultOutcome::Error));
     }
 
     #[test]
     fn parse_step_id_and_text_zero_step_id() {
         let call = tool_call(json!({ "step_id": 0, "outcome": "Did the thing" }));
         let err = parse_step_id_and_text(&call, "outcome").unwrap_err();
-        assert!(err.is_error);
+        assert!(matches!(err.outcome(), ToolResultOutcome::Error));
     }
 
     #[test]

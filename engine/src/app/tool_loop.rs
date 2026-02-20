@@ -21,6 +21,7 @@ use super::{
     CompletedTurnUsage, DEFAULT_TOOL_CAPACITY_BYTES, TOOL_EVENT_CHANNEL_CAPACITY,
     TOOL_OUTPUT_SAFETY_MARGIN_TOKENS,
 };
+use crate::operation::ToolBatchContinuation;
 use crate::security;
 use crate::state::{
     ApprovalState, JournalStatus, OperationEdge, OperationState, PlanApprovalState, ToolBatch,
@@ -284,7 +285,7 @@ impl App {
                     step_id,
                     turn,
                 },
-                true,
+                ToolBatchContinuation::ResumeStreaming,
             );
             return;
         }
@@ -367,7 +368,7 @@ impl App {
                                         step_id,
                                         turn,
                                     },
-                                    true,
+                                    ToolBatchContinuation::ResumeStreaming,
                                 );
                                 return;
                             }
@@ -428,7 +429,7 @@ impl App {
                                 step_id,
                                 turn,
                             },
-                            true,
+                            ToolBatchContinuation::ResumeStreaming,
                         );
                         return;
                     }
@@ -494,7 +495,7 @@ impl App {
                     turn,
                 },
                 journal_status,
-                true,
+                ToolBatchContinuation::ResumeStreaming,
             );
             return;
         }
@@ -544,7 +545,7 @@ impl App {
                             turn,
                         },
                         journal_status,
-                        true,
+                        ToolBatchContinuation::ResumeStreaming,
                     );
                     return;
                 }
@@ -598,7 +599,11 @@ impl App {
         let calls_to_execute = batch.execute_now.clone();
         if calls_to_execute.is_empty() {
             let journal_status = batch.journal_status.clone();
-            self.commit_tool_batch(batch.into_commit(), journal_status, true);
+            self.commit_tool_batch(
+                batch.into_commit(),
+                journal_status,
+                ToolBatchContinuation::ResumeStreaming,
+            );
             return;
         }
 
@@ -638,7 +643,7 @@ impl App {
                         turn: batch.turn,
                     },
                     batch.journal_status,
-                    true,
+                    ToolBatchContinuation::ResumeStreaming,
                 );
                 return;
             }
@@ -813,13 +818,13 @@ impl App {
             | ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => usage,
         };
 
-        if usage.budget_tokens == 0 {
+        if usage.budget_tokens() == 0 {
             return DEFAULT_TOOL_CAPACITY_BYTES;
         }
 
         let available_tokens = usage
-            .budget_tokens
-            .saturating_sub(usage.used_tokens)
+            .budget_tokens()
+            .saturating_sub(usage.used_tokens())
             .saturating_sub(TOOL_OUTPUT_SAFETY_MARGIN_TOKENS);
         if available_tokens == 0 {
             return 0;
@@ -1041,7 +1046,7 @@ impl App {
                             turn: batch.turn,
                         },
                         batch.journal_status,
-                        true,
+                        ToolBatchContinuation::ResumeStreaming,
                     );
                     return;
                 }
@@ -1060,7 +1065,7 @@ impl App {
                             turn: batch.turn,
                         },
                         batch.journal_status,
-                        true,
+                        ToolBatchContinuation::ResumeStreaming,
                     );
                 } else {
                     // Spawn next tool
@@ -1101,7 +1106,7 @@ impl App {
                                     turn: batch.turn,
                                 },
                                 batch.journal_status,
-                                true,
+                                ToolBatchContinuation::ResumeStreaming,
                             );
                             return;
                         }
@@ -1240,7 +1245,7 @@ impl App {
                                 turn: batch.turn,
                             },
                             batch.journal_status,
-                            true,
+                            ToolBatchContinuation::ResumeStreaming,
                         );
                         return;
                     }
@@ -1270,7 +1275,7 @@ impl App {
                                 turn: batch.turn,
                             },
                             batch.journal_status,
-                            true,
+                            ToolBatchContinuation::ResumeStreaming,
                         );
                     } else {
                         // If tool journaling was disabled mid-loop, fail closed and do not execute
@@ -1303,7 +1308,7 @@ impl App {
                                     turn: batch.turn,
                                 },
                                 batch.journal_status,
-                                true,
+                                ToolBatchContinuation::ResumeStreaming,
                             );
                             return;
                         }
@@ -1346,7 +1351,7 @@ impl App {
                                         turn: batch.turn,
                                     },
                                     batch.journal_status,
-                                    true,
+                                    ToolBatchContinuation::ResumeStreaming,
                                 );
                                 return;
                             }
@@ -1387,7 +1392,11 @@ impl App {
         }
 
         let journal_status = batch.journal_status.clone();
-        self.commit_tool_batch(batch.into_commit(), journal_status, false);
+        self.commit_tool_batch(
+            batch.into_commit(),
+            journal_status,
+            ToolBatchContinuation::FinishTurn,
+        );
     }
 
     fn commit_tool_batch_messages(&mut self, payload: &ToolCommitPayload) -> bool {
@@ -1457,7 +1466,7 @@ impl App {
         &mut self,
         payload: ToolCommitPayload,
         journal_status: JournalStatus,
-        auto_resume: bool,
+        continuation: ToolBatchContinuation,
     ) {
         self.op_transition(self.idle_state());
         let autosave_succeeded = self.commit_tool_batch_messages(&payload);
@@ -1497,13 +1506,13 @@ impl App {
             }
         }
 
-        if !auto_resume {
+        if matches!(continuation, ToolBatchContinuation::FinishTurn) {
             self.core.turn_rollback = super::TurnRollback::Committed;
         }
 
         // Only auto_resume if autosave succeeded - otherwise the journal step
         // remains uncommitted and would cause recovery issues on restart
-        if auto_resume && !autosave_succeeded {
+        if matches!(continuation, ToolBatchContinuation::ResumeStreaming) && !autosave_succeeded {
             self.push_notification(
                 "Cannot continue tool loop: history save failed. Stopping to prevent data loss.",
             );
@@ -1511,7 +1520,7 @@ impl App {
             return;
         }
 
-        if auto_resume && tool_cleanup_failed {
+        if matches!(continuation, ToolBatchContinuation::ResumeStreaming) && tool_cleanup_failed {
             // If tools are already disabled due to journal errors, allow streaming to continue.
             // The pending batch will be cleaned up best-effort or cleared manually via /clear.
             if let super::tool_gate::ToolGateStatus::Enabled = self.core.tool_gate.status() {
@@ -1523,7 +1532,7 @@ impl App {
             }
         }
 
-        if auto_resume {
+        if matches!(continuation, ToolBatchContinuation::ResumeStreaming) {
             let Some(api_key) = self.runtime.api_keys.get(&model.provider()).cloned() else {
                 self.push_notification(format!(
                     "Cannot resume: no API key for {}",
@@ -1568,7 +1577,7 @@ impl App {
     pub(crate) fn commit_tool_batch_without_journal(
         &mut self,
         payload: ToolCommitPayload,
-        auto_resume: bool,
+        continuation: ToolBatchContinuation,
     ) {
         self.op_transition(self.idle_state());
         let autosave_succeeded = self.commit_tool_batch_messages(&payload);
@@ -1582,13 +1591,13 @@ impl App {
             self.finalize_journal_commit(step_id);
         }
 
-        if !auto_resume {
+        if matches!(continuation, ToolBatchContinuation::FinishTurn) {
             self.core.turn_rollback = super::TurnRollback::Committed;
         }
 
         // Only auto_resume if autosave succeeded - otherwise the journal step
         // remains uncommitted and would cause recovery issues on restart.
-        if auto_resume && !autosave_succeeded {
+        if matches!(continuation, ToolBatchContinuation::ResumeStreaming) && !autosave_succeeded {
             self.push_notification(
                 "Cannot continue after tool failure: history save failed. Stopping to prevent data loss.",
             );
@@ -1596,7 +1605,7 @@ impl App {
             return;
         }
 
-        if auto_resume {
+        if matches!(continuation, ToolBatchContinuation::ResumeStreaming) {
             let Some(api_key) = self.runtime.api_keys.get(&model.provider()).cloned() else {
                 self.push_notification(format!(
                     "Cannot resume: no API key for {}",
@@ -1751,7 +1760,7 @@ impl App {
                     turn: batch.turn,
                 },
                 batch.journal_status,
-                true,
+                ToolBatchContinuation::ResumeStreaming,
             );
             return;
         }
@@ -1784,7 +1793,7 @@ impl App {
                     turn: batch.turn,
                 },
                 batch.journal_status,
-                true,
+                ToolBatchContinuation::ResumeStreaming,
             );
             return;
         }
@@ -1826,7 +1835,7 @@ impl App {
                         turn: batch.turn,
                     },
                     batch.journal_status,
-                    true,
+                    ToolBatchContinuation::ResumeStreaming,
                 );
                 return;
             }
@@ -1904,7 +1913,6 @@ impl App {
             batch.thinking_replay.clone(),
         );
 
-        let auto_resume = true;
         self.commit_tool_batch(
             ToolCommitPayload {
                 assistant_text,
@@ -1916,7 +1924,7 @@ impl App {
                 turn: TurnContext::new_for_recovery(),
             },
             JournalStatus::new(batch.batch_id),
-            auto_resume,
+            ToolBatchContinuation::ResumeStreaming,
         );
 
         match decision {

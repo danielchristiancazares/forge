@@ -10,7 +10,7 @@ use ratatui::{
 
 use forge_core::sanitize_display_text;
 use forge_engine::App;
-use forge_types::ToolResult;
+use forge_types::{ToolResult, ToolResultOutcome};
 
 use crate::shared::collect_approval_view;
 use crate::theme::{Glyphs, Palette, styles};
@@ -327,7 +327,7 @@ pub(crate) fn draw_tool_recovery_prompt(
 
     for call in calls {
         let (icon, style) = if let Some(result) = results_map.get(call.id.as_str()) {
-            if result.is_error {
+            if matches!(result.outcome(), ToolResultOutcome::Error) {
                 (
                     glyphs.tool_result_err,
                     Style::default()

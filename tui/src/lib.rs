@@ -35,7 +35,9 @@ use forge_engine::{
     PredefinedModel, Provider, SettingsAccess, command_specs, find_match_positions,
 };
 use forge_types::sanitize_path_for_display;
-use forge_types::ui::{ChangeKind, DiffExpansion, InputMode, SettingsCategory, SettingsSurface};
+use forge_types::ui::{
+    AnimPhase, ChangeKind, DiffExpansion, InputMode, SettingsCategory, SettingsSurface,
+};
 
 use self::diff_render::render_tool_result_lines;
 use self::format::{format_api_usage, format_token_count, highlight_file_refs};
@@ -76,7 +78,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         if animated.width > 0 && animated.height > 0 {
             files_panel_area = Some(animated);
         }
-        if effect.is_finished() {
+        if matches!(effect.phase(), AnimPhase::Completed) {
             app.finish_files_panel_effect();
         }
     } else if app.files_panel_visible() {
@@ -1836,19 +1838,16 @@ fn draw_settings_modal(
         height: selector_height,
     };
 
-    let (selector_area, effect_done) = if let Some(effect) = app.modal_effect_mut() {
+    let selector_area = if let Some(effect) = app.modal_effect_mut() {
         effect.advance(elapsed);
-        (
-            apply_modal_effect(effect, base_area, area),
-            effect.is_finished(),
-        )
+        let animated = apply_modal_effect(effect, base_area, area);
+        if matches!(effect.phase(), AnimPhase::Completed) {
+            app.clear_modal_effect();
+        }
+        animated
     } else {
-        (base_area, false)
+        base_area
     };
-
-    if effect_done {
-        app.clear_modal_effect();
-    }
 
     frame.render_widget(Clear, selector_area);
 
@@ -2014,19 +2013,16 @@ pub fn draw_model_selector(
         height: selector_height,
     };
 
-    let (selector_area, effect_done) = if let Some(effect) = app.modal_effect_mut() {
+    let selector_area = if let Some(effect) = app.modal_effect_mut() {
         effect.advance(elapsed);
-        (
-            apply_modal_effect(effect, base_area, area),
-            effect.is_finished(),
-        )
+        let animated = apply_modal_effect(effect, base_area, area);
+        if matches!(effect.phase(), AnimPhase::Completed) {
+            app.clear_modal_effect();
+        }
+        animated
     } else {
-        (base_area, false)
+        base_area
     };
-
-    if effect_done {
-        app.clear_modal_effect();
-    }
 
     frame.render_widget(Clear, selector_area);
 
@@ -2247,19 +2243,16 @@ fn draw_file_selector(
         height: selector_height,
     };
 
-    let (selector_area, effect_done) = if let Some(effect) = app.modal_effect_mut() {
+    let selector_area = if let Some(effect) = app.modal_effect_mut() {
         effect.advance(elapsed);
-        (
-            apply_modal_effect(effect, base_area, area),
-            effect.is_finished(),
-        )
+        let animated = apply_modal_effect(effect, base_area, area);
+        if matches!(effect.phase(), AnimPhase::Completed) {
+            app.clear_modal_effect();
+        }
+        animated
     } else {
-        (base_area, false)
+        base_area
     };
-
-    if effect_done {
-        app.clear_modal_effect();
-    }
 
     frame.render_widget(Clear, selector_area);
 

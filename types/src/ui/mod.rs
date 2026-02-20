@@ -11,7 +11,8 @@ mod panel;
 mod scroll;
 mod view_state;
 
-pub use history::InputHistory;
+pub use animation::AnimPhase;
+pub use history::{InputHistory, NavOutcome};
 pub use input::{
     CommandDraftMut, CommandDraftRef, CommandStateOwned, DraftInput, FileSelectMut, FileSelectRef,
     InputMode, InputState, InsertDraftMut, ModelSelectMut, ModelSelectRef, SettingsCategory,

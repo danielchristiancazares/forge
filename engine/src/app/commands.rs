@@ -506,9 +506,7 @@ impl super::App {
     }
 
     pub fn process_command(&mut self, command: EnteredCommand) {
-        if !command.raw.is_empty() {
-            self.record_command(&command.raw);
-        }
+        self.record_command(&command.raw);
 
         let parsed = Command::parse(&command.raw);
 
@@ -703,8 +701,8 @@ impl super::App {
                 self.push_notification(format!(
                     "Memory: {} │ Context: {remaining:.0}% left │ Used: {} │ Budget(effective): {} │ Window(raw): {} │ Output(reserved): {} │ Model: {} │ Limits: {}{}",
                     memory_flag,
-                    format_k(usage.used_tokens),
-                    format_k(usage.budget_tokens),
+                    format_k(usage.used_tokens()),
+                    format_k(usage.budget_tokens()),
                     format_k(limits.context_window()),
                     format_k(self.core.output_limits.max_output_tokens()),
                     self.core.context_manager.current_model(),

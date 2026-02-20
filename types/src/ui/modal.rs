@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use super::animation::EffectTimer;
+use super::animation::{AnimPhase, EffectTimer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalEffectKind {
@@ -47,13 +47,8 @@ impl ModalEffect {
     }
 
     #[must_use]
-    pub fn progress(&self) -> f32 {
-        self.timer.progress()
-    }
-
-    #[must_use]
-    pub fn is_finished(&self) -> bool {
-        self.timer.is_finished()
+    pub fn phase(&self) -> AnimPhase {
+        self.timer.phase()
     }
 
     #[must_use]
@@ -64,56 +59,54 @@ impl ModalEffect {
 
 #[cfg(test)]
 mod tests {
-    use super::{ModalEffect, ModalEffectKind};
+    use super::{AnimPhase, ModalEffect, ModalEffectKind};
     use std::time::Duration;
 
     #[test]
     fn pop_scale_initial_state() {
         let effect = ModalEffect::pop_scale(Duration::from_millis(200));
         assert_eq!(effect.kind(), ModalEffectKind::PopScale);
-        assert!(!effect.is_finished());
-        assert!(effect.progress() < 0.1);
+        assert!(matches!(effect.phase(), AnimPhase::Running { progress } if progress < 0.1));
     }
 
     #[test]
     fn slide_up_initial_state() {
         let effect = ModalEffect::slide_up(Duration::from_millis(300));
         assert_eq!(effect.kind(), ModalEffectKind::SlideUp);
-        assert!(!effect.is_finished());
+        assert!(matches!(effect.phase(), AnimPhase::Running { .. }));
     }
 
     #[test]
     fn shake_initial_state() {
         let effect = ModalEffect::shake(Duration::from_millis(250));
         assert_eq!(effect.kind(), ModalEffectKind::Shake);
-        assert!(!effect.is_finished());
+        assert!(matches!(effect.phase(), AnimPhase::Running { .. }));
     }
 
     #[test]
-    fn advance_increases_progress() {
+    fn advance_keeps_running() {
         let mut effect = ModalEffect::pop_scale(Duration::from_millis(200));
         effect.advance(Duration::from_millis(100));
-        assert!(!effect.is_finished());
+        assert!(matches!(effect.phase(), AnimPhase::Running { .. }));
     }
 
     #[test]
-    fn finished_after_duration() {
+    fn completed_after_duration() {
         let mut effect = ModalEffect::pop_scale(Duration::from_millis(100));
         effect.advance(Duration::from_millis(150));
-        assert!(effect.is_finished());
+        assert!(matches!(effect.phase(), AnimPhase::Completed));
     }
 
     #[test]
-    fn zero_duration_immediately_finished() {
+    fn zero_duration_immediately_completed() {
         let effect = ModalEffect::pop_scale(Duration::ZERO);
-        assert!(effect.is_finished());
-        assert!((effect.progress() - 1.0).abs() < f32::EPSILON);
+        assert!(matches!(effect.phase(), AnimPhase::Completed));
     }
 
     #[test]
     fn progress_clamped_at_one() {
         let mut effect = ModalEffect::pop_scale(Duration::from_millis(10));
         effect.advance(Duration::from_millis(1000));
-        assert!(effect.progress() <= 1.0);
+        assert!(matches!(effect.phase(), AnimPhase::Completed));
     }
 }

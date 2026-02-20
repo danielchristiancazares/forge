@@ -14,6 +14,6 @@ pub use forge_types::ui::{
     ActiveFilesPanel, ChangeKind, CommandDraftMut, CommandDraftRef, CommandStateOwned,
     DiffExpansion, DraftInput, FileSelectMut, FileSelectRef, FilesPanelState, InputHistory,
     InputMode, InputState, InsertDraftMut, ModalEffect, ModalEffectKind, ModelSelectMut,
-    ModelSelectRef, PanelEffect, PanelEffectKind, ScrollState, SettingsCategory, SettingsModalMut,
-    SettingsModalRef, SettingsModalState, SettingsSurface, UiOptions, ViewState,
+    ModelSelectRef, NavOutcome, PanelEffect, PanelEffectKind, ScrollState, SettingsCategory,
+    SettingsModalMut, SettingsModalRef, SettingsModalState, SettingsSurface, UiOptions, ViewState,
 };

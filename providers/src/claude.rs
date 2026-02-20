@@ -5,6 +5,7 @@ use crate::{
     retry::RetryConfig, send_retried_sse_request, stream_idle_timeout,
 };
 use forge_types::ThinkingState;
+use forge_types::ToolResultOutcome;
 use serde_json::json;
 use std::mem;
 
@@ -157,7 +158,7 @@ fn build_request_body(input: ClaudeRequestBodyInput<'_>) -> serde_json::Value {
                     "type": "tool_result",
                     "tool_use_id": result.tool_call_id,
                     "content": result.content,
-                    "is_error": result.is_error
+                    "is_error": matches!(result.outcome(), ToolResultOutcome::Error)
                 });
                 if matches!(hint, CacheHint::Ephemeral) {
                     apply_ephemeral_cache_control(&mut block);
@@ -276,14 +277,24 @@ fn build_request_body(input: ClaudeRequestBodyInput<'_>) -> serde_json::Value {
 
 use crate::sse_types::claude as typed;
 
+/// Parser state machine for Claude SSE events.
+///
+/// Idle → InToolCall(id) on ContentBlockStart
+/// InToolCall → Idle on ContentBlockStop
+/// Any → Compacting on MessageDelta with stop_reason: compaction
+/// Compacting → Idle on MessageStop (continue reading the resumed stream)
+/// Idle/InToolCall → Done on MessageStop (normal end-of-stream)
+#[derive(Default)]
+enum ClaudeParserState {
+    #[default]
+    Idle,
+    InToolCall(String),
+    Compacting,
+}
+
 #[derive(Default)]
 struct ClaudeParser {
-    /// Current tool call ID for streaming tool arguments
-    current_tool_id: Option<String>,
-    /// Server-side compaction is in progress — the API will send a new
-    /// `message_start` after the current `message_stop`, so we must NOT
-    /// treat that `message_stop` as end-of-stream.
-    compacting: bool,
+    state: ClaudeParserState,
 }
 
 impl SseParser for ClaudeParser {
@@ -313,7 +324,7 @@ impl SseParser for ClaudeParser {
                 }) = delta
                 {
                     tracing::info!("Server-side compaction triggered by Anthropic API");
-                    self.compacting = true;
+                    self.state = ClaudeParserState::Compacting;
                 }
 
                 if let Some(usage) = usage
@@ -336,7 +347,7 @@ impl SseParser for ClaudeParser {
                     if name.is_empty() {
                         return SseParseAction::Error("Claude tool call missing name".to_string());
                     }
-                    self.current_tool_id = Some(id.clone());
+                    self.state = ClaudeParserState::InToolCall(id.clone());
                     events.push(StreamEvent::ToolCallStart {
                         id,
                         name,
@@ -355,31 +366,31 @@ impl SseParser for ClaudeParser {
                 typed::Delta::SignatureDelta { signature } => {
                     events.push(StreamEvent::ThinkingSignature(signature));
                 }
-                typed::Delta::InputJsonDelta { partial_json } => {
-                    if let Some(ref id) = self.current_tool_id {
+                typed::Delta::InputJsonDelta { partial_json } => match &self.state {
+                    ClaudeParserState::InToolCall(id) => {
                         events.push(StreamEvent::ToolCallDelta {
                             id: id.clone(),
                             arguments: partial_json,
                         });
                     }
-                }
+                    ClaudeParserState::Idle | ClaudeParserState::Compacting => {}
+                },
                 typed::Delta::Unknown => {}
             },
 
             typed::Event::ContentBlockStop { .. } => {
-                self.current_tool_id = None;
+                self.state = ClaudeParserState::Idle;
             }
 
-            typed::Event::MessageStop => {
-                if self.compacting {
-                    // Compaction: the API will immediately start a new message
-                    // stream with the compacted context. Keep reading.
-                    self.compacting = false;
-                    // Fall through to Continue — do NOT signal Done.
-                } else {
+            typed::Event::MessageStop => match self.state {
+                ClaudeParserState::Compacting => {
+                    tracing::info!("Server-side compaction complete — resuming stream");
+                    self.state = ClaudeParserState::Idle;
+                }
+                ClaudeParserState::Idle | ClaudeParserState::InToolCall(_) => {
                     return SseParseAction::Done;
                 }
-            }
+            },
 
             typed::Event::Error { error } => {
                 let msg = if error.message.is_empty() {
@@ -448,9 +459,9 @@ pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CacheHint, CacheableMessage, ClaudeParser, ClaudeRequestBodyInput, Message, OutputLimits,
-        SseParseAction, SseParser, StreamEvent, ToolDefinition, anthropic_beta_header,
-        build_request_body, json,
+        CacheHint, CacheableMessage, ClaudeParser, ClaudeParserState, ClaudeRequestBodyInput,
+        Message, OutputLimits, SseParseAction, SseParser, StreamEvent, ToolDefinition,
+        anthropic_beta_header, build_request_body, json,
     };
     use forge_types::Provider;
     use forge_types::{ModelName, NonEmptyString};
@@ -1047,7 +1058,10 @@ mod tests {
             }
             _ => panic!("Expected Emit with usage for compaction delta"),
         }
-        assert!(parser.compacting, "compacting flag should be set");
+        assert!(
+            matches!(parser.state, ClaudeParserState::Compacting),
+            "parser should be in Compacting state"
+        );
 
         // Phase 3: message_stop during compaction should NOT end the stream
         let message_stop = serde_json::json!({ "type": "message_stop" });
@@ -1059,8 +1073,8 @@ mod tests {
             other => panic!("Expected Continue, got {other:?}"),
         }
         assert!(
-            !parser.compacting,
-            "compacting flag should be cleared after message_stop"
+            matches!(parser.state, ClaudeParserState::Idle),
+            "parser should be back to Idle after message_stop"
         );
 
         // Phase 4: New message_start from compacted continuation

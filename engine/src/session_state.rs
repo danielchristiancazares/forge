@@ -113,6 +113,7 @@ impl SessionState {
 mod tests {
     use super::{InputHistory, InputState, SessionChangeLog, SessionState};
     use crate::ui::DraftInput;
+    use forge_types::NonEmptyString;
     use std::collections::BTreeSet;
 
     #[test]
@@ -150,8 +151,8 @@ mod tests {
     #[test]
     fn session_state_serialization_roundtrip() {
         let mut history = InputHistory::default();
-        history.push_prompt("test prompt".to_owned());
-        history.push_command("quit".to_owned());
+        history.push_prompt(NonEmptyString::new("test prompt").unwrap());
+        history.push_command(NonEmptyString::new("quit").unwrap());
 
         let mut draft = DraftInput::default();
         draft.set_text("in progress".to_owned());

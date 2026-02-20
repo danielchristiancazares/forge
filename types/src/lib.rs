@@ -792,12 +792,18 @@ impl ToolCall {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolResultOutcome {
+    Success,
+    Error,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     pub tool_call_id: String,
     pub tool_name: String,
     pub content: String,
-    pub is_error: bool,
+    pub outcome: ToolResultOutcome,
 }
 
 impl ToolResult {
@@ -810,7 +816,7 @@ impl ToolResult {
             tool_call_id: tool_call_id.into(),
             tool_name: tool_name.into(),
             content: content.into(),
-            is_error: false,
+            outcome: ToolResultOutcome::Success,
         }
     }
 
@@ -823,8 +829,13 @@ impl ToolResult {
             tool_call_id: tool_call_id.into(),
             tool_name: tool_name.into(),
             content: error.into(),
-            is_error: true,
+            outcome: ToolResultOutcome::Error,
         }
+    }
+
+    #[must_use]
+    pub const fn outcome(&self) -> ToolResultOutcome {
+        self.outcome
     }
 
     #[must_use]
@@ -833,7 +844,7 @@ impl ToolResult {
             tool_call_id: normalize_string_for_persistence(&self.tool_call_id),
             tool_name: normalize_string_for_persistence(&self.tool_name),
             content: normalize_string_for_persistence(&self.content),
-            is_error: self.is_error,
+            outcome: self.outcome,
         }
     }
 }
