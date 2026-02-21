@@ -1,239 +1,67 @@
-# Bash AST Hardening Plan
+# Bash AST Hardening Plan (Implementation-Ready Spec)
 
-## Context
+## Objective
 
-Forge currently builds a normalized `policy_text` for Windows PowerShell commands before applying command blacklist and run-sandbox policy checks. On Unix shells, policy checks are applied to raw command text. This leaves avoidable gaps where shell syntax and token obfuscation can hide policy-relevant intent.
+Define an executable implementation spec for Bash-family command normalization in `Run` so blacklist and run-sandbox policy checks operate on canonical, parser-derived intent where possible.
 
-This plan introduces a Bash AST normalization boundary so policy checks operate on a strict, canonical representation of command intent for Bash-family shells.
+This document resolves prior architectural ambiguities and is normative for implementation.
 
-Goals:
+## DESIGN.md Conformance (Normative)
 
-1. Preserve mechanism/policy split: parser extracts facts, policy decides allow or deny.
-2. Reject syntax we cannot safely analyze.
-3. Normalize literals and command names so blacklist and run policy checks are harder to evade.
-4. Roll out safely via audit mode before enforcement.
+1. Boundary collapse: parser boundary code must collapse uncertainty immediately into `Result<BashPolicyText, BashAstViolation>`.
+2. Mechanism/policy split: `bash_ast` reports facts (`BashPolicyText`) or typed violations (`BashAstViolation`) only; caller policy decides allow/deny/log.
+3. ADT violations only: unsupported syntax is modeled as enum variants and matched exhaustively.
+4. No hidden fallback policy in parser: parser must never silently return raw command text on parse failure.
+5. Policy is outside parser: `off | audit | enforce` behavior is implemented in `tools/src/builtins.rs`.
 
----
+## Runtime Config Contract (Normative)
 
-## Contract With DESIGN.md
+### TOML location
 
-This plan follows the same invariants as existing security plans:
-
-1. No mechanism-owned policy fallback. AST parser reports facts and violations only.
-2. Boundary parsing collapses uncertainty before core policy checks.
-3. Unsupported or ambiguous syntax is explicit (`Violation`), never treated as safe.
-4. Parser output is proof-carrying (`BashPolicyText`) and consumed by policy code.
-5. Enforcement mode is caller policy, not parser default.
-
----
-
-## Threat Mapping
-
-Primary threats reduced:
-
-- `TM-002` (`docs/FORGE_THREAT_MODEL.md`): command execution abuse after policy drift.
-- `TM-007` (`docs/FORGE_THREAT_MODEL.md`): user confusion around what policy actually checks.
-- Argument obfuscation class from `docs/PLAN_BEHAVIORAL_SECURITY_FRAMEWORK.md`: shell argument injection and evasive syntax.
-
-What this does not solve:
-
-- User-approved harmful commands that are syntactically simple and explicit.
-- Host compromise by malware running as the same user.
-- OS-level isolation gaps (addressed by Linux/macOS hardening plans).
-
----
-
-## Design Overview
-
-### New boundary module
-
-`tools/src/bash_ast.rs`:
-
-- Parses Bash command text into AST.
-- Enforces a strict supported subset.
-- Produces canonical `policy_text` for downstream checks.
-- Returns typed violations for unsupported syntax.
-
-### Parser choice
-
-Use `tree-sitter` + `tree-sitter-bash` in-process (no shell subprocess required).
-
-Rationale:
-
-- No execution side effects.
-- Deterministic parse behavior.
-- Good structural access to command forms needed for deny decisions.
-
-### Output type
-
-```rust
-pub(crate) struct BashPolicyText {
-    command: NonEmptyString,
-    args: Vec<String>,
-}
-
-impl BashPolicyText {
-    pub(crate) fn to_policy_string(&self) -> String {
-        let mut s = self.command.to_lowercase();
-        for arg in &self.args {
-            s.push(' ');
-            s.push_str(arg);
-        }
-        s
-    }
-}
-```
-
-Structural invariants:
-
-- `command` is a NFKC-normalized, lowercased, non-empty literal command name. Empty commands are unrepresentable.
-- `args` contains resolved literal argument values with quote delimiters stripped.
-- `to_policy_string()` derives the whitespace-joined policy text for downstream checks. The flat string is a projection, not the source of truth.
-
-### Resolved policy text (capability token)
-
-```rust
-/// Proof that mode-aware policy-text resolution completed.
-/// Possession guarantees a usable policy string.
-/// Private field — only producible through `resolve_policy_text()`.
-pub(crate) struct ResolvedPolicyText {
-    inner: String,
-}
-```
-
-`ResolvedPolicyText` is the cats/food boundary (DESIGN.md §140–154). A resolution function absorbs the mode decision and produces the token. The caller possesses the token and uses it — never branches on mode.
-
-```rust
-fn resolve_policy_text(
-    result: Result<BashPolicyText, BashAstViolation>,
-    raw: &str,
-    mode: BashAstMode,
-) -> Result<ResolvedPolicyText, BashAstViolation> {
-    match result {
-        Ok(pt) => Ok(ResolvedPolicyText {
-            inner: pt.to_policy_string(),
-        }),
-        Err(v) => match mode {
-            BashAstMode::Audit => {
-                tracing::warn!(violation = %v, "bash AST violation (audit)");
-                Ok(ResolvedPolicyText { inner: raw.into() })
-            }
-            BashAstMode::Enforce => Err(v),
-            BashAstMode::Off => unreachable!(),
-        },
-    }
-}
-```
-
-Structural invariants:
-
-- In canonical path: `inner` contains the `BashPolicyText::to_policy_string()` projection.
-- In audit fallback: `inner` contains the raw command text (existing behavior, logged).
-- In enforce denial: no `ResolvedPolicyText` exists — `Err(violation)` propagates.
-- `BashAstMode::Off` never reaches resolution (parser is not called in off mode).
-- The caller never inspects provenance. Possession is the proof.
-
-### Violation model
-
-```rust
-pub(crate) enum BashAstViolation {
-    ParseError,
-    MultipleStatements,
-    PipelineNotSupported,
-    RedirectionNotSupported,
-    CompoundCommandNotSupported,
-    SubshellNotSupported,
-    CommandSubstitutionNotSupported,
-    ArithmeticExpansionNotSupported,
-    ProcessSubstitutionNotSupported,
-    HereDocNotSupported,
-    NonLiteralWordNotSupported,
-    AssignmentPrefixNotSupported,
-}
-```
-
----
-
-## Supported Syntax Subset (Phase 1)
-
-Allow:
-
-1. Exactly one simple command.
-2. Literal command name.
-3. Literal arguments only (plain words and quoted literals that resolve without expansion).
-
-Deny:
-
-1. Command lists (`;`, newline-separated multiple statements, `&&`, `||`).
-2. Pipelines (`|`).
-3. Any redirection (`>`, `>>`, `<`, `2>`, here-strings, heredocs).
-4. Subshells (`(...)`), grouping, compound commands (`if`, `for`, `while`, `case`, functions).
-5. Command substitution (`$(...)`, backticks).
-6. Parameter/arithmetic expansion (`$VAR`, `${...}`, `$((...))`).
-7. Process substitution (`<(...)`, `>(...)`).
-8. Assignment prefixes (`FOO=bar cmd`) in initial strict mode.
-
----
-
-## Canonicalization Rules
-
-Given accepted subset:
-
-1. NFKC normalize tokens.
-2. Lowercase command name for policy matching.
-3. Preserve argument byte content semantics where literal, but normalize whitespace joining to single spaces.
-4. Strip quote delimiters when they are syntactic-only wrappers for literals.
-5. Reject tokens requiring runtime expansion to resolve.
-
-Examples:
-
-| Raw | Result |
-|-----|--------|
-| `curl https://example.com` | `curl https://example.com` |
-| `'curl' "https://example.com"` | `curl https://example.com` |
-| `cu\rl https://example.com` | `curl https://example.com` |
-| `$(echo curl) https://example.com` | reject |
-| `curl "$URL"` | reject |
-| `curl https://x | jq .` | reject |
-
----
-
-## Integration Plan
-
-### Run tool integration
-
-Wire into `tools/src/builtins.rs` in `RunCommandTool::execute`:
-
-1. Detect Bash-family shells (`bash`, `sh`, `dash`, `zsh`) by executable stem.
-2. When mode is not `Off`, call `bash_ast::parse_command(raw)` then resolve:
-
-```rust
-let policy = resolve_policy_text(
-    bash_ast::parse_command(raw), raw, mode,
-)?;
-command_blacklist.validate(&policy);
-RunCommandText::new(raw, policy)  // consumes by move
-```
-
-3. The caller never branches on mode. `resolve_policy_text` absorbs that decision:
-   - Canonical parse succeeds: token wraps normalized policy string.
-   - Parse fails + `Audit`: token wraps raw text, violation logged.
-   - Parse fails + `Enforce`: `?` propagates denial, no token exists.
-4. Preserve raw command for actual execution path (shell receives the original string).
-
-### Policy mode
-
-Add config-gated behavior (boundary-owned parse, caller-owned policy):
+`bash_ast_mode` lives under `[tools.run]`, not `[run]`.
 
 ```toml
-[run]
-bash_ast_mode = "off"    # off | audit | enforce
+[tools.run]
+bash_ast_mode = "off" # off | audit | enforce
 ```
 
-Rust-side type (boundary collapses string immediately at config parse):
+### Parse and wiring path
+
+1. `config/src/lib.rs`:
+Add `bash_ast_mode` to `RunConfig` and deserialize to a typed enum at config boundary.
+2. `engine/src/app/init.rs`:
+Map parsed config value into tool runtime settings when building `ToolSettings`.
+3. `tools/src/lib.rs` and `tools/src/builtins.rs`:
+Carry typed mode into `RunCommandTool` and apply mode in `RunCommandTool::execute`.
+
+### Default behavior
+
+If `bash_ast_mode` is absent, default is `off`.
+
+### Planned config/runtime types
 
 ```rust
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+// config/src/lib.rs
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BashAstMode {
+    #[default]
+    Off,
+    Audit,
+    Enforce,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct RunConfig {
+    pub bash_ast_mode: Option<BashAstMode>,
+    pub windows: Option<WindowsRunConfig>,
+    pub macos: Option<MacOsRunConfig>,
+}
+```
+
+```rust
+// tools/src/lib.rs (runtime-facing copy mapped in engine init)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BashAstMode {
     #[default]
     Off,
@@ -242,136 +70,333 @@ pub enum BashAstMode {
 }
 ```
 
-Config parsing in `config/src/lib.rs` deserializes the TOML string into `BashAstMode`. Engine and tool code only see the enum — no raw strings propagate past the config boundary.
+## RunCommandText Contract (Resolved)
 
-Semantics:
+Implementation must keep the current borrowed integration contract in `tools/src/windows_run.rs`:
 
-1. `Off`: current behavior, no AST parsing.
-2. `Audit`: parse and emit warnings/telemetry, but do not block on violations.
-3. `Enforce`: fail closed on any `BashAstViolation`.
+```rust
+pub(crate) fn new(raw: &str, policy_text: &str) -> RunCommandText<'_>
+```
 
----
+No move-consumption API change is part of this phase. The plan must preserve borrowed `&str` call sites.
 
-## File Changes (Planned)
+## Parser Boundary Contract (Normative)
 
-| File | Change |
-|------|--------|
-| `tools/Cargo.toml` | Add `tree-sitter` and `tree-sitter-bash` dependencies |
-| `tools/src/bash_ast.rs` (new) | Parser, canonicalizer, typed violation mapping |
-| `tools/src/lib.rs` | Export module and shared types as needed |
-| `tools/src/builtins.rs` | Integrate Bash AST policy text generation in `Run` execution path |
-| `tools/src/windows_run.rs` | Reuse existing `RunCommandText` flow without behavior regression |
-| `config/src/lib.rs` | Add `bash_ast_mode` config field and parsing |
-| `engine/src/app/init.rs` | Resolve config into runtime policy object |
-| `docs/SECURITY_SANITIZATION.md` | Document Bash AST normalization boundary and limits |
-| `docs/FORGE_THREAT_MODEL.md` | Update controls/evidence references and residual risk notes |
+### Input contract
 
----
+1. Input type is Rust `&str` (UTF-8 by construction).
+2. Hard cap: input length must be `<= 64 * 1024` bytes.
+3. Exactly one parse attempt per command string.
+4. No parser retries, no secondary parser, no "best effort" text transforms after parse failure.
 
-## Rollout Phases
+### Output contract
 
-## Phase 1: Parser and Canonicalization Core
+1. Return `Ok(BashPolicyText)` iff command is exactly one simple literal command in allowed subset.
+2. Return `Err(BashAstViolation::<variant>)` for all unsupported or ambiguous forms.
+3. Parser output excludes parser-internal diagnostics from policy layers.
+4. Only `BashPolicyText` and `BashAstViolation` cross parser boundary.
 
-Deliverables:
+### Core parser types
 
-1. `bash_ast.rs` parser wrapper.
-2. Strict subset validator.
-3. `BashPolicyText` output.
-4. Unit tests for accepted/rejected syntax and normalization.
+```rust
+pub(crate) struct BashPolicyText {
+    command: NonEmptyString,
+    args: Vec<String>,
+}
 
-Risk: LOW to MEDIUM (parser edge cases).
+pub(crate) enum BashAstViolation {
+    InputTooLarge,
+    ParseError,
+    MultipleStatements,
+    PipelineNotSupported,
+    RedirectionNotSupported,
+    HereDocNotSupported,
+    CompoundCommandNotSupported,
+    SubshellNotSupported,
+    CommandSubstitutionNotSupported,
+    ParameterExpansionNotSupported,
+    ArithmeticExpansionNotSupported,
+    ProcessSubstitutionNotSupported,
+    NonLiteralWordNotSupported,
+    AssignmentPrefixNotSupported,
+}
+```
 
-## Phase 2: Audit-Mode Integration
+## Supported Syntax Subset (Phase 1)
 
-Deliverables:
+### Accepted
 
-1. `Run` path computes Bash policy text in audit mode.
-2. Violations logged with stable reason codes.
-3. No execution blocking yet.
+1. Exactly one simple command.
+2. Literal command word.
+3. Literal arguments only.
+4. Quoted literal arguments if no runtime expansion is required.
 
-Risk: LOW (no behavior breaks by default).
+### Rejected
 
-## Phase 3: Enforce Mode
+1. Multi-statement forms (`;`, `&&`, `||`, newline-separated command lists).
+2. Pipelines.
+3. Redirections and heredocs.
+4. Compound commands (`if`, `for`, `while`, `case`, function defs, brace groups).
+5. Subshells.
+6. Command substitution (`$(...)`, backticks).
+7. Parameter expansion and arithmetic expansion.
+8. Process substitution.
+9. Assignment prefixes (`FOO=bar cmd`).
 
-Deliverables:
+## Canonicalization Algorithm (Normative)
 
-1. Enforcement toggle in config.
-2. User-facing denial messages with clear violation reason.
-3. Regression tests for deny behavior.
+Apply in strict order:
 
-Risk: MEDIUM (may block workflows using unsupported syntax).
+1. Validate input byte length (`InputTooLarge` on overflow).
+2. Parse once using `tree-sitter` + `tree-sitter-bash`.
+3. If parse tree has error/missing nodes, return `ParseError`.
+4. Validate exactly one top-level simple command (`MultipleStatements` otherwise).
+5. Reject structural disallowed forms before token normalization:
+   pipeline, redirection/heredoc, compound, subshell.
+6. Reject assignment-prefix forms (`AssignmentPrefixNotSupported`).
+7. Validate command word is literal (`NonLiteralWordNotSupported` if not).
+8. Validate each argument token with deterministic violation mapping table below.
+9. NFKC-normalize command and args.
+10. Lowercase command token only.
+11. Emit canonical policy string by single-space join of normalized command and args.
 
-## Phase 4: Safe Subset Expansion (Optional)
+Non-goals for Phase 1:
 
-Candidate expansions after evidence:
+1. No runtime shell expansion.
+2. No command substitution semantics.
+3. No redirection semantics.
+4. No attempt to preserve shell quoting semantics beyond literal token extraction.
 
-1. Limited redirections (`2>/dev/null`) if security value justifies complexity.
-2. Assignment prefix handling with explicit rules.
-3. Multi-command allowance only if semantically equivalent policy guarantees can be proven.
+## Violation Mapping Rules (Normative)
 
-Risk: MEDIUM to HIGH (complexity and bypass surface increase).
+### Deterministic precedence
 
----
+When multiple unsupported constructs are present, return first violation according to this precedence order:
 
-## Testing Strategy
+1. `InputTooLarge`
+2. `ParseError`
+3. `MultipleStatements`
+4. `PipelineNotSupported`
+5. `HereDocNotSupported`
+6. `RedirectionNotSupported`
+7. `CompoundCommandNotSupported`
+8. `SubshellNotSupported`
+9. `AssignmentPrefixNotSupported`
+10. `CommandSubstitutionNotSupported`
+11. `ProcessSubstitutionNotSupported`
+12. `ParameterExpansionNotSupported`
+13. `ArithmeticExpansionNotSupported`
+14. `NonLiteralWordNotSupported`
 
-Unit tests (`tools/src/bash_ast.rs`):
+### Node-to-violation table
 
-1. Accept single literal command.
-2. Reject each unsupported syntax class with stable `BashAstViolation`.
-3. Canonicalize quoted and escaped literal tokens.
-4. Reject dynamic expansions and substitutions.
+| Syntax observation | Violation |
+|---|---|
+| input bytes > 65536 | `InputTooLarge` |
+| parse error or missing node | `ParseError` |
+| more than one top-level statement | `MultipleStatements` |
+| pipeline with `|` or multiple pipeline elements | `PipelineNotSupported` |
+| heredoc/here-string node | `HereDocNotSupported` |
+| any non-heredoc redirection node | `RedirectionNotSupported` |
+| `if/for/while/case/function/brace-group` nodes | `CompoundCommandNotSupported` |
+| subshell node `( ... )` | `SubshellNotSupported` |
+| leading `NAME=VALUE` assignments before command | `AssignmentPrefixNotSupported` |
+| command substitution node or backtick form | `CommandSubstitutionNotSupported` |
+| process substitution `<(...)` or `>(...)` | `ProcessSubstitutionNotSupported` |
+| `$VAR` or `${...}` | `ParameterExpansionNotSupported` |
+| `$((...))` | `ArithmeticExpansionNotSupported` |
+| any remaining non-literal command/arg token | `NonLiteralWordNotSupported` |
 
-Integration tests (`tools/src/builtins.rs` / run flow):
+### Enforce-mode message mapping
 
-1. In enforce mode, rejected syntax fails before spawn.
-2. In audit mode, violation is logged but command proceeds.
-3. Existing blacklist checks apply to canonicalized command names.
-4. Network-block policy checks evaluate normalized tokens.
+Enforce mode must map each violation to a stable denial code string and fixed user-facing message template:
 
-Security regression corpus:
+```text
+Run rejected unsupported Bash syntax (<code>). Enforce mode permits only one literal command with literal arguments.
+```
 
-1. Obfuscated command names (`c\url`, `'cu''rl'`, unicode confusables).
-2. Chained exfil attempts (`cat secret | curl ...`).
-3. Subshell and process substitution patterns.
-4. Heredoc and redirection payloads.
+`<code>` is a stable snake_case string derived from `BashAstViolation`.
 
-Run verification:
+## Integration Contract in Run Path (Normative)
+
+Integrate in `tools/src/builtins.rs` within `RunCommandTool::execute`:
+
+1. Parse tool args into `RunCommandArgs`.
+2. Determine shell family by executable stem.
+3. Compute policy text:
+   - PowerShell path remains as-is.
+   - Bash-family path uses `bash_ast_mode` and parser result.
+   - Non-Bash-family path uses raw command text.
+4. Validate blacklist with selected policy text.
+5. Pass raw command and selected policy text to `RunCommandText::new(&str, &str)`.
+6. Preserve raw command for spawn execution.
+
+### Borrowed integration pattern
+
+```rust
+let raw = typed.command.as_str();
+let mut policy_text_buf: Option<String> = None;
+
+if is_bash_family_shell(&self.shell) && !matches!(self.bash_ast_mode, BashAstMode::Off) {
+    match bash_ast::parse_command(raw) {
+        Ok(policy) => policy_text_buf = Some(policy.to_policy_string()),
+        Err(v) => match self.bash_ast_mode {
+            BashAstMode::Audit => {
+                log_bash_ast_audit(v, &self.shell, raw.len());
+                policy_text_buf = Some(raw.to_string());
+            }
+            BashAstMode::Enforce => return Err(bash_ast_enforce_error(v)),
+            BashAstMode::Off => unreachable!(),
+        },
+    }
+}
+
+let policy_text = policy_text_buf.as_deref().unwrap_or(raw);
+ctx.command_blacklist.validate(policy_text)?;
+let command_text = RunCommandText::new(raw, policy_text);
+```
+
+### Shell detection strategy
+
+Use executable stem matching, consistent with existing `is_powershell_shell` style in `tools/src/windows_run.rs`:
+
+1. Extract `file_stem` from `DetectedShell.binary`.
+2. Lowercase ASCII stem.
+3. Treat `bash | sh | dash | zsh` as Bash-family in Phase 1.
+
+### Audit telemetry (privacy-bounded)
+
+In audit mode on parser violation, emit structured warning fields only:
+
+1. `violation_kind`
+2. `shell_name`
+3. `command_length_bytes`
+4. `mode` (always `"audit"`)
+
+Do not log:
+
+1. raw command text
+2. canonical policy text
+3. parser token payloads
+
+## Decisions (Resolved) and Deferred Scope
+
+### Resolved for this phase
+
+1. `zsh` is treated as Bash-family by shell-stem matching.
+2. Assignment prefixes are rejected in Phase 1.
+3. Mode is global under `[tools.run]`.
+4. Telemetry is minimal and privacy-bounded as defined above.
+5. `RunCommandText` stays borrowed (`&str`, `&str`).
+
+### Deferred to Phase 4 (strict no-change guarantee for earlier phases)
+
+1. Redirection support.
+2. Assignment prefix support.
+3. Multi-command support.
+4. Per-profile or per-tool override policies.
+
+Phases 1-3 must not alter deferred semantics.
+
+## File Changes and Ownership
+
+| File | Required change |
+|---|---|
+| `Cargo.toml` | Add `tree-sitter` and `tree-sitter-bash` under `[workspace.dependencies]` |
+| `tools/Cargo.toml` | Consume `tree-sitter.workspace = true` and `tree-sitter-bash.workspace = true` |
+| `tools/src/bash_ast.rs` (new) | Parser boundary, canonicalization, violation mapping |
+| `tools/src/lib.rs` | Export `bash_ast` module and runtime `BashAstMode` type |
+| `config/src/lib.rs` | Add config `BashAstMode` and `[tools.run].bash_ast_mode` |
+| `engine/src/app/init.rs` | Map config mode into tool runtime settings |
+| `tools/src/builtins.rs` | Mode-aware integration and policy boundary decisions |
+| `tools/src/windows_run.rs` | Keep `RunCommandText` borrowed contract (no ownership API change) |
+| `docs/SECURITY_SANITIZATION.md` | Document parser boundary and telemetry restrictions |
+| `docs/FORGE_THREAT_MODEL.md` | Add control evidence and residual risk notes |
+
+Ownership statement:
+
+1. Parser and canonicalization mechanism belong in `tools/src/bash_ast.rs`.
+2. Policy decisions belong in `tools/src/builtins.rs`.
+3. Execution shaping remains in `tools/src/windows_run.rs`.
+
+## Runtime Flow
+
+```mermaid
+flowchart LR
+RawCommand["Run.command raw string"] --> ParseBoundary["bash_ast::parse_command(raw)"]
+ParseBoundary -->|"Ok BashPolicyText"| CanonicalPolicy["policy_text canonical string"]
+ParseBoundary -->|"Err BashAstViolation"| ModeDecision["bash_ast_mode policy decision"]
+ModeDecision -->|"audit"| AuditLog["tracing::warn! structured fields"]
+ModeDecision -->|"enforce"| DenyRun["ToolError::SandboxViolation(LimitsExceeded)"]
+AuditLog --> RawPolicy["fallback policy_text = raw command"]
+CanonicalPolicy --> BlacklistCheck["command_blacklist.validate(policy_text)"]
+RawPolicy --> BlacklistCheck
+BlacklistCheck --> PrepareRun["prepare_run_command(RunCommandText)"]
+PrepareRun --> Spawn["shell executes raw command"]
+```
+
+## Testing and Evidence Matrix
+
+### Unit tests (`tools/src/bash_ast.rs`)
+
+1. Allowed literal command and args.
+2. One test per `BashAstViolation` variant.
+3. Precedence determinism tests when multiple violations coexist.
+4. Canonicalization tests:
+   quoted literals, escaped literals, whitespace normalization, unicode NFKC normalization, confusable command tokens.
+5. Input-size boundary tests:
+   exactly 64 KiB accepted path and 64 KiB + 1 rejected path.
+
+### Integration tests (`tools/src/builtins.rs`)
+
+1. `audit` mode logs violation and continues to blacklist/spawn path.
+2. `enforce` mode blocks before spawn.
+3. Blacklist receives canonical AST text when parse succeeds.
+4. Blacklist receives raw text fallback only in `audit` parser-failure path.
+5. `off` mode preserves pre-existing raw policy behavior.
+
+### Regression requirements
+
+1. No behavior change to PowerShell AST path (`tools/src/powershell_ast.rs`).
+2. Existing Windows run-sandbox tests remain green.
+3. Existing command-blacklist tests remain green.
+
+### Validation commands
 
 1. `just fix`
 2. `just verify`
 
----
+## Rollout, Rollback, and Migration
 
-## Operational Guidance
+### Migration
 
-Recommended defaults:
+1. No config migration required.
+2. Feature is opt-in with default `off`.
 
-1. `bash_ast_mode = "audit"` for one release cycle.
-2. Promote to `enforce` after observing low false-positive rate in real workflows.
-3. Keep violation reason telemetry bounded and privacy-safe (no raw command persistence beyond existing policy).
+### Rollback
 
-Denial UX requirements:
+Immediate rollback is config-only:
 
-1. Explain rejected syntax category.
-2. Show minimal remediation guidance ("single literal command only in enforce mode").
-3. Avoid leaking sensitive command content in logs.
+```toml
+[tools.run]
+bash_ast_mode = "off"
+```
 
----
+### Rollout gate to recommend `audit -> enforce`
 
-## Success Criteria
+Require all of the following:
 
-1. Bash-family `Run` policy checks operate on canonicalized AST output, not raw text, in enforce mode.
-2. Obfuscation bypass examples in test corpus fail in enforce mode.
-3. No regressions to PowerShell AST path or Windows behavior.
-4. Audit mode demonstrates acceptable compatibility before default enforcement.
-5. Threat model control evidence updated and traceable to concrete symbols/tests.
+1. violation rate below 0.5% of Bash-family `Run` invocations for 14 consecutive days.
+2. zero confirmed severity-high false-positive incidents in that window.
+3. unit/integration matrix fully green in CI.
 
----
+## Implementation Completion Criteria
 
-## Open Questions
+This plan is implementation-ready only if all conditions are met:
 
-1. Should `zsh` use the Bash parser in strict compatibility mode, or remain raw until a dedicated parser exists?
-2. Should assignment prefixes (`FOO=bar cmd`) be supported in phase 1 for developer ergonomics?
-3. Should enforce mode be globally configurable, or tool-profile specific?
-4. How much violation telemetry is acceptable by default without storing sensitive command material?
+1. No unresolved architectural questions remain in this document.
+2. All config examples map to concrete structs and runtime wiring.
+3. Every violation class has deterministic trigger conditions and tests.
+4. Parser boundary, policy boundary, and telemetry privacy boundary are explicitly separated.
+5. Rollout, rollback, and migration guidance are concrete and immediately actionable.
+6. `DESIGN.md` contract language is encoded as normative requirements.
