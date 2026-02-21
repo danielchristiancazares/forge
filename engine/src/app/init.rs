@@ -15,8 +15,8 @@ use forge_types::{LspConfig, ModelName, OutputLimits, Provider, SecretString, To
 use tokio::sync::Mutex;
 
 use super::{
-    AppCore, AppRuntime, AppUi, LspRuntimeState, ProviderRuntimeState, SystemPrompts, TurnConfig,
-    TurnConfigStaging,
+    AppCore, AppRuntime, AppUi, GeminiCacheConfig, LspRuntimeState, PlanState,
+    ProviderRuntimeState, SystemPrompts, TurnConfig, TurnConfigStaging,
 };
 use crate::config::{self, ForgeConfig, OpenAIConfig};
 use crate::notifications::NotificationQueue;
@@ -158,7 +158,7 @@ pub(crate) fn build_app(parts: AppBuildParts) -> App {
             turn_usage: Default::default(),
             last_turn_usage: super::CompletedTurnUsage::NoTurnCompleted,
             notification_queue: NotificationQueue::new(),
-            plan_state: crate::PlanState::Inactive,
+            plan_state: PlanState::Inactive,
         },
         runtime: AppRuntime {
             api_keys: parts.api_keys,
@@ -342,7 +342,7 @@ impl App {
 
         // Load Gemini cache config
         let gemini_config = config.as_ref().and_then(|cfg| cfg.google.as_ref());
-        let gemini_cache_config = crate::GeminiCacheConfig {
+        let gemini_cache_config = GeminiCacheConfig {
             enabled: gemini_config.is_some_and(|cfg| cfg.cache_enabled), // Default disabled - requires explicit opt-in
             ttl_seconds: gemini_config
                 .and_then(|cfg| cfg.cache_ttl_seconds)

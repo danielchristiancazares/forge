@@ -168,7 +168,7 @@ impl App {
                             forge_utils::AtomicWriteOptions {
                                 sync_all: true,
                                 dir_sync: true,
-                                unix_mode: None,
+                                mode: forge_utils::PersistMode::SensitiveOwnerOnly,
                             },
                         ) {
                             tracing::warn!("Failed to save plan.json: {e}");
@@ -232,7 +232,7 @@ impl App {
             forge_utils::AtomicWriteOptions {
                 sync_all: true,
                 dir_sync: true,
-                unix_mode: None,
+                mode: forge_utils::PersistMode::SensitiveOwnerOnly,
             },
         )?;
 

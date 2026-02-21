@@ -504,8 +504,9 @@ impl super::App {
             .await;
 
             if let Err(e) = result {
-                tracing::warn!("LLM streaming request failed: {e}");
-                let _ = tx.send(StreamEvent::Error(e.to_string())).await;
+                let sanitized_error = security::sanitize_stream_error(&e.to_string());
+                tracing::warn!("LLM streaming request failed: {sanitized_error}");
+                let _ = tx.send(StreamEvent::Error(sanitized_error)).await;
             }
         };
 

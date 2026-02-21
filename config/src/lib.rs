@@ -675,7 +675,7 @@ fn persist_config_doc(path: &Path, doc: &toml_edit::DocumentMut) -> io::Result<(
         AtomicWriteOptions {
             sync_all: true,
             dir_sync: true,
-            unix_mode: None,
+            mode: forge_utils::PersistMode::Default,
         },
     )?;
 

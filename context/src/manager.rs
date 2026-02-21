@@ -425,7 +425,7 @@ impl ContextManager {
             forge_utils::AtomicWriteOptions {
                 sync_all: true,
                 dir_sync: true,
-                unix_mode: Some(0o600),
+                mode: forge_utils::PersistMode::SensitiveOwnerOnly,
             },
         )?;
         Ok(())

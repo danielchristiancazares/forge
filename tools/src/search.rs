@@ -80,9 +80,13 @@ impl SearchTool {
         Self { config }
     }
 
-    async fn select_backend(&self, mode: SearchMode) -> Result<BackendInfo, ToolError> {
-        let primary = probe_backend(&self.config.binary).await;
-        let fallback = probe_backend(&self.config.fallback_binary).await;
+    async fn select_backend(
+        &self,
+        mode: SearchMode,
+        env_sanitizer: &EnvSanitizer,
+    ) -> Result<BackendInfo, ToolError> {
+        let primary = probe_backend(&self.config.binary, env_sanitizer).await;
+        let fallback = probe_backend(&self.config.fallback_binary, env_sanitizer).await;
 
         let mut candidates = Vec::new();
         if let Some(info) = primary {
@@ -357,7 +361,7 @@ impl ToolExecutor for SearchTool {
             let exclude_glob = resolve_glob_list(typed.exclude_glob)?;
 
             let mode = SearchMode::from_request(fuzzy, context);
-            let backend = self.select_backend(mode).await?;
+            let backend = self.select_backend(mode, &ctx.env_sanitizer).await?;
 
             let order_root =
                 determine_order_root(&resolved, &ctx.working_dir, Path::new(&path_raw))
@@ -969,11 +973,12 @@ enum BackendKind {
     Ugrep,
 }
 
-async fn probe_backend(binary: &str) -> Option<BackendInfo> {
+async fn probe_backend(binary: &str, env_sanitizer: &EnvSanitizer) -> Option<BackendInfo> {
     let resolved = which::which(binary).ok()?;
-    let mut cmd = Command::new(&resolved);
+    let cmd = Command::new(&resolved);
+    let mut cmd = super::process::apply_sanitized_env(cmd, env_sanitizer);
     cmd.arg("--version");
-    let output = cmd.output().await.ok()?;
+    let output = cmd.into_inner().output().await.ok()?;
     if !output.status.success() {
         return None;
     }
@@ -1243,7 +1248,7 @@ fn add_batch_files(cmd: &mut Command, pattern: &str, batch: &[FileCandidate], se
 }
 
 async fn execute_backend_batch<F>(
-    mut cmd: Command,
+    mut cmd: super::process::SanitizedCommand,
     deadline: Instant,
     mut handle_line: F,
 ) -> Result<BatchExecutionResult, ToolError>
@@ -1454,7 +1459,7 @@ async fn run_ripgrep(run: RipgrepRun<'_>) -> Result<BackendRun, ToolError> {
         }
         add_batch_files(&mut cmd, pattern, batch, search_root);
 
-        super::process::apply_sanitized_env(&mut cmd, env_sanitizer);
+        let cmd = super::process::apply_sanitized_env(cmd, env_sanitizer);
 
         let batch_result = execute_backend_batch(cmd, deadline, |line| {
             let value = parse_backend_json_line(line, "ripgrep")?;
@@ -1558,7 +1563,7 @@ async fn run_ugrep(run: UgrepRun<'_>) -> Result<BackendRun, ToolError> {
 
         add_batch_files(&mut cmd, pattern, batch, search_root);
 
-        super::process::apply_sanitized_env(&mut cmd, env_sanitizer);
+        let cmd = super::process::apply_sanitized_env(cmd, env_sanitizer);
 
         let batch_result = execute_backend_batch(cmd, deadline, |line| {
             let value = parse_backend_json_line(line, "ugrep")?;
@@ -1752,9 +1757,62 @@ fn looks_like_option_error(stderr: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        SearchTool, SearchToolConfig, ToolExecutor, normalize_path_text,
+        BackendKind, EnvSanitizer, SearchTool, SearchToolConfig, ToolExecutor, normalize_path_text,
         pattern_has_ascii_uppercase, trim_line_endings,
     };
+    use std::env;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = env::var(key).ok();
+            unsafe {
+                env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                unsafe {
+                    env::set_var(self.key, previous);
+                }
+            } else {
+                unsafe {
+                    env::remove_var(self.key);
+                }
+            }
+        }
+    }
+
+    fn write_probe_script(path: &Path) {
+        #[cfg(windows)]
+        let content =
+            "@echo off\r\nif not \"%LD_PRELOAD%\"==\"\" exit /b 9\r\necho ripgrep 13.0.0\r\n";
+        #[cfg(not(windows))]
+        let content =
+            "#!/bin/sh\nif [ -n \"$LD_PRELOAD\" ]; then\n  exit 9\nfi\necho \"ripgrep 13.0.0\"\n";
+
+        fs::write(path, content).expect("write test probe script");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut perms = fs::metadata(path).expect("metadata").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(path, perms).expect("set executable bit");
+        }
+    }
 
     #[test]
     fn trim_line_endings_removes_trailing_newlines() {
@@ -1778,5 +1836,23 @@ mod tests {
     fn search_tool_reads_user_data() {
         let tool = SearchTool::new(SearchToolConfig::default());
         assert!(tool.reads_user_data(&serde_json::json!({"pattern": "test"})));
+    }
+
+    #[tokio::test]
+    async fn probe_backend_strips_injection_env_vars() {
+        let dir = tempdir().expect("tempdir");
+        #[cfg(windows)]
+        let script = dir.path().join("probe-backend.cmd");
+        #[cfg(not(windows))]
+        let script = dir.path().join("probe-backend.sh");
+        write_probe_script(&script);
+
+        let sanitizer = EnvSanitizer::new(&["LD_PRELOAD".to_string()]).expect("sanitizer");
+        let _env_guard = EnvVarGuard::set("LD_PRELOAD", "/tmp/forge-test-preload");
+
+        let info = super::probe_backend(script.to_str().expect("utf8 path"), &sanitizer)
+            .await
+            .expect("backend should probe after env sanitization");
+        assert!(matches!(info.kind, BackendKind::Ripgrep));
     }
 }

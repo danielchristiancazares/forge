@@ -1,8 +1,9 @@
 use crate::{
-    CacheableMessage, Message, OutputLimits, ParsedSsePayload, Result, SendMessageRequest,
-    SseParseAction, SseParser, StreamEvent, ThoughtSignature, ThoughtSignatureState,
-    ToolDefinition, emit_or_continue, http_client, http_client_with_timeout, parse_sse_payload,
-    read_capped_error_body, retry::RetryConfig, send_retried_sse_request,
+    ApiUsage, CacheableMessage, GEMINI_API_BASE_URL, Message, OutputLimits, ParsedSsePayload,
+    Result, SendMessageRequest, SseParseAction, SseParser, StreamEvent, ThoughtSignature,
+    ThoughtSignatureState, ToolDefinition, emit_or_continue, http_client, http_client_with_timeout,
+    parse_sse_payload, read_capped_error_body, retry::RetryConfig, send_retried_sse_request,
+    stream_idle_timeout,
 };
 
 use chrono::{DateTime, Utc};
@@ -11,7 +12,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use uuid::Uuid;
 
-const API_BASE: &str = crate::GEMINI_API_BASE_URL;
+const API_BASE: &str = GEMINI_API_BASE_URL;
 
 /// Active Gemini cache reference.
 ///
@@ -376,7 +377,7 @@ impl SseParser for GeminiParser {
         let mut finish_action: Option<SseParseAction> = None;
 
         if let Some(usage) = response.usage_metadata {
-            events.push(StreamEvent::Usage(crate::ApiUsage {
+            events.push(StreamEvent::Usage(ApiUsage {
                 input_tokens: usage.prompt_token_count,
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
@@ -505,7 +506,7 @@ pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
         &retry_config,
         tx,
         &mut parser,
-        crate::stream_idle_timeout(),
+        stream_idle_timeout(),
     )
     .await
 }

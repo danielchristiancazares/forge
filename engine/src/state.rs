@@ -15,7 +15,7 @@ use crate::StreamingMessage;
 use crate::TurnContext;
 use crate::thinking::ThinkingPayload;
 use crate::tools::ConfirmationRequest;
-use crate::{ActiveExecution, ToolQueue};
+use crate::{ActiveExecution, QueuedUserMessage, ToolQueue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DataDirSource {
@@ -407,7 +407,7 @@ pub(crate) enum DistillationState {
     /// Distillation in progress, with a user message queued to stream after completion.
     CompletedWithQueued {
         task: DistillationTask,
-        message: crate::QueuedUserMessage,
+        message: QueuedUserMessage,
     },
 }
 

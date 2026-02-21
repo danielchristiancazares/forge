@@ -198,9 +198,9 @@ pub(crate) async fn policy_text_for_command(
     raw_command: &str,
     env_sanitizer: &EnvSanitizer,
 ) -> Result<PowerShellPolicyText, ToolError> {
-    let mut cmd = Command::new(powershell_binary);
+    let cmd = Command::new(powershell_binary);
 
-    super::process::apply_sanitized_env(&mut cmd, env_sanitizer);
+    let mut cmd = super::process::apply_sanitized_env(cmd, env_sanitizer);
     cmd.env("FORGE_POWERSHELL_AST_RAW", raw_command);
 
     cmd.arg("-NoProfile")

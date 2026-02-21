@@ -1,8 +1,9 @@
 use crate::{
-    ApiConfig, ApiResponse, ApiUsage, CacheableMessage, Message, OutputLimits, ParsedSsePayload,
-    Result, SendMessageRequest, SseParseAction, SseParser, StreamEvent, ThinkingReplayState,
-    ThoughtSignatureState, ToolDefinition, emit_or_continue, http_client, parse_sse_payload,
-    process_sse_stream, retry::RetryConfig, send_event, send_retried_request,
+    ApiConfig, ApiResponse, ApiUsage, CacheableMessage, Message, OPENAI_RESPONSES_API_URL,
+    OutputLimits, ParsedSsePayload, Result, SendMessageRequest, SseParseAction, SseParser,
+    StreamEvent, ThinkingReplayState, ThoughtSignatureState, ToolDefinition, emit_or_continue,
+    http_client, parse_sse_payload, process_sse_stream, retry::RetryConfig, send_event,
+    send_retried_request, stream_idle_timeout,
 };
 
 use forge_types::{OpenAIReasoningEffort, OpenAIReasoningSummary, OpenAIReasoningSummaryPart};
@@ -12,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const API_URL: &str = crate::OPENAI_RESPONSES_API_URL;
+const API_URL: &str = OPENAI_RESPONSES_API_URL;
 
 fn is_pro_model(model: &forge_types::ModelName) -> bool {
     model.as_str() == "gpt-5.2-pro"
@@ -780,11 +781,11 @@ pub async fn send_message(request: &SendMessageRequest<'_>) -> Result<()> {
 
     let idle_timeout = if is_pro {
         cmp::max(
-            crate::stream_idle_timeout(),
+            stream_idle_timeout(),
             Duration::from_secs(PRO_IDLE_TIMEOUT_SECS),
         )
     } else {
-        crate::stream_idle_timeout()
+        stream_idle_timeout()
     };
 
     let mut parser = if let Some(st) = background_state.as_ref() {

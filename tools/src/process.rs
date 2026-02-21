@@ -2,6 +2,7 @@
 
 use std::env::vars as env_vars;
 use std::io::Error as IoError;
+use std::ops::{Deref, DerefMut};
 
 use tokio::process::{Child, Command};
 #[cfg(windows)]
@@ -62,11 +63,44 @@ impl Drop for ChildGuard {
     }
 }
 
-pub(crate) fn apply_sanitized_env(cmd: &mut Command, env_sanitizer: &EnvSanitizer) {
+/// A Command that has had its environment mathematically sanitized.
+///
+/// IFA: By hiding `tokio::process::Command` execution behind this token, we
+/// make it structurally impossible to spawn a subprocess with unsanitized
+/// inherited environment variables in core logic.
+pub struct SanitizedCommand(Command);
+
+impl Deref for SanitizedCommand {
+    type Target = Command;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for SanitizedCommand {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl SanitizedCommand {
+    /// Unwrap into the inner tokio Command if absolutely necessary.
+    #[must_use]
+    pub fn into_inner(self) -> Command {
+        self.0
+    }
+}
+
+pub(crate) fn apply_sanitized_env(
+    mut cmd: Command,
+    env_sanitizer: &EnvSanitizer,
+) -> SanitizedCommand {
     let env: Vec<(String, String)> = env_vars().collect();
     let sanitized = env_sanitizer.sanitize_env(&env);
     cmd.env_clear();
     cmd.envs(sanitized);
+    SanitizedCommand(cmd)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,7 +407,7 @@ fn filetime_to_unix_ms(filetime: FILETIME) -> Result<i64, ProcessStartTimeError>
 /// Put the child process in its own session (Unix only) so the entire process
 /// group can be killed via `killpg` in `ChildGuard::drop`.
 #[cfg(unix)]
-pub fn set_new_session(cmd: &mut Command) {
+pub fn set_new_session(cmd: &mut SanitizedCommand) {
     use std::os::unix::process::CommandExt;
     unsafe {
         cmd.as_std_mut().pre_exec(|| {

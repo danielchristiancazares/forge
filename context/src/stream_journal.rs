@@ -214,7 +214,7 @@ impl ActiveJournal {
     ) -> Result<()> {
         let seq = self.next_seq;
         self.next_seq += 1;
-        let content = normalize_persistable_owned(content.into());
+        let content = sanitize_persistable_owned(content.into());
         self.pending_bytes += content.len();
         let delta = StreamDelta::new(self.step_id, seq, StreamDeltaEvent::TextDelta(content));
         self.pending_deltas.push(delta);
@@ -263,7 +263,7 @@ impl ActiveJournal {
         self.flush(journal)?;
         journal.append_event(
             self,
-            StreamDeltaEvent::Error(normalize_persistable_owned(message.into())),
+            StreamDeltaEvent::Error(sanitize_persistable_owned(message.into())),
         )
     }
 
@@ -666,7 +666,7 @@ impl StreamJournal {
                     delta.step_id.value(),
                     seq_i64,
                     delta.event.event_type(),
-                    normalize_persistable_borrowed(delta.event.content()).as_ref(),
+                    sanitize_persistable_borrowed(delta.event.content()).as_ref(),
                     created_at
                 ],
             )
@@ -828,7 +828,7 @@ fn append_delta(db: &Connection, delta: &StreamDelta) -> Result<()> {
             delta.step_id.value(),
             seq_i64,
             delta.event.event_type(),
-            normalize_persistable_borrowed(delta.event.content()).as_ref(),
+            sanitize_persistable_borrowed(delta.event.content()).as_ref(),
             created_at
         ],
     )
@@ -846,11 +846,23 @@ fn normalize_persistable_borrowed(input: &str) -> Cow<'_, str> {
     PersistableContent::normalize_borrowed(input)
 }
 
+fn sanitize_persistable_borrowed(input: &str) -> Cow<'_, str> {
+    let normalized = normalize_persistable_borrowed(input);
+    let sanitized = forge_utils::sanitize_display_text(normalized.as_ref());
+    Cow::Owned(normalize_persistable_owned(sanitized))
+}
+
 fn normalize_persistable_owned(input: String) -> String {
     match normalize_persistable_borrowed(&input) {
         Cow::Borrowed(_) => input,
         Cow::Owned(normalized) => normalized,
     }
+}
+
+fn sanitize_persistable_owned(input: String) -> String {
+    let normalized = normalize_persistable_owned(input);
+    let sanitized = forge_utils::sanitize_display_text(&normalized);
+    normalize_persistable_owned(sanitized)
 }
 
 fn collect_text(db: &Connection, step_id: StepId) -> Result<String> {
@@ -1015,6 +1027,7 @@ mod tests {
     use super::{BeginSessionError, RecoveredStream, StreamJournal, iso8601_to_system_time};
     use crate::time_utils::system_time_to_iso8601_millis;
     use forge_types::StepId;
+    use rusqlite::params;
     use std::env;
     use std::fs;
     use std::path::PathBuf;
@@ -1133,6 +1146,32 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
+    #[test]
+    fn test_stream_content_redacts_secrets_before_persisting() {
+        let mut journal = StreamJournal::open_in_memory().unwrap();
+        let mut active = journal.begin_session("test-model").unwrap();
+
+        let secret = "key=sk-proj-abc123def456ghi789jkl";
+        active.append_text(&mut journal, secret).unwrap();
+        let step_id = active.step_id();
+        active.append_done(&mut journal).unwrap();
+        let sealed = active.seal(&mut journal).unwrap();
+
+        assert!(sealed.contains("sk-***"));
+        assert!(!sealed.contains("abc123def456ghi789jkl"));
+
+        let persisted: String = journal
+            .db
+            .query_row(
+                "SELECT content FROM stream_journal WHERE step_id = ?1 AND event_type = 'text_delta' LIMIT 1",
+                params![step_id.value()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(persisted.contains("sk-***"));
+        assert!(!persisted.contains("abc123def456ghi789jkl"));
     }
 
     #[test]

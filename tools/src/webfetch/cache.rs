@@ -251,7 +251,7 @@ impl Cache {
             AtomicWriteOptions {
                 sync_all: false,
                 dir_sync: false,
-                unix_mode: None,
+                mode: forge_utils::PersistMode::Default,
             },
         )?;
 

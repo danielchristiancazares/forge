@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use super::{
     ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, PlanState,
-    TranscriptRenderAction,
+    SessionChangeLog, TranscriptRenderAction,
     state::{
         ActiveStream, DistillationStart, JournalCleanup, OperationState, PlanApprovalKind,
         ToolLoopPhase, ToolLoopState, ToolRecoveryDecision,
@@ -583,7 +583,7 @@ impl super::App {
 
                 self.ui.display.clear();
                 self.core.turn_rollback = super::TurnRollback::Committed;
-                self.core.session_changes = crate::SessionChangeLog::default();
+                self.core.session_changes = SessionChangeLog::default();
                 self.core.context_manager = ContextManager::new(self.core.model.clone());
                 self.core
                     .context_manager
@@ -929,7 +929,7 @@ impl super::App {
                         let opts = forge_utils::AtomicWriteOptions {
                             sync_all: true,
                             dir_sync: false,
-                            unix_mode: Some(0o600),
+                            mode: forge_utils::PersistMode::SensitiveOwnerOnly,
                         };
                         match forge_utils::atomic_write_with_options(&path, json.as_bytes(), opts) {
                             Ok(()) => {

@@ -1,70 +1,120 @@
 use crate::PredefinedModel;
-use crate::app::{
-    AppearanceEditorSnapshot, ContextEditorSnapshot, ModelEditorSnapshot, ToolsEditorSnapshot,
-};
+
 use crate::tools;
 use crate::ui::UiOptions;
-use forge_context::ModelName;
+use forge_types::ModelName;
+use tools::ApprovalMode;
 
 pub(crate) const APPEARANCE_SETTINGS_COUNT: usize = 4;
 pub(crate) const CONTEXT_SETTINGS_COUNT: usize = 1;
 pub(crate) const TOOLS_SETTINGS_COUNT: usize = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AppearanceSettingsEditor {
-    pub(crate) baseline: UiOptions,
-    pub(crate) draft: UiOptions,
-    pub(crate) selected: usize,
+/// Core domain representation of an editor's unsaved state (IFA §9 Structurally encoded state).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EditorState<T> {
+    Clean {
+        baseline: T,
+        selected: usize,
+    },
+    Unsaved {
+        baseline: T,
+        draft: T,
+        selected: usize,
+    },
 }
 
-impl AppearanceSettingsEditor {
-    pub(crate) fn new(initial: UiOptions) -> Self {
-        Self {
-            baseline: initial,
-            draft: initial,
-            selected: 0,
+impl<T: Clone + PartialEq> EditorState<T> {
+    pub(crate) fn new(baseline: T, selected: usize) -> Self {
+        Self::Clean { baseline, selected }
+    }
+
+    pub(crate) fn with_draft(baseline: T, draft: T, selected: usize) -> Self {
+        if baseline == draft {
+            Self::Clean { baseline, selected }
+        } else {
+            Self::Unsaved {
+                baseline,
+                draft,
+                selected,
+            }
         }
     }
 
-    pub(crate) fn is_dirty(self) -> bool {
-        self.draft != self.baseline
+    pub(crate) fn baseline(&self) -> &T {
+        match self {
+            Self::Clean { baseline, .. } | Self::Unsaved { baseline, .. } => baseline,
+        }
+    }
+
+    pub(crate) fn draft(&self) -> &T {
+        match self {
+            Self::Clean { baseline, .. } => baseline,
+            Self::Unsaved { draft, .. } => draft,
+        }
+    }
+
+    pub(crate) fn selected(&self) -> usize {
+        match self {
+            Self::Clean { selected, .. } | Self::Unsaved { selected, .. } => *selected,
+        }
+    }
+
+    pub(crate) fn set_selected(&mut self, new_selected: usize) {
+        match self {
+            Self::Clean { selected, .. } | Self::Unsaved { selected, .. } => {
+                *selected = new_selected;
+            }
+        }
+    }
+
+    pub(crate) fn is_unsaved(&self) -> bool {
+        matches!(self, Self::Unsaved { .. })
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ModelSettingsEditor {
-    pub(crate) baseline: ModelName,
-    pub(crate) draft: ModelName,
-    pub(crate) selected: usize,
+impl EditorState<UiOptions> {
+    pub(crate) fn toggle_selected(&mut self) {
+        let selected = self.selected();
+        let mut draft = *self.draft();
+        match selected {
+            0 => draft.ascii_only = !draft.ascii_only,
+            1 => draft.high_contrast = !draft.high_contrast,
+            2 => draft.reduced_motion = !draft.reduced_motion,
+            3 => draft.show_thinking = !draft.show_thinking,
+            _ => {}
+        }
+        *self = Self::with_draft(*self.baseline(), draft, selected);
+    }
 }
 
-impl ModelSettingsEditor {
-    pub(crate) fn new(initial: ModelName) -> Self {
+impl EditorState<ModelName> {
+    pub(crate) fn from_model(initial: ModelName) -> Self {
         let selected = Self::index_for_model(&initial).unwrap_or(0);
-        Self {
-            baseline: initial.clone(),
-            draft: initial,
+        Self::Clean {
+            baseline: initial,
             selected,
         }
     }
 
     pub(crate) fn update_draft_from_selected(&mut self) {
-        if let Some(predefined) = PredefinedModel::all().get(self.selected) {
-            self.draft = predefined.to_model_name();
+        let selected = self.selected();
+        if let Some(predefined) = PredefinedModel::all().get(selected) {
+            *self = Self::with_draft(
+                self.baseline().clone(),
+                predefined.to_model_name(),
+                selected,
+            );
         }
     }
 
     pub(crate) fn sync_selected_to_draft(&mut self) {
-        if let Some(index) = Self::index_for_model(&self.draft) {
-            self.selected = index;
+        let draft = self.draft().clone();
+        if let Some(index) = Self::index_for_model(&draft) {
+            *self = Self::with_draft(self.baseline().clone(), draft, index);
         }
     }
 
-    pub(crate) fn is_dirty(&self) -> bool {
-        self.draft != self.baseline
-    }
-
-    pub(crate) fn max_index() -> usize {
+    pub(crate) fn max_model_index() -> usize {
         PredefinedModel::all().len().saturating_sub(1)
     }
 
@@ -75,54 +125,71 @@ impl ModelSettingsEditor {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ToolsSettingsEditor {
-    pub(crate) baseline_approval_mode: tools::ApprovalMode,
-    pub(crate) draft_approval_mode: tools::ApprovalMode,
-    pub(crate) selected: usize,
-}
-
-impl ToolsSettingsEditor {
-    pub(crate) fn new(initial_approval_mode: tools::ApprovalMode) -> Self {
-        Self {
-            baseline_approval_mode: initial_approval_mode,
-            draft_approval_mode: initial_approval_mode,
-            selected: 0,
-        }
-    }
-
-    pub(crate) fn is_dirty(self) -> bool {
-        self.draft_approval_mode != self.baseline_approval_mode
-    }
-
+impl EditorState<ApprovalMode> {
     pub(crate) fn cycle_selected(&mut self) {
-        if self.selected == 0 {
-            self.draft_approval_mode = next_approval_mode(self.draft_approval_mode);
+        let selected = self.selected();
+        if selected == 0 {
+            let next_draft = next_approval_mode(*self.draft());
+            *self = Self::with_draft(*self.baseline(), next_draft, selected);
         }
     }
 }
 
-pub(crate) fn approval_mode_config_value(mode: tools::ApprovalMode) -> &'static str {
-    match mode {
-        tools::ApprovalMode::Permissive => "permissive",
-        tools::ApprovalMode::Default => "default",
-        tools::ApprovalMode::Strict => "strict",
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MemoryState {
+    Enabled,
+    Disabled,
+}
+
+impl MemoryState {
+    pub(crate) fn from_bool(enabled: bool) -> Self {
+        if enabled {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+
+    pub(crate) fn as_bool(self) -> bool {
+        matches!(self, Self::Enabled)
     }
 }
 
-pub(crate) fn approval_mode_display(mode: tools::ApprovalMode) -> &'static str {
-    match mode {
-        tools::ApprovalMode::Permissive => "permissive",
-        tools::ApprovalMode::Default => "default",
-        tools::ApprovalMode::Strict => "strict",
+impl EditorState<MemoryState> {
+    pub(crate) fn cycle_selected(&mut self) {
+        let selected = self.selected();
+        if selected == 0 {
+            let draft = *self.draft();
+            let next_draft = match draft {
+                MemoryState::Enabled => MemoryState::Disabled,
+                MemoryState::Disabled => MemoryState::Enabled,
+            };
+            *self = Self::with_draft(*self.baseline(), next_draft, selected);
+        }
     }
 }
 
-pub(crate) fn next_approval_mode(mode: tools::ApprovalMode) -> tools::ApprovalMode {
+pub(crate) fn approval_mode_config_value(mode: ApprovalMode) -> &'static str {
     match mode {
-        tools::ApprovalMode::Permissive => tools::ApprovalMode::Default,
-        tools::ApprovalMode::Default => tools::ApprovalMode::Strict,
-        tools::ApprovalMode::Strict => tools::ApprovalMode::Permissive,
+        ApprovalMode::Permissive => "permissive",
+        ApprovalMode::Default => "default",
+        ApprovalMode::Strict => "strict",
+    }
+}
+
+pub(crate) fn approval_mode_display(mode: ApprovalMode) -> &'static str {
+    match mode {
+        ApprovalMode::Permissive => "permissive",
+        ApprovalMode::Default => "default",
+        ApprovalMode::Strict => "strict",
+    }
+}
+
+pub(crate) fn next_approval_mode(mode: ApprovalMode) -> ApprovalMode {
+    match mode {
+        ApprovalMode::Permissive => ApprovalMode::Default,
+        ApprovalMode::Default => ApprovalMode::Strict,
+        ApprovalMode::Strict => ApprovalMode::Permissive,
     }
 }
 
@@ -150,35 +217,14 @@ pub(crate) fn ui_options_display(options: UiOptions) -> String {
     flags.join(", ")
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ContextSettingsEditor {
-    pub(crate) baseline_memory_enabled: bool,
-    pub(crate) draft_memory_enabled: bool,
-    pub(crate) selected: usize,
-}
-
-impl ContextSettingsEditor {
-    pub(crate) fn new(initial_memory_enabled: bool) -> Self {
-        Self {
-            baseline_memory_enabled: initial_memory_enabled,
-            draft_memory_enabled: initial_memory_enabled,
-            selected: 0,
-        }
-    }
-
-    pub(crate) fn is_dirty(self) -> bool {
-        self.draft_memory_enabled != self.baseline_memory_enabled
-    }
-}
-
 /// Mutually-exclusive settings editor state (IFA §9.2).
 ///
 /// Only one detail editor may be active at a time.
 #[derive(Debug, Clone)]
 pub(crate) enum SettingsEditorState {
     Inactive,
-    Model(ModelSettingsEditor),
-    Tools(ToolsSettingsEditor),
-    Context(ContextSettingsEditor),
-    Appearance(AppearanceSettingsEditor),
+    Model(EditorState<ModelName>),
+    Tools(EditorState<ApprovalMode>),
+    Context(EditorState<MemoryState>),
+    Appearance(EditorState<UiOptions>),
 }

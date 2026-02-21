@@ -676,7 +676,7 @@ async fn run_git(
         .stderr(Stdio::piped())
         .current_dir(working_dir);
 
-    super::process::apply_sanitized_env(&mut cmd, &ctx.env_sanitizer);
+    let mut cmd = super::process::apply_sanitized_env(cmd, &ctx.env_sanitizer);
 
     #[cfg(unix)]
     super::process::set_new_session(&mut cmd);

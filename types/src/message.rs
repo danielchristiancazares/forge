@@ -6,13 +6,32 @@
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 use crate::model::{ModelName, Provider};
 use crate::proofs::{EmptyStringError, NonEmptyString, normalize_non_empty_for_persistence};
 use crate::{
     OpenAIReasoningItem, ThinkingReplayState, ThoughtSignature, ThoughtSignatureState, ToolCall,
-    ToolResult,
+    ToolResult, sanitize_terminal_text, strip_steganographic_chars,
 };
+
+const SANITIZED_EMPTY_PLACEHOLDER: &str = "[content removed by sanitizer]";
+
+fn sanitize_untrusted_owned(input: &str) -> String {
+    let terminal_safe = sanitize_terminal_text(input);
+    match strip_steganographic_chars(terminal_safe.as_ref()) {
+        Cow::Borrowed(_) => terminal_safe.into_owned(),
+        Cow::Owned(stripped) => stripped,
+    }
+}
+
+fn sanitize_non_empty_untrusted(content: NonEmptyString) -> NonEmptyString {
+    let sanitized = sanitize_untrusted_owned(content.as_str());
+    NonEmptyString::new(sanitized).unwrap_or_else(|_| {
+        NonEmptyString::try_from(SANITIZED_EMPTY_PLACEHOLDER)
+            .expect("SANITIZED_EMPTY_PLACEHOLDER must be non-empty")
+    })
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 enum UserDisplayContent {
@@ -378,6 +397,7 @@ impl Message {
 
     #[must_use]
     pub fn assistant(model: ModelName, content: NonEmptyString, timestamp: SystemTime) -> Self {
+        let content = sanitize_non_empty_untrusted(content);
         Self::Assistant(AssistantMessage::new(model, content, timestamp))
     }
 
@@ -417,7 +437,11 @@ impl Message {
 
     #[must_use]
     pub fn tool_result(result: ToolResult) -> Self {
-        Self::ToolResult(result)
+        let sanitized = ToolResult {
+            content: sanitize_untrusted_owned(&result.content),
+            ..result
+        };
+        Self::ToolResult(sanitized)
     }
 
     #[must_use]
@@ -466,8 +490,8 @@ impl Message {
 mod tests {
     use std::time::UNIX_EPOCH;
 
-    use super::{ClaudeSignatureRef, ThinkingMessage, UserMessage};
-    use crate::{NonEmptyString, Provider};
+    use super::{ClaudeSignatureRef, Message, ThinkingMessage, UserMessage};
+    use crate::{NonEmptyString, Provider, ToolResult};
 
     fn non_empty(value: &str) -> NonEmptyString {
         NonEmptyString::new(value).unwrap()
@@ -515,5 +539,22 @@ mod tests {
             ClaudeSignatureRef::Signed(_)
         ));
         assert!(signed.claude_signature_state().is_signed());
+    }
+
+    #[test]
+    fn assistant_constructor_sanitizes_steganographic_content() {
+        let message = Message::assistant(
+            Provider::Claude.default_model(),
+            non_empty("Hello\u{200B}World"),
+            UNIX_EPOCH,
+        );
+        assert_eq!(message.content(), "HelloWorld");
+    }
+
+    #[test]
+    fn tool_result_constructor_sanitizes_terminal_escape_content() {
+        let message =
+            Message::tool_result(ToolResult::success("call-1", "Read", "Hello\x1b[31mWorld"));
+        assert_eq!(message.content(), "HelloWorld");
     }
 }

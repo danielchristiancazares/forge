@@ -978,7 +978,7 @@ impl ToolExecutor for WriteFileTool {
                     forge_utils::AtomicWriteOptions {
                         sync_all: true,
                         dir_sync: true,
-                        unix_mode: None,
+                        mode: forge_utils::PersistMode::Default,
                     },
                 )
             })
@@ -1118,7 +1118,7 @@ impl ToolExecutor for RunCommandTool {
                 .stderr(Stdio::piped())
                 .current_dir(&ctx.working_dir);
 
-            super::process::apply_sanitized_env(&mut command, &ctx.env_sanitizer);
+            let mut command = super::process::apply_sanitized_env(command, &ctx.env_sanitizer);
 
             let requires_host_sandbox = prepared.requires_host_sandbox();
 
@@ -1628,17 +1628,20 @@ fn apply_staged_files(staged: &[StagedFile], sandbox: &Sandbox) -> Result<(), To
 
         // Extract unix mode from existing permissions to preserve across atomic write
         #[cfg(unix)]
-        let unix_mode = file.permissions.as_ref().map(|p| {
-            use std::os::unix::fs::PermissionsExt;
-            p.mode()
-        });
+        let mode = match file.permissions.as_ref() {
+            Some(p) => {
+                use std::os::unix::fs::PermissionsExt;
+                forge_utils::PersistMode::Preserve(p.mode())
+            }
+            None => forge_utils::PersistMode::Default,
+        };
         #[cfg(not(unix))]
-        let unix_mode: Option<u32> = None;
+        let mode = forge_utils::PersistMode::Default;
 
         let options = forge_utils::AtomicWriteOptions {
             sync_all: true,
             dir_sync: true,
-            unix_mode,
+            mode,
         };
 
         let result = if file.existed {

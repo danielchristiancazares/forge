@@ -10,6 +10,30 @@ use std::path::Path;
 use tempfile::NamedTempFile;
 use tracing::debug;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PersistMode {
+    /// Allow the file to inherit the default umask.
+    #[default]
+    Default,
+    /// Strictly enforce owner-only read/write permissions (0o600 on Unix).
+    SensitiveOwnerOnly,
+    /// Preserve an existing Unix mode from a previously-materialized file.
+    ///
+    /// Ignored on non-Unix platforms.
+    Preserve(u32),
+}
+
+impl PersistMode {
+    #[cfg(unix)]
+    pub fn mode(self) -> Option<u32> {
+        match self {
+            Self::Default => None,
+            Self::SensitiveOwnerOnly => Some(0o600),
+            Self::Preserve(mode) => Some(mode),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct AtomicWriteOptions {
     /// When true, `sync_all()` is called on the temp file before persisting.
@@ -22,9 +46,8 @@ pub struct AtomicWriteOptions {
     ///
     /// Best-effort: errors are logged but do not fail the write.
     pub dir_sync: bool,
-    /// When set (Unix only), apply this mode to the temp file before writing and to
-    /// the final file after persist (e.g. `0o600`).
-    pub unix_mode: Option<u32>,
+    /// Determine the permission policy for the created file.
+    pub mode: PersistMode,
 }
 
 impl Default for AtomicWriteOptions {
@@ -32,10 +55,8 @@ impl Default for AtomicWriteOptions {
         Self {
             sync_all: true,
             dir_sync: false,
-            #[cfg(unix)]
-            unix_mode: Some(0o600),
-            #[cfg(not(unix))]
-            unix_mode: None,
+            // Backwards compatibility: the default option struct previously enforced 0o600.
+            mode: PersistMode::SensitiveOwnerOnly,
         }
     }
 }
@@ -100,7 +121,7 @@ pub fn atomic_write_new_with_options(
     }
 
     #[cfg(unix)]
-    if let Some(mode) = options.unix_mode {
+    if let Some(mode) = options.mode.mode() {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, Permissions::from_mode(mode))?;
     }
@@ -159,7 +180,7 @@ pub fn atomic_write_with_options(
 
     let mut tmp = NamedTempFile::new_in(parent)?;
     #[cfg(unix)]
-    if let Some(mode) = options.unix_mode {
+    if let Some(mode) = options.mode.mode() {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(tmp.path(), Permissions::from_mode(mode))?;
     }
@@ -193,7 +214,7 @@ pub fn atomic_write_with_options(
     }
 
     #[cfg(unix)]
-    if let Some(mode) = options.unix_mode {
+    if let Some(mode) = options.mode.mode() {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, Permissions::from_mode(mode))?;
     }
@@ -218,7 +239,7 @@ mod tests {
         let opts = AtomicWriteOptions {
             sync_all: false,
             dir_sync: false,
-            unix_mode: None,
+            mode: super::PersistMode::Default,
         };
 
         atomic_write_with_options(&path, b"one", opts).expect("write one");
@@ -239,7 +260,7 @@ mod tests {
         let opts = AtomicWriteOptions {
             sync_all: false,
             dir_sync: false,
-            unix_mode: Some(0o600),
+            mode: super::PersistMode::SensitiveOwnerOnly,
         };
 
         atomic_write_with_options(&path, b"secret", opts).expect("write");
