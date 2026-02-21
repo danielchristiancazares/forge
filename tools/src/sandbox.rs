@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
-use std::fs::{File, Metadata, canonicalize, metadata, symlink_metadata};
+use std::fs::{File, Metadata, canonicalize, symlink_metadata};
+use std::io::{Error as IoError, Result as IoResult};
 use std::path::{Component, Path, PathBuf};
 
 use super::{DenialReason, ToolError};
@@ -34,6 +35,13 @@ pub const DEFAULT_SANDBOX_DENY_PATTERNS: &[&str] = &[
     "**/*.mdmp",
     "**/*.stackdump",
 ];
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowsFileIdentity {
+    volume_serial_number: u32,
+    file_index: u64,
+}
 
 #[must_use]
 pub fn default_sandbox_deny_patterns() -> Vec<String> {
@@ -361,21 +369,13 @@ impl Sandbox {
             })
         })?;
         self.check_allowed(path, canonical.clone())?;
-
-        let opened_meta = file.metadata().map_err(|_| {
+        let same_file = same_opened_file(file, &canonical).map_err(|_| {
             ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
                 attempted: path.to_path_buf(),
                 resolved: canonical.clone(),
             })
         })?;
-        let current_meta = metadata(&canonical).map_err(|_| {
-            ToolError::SandboxViolation(DenialReason::PathOutsideSandbox {
-                attempted: path.to_path_buf(),
-                resolved: canonical.clone(),
-            })
-        })?;
-
-        if !same_opened_file(&opened_meta, &current_meta) {
+        if !same_file {
             return Err(ToolError::SandboxViolation(
                 DenialReason::PathOutsideSandbox {
                     attempted: path.to_path_buf(),
@@ -558,18 +558,42 @@ fn is_reparse_point(_meta: &Metadata) -> bool {
 }
 
 #[cfg(unix)]
-fn same_opened_file(opened: &Metadata, current: &Metadata) -> bool {
+fn same_opened_file(opened: &File, canonical: &Path) -> IoResult<bool> {
     use std::os::unix::fs::MetadataExt;
-    opened.dev() == current.dev() && opened.ino() == current.ino()
+    let opened_meta = opened.metadata()?;
+    let current_meta = canonical.metadata()?;
+    Ok(opened_meta.dev() == current_meta.dev() && opened_meta.ino() == current_meta.ino())
 }
 
 #[cfg(windows)]
-fn same_opened_file(opened: &Metadata, current: &Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    opened.file_attributes() == current.file_attributes()
-        && opened.file_size() == current.file_size()
-        && opened.creation_time() == current.creation_time()
-        && opened.last_write_time() == current.last_write_time()
+fn same_opened_file(opened: &File, canonical: &Path) -> IoResult<bool> {
+    let opened_id = windows_file_identity(opened)?;
+    let current = File::open(canonical)?;
+    let current_id = windows_file_identity(&current)?;
+    Ok(opened_id == current_id)
+}
+
+#[cfg(windows)]
+fn windows_file_identity(file: &File) -> IoResult<WindowsFileIdentity> {
+    use std::mem::MaybeUninit;
+    use std::os::windows::io::AsRawHandle;
+
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    // SAFETY: `file` is a live handle and `info` points to valid writable memory.
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), info.as_mut_ptr()) };
+    if ok == 0 {
+        return Err(IoError::last_os_error());
+    }
+    // SAFETY: successful Win32 call initializes the output struct fully.
+    let info = unsafe { info.assume_init() };
+    Ok(WindowsFileIdentity {
+        volume_serial_number: info.dwVolumeSerialNumber,
+        file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    })
 }
 
 #[cfg(windows)]
