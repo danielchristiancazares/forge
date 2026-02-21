@@ -39,8 +39,8 @@ pub const DEFAULT_SANDBOX_DENY_PATTERNS: &[&str] = &[
 #[cfg(windows)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WindowsFileIdentity {
-    volume_serial_number: u32,
-    file_index: u64,
+    volume_serial_number: u64,
+    file_id: [u8; 16],
 }
 
 #[must_use]
@@ -575,24 +575,31 @@ fn same_opened_file(opened: &File, canonical: &Path) -> IoResult<bool> {
 
 #[cfg(windows)]
 fn windows_file_identity(file: &File) -> IoResult<WindowsFileIdentity> {
-    use std::mem::MaybeUninit;
+    use std::mem::{MaybeUninit, size_of};
     use std::os::windows::io::AsRawHandle;
 
     use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
     };
 
-    let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    let mut info = MaybeUninit::<FILE_ID_INFO>::uninit();
     // SAFETY: `file` is a live handle and `info` points to valid writable memory.
-    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), info.as_mut_ptr()) };
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle().cast(),
+            FileIdInfo,
+            info.as_mut_ptr().cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
     if ok == 0 {
         return Err(IoError::last_os_error());
     }
     // SAFETY: successful Win32 call initializes the output struct fully.
     let info = unsafe { info.assume_init() };
     Ok(WindowsFileIdentity {
-        volume_serial_number: info.dwVolumeSerialNumber,
-        file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        volume_serial_number: info.VolumeSerialNumber,
+        file_id: info.FileId.Identifier,
     })
 }
 

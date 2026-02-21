@@ -22,12 +22,32 @@ use std::sync::OnceLock;
 
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use forge_types::{ENV_CREDENTIAL_PATTERNS, sanitize_terminal_text, strip_steganographic_chars};
-use globset::{GlobBuilder, GlobSetBuilder};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use regex::Regex;
 
 /// Minimum length for env var values to be considered secrets.
 /// Avoids false positives on short values ("true", "1", "yes").
 const MIN_SECRET_LENGTH: usize = 16;
+
+/// Exact env var keys that must be redacted regardless of value length.
+///
+/// These are high-confidence secret carriers that may legitimately be shorter
+/// than `MIN_SECRET_LENGTH` (e.g. legacy DB passwords, short API tokens).
+const FORCE_REDACT_ENV_KEYS: &[&str] = &[
+    "DB_PASS",
+    "DB_PASSWORD",
+    "DATABASE_PASS",
+    "DATABASE_PASSWORD",
+    "DATABASE_URL",
+    "API_TOKEN",
+    "ACCESS_TOKEN",
+    "AUTH_TOKEN",
+    "SESSION_TOKEN",
+    "PRIVATE_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+];
 
 /// Runtime secret redactor built from environment variables.
 ///
@@ -54,12 +74,7 @@ impl SecretRedactor {
     #[must_use]
     pub fn from_env() -> Self {
         let matcher = build_var_name_matcher();
-        let mut secrets: Vec<String> = env::vars()
-            .filter(|(name, _)| matcher.is_match(name))
-            .map(|(_, value)| value.trim().to_string())
-            .filter(|v| v.len() >= MIN_SECRET_LENGTH)
-            .filter(|v| !looks_like_non_secret(v))
-            .collect();
+        let mut secrets = collect_env_secrets(env::vars(), &matcher);
 
         // Ensure deterministic order, and ensure fallback redaction prefers longer matches.
         secrets.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
@@ -130,6 +145,39 @@ impl SecretRedactor {
     pub fn secret_count(&self) -> usize {
         self.secrets.len()
     }
+}
+
+fn force_redact_env_key(var_name_upper: &str) -> bool {
+    FORCE_REDACT_ENV_KEYS.contains(&var_name_upper)
+}
+
+fn collect_env_secrets<I>(vars: I, matcher: &GlobSet) -> Vec<String>
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    let mut secrets = Vec::new();
+    for (name, raw_value) in vars {
+        let var_name_upper = name.trim().to_ascii_uppercase();
+        let force_redact = force_redact_env_key(&var_name_upper);
+        if !force_redact && !matcher.is_match(name.as_str()) {
+            continue;
+        }
+
+        let value = raw_value.trim();
+        if value.is_empty() {
+            continue;
+        }
+
+        if !force_redact && value.len() < MIN_SECRET_LENGTH {
+            continue;
+        }
+        if !force_redact && looks_like_non_secret(value) {
+            continue;
+        }
+
+        secrets.push(value.to_string());
+    }
+    secrets
 }
 
 fn build_var_name_matcher() -> globset::GlobSet {
@@ -438,8 +486,8 @@ mod tests {
     use aho_corasick::{AhoCorasickBuilder, MatchKind};
 
     use super::{
-        SecretRedactor, looks_like_non_secret, normalize_untrusted, redact_api_keys,
-        sanitize_stream_error,
+        SecretRedactor, build_var_name_matcher, collect_env_secrets, looks_like_non_secret,
+        normalize_untrusted, redact_api_keys, sanitize_stream_error,
     };
 
     #[test]
@@ -843,5 +891,36 @@ mod tests {
         assert!(populated_redactor.has_secrets());
         assert_eq!(populated_redactor.secret_count(), 1);
         assert_eq!(populated_redactor.redact(&secret), "[REDACTED]");
+    }
+
+    #[test]
+    fn collect_env_secrets_keeps_short_values_for_force_keys() {
+        let matcher = build_var_name_matcher();
+        let secrets = collect_env_secrets(
+            vec![
+                ("DB_PASS".to_string(), "shortpw".to_string()),
+                ("API_TOKEN".to_string(), "tok42".to_string()),
+            ],
+            &matcher,
+        );
+        assert!(secrets.contains(&"shortpw".to_string()));
+        assert!(secrets.contains(&"tok42".to_string()));
+    }
+
+    #[test]
+    fn collect_env_secrets_applies_min_length_to_wildcard_only_keys() {
+        let matcher = build_var_name_matcher();
+        let secrets = collect_env_secrets(
+            vec![("MY_TOKEN".to_string(), "short".to_string())],
+            &matcher,
+        );
+        assert!(secrets.is_empty());
+    }
+
+    #[test]
+    fn collect_env_secrets_force_keys_bypass_non_secret_heuristics() {
+        let matcher = build_var_name_matcher();
+        let secrets = collect_env_secrets(vec![("DB_PASS".to_string(), "/".to_string())], &matcher);
+        assert_eq!(secrets, vec!["/".to_string()]);
     }
 }

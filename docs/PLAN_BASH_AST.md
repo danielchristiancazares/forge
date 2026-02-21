@@ -68,13 +68,27 @@ Rationale:
 
 ```rust
 pub(crate) struct BashPolicyText {
-    policy_text: String,
+    command: NonEmptyString,
+    args: Vec<String>,
+}
+
+impl BashPolicyText {
+    pub(crate) fn to_policy_string(&self) -> String {
+        let mut s = self.command.to_lowercase();
+        for arg in &self.args {
+            s.push(' ');
+            s.push_str(arg);
+        }
+        s
+    }
 }
 ```
 
-Invariant:
+Structural invariants:
 
-- `policy_text` is a whitespace-joined token sequence with normalized command name first.
+- `command` is a NFKC-normalized, lowercased, non-empty literal command name. Empty commands are unrepresentable.
+- `args` contains resolved literal argument values with quote delimiters stripped.
+- `to_policy_string()` derives the whitespace-joined policy text for downstream checks. The flat string is a projection, not the source of truth.
 
 ### Violation model
 
@@ -148,11 +162,14 @@ Examples:
 Wire into `tools/src/builtins.rs` in `RunCommandTool::execute`:
 
 1. Detect Bash-family shells (`bash`, `sh`, `dash`, `zsh`) by executable stem.
-2. Build `policy_text` via `bash_ast::policy_text_for_command(...)` when mode is enabled.
-3. Use returned `policy_text` for:
-   - `command_blacklist.validate(policy_text)`
-   - `RunCommandText::new(raw, policy_text)`
-4. Preserve raw command for actual execution path.
+2. Call `bash_ast::parse_command(raw) -> Result<BashPolicyText, BashAstViolation>` when mode is enabled.
+3. On `Ok(policy_text)`:
+   - Borrow for blacklist: `command_blacklist.validate(&policy_text)`.
+   - Consume into run text: `RunCommandText::new(raw, policy_text)` takes `BashPolicyText` by move. After this point the proof token is spent.
+4. On `Err(violation)`:
+   - `Enforce`: deny execution, return violation to user.
+   - `Audit`: log violation, fall through to raw-text policy path (existing behavior).
+5. Preserve raw command for actual execution path (shell receives the original string).
 
 ### Policy mode
 
@@ -163,11 +180,25 @@ Add config-gated behavior (boundary-owned parse, caller-owned policy):
 bash_ast_mode = "off"    # off | audit | enforce
 ```
 
+Rust-side type (boundary collapses string immediately at config parse):
+
+```rust
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub enum BashAstMode {
+    #[default]
+    Off,
+    Audit,
+    Enforce,
+}
+```
+
+Config parsing in `config/src/lib.rs` deserializes the TOML string into `BashAstMode`. Engine and tool code only see the enum — no raw strings propagate past the config boundary.
+
 Semantics:
 
-1. `off`: current behavior.
-2. `audit`: parse and emit warnings/telemetry, but do not block on violations.
-3. `enforce`: fail closed on any `BashAstViolation`.
+1. `Off`: current behavior, no AST parsing.
+2. `Audit`: parse and emit warnings/telemetry, but do not block on violations.
+3. `Enforce`: fail closed on any `BashAstViolation`.
 
 ---
 

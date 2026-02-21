@@ -72,6 +72,7 @@ pub struct ReadFileTool {
 #[derive(Debug)]
 pub struct ApplyPatchTool {
     limits: PatchLimits,
+    max_file_read_bytes: usize,
 }
 
 #[derive(Debug, Default)]
@@ -122,8 +123,11 @@ impl ReadFileTool {
 
 impl ApplyPatchTool {
     #[must_use]
-    pub fn new(limits: PatchLimits) -> Self {
-        Self { limits }
+    pub fn new(limits: PatchLimits, max_file_read_bytes: usize) -> Self {
+        Self {
+            limits,
+            max_file_read_bytes,
+        }
     }
 }
 
@@ -681,6 +685,7 @@ impl ToolExecutor for ApplyPatchTool {
                 // Check if file exists FIRST (before stale check)
                 #[cfg(unix)]
                 let mut permissions: Option<Permissions> = None;
+                let mut existing_file_bytes: u64 = 0;
                 let existed = match metadata(&resolved) {
                     Ok(meta) => {
                         if meta.is_dir() {
@@ -689,6 +694,7 @@ impl ToolExecutor for ApplyPatchTool {
                                 message: "Path is a directory".to_string(),
                             });
                         }
+                        existing_file_bytes = meta.len();
                         #[cfg(unix)]
                         {
                             permissions = Some(meta.permissions());
@@ -703,6 +709,16 @@ impl ToolExecutor for ApplyPatchTool {
                         });
                     }
                 };
+
+                if existed && existing_file_bytes > self.max_file_read_bytes as u64 {
+                    return Err(ToolError::PatchFailed {
+                        file: resolved.clone(),
+                        message: format!(
+                            "File too large for Edit tool ({} bytes > {} max_file_read_bytes)",
+                            existing_file_bytes, self.max_file_read_bytes
+                        ),
+                    });
+                }
 
                 // Read file once to avoid TOCTOU between hash check and patch application
                 let original_bytes = if existed {
@@ -1504,7 +1520,10 @@ pub fn register_builtins(
     } = config;
 
     registry.register(Box::new(ReadFileTool::new(read_limits)))?;
-    registry.register(Box::new(ApplyPatchTool::new(patch_limits)))?;
+    registry.register(Box::new(ApplyPatchTool::new(
+        patch_limits,
+        read_limits.max_file_read_bytes,
+    )))?;
     registry.register(Box::new(WriteFileTool))?;
     registry.register(Box::new(RunCommandTool::new(
         shell,

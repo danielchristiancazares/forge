@@ -1,41 +1,49 @@
 # Enterprise Provider Routing Plan (Bedrock + Vertex)
 
-## Context
+## Audit Outcome Against `DESIGN.md`
 
-Forge currently supports direct provider integrations (Claude, OpenAI, Gemini). Enterprise environments often require cloud-identity routing through AWS Bedrock or GCP Vertex AI. This plan adds deterministic provider routing that remains fully constrained by `DESIGN.md`: boundary uncertainty stays at boundaries, core execution stays inhabited and policy-free.
+This revision corrects the following inaccuracies from the previous draft:
+
+1. **Boundary ownership was misplaced**: `core/src/environment.rs` is an OS/environment facts boundary and should not become cloud transport credential orchestration.
+2. **Provider/domain surface was overloaded**: adding Bedrock/Vertex to `types/src/model.rs` would conflate model provider identity with transport backend identity.
+3. **Current queue-time API-key gate was not addressed**: `engine/src/app/input_modes.rs` currently blocks sends before streaming if direct API keys are absent.
+4. **Config optionality leaked into core shape**: `enabled` booleans in the runtime contract conflict with `DESIGN.md` direction for inhabited core types.
 
 ## Contract With `DESIGN.md`
 
-This plan is valid only if these rules hold:
+This plan is valid only if all of the following remain true:
 
 1. Invalid states are unrepresentable in core execution paths.
-2. `Result`/`Option` exist only in boundary parsing and boundary adaptation layers.
+2. `Option`/`Result` stay in boundary parse/adaptation layers; core execution consumes strict types.
 3. Typestate transitions consume precursor values and return proof-carrying next-state values.
-4. Routing policy chooses targets; provider mechanism only executes targets.
-5. No fallback decisions are hidden inside provider modules.
+4. Routing policy chooses targets; provider mechanism only executes chosen targets.
+5. No fallback or route switching is hidden inside provider modules.
 
-Clarification on proof semantics:
-
-Compilation cannot prove external cloud credential validity. Compilation can prove that provider execution entry points require capability-bearing values that can only be constructed by successful boundary validation.
+Compilation cannot prove external cloud credential validity. It **can** prove that execution entry points require capability-bearing values only constructible by successful boundary validation.
 
 ## Non-Goals (v1)
 
-1. Weighted routing, latency-aware routing, or cost-based routing.
-2. Automatic cross-cloud failover after transport has already begun.
-3. Full workload identity federation support on day one.
+1. Weighted/latency/cost-based dynamic routing.
+2. Mid-stream cross-cloud failover after transport has started.
+3. Full workload identity federation.
 4. Runtime mutation of routing policy after session initialization.
 
-## Routing Boundary Model
+## Corrected Boundary Ownership
 
-### Boundary Inputs
+| Responsibility | Module Location |
+|---|---|
+| Raw config parsing and validation | `config/src/lib.rs` |
+| Strict resolved routing config types | `types/src/settings.rs` |
+| Route policy ordering + deterministic selection | `engine/src/app/provider_routing.rs` (new) |
+| Queue-time preflight (direct key vs enterprise capability readiness) | `engine/src/app/input_modes.rs` |
+| Transport mechanism implementations | `providers/src/bedrock.rs` and `providers/src/vertex.rs` (new) |
+| Dispatch wiring | `providers/src/lib.rs` and `engine/src/app/streaming.rs` |
 
-1. Raw config values from `config::ForgeConfig`.
-2. Runtime environment evidence (AWS env/profile/metadata; GCP service-account file/metadata).
-3. Provider metadata strings (region, project, endpoint/model path) as raw text.
+`core/src/environment.rs` remains focused on OS/runtime environment facts and AGENTS discovery.
 
-### Boundary Outputs
+## Routing Type Contracts (Concrete)
 
-The boundary collapses uncertainty and emits either strict capabilities or explicit route failures:
+### Core Route Targets
 
 ```rust
 pub(crate) enum InferenceTarget {
@@ -43,29 +51,41 @@ pub(crate) enum InferenceTarget {
     Vertex(VertexCapability),
 }
 
-pub(crate) struct RouteResolutionFailure {
-    attempts: Vec<RouteAttemptFailure>,
+pub(crate) enum DispatchTarget {
+    Direct(ApiConfig),
+    Enterprise(InferenceTarget),
 }
 ```
 
-`InferenceTarget` must not include `Unconfigured` or `Unknown` variants. Unconfigured states fail at the boundary before execution.
+`InferenceTarget` and `DispatchTarget` must not include `Unknown`, `Disabled`, or `Unconfigured` variants.
 
-### Deterministic Selection Algorithm
+### Deterministic Policy
 
-Given `ProviderRoutePolicy`, selection is deterministic and testable:
+```rust
+pub(crate) enum ProviderRoutePolicy {
+    PreferBedrockThenVertex,
+    PreferVertexThenBedrock,
+    ForceBedrock,
+    ForceVertex,
+}
+```
 
-1. Expand policy to ordered candidates (`[Bedrock, Vertex]` or `[Vertex, Bedrock]`).
-2. For each candidate, call the provider-specific boundary constructor.
-3. Return first successful capability as `InferenceTarget`.
-4. If all candidates fail, return `RouteResolutionFailure` with per-attempt stable failure codes.
+Candidate order is derived only from this enum; provider modules must not recompute order.
 
-No provider module is allowed to re-run this algorithm.
+### Non-Empty Failure Evidence
 
-## Provider Typestate Contracts
+```rust
+pub(crate) struct RouteResolutionFailure {
+    first: RouteAttemptFailure,
+    rest: Vec<RouteAttemptFailure>,
+}
+```
+
+`RouteResolutionFailure` is structurally non-empty (no empty `attempts: Vec<_>` state).
+
+## Provider Capability Contracts
 
 ### AWS Bedrock Boundary
-
-Strict types:
 
 ```rust
 pub(crate) enum AwsCredentialMaterial {
@@ -84,24 +104,19 @@ pub(crate) struct BedrockCapability {
     signer: SigV4Signer,
     endpoint: BedrockEndpoint,
     region: AwsRegion,
+    model_id: BedrockModelId,
     _proof: (),
 }
 ```
 
 Boundary steps:
 
-1. Resolve credential source from explicit ordered sources.
-2. Parse and validate into `AwsCredentialMaterial` without optional fields.
-3. Build signer and bind validated target metadata.
-4. Construct `BedrockCapability` with private constructor.
-
-Guarantee:
-
-Execution never branches on missing AWS key fields, missing region, or missing endpoint.
+1. Resolve source from explicit ordered credential sources.
+2. Parse into strict `AwsCredentialMaterial` (no partial fields).
+3. Build signer and validated endpoint/region/model identifiers.
+4. Construct `BedrockCapability` via private constructor.
 
 ### GCP Vertex Boundary
-
-Strict types:
 
 ```rust
 pub(crate) enum VertexIdentityMaterial {
@@ -121,17 +136,24 @@ pub(crate) struct VertexCapability {
 Boundary steps:
 
 1. Resolve identity source from explicit ordered sources.
-2. Parse and validate into `VertexIdentityMaterial`.
-3. Build token provider and bind validated target metadata.
-4. Construct `VertexCapability` with private constructor.
+2. Parse into strict `VertexIdentityMaterial`.
+3. Build token provider and validated project/location/model path.
+4. Construct `VertexCapability` via private constructor.
 
-Guarantee:
+Execution paths branch only on target variant, never on missing fields.
 
-Execution never branches on which identity source succeeded.
+## Deterministic Selection Algorithm
+
+Given `ProviderRoutePolicy`:
+
+1. Expand to ordered candidates.
+2. Run candidate-specific boundary constructor for each candidate in order.
+3. Return first success as `InferenceTarget`.
+4. On total failure, return `RouteResolutionFailure` with stable per-attempt codes.
+
+No provider mechanism module is allowed to run this algorithm.
 
 ## Failure Model (Stable Codes)
-
-Routing failures should be concrete and auditable, similar to typed violation models in other plans.
 
 ```rust
 pub(crate) enum RouteFailureCode {
@@ -139,6 +161,7 @@ pub(crate) enum RouteFailureCode {
     AwsCredentialMalformed,
     AwsRegionInvalid,
     BedrockEndpointInvalid,
+    BedrockModelInvalid,
     BedrockSignerUnavailable,
     GcpIdentitySourceUnavailable,
     GcpIdentityMalformed,
@@ -146,155 +169,151 @@ pub(crate) enum RouteFailureCode {
     VertexLocationInvalid,
     VertexModelPathInvalid,
     VertexTokenUnavailable,
+    ModelUnsupportedForTarget,
     NoRoutableProvider,
 }
 ```
 
 Rules:
 
-1. Every failed candidate route yields one stable code.
-2. Policy fallback behavior is explicit from candidate ordering, never inferred from code paths.
-3. Logs and telemetry record code and provider identity, not raw secrets.
+1. Each failed candidate contributes exactly one stable `RouteFailureCode`.
+2. Candidate ordering defines fallback behavior explicitly.
+3. Logs/telemetry include candidate + failure code only (never raw secrets).
 
 ## Config Contract (v1)
 
-Proposed schema:
+Raw TOML boundary (example):
 
 ```toml
 [enterprise_routing]
-policy = "prefer_bedrock_then_vertex"  # prefer_bedrock_then_vertex | prefer_vertex_then_bedrock | force_bedrock | force_vertex
+policy = "prefer_bedrock_then_vertex" # prefer_bedrock_then_vertex | prefer_vertex_then_bedrock | force_bedrock | force_vertex
 
 [enterprise_routing.bedrock]
-enabled = true
 region = "us-east-1"
 endpoint = "https://bedrock-runtime.us-east-1.amazonaws.com"
-model_id = "anthropic.claude-3-7-sonnet-20250219-v1:0"
+model_id = "<bedrock-model-id>"
 
 [enterprise_routing.vertex]
-enabled = true
 project = "my-project"
 location = "us-central1"
 publisher = "anthropic"
 model = "claude-sonnet-4"
 ```
 
-Validation at config boundary:
+Resolved runtime contract:
 
-1. `force_*` policies require that target provider section is enabled.
-2. Region/location and model identifiers must parse into strict newtypes.
+1. No `enabled` booleans in resolved route types.
+2. Referenced targets in policy must be present and valid at parse boundary.
 3. Unknown policy strings fail fast during config load.
+4. Target metadata parses into strict newtypes before entering core routing.
 
-## Mechanism vs Policy Boundaries
+## Direct vs Enterprise Preflight
 
-Module ownership:
+Current behavior blocks queued messages when direct API keys are missing. v1 enterprise routing must make this explicit:
 
-1. `core/src/environment.rs`: boundary resolution and capability construction.
-2. `engine/src/app/streaming.rs`: route policy evaluation and target selection.
-3. `providers/src/bedrock.rs` and `providers/src/vertex.rs`: request mechanism only, no fallback or provider switching.
+1. `DispatchTarget::Direct` requires direct provider API key.
+2. `DispatchTarget::Enterprise` requires enterprise capability construction.
+3. The queue path in `engine/src/app/input_modes.rs` must call route preflight and stop using direct API-key presence as the only send gate.
+4. No silent fallback from enterprise failure to direct path unless policy explicitly says direct path is selected.
 
-Enforcement:
+## Mechanism vs Policy Enforcement
 
-1. Capability constructors are private to boundary modules.
-2. Provider execution functions accept capability-bearing targets only.
-3. Policy enum and selection function are the single route decision authority.
+1. Policy authority lives in one engine routing module (`provider_routing.rs`).
+2. Provider modules (`bedrock.rs`, `vertex.rs`) accept capability-bearing input only.
+3. Capability constructors are private to boundary modules.
+4. Providers never inspect policy ordering or perform cross-provider retries.
 
-## Planned File Changes
+## Planned File Changes (Corrected)
 
 | File | Planned Change |
-|------|----------------|
-| `types/src/model.rs` | Add Bedrock/Vertex model/provider surface and strict route-facing types |
-| `config/src/lib.rs` | Add enterprise routing schema and parse-time validation for policy + target metadata |
-| `core/src/environment.rs` | Add boundary credential/identity discovery and strict capability construction hooks |
-| `engine/src/app/streaming.rs` | Add deterministic route selection before provider dispatch |
-| `providers/src/lib.rs` | Extend dispatch interfaces to accept capability-backed `InferenceTarget` values |
-| `providers/src/bedrock.rs` (new) | Bedrock transport mechanism that requires `BedrockCapability` |
-| `providers/src/vertex.rs` (new) | Vertex transport mechanism that requires `VertexCapability` |
-| `docs/` | Add enterprise setup and failure-code troubleshooting docs |
-| `ifa/*.toml` | Update invariants, authority boundaries, and proof maps for new capability flow |
+|---|---|
+| `types/src/settings.rs` | Add strict enterprise routing config types and policy enums (resolved, inhabited runtime contract) |
+| `config/src/lib.rs` | Add raw enterprise routing schema + parse boundary conversion into strict types |
+| `engine/src/app/provider_routing.rs` (new) | Add deterministic candidate ordering, selection, and failure aggregation |
+| `engine/src/app/input_modes.rs` | Replace direct API-key-only queue gate with route preflight gate |
+| `engine/src/app/streaming.rs` | Dispatch via `DispatchTarget` (direct or enterprise) before provider send |
+| `providers/src/lib.rs` | Add dispatch entrypoints for enterprise targets while preserving direct path |
+| `providers/src/bedrock.rs` (new) | Bedrock transport mechanism requiring `BedrockCapability` |
+| `providers/src/vertex.rs` (new) | Vertex transport mechanism requiring `VertexCapability` |
+| `docs/` | Add enterprise setup + failure-code troubleshooting |
+| `ifa/*.toml` | Update invariants, authority maps, and proof maps for new routing boundaries |
 
 ## Implementation Phases
 
-## Phase 1: Domain Types and Capability Sealing
+### Phase 1: Routing Types and Sealed Capabilities
 
 Deliverables:
 
-1. Add strict credential/identity material types without `Option` fields.
-2. Add `BedrockCapability` and `VertexCapability` with private constructors and proof fields.
-3. Add `InferenceTarget` variants and require them in provider execution signatures.
+1. Add strict routing policy/types in `types/src/settings.rs`.
+2. Add capability structs with private constructors in provider boundary modules.
+3. Add `DispatchTarget` and `InferenceTarget` as executable-only variants.
 
 Exit criteria:
 
-1. Bedrock/Vertex execution paths are uncallable without capabilities.
-2. Compile-time checks fail when attempting to construct capabilities outside boundary module.
+1. No execution entrypoint accepts raw cloud credential/identity text.
+2. Capability creation is impossible outside boundary modules.
 
-Risk: LOW to MEDIUM (type migration breadth).
-
-## Phase 2: Boundary Builders and Failure Codes
+### Phase 2: Boundary Builders + Failure Codes
 
 Deliverables:
 
-1. Implement AWS boundary parsing and signer construction.
-2. Implement GCP boundary parsing and token-provider construction.
-3. Implement stable `RouteFailureCode` mapping.
+1. Implement Bedrock boundary builder.
+2. Implement Vertex boundary builder.
+3. Implement stable code mapping into `RouteAttemptFailure`.
 
 Exit criteria:
 
-1. Boundary constructors fully collapse uncertainty before core routing receives values.
-2. Failure paths surface stable codes with no secret leakage.
+1. Boundary builders collapse uncertainty fully before selection returns.
+2. Failure payloads are stable and redact secret-bearing details.
 
-Risk: MEDIUM (credential-source variability).
-
-## Phase 3: Policy Integration
+### Phase 3: Engine Policy Integration
 
 Deliverables:
 
-1. Implement deterministic policy ordering and candidate evaluation.
-2. Emit first-success target or `RouteResolutionFailure` with attempt details.
-3. Enforce no fallback behavior in provider mechanism modules.
+1. Add deterministic selection in `engine/src/app/provider_routing.rs`.
+2. Integrate route preflight into queue path.
+3. Integrate `DispatchTarget` into streaming send path.
 
 Exit criteria:
 
 1. Route decisions are unit-testable in isolation.
-2. Provider modules cannot select or switch provider targets.
+2. Queue gating supports enterprise-ready sessions without direct API keys.
 
-Risk: MEDIUM (behavioral changes in startup routing path).
-
-## Phase 4: Runtime Adoption, Docs, and IFA
+### Phase 4: Docs + IFA + Rollout
 
 Deliverables:
 
-1. Integrate route selection into streaming request flow.
-2. Add user-facing documentation for enterprise config and failure diagnostics.
-3. Update IFA artifacts when authority boundaries or invariants change.
+1. Add user-facing enterprise setup docs and remediation guidance for stable failure codes.
+2. Update IFA artifacts for routing authority boundaries.
+3. Add release notes describing direct-vs-enterprise dispatch behavior.
 
 Exit criteria:
 
-1. End-to-end inference uses capability-backed targets only.
-2. Docs and IFA artifacts match final behavior.
-
-Risk: LOW to MEDIUM (docs and artifact completeness).
+1. End-to-end enterprise dispatch works without direct API key dependency.
+2. Docs/IFA artifacts match implementation.
 
 ## Testing Strategy
 
 Unit tests:
 
-1. Typestate transitions consume precursor values and prevent reuse.
-2. Capability constructors are not accessible outside boundary modules.
-3. Policy ordering returns deterministic first-success targets.
+1. Policy ordering deterministically expands candidate order.
+2. `RouteResolutionFailure` cannot be empty.
+3. Capability constructors are not visible outside their modules.
 4. Each boundary failure maps to one stable `RouteFailureCode`.
 
 Integration tests:
 
-1. Bedrock route succeeds with valid AWS material and valid target metadata.
-2. Vertex route succeeds with valid GCP identity and valid target metadata.
-3. `force_bedrock` and `force_vertex` fail explicitly when capability construction fails.
-4. Preference policies fall through only via explicit boundary failure results.
+1. Bedrock dispatch succeeds with valid boundary material.
+2. Vertex dispatch succeeds with valid boundary material.
+3. `force_bedrock` / `force_vertex` fail explicitly with stable codes when capability build fails.
+4. Preference policies fall through only by explicit boundary failure outputs.
+5. Queue preflight allows enterprise dispatch with no direct API key when enterprise capability succeeds.
 
 Security/robustness tests:
 
-1. Malformed service account JSON is rejected at boundary.
-2. Partial or malformed AWS material is rejected at boundary.
-3. Diagnostics redact credentials, tokens, and private keys.
+1. Malformed AWS/GCP material is rejected at boundary.
+2. Diagnostics/telemetry redact credentials, tokens, and private keys.
+3. Provider modules do not emit fallback decisions.
 
 Validation commands:
 
@@ -303,19 +322,19 @@ Validation commands:
 
 ## Operational Guidance
 
-1. Default policy remains current direct-provider behavior unless enterprise routing is explicitly enabled.
-2. Enterprise failures must surface actionable reason codes and remediation text.
-3. Telemetry should capture provider candidate order and failure codes, not secret-bearing payloads.
+1. Default behavior remains current direct-provider routing unless enterprise routing is configured.
+2. Enterprise failures must include actionable failure codes and remediation text.
+3. Telemetry captures candidate order + failure codes only (no secrets).
 
 ## Success Criteria
 
-1. `InferenceTarget` contains only capability-bearing, executable variants.
-2. Core execution has no provider-specific optionality checks for Bedrock/Vertex.
-3. Routing policy is deterministic, isolated, and independently testable.
-4. Provider mechanism code contains no hidden fallback logic.
-5. IFA and docs are updated when capability boundaries or authority maps change.
+1. Execution receives only inhabited dispatch targets (`Direct` or capability-backed enterprise target).
+2. Policy decisions are centralized and deterministic.
+3. Provider mechanisms are policy-free.
+4. Queue/start-stream paths no longer assume direct API keys are always required.
+5. IFA + docs stay in lockstep with authority boundary changes.
 
 ## Open Questions
 
-1. Should workload identity federation be in v1 or a follow-on phase?
-2. Should direct-provider and enterprise-provider routing share one policy enum or remain separately staged initially?
+1. Should v1 restrict enterprise routing to a model allowlist per target, or support all model families immediately?
+2. Should direct and enterprise dispatch share one top-level enum from day one, or stage enterprise dispatch behind a temporary adapter?
