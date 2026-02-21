@@ -444,12 +444,18 @@ use crate::state::{
 };
 
 #[derive(Debug, Clone)]
-struct ToolCallAccumulator {
-    id: String,
-    name: String,
-    arguments_json: String,
-    thought_signature: ThoughtSignatureState,
-    args_exceeded: bool,
+enum ToolCallAccumulator {
+    Collecting {
+        id: NonEmptyString,
+        name: NonEmptyString,
+        arguments_json: String,
+        thought_signature: ThoughtSignatureState,
+    },
+    Exceeded {
+        id: NonEmptyString,
+        name: NonEmptyString,
+        thought_signature: ThoughtSignatureState,
+    },
 }
 
 #[derive(Debug)]
@@ -470,7 +476,7 @@ pub(crate) use settings::*;
 /// # Tool Call Accumulation
 ///
 /// As `ToolCallStart` and `ToolCallDelta` events arrive, tool calls are accumulated
-/// in `ToolCallAccumulator` structs. Arguments are streamed as JSON strings and
+/// in `ToolCallAccumulator` entries. Arguments are streamed as JSON strings and
 /// parsed only when the stream completes.
 ///
 /// Thinking/reasoning deltas are always captured for retroactive UI visibility toggle.
@@ -602,26 +608,63 @@ impl StreamingMessage {
                 name,
                 thought_signature,
             } => {
-                self.tool_calls.push(ToolCallAccumulator {
-                    id,
-                    name,
-                    arguments_json: String::new(),
-                    thought_signature,
-                    args_exceeded: false,
-                });
+                match (NonEmptyString::new(id), NonEmptyString::new(name)) {
+                    (Ok(id), Ok(name)) => self.tool_calls.push(ToolCallAccumulator::Collecting {
+                        id,
+                        name,
+                        arguments_json: String::new(),
+                        thought_signature,
+                    }),
+                    _ => {
+                        tracing::warn!(
+                            "Skipping tool call start with empty id or name from stream boundary"
+                        );
+                    }
+                }
                 None
             }
             StreamEvent::ToolCallDelta { id, arguments } => {
-                if let Some(acc) = self.tool_calls.iter_mut().find(|t| t.id == id) {
-                    if acc.args_exceeded {
-                        return None;
-                    }
-                    let new_len = acc.arguments_json.len().saturating_add(arguments.len());
-                    if new_len > self.max_tool_args_bytes {
-                        acc.args_exceeded = true;
-                        return None;
-                    }
-                    acc.arguments_json.push_str(&arguments);
+                if let Some(position) = self.tool_calls.iter().position(|acc| match acc {
+                    ToolCallAccumulator::Collecting { id: acc_id, .. }
+                    | ToolCallAccumulator::Exceeded { id: acc_id, .. } => acc_id.as_str() == id,
+                }) {
+                    let accumulator = self.tool_calls.remove(position);
+                    let updated = match accumulator {
+                        ToolCallAccumulator::Collecting {
+                            id,
+                            name,
+                            mut arguments_json,
+                            thought_signature,
+                        } => {
+                            let new_len = arguments_json.len().saturating_add(arguments.len());
+                            match new_len.cmp(&self.max_tool_args_bytes) {
+                                CmpOrdering::Greater => ToolCallAccumulator::Exceeded {
+                                    id,
+                                    name,
+                                    thought_signature,
+                                },
+                                CmpOrdering::Less | CmpOrdering::Equal => {
+                                    arguments_json.push_str(&arguments);
+                                    ToolCallAccumulator::Collecting {
+                                        id,
+                                        name,
+                                        arguments_json,
+                                        thought_signature,
+                                    }
+                                }
+                            }
+                        }
+                        ToolCallAccumulator::Exceeded {
+                            id,
+                            name,
+                            thought_signature,
+                        } => ToolCallAccumulator::Exceeded {
+                            id,
+                            name,
+                            thought_signature,
+                        },
+                    };
+                    self.tool_calls.insert(position, updated);
                 }
                 None
             }
@@ -648,63 +691,60 @@ impl StreamingMessage {
                 |id: String,
                  name: String,
                  arguments: serde_json::Value,
-                 thought_signature: ThoughtSignatureState| {
-                    match thought_signature {
-                        ThoughtSignatureState::Signed(signature) => {
-                            ToolCall::new_signed(id, name, arguments, signature)
-                        }
-                        ThoughtSignatureState::Unsigned => ToolCall::new(id, name, arguments),
+                 thought_signature: ThoughtSignatureState| match thought_signature {
+                    ThoughtSignatureState::Signed(signature) => {
+                        ToolCall::new_signed(id, name, arguments, signature)
                     }
+                    ThoughtSignatureState::Unsigned => ToolCall::new(id, name, arguments),
                 };
-            if acc.args_exceeded {
-                pre_resolved.push(ToolResult::error(
-                    acc.id.clone(),
-                    acc.name.clone(),
-                    "Tool arguments exceeded maximum size",
-                ));
-                calls.push(build_call(
-                    acc.id,
-                    acc.name,
-                    serde_json::Value::Object(serde_json::Map::new()),
-                    acc.thought_signature,
-                ));
-                continue;
-            }
+            let empty_arguments = || serde_json::Value::Object(serde_json::Map::new());
 
-            if acc.arguments_json.trim().is_empty() {
-                calls.push(build_call(
-                    acc.id,
-                    acc.name,
-                    serde_json::Value::Object(serde_json::Map::new()),
-                    acc.thought_signature,
-                ));
-                continue;
-            }
-
-            match serde_json::from_str(&acc.arguments_json) {
-                Ok(arguments) => calls.push(build_call(
-                    acc.id,
-                    acc.name,
-                    arguments,
-                    acc.thought_signature,
-                )),
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to parse tool call arguments for '{}': {}",
-                        acc.name,
-                        e
-                    );
+            match acc {
+                ToolCallAccumulator::Exceeded {
+                    id,
+                    name,
+                    thought_signature,
+                } => {
+                    let id = id.into_inner();
+                    let name = name.into_inner();
                     pre_resolved.push(ToolResult::error(
-                        acc.id.clone(),
-                        acc.name.clone(),
-                        "Invalid tool arguments JSON",
+                        id.clone(),
+                        name.clone(),
+                        "Tool arguments exceeded maximum size",
                     ));
-                    calls.push(build_call(
-                        acc.id,
-                        acc.name,
-                        serde_json::Value::Object(serde_json::Map::new()),
-                        acc.thought_signature,
-                    ));
+                    calls.push(build_call(id, name, empty_arguments(), thought_signature));
+                }
+                ToolCallAccumulator::Collecting {
+                    id,
+                    name,
+                    arguments_json,
+                    thought_signature,
+                } => {
+                    let id = id.into_inner();
+                    let name = name.into_inner();
+                    if arguments_json.trim().is_empty() {
+                        calls.push(build_call(id, name, empty_arguments(), thought_signature));
+                        continue;
+                    }
+
+                    match serde_json::from_str(&arguments_json) {
+                        Ok(arguments) => {
+                            calls.push(build_call(id, name, arguments, thought_signature));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to parse tool call arguments for '{}': {}",
+                                name,
+                                e
+                            );
+                            pre_resolved.push(ToolResult::error(
+                                id.clone(),
+                                name.clone(),
+                                "Invalid tool arguments JSON",
+                            ));
+                            calls.push(build_call(id, name, empty_arguments(), thought_signature));
+                        }
+                    }
                 }
             }
         }
@@ -823,7 +863,7 @@ struct AppCore {
     turn_rollback: TurnRollback,
     /// Tool definitions to send with each request.
     tool_definitions: Vec<ToolDefinition>,
-    /// Tool names hidden from UI rendering (source-of-truth: `ToolExecutor::is_hidden()`).
+    /// Tool names hidden from UI rendering (source-of-truth: `ToolExecutor::metadata()`).
     hidden_tools: HashSet<String>,
     /// Session-scoped tool execution gate.
     ///
@@ -871,17 +911,13 @@ struct AppRuntime {
     tool_cleanup: JournalCleanup<ToolBatchId>,
     /// File hash cache for tool safety checks.
     tool_file_cache: Arc<Mutex<tools::ToolFileCache>>,
-    /// Whether we've already warned about a failed history load.
-    history_load_warning_shown: bool,
-    /// Whether we've already warned about autosave failures.
-    autosave_warning_shown: bool,
+    /// Notification text emitted to the local boundary (deduped by content).
+    seen_notifications: HashSet<String>,
     /// The Librarian for fact extraction and retrieval (Long-term Memory).
     /// Uses `Arc<Mutex>` because it's accessed from async tasks for extraction.
     librarian: LibrarianState,
     /// Wall-clock timestamp for session autosave cadence (~3s).
     last_session_autosave: Instant,
-    /// Earliest time to attempt journal cleanup retries.
-    next_journal_cleanup_attempt: Instant,
     lsp_runtime: LspRuntimeState,
 }
 
@@ -2910,7 +2946,7 @@ impl App {
             .hash(&mut hasher);
         match self.runtime.tool_settings.policy.mode {
             tools::ApprovalMode::Permissive => "permissive",
-            tools::ApprovalMode::Default => "default",
+            tools::ApprovalMode::Balanced => "balanced",
             tools::ApprovalMode::Strict => "strict",
         }
         .hash(&mut hasher);
@@ -2958,7 +2994,7 @@ impl App {
         if self.settings_pending_model_apply_next_turn() {
             session_overrides.push("pending model change: next turn".to_string());
         }
-        if self.settings_configured_tool_approval_mode() != tools::ApprovalMode::Default {
+        if self.settings_configured_tool_approval_mode() != tools::ApprovalMode::Balanced {
             session_overrides.push(format!(
                 "tool approval mode: {}",
                 approval_mode_display(self.settings_configured_tool_approval_mode())

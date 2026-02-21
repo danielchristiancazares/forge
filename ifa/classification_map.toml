@@ -1,5 +1,5 @@
 version = 1
-last_updated = "2026-02-19"
+last_updated = "2026-02-20"
 
 [[rules]]
 prefix = "cli/src/"
@@ -67,6 +67,11 @@ classification = "boundary"
 rationale = "Engine orchestration coordinates async runtime, IO, and external providers."
 
 [[rules]]
+prefix = "engine/src/state.rs"
+classification = "core"
+rationale = "Engine tool/state-machine payloads are pure ownership and transition domain structures."
+
+[[rules]]
 prefix = "lsp/src/"
 classification = "boundary"
 rationale = "LSP client/server process and protocol integration are boundary concerns."
@@ -80,6 +85,11 @@ rationale = "Provider API clients are external-service boundaries."
 prefix = "tools/src/"
 classification = "boundary"
 rationale = "Tool execution, shell/process, and webfetch are boundary concerns."
+
+[[rules]]
+prefix = "tools/src/lib.rs"
+classification = "core"
+rationale = "Tool contract and policy types define core mechanism-policy interfaces."
 
 [[rules]]
 prefix = "tui/src/"

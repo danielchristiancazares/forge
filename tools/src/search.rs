@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::default_true;
 
+use forge_types::{ToolProviderScope, ToolVisibility};
 use globset::{GlobBuilder, GlobSet};
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
@@ -19,8 +20,9 @@ use tokio::time::timeout;
 use unicode_normalization::UnicodeNormalization;
 
 use super::{
-    EnvSanitizer, RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, parse_args,
-    redact_distillate, sanitize_output,
+    EnvSanitizer, RiskLevel, ToolApprovalRequirement, ToolCtx, ToolEffectProfile, ToolError,
+    ToolExecutor, ToolFut, ToolMetadata, TruncationPolicy, parse_args, redact_distillate,
+    sanitize_output,
 };
 
 const SEARCH_TOOL_NAME: &str = "Search";
@@ -254,12 +256,20 @@ impl ToolExecutor for SearchTool {
         })
     }
 
-    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
-        false
+    fn effect_profile(&self, _args: &serde_json::Value) -> ToolEffectProfile {
+        ToolEffectProfile::ReadsUserData
     }
 
-    fn reads_user_data(&self, _args: &serde_json::Value) -> bool {
-        true
+    fn approval_requirement(&self) -> ToolApprovalRequirement {
+        ToolApprovalRequirement::Never
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            approval_requirement: ToolApprovalRequirement::Never,
+            visibility: ToolVisibility::Visible,
+            provider_scope: ToolProviderScope::AllProviders,
+        }
     }
 
     fn risk_level(&self, _args: &serde_json::Value) -> RiskLevel {
@@ -275,7 +285,7 @@ impl ToolExecutor for SearchTool {
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
-            ctx.allow_truncation = false;
+            ctx.truncation_policy = TruncationPolicy::Forbidden;
             let typed: SearchArgs = parse_args(&args)?;
 
             let pattern = typed.pattern.trim().to_string();
@@ -1755,8 +1765,8 @@ fn looks_like_option_error(stderr: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendKind, EnvSanitizer, SearchTool, SearchToolConfig, ToolExecutor, normalize_path_text,
-        pattern_has_ascii_uppercase, trim_line_endings,
+        BackendKind, EnvSanitizer, SearchTool, SearchToolConfig, ToolEffectProfile, ToolExecutor,
+        normalize_path_text, pattern_has_ascii_uppercase, trim_line_endings,
     };
     use std::env;
     use std::fs;
@@ -1831,9 +1841,12 @@ mod tests {
     }
 
     #[test]
-    fn search_tool_reads_user_data() {
+    fn search_tool_effect_profile_reads_user_data() {
         let tool = SearchTool::new(SearchToolConfig::default());
-        assert!(tool.reads_user_data(&serde_json::json!({"pattern": "test"})));
+        assert!(matches!(
+            tool.effect_profile(&serde_json::json!({"pattern": "test"})),
+            ToolEffectProfile::ReadsUserData
+        ));
     }
 
     #[tokio::test]

@@ -7,10 +7,13 @@
 //!
 //! The tool is hidden from the UI and only sent to the Gemini provider.
 
-use forge_types::Provider;
+use forge_types::{Provider, ToolProviderScope, ToolVisibility};
 use serde_json::{Value, json};
 
-use super::{RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut};
+use super::{
+    RiskLevel, ToolApprovalRequirement, ToolCtx, ToolEffectProfile, ToolError, ToolExecutor,
+    ToolFut, ToolMetadata,
+};
 
 const PHASE_2_CHECKLIST: &str = "\
 Phase 1 complete. Answer each item before proceeding.
@@ -84,24 +87,24 @@ impl ToolExecutor for GeminiGateTool {
         })
     }
 
-    fn is_side_effecting(&self, _args: &Value) -> bool {
-        false
-    }
-
-    fn requires_approval(&self) -> bool {
-        false
+    fn effect_profile(&self, _args: &Value) -> ToolEffectProfile {
+        ToolEffectProfile::Pure
     }
 
     fn risk_level(&self, _args: &Value) -> RiskLevel {
         RiskLevel::Low
     }
 
-    fn is_hidden(&self) -> bool {
-        true
+    fn approval_requirement(&self) -> ToolApprovalRequirement {
+        ToolApprovalRequirement::Never
     }
 
-    fn target_provider(&self) -> Option<Provider> {
-        Some(Provider::Gemini)
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            approval_requirement: ToolApprovalRequirement::Never,
+            visibility: ToolVisibility::Hidden,
+            provider_scope: ToolProviderScope::ProviderScoped(Provider::Gemini),
+        }
     }
 
     fn approval_summary(&self, args: &Value) -> Result<String, ToolError> {
@@ -125,30 +128,36 @@ impl ToolExecutor for GeminiGateTool {
 
 #[cfg(test)]
 mod tests {
-    use super::{GeminiGateTool, Phase, Provider, RiskLevel, ToolExecutor, json};
+    use super::{
+        GeminiGateTool, Phase, Provider, RiskLevel, ToolApprovalRequirement, ToolEffectProfile,
+        ToolExecutor, ToolProviderScope, ToolVisibility, json,
+    };
 
     #[test]
     fn gemini_gate_is_hidden() {
         let tool = GeminiGateTool;
-        assert!(tool.is_hidden());
+        assert_eq!(tool.metadata().visibility, ToolVisibility::Hidden);
     }
 
     #[test]
     fn gemini_gate_targets_gemini() {
         let tool = GeminiGateTool;
-        assert_eq!(tool.target_provider(), Some(Provider::Gemini));
+        assert_eq!(
+            tool.metadata().provider_scope,
+            ToolProviderScope::ProviderScoped(Provider::Gemini)
+        );
     }
 
     #[test]
     fn gemini_gate_is_not_side_effecting() {
         let tool = GeminiGateTool;
-        assert!(!tool.is_side_effecting(&json!({})));
+        assert_eq!(tool.effect_profile(&json!({})), ToolEffectProfile::Pure);
     }
 
     #[test]
     fn gemini_gate_does_not_require_approval() {
         let tool = GeminiGateTool;
-        assert!(!tool.requires_approval());
+        assert_eq!(tool.approval_requirement(), ToolApprovalRequirement::Never);
     }
 
     #[test]

@@ -42,8 +42,8 @@ use serde::de::DeserializeOwned;
 use change_recording::ChangeRecorder;
 use forge_context::Librarian;
 use forge_types::{
-    HomoglyphWarning, MixedScriptDetection, Provider, ToolDefinition, ToolProviderScope,
-    ToolVisibility, detect_mixed_script,
+    HomoglyphWarning, MixedScriptDetection, ToolDefinition, ToolProviderScope, ToolVisibility,
+    detect_mixed_script,
 };
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
@@ -81,8 +81,8 @@ pub enum ApprovalDecision {
 pub enum ApprovalMode {
     /// Auto-approve most tools, only prompt for high-risk operations.
     Permissive,
-    /// Prompt for any side-effecting tool unless allowlisted.
-    Default,
+    /// Prompt for tools based on effect profile and allowlist policy.
+    Balanced,
     /// Deny all tools unless explicitly allowlisted.
     Strict,
 }
@@ -108,6 +108,18 @@ pub struct ToolMetadata {
     pub provider_scope: ToolProviderScope,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TruncationPolicy {
+    Allowed,
+    Forbidden,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionBudget {
+    UseDefault,
+    Bounded(Duration),
+}
+
 /// Policy for tool approval and deny/allow lists.
 #[derive(Debug, Clone)]
 pub struct Policy {
@@ -128,14 +140,21 @@ impl Policy {
     }
 }
 
+/// Escalation reason attached to an approval request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EscalationReason {
+    NotProvided,
+    Provided(String),
+}
+
 /// Confirmation request for a tool call.
 #[derive(Debug, Clone)]
 pub struct ConfirmationRequest {
     pub tool_call_id: String,
     pub tool_name: String,
     pub summary: String,
-    /// Optional user-facing reason provided by the model for escalation prompts.
-    pub reason: Option<String>,
+    /// User-facing escalation reason captured from tool arguments.
+    pub reason: EscalationReason,
     pub risk_level: RiskLevel,
     pub arguments: Value,
     /// Homoglyph warnings detected in tool arguments.
@@ -297,65 +316,20 @@ pub trait ToolExecutor: Send + Sync + UnwindSafe {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn schema(&self) -> Value;
-    fn is_side_effecting(&self, args: &Value) -> bool;
-    /// Whether this tool reads local user data that will be sent to the LLM provider.
-    /// In Default approval mode, such tools require approval unless allowlisted.
-    fn reads_user_data(&self, _args: &Value) -> bool {
-        false
-    }
-    fn effect_profile(&self, args: &Value) -> ToolEffectProfile {
-        match (self.is_side_effecting(args), self.reads_user_data(args)) {
-            (false, false) => ToolEffectProfile::Pure,
-            (false, true) => ToolEffectProfile::ReadsUserData,
-            (true, false) => ToolEffectProfile::SideEffecting,
-            (true, true) => ToolEffectProfile::SideEffectingAndReadsUserData,
-        }
-    }
-    fn requires_approval(&self) -> bool {
-        false
-    }
-    fn approval_requirement(&self) -> ToolApprovalRequirement {
-        if self.requires_approval() {
-            ToolApprovalRequirement::Always
-        } else {
-            ToolApprovalRequirement::Never
-        }
-    }
-    fn metadata(&self) -> ToolMetadata {
-        let visibility = if self.is_hidden() {
-            ToolVisibility::Hidden
-        } else {
-            ToolVisibility::Visible
-        };
-        let provider_scope = self.target_provider().map_or(
-            ToolProviderScope::AllProviders,
-            ToolProviderScope::ProviderScoped,
-        );
-        ToolMetadata {
-            approval_requirement: self.approval_requirement(),
-            visibility,
-            provider_scope,
-        }
-    }
+    fn effect_profile(&self, args: &Value) -> ToolEffectProfile;
+    fn approval_requirement(&self) -> ToolApprovalRequirement;
+    fn metadata(&self) -> ToolMetadata;
     fn risk_level(&self, args: &Value) -> RiskLevel {
-        if self.is_side_effecting(args) {
-            RiskLevel::Medium
-        } else {
-            RiskLevel::Low
+        match self.effect_profile(args) {
+            ToolEffectProfile::SideEffecting | ToolEffectProfile::SideEffectingAndReadsUserData => {
+                RiskLevel::Medium
+            }
+            ToolEffectProfile::Pure | ToolEffectProfile::ReadsUserData => RiskLevel::Low,
         }
     }
     fn approval_summary(&self, args: &Value) -> Result<String, ToolError>;
-    fn timeout(&self) -> Option<Duration> {
-        None
-    }
-    /// Hidden tools still execute normally but are invisible to the user.
-    fn is_hidden(&self) -> bool {
-        false
-    }
-    /// If set, this tool is only sent to the specified provider.
-    /// Returns `None` for tools available to all providers.
-    fn target_provider(&self) -> Option<Provider> {
-        None
+    fn timeout(&self) -> ExecutionBudget {
+        ExecutionBudget::UseDefault
     }
     fn execute<'a>(&'a self, args: Value, ctx: &'a mut ToolCtx) -> ToolFut<'a>;
 }
@@ -504,7 +478,7 @@ pub struct ToolCtx {
     pub max_output_bytes: usize,
     pub available_capacity_bytes: usize,
     pub tool_call_id: String,
-    pub allow_truncation: bool,
+    pub truncation_policy: TruncationPolicy,
     pub working_dir: PathBuf,
     pub env_sanitizer: EnvSanitizer,
     pub file_cache: Arc<Mutex<ToolFileCache>>,

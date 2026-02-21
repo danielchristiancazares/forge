@@ -4,11 +4,13 @@
 //! learned in previous conversations. Part of the Context Infinity system.
 
 use forge_context::FactWithStaleness;
+use forge_types::{ToolProviderScope, ToolVisibility};
 use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    ToolCtx, ToolCtxLibrarian, ToolError, ToolExecutor, ToolFut, parse_args, sanitize_output,
+    ToolApprovalRequirement, ToolCtx, ToolCtxLibrarian, ToolEffectProfile, ToolError, ToolExecutor,
+    ToolFut, ToolMetadata, parse_args, sanitize_output,
 };
 
 /// Tool for recalling facts from the Librarian.
@@ -45,8 +47,20 @@ impl ToolExecutor for RecallTool {
         })
     }
 
-    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
-        false
+    fn effect_profile(&self, _args: &serde_json::Value) -> ToolEffectProfile {
+        ToolEffectProfile::Pure
+    }
+
+    fn approval_requirement(&self) -> ToolApprovalRequirement {
+        ToolApprovalRequirement::Never
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            approval_requirement: ToolApprovalRequirement::Never,
+            visibility: ToolVisibility::Visible,
+            provider_scope: ToolProviderScope::AllProviders,
+        }
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {

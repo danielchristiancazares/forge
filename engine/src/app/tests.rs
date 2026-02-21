@@ -44,7 +44,7 @@ use forge_types::{
     ApiKey, Message, ModelName, NonEmptyString, OpenAIReasoningEffort, OpenAIRequestOptions,
     OutputLimits, PhaseInput, Plan, PlanState, PlanStepId, Provider, SecretString, StepInput,
     StreamEvent, StreamFinishReason, ThinkingMessage, ThinkingReplayState, ThoughtSignatureState,
-    ToolCall, ToolResult, ToolResultOutcome,
+    ToolCall, ToolProviderScope, ToolResult, ToolResultOutcome, ToolVisibility,
 };
 use tokio::sync::Mutex as TokioMutex;
 use tokio::task::yield_now;
@@ -77,7 +77,7 @@ fn test_app() -> App {
     init::build_app(AppBuildParts {
         view: ViewState::default(),
         configured_model: model.clone(),
-        configured_tool_approval_mode: tools::ApprovalMode::Default,
+        configured_tool_approval_mode: tools::ApprovalMode::Balanced,
         configured_context_memory_enabled: true,
         configured_ui_options: UiOptions::default(),
         api_keys,
@@ -279,12 +279,24 @@ impl tools::ToolExecutor for MockTool {
         })
     }
 
-    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
-        false
+    fn effect_profile(&self, _args: &serde_json::Value) -> tools::ToolEffectProfile {
+        tools::ToolEffectProfile::Pure
     }
 
-    fn requires_approval(&self) -> bool {
-        self.requires_approval
+    fn approval_requirement(&self) -> tools::ToolApprovalRequirement {
+        if self.requires_approval {
+            tools::ToolApprovalRequirement::Always
+        } else {
+            tools::ToolApprovalRequirement::Never
+        }
+    }
+
+    fn metadata(&self) -> tools::ToolMetadata {
+        tools::ToolMetadata {
+            approval_requirement: self.approval_requirement(),
+            visibility: ToolVisibility::Visible,
+            provider_scope: ToolProviderScope::AllProviders,
+        }
     }
 
     fn approval_summary(&self, _args: &serde_json::Value) -> Result<String, tools::ToolError> {
@@ -860,7 +872,7 @@ fn settings_activate_tools_initializes_editor_snapshot() {
     assert_eq!(
         app.settings_tools_editor_snapshot(),
         Some(ToolsEditorSnapshot {
-            draft_approval_mode: "default",
+            draft_approval_mode: "balanced",
             selected: 0,
             dirty: false,
         })
@@ -886,7 +898,7 @@ fn settings_tools_cycle_and_revert_updates_dirty_state() {
     assert_eq!(
         app.settings_tools_editor_snapshot(),
         Some(ToolsEditorSnapshot {
-            draft_approval_mode: "default",
+            draft_approval_mode: "balanced",
             selected: 0,
             dirty: false,
         })
@@ -1601,7 +1613,7 @@ async fn tool_loop_awaiting_approval_then_deny_all_commits() {
 async fn run_approval_request_captures_reason_without_changing_summary() {
     let mut app = test_app();
     app.runtime.api_keys.clear();
-    app.runtime.tool_settings.policy.mode = tools::ApprovalMode::Default;
+    app.runtime.tool_settings.policy.mode = tools::ApprovalMode::Balanced;
     app.runtime.tool_settings.policy.denylist.remove("Run");
 
     let call = ToolCall::new(
@@ -1630,7 +1642,7 @@ async fn run_approval_request_captures_reason_without_changing_summary() {
     assert_eq!(requests[0].summary, "Run command: echo hello".to_string());
     assert_eq!(
         requests[0].reason,
-        Some("Need to verify the local build toolchain.".to_string())
+        tools::EscalationReason::Provided("Need to verify the local build toolchain.".to_string())
     );
 }
 

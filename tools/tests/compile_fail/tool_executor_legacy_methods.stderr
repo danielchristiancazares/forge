@@ -1,0 +1,39 @@
+error[E0407]: method `is_side_effecting` is not a member of trait `ToolExecutor`
+  --> tests/compile_fail/tool_executor_legacy_methods.rs:39:5
+   |
+39 | /     fn is_side_effecting(&self, _args: &Value) -> bool {
+40 | |         false
+41 | |     }
+   | |_____^ not a member of trait `ToolExecutor`
+
+error[E0407]: method `reads_user_data` is not a member of trait `ToolExecutor`
+  --> tests/compile_fail/tool_executor_legacy_methods.rs:43:5
+   |
+43 | /     fn reads_user_data(&self, _args: &Value) -> bool {
+44 | |         false
+45 | |     }
+   | |_____^ not a member of trait `ToolExecutor`
+
+error[E0407]: method `requires_approval` is not a member of trait `ToolExecutor`
+  --> tests/compile_fail/tool_executor_legacy_methods.rs:47:5
+   |
+47 | /     fn requires_approval(&self) -> bool {
+48 | |         false
+49 | |     }
+   | |_____^ not a member of trait `ToolExecutor`
+
+error[E0407]: method `is_hidden` is not a member of trait `ToolExecutor`
+  --> tests/compile_fail/tool_executor_legacy_methods.rs:51:5
+   |
+51 | /     fn is_hidden(&self) -> bool {
+52 | |         false
+53 | |     }
+   | |_____^ not a member of trait `ToolExecutor`
+
+error[E0407]: method `target_provider` is not a member of trait `ToolExecutor`
+  --> tests/compile_fail/tool_executor_legacy_methods.rs:55:5
+   |
+55 | /     fn target_provider(&self) -> Option<Provider> {
+56 | |         None
+57 | |     }
+   | |_____^ not a member of trait `ToolExecutor`

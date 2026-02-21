@@ -84,10 +84,7 @@ impl App {
             }
             Err(e) => {
                 tracing::warn!("Failed to load history: {e}");
-                if !self.runtime.history_load_warning_shown {
-                    self.push_notification("Failed to load history.json — starting fresh.");
-                    self.runtime.history_load_warning_shown = true;
-                }
+                self.push_notification("Failed to load history.json — starting fresh.");
             }
         }
 
@@ -134,10 +131,7 @@ impl App {
             }
             Err(e) => {
                 tracing::warn!("Autosave failed: {e}");
-                if !self.runtime.autosave_warning_shown {
-                    self.push_notification("Autosave failed — changes may not persist.");
-                    self.runtime.autosave_warning_shown = true;
-                }
+                self.push_notification("Autosave failed — changes may not persist.");
                 false
             }
         }
@@ -297,29 +291,27 @@ impl App {
         }
 
         let now = Instant::now();
-        if now < self.runtime.next_journal_cleanup_attempt {
-            return;
-        }
-
-        let mut attempted_any = false;
 
         if let JournalCleanup::Pending {
             id: step_id,
             failures,
-        } = &self.runtime.stream_cleanup
+            not_before,
+        } = self.runtime.stream_cleanup.clone()
+            && now >= not_before
         {
-            let step_id = *step_id;
-            let failures = *failures;
-            attempted_any = true;
             match self.runtime.stream_journal.commit_and_prune_step(step_id) {
                 Ok(_) => {
                     self.runtime.stream_cleanup = JournalCleanup::Clean;
                 }
                 Err(e) => {
-                    if let JournalCleanup::Pending { failures: f, .. } =
-                        &mut self.runtime.stream_cleanup
+                    if let JournalCleanup::Pending {
+                        failures: failure_count,
+                        not_before,
+                        ..
+                    } = &mut self.runtime.stream_cleanup
                     {
-                        *f = f.saturating_add(1);
+                        *failure_count = failure_count.saturating_add(1);
+                        *not_before = now + Duration::from_secs(1);
                     }
                     tracing::warn!("Failed to retry commit/prune journal step {step_id}: {e}");
                     if failures + 1 == 3 {
@@ -334,20 +326,23 @@ impl App {
         if let JournalCleanup::Pending {
             id: batch_id,
             failures,
-        } = &self.runtime.tool_cleanup
+            not_before,
+        } = self.runtime.tool_cleanup.clone()
+            && now >= not_before
         {
-            let batch_id = *batch_id;
-            let failures = *failures;
-            attempted_any = true;
             match self.runtime.tool_journal.commit_batch(batch_id) {
                 Ok(()) => {
                     self.runtime.tool_cleanup = JournalCleanup::Clean;
                 }
                 Err(e) => {
-                    if let JournalCleanup::Pending { failures: f, .. } =
-                        &mut self.runtime.tool_cleanup
+                    if let JournalCleanup::Pending {
+                        failures: failure_count,
+                        not_before,
+                        ..
+                    } = &mut self.runtime.tool_cleanup
                     {
-                        *f = f.saturating_add(1);
+                        *failure_count = failure_count.saturating_add(1);
+                        *not_before = now + Duration::from_secs(1);
                     }
                     tracing::warn!("Failed to retry commit tool batch {batch_id}: {e}");
                     if failures + 1 == 3 {
@@ -357,13 +352,6 @@ impl App {
                     }
                 }
             }
-        }
-
-        if attempted_any
-            && (matches!(self.runtime.stream_cleanup, JournalCleanup::Pending { .. })
-                || matches!(self.runtime.tool_cleanup, JournalCleanup::Pending { .. }))
-        {
-            self.runtime.next_journal_cleanup_attempt = now + Duration::from_secs(1);
         }
     }
 
@@ -376,6 +364,9 @@ impl App {
     /// and transient feedback.
     pub(crate) fn push_notification(&mut self, message: impl Into<String>) {
         let text = message.into();
+        if !self.runtime.seen_notifications.insert(text.clone()) {
+            return;
+        }
         if let Ok(content) = NonEmptyString::new(text) {
             self.push_local_message(Message::system(content, SystemTime::now()));
         }
@@ -804,16 +795,13 @@ impl App {
                 self.runtime.stream_cleanup,
                 JournalCleanup::Pending { id, .. } if id == step_id
             );
-            self.runtime.stream_cleanup.set_pending(step_id);
+            self.runtime
+                .stream_cleanup
+                .set_pending(step_id, Instant::now() + Duration::from_secs(1));
             if is_new {
                 self.push_notification(format!(
                     "Stream journal cleanup failed; will retry. If sending gets stuck, run /clear. ({e})"
                 ));
-            }
-
-            let after = Instant::now() + Duration::from_secs(1);
-            if self.runtime.next_journal_cleanup_attempt < after {
-                self.runtime.next_journal_cleanup_attempt = after;
             }
         }
     }

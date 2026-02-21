@@ -264,6 +264,109 @@ def _validate_core_struct_bans(path: Path, lines: list[str]) -> None:
             idx += 1
 
 
+def _looks_like_enum_type(field_type: str) -> bool:
+    cleaned = re.sub(r"\s+", "", field_type)
+    if cleaned.startswith(("&", "Box<", "Vec<", "Option<", "Result<")):
+        return False
+    return re.search(r"(?:^|::)[A-Z][A-Za-z0-9_]*", cleaned) is not None
+
+
+def _validate_sum_type_with_parallel_bool(path: Path, lines: list[str]) -> None:
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        struct_match = re.match(
+            r"^\s*(?:pub(?:\([^)]*\))?\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+            line,
+        )
+        if not struct_match:
+            idx += 1
+            continue
+
+        struct_name = struct_match.group(1)
+        declaration = line.strip()
+        while "{" not in declaration and ";" not in declaration and idx + 1 < len(lines):
+            idx += 1
+            declaration = f"{declaration} {lines[idx].strip()}"
+
+        if "(" in declaration and "{" not in declaration:
+            idx += 1
+            continue
+
+        if "{" not in declaration:
+            idx += 1
+            continue
+
+        has_bool_field = False
+        has_enum_like_field = False
+        brace_depth = declaration.count("{") - declaration.count("}")
+        idx += 1
+        while idx < len(lines) and brace_depth > 0:
+            body_line = lines[idx]
+            if brace_depth == 1:
+                field_match = re.match(
+                    r"^\s*(?:pub(?:\([^)]*\))?\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^,]+),?\s*$",
+                    body_line,
+                )
+                if field_match:
+                    field_type = field_match.group(2).strip()
+                    if re.fullmatch(r"(?:std::primitive::)?bool", field_type):
+                        has_bool_field = True
+                    elif _looks_like_enum_type(field_type):
+                        has_enum_like_field = True
+
+            brace_depth += body_line.count("{") - body_line.count("}")
+            idx += 1
+
+        if has_bool_field and has_enum_like_field:
+            raise ValueError(
+                f"{path}: Core struct '{struct_name}' uses sum-type-with-parallel-bool; "
+                "encode lifecycle in enum variants only"
+            )
+
+
+def _validate_core_trait_option_duration_returns(path: Path, lines: list[str]) -> None:
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        trait_match = re.match(
+            r"^\s*(?:pub(?:\([^)]*\))?\s+)?trait\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+            line,
+        )
+        if not trait_match:
+            idx += 1
+            continue
+
+        trait_name = trait_match.group(1)
+        declaration = line.strip()
+        while "{" not in declaration and idx + 1 < len(lines):
+            idx += 1
+            declaration = f"{declaration} {lines[idx].strip()}"
+
+        if "{" not in declaration:
+            idx += 1
+            continue
+
+        brace_depth = declaration.count("{") - declaration.count("}")
+        idx += 1
+        while idx < len(lines) and brace_depth > 0:
+            body_line = lines[idx]
+            if brace_depth == 1 and re.match(r"^\s*(?:pub(?:\([^)]*\))?\s+)?fn\b", body_line):
+                signature_start_line = idx + 1
+                signature = body_line.strip()
+                while "{" not in signature and ";" not in signature and idx + 1 < len(lines):
+                    idx += 1
+                    signature = f"{signature} {lines[idx].strip()}"
+                if re.search(r"->\s*Option\s*<\s*(?:std::time::)?Duration\s*>", signature):
+                    raise ValueError(
+                        f"{path}: Core trait '{trait_name}' function at line {signature_start_line} "
+                        "returns Option<Duration>; use ExecutionBudget"
+                    )
+
+            brace_depth += body_line.count("{") - body_line.count("}")
+            idx += 1
+
+
 def _validate_core_enum_variant_bans(path: Path, lines: list[str]) -> None:
     idx = 0
     while idx < len(lines):
@@ -316,6 +419,9 @@ def validate_core_bans(classification_by_file: dict[str, str], source_cache: dic
         stripped = _strip_rust_comments(source)
         lines = stripped.splitlines()
 
+        _validate_sum_type_with_parallel_bool(source_path, lines)
+        _validate_core_trait_option_duration_returns(source_path, lines)
+
         for line_number, signature in _collect_fn_signatures(lines):
             if re.search(r"\bOption\s*<", signature):
                 raise ValueError(
@@ -324,6 +430,30 @@ def validate_core_bans(classification_by_file: dict[str, str], source_cache: dic
 
         _validate_core_struct_bans(source_path, lines)
         _validate_core_enum_variant_bans(source_path, lines)
+
+
+def validate_engine_warning_emission_bools(source_files: list[str], source_cache: dict[Path, str]) -> None:
+    warning_field_pattern = re.compile(
+        r"^\s*(?:pub(?:\([^)]*\))?\s+)?([A-Za-z_][A-Za-z0-9_]*(?:_warning_shown|_shown))\s*:\s*(?:std::primitive::)?bool\b"
+    )
+    for rel_path in source_files:
+        if not rel_path.startswith("engine/src/"):
+            continue
+        source_path = ROOT / rel_path
+        source = source_cache.get(source_path)
+        if source is None:
+            source = source_path.read_text(encoding="utf-8")
+            source_cache[source_path] = source
+        stripped = _strip_rust_comments(source)
+        lines = stripped.splitlines()
+        for idx, line in enumerate(lines):
+            match = warning_field_pattern.match(line)
+            if match:
+                field_name = match.group(1)
+                raise ValueError(
+                    f"{source_path}: warning-emission bool field '{field_name}' at line {idx + 1} "
+                    "is banned; dedupe in boundary notification layer"
+                )
 
 
 def _validate_common_metadata(data: dict, path: Path) -> None:
@@ -948,6 +1078,7 @@ def main() -> int:
 
         classifications = validate_classification_map(CLASSIFICATION_MAP, source_files)
         validate_core_bans(classifications, source_cache)
+        validate_engine_warning_emission_bools(source_files, source_cache)
         invariant_ids = validate_invariant_registry(
             INVARIANT_REGISTRY,
             workspace_members,

@@ -193,7 +193,7 @@ impl EditorState<MemoryState> {
 pub(crate) fn approval_mode_config_value(mode: ApprovalMode) -> &'static str {
     match mode {
         ApprovalMode::Permissive => "permissive",
-        ApprovalMode::Default => "default",
+        ApprovalMode::Balanced => "balanced",
         ApprovalMode::Strict => "strict",
     }
 }
@@ -201,15 +201,15 @@ pub(crate) fn approval_mode_config_value(mode: ApprovalMode) -> &'static str {
 pub(crate) fn approval_mode_display(mode: ApprovalMode) -> &'static str {
     match mode {
         ApprovalMode::Permissive => "permissive",
-        ApprovalMode::Default => "default",
+        ApprovalMode::Balanced => "balanced",
         ApprovalMode::Strict => "strict",
     }
 }
 
 pub(crate) fn next_approval_mode(mode: ApprovalMode) -> ApprovalMode {
     match mode {
-        ApprovalMode::Permissive => ApprovalMode::Default,
-        ApprovalMode::Default => ApprovalMode::Strict,
+        ApprovalMode::Permissive => ApprovalMode::Balanced,
+        ApprovalMode::Balanced => ApprovalMode::Strict,
         ApprovalMode::Strict => ApprovalMode::Permissive,
     }
 }

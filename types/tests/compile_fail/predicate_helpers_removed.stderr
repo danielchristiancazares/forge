@@ -1,0 +1,35 @@
+error[E0599]: no method named `is_enabled` found for enum `AsciiOnly` in the current scope
+ --> tests/compile_fail/predicate_helpers_removed.rs:5:32
+  |
+5 |     let _ = AsciiOnly::Enabled.is_enabled();
+  |                                ^^^^^^^^^^ method not found in `AsciiOnly`
+
+error[E0599]: no method named `is_visible` found for enum `DetailView` in the current scope
+ --> tests/compile_fail/predicate_helpers_removed.rs:6:32
+  |
+6 |     let _ = DetailView::Hidden.is_visible();
+  |                                ^^^^^^^^^^ method not found in `DetailView`
+
+error[E0599]: no method named `is_filtering` found for enum `SettingsFilterMode` in the current scope
+ --> tests/compile_fail/predicate_helpers_removed.rs:7:43
+  |
+7 |     let _ = SettingsFilterMode::Filtering.is_filtering();
+  |                                           ^^^^^^^^^^^^ method not found in `SettingsFilterMode`
+  |
+help: there is a variant with a similar name
+  |
+7 -     let _ = SettingsFilterMode::Filtering.is_filtering();
+7 +     let _ = SettingsFilterMode::Filtering.Filtering();
+  |
+
+error[E0599]: no method named `allows` found for enum `ToolProviderScope` in the current scope
+ --> tests/compile_fail/predicate_helpers_removed.rs:8:45
+  |
+8 |     let _ = ToolProviderScope::AllProviders.allows(Provider::OpenAI);
+  |                                             ^^^^^^ method not found in `ToolProviderScope`
+
+error[E0599]: no method named `has_data` found for struct `ApiUsage` in the current scope
+ --> tests/compile_fail/predicate_helpers_removed.rs:9:33
+  |
+9 |     let _ = ApiUsage::default().has_data();
+  |                                 ^^^^^^^^ method not found in `ApiUsage`

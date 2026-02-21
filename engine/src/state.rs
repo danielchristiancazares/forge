@@ -66,19 +66,22 @@ pub(crate) enum JournalCleanup<Id> {
     Pending {
         id: Id,
         failures: u8,
+        not_before: Instant,
     },
 }
 
 impl<Id: PartialEq> JournalCleanup<Id> {
-    pub(crate) fn set_pending(&mut self, new_id: Id) {
+    pub(crate) fn set_pending(&mut self, new_id: Id, not_before: Instant) {
         *self = match mem::take(self) {
-            Self::Pending { id, failures } if id == new_id => Self::Pending {
+            Self::Pending { id, failures, .. } if id == new_id => Self::Pending {
                 id,
                 failures: failures.saturating_add(1),
+                not_before,
             },
             _ => Self::Pending {
                 id: new_id,
                 failures: 1,
+                not_before,
             },
         };
     }

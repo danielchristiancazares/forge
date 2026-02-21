@@ -18,6 +18,7 @@ pub use types::{
     WebFetchOutput,
 };
 
+use forge_types::{ToolProviderScope, ToolVisibility};
 use serde::Deserialize;
 use std::io;
 use std::net::IpAddr;
@@ -25,8 +26,8 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use super::{
-    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, parse_args, redact_distillate,
-    sanitize_output,
+    RiskLevel, ToolApprovalRequirement, ToolCtx, ToolEffectProfile, ToolError, ToolExecutor,
+    ToolFut, ToolMetadata, TruncationPolicy, parse_args, redact_distillate, sanitize_output,
 };
 
 pub async fn fetch(
@@ -313,12 +314,20 @@ impl ToolExecutor for WebFetchTool {
         })
     }
 
-    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
-        false
+    fn effect_profile(&self, _args: &serde_json::Value) -> ToolEffectProfile {
+        ToolEffectProfile::Pure
     }
 
-    fn requires_approval(&self) -> bool {
-        true
+    fn approval_requirement(&self) -> ToolApprovalRequirement {
+        ToolApprovalRequirement::Always
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            approval_requirement: ToolApprovalRequirement::Always,
+            visibility: ToolVisibility::Visible,
+            provider_scope: ToolProviderScope::AllProviders,
+        }
     }
 
     fn risk_level(&self, _args: &serde_json::Value) -> RiskLevel {
@@ -333,7 +342,7 @@ impl ToolExecutor for WebFetchTool {
 
     fn execute<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
-            ctx.allow_truncation = false;
+            ctx.truncation_policy = TruncationPolicy::Forbidden;
             let typed: WebFetchArgs = parse_args(&args)?;
 
             if typed.url.trim().is_empty() {

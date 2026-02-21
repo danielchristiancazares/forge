@@ -52,3 +52,4 @@ windows-sys = { version = "0.61", features = [
 tokio = { workspace = true, features = ["rt", "macros"] }
 tempfile.workspace = true
 wiremock.workspace = true
+trybuild = "1"

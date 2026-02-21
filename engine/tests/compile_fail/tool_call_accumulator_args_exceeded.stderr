@@ -1,0 +1,5 @@
+error[E0422]: cannot find struct, variant or union type `ToolCallAccumulator` in crate `forge_engine`
+ --> tests/compile_fail/tool_call_accumulator_args_exceeded.rs:4:27
+  |
+4 |     let _ = forge_engine::ToolCallAccumulator {
+  |                           ^^^^^^^^^^^^^^^^^^^ not found in `forge_engine`

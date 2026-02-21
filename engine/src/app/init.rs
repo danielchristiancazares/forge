@@ -176,14 +176,12 @@ pub(crate) fn build_app(parts: AppBuildParts) -> App {
             stream_cleanup: Default::default(),
             tool_cleanup: Default::default(),
             tool_file_cache: parts.tool_file_cache,
-            history_load_warning_shown: false,
-            autosave_warning_shown: false,
+            seen_notifications: HashSet::new(),
             librarian: match parts.librarian {
                 Some(arc) => super::LibrarianState::Enabled(arc),
                 None => super::LibrarianState::Disabled,
             },
             last_session_autosave: Instant::now(),
-            next_journal_cleanup_attempt: Instant::now(),
             lsp_runtime: LspRuntimeState {
                 config: parts.lsp_config,
                 manager: Arc::new(Mutex::new(None)),
@@ -878,12 +876,15 @@ impl App {
         let mut tool_registry = tools::ToolRegistry::default();
         if let Err(e) = builtins::register_builtins(
             &mut tool_registry,
-            tool_settings.read_limits,
-            tool_settings.patch_limits,
-            tool_settings.search.clone(),
-            tool_settings.webfetch.clone(),
-            tool_settings.shell.clone(),
-            tool_settings.run_policy,
+            builtins::BuiltinRegistrationConfig {
+                read_limits: tool_settings.read_limits,
+                patch_limits: tool_settings.patch_limits,
+                search_config: tool_settings.search.clone(),
+                webfetch_config: tool_settings.webfetch.clone(),
+                shell: tool_settings.shell.clone(),
+                run_policy: tool_settings.run_policy,
+                shell_timeout: tool_settings.timeouts.shell_commands_timeout,
+            },
         ) {
             tracing::warn!("Failed to register built-in tools: {e}");
         }
@@ -902,8 +903,7 @@ fn parse_approval_mode(raw: Option<&str>) -> tools::ApprovalMode {
     match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
         Some("permissive" | "auto") => tools::ApprovalMode::Permissive,
         Some("strict" | "deny") => tools::ApprovalMode::Strict,
-        // "default", "prompt", or anything else
-        _ => tools::ApprovalMode::Default,
+        Some("balanced" | "default" | "prompt" | _) | None => tools::ApprovalMode::Balanced,
     }
 }
 

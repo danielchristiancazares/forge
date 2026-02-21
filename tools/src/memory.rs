@@ -1,9 +1,13 @@
 //! Memory tool for pinning facts via the Librarian's fact store.
 
+use forge_types::{ToolProviderScope, ToolVisibility};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{RiskLevel, ToolCtx, ToolCtxLibrarian, ToolError, ToolExecutor, ToolFut, parse_args};
+use super::{
+    RiskLevel, ToolApprovalRequirement, ToolCtx, ToolCtxLibrarian, ToolEffectProfile, ToolError,
+    ToolExecutor, ToolFut, ToolMetadata, parse_args,
+};
 
 /// Tool for storing facts in the Librarian's memory.
 #[derive(Debug, Default)]
@@ -45,8 +49,20 @@ impl ToolExecutor for MemoryTool {
         })
     }
 
-    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
-        true
+    fn effect_profile(&self, _args: &serde_json::Value) -> ToolEffectProfile {
+        ToolEffectProfile::SideEffecting
+    }
+
+    fn approval_requirement(&self) -> ToolApprovalRequirement {
+        ToolApprovalRequirement::Never
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            approval_requirement: ToolApprovalRequirement::Never,
+            visibility: ToolVisibility::Visible,
+            provider_scope: ToolProviderScope::AllProviders,
+        }
     }
 
     fn risk_level(&self, _args: &serde_json::Value) -> RiskLevel {

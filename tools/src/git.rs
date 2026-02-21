@@ -9,6 +9,7 @@ use std::process::{Stdio, id as process_id};
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use forge_types::{ToolProviderScope, ToolVisibility};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::fs::{create_dir_all as async_create_dir_all, write as async_write};
@@ -17,8 +18,8 @@ use tokio::process::Command;
 use tokio::time;
 
 use super::{
-    RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, parse_args, redact_distillate,
-    sanitize_output,
+    RiskLevel, ToolApprovalRequirement, ToolCtx, ToolEffectProfile, ToolError, ToolExecutor,
+    ToolFut, ToolMetadata, TruncationPolicy, parse_args, redact_distillate, sanitize_output,
 };
 
 const DEFAULT_GIT_TIMEOUT_MS: u64 = 30_000;
@@ -84,7 +85,7 @@ impl GitToolKind {
         }
     }
 
-    fn is_side_effecting(self) -> bool {
+    fn mutates_repo(self) -> bool {
         matches!(
             self,
             GitToolKind::Restore
@@ -283,23 +284,40 @@ impl ToolExecutor for GitTool {
         git_tool_schema()
     }
 
-    fn is_side_effecting(&self, args: &Value) -> bool {
+    fn effect_profile(&self, args: &Value) -> ToolEffectProfile {
         match Self::parse_kind(args) {
             Ok(GitToolKind::Diff) => {
                 // Diff is side-effecting when output_dir is specified (writes patch files)
-                args.get("output_dir")
+                if args
+                    .get("output_dir")
                     .and_then(Value::as_str)
                     .is_some_and(|s| !s.trim().is_empty())
+                {
+                    ToolEffectProfile::SideEffectingAndReadsUserData
+                } else {
+                    ToolEffectProfile::ReadsUserData
+                }
             }
-            Ok(kind) => kind.is_side_effecting(),
-            Err(_) => true,
+            Ok(kind) => {
+                if kind.mutates_repo() {
+                    ToolEffectProfile::SideEffecting
+                } else {
+                    ToolEffectProfile::ReadsUserData
+                }
+            }
+            Err(_) => ToolEffectProfile::SideEffectingAndReadsUserData,
         }
     }
 
-    fn reads_user_data(&self, args: &Value) -> bool {
-        match Self::parse_kind(args) {
-            Ok(kind) => !kind.is_side_effecting(),
-            Err(_) => true,
+    fn approval_requirement(&self) -> ToolApprovalRequirement {
+        ToolApprovalRequirement::Never
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            approval_requirement: ToolApprovalRequirement::Never,
+            visibility: ToolVisibility::Visible,
+            provider_scope: ToolProviderScope::AllProviders,
         }
     }
 
@@ -384,16 +402,12 @@ impl ToolExecutor for GitTool {
         Ok(redact_distillate(&distillate))
     }
 
-    fn timeout(&self) -> Option<Duration> {
-        Some(Duration::from_millis(MAX_GIT_TIMEOUT_MS))
-    }
-
     fn execute<'a>(&'a self, args: Value, ctx: &'a mut ToolCtx) -> ToolFut<'a> {
         Box::pin(async move {
             let kind = Self::parse_kind(&args)?;
 
             // Disable generic truncation - we handle it ourselves to preserve JSON validity
-            ctx.allow_truncation = false;
+            ctx.truncation_policy = TruncationPolicy::Forbidden;
 
             let mut payload = match kind {
                 GitToolKind::Status => handle_git_status(ctx, args).await?,
@@ -2179,14 +2193,14 @@ async fn handle_git_pull(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
 
 #[cfg(test)]
 mod tests {
-    use super::{GitDiffArgs, GitTool, RiskLevel, ToolExecutor};
+    use super::{GitDiffArgs, GitTool, RiskLevel, ToolEffectProfile, ToolExecutor};
     use serde_json::json;
 
     #[test]
     fn diff_without_output_dir_is_not_side_effecting() {
         let tool = GitTool;
         let args = json!({"command": "diff"});
-        assert!(!tool.is_side_effecting(&args));
+        assert_eq!(tool.effect_profile(&args), ToolEffectProfile::ReadsUserData);
         assert_eq!(tool.risk_level(&args), RiskLevel::Low);
     }
 
@@ -2194,7 +2208,10 @@ mod tests {
     fn diff_with_output_dir_is_side_effecting() {
         let tool = GitTool;
         let args = json!({"command": "diff", "output_dir": "patches"});
-        assert!(tool.is_side_effecting(&args));
+        assert_eq!(
+            tool.effect_profile(&args),
+            ToolEffectProfile::SideEffectingAndReadsUserData
+        );
         assert_eq!(tool.risk_level(&args), RiskLevel::Medium);
     }
 
@@ -2202,7 +2219,7 @@ mod tests {
     fn diff_with_empty_output_dir_is_not_side_effecting() {
         let tool = GitTool;
         let args = json!({"command": "diff", "output_dir": ""});
-        assert!(!tool.is_side_effecting(&args));
+        assert_eq!(tool.effect_profile(&args), ToolEffectProfile::ReadsUserData);
         assert_eq!(tool.risk_level(&args), RiskLevel::Low);
     }
 
@@ -2210,14 +2227,14 @@ mod tests {
     fn diff_with_whitespace_output_dir_is_not_side_effecting() {
         let tool = GitTool;
         let args = json!({"command": "diff", "output_dir": "  "});
-        assert!(!tool.is_side_effecting(&args));
+        assert_eq!(tool.effect_profile(&args), ToolEffectProfile::ReadsUserData);
     }
 
     #[test]
     fn status_is_not_side_effecting() {
         let tool = GitTool;
         let args = json!({"command": "status"});
-        assert!(!tool.is_side_effecting(&args));
+        assert_eq!(tool.effect_profile(&args), ToolEffectProfile::ReadsUserData);
         assert_eq!(tool.risk_level(&args), RiskLevel::Low);
     }
 
@@ -2225,7 +2242,7 @@ mod tests {
     fn restore_is_side_effecting_high_risk() {
         let tool = GitTool;
         let args = json!({"command": "restore", "paths": ["file.rs"]});
-        assert!(tool.is_side_effecting(&args));
+        assert_eq!(tool.effect_profile(&args), ToolEffectProfile::SideEffecting);
         assert_eq!(tool.risk_level(&args), RiskLevel::High);
     }
 
@@ -2233,32 +2250,47 @@ mod tests {
     fn unknown_command_is_side_effecting_high_risk() {
         let tool = GitTool;
         let args = json!({"command": "unknown"});
-        assert!(tool.is_side_effecting(&args));
+        assert_eq!(
+            tool.effect_profile(&args),
+            ToolEffectProfile::SideEffectingAndReadsUserData
+        );
         assert_eq!(tool.risk_level(&args), RiskLevel::High);
     }
 
     #[test]
     fn status_reads_user_data() {
         let tool = GitTool;
-        assert!(tool.reads_user_data(&json!({"command": "status"})));
+        assert!(matches!(
+            tool.effect_profile(&json!({"command": "status"})),
+            ToolEffectProfile::ReadsUserData | ToolEffectProfile::SideEffectingAndReadsUserData
+        ));
     }
 
     #[test]
     fn diff_reads_user_data() {
         let tool = GitTool;
-        assert!(tool.reads_user_data(&json!({"command": "diff"})));
+        assert!(matches!(
+            tool.effect_profile(&json!({"command": "diff"})),
+            ToolEffectProfile::ReadsUserData | ToolEffectProfile::SideEffectingAndReadsUserData
+        ));
     }
 
     #[test]
     fn commit_does_not_read_user_data() {
         let tool = GitTool;
-        assert!(!tool.reads_user_data(&json!({"command": "commit", "message": "test"})));
+        assert!(!matches!(
+            tool.effect_profile(&json!({"command": "commit", "message": "test"})),
+            ToolEffectProfile::ReadsUserData | ToolEffectProfile::SideEffectingAndReadsUserData
+        ));
     }
 
     #[test]
     fn restore_does_not_read_user_data() {
         let tool = GitTool;
-        assert!(!tool.reads_user_data(&json!({"command": "restore", "paths": ["f.rs"]})));
+        assert!(!matches!(
+            tool.effect_profile(&json!({"command": "restore", "paths": ["f.rs"]})),
+            ToolEffectProfile::ReadsUserData | ToolEffectProfile::SideEffectingAndReadsUserData
+        ));
     }
 
     #[test]
@@ -2295,18 +2327,24 @@ mod tests {
 fn push_is_side_effecting_medium_risk() {
     let tool = GitTool;
     let args = json!({"command": "push"});
-    assert!(tool.is_side_effecting(&args));
+    assert_eq!(tool.effect_profile(&args), ToolEffectProfile::SideEffecting);
     assert_eq!(tool.risk_level(&args), RiskLevel::Medium);
-    assert!(!tool.reads_user_data(&args));
+    assert!(!matches!(
+        tool.effect_profile(&args),
+        ToolEffectProfile::ReadsUserData | ToolEffectProfile::SideEffectingAndReadsUserData
+    ));
 }
 
 #[test]
 fn pull_is_side_effecting_medium_risk() {
     let tool = GitTool;
     let args = json!({"command": "pull"});
-    assert!(tool.is_side_effecting(&args));
+    assert_eq!(tool.effect_profile(&args), ToolEffectProfile::SideEffecting);
     assert_eq!(tool.risk_level(&args), RiskLevel::Medium);
-    assert!(!tool.reads_user_data(&args));
+    assert!(!matches!(
+        tool.effect_profile(&args),
+        ToolEffectProfile::ReadsUserData | ToolEffectProfile::SideEffectingAndReadsUserData
+    ));
 }
 
 #[test]

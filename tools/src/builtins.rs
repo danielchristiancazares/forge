@@ -7,9 +7,11 @@ use std::io::{BufRead, BufReader, Error as IoError, ErrorKind, Read, Seek, SeekF
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::str::from_utf8;
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use forge_types::{ToolProviderScope, ToolVisibility};
 use globset::GlobBuilder;
 use ignore::WalkBuilder;
 use serde::Deserialize;
@@ -22,9 +24,10 @@ use tokio::sync::mpsc::Sender;
 use tokio::task::spawn_blocking;
 
 use super::{
-    FileCacheEntry, ObservedRegion, PatchLimits, ReadFileLimits, RiskLevel, RunSandboxPolicy,
-    SearchToolConfig, ToolCtx, ToolError, ToolExecutor, ToolFut, ToolRegistry, WebFetchToolConfig,
-    parse_args, redact_distillate, sanitize_output,
+    ExecutionBudget, FileCacheEntry, ObservedRegion, PatchLimits, ReadFileLimits, RiskLevel,
+    RunSandboxPolicy, SearchToolConfig, ToolApprovalRequirement, ToolCtx, ToolEffectProfile,
+    ToolError, ToolExecutor, ToolFut, ToolMetadata, ToolRegistry, TruncationPolicy,
+    WebFetchToolConfig, parse_args, redact_distillate, sanitize_output,
 };
 use crate::default_true;
 use crate::git;
@@ -78,13 +81,33 @@ pub struct WriteFileTool;
 pub struct RunCommandTool {
     shell: super::DetectedShell,
     run_policy: RunSandboxPolicy,
+    timeout: Duration,
 }
 
 impl RunCommandTool {
     #[must_use]
-    pub fn new(shell: super::DetectedShell, run_policy: RunSandboxPolicy) -> Self {
-        Self { shell, run_policy }
+    pub fn new(
+        shell: super::DetectedShell,
+        run_policy: RunSandboxPolicy,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            shell,
+            run_policy,
+            timeout,
+        }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct BuiltinRegistrationConfig {
+    pub read_limits: ReadFileLimits,
+    pub patch_limits: PatchLimits,
+    pub search_config: SearchToolConfig,
+    pub webfetch_config: WebFetchToolConfig,
+    pub shell: super::DetectedShell,
+    pub run_policy: RunSandboxPolicy,
+    pub shell_timeout: Duration,
 }
 
 #[derive(Debug, Default)]
@@ -179,12 +202,20 @@ impl ToolExecutor for GlobTool {
         })
     }
 
-    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
-        false
+    fn effect_profile(&self, _args: &serde_json::Value) -> ToolEffectProfile {
+        ToolEffectProfile::ReadsUserData
     }
 
-    fn reads_user_data(&self, _args: &serde_json::Value) -> bool {
-        true
+    fn approval_requirement(&self) -> ToolApprovalRequirement {
+        ToolApprovalRequirement::Never
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            approval_requirement: ToolApprovalRequirement::Never,
+            visibility: ToolVisibility::Visible,
+            provider_scope: ToolProviderScope::AllProviders,
+        }
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
@@ -385,12 +416,20 @@ impl ToolExecutor for ReadFileTool {
         })
     }
 
-    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
-        false
+    fn effect_profile(&self, _args: &serde_json::Value) -> ToolEffectProfile {
+        ToolEffectProfile::ReadsUserData
     }
 
-    fn reads_user_data(&self, _args: &serde_json::Value) -> bool {
-        true
+    fn approval_requirement(&self) -> ToolApprovalRequirement {
+        ToolApprovalRequirement::Never
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            approval_requirement: ToolApprovalRequirement::Never,
+            visibility: ToolVisibility::Visible,
+            provider_scope: ToolProviderScope::AllProviders,
+        }
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
@@ -483,7 +522,7 @@ impl ToolExecutor for ReadFileTool {
                         message: "Line ranges are not supported for binary files".to_string(),
                     });
                 }
-                ctx.allow_truncation = false;
+                ctx.truncation_policy = TruncationPolicy::Forbidden;
                 (read_binary(&mut file, meta.len(), output_limit)?, None)
             } else if typed.start_line.is_none() && typed.end_line.is_none() {
                 if meta.len() as usize > read_limit {
@@ -585,8 +624,20 @@ impl ToolExecutor for ApplyPatchTool {
         })
     }
 
-    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
-        true
+    fn effect_profile(&self, _args: &serde_json::Value) -> ToolEffectProfile {
+        ToolEffectProfile::SideEffecting
+    }
+
+    fn approval_requirement(&self) -> ToolApprovalRequirement {
+        ToolApprovalRequirement::Never
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            approval_requirement: ToolApprovalRequirement::Never,
+            visibility: ToolVisibility::Visible,
+            provider_scope: ToolProviderScope::AllProviders,
+        }
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
@@ -918,8 +969,20 @@ impl ToolExecutor for WriteFileTool {
         })
     }
 
-    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
-        true
+    fn effect_profile(&self, _args: &serde_json::Value) -> ToolEffectProfile {
+        ToolEffectProfile::SideEffecting
+    }
+
+    fn approval_requirement(&self) -> ToolApprovalRequirement {
+        ToolApprovalRequirement::Never
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            approval_requirement: ToolApprovalRequirement::Never,
+            visibility: ToolVisibility::Visible,
+            provider_scope: ToolProviderScope::AllProviders,
+        }
     }
 
     fn approval_summary(&self, args: &serde_json::Value) -> Result<String, ToolError> {
@@ -1050,12 +1113,24 @@ impl ToolExecutor for RunCommandTool {
         })
     }
 
-    fn is_side_effecting(&self, _args: &serde_json::Value) -> bool {
-        true
+    fn effect_profile(&self, _args: &serde_json::Value) -> ToolEffectProfile {
+        ToolEffectProfile::SideEffecting
     }
 
-    fn requires_approval(&self) -> bool {
-        true
+    fn approval_requirement(&self) -> ToolApprovalRequirement {
+        ToolApprovalRequirement::Always
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            approval_requirement: ToolApprovalRequirement::Always,
+            visibility: ToolVisibility::Visible,
+            provider_scope: ToolProviderScope::AllProviders,
+        }
+    }
+
+    fn timeout(&self) -> ExecutionBudget {
+        ExecutionBudget::Bounded(self.timeout)
     }
 
     fn risk_level(&self, _args: &serde_json::Value) -> RiskLevel {
@@ -1416,17 +1491,26 @@ fn plan_tool_definition() -> forge_types::ToolDefinition {
 
 pub fn register_builtins(
     registry: &mut ToolRegistry,
-    read_limits: ReadFileLimits,
-    patch_limits: PatchLimits,
-    search_config: SearchToolConfig,
-    webfetch_config: WebFetchToolConfig,
-    shell: super::DetectedShell,
-    run_policy: RunSandboxPolicy,
+    config: BuiltinRegistrationConfig,
 ) -> Result<(), ToolError> {
+    let BuiltinRegistrationConfig {
+        read_limits,
+        patch_limits,
+        search_config,
+        webfetch_config,
+        shell,
+        run_policy,
+        shell_timeout,
+    } = config;
+
     registry.register(Box::new(ReadFileTool::new(read_limits)))?;
     registry.register(Box::new(ApplyPatchTool::new(patch_limits)))?;
     registry.register(Box::new(WriteFileTool))?;
-    registry.register(Box::new(RunCommandTool::new(shell, run_policy)))?;
+    registry.register(Box::new(RunCommandTool::new(
+        shell,
+        run_policy,
+        shell_timeout,
+    )))?;
     registry.register(Box::new(GlobTool))?;
     git::register_git_tool(registry)?;
     registry.register(Box::new(SearchTool::new(search_config)))?;
@@ -1706,11 +1790,12 @@ use super::process::ChildGuard;
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     use super::{
-        GlobArgs, GlobTool, ReadFileLimits, ReadFileTool, RiskLevel, RunCommandTool, ToolExecutor,
-        WriteFileTool, expand_braces, expand_single_brace, format_with_line_numbers,
-        is_crash_dump_artifact,
+        GlobArgs, GlobTool, ReadFileLimits, ReadFileTool, RiskLevel, RunCommandTool,
+        ToolApprovalRequirement, ToolEffectProfile, ToolExecutor, WriteFileTool, expand_braces,
+        expand_single_brace, format_with_line_numbers, is_crash_dump_artifact,
     };
     use crate::{DetectedShell, RunSandboxPolicy};
 
@@ -1722,6 +1807,7 @@ mod tests {
                 name: "pwsh".to_string(),
             },
             RunSandboxPolicy::default(),
+            Duration::from_secs(30),
         )
     }
 
@@ -1834,21 +1920,18 @@ mod tests {
     }
 
     #[test]
-    fn glob_tool_is_not_side_effecting() {
+    fn glob_tool_effect_profile_reads_user_data() {
         let tool = GlobTool;
-        assert!(!tool.is_side_effecting(&serde_json::json!({})));
+        assert_eq!(
+            tool.effect_profile(&serde_json::json!({})),
+            ToolEffectProfile::ReadsUserData
+        );
     }
 
     #[test]
     fn glob_tool_does_not_require_approval() {
         let tool = GlobTool;
-        assert!(!tool.requires_approval());
-    }
-
-    #[test]
-    fn glob_tool_reads_user_data() {
-        let tool = GlobTool;
-        assert!(tool.reads_user_data(&serde_json::json!({})));
+        assert_eq!(tool.approval_requirement(), ToolApprovalRequirement::Never);
     }
 
     #[test]
@@ -1942,12 +2025,18 @@ mod tests {
             max_file_read_bytes: 1024,
             max_scan_bytes: 4096,
         });
-        assert!(tool.reads_user_data(&serde_json::json!({"path": "foo.rs"})));
+        assert_eq!(
+            tool.effect_profile(&serde_json::json!({"path": "foo.rs"})),
+            ToolEffectProfile::ReadsUserData
+        );
     }
 
     #[test]
     fn write_tool_does_not_read_user_data() {
         let tool = WriteFileTool;
-        assert!(!tool.reads_user_data(&serde_json::json!({})));
+        assert_eq!(
+            tool.effect_profile(&serde_json::json!({})),
+            ToolEffectProfile::SideEffecting
+        );
     }
 }
