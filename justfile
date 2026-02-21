@@ -7,62 +7,31 @@ default:
     @just --list
 
 # Fast type-check (use during development)
-[windows]
-check:
-    @& { $r = cargo check 2>&1; $ec = $LASTEXITCODE; if ($ec -eq 0) { $r | ForEach-Object { "$_" } } else { $r | pwsh -NoProfile -File scripts/minify-rust-errors.ps1; if ($LASTEXITCODE -ne 0) { $r | ForEach-Object { "$_" } }; exit $ec } }
-
-[unix]
 check:
     cargo check
 
 # Debug build
-[windows]
 build:
-    @& { $r = cargo build 2>&1; $ec = $LASTEXITCODE; if ($ec -eq 0) { $r | ForEach-Object { "$_" } } else { $r | pwsh -NoProfile -File scripts/minify-rust-errors.ps1; if ($LASTEXITCODE -ne 0) { $r | ForEach-Object { "$_" } }; exit $ec } }
-
-[unix]
-build:
-    cargo build
+    cargo build -j 24
 
 # Release build
-[windows]
-release:
-    @& { $r = cargo build --release 2>&1; $ec = $LASTEXITCODE; if ($ec -eq 0) { $r | ForEach-Object { "$_" } } else { $r | pwsh -NoProfile -File scripts/minify-rust-errors.ps1; if ($LASTEXITCODE -ne 0) { $r | ForEach-Object { "$_" } }; exit $ec } }
-
-[unix]
 release:
     cargo build --release
 
-# Run tests (concise: one-line summary on pass, full output on fail)
-[windows]
 test:
-    @& { $r = cargo test 2>&1; $ec = $LASTEXITCODE; if ($ec -eq 0) { $p=0; $f=0; $i=0; $r | Select-String 'test result:' | ForEach-Object { if ($_ -match '(\d+) passed; (\d+) failed; (\d+) ignored') { $p+=[int]$Matches[1]; $f+=[int]$Matches[2]; $i+=[int]$Matches[3] } }; "ok: $p passed, $f failed, $i ignored" } else { if ($r | Select-String '^\s*error(?:\[[A-Z]\d+\])?:\s+' -Quiet) { $r | pwsh -NoProfile -File scripts/minify-rust-errors.ps1; if ($LASTEXITCODE -ne 0) { $r | ForEach-Object { "$_" } } } else { $r | ForEach-Object { "$_" } }; exit $ec } }
-
-[unix]
-test:
-    @r=$(cargo test 2>&1); rc=$?; if [ $rc -eq 0 ]; then echo "$r" | grep 'test result:' | awk '{p+=$4; f+=$6; i+=$8} END {printf "ok: %d passed, %d failed, %d ignored\n", p, f, i}'; else echo "$r"; exit $rc; fi
+   cargo -q test 2>&1
 
 # Run clippy lints (silent on pass, errors only on fail)
-[windows]
 lint:
-    @& { $r = cargo clippy --workspace --all-targets -- -D warnings 2>&1; $ec = $LASTEXITCODE; if ($ec -ne 0) { $r | pwsh -NoProfile -File scripts/minify-rust-errors.ps1; if ($LASTEXITCODE -ne 0) { $r | Where-Object { $_ -notmatch '^\s*(Checking|Compiling|Finished|Downloading|Downloaded|warning: build failed)' } | ForEach-Object { "$_" } }; exit $ec } }
-
-[unix]
-lint:
-    @r=$(cargo clippy --workspace --all-targets -- -D warnings 2>&1); rc=$?; if [ $rc -ne 0 ]; then echo "$r" | grep -Ev '^\s*(Checking|Compiling|Finished|Downloading|Downloaded|warning: build failed)'; exit $rc; fi
-
-# Minify Rust compiler errors for LLM consumption (optional: path, keep_help=true, keep_notes=true)
-[windows]
-minify-rust-errors path="" keep_help="false" keep_notes="false":
-    @& { $ErrorActionPreference = 'Stop'; $args = @(); if ("{{path}}" -ne "") { $args += @('-Path', "{{path}}") }; if ("{{keep_help}}" -eq "true") { $args += '-KeepHelp' }; if ("{{keep_notes}}" -eq "true") { $args += '-KeepNotes' }; pwsh -NoProfile -File scripts/minify-rust-errors.ps1 @args }
+    cargo clippy -q --workspace --all-targets -- -D warnings
 
 # Format code
 fmt:
-    @cargo fmt --all
+    cargo fmt --all
 
 # Check formatting without modifying
 fmt-check:
-    @cargo fmt -- --check
+    cargo fmt -- --check
 
 # Coverage report (requires cargo-llvm-cov)
 cov:
@@ -110,22 +79,6 @@ install:
 # Clean build artifacts
 clean:
     cargo clean
-
-# Flatten source files for external review (path-prefixed filenames)
-[windows]
-flatten:
-    if (Test-Path gemini-review) { Remove-Item -Recurse -Force gemini-review }
-    New-Item -ItemType Directory -Path gemini-review | Out-Null
-    Get-ChildItem -Path . -Include *.rs -Recurse | Where-Object { $_.FullName -notmatch '[\\/]target[\\/]' -and $_.FullName -notmatch '[\\/]gemini-review[\\/]' } | ForEach-Object { $newName = ($_.FullName.Substring((Get-Location).Path.Length + 1) -replace '[\\/]', '-'); Copy-Item $_.FullName -Destination "gemini-review/$newName" }
-    Get-ChildItem -Path . -Include README.md,CLAUDE.md,DESIGN.md,ARCHITECTURE.md -Recurse | Where-Object { $_.FullName -notmatch '[\\/]target[\\/]' -and $_.FullName -notmatch '[\\/]gemini-review[\\/]' } | ForEach-Object { $newName = ($_.FullName.Substring((Get-Location).Path.Length + 1) -replace '[\\/]', '-'); Copy-Item $_.FullName -Destination "gemini-review/$newName" }
-    Write-Host "Flattened $(Get-ChildItem gemini-review | Measure-Object | Select-Object -ExpandProperty Count) files to gemini-review/"
-
-[unix]
-flatten:
-    rm -rf gemini-review && mkdir -p gemini-review
-    find . -name '*.rs' -not -path './target/*' -not -path './gemini-review/*' | while IFS= read -r f; do cp "$f" "gemini-review/$(echo "${f#./}" | tr '/' '-')"; done
-    find . \( -name 'README.md' -o -name 'CLAUDE.md' -o -name 'DESIGN.md' -o -name 'ARCHITECTURE.md' \) -not -path './target/*' -not -path './gemini-review/*' | while IFS= read -r f; do cp "$f" "gemini-review/$(echo "${f#./}" | tr '/' '-')"; done
-    echo "Flattened $(ls gemini-review | wc -l) files to gemini-review/"
 
 # Update TOC with current line numbers (uses cached descriptions)
 toc file="README.md":
@@ -175,12 +128,21 @@ toc-all:
     just toc README.md
     just toc context/README.md
 
+# Run all checks and print a one-line summary (like cargo deny output)
+[windows]
+verify-summary:
+    pwsh -NoProfile -File scripts/verify-summary.ps1
+
+[unix]
+verify-summary:
+    bash scripts/verify-summary.sh
+
 # Normalize line endings to LF for source and doc files
 [windows]
 fix:
-    @& { $ErrorActionPreference = 'Stop'; try { cargo clippy --fix --workspace --all-targets --allow-dirty --allow-staged -- -W 'clippy::collapsible_if' -W 'clippy::redundant_closure' -W 'clippy::redundant_closure_for_method_calls' -W 'clippy::needless_return' -W 'clippy::let_and_return' -W 'clippy::needless_borrow' -W 'clippy::needless_borrows_for_generic_args' -W 'clippy::clone_on_copy' -W 'clippy::unnecessary_cast' -W 'clippy::needless_bool' -W 'clippy::needless_bool_assign' -W 'unused_imports' -W 'unused_mut' -W 'unused_parens'; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Get-ChildItem -Path . -Include *.rs,*.md -Recurse -ErrorAction Stop | Where-Object { $_.FullName -notmatch '[\\/]target[\\/]' -and $_.FullName -notmatch '[\\/]gemini-review[\\/]' -and $_.FullName -notmatch '[\\/]\\.git[\\/]' } | ForEach-Object { $c = [System.IO.File]::ReadAllText($_.FullName); if ($c -match "`r`n") { [System.IO.File]::WriteAllText($_.FullName, ($c -replace "`r`n", "`n")); Write-Host "fixed: $($_.FullName.Substring((Get-Location).Path.Length + 1))" } } } catch { Write-Error $_; exit 1 } }
+  cargo clippy -q --fix --workspace --all-targets --allow-dirty --allow-staged -- -W clippy::collapsible_if -W clippy::redundant_closure -W clippy::redundant_closure_for_method_calls -W clippy::needless_return -W clippy::let_and_return -W clippy::needless_borrow -W clippy::needless_borrows_for_generic_args -W clippy::clone_on_copy -W clippy::unnecessary_cast -W clippy::needless_bool -W clippy::needless_bool_assign -W unused_imports -W unused_mut -W unused_parens
+  [IO.Directory]::EnumerateFiles($PWD, "*", 1) | Where-Object { $_ -match '\.(rs|md)$' -and $_ -notmatch '\\(target|gemini-review|\.git)\\' } | ForEach-Object { $b = [IO.File]::ReadAllBytes($_); if ($b -contains 13) { [IO.File]::WriteAllText($_, ([Text.Encoding]::UTF8.GetString($b) -replace "\r", "")) } }
 
 [unix]
 fix:
     cargo clippy --fix --workspace --all-targets --allow-dirty --allow-staged -- -W 'clippy::collapsible_if' -W 'clippy::redundant_closure' -W 'clippy::redundant_closure_for_method_calls' -W 'clippy::needless_return' -W 'clippy::let_and_return' -W 'clippy::needless_borrow' -W 'clippy::needless_borrows_for_generic_args' -W 'clippy::clone_on_copy' -W 'clippy::unnecessary_cast' -W 'clippy::needless_bool' -W 'clippy::needless_bool_assign' -W 'unused_imports' -W 'unused_mut' -W 'unused_parens'
-    find . \( -name '*.rs' -o -name '*.md' \) -not -path './target/*' -not -path './gemini-review/*' -not -path './.git/*' -exec perl -pi -e 's/\r$//' {} +
