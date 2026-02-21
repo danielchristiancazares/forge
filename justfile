@@ -41,8 +41,14 @@ cov:
 deny:
     cargo deny check
 
-# Run all checks before committing (includes auto-formatting)
-verify: ifa-check fix fmt fmt-check lint test deny
+# Run all checks and print a one-line summary
+[windows]
+verify:
+    @pwsh -NoProfile -File scripts/verify-summary.ps1
+
+[unix]
+verify:
+    @bash scripts/verify-summary.sh
 
 [windows]
 ifa-check:
@@ -127,15 +133,6 @@ digest:
 toc-all:
     just toc README.md
     just toc context/README.md
-
-# Run all checks and print a one-line summary (like cargo deny output)
-[windows]
-verify-summary:
-    pwsh -NoProfile -File scripts/verify-summary.ps1
-
-[unix]
-verify-summary:
-    bash scripts/verify-summary.sh
 
 # Normalize line endings to LF for source and doc files
 [windows]
