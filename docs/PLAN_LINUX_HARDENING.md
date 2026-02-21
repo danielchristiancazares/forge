@@ -58,12 +58,15 @@ This plan follows these non-negotiable rules:
 `tools/src/process.rs`:
 
 ```rust
-pub struct UnhardenedCommand { /* wraps std::process::Command */ }
+pub struct UnhardenedCommand { /* wraps process command substrate */ }
 pub struct BaseHardenedCommand { /* private proof field */ }
 pub struct SandboxedCommand { /* private proof field */ }
-pub struct UnsandboxedCommand { /* private proof field */ }
+pub struct UnsandboxedCommand { /* private proof field; carries UnsandboxedReason internally */ }
 pub struct TrustedExecutable { /* private proof field */ }
 pub struct VerifiedExecutableFd { /* private proof field */ }
+pub struct NoNewPrivsToken(());
+pub struct ClosedFdsToken(());
+pub struct EnvSanitizedToken(());
 pub enum SanitizedEnv {
     Minimal(MinimalEnv),
     Toolchain(ToolchainEnv),
@@ -98,11 +101,12 @@ pub struct ProcessBoundaryProfile {
 }
 
 impl UnhardenedCommand {
+    #[must_use]
     pub fn harden_base(self, profile: ProcessBoundaryProfile) -> Result<BaseHardenedCommand, HardeningError>;
 }
 
 pub fn spawn_sandboxed(cmd: SandboxedCommand) -> io::Result<Child>;
-pub fn spawn_unsandboxed(cmd: UnsandboxedCommand, reason: UnsandboxedReason) -> io::Result<Child>;
+pub fn spawn_unsandboxed(cmd: UnsandboxedCommand) -> io::Result<Child>;
 ```
 
 Rules:
@@ -111,33 +115,49 @@ Rules:
 3. Update all tool spawn sites to use `UnhardenedCommand -> BaseHardenedCommand -> {SandboxedCommand|UnsandboxedCommand} -> spawn_*`.
 4. Do not expose conversion from `SandboxedCommand` to `UnsandboxedCommand` or vice versa.
 5. Keep hardening implementation shared for `tools` and `lsp`; do not maintain mirrored independent spawn hardening logic.
+6. Do not expose `Deref`, `DerefMut`, or `into_inner()` escape hatches back to raw process command types.
+
+### Workspace wiring
+
+`core/src/process_hardening.rs` remains the shared authority boundary for hardening proof objects.  
+Implementation requires explicit crate wiring:
+
+1. Add `forge-core` as a dependency of `forge-tools` and `forge-lsp`.
+2. Keep proof constructors and unchecked transitions private to `forge-core::process_hardening`.
+3. Only boundary adapters in `tools`/`lsp` may assemble policy inputs; they cannot mint proof objects directly.
 
 `lsp/src/server.rs`:
 1. Use the shared hardening helper/API used by `tools`; do not fork behavior locally.
 2. Do not call `.spawn()` directly from server setup.
 
+`pre_exec` safety contract:
+1. Child-side `pre_exec` logic is syscall-only (`libc` + stack locals); no heap allocation.
+2. No formatting, logging (`tracing::*`), filesystem access, or lock/global-state usage in `pre_exec`.
+3. Mechanism unavailability reasons are resolved/logged at parent boundary before fork; child receives only finalized proof/state objects.
+
 `pre_exec` hardening sequence:
 1. `setsid()`
 2. `prctl(PR_SET_PDEATHSIG, SIGKILL)`
 3. close parent-death race window (re-check parent identity immediately after `PR_SET_PDEATHSIG`; fail closed on mismatch/reparent)
-4. `prctl(PR_SET_NO_NEW_PRIVS, 1)`
+4. `prctl(PR_SET_NO_NEW_PRIVS, 1)` -> `NoNewPrivsToken`
 5. apply dumpability action selected in `KernelFeatureProfile` (no runtime compatibility probing in `pre_exec`)
 6. reset signal handlers and signal mask to policy baseline
 7. apply UID/GID/supplementary-group/capability policy (drop ambient and inheritable capabilities unless explicitly needed)
 8. apply `ResourceLimitsProfile` (explicit values for every tracked limit; no optional limit branches in core hardening code)
 9. apply `StdioPolicy` and enforce CLOEXEC-by-default on non-stdio descriptors
-10. close inherited file descriptors using pre-selected `ClosedFdSet` strategy from boundary profile (no in-core fallback probing)
-11. apply sanitized child environment from explicit allowlist/override policy
+10. close inherited file descriptors using pre-selected `ClosedFdSet` strategy from boundary profile (no in-core fallback probing), preserving explicit keep-fds (stdio + launch/sandbox mechanism fds) -> `ClosedFdsToken`
+11. apply sanitized child environment from explicit allowlist/override policy -> `EnvSanitizedToken`
 
 Boundary normalization (before `pre_exec`):
 1. Resolve executable path to absolute canonical location and materialize `TrustedExecutable` proof:
    - validate path ancestry trust policy (reject writable-by-untrusted parent directories)
    - open executable handle and materialize `VerifiedExecutableFd`
    - select `ExecLaunchStrategy` at boundary (`FdExec` preferred; `PathExecFallback` only with explicit policy token)
+   - for `FdExec`, pre-build launch payload needed by child-side `execveat(..., AT_EMPTY_PATH)` / `fexecve` path (no child-side allocation or probing)
    - capture stable identity facts (`dev`, `ino`, mode/owner checks) for launch-time revalidation when fallback path launch is policy-approved
 2. Reject ambiguous launch inputs (`PATH` surprises, relative executable with missing trusted cwd policy).
 3. Probe kernel capability surface once and collapse it into `KernelFeatureProfile` before type transition.
-4. Materialize `SanitizedEnv`, `ClosedFdSet`, `StdioPolicy`, and `BoundarySnapshot` proof objects at the boundary.
+4. Materialize `SanitizedEnv`, `ClosedFdSet` (including keep-fd set), `StdioPolicy`, and `BoundarySnapshot` proof objects at the boundary.
 5. Normalize cwd policy (explicit trusted cwd or deny spawn).
 6. Normalize umask policy and inherited process identity facts before type transition.
 
@@ -145,7 +165,13 @@ Environment policy invariants:
 1. `SanitizedEnv` is allowlist-first and typed (`MinimalEnv` vs `ToolchainEnv`); inherited environment is denied by default.
 2. Runtime and loader injection variables (`LD_*`, `DYLD_*`, and runtime preload hooks) are explicitly denied unless policy grants them.
 3. `PATH` is explicit and deterministic for hardened launches.
-4. Elevating from `MinimalEnv` to `ToolchainEnv` requires an explicit capability proof token at the boundary.
+4. `MinimalEnv` baseline is explicit (`PATH`, `HOME`, locale, and temp-dir variables only when policy grants them).
+5. Elevating from `MinimalEnv` to `ToolchainEnv` requires an explicit capability proof token at the boundary.
+
+Failure surface invariants:
+1. `HardeningError` and raw syscall errors remain internal mechanism representations.
+2. Boundary adapters map internal failures to stable boundary-defined error surfaces before UI/tool output.
+3. External failure surfaces must not leak internal module layout or unchecked raw path details by default.
 
 **IFA/Design alignment:** hardening proof objects make unhardened spawn unrepresentable and preserve sandbox state as a first-class type until final policy match.
 
@@ -154,28 +180,31 @@ Environment policy invariants:
 | File | Change |
 |------|--------|
 | `core/src/process_hardening.rs` (new) | Shared typestate wrappers, boundary profile types, and private raw spawn path used by `tools` and `lsp` |
+| `tools/Cargo.toml` | Add `forge-core` dependency for shared hardening boundary |
+| `lsp/Cargo.toml` | Add `forge-core` dependency (`libc` unix dep retained as needed for `prctl`/`setsid`) |
 | `tools/src/process.rs` | Thin adapter over shared hardening API (tool-specific policy wiring only) |
 | `tools/src/builtins.rs` | Migrate to hardened spawn API |
 | `tools/src/git.rs` | Migrate to hardened spawn API |
 | `tools/src/search.rs` | Migrate to hardened spawn API |
 | `tools/src/powershell_ast.rs` | Migrate to hardened spawn API |
 | `lsp/src/server.rs` | Migrate to shared hardened spawn API for LSP child |
-| `lsp/Cargo.toml` | Add `libc` unix dep if needed for `prctl`/`setsid` |
+| `tools/tests/bin/hardening_probe.rs` (new) | Child introspection helper for deterministic hardening assertions (`/proc` status, env, fd list, limits) |
 | `tools/tests/compile_fail/*.rs` | Add typestate negative tests (`trybuild`) for forbidden transitions and raw spawn bypass |
 
 **Test:**
-1. Unit: API does not expose direct raw spawn from hardened modules.
-2. Integration (Linux): spawned child shows `NoNewPrivs: 1` in `/proc/<pid>/status`.
+1. Unit: API does not expose direct raw spawn from hardened modules and does not expose raw-command escape hatches (`Deref`, `into_inner`).
+2. Integration (Linux): hardened child probe shows `NoNewPrivs: 1` in `/proc/<pid>/status`.
 3. Integration: child process dies on parent death (`PDEATHSIG` behavior), including race-window regression coverage.
 4. Integration: child gets sanitized environment only (unexpected inherited vars absent).
-5. Integration: child does not inherit unexpected file descriptors.
+5. Integration: child does not inherit unexpected file descriptors; keep-fd policy preserves only declared launch/sandbox fds.
 6. Integration: fd-backed exec path is used when available and survives executable path rename races.
 7. Integration: when fd-backed exec is unavailable, spawn is denied unless `PathExecFallbackToken` policy is present.
 8. Integration: executable identity (`dev`/`ino`) is revalidated at launch and fails closed on mismatch when fallback path launch is used.
 9. Integration: signal mask/handler, cwd, and umask reflect hardened baseline.
 10. Compile-fail: direct raw spawn and illegal typestate transitions fail to compile.
 11. Compile-fail: path-based launch cannot be selected without explicit fallback proof token.
-12. Run `just verify`.
+12. Compile-fail: `NoNewPrivsToken`, `ClosedFdsToken`, and `EnvSanitizedToken` are unconstructable outside the hardening boundary.
+13. Run `just verify`.
 
 **Risk:** LOW to MEDIUM (boundary normalization may surface latent assumptions in tool launch paths).
 
@@ -205,9 +234,11 @@ pub enum LandlockUnavailableReason {
 Caller policy (chosen outside mechanism):
 
 ```rust
+pub struct AllowUnsandboxedToken(());
+
 pub enum SandboxPolicy {
     RequireSandbox,
-    AllowUnsandboxed,
+    AllowUnsandboxed(AllowUnsandboxedToken),
 }
 ```
 
@@ -216,7 +247,7 @@ Spawn decision result:
 ```rust
 pub enum SpawnDecision {
     Sandboxed(SandboxedCommand),
-    Unsandboxed(UnsandboxedCommand, LandlockUnavailableReason),
+    Unsandboxed(UnsandboxedCommand),
     Denied(LandlockUnavailableReason), // only when policy requires sandbox
 }
 ```
@@ -225,7 +256,8 @@ Mechanism rule:
 1. Landlock module only applies policy proof (`LandlockPolicy`) in `pre_exec`.
 2. Landlock module never decides to continue unsandboxed.
 3. Callers must exhaustively match `(SandboxPolicy, LandlockAvailability)` to produce `SpawnDecision`.
-4. Sensitive call paths may require sandbox by type/capability token and must never receive `AllowUnsandboxed`.
+4. Sensitive call paths may require sandbox by type/capability token and must never receive `AllowUnsandboxedToken`.
+5. Unsandboxed reason data is bound to `UnsandboxedCommand` at boundary construction; spawn call sites do not supply free-form reason values.
 
 ### `LandlockPolicy` proof object shape
 
@@ -237,8 +269,8 @@ pub struct LandlockPolicy {
 }
 
 pub struct NonEmptyLandlockRules {
-    // Keyed by canonical path; constructor enforces non-empty and de-duplicates by join.
-    by_path: BTreeMap<CanonicalDir, LandlockPathRule>,
+    // Keyed by canonical filesystem entry; constructor enforces non-empty and de-duplicates by join.
+    by_path: BTreeMap<CanonicalFsEntry, LandlockPathRule>,
 }
 
 pub struct LandlockPathRule {
@@ -246,16 +278,31 @@ pub struct LandlockPathRule {
     fd: OwnedFd,
 }
 
-pub struct CanonicalDir(PathBuf); // constructor validates: absolute, canonical, exists, directory
+pub enum CanonicalFsEntry {
+    Dir(CanonicalDir),
+    File(CanonicalFile),
+    Device(CanonicalDevice),
+}
+
+pub struct CanonicalDir(PathBuf);    // absolute, canonical, exists, directory
+pub struct CanonicalFile(PathBuf);   // absolute, canonical, exists, regular file
+pub struct CanonicalDevice(PathBuf); // absolute, canonical, exists, device node
 
 pub enum AccessProfile {
     ReadOnly,
     ReadWrite,
     ReadExec,
+    ReadWriteExec,
 }
 ```
 
-Construction boundary validates each `CanonicalDir`, opens all FDs up front, rejects empty policy construction, and canonicalizes duplicate path grants with monotonic access joins.
+Construction boundary validates each `CanonicalFsEntry`, opens all FDs up front, rejects empty policy construction, and canonicalizes duplicate path grants with monotonic access joins.
+
+Join law (explicit and monotonic):
+1. `ReadOnly ⊔ ReadWrite = ReadWrite`
+2. `ReadOnly ⊔ ReadExec = ReadExec`
+3. `ReadWrite ⊔ ReadExec = ReadWriteExec`
+4. `x ⊔ x = x`
 
 ### Capability-scoped path policy (least privilege by tool class)
 
@@ -309,7 +356,7 @@ Policy notes:
 | `tools/src/search.rs` | Same |
 | `tools/src/powershell_ast.rs` | Same |
 
-`FORGE_LANDLOCK=0` is parsed at the caller boundary into a policy input that yields `SandboxPolicy::AllowUnsandboxed`; mechanism modules never read environment toggles directly.
+`FORGE_LANDLOCK=0` is parsed at the caller boundary into policy input that can mint `AllowUnsandboxedToken` for explicitly permitted paths; mechanism modules never read environment toggles directly.
 
 **IFA/Design alignment:**
 1. Boundary collapses uncertainty into strict enums immediately.
@@ -318,15 +365,15 @@ Policy notes:
 4. Sum types preserve security-relevant distinctions through to spawn.
 
 **Test:**
-1. Unit: `landlock_policy_for(CapabilitySet)` builds canonical, non-empty typed rules keyed by canonical path with no conflicting duplicates.
+1. Unit: `landlock_policy_for(CapabilitySet)` builds canonical, non-empty typed rules keyed by canonical fs entries with deterministic access joins.
 2. Integration (Linux 5.13+): blocked read outside allowed roots returns permission error.
 3. Integration: allowed project reads/writes still succeed.
 4. Integration: `RequireSandbox + Unavailable` yields denied spawn (no child launch).
-5. Integration: `AllowUnsandboxed + Unavailable` launches with `tracing::warn!` including reason.
+5. Integration: `AllowUnsandboxed(token) + Unavailable` launches unsandboxed with boundary warning that includes reason.
 6. Integration: baseline capability-scoped policy denies access to non-allowed `/dev` and `/proc` paths.
 7. Unit: capability token sets produce minimal rules per tool class.
 8. Compile-fail: code outside boundary modules cannot construct widening capability tokens.
-9. Compile-fail: sensitive call paths requiring sandbox capability cannot select `AllowUnsandboxed`.
+9. Compile-fail: sensitive call paths requiring sandbox capability cannot select `AllowUnsandboxed(token)`.
 10. Run `just verify`.
 
 **Risk:** MEDIUM. Toolchains on uncommon layouts (`/nix/store`, linuxbrew) may require additional explicit rules.
@@ -388,10 +435,17 @@ One phase per PR.
 After each phase:
 1. `just fix`
 2. `just verify`
-3. Manual smoke test: run Forge and invoke a tool command
-4. Phase 2: confirm `NoNewPrivs: 1` in `/proc/<pid>/status`
-5. Phase 2: validate `PDEATHSIG`, fd-backed exec behavior, and descriptor/environment normalization behavior
-6. Phase 3: validate both `RequireSandbox` and `AllowUnsandboxed` policy branches
-7. Phase 3: validate least-privilege defaults (`/dev` and `/proc` not broadly available)
-8. Phase 2/3/3.5: run compile-fail tests for typestate and capability invariants
-9. Phase 3.5: validate namespace and cgroup isolation behavior where supported
+3. Update IFA operational artifacts when invariants/authority boundaries changed:
+   - `ifa/invariant_registry.toml`
+   - `ifa/authority_boundary_map.toml`
+   - `ifa/parametricity_rules.toml`
+   - `ifa/move_semantics_rules.toml`
+   - `ifa/dry_proof_map.toml`
+   - `ifa/classification_map.toml` (when module classification/boundary ownership changes)
+4. Manual smoke test: run Forge and invoke a tool command
+5. Phase 2: confirm `NoNewPrivs: 1` in `/proc/<pid>/status`
+6. Phase 2: validate `PDEATHSIG`, fd-backed exec behavior, and descriptor/environment normalization behavior
+7. Phase 3: validate both `RequireSandbox` and `AllowUnsandboxed(token)` policy branches
+8. Phase 3: validate least-privilege defaults (`/dev` and `/proc` not broadly available)
+9. Phase 2/3/3.5: run compile-fail tests for typestate and capability invariants
+10. Phase 3.5: validate namespace and cgroup isolation behavior where supported
