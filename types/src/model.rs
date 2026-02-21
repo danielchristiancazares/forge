@@ -239,9 +239,9 @@ impl PredefinedModel {
     #[must_use]
     pub const fn model_name(self) -> &'static str {
         match self {
-            PredefinedModel::ClaudeOpus => "Opus 4.6",
-            PredefinedModel::ClaudeSonnet => "Sonnet 4.6",
-            PredefinedModel::ClaudeHaiku => "Haiku 4.5",
+            PredefinedModel::ClaudeOpus => "Claude Opus 4.6",
+            PredefinedModel::ClaudeSonnet => "Claude Sonnet 4.6",
+            PredefinedModel::ClaudeHaiku => "Claude Haiku 4.5",
             PredefinedModel::Gpt52Pro => "GPT 5.2 Pro",
             PredefinedModel::Gpt52 => "GPT 5.2",
             PredefinedModel::GeminiPro => "Gemini 3.1 Pro",
@@ -433,6 +433,12 @@ impl ModelName {
     pub fn predefined(&self) -> PredefinedModel {
         PredefinedModel::from_provider_and_id(self.provider, self.as_str())
             .expect("ModelName should always be constructed from a known model")
+    }
+
+    /// Short human-readable name for UI display (e.g. "Claude Sonnet 4.6").
+    #[must_use]
+    pub fn short_display_name(&self) -> &'static str {
+        self.predefined().model_name()
     }
 }
 

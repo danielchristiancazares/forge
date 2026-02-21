@@ -43,15 +43,15 @@ use tokio::sync::{Mutex, mpsc};
 
 use crate::ui::InputState;
 use crate::ui::{
-    ChangeKind, DisplayItem, DisplayLog, DraftInput, FilesPanelState, InputMode, ModalEffect,
-    PanelEffect, PanelEffectKind, PredefinedModel, ScrollState, SettingsCategory, SettingsSurface,
-    UiOptions, ViewState,
+    ChangeKind, DisplayItem, DisplayLog, DraftInput, FileScanState, FilesPanelState, InputMode,
+    ModalEffect, PanelEffect, PanelEffectKind, PredefinedModel, ScrollState, SettingsCategory,
+    SettingsFilterMode, SettingsSurface, TranscriptRenderAction, UiOptions, ViewState,
 };
 
 use forge_context::{
-    ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus, FullHistory,
-    Librarian, ModelLimitsSource, StreamJournal, TokenCounter, ToolJournal, distillation_model,
-    generate_distillation,
+    ContextAdaptation, ContextManager, ContextPreparation, ContextShrinkRequirement,
+    ContextUsageStatus, FullHistory, Librarian, ModelLimitsSource, StreamJournal, TokenCounter,
+    ToolJournal, distillation_model, generate_distillation,
 };
 use forge_lsp::{DiagnosticsSnapshot, LspManager};
 use forge_providers::{self, ApiConfig, gemini::GeminiCache, gemini::GeminiCacheConfig};
@@ -151,7 +151,7 @@ pub enum SettingsAccess<'a> {
     Active {
         surface: SettingsSurface,
         filter_text: &'a str,
-        filter_active: bool,
+        filter_mode: SettingsFilterMode,
         detail_view: Option<SettingsCategory>,
         selected_index: usize,
     },
@@ -1076,8 +1076,11 @@ impl App {
         self.ui.should_quit = true;
     }
 
-    pub fn take_clear_transcript(&mut self) -> bool {
-        mem::take(&mut self.ui.view.clear_transcript)
+    pub fn take_transcript_render_action(&mut self) -> TranscriptRenderAction {
+        mem::replace(
+            &mut self.ui.view.transcript_action,
+            TranscriptRenderAction::Preserve,
+        )
     }
 
     pub fn ui_options(&self) -> UiOptions {
@@ -1495,6 +1498,10 @@ impl App {
 
     pub fn model(&self) -> &str {
         self.core.model.as_str()
+    }
+
+    pub fn model_display_name(&self) -> &'static str {
+        self.core.model.short_display_name()
     }
 
     pub(crate) fn openai_options_for_model(&self, model: &ModelName) -> OpenAIRequestOptions {
@@ -1962,7 +1969,7 @@ impl App {
         if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
             modal.surface = SettingsSurface::Root;
             modal.filter = DraftInput::default();
-            modal.filter_active = false;
+            modal.filter_mode = SettingsFilterMode::Browsing;
             modal.detail_view = None;
             if let Some(index) = SettingsCategory::ALL
                 .iter()
@@ -2413,13 +2420,13 @@ impl App {
         match adaptation {
             ContextAdaptation::NoChange
             | ContextAdaptation::Shrinking {
-                needs_compaction: false,
+                requirement: ContextShrinkRequirement::Ready,
                 ..
             } => {}
             ContextAdaptation::Shrinking {
                 old_budget,
                 new_budget,
-                needs_compaction: true,
+                requirement: ContextShrinkRequirement::NeedsDistillation,
             } => {
                 self.push_notification(format!(
                     "Context budget shrank {}k → {}k; compacting...",
@@ -2543,7 +2550,7 @@ impl App {
             ui::SettingsModalRef::Active(modal) => SettingsAccess::Active {
                 surface: modal.surface,
                 filter_text: modal.filter.text(),
-                filter_active: modal.filter_active,
+                filter_mode: modal.filter_mode,
                 detail_view: modal.detail_view,
                 selected_index: modal.selected,
             },
@@ -2648,13 +2655,13 @@ impl App {
             return;
         }
         if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
-            modal.filter_active = true;
+            modal.filter_mode = SettingsFilterMode::Filtering;
         }
     }
 
     pub fn settings_stop_filter(&mut self) {
         if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
-            modal.filter_active = false;
+            modal.filter_mode = SettingsFilterMode::Browsing;
         }
     }
 
@@ -2892,18 +2899,18 @@ impl App {
     }
 
     pub fn settings_activate(&mut self) {
-        let (filter_active, detail_view, selected) = match self.settings_access() {
+        let (filter_mode, detail_view, selected) = match self.settings_access() {
             SettingsAccess::Active {
                 surface: SettingsSurface::Root,
-                filter_active,
+                filter_mode,
                 detail_view,
                 selected_index,
                 ..
-            } => (filter_active, detail_view, selected_index),
+            } => (filter_mode, detail_view, selected_index),
             SettingsAccess::Active { .. } | SettingsAccess::Inactive => return,
         };
 
-        if filter_active {
+        if filter_mode.is_filtering() {
             self.settings_stop_filter();
             return;
         }
@@ -2921,16 +2928,16 @@ impl App {
     }
 
     pub fn settings_close_or_exit(&mut self) {
-        let (filter_active, detail_view) = match self.settings_access() {
+        let (filter_mode, detail_view) = match self.settings_access() {
             SettingsAccess::Active {
-                filter_active,
+                filter_mode,
                 detail_view,
                 ..
-            } => (filter_active, detail_view),
+            } => (filter_mode, detail_view),
             SettingsAccess::Inactive => return,
         };
 
-        if filter_active {
+        if filter_mode.is_filtering() {
             self.settings_stop_filter();
             return;
         }
@@ -3059,7 +3066,7 @@ impl App {
         let usage_status = self.context_usage_status();
         let usage = match usage_status {
             ContextUsageStatus::Ready(usage)
-            | ContextUsageStatus::NeedsCompaction { usage, .. }
+            | ContextUsageStatus::NeedsDistillation { usage, .. }
             | ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => usage,
         };
         let distill_threshold_tokens = usage.budget_tokens().saturating_mul(8) / 10;
@@ -3489,7 +3496,7 @@ impl App {
 
     /// Enter file select mode, scanning files from the current directory.
     pub fn enter_file_select_mode(&mut self) {
-        if !self.ui.file_picker.is_scanned() {
+        if matches!(self.ui.file_picker.scan_state(), FileScanState::Unscanned) {
             let root = self.runtime.tool_settings.sandbox.working_dir();
             self.ui
                 .file_picker

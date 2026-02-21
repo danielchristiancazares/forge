@@ -163,11 +163,13 @@ fn format_git_branch(obj: &serde_json::Map<String, Value>) -> Option<String> {
     {
         return Some(format!("{old} -> {new}"));
     }
-    if obj.get("list_all").and_then(serde_json::Value::as_bool) == Some(true) {
-        return Some("-a".to_string());
-    }
-    if obj.get("list_remote").and_then(serde_json::Value::as_bool) == Some(true) {
-        return Some("-r".to_string());
+    if let Some(mode) = obj.get("list_mode").and_then(|v| v.as_str()) {
+        return match mode {
+            "all" => Some("-a".to_string()),
+            "remote" => Some("-r".to_string()),
+            "local" => Some("-v".to_string()),
+            _ => None,
+        };
     }
     None
 }

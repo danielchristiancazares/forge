@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use super::{
     ContextManager, ContextUsageStatus, EnteredCommand, ModelLimitsSource, PlanState,
+    TranscriptRenderAction,
     state::{
         ActiveStream, DistillationStart, JournalCleanup, OperationState, PlanApprovalKind,
         ToolLoopPhase, ToolLoopState, ToolRecoveryDecision,
@@ -305,7 +306,7 @@ pub(crate) enum ExportDestination<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ContextUsageCondition {
     Ready,
-    NeedsCompaction,
+    NeedsDistillation,
     RecentMessagesTooLarge {
         required_tokens: u32,
         budget_tokens: u32,
@@ -604,7 +605,7 @@ impl super::App {
                 self.core.tool_gate.clear();
                 self.runtime.provider_runtime.openai_previous_response_id = None;
                 self.autosave_history();
-                self.ui.view.clear_transcript = true;
+                self.ui.view.transcript_action = TranscriptRenderAction::Clear;
                 self.op_transition(self.idle_state());
             }
             Command::Model(model_cmd) => {
@@ -656,8 +657,8 @@ impl super::App {
                 let usage_status = self.context_usage_status();
                 let (usage, condition) = match &usage_status {
                     ContextUsageStatus::Ready(usage) => (usage, ContextUsageCondition::Ready),
-                    ContextUsageStatus::NeedsCompaction { usage } => {
-                        (usage, ContextUsageCondition::NeedsCompaction)
+                    ContextUsageStatus::NeedsDistillation { usage } => {
+                        (usage, ContextUsageCondition::NeedsDistillation)
                     }
                     ContextUsageStatus::RecentMessagesTooLarge {
                         usage,
@@ -695,7 +696,9 @@ impl super::App {
                     } => format!(
                         " │ ERROR: recent msgs ({required_tokens} tokens) > budget ({budget_tokens} tokens)"
                     ),
-                    ContextUsageCondition::NeedsCompaction => " │ Compaction needed".to_string(),
+                    ContextUsageCondition::NeedsDistillation => {
+                        " │ Distillation needed".to_string()
+                    }
                     ContextUsageCondition::Ready => String::new(),
                 };
                 self.push_notification(format!(

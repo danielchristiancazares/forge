@@ -12,7 +12,7 @@ use std::fs::{read_to_string, remove_file, rename};
 use std::mem::take;
 use std::time::{Duration, Instant, SystemTime};
 
-use forge_context::RecoveredStream;
+use forge_context::{RecoveredModelName, RecoveredStream, RollbackLastMessage};
 use forge_types::{Message, NonEmptyStaticStr, NonEmptyString, PersistableContent, StepId};
 
 use super::{TurnOrigin, TurnRollback};
@@ -492,13 +492,13 @@ impl App {
                     Some(partial_text.as_str()),
                     model_name.clone(),
                 ),
-                None => (None, None, None),
+                None => (None, None, RecoveredModelName::Unspecified),
             };
 
             // Validate the new invariant: tool batches are bound to a stream step id.
             // If both journals exist but disagree, fail closed into an explicit safety state.
             if let (Some(tool_step_id), Some(stream_step_id)) =
-                (recovered_batch.stream_step_id, stream_step_id)
+                (recovered_batch.stream_step_id.into_option(), stream_step_id)
                 && tool_step_id != stream_step_id
             {
                 self.op_transition(OperationState::RecoveryBlocked(RecoveryBlockedState {
@@ -524,12 +524,12 @@ impl App {
             let model = util::parse_model_name_from_string(&recovered_batch.model_name)
                 .or_else(|| {
                     stream_model_name
-                        .as_ref()
-                        .and_then(|name| util::parse_model_name_from_string(name))
+                        .as_str()
+                        .and_then(util::parse_model_name_from_string)
                 })
                 .unwrap_or_else(|| self.core.model.clone());
 
-            let step_id = stream_step_id.or(recovered_batch.stream_step_id);
+            let step_id = stream_step_id.or(recovered_batch.stream_step_id.into_option());
             if let Some(step_id) = step_id {
                 // Idempotency guard: if history already contains this step_id,
                 // the response was already committed - just clean up stale journals.
@@ -586,13 +586,17 @@ impl App {
                         continue;
                     };
 
-                    let Some(pid) = meta.process_id.and_then(|pid| u32::try_from(pid).ok()) else {
+                    let Some(pid) = meta
+                        .process_id
+                        .into_option()
+                        .and_then(|pid| u32::try_from(pid).ok())
+                    else {
                         self.push_notification(
                             "Warning: a `Run` command may still be running from before the crash.",
                         );
                         continue;
                     };
-                    let Some(expected_start) = meta.process_started_at_unix_ms else {
+                    let Some(expected_start) = meta.process_started_at_unix_ms.into_option() else {
                         self.push_notification(format!(
                             "Warning: recovered `Run` call had pid {pid} but no start time; not terminating automatically."
                         ));
@@ -723,7 +727,8 @@ impl App {
 
         // Use the model from the stream if available, otherwise fall back to current
         let model = model_name
-            .and_then(|name| util::parse_model_name_from_string(&name))
+            .as_str()
+            .and_then(util::parse_model_name_from_string)
             .unwrap_or_else(|| self.core.model.clone());
 
         // Add the partial response as an assistant message with recovery badge.
@@ -861,36 +866,34 @@ impl App {
             consumed_agents_md,
         } = origin;
 
-        if self
-            .core
-            .context_manager
-            .rollback_last_message(message_id)
-            .is_some()
-        {
-            // Remove from display (should be the last History item)
-            if let DisplayTail::Item(DisplayItem::History(display_id)) = self.ui.display.last()
-                && *display_id == message_id
-            {
-                let _ = self.ui.display.pop();
+        match self.core.context_manager.rollback_last_message(message_id) {
+            RollbackLastMessage::RolledBack(_) => {
+                // Remove from display (should be the last History item)
+                if let DisplayTail::Item(DisplayItem::History(display_id)) = self.ui.display.last()
+                    && *display_id == message_id
+                {
+                    let _ = self.ui.display.pop();
+                }
+
+                // Restore to input box and enter insert mode for easy retry
+                self.ui.input.draft_mut().set_text(original_draft);
+                self.ui.input = take(&mut self.ui.input).into_insert();
+
+                // Restore consumed AGENTS.md so the next message gets it
+                self.core.environment.restore_agents_md(consumed_agents_md);
+
+                // Persist the rollback
+                if let Err(e) = self.save_history() {
+                    tracing::warn!("Failed to save history after rollback: {e}");
+                }
+
+                tracing::debug!("Rolled back user message {message_id:?} after stream error");
             }
-
-            // Restore to input box and enter insert mode for easy retry
-            self.ui.input.draft_mut().set_text(original_draft);
-            self.ui.input = take(&mut self.ui.input).into_insert();
-
-            // Restore consumed AGENTS.md so the next message gets it
-            self.core.environment.restore_agents_md(consumed_agents_md);
-
-            // Persist the rollback
-            if let Err(e) = self.save_history() {
-                tracing::warn!("Failed to save history after rollback: {e}");
+            RollbackLastMessage::NotLastMessage => {
+                tracing::warn!(
+                    "Failed to rollback user message {message_id:?} - not the last message in history"
+                );
             }
-
-            tracing::debug!("Rolled back user message {message_id:?} after stream error");
-        } else {
-            tracing::warn!(
-                "Failed to rollback user message {message_id:?} - not the last message in history"
-            );
         }
     }
 }

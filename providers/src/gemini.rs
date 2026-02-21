@@ -1,8 +1,8 @@
 use crate::{
-    CacheableMessage, Message, OutputLimits, Result, SendMessageRequest, SseParseAction, SseParser,
-    StreamEvent, ThoughtSignature, ThoughtSignatureState, ToolDefinition, emit_or_continue,
-    http_client, http_client_with_timeout, parse_sse_payload, read_capped_error_body,
-    retry::RetryConfig, send_retried_sse_request,
+    CacheableMessage, Message, OutputLimits, ParsedSsePayload, Result, SendMessageRequest,
+    SseParseAction, SseParser, StreamEvent, ThoughtSignature, ThoughtSignatureState,
+    ToolDefinition, emit_or_continue, http_client, http_client_with_timeout, parse_sse_payload,
+    read_capped_error_body, retry::RetryConfig, send_retried_sse_request,
 };
 
 use chrono::{DateTime, Utc};
@@ -362,8 +362,9 @@ struct GeminiParser;
 impl SseParser for GeminiParser {
     fn parse(&mut self, json: &Value) -> SseParseAction {
         // Deserialize into typed response
-        let Some(response) = parse_sse_payload::<typed::Response>(json, "Gemini") else {
-            return SseParseAction::Continue;
+        let response = match parse_sse_payload::<typed::Response>(json, "Gemini") {
+            ParsedSsePayload::Parsed(response) => response,
+            ParsedSsePayload::Invalid => return SseParseAction::Continue,
         };
 
         // Check for error response

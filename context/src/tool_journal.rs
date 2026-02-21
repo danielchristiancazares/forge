@@ -42,6 +42,52 @@ use forge_types::{
     ToolBatchId, ToolCall, ToolResult, ToolResultOutcome,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveredField<T> {
+    Present(T),
+    Missing,
+}
+
+impl<T> RecoveredField<T> {
+    fn from_option(value: Option<T>) -> Self {
+        match value {
+            Some(value) => Self::Present(value),
+            None => Self::Missing,
+        }
+    }
+
+    #[must_use]
+    pub fn into_option(self) -> Option<T> {
+        match self {
+            Self::Present(value) => Some(value),
+            Self::Missing => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveredStepBinding {
+    Bound(StepId),
+    Unbound,
+}
+
+impl RecoveredStepBinding {
+    fn from_option(value: Option<StepId>) -> Self {
+        match value {
+            Some(step_id) => Self::Bound(step_id),
+            None => Self::Unbound,
+        }
+    }
+
+    #[must_use]
+    pub fn into_option(self) -> Option<StepId> {
+        match self {
+            Self::Bound(step_id) => Some(step_id),
+            Self::Unbound => None,
+        }
+    }
+}
+
 /// Per-tool-call execution metadata captured for crash recovery.
 ///
 /// This data is best-effort and may be partially populated depending on the
@@ -49,13 +95,13 @@ use forge_types::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecoveredToolCallExecution {
     /// When Forge began executing the tool call (Unix epoch milliseconds).
-    pub started_at_unix_ms: Option<i64>,
+    pub started_at_unix_ms: RecoveredField<i64>,
     /// OS process id for subprocess-backed tools (e.g., `Run`) when available.
-    pub process_id: Option<i64>,
+    pub process_id: RecoveredField<i64>,
     /// Process creation timestamp (Unix epoch milliseconds) when available.
     ///
     /// Used to reduce PID reuse risk when attempting recovery cleanup.
-    pub process_started_at_unix_ms: Option<i64>,
+    pub process_started_at_unix_ms: RecoveredField<i64>,
 }
 
 /// Information about corrupted tool call arguments during recovery.
@@ -70,7 +116,7 @@ pub struct CorruptedToolArgs {
 #[derive(Debug, Clone)]
 pub struct RecoveredToolBatch {
     pub batch_id: ToolBatchId,
-    pub stream_step_id: Option<StepId>,
+    pub stream_step_id: RecoveredStepBinding,
     pub model_name: String,
     pub assistant_text: String,
     pub calls: Vec<ToolCall>,
@@ -659,8 +705,8 @@ impl ToolJournal {
             return Ok(None);
         };
 
-        let (stream_step_id, model_name, assistant_text, thinking_replay_json): (
-            Option<StepId>,
+        let (stream_step_binding, model_name, assistant_text, thinking_replay_json): (
+            RecoveredStepBinding,
             String,
             String,
             Option<String>,
@@ -671,7 +717,12 @@ impl ToolJournal {
                 params![batch_id.value()],
                 |row| {
                     let step_id: Option<i64> = row.get(0)?;
-                    Ok((step_id.map(StepId::new), row.get(1)?, row.get(2)?, row.get(3)?))
+                    Ok((
+                        RecoveredStepBinding::from_option(step_id.map(StepId::new)),
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                    ))
                 },
             )
             .context("Failed to load tool batch metadata")?;
@@ -769,9 +820,11 @@ impl ToolJournal {
             call_execution.insert(
                 tool_call_id,
                 RecoveredToolCallExecution {
-                    started_at_unix_ms,
-                    process_id,
-                    process_started_at_unix_ms,
+                    started_at_unix_ms: RecoveredField::from_option(started_at_unix_ms),
+                    process_id: RecoveredField::from_option(process_id),
+                    process_started_at_unix_ms: RecoveredField::from_option(
+                        process_started_at_unix_ms,
+                    ),
                 },
             );
         }
@@ -806,7 +859,7 @@ impl ToolJournal {
 
         Ok(Some(RecoveredToolBatch {
             batch_id,
-            stream_step_id,
+            stream_step_id: stream_step_binding,
             model_name,
             assistant_text,
             calls,
@@ -1060,7 +1113,7 @@ fn normalize_persistable_owned(input: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{RecoveredToolCallExecution, ToolJournal};
+    use super::{RecoveredField, RecoveredToolCallExecution, ToolJournal};
     use crate::time_utils::system_time_to_iso8601_millis;
     use forge_types::StepId;
     use forge_types::{
@@ -1098,9 +1151,9 @@ mod tests {
         assert_eq!(
             *exec,
             RecoveredToolCallExecution {
-                started_at_unix_ms: None,
-                process_id: None,
-                process_started_at_unix_ms: None,
+                started_at_unix_ms: RecoveredField::Missing,
+                process_id: RecoveredField::Missing,
+                process_started_at_unix_ms: RecoveredField::Missing,
             }
         );
     }
@@ -1375,9 +1428,9 @@ mod tests {
         assert_eq!(
             *exec,
             RecoveredToolCallExecution {
-                started_at_unix_ms: Some(1_700_000_000_000),
-                process_id: Some(4242),
-                process_started_at_unix_ms: Some(1_700_000_000_123),
+                started_at_unix_ms: RecoveredField::Present(1_700_000_000_000),
+                process_id: RecoveredField::Present(4242),
+                process_started_at_unix_ms: RecoveredField::Present(1_700_000_000_123),
             }
         );
     }

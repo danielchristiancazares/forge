@@ -70,3 +70,31 @@ boundary_module_path = "types::plan"
 constructor_paths = ["types::plan::Plan::try_complete"]
 allowed_caller_module_paths = ["engine::app::plan", "engine::app::persistence"]
 max_constructor_visibility_rung = "pub"
+
+[[entries]]
+controlled_type_path = "providers::ParsedSsePayload"
+boundary_module_path = "providers"
+constructor_paths = ["providers::ParsedSsePayload::*"]
+allowed_caller_module_paths = ["providers", "providers::claude", "providers::openai", "providers::gemini"]
+max_constructor_visibility_rung = "pub(crate)"
+
+[[entries]]
+controlled_type_path = "types::ui::input::SettingsFilterMode"
+boundary_module_path = "engine::app::mod"
+constructor_paths = ["types::ui::input::SettingsFilterMode::*"]
+allowed_caller_module_paths = ["engine::app::mod", "types::ui::input", "tui::input", "tui::lib"]
+max_constructor_visibility_rung = "pub"
+
+[[entries]]
+controlled_type_path = "types::ui::view_state::TranscriptRenderAction"
+boundary_module_path = "engine::app::commands"
+constructor_paths = ["types::ui::view_state::TranscriptRenderAction::*"]
+allowed_caller_module_paths = ["engine::app::commands", "engine::app::mod", "cli::main", "types::ui::view_state"]
+max_constructor_visibility_rung = "pub"
+
+[[entries]]
+controlled_type_path = "engine::ui::file_picker::FileScanState"
+boundary_module_path = "engine::ui::file_picker"
+constructor_paths = ["engine::ui::file_picker::FileScanState::*"]
+allowed_caller_module_paths = ["engine::ui::file_picker", "engine::app::mod"]
+max_constructor_visibility_rung = "pub"

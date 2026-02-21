@@ -14,7 +14,7 @@ use tokio::task::{JoinHandle, spawn_blocking};
 use tokio::time::timeout;
 use tracing::debug;
 
-use forge_engine::{App, FileSelectAccess, SettingsAccess};
+use forge_engine::{App, FileSelectAccess, SettingsAccess, SettingsFilterMode};
 use forge_types::ui::{InputMode, SettingsSurface};
 
 const INPUT_POLL_TIMEOUT: Duration = Duration::from_millis(25); // shutdown responsiveness
@@ -881,14 +881,14 @@ fn handle_file_select_mode(app: &mut App, key: KeyEvent) {
 
 fn handle_settings_mode(app: &mut App, key: KeyEvent) {
     let settings_access = app.settings_access();
-    let (surface, filter_active, detail_view) = match settings_access {
+    let (surface, filter_mode, detail_view) = match settings_access {
         SettingsAccess::Active {
             surface,
-            filter_active,
+            filter_mode,
             detail_view,
             ..
-        } => (surface, filter_active, detail_view),
-        SettingsAccess::Inactive => (SettingsSurface::Root, false, None),
+        } => (surface, filter_mode, detail_view),
+        SettingsAccess::Inactive => (SettingsSurface::Root, SettingsFilterMode::Browsing, None),
     };
     if surface != SettingsSurface::Root {
         match surface {
@@ -948,19 +948,19 @@ fn handle_settings_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.settings_close_or_exit();
         }
-        KeyCode::Char('q') if !filter_active => {
+        KeyCode::Char('q') if !filter_mode.is_filtering() => {
             app.settings_close_or_exit();
         }
         KeyCode::Enter => {
             app.settings_activate();
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            if !filter_active {
+            if !filter_mode.is_filtering() {
                 app.settings_move_up();
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if !filter_active {
+            if !filter_mode.is_filtering() {
                 app.settings_move_down();
             }
         }
@@ -968,11 +968,11 @@ fn handle_settings_mode(app: &mut App, key: KeyEvent) {
             app.settings_start_filter();
         }
         KeyCode::Backspace => {
-            if filter_active {
+            if filter_mode.is_filtering() {
                 app.settings_filter_backspace();
             }
         }
-        KeyCode::Char(c) if c != '\r' && filter_active => {
+        KeyCode::Char(c) if c != '\r' && filter_mode.is_filtering() => {
             app.settings_filter_push_char(c);
         }
         _ => {}

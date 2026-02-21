@@ -4,7 +4,7 @@
 //! See `providers/src/retry.rs` for HTTP retry policy.
 
 use super::{
-    ApiConfig, ContextBuildError, DistillationStart, DistillationState, DistillationTask,
+    ApiConfig, ContextPreparation, DistillationStart, DistillationState, DistillationTask,
     NonEmptyString, OperationState, QueuedUserMessage, TokenCounter, distillation_model,
     generate_distillation,
 };
@@ -59,18 +59,18 @@ impl super::App {
         };
 
         match self.core.context_manager.prepare(overhead) {
-            Ok(_) => {
+            ContextPreparation::Ready(_) => {
                 if let Some(queued) = queued_request {
                     self.start_streaming(queued);
                 }
                 return DistillationStart::NotNeeded;
             }
-            Err(ContextBuildError::CompactionNeeded) => {}
-            Err(ContextBuildError::RecentMessagesTooLarge {
+            ContextPreparation::NeedsDistillation => {}
+            ContextPreparation::Overflow {
                 required_tokens,
                 budget_tokens,
                 message_count,
-            }) => {
+            } => {
                 self.push_notification(format!(
                     "Recent {message_count} messages ({required_tokens} tokens) exceed budget ({budget_tokens} tokens). Reduce input or use larger model."
                 ));

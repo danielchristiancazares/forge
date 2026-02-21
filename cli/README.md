@@ -261,7 +261,7 @@ The event loop runs at a fixed 8ms (~120 FPS) cadence:
 2. handle_events(app, input) -- drain input queue (non-blocking)
 3. app.tick() -- advance animations, poll background tasks
 4. app.process_stream_events() -- apply streaming chunks to UI
-5. Clear transcript if requested (terminal.clear())
+5. Clear transcript when `TranscriptRenderAction::Clear` is emitted
 6. terminal.draw(...) -- render frame
 ```
 
@@ -290,7 +290,7 @@ where
         app.tick();
         app.process_stream_events();
 
-        if app.take_clear_transcript()
+        if matches!(app.take_transcript_render_action(), TranscriptRenderAction::Clear)
             && let Err(e) = terminal.clear()
         {
             break Err(e.into());

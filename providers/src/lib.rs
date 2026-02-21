@@ -189,6 +189,12 @@ pub(crate) trait SseParser {
     fn provider_name(&self) -> &'static str;
 }
 
+#[derive(Debug)]
+pub(crate) enum ParsedSsePayload<T> {
+    Parsed(T),
+    Invalid,
+}
+
 pub(crate) fn stream_idle_timeout() -> Duration {
     static TIMEOUT: OnceLock<Duration> = OnceLock::new();
     *TIMEOUT.get_or_init(|| {
@@ -208,15 +214,15 @@ pub(crate) async fn send_event(tx: &mpsc::Sender<StreamEvent>, event: StreamEven
 pub(crate) fn parse_sse_payload<T>(
     json: &serde_json::Value,
     provider_name: &'static str,
-) -> Option<T>
+) -> ParsedSsePayload<T>
 where
     T: DeserializeOwned,
 {
     match serde_json::from_value(json.clone()) {
-        Ok(event) => Some(event),
+        Ok(event) => ParsedSsePayload::Parsed(event),
         Err(e) => {
             tracing::warn!(%e, provider = provider_name, "Failed to parse SSE event");
-            None
+            ParsedSsePayload::Invalid
         }
     }
 }

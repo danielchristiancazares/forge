@@ -55,3 +55,23 @@ authority_boundary_module_path = "types::plan"
 invariant_id = "APP-INV-12"
 canonical_proof_type_path = "types::plan::CompletedPlan"
 authority_boundary_module_path = "types::plan"
+
+[[entries]]
+invariant_id = "APP-INV-13"
+canonical_proof_type_path = "providers::ParsedSsePayload"
+authority_boundary_module_path = "providers"
+
+[[entries]]
+invariant_id = "APP-INV-14"
+canonical_proof_type_path = "types::ui::input::SettingsFilterMode"
+authority_boundary_module_path = "engine::app::mod"
+
+[[entries]]
+invariant_id = "APP-INV-15"
+canonical_proof_type_path = "types::ui::view_state::TranscriptRenderAction"
+authority_boundary_module_path = "engine::app::commands"
+
+[[entries]]
+invariant_id = "APP-INV-16"
+canonical_proof_type_path = "engine::ui::file_picker::FileScanState"
+authority_boundary_module_path = "engine::ui::file_picker"

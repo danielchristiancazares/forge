@@ -5,7 +5,7 @@
 
 mod file_picker;
 
-pub use file_picker::{FileEntry, FilePickerState, find_match_positions};
+pub use file_picker::{FileEntry, FilePickerState, FileScanState, find_match_positions};
 pub use forge_core::{DisplayItem, DisplayLog, DisplayPop, DisplayTail};
 pub use forge_types::PredefinedModel;
 
@@ -15,5 +15,6 @@ pub use forge_types::ui::{
     DiffExpansion, DraftInput, FileSelectMut, FileSelectRef, FilesPanelState, InputHistory,
     InputMode, InputState, InsertDraftMut, ModalEffect, ModalEffectKind, ModelSelectMut,
     ModelSelectRef, NavOutcome, PanelEffect, PanelEffectKind, ScrollState, SettingsCategory,
-    SettingsModalMut, SettingsModalRef, SettingsModalState, SettingsSurface, UiOptions, ViewState,
+    SettingsFilterMode, SettingsModalMut, SettingsModalRef, SettingsModalState, SettingsSurface,
+    TranscriptRenderAction, UiOptions, ViewState,
 };

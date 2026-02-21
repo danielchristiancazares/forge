@@ -171,6 +171,16 @@ unnecessary_wraps = "allow"
 wildcard_imports = "deny"
 absolute_paths = "deny"
 
+[profile.dev]
+opt-level = 0
+debug = 1
+codegen-units = 256
+incremental = false
+
+[profile.dev.package."*"]
+opt-level = 3
+incremental = false
+
 [profile.release]
 lto = true
 codegen-units = 1

@@ -84,6 +84,21 @@ def _workspace_members() -> list[str]:
     return out
 
 
+def validate_workspace_readmes(workspace_members: list[str]) -> None:
+    missing: list[Path] = []
+    for crate in workspace_members:
+        readme = ROOT / crate / "README.md"
+        if not readme.exists():
+            missing.append(readme)
+
+    if missing:
+        missing_paths = ", ".join(path.relative_to(ROOT).as_posix() for path in missing)
+        raise ValueError(
+            "workspace crates missing README.md: "
+            f"{missing_paths}"
+        )
+
+
 def _crate_source_files(crate: str) -> list[Path]:
     src_dir = ROOT / crate / "src"
     if not src_dir.exists():
@@ -926,6 +941,7 @@ def main() -> int:
 
     try:
         workspace_members = _workspace_members()
+        validate_workspace_readmes(workspace_members)
         source_files = _all_source_files(workspace_members)
         crate_source_files = {crate: _crate_source_files(crate) for crate in workspace_members}
         source_cache: dict[Path, str] = {}

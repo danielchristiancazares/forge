@@ -21,6 +21,7 @@ The CI gate is `just ifa-check` (also included in `just verify`). The checker va
 5. Core deterministic bans (`Option<`, lifecycle `bool`, banned enum variants).
 6. Controlled-type struct unforgeability (no public fields).
 7. Constructor visibility-rung enforcement (see below).
+8. Workspace crate documentation coverage (`<crate>/README.md` for every workspace member).
 
 ### Constructor visibility rungs
 

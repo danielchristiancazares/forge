@@ -32,7 +32,8 @@ use unicode_width::UnicodeWidthStr;
 use forge_core::sanitize_display_text;
 use forge_engine::{
     App, ContextUsageStatus, FileDiff, FileSelectAccess, FilesPanelState, ModelSelectAccess,
-    PredefinedModel, Provider, SettingsAccess, command_specs, find_match_positions,
+    PredefinedModel, Provider, SettingsAccess, SettingsFilterMode, command_specs,
+    find_match_positions,
 };
 use forge_types::sanitize_path_for_display;
 use forge_types::ui::{
@@ -259,7 +260,7 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
     // 0 = ready, 1 = needs compaction, 2 = recent messages too large (unrecoverable)
     let (usage, severity_override) = match &usage_status {
         ContextUsageStatus::Ready(usage) => (usage, 0),
-        ContextUsageStatus::NeedsCompaction { usage, .. } => (usage, 1),
+        ContextUsageStatus::NeedsDistillation { usage, .. } => (usage, 1),
         ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => (usage, 2),
     };
     let pct = usage.percentage();
@@ -484,12 +485,12 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
     let (model_text, model_style) = if app.is_loading() {
         let spinner = spinner_frame(app.tick_count(), app.ui_options());
         (
-            format!("{spinner} {}", app.model()),
+            format!("{spinner} {}", app.model_display_name()),
             Style::default().fg(palette.primary),
         )
     } else if app.current_api_key().is_some() {
         (
-            format!("{} {}", glyphs.status_ready, app.model()),
+            format!("{} {}", glyphs.status_ready, app.model_display_name()),
             Style::default().fg(palette.success),
         )
     } else {
@@ -1679,22 +1680,28 @@ fn draw_settings_modal(
     elapsed: Duration,
 ) {
     let area = frame.area();
-    let (surface, root_filter, root_filter_active, root_detail_view, root_selected_index) =
+    let (surface, root_filter, root_filter_mode, root_detail_view, root_selected_index) =
         match app.settings_access() {
             SettingsAccess::Active {
                 surface,
                 filter_text,
-                filter_active,
+                filter_mode,
                 detail_view,
                 selected_index,
             } => (
                 surface,
                 filter_text.to_string(),
-                filter_active,
+                filter_mode,
                 detail_view,
                 selected_index,
             ),
-            SettingsAccess::Inactive => (SettingsSurface::Root, String::new(), false, None, 0),
+            SettingsAccess::Inactive => (
+                SettingsSurface::Root,
+                String::new(),
+                SettingsFilterMode::Browsing,
+                None,
+                0,
+            ),
         };
     let selector_width = match surface {
         SettingsSurface::Root => 76.min(area.width.saturating_sub(4)).max(52),
@@ -1718,7 +1725,7 @@ fn draw_settings_modal(
         }
         SettingsSurface::Root => {
             let filter = root_filter.clone();
-            let filter_active = root_filter_active;
+            let filter_mode = root_filter_mode;
             let detail_view = root_detail_view;
             let categories = app.settings_categories();
             let selected_index = root_selected_index.min(categories.len().saturating_sub(1));
@@ -1732,7 +1739,7 @@ fn draw_settings_modal(
                     content_width,
                 ));
             } else {
-                let filter_style = if filter_active {
+                let filter_style = if filter_mode.is_filtering() {
                     Style::default()
                         .fg(palette.yellow)
                         .add_modifier(Modifier::BOLD)
@@ -1800,7 +1807,7 @@ fn draw_settings_modal(
                     "─".repeat(content_width),
                     Style::default().fg(palette.primary_dim),
                 )));
-                if filter_active {
+                if filter_mode.is_filtering() {
                     lines.push(Line::from(vec![
                         Span::styled("Type", styles::key_highlight(palette)),
                         Span::styled(" filter  ", styles::key_hint(palette)),

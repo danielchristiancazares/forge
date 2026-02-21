@@ -1,6 +1,6 @@
 use crate::{
-    ApiConfig, ApiResponse, ApiUsage, CacheableMessage, Message, OutputLimits, Result,
-    SendMessageRequest, SseParseAction, SseParser, StreamEvent, ThinkingReplayState,
+    ApiConfig, ApiResponse, ApiUsage, CacheableMessage, Message, OutputLimits, ParsedSsePayload,
+    Result, SendMessageRequest, SseParseAction, SseParser, StreamEvent, ThinkingReplayState,
     ThoughtSignatureState, ToolDefinition, emit_or_continue, http_client, parse_sse_payload,
     process_sse_stream, retry::RetryConfig, send_event, send_retried_request,
 };
@@ -99,6 +99,126 @@ impl Drop for BackgroundCancelGuard {
     }
 }
 
+#[derive(Debug, Clone)]
+enum NonEmptyText {
+    Present(String),
+    Missing,
+}
+
+impl NonEmptyText {
+    fn from_option(value: Option<String>) -> Self {
+        match value {
+            Some(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    Self::Missing
+                } else {
+                    Self::Present(trimmed.to_string())
+                }
+            }
+            None => Self::Missing,
+        }
+    }
+
+    fn into_option(self) -> Option<String> {
+        match self {
+            Self::Present(value) => Some(value),
+            Self::Missing => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum CallIdResolution {
+    Resolved(String),
+    Missing,
+}
+
+#[derive(Debug, Clone)]
+enum IncompleteReason {
+    Provided(String),
+    Missing,
+}
+
+impl IncompleteReason {
+    fn from_response(response: Option<typed::ResponseInfo>) -> Self {
+        match response {
+            Some(typed::ResponseInfo {
+                incomplete_details: Some(details),
+                ..
+            }) => match NonEmptyText::from_option(details.reason) {
+                NonEmptyText::Present(reason) => Self::Provided(reason),
+                NonEmptyText::Missing => Self::Missing,
+            },
+            Some(_) | None => Self::Missing,
+        }
+    }
+
+    fn into_message(self) -> String {
+        match self {
+            Self::Provided(reason) => reason,
+            Self::Missing => "Response incomplete".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum FailedMessage {
+    Event(String),
+    Response(String),
+    Missing,
+}
+
+impl FailedMessage {
+    fn from_sources(
+        response: Option<typed::ResponseInfo>,
+        error: Option<typed::ErrorInfo>,
+    ) -> Self {
+        match NonEmptyText::from_option(error.and_then(|event| event.message)) {
+            NonEmptyText::Present(message) => Self::Event(message),
+            NonEmptyText::Missing => match response {
+                Some(typed::ResponseInfo {
+                    error: Some(response_error),
+                    ..
+                }) => match NonEmptyText::from_option(response_error.message) {
+                    NonEmptyText::Present(message) => Self::Response(message),
+                    NonEmptyText::Missing => Self::Missing,
+                },
+                Some(_) | None => Self::Missing,
+            },
+        }
+    }
+
+    fn into_message(self) -> String {
+        match self {
+            Self::Event(message) | Self::Response(message) => message,
+            Self::Missing => "Response failed".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum ErrorEventMessage {
+    Provided(String),
+    Missing,
+}
+
+impl ErrorEventMessage {
+    fn from_error(error: Option<typed::ErrorInfo>) -> Self {
+        match NonEmptyText::from_option(error.and_then(|value| value.message)) {
+            NonEmptyText::Present(message) => Self::Provided(message),
+            NonEmptyText::Missing => Self::Missing,
+        }
+    }
+
+    fn into_message(self) -> String {
+        match self {
+            Self::Provided(message) => message,
+            Self::Missing => "Unknown error".to_string(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct OpenAIParser {
     /// Track which item_ids have received text deltas (for fallback on .done)
@@ -146,25 +266,31 @@ impl OpenAIParser {
     }
 
     /// Resolve call_id from item_id or direct call_id.
-    fn resolve_call_id(&self, item_id: Option<&str>, call_id: Option<&str>) -> Option<String> {
-        if let Some(call_id) = call_id {
-            return Some(call_id.to_string());
-        }
-        if let Some(item_id) = item_id {
-            if let Some(mapped) = self.item_to_call.get(item_id) {
-                return Some(mapped.clone());
+    fn resolve_call_id(&self, item_id: Option<&str>, call_id: Option<&str>) -> CallIdResolution {
+        match NonEmptyText::from_option(call_id.map(ToString::to_string)) {
+            NonEmptyText::Present(call_id) => CallIdResolution::Resolved(call_id),
+            NonEmptyText::Missing => {
+                match NonEmptyText::from_option(item_id.map(ToString::to_string)) {
+                    NonEmptyText::Present(item_id) => {
+                        if let Some(mapped) = self.item_to_call.get(&item_id) {
+                            CallIdResolution::Resolved(mapped.clone())
+                        } else {
+                            CallIdResolution::Resolved(item_id)
+                        }
+                    }
+                    NonEmptyText::Missing => CallIdResolution::Missing,
+                }
             }
-            return Some(item_id.to_string());
         }
-        None
     }
 }
 
 impl SseParser for OpenAIParser {
     fn parse(&mut self, json: &Value) -> SseParseAction {
         // Deserialize into typed event - forward compatible via Unknown variant
-        let Some(event) = parse_sse_payload::<typed::Event>(json, "OpenAI") else {
-            return SseParseAction::Continue;
+        let event = match parse_sse_payload::<typed::Event>(json, "OpenAI") {
+            ParsedSsePayload::Parsed(event) => event,
+            ParsedSsePayload::Invalid => return SseParseAction::Continue,
         };
 
         let mut events = Vec::new();
@@ -236,14 +362,8 @@ impl SseParser for OpenAIParser {
                         events.push(StreamEvent::OpenAIReasoningDone {
                             id,
                             summary: normalize_reasoning_summary(summary),
-                            encrypted_content: encrypted_content.and_then(|value| {
-                                let trimmed = value.trim();
-                                if trimmed.is_empty() {
-                                    None
-                                } else {
-                                    Some(trimmed.to_string())
-                                }
-                            }),
+                            encrypted_content: NonEmptyText::from_option(encrypted_content)
+                                .into_option(),
                         });
                     } else {
                         tracing::warn!(
@@ -349,10 +469,13 @@ impl SseParser for OpenAIParser {
             } => {
                 let resolved = self.resolve_call_id(item_id.as_deref(), call_id.as_deref());
                 if let Some(delta) = delta {
-                    let Some(call_id) = resolved else {
-                        return SseParseAction::Error(
-                            "OpenAI tool call delta missing id".to_string(),
-                        );
+                    let call_id = match resolved {
+                        CallIdResolution::Resolved(call_id) => call_id,
+                        CallIdResolution::Missing => {
+                            return SseParseAction::Error(
+                                "OpenAI tool call delta missing id".to_string(),
+                            );
+                        }
                     };
                     events.push(StreamEvent::ToolCallDelta {
                         id: call_id.clone(),
@@ -369,10 +492,13 @@ impl SseParser for OpenAIParser {
             } => {
                 let resolved = self.resolve_call_id(item_id.as_deref(), call_id.as_deref());
                 if let Some(arguments) = arguments {
-                    let Some(call_id) = resolved else {
-                        return SseParseAction::Error(
-                            "OpenAI tool call args missing id".to_string(),
-                        );
+                    let call_id = match resolved {
+                        CallIdResolution::Resolved(call_id) => call_id,
+                        CallIdResolution::Missing => {
+                            return SseParseAction::Error(
+                                "OpenAI tool call args missing id".to_string(),
+                            );
+                        }
                     };
                     // Only emit if no deltas were seen for this call
                     if !self.call_has_delta.contains(&call_id) && !arguments.is_empty() {
@@ -404,27 +530,19 @@ impl SseParser for OpenAIParser {
 
             typed::Event::Incomplete { response } => {
                 self.mark_terminal();
-                let reason = response
-                    .and_then(|r| r.incomplete_details)
-                    .and_then(|d| d.reason)
-                    .unwrap_or_else(|| "Response incomplete".to_string());
+                let reason = IncompleteReason::from_response(response).into_message();
                 return SseParseAction::Error(reason);
             }
 
             typed::Event::Failed { response, error } => {
                 self.mark_terminal();
-                let message = error
-                    .and_then(|e| e.message)
-                    .or_else(|| response.and_then(|r| r.error).and_then(|e| e.message))
-                    .unwrap_or_else(|| "Response failed".to_string());
+                let message = FailedMessage::from_sources(response, error).into_message();
                 return SseParseAction::Error(message);
             }
 
             typed::Event::Error { error } => {
                 self.mark_terminal();
-                let message = error
-                    .and_then(|e| e.message)
-                    .unwrap_or_else(|| "Unknown error".to_string());
+                let message = ErrorEventMessage::from_error(error).into_message();
                 return SseParseAction::Error(message);
             }
 

@@ -279,6 +279,29 @@ impl ActiveJournal {
 }
 
 /// Recovered stream data after a crash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecoveredModelName {
+    Known(String),
+    Unspecified,
+}
+
+impl RecoveredModelName {
+    fn from_option(model_name: Option<String>) -> Self {
+        match model_name {
+            Some(model_name) => Self::Known(model_name),
+            None => Self::Unspecified,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::Known(model_name) => Some(model_name.as_str()),
+            Self::Unspecified => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RecoveredStream {
     /// The stream ended cleanly but was not sealed.
@@ -290,7 +313,7 @@ pub enum RecoveredStream {
         /// Last sequence number seen
         last_seq: u64,
         /// Model name from the original stream (for accurate attribution)
-        model_name: Option<String>,
+        model_name: RecoveredModelName,
     },
     /// The stream ended with an error but was not sealed.
     Errored {
@@ -303,7 +326,7 @@ pub enum RecoveredStream {
         /// Error message captured from the stream
         error: String,
         /// Model name from the original stream (for accurate attribution)
-        model_name: Option<String>,
+        model_name: RecoveredModelName,
     },
     /// The stream ended mid-flight.
     Incomplete {
@@ -314,7 +337,7 @@ pub enum RecoveredStream {
         /// Last sequence number seen
         last_seq: u64,
         /// Model name from the original stream (for accurate attribution)
-        model_name: Option<String>,
+        model_name: RecoveredModelName,
     },
 }
 
@@ -561,7 +584,7 @@ impl StreamJournal {
         Ok(deleted as u64)
     }
 
-    fn get_step_model_name(&self, step_id: StepId) -> Result<Option<String>> {
+    fn get_step_model_name(&self, step_id: StepId) -> Result<RecoveredModelName> {
         let model_name: Option<String> = self
             .db
             .query_row(
@@ -571,7 +594,7 @@ impl StreamJournal {
             )
             .optional()
             .context("Failed to query step model name")?;
-        Ok(model_name)
+        Ok(RecoveredModelName::from_option(model_name))
     }
 
     /// Delete all unsealed entries for a step (discard recovery data).
@@ -998,13 +1021,13 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn unique_db_path(label: &str) -> PathBuf {
-        let mut path = env::temp_dir();
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        path.push(format!("forge_{label}_{stamp}.db"));
-        path
+        let dir = env::temp_dir().join(format!("forge_test_{label}_{stamp}"));
+        fs::create_dir_all(&dir).expect("create test subdir");
+        dir.join("journal.db")
     }
 
     #[test]
@@ -1036,7 +1059,7 @@ mod tests {
     #[test]
     fn test_begin_session_returns_recoverable_step_exists_when_unsealed() {
         let db_path = unique_db_path("begin_session_unsealed");
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
@@ -1054,7 +1077,7 @@ mod tests {
             other => panic!("Expected RecoverableStepExists, got {other:?}"),
         }
 
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
     #[test]
@@ -1085,7 +1108,7 @@ mod tests {
     #[test]
     fn test_stream_content_normalizes_standalone_carriage_returns() {
         let db_path = unique_db_path("normalize_cr");
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
@@ -1109,7 +1132,7 @@ mod tests {
             _ => panic!("Expected errored recovery"),
         }
 
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
     #[test]
@@ -1128,7 +1151,7 @@ mod tests {
     #[test]
     fn test_recover_finds_unsealed_stream() {
         let db_path = unique_db_path("recover_incomplete");
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
@@ -1158,13 +1181,13 @@ mod tests {
             _ => panic!("Expected incomplete recovery"),
         }
 
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
     #[test]
     fn test_recover_detects_complete_but_unsealed() {
         let db_path = unique_db_path("recover_complete");
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
@@ -1183,13 +1206,13 @@ mod tests {
             _ => panic!("Expected complete recovery"),
         }
 
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
     #[test]
     fn test_recover_returns_none_when_all_sealed() {
         let db_path = unique_db_path("recover_none");
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
@@ -1204,7 +1227,7 @@ mod tests {
         let journal = StreamJournal::open(&db_path).unwrap();
         assert!(journal.recover().unwrap().is_none());
 
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
     #[test]
@@ -1225,7 +1248,7 @@ mod tests {
     #[test]
     fn test_prune_preserves_unsealed_entries() {
         let db_path = unique_db_path("prune_unsealed");
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
@@ -1241,13 +1264,13 @@ mod tests {
         let stats = journal.stats().unwrap();
         assert_eq!(stats.unsealed_entries, 1);
 
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
     #[test]
     fn test_discard_unsealed() {
         let db_path = unique_db_path("discard_unsealed");
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
@@ -1265,7 +1288,7 @@ mod tests {
         assert_eq!(deleted, 1);
         assert!(journal.recover().unwrap().is_none());
 
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
     #[test]
@@ -1326,7 +1349,7 @@ mod tests {
     #[test]
     fn test_persistence_across_instances() {
         let db_path = unique_db_path("persist");
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
@@ -1351,13 +1374,13 @@ mod tests {
             }
         }
 
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
     #[test]
     fn test_error_event_in_stream() {
         let db_path = unique_db_path("error_event");
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
@@ -1381,7 +1404,7 @@ mod tests {
             _ => panic!("Expected error recovery"),
         }
 
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 
     #[test]
@@ -1398,7 +1421,7 @@ mod tests {
     #[test]
     fn test_step_id_counter_persistence() {
         let db_path = unique_db_path("counter");
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
 
         {
             let mut journal = StreamJournal::open(&db_path).unwrap();
@@ -1413,6 +1436,6 @@ mod tests {
             assert_eq!(journal.next_step_id().unwrap(), StepId::new(5));
         }
 
-        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_dir_all(db_path.parent().unwrap());
     }
 }

@@ -55,17 +55,32 @@ pub struct SearchTool {
     config: SearchToolConfig,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchMode {
+    Standard,
+    Contextual,
+    Fuzzy,
+}
+
+impl SearchMode {
+    const fn from_request(fuzzy: Option<u8>, context: usize) -> Self {
+        if fuzzy.is_some() {
+            Self::Fuzzy
+        } else if context > 0 {
+            Self::Contextual
+        } else {
+            Self::Standard
+        }
+    }
+}
+
 impl SearchTool {
     #[must_use]
     pub fn new(config: SearchToolConfig) -> Self {
         Self { config }
     }
 
-    async fn select_backend(
-        &self,
-        need_fuzzy: bool,
-        need_context: bool,
-    ) -> Result<BackendInfo, ToolError> {
+    async fn select_backend(&self, mode: SearchMode) -> Result<BackendInfo, ToolError> {
         let primary = probe_backend(&self.config.binary).await;
         let fallback = probe_backend(&self.config.fallback_binary).await;
 
@@ -86,37 +101,34 @@ impl SearchTool {
             });
         }
 
-        if need_fuzzy {
-            return candidates
+        match mode {
+            SearchMode::Fuzzy => candidates
                 .into_iter()
                 .find(|c| matches!(c.kind, BackendKind::Ugrep))
                 .ok_or_else(|| ToolError::BadArgs {
                     message: "fuzzy search requires ugrep".to_string(),
-                });
-        }
-
-        if need_context {
-            return candidates
+                }),
+            SearchMode::Contextual => candidates
                 .into_iter()
                 .find(|c| matches!(c.kind, BackendKind::Ripgrep))
                 .ok_or_else(|| ToolError::ExecutionFailed {
                     tool: SEARCH_TOOL_NAME.to_string(),
                     message: "context search requires ripgrep".to_string(),
-                });
+                }),
+            SearchMode::Standard => {
+                // Prefer ugrep when possible.
+                if let Some(ugrep) = candidates
+                    .iter()
+                    .find(|c| matches!(c.kind, BackendKind::Ugrep))
+                {
+                    return Ok(ugrep.clone());
+                }
+                Ok(candidates
+                    .into_iter()
+                    .find(|c| matches!(c.kind, BackendKind::Ripgrep))
+                    .expect("at least one candidate"))
+            }
         }
-
-        // Prefer ugrep when possible.
-        if let Some(ugrep) = candidates
-            .iter()
-            .find(|c| matches!(c.kind, BackendKind::Ugrep))
-        {
-            return Ok(ugrep.clone());
-        }
-
-        Ok(candidates
-            .into_iter()
-            .find(|c| matches!(c.kind, BackendKind::Ripgrep))
-            .expect("at least one candidate"))
     }
 }
 
@@ -344,7 +356,8 @@ impl ToolExecutor for SearchTool {
             let include_glob = resolve_include_glob(typed.include_glob, typed.glob)?;
             let exclude_glob = resolve_glob_list(typed.exclude_glob)?;
 
-            let backend = self.select_backend(fuzzy.is_some(), context > 0).await?;
+            let mode = SearchMode::from_request(fuzzy, context);
+            let backend = self.select_backend(mode).await?;
 
             let order_root =
                 determine_order_root(&resolved, &ctx.working_dir, Path::new(&path_raw))
@@ -507,16 +520,14 @@ impl ToolExecutor for SearchTool {
                     path: normalized_root,
                     count: 0,
                     matches: Vec::new(),
-                    truncated: false,
-                    timed_out,
+                    completion: SearchCompletionOutcome::from_flags(false, timed_out),
                     files_scanned,
                     errors,
                     exit_code: None,
                     stderr: None,
                     content: String::new(),
                 };
-                response.content =
-                    render_content(&response.matches, response.truncated, response.timed_out);
+                response.content = render_content(&response.matches, response.completion);
                 return finalize_output(response, ctx);
             }
 
@@ -608,16 +619,14 @@ impl ToolExecutor for SearchTool {
                 path: normalized_root,
                 count: events.len(),
                 matches: events,
-                truncated,
-                timed_out,
+                completion: SearchCompletionOutcome::from_flags(truncated, timed_out),
                 files_scanned,
                 errors,
                 exit_code,
                 stderr,
                 content: String::new(),
             };
-            response.content =
-                render_content(&response.matches, response.truncated, response.timed_out);
+            response.content = render_content(&response.matches, response.completion);
 
             finalize_output(response, ctx)
         })
@@ -666,14 +675,49 @@ enum CaseMode {
     Smart,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SearchCompletionOutcome {
+    Complete,
+    Truncated,
+    TimedOut,
+    TimedOutTruncated,
+}
+
+impl SearchCompletionOutcome {
+    const fn from_flags(truncated: bool, timed_out: bool) -> Self {
+        match (truncated, timed_out) {
+            (false, false) => Self::Complete,
+            (true, false) => Self::Truncated,
+            (false, true) => Self::TimedOut,
+            (true, true) => Self::TimedOutTruncated,
+        }
+    }
+
+    const fn is_truncated(self) -> bool {
+        matches!(self, Self::Truncated | Self::TimedOutTruncated)
+    }
+
+    const fn is_timed_out(self) -> bool {
+        matches!(self, Self::TimedOut | Self::TimedOutTruncated)
+    }
+
+    const fn with_truncation(self) -> Self {
+        match self {
+            Self::Complete => Self::Truncated,
+            Self::TimedOut => Self::TimedOutTruncated,
+            Self::Truncated | Self::TimedOutTruncated => self,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct SearchResponse {
     pattern: String,
     path: String,
     count: usize,
     matches: Vec<SearchEvent>,
-    truncated: bool,
-    timed_out: bool,
+    completion: SearchCompletionOutcome,
     files_scanned: usize,
     errors: Vec<SearchFileError>,
     exit_code: Option<i32>,
@@ -1063,7 +1107,7 @@ fn path_sort_key(path: &Path, order_root: &Path) -> Vec<u8> {
     s.nfc().collect::<String>().into_bytes()
 }
 
-fn render_content(matches: &[SearchEvent], truncated: bool, timed_out: bool) -> String {
+fn render_content(matches: &[SearchEvent], completion: SearchCompletionOutcome) -> String {
     let mut out = String::new();
     for event in matches {
         match event {
@@ -1082,10 +1126,10 @@ fn render_content(matches: &[SearchEvent], truncated: bool, timed_out: bool) -> 
         }
         out.push('\n');
     }
-    if truncated {
+    if completion.is_truncated() {
         out.push_str("... [truncated]\n");
     }
-    if timed_out {
+    if completion.is_timed_out() {
         out.push_str("... [timed out]\n");
     }
     out.trim_end().to_string()
@@ -1177,11 +1221,10 @@ fn finalize_output(response: SearchResponse, ctx: &ToolCtx) -> Result<String, To
             return Ok(sanitize_output(&json));
         }
 
-        response.truncated = true;
+        response.completion = response.completion.with_truncation();
         response.matches.pop();
         response.count = response.matches.len();
-        response.content =
-            render_content(&response.matches, response.truncated, response.timed_out);
+        response.content = render_content(&response.matches, response.completion);
     }
 }
 

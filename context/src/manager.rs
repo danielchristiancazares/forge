@@ -18,17 +18,10 @@ use super::model_limits::{ModelLimits, ModelLimitsSource, ModelRegistry};
 use super::token_counter::TokenCounter;
 use super::working_context::{ContextCompactionState, ContextUsage, WorkingContext};
 
-#[derive(Debug)]
-pub enum ContextBuildError {
-    /// Context exceeds budget; compaction is needed.
-    CompactionNeeded,
-    /// The most recent messages alone exceed the budget.
-    /// This is unrecoverable - user must reduce input or switch to larger model.
-    RecentMessagesTooLarge {
-        required_tokens: u32,
-        budget_tokens: u32,
-        message_count: usize,
-    },
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextShrinkRequirement {
+    Ready,
+    NeedsDistillation,
 }
 
 #[derive(Debug, Clone)]
@@ -39,7 +32,7 @@ pub enum ContextAdaptation {
     Shrinking {
         old_budget: u32,
         new_budget: u32,
-        needs_compaction: bool,
+        requirement: ContextShrinkRequirement,
     },
     /// Switched to a model with larger context.
     Expanding { old_budget: u32, new_budget: u32 },
@@ -82,6 +75,23 @@ impl PreparedContext<'_> {
     }
 }
 
+#[derive(Debug)]
+pub enum ContextPreparation<'a> {
+    Ready(PreparedContext<'a>),
+    NeedsDistillation,
+    Overflow {
+        required_tokens: u32,
+        budget_tokens: u32,
+        message_count: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum RollbackLastMessage {
+    RolledBack(Message),
+    NotLastMessage,
+}
+
 /// Current context usage state.
 ///
 /// Returned by [`ContextManager::usage_status`] to provide UI-friendly
@@ -91,7 +101,7 @@ pub enum ContextUsageStatus {
     /// Context fits within budget and is ready for use.
     Ready(ContextUsage),
     /// Context exceeds budget; compaction is needed before API call.
-    NeedsCompaction {
+    NeedsDistillation {
         /// Current usage statistics.
         usage: ContextUsage,
     },
@@ -113,6 +123,12 @@ enum UsageCache {
     Fresh(ContextUsageStatus),
 }
 
+#[derive(Debug, Clone, Copy)]
+enum OutputLimitPolicy {
+    ModelDefault,
+    ReservedOutputTokens(u32),
+}
+
 #[derive(Debug)]
 pub struct ContextManager {
     history: FullHistory,
@@ -121,8 +137,8 @@ pub struct ContextManager {
     current_model: ModelName,
     current_limits: ModelLimits,
     current_limits_source: ModelLimitsSource,
-    /// Configured output limit (if set, allows more input context).
-    configured_output_limit: Option<u32>,
+    /// Configured output limit policy (reserved output allows more input context).
+    output_limit_policy: OutputLimitPolicy,
     /// Cached usage status (auto-invalidated on mutation).
     usage_cache: UsageCache,
 }
@@ -142,23 +158,23 @@ impl ContextManager {
             current_model: initial_model,
             current_limits: limits,
             current_limits_source: limits_source,
-            configured_output_limit: None,
+            output_limit_policy: OutputLimitPolicy::ModelDefault,
             usage_cache: UsageCache::Stale,
         }
     }
 
     /// This allows more input context when users configure smaller output limits.
     pub fn set_output_limit(&mut self, limit: u32) {
-        self.configured_output_limit = Some(limit);
+        self.output_limit_policy = OutputLimitPolicy::ReservedOutputTokens(limit);
         self.usage_cache = UsageCache::Stale;
     }
 
     fn effective_budget(&self) -> u32 {
-        match self.configured_output_limit {
-            Some(limit) => self
+        match self.output_limit_policy {
+            OutputLimitPolicy::ReservedOutputTokens(limit) => self
                 .current_limits
                 .effective_input_budget_with_reserved(limit),
-            None => self.current_limits.effective_input_budget(),
+            OutputLimitPolicy::ModelDefault => self.current_limits.effective_input_budget(),
         }
     }
 
@@ -186,12 +202,17 @@ impl ContextManager {
     }
 
     /// This is used for transactional rollback when a stream fails...
-    pub fn rollback_last_message(&mut self, id: MessageId) -> Option<Message> {
+    pub fn rollback_last_message(&mut self, id: MessageId) -> RollbackLastMessage {
         let result = self.history.pop_if_last(id);
-        if result.is_some() {
-            self.usage_cache = UsageCache::Stale;
+        match result {
+            super::history::HistoryPopOutcome::Popped(message) => {
+                self.usage_cache = UsageCache::Stale;
+                RollbackLastMessage::RolledBack(message)
+            }
+            super::history::HistoryPopOutcome::NotLastMessage => {
+                RollbackLastMessage::NotLastMessage
+            }
         }
-        result
     }
 
     pub fn switch_model(&mut self, new_model: ModelName) -> ContextAdaptation {
@@ -211,7 +232,12 @@ impl ContextManager {
             Ordering::Less => ContextAdaptation::Shrinking {
                 old_budget,
                 new_budget,
-                needs_compaction: self.build_working_context(0).is_err(),
+                requirement: match self.prepare(0) {
+                    ContextPreparation::Ready(_) => ContextShrinkRequirement::Ready,
+                    ContextPreparation::NeedsDistillation | ContextPreparation::Overflow { .. } => {
+                        ContextShrinkRequirement::NeedsDistillation
+                    }
+                },
             },
             Ordering::Greater => ContextAdaptation::Expanding {
                 old_budget,
@@ -234,7 +260,7 @@ impl ContextManager {
     /// If the history is compacted, only entries after the compaction point
     /// are included. The compaction summary tokens count against the budget
     /// but are not segments — they're injected during materialization.
-    fn build_working_context(&self, overhead: u32) -> Result<WorkingContext, ContextBuildError> {
+    fn build_working_context(&self, overhead: u32) -> ContextPreparation<'_> {
         let budget = self.effective_budget().saturating_sub(overhead);
         let api_entries = self.history.api_entries();
 
@@ -253,15 +279,18 @@ impl ContextManager {
             for entry in api_entries {
                 ctx.push(entry.id(), entry.token_count());
             }
-            Ok(ctx)
+            ContextPreparation::Ready(PreparedContext {
+                manager: self,
+                working_context: ctx,
+            })
         } else if api_entries.len() <= 1 && self.history.is_compacted() {
-            Err(ContextBuildError::RecentMessagesTooLarge {
+            ContextPreparation::Overflow {
                 required_tokens: total,
                 budget_tokens: budget,
                 message_count: api_entries.len(),
-            })
+            }
         } else {
-            Err(ContextBuildError::CompactionNeeded)
+            ContextPreparation::NeedsDistillation
         }
     }
 
@@ -300,12 +329,9 @@ impl ContextManager {
         self.usage_cache = UsageCache::Stale;
     }
 
-    pub fn prepare(&self, overhead: u32) -> Result<PreparedContext<'_>, ContextBuildError> {
-        let working_context = self.build_working_context(overhead)?;
-        Ok(PreparedContext {
-            manager: self,
-            working_context,
-        })
+    #[must_use]
+    pub fn prepare(&self, overhead: u32) -> ContextPreparation<'_> {
+        self.build_working_context(overhead)
     }
 
     /// Get only the N most recent messages, bypassing compaction.
@@ -341,15 +367,15 @@ impl ContextManager {
         };
 
         let status = match self.prepare(0) {
-            Ok(prepared) => ContextUsageStatus::Ready(prepared.usage()),
-            Err(ContextBuildError::CompactionNeeded) => ContextUsageStatus::NeedsCompaction {
+            ContextPreparation::Ready(prepared) => ContextUsageStatus::Ready(prepared.usage()),
+            ContextPreparation::NeedsDistillation => ContextUsageStatus::NeedsDistillation {
                 usage: fallback_usage(),
             },
-            Err(ContextBuildError::RecentMessagesTooLarge {
+            ContextPreparation::Overflow {
                 required_tokens,
                 budget_tokens,
                 ..
-            }) => ContextUsageStatus::RecentMessagesTooLarge {
+            } => ContextUsageStatus::RecentMessagesTooLarge {
                 usage: fallback_usage(),
                 required_tokens,
                 budget_tokens,
@@ -422,7 +448,7 @@ impl ContextManager {
             current_model: model,
             current_limits: limits,
             current_limits_source: limits_source,
-            configured_output_limit: None,
+            output_limit_policy: OutputLimitPolicy::ModelDefault,
             usage_cache: UsageCache::Stale,
         })
     }
@@ -443,8 +469,8 @@ mod tests {
     use std::time::SystemTime;
 
     use super::{
-        ContextAdaptation, ContextBuildError, ContextManager, ContextUsageStatus, ModelLimits,
-        ModelLimitsSource, StepId,
+        ContextAdaptation, ContextManager, ContextPreparation, ContextUsageStatus, ModelLimits,
+        ModelLimitsSource, RollbackLastMessage, StepId,
     };
     use forge_types::{Message, ModelName, NonEmptyString, PredefinedModel};
 
@@ -516,10 +542,14 @@ mod tests {
         );
 
         let result = manager.build_working_context(0);
-        assert!(result.is_ok());
-
-        let ctx = result.unwrap();
-        assert_eq!(ctx.segments().len(), 2);
+        match result {
+            ContextPreparation::Ready(prepared) => {
+                assert_eq!(prepared.working_context.segments().len(), 2);
+            }
+            ContextPreparation::NeedsDistillation | ContextPreparation::Overflow { .. } => {
+                panic!("expected context to be ready")
+            }
+        }
     }
 
     #[test]
@@ -541,7 +571,7 @@ mod tests {
         }
 
         let result = manager.build_working_context(0);
-        assert!(matches!(result, Err(ContextBuildError::CompactionNeeded)));
+        assert!(matches!(result, ContextPreparation::NeedsDistillation));
     }
 
     #[test]
@@ -576,13 +606,21 @@ mod tests {
         assert_eq!(manager.history().len(), 2);
 
         let rolled_back = manager.rollback_last_message(id2);
-        assert!(rolled_back.is_some());
-        assert_eq!(rolled_back.unwrap().content(), "World");
+        match rolled_back {
+            RollbackLastMessage::RolledBack(message) => {
+                assert_eq!(message.content(), "World");
+            }
+            RollbackLastMessage::NotLastMessage => panic!("expected rollback to succeed"),
+        }
         assert_eq!(manager.history().len(), 1);
 
         let rolled_back = manager.rollback_last_message(id1);
-        assert!(rolled_back.is_some());
-        assert_eq!(rolled_back.unwrap().content(), "Hello");
+        match rolled_back {
+            RollbackLastMessage::RolledBack(message) => {
+                assert_eq!(message.content(), "Hello");
+            }
+            RollbackLastMessage::NotLastMessage => panic!("expected rollback to succeed"),
+        }
         assert_eq!(manager.history().len(), 0);
     }
 
@@ -596,7 +634,7 @@ mod tests {
             manager.push_message(Message::try_user("World", SystemTime::now()).expect("non-empty"));
 
         let rolled_back = manager.rollback_last_message(id1);
-        assert!(rolled_back.is_none());
+        assert!(matches!(rolled_back, RollbackLastMessage::NotLastMessage));
         assert_eq!(manager.history().len(), 2);
     }
 

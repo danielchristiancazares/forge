@@ -13,6 +13,12 @@ use serde::{Deserialize, Serialize};
 use forge_types::{Message, MessageId, NonEmptyString, PersistableContent, StepId};
 
 #[derive(Debug, Clone)]
+pub enum HistoryPopOutcome {
+    Popped(Message),
+    NotLastMessage,
+}
+
+#[derive(Debug, Clone)]
 pub struct HistoryEntry {
     id: MessageId,
     message: Message,
@@ -362,15 +368,19 @@ impl FullHistory {
         self.entries.is_empty()
     }
 
-    pub fn pop_if_last(&mut self, id: MessageId) -> Option<Message> {
-        let last = self.entries.last()?;
+    pub fn pop_if_last(&mut self, id: MessageId) -> HistoryPopOutcome {
+        let Some(last) = self.entries.last() else {
+            return HistoryPopOutcome::NotLastMessage;
+        };
         if last.id() != id {
-            return None;
+            return HistoryPopOutcome::NotLastMessage;
         }
 
-        let entry = self.entries.pop()?;
+        let Some(entry) = self.entries.pop() else {
+            return HistoryPopOutcome::NotLastMessage;
+        };
         self.next_message_id = self.entries.len() as u64;
-        Some(entry.message().clone())
+        HistoryPopOutcome::Popped(entry.message().clone())
     }
 
     /// All existing entries become display-only. New entries after this point
@@ -392,7 +402,7 @@ impl FullHistory {
 mod tests {
     use std::time::SystemTime;
 
-    use super::{CompactionSummary, FullHistory};
+    use super::{CompactionSummary, FullHistory, HistoryPopOutcome};
     use forge_types::{Message, MessageId, NonEmptyString};
 
     fn make_test_message(content: &str) -> Message {
@@ -442,13 +452,17 @@ mod tests {
         assert_eq!(history.len(), 2);
 
         let popped = history.pop_if_last(id2);
-        assert!(popped.is_some());
-        assert_eq!(popped.unwrap().content(), "Second");
+        match popped {
+            HistoryPopOutcome::Popped(message) => assert_eq!(message.content(), "Second"),
+            HistoryPopOutcome::NotLastMessage => panic!("expected second entry to pop"),
+        }
         assert_eq!(history.len(), 1);
 
         let popped = history.pop_if_last(id1);
-        assert!(popped.is_some());
-        assert_eq!(popped.unwrap().content(), "First");
+        match popped {
+            HistoryPopOutcome::Popped(message) => assert_eq!(message.content(), "First"),
+            HistoryPopOutcome::NotLastMessage => panic!("expected first entry to pop"),
+        }
         assert_eq!(history.len(), 0);
     }
 
@@ -460,7 +474,7 @@ mod tests {
         let _id2 = history.push(make_test_message("Second"), 20);
 
         let popped = history.pop_if_last(id1);
-        assert!(popped.is_none());
+        assert!(matches!(popped, HistoryPopOutcome::NotLastMessage));
         assert_eq!(history.len(), 2);
     }
 
@@ -469,7 +483,7 @@ mod tests {
         let mut history = FullHistory::new();
 
         let popped = history.pop_if_last(MessageId::new(0));
-        assert!(popped.is_none());
+        assert!(matches!(popped, HistoryPopOutcome::NotLastMessage));
         assert_eq!(history.len(), 0);
     }
 

@@ -66,3 +66,27 @@ id = "APP-INV-12"
 predicate = "A plan has reached a terminal satisfied state across all phases and steps."
 canonical_proof_type_path = "types::plan::CompletedPlan"
 authority_boundary_module_path = "types::plan"
+
+[[invariants]]
+id = "APP-INV-13"
+predicate = "Provider SSE payload decode outcome is explicit and never encoded as optional absence."
+canonical_proof_type_path = "providers::ParsedSsePayload"
+authority_boundary_module_path = "providers"
+
+[[invariants]]
+id = "APP-INV-14"
+predicate = "Settings modal filter interaction lifecycle is represented as an explicit mode enum."
+canonical_proof_type_path = "types::ui::input::SettingsFilterMode"
+authority_boundary_module_path = "engine::app::mod"
+
+[[invariants]]
+id = "APP-INV-15"
+predicate = "Transcript redraw behavior is represented as explicit render action state."
+canonical_proof_type_path = "types::ui::view_state::TranscriptRenderAction"
+authority_boundary_module_path = "engine::app::commands"
+
+[[invariants]]
+id = "APP-INV-16"
+predicate = "File picker index readiness is encoded as explicit scan-state lifecycle."
+canonical_proof_type_path = "engine::ui::file_picker::FileScanState"
+authority_boundary_module_path = "engine::ui::file_picker"

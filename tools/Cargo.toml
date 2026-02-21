@@ -30,7 +30,6 @@ ignore.workspace = true
 unicode-normalization.workspace = true
 chrono.workspace = true
 
-anyhow.workspace = true
 thiserror.workspace = true
 
 futures-util.workspace = true
@@ -38,7 +37,6 @@ dirs.workspace = true
 
 tracing.workspace = true
 
-unicode-segmentation.workspace = true
 which = "8"
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

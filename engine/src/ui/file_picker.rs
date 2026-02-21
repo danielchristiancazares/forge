@@ -22,14 +22,22 @@ pub struct FileEntry {
 }
 
 /// File picker state for the "@" reference feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileScanState {
+    #[default]
+    Unscanned,
+    Scanned,
+}
+
+/// File picker state for the "@" reference feature.
 #[derive(Debug, Clone, Default)]
 pub struct FilePickerState {
     /// All scanned files from the project.
     all_files: Vec<FileEntry>,
     /// Filtered results based on current filter text.
     filtered: Vec<usize>,
-    /// Whether files have been scanned.
-    scanned: bool,
+    /// Lifecycle state for file index readiness.
+    scan_state: FileScanState,
 }
 
 impl FilePickerState {
@@ -42,7 +50,7 @@ impl FilePickerState {
     pub fn scan_files(&mut self, root: &Path, sandbox: &Sandbox) {
         self.all_files.clear();
         self.filtered.clear();
-        self.scanned = true;
+        self.scan_state = FileScanState::Scanned;
 
         let walker = WalkBuilder::new(root)
             .hidden(false)
@@ -150,8 +158,8 @@ impl FilePickerState {
     }
 
     #[must_use]
-    pub fn is_scanned(&self) -> bool {
-        self.scanned
+    pub fn scan_state(&self) -> FileScanState {
+        self.scan_state
     }
 
     #[must_use]

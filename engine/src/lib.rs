@@ -6,9 +6,10 @@ mod ui;
 
 pub use ui::{
     ChangeKind, DisplayItem, DisplayPop, DisplayTail, DraftInput, FileEntry, FilePickerState,
-    FilesPanelState, InputHistory, InputMode, InputState, ModalEffect, ModalEffectKind,
-    PanelEffect, PanelEffectKind, PredefinedModel, ScrollState, SettingsCategory,
-    SettingsModalState, SettingsSurface, UiOptions, ViewState, find_match_positions,
+    FileScanState, FilesPanelState, InputHistory, InputMode, InputState, ModalEffect,
+    ModalEffectKind, PanelEffect, PanelEffectKind, PredefinedModel, ScrollState, SettingsCategory,
+    SettingsFilterMode, SettingsModalState, SettingsSurface, TranscriptRenderAction, UiOptions,
+    ViewState, find_match_positions,
 };
 
 mod config;
@@ -62,10 +63,12 @@ pub use app::{
 pub(crate) use app::{ActiveExecution, ToolQueue, TurnContext};
 
 pub use forge_context::{
-    ActiveJournal, BeginSessionError, CompactionPlan, ContextAdaptation, ContextBuildError,
-    ContextManager, ContextUsageStatus, Fact, FactType, FullHistory, Librarian, ModelLimits,
-    ModelLimitsSource, ModelRegistry, PreparedContext, RecoveredStream, RecoveredToolBatch,
-    StreamJournal, TokenCounter, ToolJournal, distillation_model, generate_distillation,
+    ActiveJournal, BeginSessionError, CompactionPlan, ContextAdaptation, ContextManager,
+    ContextPreparation, ContextShrinkRequirement, ContextUsageStatus, Fact, FactType, FullHistory,
+    Librarian, ModelLimits, ModelLimitsSource, ModelRegistry, PreparedContext, RecoveredField,
+    RecoveredModelName, RecoveredStepBinding, RecoveredStream, RecoveredToolBatch,
+    RollbackLastMessage, StreamJournal, TokenCounter, ToolJournal, distillation_model,
+    generate_distillation,
 };
 
 pub use forge_tools as tools;

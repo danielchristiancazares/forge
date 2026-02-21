@@ -45,7 +45,7 @@ use tokio::signal::ctrl_c;
 use tokio::time::{MissedTickBehavior, interval};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-use forge_engine::{App, ForgeConfig};
+use forge_engine::{App, ForgeConfig, TranscriptRenderAction};
 use forge_tui::{InputPump, draw, handle_events};
 
 fn init_tracing() {
@@ -322,8 +322,10 @@ where
         app.tick();
         app.process_stream_events();
 
-        if app.take_clear_transcript()
-            && let Err(e) = terminal.clear()
+        if matches!(
+            app.take_transcript_render_action(),
+            TranscriptRenderAction::Clear
+        ) && let Err(e) = terminal.clear()
         {
             break Err(e.into());
         }

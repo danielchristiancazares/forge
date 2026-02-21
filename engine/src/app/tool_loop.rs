@@ -814,7 +814,7 @@ impl App {
     fn tool_capacity_bytes(&mut self) -> usize {
         let usage = match self.context_usage_status() {
             ContextUsageStatus::Ready(usage)
-            | ContextUsageStatus::NeedsCompaction { usage, .. }
+            | ContextUsageStatus::NeedsDistillation { usage, .. }
             | ContextUsageStatus::RecentMessagesTooLarge { usage, .. } => usage,
         };
 

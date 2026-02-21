@@ -13,7 +13,7 @@ When writing instructions or scripts, avoid assuming a single shell. If you need
 
 ## Rules
 
-- Run `just verify` after every code change (runs fmt + clippy -D warnings + test)
+- Run `just verify` after major code changes to verify (runs fmt + clippy + test)
 - Run `just fix` after editing files (normalizes CRLF → LF in *.rs and*.md)
 - Avoid `cargo check` or `cargo test` since `just verify` runs them implicitly unless as a temporary workaround.
 - Never add trivial comments. Do not restate the obvious.
@@ -24,6 +24,7 @@ When writing instructions or scripts, avoid assuming a single shell. If you need
 
 ## Rust Style
 
+- `use` imports over qualified paths inlined
 - `String::new()` not `"".to_string()`
 - `.map(ToString::to_string)` not `.map(|m| m.to_string())`
 - Method references over closures (`clippy::redundant_closure_for_method_calls`)

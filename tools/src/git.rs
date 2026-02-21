@@ -195,8 +195,10 @@ fn git_tool_schema() -> Value {
         "grep".into(),
         json!({ "type": "string", "description": "[log] Filter by message pattern" }),
     );
-    props.insert("list_all".into(), json!({ "type": "boolean", "default": false, "description": "[branch] List local and remote branches (-a)" }));
-    props.insert("list_remote".into(), json!({ "type": "boolean", "default": false, "description": "[branch] List only remote branches (-r)" }));
+    props.insert(
+        "list_mode".into(),
+        json!({ "type": "string", "enum": ["local", "all", "remote"], "default": "local", "description": "[branch] Branch listing mode" }),
+    );
     props.insert(
         "create".into(),
         json!({ "type": "string", "description": "[branch] Create a new branch with this name" }),
@@ -504,18 +506,53 @@ pub fn register_git_tool(registry: &mut super::ToolRegistry) -> Result<(), ToolE
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum GitExecutionOutcome {
+    Success,
+    Failure,
+    TimedOut,
+}
+
+impl GitExecutionOutcome {
+    const fn is_error(self) -> bool {
+        !matches!(self, Self::Success)
+    }
+
+    const fn is_success(self) -> bool {
+        matches!(self, Self::Success)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TruncationState {
+    Complete,
+    Truncated,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GitOutputTruncation {
+    stdout: TruncationState,
+    stderr: TruncationState,
+}
+
 #[derive(Debug, Clone)]
 struct GitExecResult {
     git_bin: PathBuf,
     args: Vec<String>,
     working_dir: Option<PathBuf>,
     exit_code: Option<i32>,
-    success: bool,
+    outcome: GitExecutionOutcome,
     stdout: String,
     stderr: String,
-    truncated_stdout: bool,
-    truncated_stderr: bool,
-    timed_out: bool,
+    truncation: GitOutputTruncation,
+}
+
+impl GitExecResult {
+    const fn succeeded(&self) -> bool {
+        self.outcome.is_success()
+    }
 }
 
 fn build_git_response(
@@ -525,14 +562,13 @@ fn build_git_response(
 ) -> Value {
     let mut payload = json!({
         "content": [{"type": "text", "text": text}],
-        "isError": !exec.success,
+        "isError": exec.outcome.is_error(),
         "git_bin": exec.git_bin.display().to_string(),
         "args": exec.args,
         "working_dir": exec.working_dir.as_ref().map(|p| p.display().to_string()),
         "exit_code": exec.exit_code,
-        "timed_out": exec.timed_out,
-        "truncated_stdout": exec.truncated_stdout,
-        "truncated_stderr": exec.truncated_stderr,
+        "outcome": exec.outcome,
+        "truncation": exec.truncation,
         "stdout": exec.stdout,
         "stderr": exec.stderr,
     });
@@ -708,18 +744,34 @@ async fn run_git(
 
     let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
     let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+    let outcome = if timed_out {
+        GitExecutionOutcome::TimedOut
+    } else if status.success() {
+        GitExecutionOutcome::Success
+    } else {
+        GitExecutionOutcome::Failure
+    };
 
     Ok(GitExecResult {
         git_bin,
         args,
         working_dir: Some(working_dir.to_path_buf()),
         exit_code,
-        success: status.success() && !timed_out,
+        outcome,
         stdout,
         stderr,
-        truncated_stdout,
-        truncated_stderr,
-        timed_out,
+        truncation: GitOutputTruncation {
+            stdout: if truncated_stdout {
+                TruncationState::Truncated
+            } else {
+                TruncationState::Complete
+            },
+            stderr: if truncated_stderr {
+                TruncationState::Truncated
+            } else {
+                TruncationState::Complete
+            },
+        },
     })
 }
 
@@ -848,7 +900,7 @@ async fn write_patches_to_dir(
     )
     .await?;
 
-    if !numstat_exec.success {
+    if !numstat_exec.succeeded() {
         return Err(ToolError::ExecutionFailed {
             tool: "Git:diff".to_string(),
             message: format!("git diff --numstat failed: {}", numstat_exec.stderr.trim()),
@@ -1057,14 +1109,31 @@ struct GitLogArgs {
     max_bytes: Option<usize>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+enum GitBranchListMode {
+    #[default]
+    Local,
+    All,
+    Remote,
+}
+
+#[derive(Debug, Clone)]
+enum GitBranchAction {
+    List(GitBranchListMode),
+    Create(String),
+    Delete(String),
+    ForceDelete(String),
+    Rename { from: String, to: String },
+}
+
 #[derive(Deserialize)]
 struct GitBranchArgs {
     #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
-    list_all: bool,
-    #[serde(default)]
-    list_remote: bool,
+    list_mode: GitBranchListMode,
     #[serde(default)]
     create: Option<String>,
     #[serde(default)]
@@ -1213,8 +1282,8 @@ async fn handle_git_status(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErro
     )
     .await?;
 
-    let clean = exec.success && exec.stdout.trim().is_empty();
-    let text = if exec.success {
+    let clean = exec.succeeded() && exec.stdout.trim().is_empty();
+    let text = if exec.succeeded() {
         if clean {
             "clean".to_string()
         } else {
@@ -1360,7 +1429,7 @@ async fn handle_git_diff(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
     )
     .await?;
 
-    let text = if exec.success {
+    let text = if exec.succeeded() {
         if exec.stdout.trim().is_empty() {
             "no diff".to_string()
         } else {
@@ -1425,7 +1494,7 @@ async fn handle_git_restore(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErr
     )
     .await?;
 
-    let text = if exec.success {
+    let text = if exec.succeeded() {
         if exec.stdout.trim().is_empty() && exec.stderr.trim().is_empty() {
             "ok".to_string()
         } else if exec.stdout.trim().is_empty() {
@@ -1486,7 +1555,7 @@ async fn handle_git_add(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError> 
     )
     .await?;
 
-    let text = if exec.success {
+    let text = if exec.succeeded() {
         "ok".to_string()
     } else if !exec.stderr.trim().is_empty() {
         trim_output(&exec.stderr)
@@ -1547,7 +1616,7 @@ async fn handle_git_commit(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErro
         .find(|s| s.len() >= 7 && s.chars().all(|c| c.is_ascii_hexdigit() || c == ']'))
         .map(|s| s.trim_end_matches(']').to_string());
 
-    let text = if exec.success {
+    let text = if exec.succeeded() {
         trim_output(&exec.stdout)
     } else if !exec.stderr.trim().is_empty() {
         trim_output(&exec.stderr)
@@ -1609,7 +1678,7 @@ async fn handle_git_log(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError> 
     )
     .await?;
 
-    let text = if exec.success {
+    let text = if exec.succeeded() {
         if exec.stdout.trim().is_empty() {
             "no commits".to_string()
         } else {
@@ -1634,38 +1703,53 @@ async fn handle_git_branch(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErro
     let working_dir = ctx.working_dir.clone();
     let max_cap = effective_max_bytes(ctx);
 
+    let action = if let Some(name) = req.create {
+        GitBranchAction::Create(name)
+    } else if let Some(name) = req.delete {
+        GitBranchAction::Delete(name)
+    } else if let Some(name) = req.force_delete {
+        GitBranchAction::ForceDelete(name)
+    } else if let Some(from) = req.rename {
+        let to = req.new_name.ok_or_else(|| ToolError::BadArgs {
+            message: "new_name required when renaming a branch".to_string(),
+        })?;
+        GitBranchAction::Rename { from, to }
+    } else {
+        GitBranchAction::List(req.list_mode)
+    };
+
     let mut cmd_args: Vec<String> = vec!["branch".into()];
 
     // Insert `--` before branch names to avoid flag injection.
-    if let Some(name) = &req.create {
-        cmd_args.push("--".into());
-        cmd_args.push(name.clone());
-    } else if let Some(name) = &req.delete {
-        cmd_args.push("-d".into());
-        cmd_args.push("--".into());
-        cmd_args.push(name.clone());
-    } else if let Some(name) = &req.force_delete {
-        cmd_args.push("-D".into());
-        cmd_args.push("--".into());
-        cmd_args.push(name.clone());
-    } else if let Some(old_name) = &req.rename {
-        cmd_args.push("-m".into());
-        cmd_args.push("--".into());
-        cmd_args.push(old_name.clone());
-        if let Some(new_name) = &req.new_name {
-            cmd_args.push(new_name.clone());
-        } else {
-            return Err(ToolError::BadArgs {
-                message: "new_name required when renaming a branch".to_string(),
-            });
+    match action {
+        GitBranchAction::Create(name) => {
+            cmd_args.push("--".into());
+            cmd_args.push(name);
         }
-    } else {
-        if req.list_all {
-            cmd_args.push("-a".into());
-        } else if req.list_remote {
-            cmd_args.push("-r".into());
+        GitBranchAction::Delete(name) => {
+            cmd_args.push("-d".into());
+            cmd_args.push("--".into());
+            cmd_args.push(name);
         }
-        cmd_args.push("-v".into());
+        GitBranchAction::ForceDelete(name) => {
+            cmd_args.push("-D".into());
+            cmd_args.push("--".into());
+            cmd_args.push(name);
+        }
+        GitBranchAction::Rename { from, to } => {
+            cmd_args.push("-m".into());
+            cmd_args.push("--".into());
+            cmd_args.push(from);
+            cmd_args.push(to);
+        }
+        GitBranchAction::List(mode) => {
+            match mode {
+                GitBranchListMode::Local => {}
+                GitBranchListMode::All => cmd_args.push("-a".into()),
+                GitBranchListMode::Remote => cmd_args.push("-r".into()),
+            }
+            cmd_args.push("-v".into());
+        }
     }
 
     let exec = run_git(
@@ -1678,7 +1762,7 @@ async fn handle_git_branch(ctx: &ToolCtx, args: Value) -> Result<Value, ToolErro
     )
     .await?;
 
-    let text = if exec.success {
+    let text = if exec.succeeded() {
         if exec.stdout.trim().is_empty() {
             "ok".to_string()
         } else {
@@ -1754,7 +1838,7 @@ async fn handle_git_checkout(ctx: &ToolCtx, args: Value) -> Result<Value, ToolEr
     )
     .await?;
 
-    let text = if exec.success {
+    let text = if exec.succeeded() {
         if exec.stdout.trim().is_empty() && exec.stderr.trim().is_empty() {
             "ok".to_string()
         } else if !exec.stderr.trim().is_empty() {
@@ -1843,7 +1927,7 @@ async fn handle_git_stash(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError
     )
     .await?;
 
-    let text = if exec.success {
+    let text = if exec.succeeded() {
         if exec.stdout.trim().is_empty() {
             match action {
                 "list" => "no stashes".to_string(),
@@ -1903,7 +1987,7 @@ async fn handle_git_show(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
     )
     .await?;
 
-    let text = if exec.success {
+    let text = if exec.succeeded() {
         trim_output(&exec.stdout)
     } else if !exec.stderr.trim().is_empty() {
         trim_output(&exec.stderr)
@@ -1964,7 +2048,7 @@ async fn handle_git_blame(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError
     )
     .await?;
 
-    let text = if exec.success {
+    let text = if exec.succeeded() {
         trim_output(&exec.stdout)
     } else if !exec.stderr.trim().is_empty() {
         trim_output(&exec.stderr)
@@ -2021,7 +2105,7 @@ async fn handle_git_push(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
     .await?;
 
     // Git push writes progress to stderr even on success
-    let text = if exec.success {
+    let text = if exec.succeeded() {
         if !exec.stderr.trim().is_empty() {
             trim_output(&exec.stderr)
         } else if !exec.stdout.trim().is_empty() {
@@ -2076,7 +2160,7 @@ async fn handle_git_pull(ctx: &ToolCtx, args: Value) -> Result<Value, ToolError>
     )
     .await?;
 
-    let text = if exec.success {
+    let text = if exec.succeeded() {
         if !exec.stdout.trim().is_empty() {
             trim_output(&exec.stdout)
         } else if !exec.stderr.trim().is_empty() {

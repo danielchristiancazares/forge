@@ -45,7 +45,7 @@ use forge_providers::gemini;
 use forge_types::{CacheBudget, CacheBudgetTake, CacheHint, ModelName, Provider, ToolDefinition};
 
 use super::{
-    ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextBuildError,
+    ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextPreparation,
     DEFAULT_STREAM_EVENT_BUDGET, DistillationStart, EMPTY_RESPONSE_BADGE, GeminiCache,
     GeminiCacheConfig, Message, NonEmptyString, OperationState, PlanState, QueuedUserMessage,
     StreamEvent, StreamFinishReason, StreamingMessage, ThinkingReplayState, notifications,
@@ -303,8 +303,8 @@ impl super::App {
 
         let api_messages = if memory_enabled {
             match self.core.context_manager.prepare(overhead) {
-                Ok(prepared) => prepared.api_messages(),
-                Err(ContextBuildError::CompactionNeeded) => {
+                ContextPreparation::Ready(prepared) => prepared.api_messages(),
+                ContextPreparation::NeedsDistillation => {
                     let queued = QueuedUserMessage { config, turn };
                     let start_result = self.try_start_distillation(Some(queued));
                     if !matches!(start_result, DistillationStart::Started) {
@@ -312,11 +312,11 @@ impl super::App {
                     }
                     return;
                 }
-                Err(ContextBuildError::RecentMessagesTooLarge {
+                ContextPreparation::Overflow {
                     required_tokens,
                     budget_tokens,
                     message_count,
-                }) => {
+                } => {
                     self.push_notification(format!(
                         "Recent {message_count} messages ({required_tokens} tokens) exceed budget ({budget_tokens} tokens). Reduce input or use larger model."
                     ));

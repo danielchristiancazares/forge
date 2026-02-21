@@ -47,6 +47,13 @@ pub struct UiOptions {
     pub show_thinking: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TranscriptRenderAction {
+    #[default]
+    Preserve,
+    Clear,
+}
+
 /// Separates view concerns from orchestration state, making it
 /// clearer what state is used for rendering vs. what drives the
 /// application logic.
@@ -56,7 +63,7 @@ pub struct ViewState {
     /// Maximum scroll offset (content length - viewport).
     pub scroll_max: u16,
     /// Request to clear the visible transcript (handled by the UI).
-    pub clear_transcript: bool,
+    pub transcript_action: TranscriptRenderAction,
     pub modal_effect: Option<ModalEffect>,
     pub files_panel_effect: Option<PanelEffect>,
     /// UI options (theme, motion, glyphs).
@@ -71,7 +78,7 @@ impl Default for ViewState {
         Self {
             scroll: ScrollState::default(),
             scroll_max: 0,
-            clear_transcript: false,
+            transcript_action: TranscriptRenderAction::default(),
             modal_effect: None,
             files_panel_effect: None,
             ui_options: UiOptions::default(),

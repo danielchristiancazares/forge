@@ -888,14 +888,14 @@ impl crate::App {
                 .map(forge_context::HistoryEntry::id)
                 .ok_or_else(|| "History unexpectedly empty".to_string())?;
 
-            // rollback_last_message returns None if the entry is Distilled or not the last
-            let _removed = self
-                .core
-                .context_manager
-                .rollback_last_message(last_id)
-                .ok_or_else(|| {
-                    "Cannot rewind conversation (unexpected Distilled tail)".to_string()
-                })?;
+            match self.core.context_manager.rollback_last_message(last_id) {
+                forge_context::RollbackLastMessage::RolledBack(_) => {}
+                forge_context::RollbackLastMessage::NotLastMessage => {
+                    return Err(
+                        "Cannot rewind conversation (unexpected Distilled tail)".to_string()
+                    );
+                }
+            }
             current = self.core.context_manager.history().len();
         }
 

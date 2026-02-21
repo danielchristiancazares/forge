@@ -10,7 +10,6 @@ name = "toc-gen"
 path = "src/main.rs"
 
 [dependencies]
-pulldown-cmark = "0.13"
 toml = "1.0"
 toml_edit = "0.25"
 serde = { version = "1", features = ["derive"] }

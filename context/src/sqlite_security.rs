@@ -4,8 +4,16 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 pub(crate) fn ensure_secure_dir(path: &Path) -> Result<()> {
+    let already_exists = path.is_dir();
     fs::create_dir_all(path)
         .with_context(|| format!("Failed to create directory: {}", path.display()))?;
+    // Only apply restrictive permissions to directories we just created.
+    // Re-ACL-ing a pre-existing directory (e.g. the system temp dir) can
+    // trigger recursive ACL propagation to all its children, which is both
+    // slow and destructive.
+    if already_exists {
+        return Ok(());
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};

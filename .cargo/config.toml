@@ -1,3 +1,6 @@
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
+
 [alias]
 # Generates an LCOV report at `lcov.info` (requires `cargo-llvm-cov`).
 cov = "llvm-cov --lcov --output-path lcov.info"

@@ -33,7 +33,7 @@ use crate::thinking::ThinkingPayload;
 use crate::tools::{self, sandbox::Sandbox};
 use crate::ui::{
     DisplayItem, DraftInput, InputMode, InputState, PredefinedModel, ScrollState, SettingsCategory,
-    SettingsSurface, UiOptions, ViewState,
+    SettingsFilterMode, SettingsSurface, TranscriptRenderAction, UiOptions, ViewState,
 };
 use forge_context::{ContextManager, StreamJournal, ToolJournal};
 use forge_providers::ApiConfig;
@@ -187,10 +187,10 @@ fn settings_filter_text(app: &App) -> Option<&str> {
     }
 }
 
-fn settings_filter_active(app: &App) -> bool {
+fn settings_filter_mode(app: &App) -> SettingsFilterMode {
     match app.settings_access() {
-        SettingsAccess::Active { filter_active, .. } => filter_active,
-        SettingsAccess::Inactive => false,
+        SettingsAccess::Active { filter_mode, .. } => filter_mode,
+        SettingsAccess::Inactive => SettingsFilterMode::Browsing,
     }
 }
 
@@ -429,8 +429,14 @@ fn process_command_clear_requests_transcript_clear() {
 
     app.process_command(command);
 
-    assert!(app.take_clear_transcript());
-    assert!(!app.take_clear_transcript());
+    assert_eq!(
+        app.take_transcript_render_action(),
+        TranscriptRenderAction::Clear
+    );
+    assert_eq!(
+        app.take_transcript_render_action(),
+        TranscriptRenderAction::Preserve
+    );
 }
 
 #[test]
@@ -450,7 +456,7 @@ fn process_command_settings_opens_settings_modal() {
 
     assert_eq!(app.input_mode(), InputMode::Settings);
     assert_eq!(settings_filter_text(&app), Some(""));
-    assert!(!settings_filter_active(&app));
+    assert_eq!(settings_filter_mode(&app), SettingsFilterMode::Browsing);
     assert_eq!(settings_selected_index(&app), Some(0));
     assert_eq!(settings_detail_view(&app), None);
     assert_eq!(settings_surface(&app), Some(SettingsSurface::Root));
@@ -471,7 +477,7 @@ fn settings_access_reports_root_modal_state() {
         SettingsAccess::Active {
             surface: SettingsSurface::Root,
             filter_text: "",
-            filter_active: false,
+            filter_mode: SettingsFilterMode::Browsing,
             detail_view: None,
             selected_index: 0,
         }

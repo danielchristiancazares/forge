@@ -1,8 +1,8 @@
 use crate::{
-    ApiUsage, CLAUDE_MESSAGES_API_URL, CacheHint, CacheableMessage, Message, OutputLimits, Result,
-    SendMessageRequest, SseParseAction, SseParser, StreamEvent, ThinkingReplayState,
-    ThoughtSignatureState, ToolDefinition, emit_or_continue, http_client, parse_sse_payload,
-    retry::RetryConfig, send_retried_sse_request, stream_idle_timeout,
+    ApiUsage, CLAUDE_MESSAGES_API_URL, CacheHint, CacheableMessage, Message, OutputLimits,
+    ParsedSsePayload, Result, SendMessageRequest, SseParseAction, SseParser, StreamEvent,
+    ThinkingReplayState, ThoughtSignatureState, ToolDefinition, emit_or_continue, http_client,
+    parse_sse_payload, retry::RetryConfig, send_retried_sse_request, stream_idle_timeout,
 };
 use forge_types::ThinkingState;
 use forge_types::ToolResultOutcome;
@@ -300,8 +300,9 @@ struct ClaudeParser {
 impl SseParser for ClaudeParser {
     fn parse(&mut self, json: &serde_json::Value) -> SseParseAction {
         // Deserialize into typed event - forward compatible via Unknown variant
-        let Some(event) = parse_sse_payload::<typed::Event>(json, "Claude") else {
-            return SseParseAction::Continue;
+        let event = match parse_sse_payload::<typed::Event>(json, "Claude") {
+            ParsedSsePayload::Parsed(event) => event,
+            ParsedSsePayload::Invalid => return SseParseAction::Continue,
         };
 
         let mut events = Vec::new();
