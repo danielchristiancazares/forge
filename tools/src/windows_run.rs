@@ -238,8 +238,8 @@ const PROCESS_ESCAPE_COMMAND_NAMES: &[&str] = &[
 /// Prepare a command for execution under run sandbox policy.
 ///
 /// On Windows this enforces `WindowsRunSandboxPolicy`. On macOS it may wrap the shell in
-/// `sandbox-exec` (Seatbelt). On Linux/BSD it applies the token-based policy checks as a
-/// baseline (no OS-level sandbox yet).
+/// `sandbox-exec` (Seatbelt). On Linux/BSD, execution is denied when sandboxing is enabled
+/// because there is no supported OS-level sandbox backend yet.
 pub(crate) fn prepare_run_command(
     command: RunCommandText<'_>,
     shell: &DetectedShell,
@@ -256,21 +256,15 @@ pub(crate) fn prepare_run_command(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // On Linux/BSD, use the "Windows" policy (token blocking + optional PowerShell enforcement)
-        // as a baseline for "Basic" sandboxing, since we don't have a specific Linux sandbox implementation yet.
-        // This closes the "passthrough" gap.
-        if !cfg!(windows) {
-            let mut linux_policy = policy.windows;
-            linux_policy.enforce_powershell_only = false;
-            return prepare_windows_run_command_with_host_probe(
-                command,
-                shell,
-                linux_policy,
-                false,     // Not Windows host (skip job object checks)
-                || Ok(()), // Host probe always succeeds
-            );
+        if !policy.windows.enabled {
+            return Ok(PreparedRunCommand::passthrough(shell, command.raw()));
         }
-        Ok(PreparedRunCommand::passthrough(shell, command.raw()))
+        let _ = working_dir;
+        Err(ToolError::ExecutionFailed {
+            tool: "Run".to_string(),
+            message: "Run sandbox is unavailable on Linux/BSD; refusing unsandboxed execution."
+                .to_string(),
+        })
     }
 }
 
@@ -961,6 +955,37 @@ mod tests {
         let prepared = PreparedRunCommand::passthrough(&shell, "Get-ChildItem");
         assert_eq!(prepared.program(), Path::new("pwsh"));
         assert_eq!(prepared.args().last().unwrap(), "Get-ChildItem");
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    #[test]
+    fn linux_bsd_denies_when_run_sandbox_is_enabled() {
+        let err = super::prepare_run_command(
+            cmd("echo hi"),
+            &shell("bash"),
+            super::RunSandboxPolicy::default(),
+            Path::new("."),
+        )
+        .unwrap_err();
+        match err {
+            ToolError::ExecutionFailed { message, .. } => {
+                assert!(message.contains("unavailable on Linux/BSD"));
+            }
+            _ => panic!("expected execution failure"),
+        }
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    #[test]
+    fn linux_bsd_allows_passthrough_when_run_sandbox_is_disabled() {
+        let mut policy = super::RunSandboxPolicy::default();
+        policy.windows.enabled = false;
+
+        let prepared =
+            super::prepare_run_command(cmd("echo hi"), &shell("bash"), policy, Path::new("."))
+                .expect("passthrough when disabled");
+        assert_eq!(prepared.program(), Path::new("bash"));
+        assert!(!prepared.requires_host_sandbox());
     }
 
     #[test]

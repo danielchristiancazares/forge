@@ -105,7 +105,7 @@ pub fn atomic_write_new_with_options(
 
     let mut tmp = NamedTempFile::new_in(parent)?;
     #[cfg(unix)]
-    if let Some(mode) = options.unix_mode {
+    if let Some(mode) = options.mode.mode() {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(tmp.path(), Permissions::from_mode(mode))?;
     }
@@ -125,6 +125,7 @@ pub fn atomic_write_new_with_options(
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, Permissions::from_mode(mode))?;
     }
+    apply_windows_owner_only_acl(path, options.mode);
 
     if options.dir_sync {
         best_effort_sync_parent_dir(parent);
@@ -164,6 +165,21 @@ fn best_effort_sync_parent_dir(parent: &Path) {
         }
     }
 }
+
+#[cfg(windows)]
+fn apply_windows_owner_only_acl(path: &Path, mode: PersistMode) {
+    if matches!(mode, PersistMode::SensitiveOwnerOnly)
+        && let Err(e) = crate::set_owner_only_file_acl(path)
+    {
+        tracing::warn!(
+            path = %path.display(),
+            "Failed to apply owner-only ACL to file (best-effort): {e}"
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_windows_owner_only_acl(_path: &Path, _mode: PersistMode) {}
 
 pub fn atomic_write_with_options(
     path: impl AsRef<Path>,
@@ -218,6 +234,7 @@ pub fn atomic_write_with_options(
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, Permissions::from_mode(mode))?;
     }
+    apply_windows_owner_only_acl(path, options.mode);
 
     if options.dir_sync {
         best_effort_sync_parent_dir(parent);

@@ -529,6 +529,13 @@ impl App {
                 fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
             }
         }
+        #[cfg(windows)]
+        if let Err(e) = forge_utils::set_owner_only_dir_acl(path) {
+            tracing::warn!(
+                path = %path.display(),
+                "Failed to apply owner-only ACL to data directory (best-effort): {e}"
+            );
+        }
         Ok(())
     }
 

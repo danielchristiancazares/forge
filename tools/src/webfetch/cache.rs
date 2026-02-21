@@ -153,6 +153,13 @@ impl Cache {
                 }
             }
         }
+        #[cfg(windows)]
+        if let Err(e) = forge_utils::set_owner_only_dir_acl(&dir) {
+            tracing::warn!(
+                path = %dir.display(),
+                "Failed to apply owner-only ACL to WebFetch cache directory (best-effort): {e}"
+            );
+        }
 
         let mut cache = Self {
             dir,
@@ -243,6 +250,13 @@ impl Cache {
         let path = self.entry_path(&key);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
+            #[cfg(windows)]
+            if let Err(e) = forge_utils::set_owner_only_dir_acl(parent) {
+                tracing::warn!(
+                    path = %parent.display(),
+                    "Failed to apply owner-only ACL to WebFetch cache subdirectory (best-effort): {e}"
+                );
+            }
         }
 
         atomic_write_with_options(
@@ -251,7 +265,7 @@ impl Cache {
             AtomicWriteOptions {
                 sync_all: false,
                 dir_sync: false,
-                mode: forge_utils::PersistMode::Default,
+                mode: forge_utils::PersistMode::SensitiveOwnerOnly,
             },
         )?;
 
