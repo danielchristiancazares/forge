@@ -90,6 +90,49 @@ Structural invariants:
 - `args` contains resolved literal argument values with quote delimiters stripped.
 - `to_policy_string()` derives the whitespace-joined policy text for downstream checks. The flat string is a projection, not the source of truth.
 
+### Resolved policy text (capability token)
+
+```rust
+/// Proof that mode-aware policy-text resolution completed.
+/// Possession guarantees a usable policy string.
+/// Private field — only producible through `resolve_policy_text()`.
+pub(crate) struct ResolvedPolicyText {
+    inner: String,
+}
+```
+
+`ResolvedPolicyText` is the cats/food boundary (DESIGN.md §140–154). A resolution function absorbs the mode decision and produces the token. The caller possesses the token and uses it — never branches on mode.
+
+```rust
+fn resolve_policy_text(
+    result: Result<BashPolicyText, BashAstViolation>,
+    raw: &str,
+    mode: BashAstMode,
+) -> Result<ResolvedPolicyText, BashAstViolation> {
+    match result {
+        Ok(pt) => Ok(ResolvedPolicyText {
+            inner: pt.to_policy_string(),
+        }),
+        Err(v) => match mode {
+            BashAstMode::Audit => {
+                tracing::warn!(violation = %v, "bash AST violation (audit)");
+                Ok(ResolvedPolicyText { inner: raw.into() })
+            }
+            BashAstMode::Enforce => Err(v),
+            BashAstMode::Off => unreachable!(),
+        },
+    }
+}
+```
+
+Structural invariants:
+
+- In canonical path: `inner` contains the `BashPolicyText::to_policy_string()` projection.
+- In audit fallback: `inner` contains the raw command text (existing behavior, logged).
+- In enforce denial: no `ResolvedPolicyText` exists — `Err(violation)` propagates.
+- `BashAstMode::Off` never reaches resolution (parser is not called in off mode).
+- The caller never inspects provenance. Possession is the proof.
+
 ### Violation model
 
 ```rust
@@ -162,14 +205,21 @@ Examples:
 Wire into `tools/src/builtins.rs` in `RunCommandTool::execute`:
 
 1. Detect Bash-family shells (`bash`, `sh`, `dash`, `zsh`) by executable stem.
-2. Call `bash_ast::parse_command(raw) -> Result<BashPolicyText, BashAstViolation>` when mode is enabled.
-3. On `Ok(policy_text)`:
-   - Borrow for blacklist: `command_blacklist.validate(&policy_text)`.
-   - Consume into run text: `RunCommandText::new(raw, policy_text)` takes `BashPolicyText` by move. After this point the proof token is spent.
-4. On `Err(violation)`:
-   - `Enforce`: deny execution, return violation to user.
-   - `Audit`: log violation, fall through to raw-text policy path (existing behavior).
-5. Preserve raw command for actual execution path (shell receives the original string).
+2. When mode is not `Off`, call `bash_ast::parse_command(raw)` then resolve:
+
+```rust
+let policy = resolve_policy_text(
+    bash_ast::parse_command(raw), raw, mode,
+)?;
+command_blacklist.validate(&policy);
+RunCommandText::new(raw, policy)  // consumes by move
+```
+
+3. The caller never branches on mode. `resolve_policy_text` absorbs that decision:
+   - Canonical parse succeeds: token wraps normalized policy string.
+   - Parse fails + `Audit`: token wraps raw text, violation logged.
+   - Parse fails + `Enforce`: `?` propagates denial, no token exists.
+4. Preserve raw command for actual execution path (shell receives the original string).
 
 ### Policy mode
 
