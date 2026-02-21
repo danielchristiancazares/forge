@@ -11,7 +11,7 @@ pub enum ModalEffectKind {
     Shake,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModalEffect {
     kind: ModalEffectKind,
     timer: EffectTimer,

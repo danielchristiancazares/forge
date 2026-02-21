@@ -4,7 +4,7 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-use forge_types::ui::UiOptions;
+use forge_types::ui::{AsciiOnly, HighContrast, ReducedMotion, UiOptions};
 
 /// Kanagawa Wave color palette constants.
 mod colors {
@@ -138,7 +138,7 @@ impl Palette {
 
 #[must_use]
 pub fn palette(options: UiOptions) -> Palette {
-    if options.high_contrast {
+    if matches!(options.high_contrast, HighContrast::Enabled) {
         Palette::high_contrast()
     } else {
         Palette::standard()
@@ -178,7 +178,7 @@ const SPINNER_FRAMES_ASCII: &[&str] = &["|", "/", "-", "\\"];
 
 #[must_use]
 pub fn glyphs(options: UiOptions) -> Glyphs {
-    if options.ascii_only {
+    if matches!(options.ascii_only, AsciiOnly::Enabled) {
         Glyphs {
             system: "S",
             user: "U",
@@ -237,7 +237,7 @@ pub fn glyphs(options: UiOptions) -> Glyphs {
 #[must_use]
 pub fn spinner_frame(tick: usize, options: UiOptions) -> &'static str {
     let frames = glyphs(options).spinner_frames;
-    if options.reduced_motion {
+    if matches!(options.reduced_motion, ReducedMotion::Enabled) {
         frames[0]
     } else {
         frames[tick % frames.len()]
@@ -309,17 +309,17 @@ pub mod styles {
 
 #[cfg(test)]
 mod tests {
-    use forge_types::ui::UiOptions;
+    use forge_types::ui::{AsciiOnly, HighContrast, ReducedMotion, ShowThinking, UiOptions};
 
     use super::spinner_frame;
 
     #[test]
     fn spinner_frame_cycles_without_reduced_motion() {
         let options = UiOptions {
-            ascii_only: false,
-            high_contrast: false,
-            reduced_motion: false,
-            show_thinking: false,
+            ascii_only: AsciiOnly::Disabled,
+            high_contrast: HighContrast::Disabled,
+            reduced_motion: ReducedMotion::Disabled,
+            show_thinking: ShowThinking::Disabled,
         };
         let frame0 = spinner_frame(0, options);
         let frame1 = spinner_frame(1, options);
@@ -329,10 +329,10 @@ mod tests {
     #[test]
     fn spinner_frame_static_with_reduced_motion() {
         let options = UiOptions {
-            ascii_only: false,
-            high_contrast: false,
-            reduced_motion: true,
-            show_thinking: false,
+            ascii_only: AsciiOnly::Disabled,
+            high_contrast: HighContrast::Disabled,
+            reduced_motion: ReducedMotion::Enabled,
+            show_thinking: ShowThinking::Disabled,
         };
         let frame0 = spinner_frame(0, options);
         let frame1 = spinner_frame(1, options);
@@ -347,10 +347,10 @@ mod tests {
     #[test]
     fn spinner_frame_static_with_reduced_motion_ascii() {
         let options = UiOptions {
-            ascii_only: true,
-            high_contrast: false,
-            reduced_motion: true,
-            show_thinking: false,
+            ascii_only: AsciiOnly::Enabled,
+            high_contrast: HighContrast::Disabled,
+            reduced_motion: ReducedMotion::Enabled,
+            show_thinking: ShowThinking::Disabled,
         };
         let frame0 = spinner_frame(0, options);
         let frame1 = spinner_frame(1, options);

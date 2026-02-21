@@ -245,14 +245,19 @@ async fn fetch_robots(url: &Url, config: &ResolvedConfig) -> Result<FetchResult,
         }
 
         if status.is_success() {
+            enum RobotsBodyCompleteness {
+                Complete,
+                Truncated,
+            }
+
             let mut body = Vec::new();
-            let mut truncated = false;
+            let mut completeness = RobotsBodyCompleteness::Complete;
             let max_bytes = MAX_ROBOTS_SIZE;
 
             if let Some(len) = response.content_length()
                 && len as usize > max_bytes
             {
-                truncated = true;
+                completeness = RobotsBodyCompleteness::Truncated;
             }
 
             let mut stream = response.bytes_stream();
@@ -279,14 +284,14 @@ async fn fetch_robots(url: &Url, config: &ResolvedConfig) -> Result<FetchResult,
                 if body.len() + chunk.len() > max_bytes {
                     let remaining = max_bytes.saturating_sub(body.len());
                     body.extend_from_slice(&chunk[..remaining]);
-                    truncated = true;
+                    completeness = RobotsBodyCompleteness::Truncated;
                     break;
                 }
 
                 body.extend_from_slice(&chunk);
             }
 
-            if truncated {
+            if matches!(completeness, RobotsBodyCompleteness::Truncated) {
                 trim_incomplete_utf8(&mut body);
                 trim_partial_line(&mut body);
             }

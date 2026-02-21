@@ -1,5 +1,5 @@
 version = 1
-last_updated = "2026-02-19"
+last_updated = "2026-02-20"
 
 [[invariants]]
 id = "APP-INV-1"
@@ -90,3 +90,99 @@ id = "APP-INV-16"
 predicate = "File picker index readiness is encoded as explicit scan-state lifecycle."
 canonical_proof_type_path = "engine::ui::file_picker::FileScanState"
 authority_boundary_module_path = "engine::ui::file_picker"
+
+[[invariants]]
+id = "APP-INV-17"
+predicate = "API token accounting presence is represented by explicit usage-state enum, not derived boolean probes."
+canonical_proof_type_path = "types::ApiUsagePresence"
+authority_boundary_module_path = "types"
+
+[[invariants]]
+id = "APP-INV-18"
+predicate = "Tool visibility is represented as explicit exposure state, not hidden boolean flags."
+canonical_proof_type_path = "types::ToolVisibility"
+authority_boundary_module_path = "types"
+
+[[invariants]]
+id = "APP-INV-19"
+predicate = "Tool provider applicability is represented by explicit provider scope, not optional provider selectors."
+canonical_proof_type_path = "types::ToolProviderScope"
+authority_boundary_module_path = "types"
+
+[[invariants]]
+id = "APP-INV-20"
+predicate = "Tool approval requirement is represented by explicit policy state."
+canonical_proof_type_path = "tools::ToolApprovalRequirement"
+authority_boundary_module_path = "tools"
+
+[[invariants]]
+id = "APP-INV-21"
+predicate = "Tool effect behavior is represented by explicit effect-profile variants."
+canonical_proof_type_path = "tools::ToolEffectProfile"
+authority_boundary_module_path = "tools"
+
+[[invariants]]
+id = "APP-INV-22"
+predicate = "Tool context librarian capability is represented as explicit enabled/disabled state."
+canonical_proof_type_path = "tools::ToolCtxLibrarian"
+authority_boundary_module_path = "tools"
+
+[[invariants]]
+id = "APP-INV-23"
+predicate = "WebFetch cache behavior is represented by explicit cache preference states."
+canonical_proof_type_path = "tools::webfetch::types::CachePreference"
+authority_boundary_module_path = "tools::webfetch::types"
+
+[[invariants]]
+id = "APP-INV-24"
+predicate = "WebFetch output completeness is represented by a single sum type carrying truncation cause."
+canonical_proof_type_path = "tools::webfetch::types::OutputCompleteness"
+authority_boundary_module_path = "tools::webfetch::types"
+
+[[invariants]]
+id = "APP-INV-25"
+predicate = "WebFetch retry semantics are represented by explicit retryability state."
+canonical_proof_type_path = "tools::webfetch::types::Retryability"
+authority_boundary_module_path = "tools::webfetch::types"
+
+[[invariants]]
+id = "APP-INV-26"
+predicate = "UI rendering options are represented by explicit view-state enums, not toggling booleans."
+canonical_proof_type_path = "types::ui::view_state::AsciiOnly"
+authority_boundary_module_path = "types::ui::view_state"
+
+[[invariants]]
+id = "APP-INV-27"
+predicate = "Settings detail presentation is represented as explicit hidden/visible detail view state."
+canonical_proof_type_path = "types::ui::input::DetailView"
+authority_boundary_module_path = "types::ui::input"
+
+[[invariants]]
+id = "APP-INV-28"
+predicate = "Atomic write file durability behavior is represented by explicit file sync policy."
+canonical_proof_type_path = "utils::atomic_write::FileSyncPolicy"
+authority_boundary_module_path = "utils::atomic_write"
+
+[[invariants]]
+id = "APP-INV-29"
+predicate = "Atomic write directory durability behavior is represented by explicit parent directory sync policy."
+canonical_proof_type_path = "utils::atomic_write::ParentDirSyncPolicy"
+authority_boundary_module_path = "utils::atomic_write"
+
+[[invariants]]
+id = "APP-INV-30"
+predicate = "Run sandbox activation is represented as explicit enabled/disabled mode."
+canonical_proof_type_path = "tools::RunSandboxMode"
+authority_boundary_module_path = "tools"
+
+[[invariants]]
+id = "APP-INV-31"
+predicate = "Run shell restrictions are represented by explicit shell-constraint states."
+canonical_proof_type_path = "tools::ShellConstraint"
+authority_boundary_module_path = "tools"
+
+[[invariants]]
+id = "APP-INV-32"
+predicate = "Run network control is represented by explicit network policy state."
+canonical_proof_type_path = "tools::NetworkPolicy"
+authority_boundary_module_path = "tools"

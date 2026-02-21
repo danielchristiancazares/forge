@@ -805,10 +805,10 @@ let cached = CacheHint::Ephemeral;
 
 ### CacheBudget
 
-Encodes the maximum number of `cache_control` markers allowed by Claude-style APIs. The budget clamps to `CacheBudget::MAX` (4), making ">4 slots" structurally unrepresentable.
+Encodes the maximum number of `cache_control` markers allowed by Claude-style APIs. Values >4 are rejected by `try_new`; the boundary decides how to handle invalid input (IFA).
 
 ```rust
-use forge_types::CacheBudget;
+use forge_types::{CacheBudget, CacheBudgetError};
 
 let budget = CacheBudget::full();
 assert_eq!(budget.remaining(), CacheBudget::MAX); // 4
@@ -819,13 +819,17 @@ let forge_types::CacheBudgetTake::Remaining(budget) = budget.take_one() else {
 };
 assert_eq!(budget.remaining(), 3);
 
-// Exhausted budget returns an explicit terminal outcome
-let mut b = CacheBudget::new(1);
+// try_new rejects slots > MAX; boundary decides reject/default/map
+let mut b = CacheBudget::try_new(1).unwrap();
 let forge_types::CacheBudgetTake::Remaining(next) = b.take_one() else {
     panic!("expected remaining cache budget");
 };
-b = next; // remaining = 0
+let b = next; // remaining = 0
 assert!(matches!(b.take_one(), forge_types::CacheBudgetTake::Exhausted));
+
+// Invalid: slots exceeds max
+let err = CacheBudget::try_new(10).unwrap_err();
+assert!(matches!(err, CacheBudgetError { slots: 10, max: 4 }));
 ```
 
 ### OutputLimits
@@ -1846,7 +1850,7 @@ ThinkingReplayState -----> ThinkingMessage.replay
 
 OpenAIReasoningSummaryPart -----> OpenAIReasoningItem
 
-CacheBudget (bounded u8, max 4)
+CacheBudget (bounded u8, max 4) ← CacheBudgetError
 
 SystemMessage / UserMessage / AssistantMessage / ThinkingMessage
     +-----> Message -----> CacheableMessage -----> CacheHint
@@ -1882,6 +1886,7 @@ ENV_CREDENTIAL_PATTERNS, ENV_INJECTION_PATTERNS, ENV_SECRET_DENYLIST
 | `EmptyStringError` | `NonEmptyString::new()` | Empty or whitespace-only input |
 | `ModelParseError::*` | `ModelName::parse()` | Empty name / wrong provider prefix / unknown model |
 | `EnumParseError` | `Provider::parse()`, `PredefinedModel::*`, OpenAI option `parse()` methods | Invalid string for the target enum |
+| `CacheBudgetError` | `CacheBudget::try_new()` | Slots exceed `CacheBudget::MAX` (4) |
 | `OutputLimitsError::*` | `OutputLimits::with_thinking()` | Invalid thinking budget (too small or >= max) |
 | `PlanValidationError` | `Plan::from_input`, `Plan::new` | Invalid plan shape or DAG |
 | `PlanTransitionError` | `PlanStep::transition` | Invalid forward step transition |

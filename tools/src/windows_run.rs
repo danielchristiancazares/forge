@@ -54,18 +54,18 @@ pub enum RunSandboxFallbackMode {
 /// Windows-specific run sandbox policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowsRunSandboxPolicy {
-    pub enabled: bool,
-    pub enforce_powershell_only: bool,
-    pub block_network: bool,
+    pub sandbox_mode: RunSandboxMode,
+    pub shell_constraint: ShellConstraint,
+    pub network_policy: NetworkPolicy,
     pub fallback_mode: RunSandboxFallbackMode,
 }
 
 impl Default for WindowsRunSandboxPolicy {
     fn default() -> Self {
         Self {
-            enabled: true,
-            enforce_powershell_only: true,
-            block_network: true,
+            sandbox_mode: RunSandboxMode::Enabled,
+            shell_constraint: ShellConstraint::PowerShellOnly,
+            network_policy: NetworkPolicy::Blocked,
             fallback_mode: RunSandboxFallbackMode::Prompt,
         }
     }
@@ -74,17 +74,46 @@ impl Default for WindowsRunSandboxPolicy {
 /// macOS-specific run sandbox policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MacOsRunSandboxPolicy {
-    pub enabled: bool,
+    pub sandbox_mode: RunSandboxMode,
     pub fallback_mode: RunSandboxFallbackMode,
 }
 
 impl Default for MacOsRunSandboxPolicy {
     fn default() -> Self {
         Self {
-            enabled: true,
+            sandbox_mode: RunSandboxMode::Enabled,
             fallback_mode: RunSandboxFallbackMode::Prompt,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunSandboxMode {
+    Enabled,
+    Disabled,
+}
+
+impl RunSandboxMode {
+    #[must_use]
+    pub const fn from_enabled(enabled: bool) -> Self {
+        if enabled {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellConstraint {
+    PowerShellOnly,
+    AnyShell,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkPolicy {
+    Blocked,
+    Allowed,
 }
 
 /// Aggregate run sandbox policy (platform-specific sub-policies).
@@ -256,7 +285,7 @@ pub(crate) fn prepare_run_command(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        if !policy.windows.enabled {
+        if !matches!(policy.windows.sandbox_mode, RunSandboxMode::Enabled) {
             return Ok(PreparedRunCommand::passthrough(shell, command.raw()));
         }
         let _ = working_dir;
@@ -292,12 +321,12 @@ fn prepare_windows_run_command_with_host_probe<F>(
 where
     F: FnOnce() -> Result<(), String>,
 {
-    if !policy.enabled {
+    if !matches!(policy.sandbox_mode, RunSandboxMode::Enabled) {
         return Ok(PreparedRunCommand::passthrough(shell, command.raw()));
     }
 
     let shell_is_powershell = is_powershell_shell(shell);
-    if policy.enforce_powershell_only && !shell_is_powershell {
+    if matches!(policy.shell_constraint, ShellConstraint::PowerShellOnly) && !shell_is_powershell {
         return handle_unsandboxed_fallback(
             PreparedRunCommand::passthrough(shell, command.raw()),
             policy.fallback_mode,
@@ -324,7 +353,7 @@ where
         }));
     }
 
-    if policy.block_network
+    if matches!(policy.network_policy, NetworkPolicy::Blocked)
         && let Some(token) = blocked_token(command.policy_text(), NETWORK_BLOCKLIST)
     {
         return Err(ToolError::SandboxViolation(DenialReason::LimitsExceeded {
@@ -515,7 +544,7 @@ fn prepare_macos_run_command(
         p.is_file().then_some(p)
     }
 
-    if !policy.enabled {
+    if !matches!(policy.sandbox_mode, RunSandboxMode::Enabled) {
         return Ok(PreparedRunCommand::passthrough(shell, command));
     }
 
@@ -600,10 +629,11 @@ mod tests {
     use std::sync::Once;
 
     use super::{
-        DenialReason, DetectedShell, MacOsRunSandboxPolicy, Path, PreparedRunCommand,
-        RunCommandText, RunSandboxFallbackMode, ToolError, WindowsRunSandboxPolicy,
-        escape_seatbelt_literal, handle_unsandboxed_fallback_with_opt_in, is_powershell_shell,
-        prepare_windows_run_command, prepare_windows_run_command_with_host_probe,
+        DenialReason, DetectedShell, MacOsRunSandboxPolicy, NetworkPolicy, Path,
+        PreparedRunCommand, RunCommandText, RunSandboxFallbackMode, RunSandboxMode,
+        ShellConstraint, ToolError, WindowsRunSandboxPolicy, escape_seatbelt_literal,
+        handle_unsandboxed_fallback_with_opt_in, is_powershell_shell, prepare_windows_run_command,
+        prepare_windows_run_command_with_host_probe,
     };
 
     fn shell(binary: &str) -> DetectedShell {
@@ -637,9 +667,12 @@ mod tests {
     #[test]
     fn windows_policy_defaults_are_hardened() {
         let policy = WindowsRunSandboxPolicy::default();
-        assert!(policy.enabled);
-        assert!(policy.enforce_powershell_only);
-        assert!(policy.block_network);
+        assert!(matches!(policy.sandbox_mode, RunSandboxMode::Enabled));
+        assert!(matches!(
+            policy.shell_constraint,
+            ShellConstraint::PowerShellOnly
+        ));
+        assert!(matches!(policy.network_policy, NetworkPolicy::Blocked));
         assert_eq!(policy.fallback_mode, RunSandboxFallbackMode::Prompt);
     }
 
@@ -828,9 +861,9 @@ mod tests {
             cmd("Get-ChildItem"),
             &shell("cmd.exe"),
             WindowsRunSandboxPolicy {
-                enabled: true,
-                enforce_powershell_only: true,
-                block_network: false,
+                sandbox_mode: RunSandboxMode::Enabled,
+                shell_constraint: ShellConstraint::PowerShellOnly,
+                network_policy: NetworkPolicy::Allowed,
                 fallback_mode: RunSandboxFallbackMode::Prompt,
             },
         )
@@ -850,9 +883,9 @@ mod tests {
             cmd("Get-ChildItem"),
             &shell("cmd.exe"),
             WindowsRunSandboxPolicy {
-                enabled: true,
-                enforce_powershell_only: true,
-                block_network: false,
+                sandbox_mode: RunSandboxMode::Enabled,
+                shell_constraint: ShellConstraint::PowerShellOnly,
+                network_policy: NetworkPolicy::Allowed,
                 fallback_mode: RunSandboxFallbackMode::AllowWithWarning,
             },
         )
@@ -921,9 +954,9 @@ mod tests {
             cmd("Get-ChildItem"),
             &shell("pwsh"),
             WindowsRunSandboxPolicy {
-                enabled: true,
-                enforce_powershell_only: true,
-                block_network: true,
+                sandbox_mode: RunSandboxMode::Enabled,
+                shell_constraint: ShellConstraint::PowerShellOnly,
+                network_policy: NetworkPolicy::Blocked,
                 fallback_mode: RunSandboxFallbackMode::AllowWithWarning,
             },
             true,
@@ -979,7 +1012,7 @@ mod tests {
     #[test]
     fn linux_bsd_allows_passthrough_when_run_sandbox_is_disabled() {
         let mut policy = super::RunSandboxPolicy::default();
-        policy.windows.enabled = false;
+        policy.windows.sandbox_mode = RunSandboxMode::Disabled;
 
         let prepared =
             super::prepare_run_command(cmd("echo hi"), &shell("bash"), policy, Path::new("."))
@@ -991,7 +1024,7 @@ mod tests {
     #[test]
     fn macos_policy_defaults_are_hardened() {
         let policy = MacOsRunSandboxPolicy::default();
-        assert!(policy.enabled);
+        assert!(matches!(policy.sandbox_mode, RunSandboxMode::Enabled));
         assert_eq!(policy.fallback_mode, RunSandboxFallbackMode::Prompt);
     }
 }

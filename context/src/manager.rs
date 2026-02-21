@@ -423,8 +423,8 @@ impl ContextManager {
             path,
             json.as_bytes(),
             forge_utils::AtomicWriteOptions {
-                sync_all: true,
-                dir_sync: true,
+                file_sync: forge_utils::FileSyncPolicy::SyncAll,
+                parent_dir_sync: forge_utils::ParentDirSyncPolicy::SyncBestEffort,
                 mode: forge_utils::PersistMode::SensitiveOwnerOnly,
             },
         )?;

@@ -927,14 +927,12 @@ All functions create a temporary file in the same directory as the target, write
 
 ```rust
 pub struct AtomicWriteOptions {
-    /// When true, `sync_all()` is called on the temp file before persisting.
-    pub sync_all: bool,         // default: true
-    /// When true, best-effort `sync_all()` is called on the parent directory
-    /// after the file has been persisted (renamed).
-    pub dir_sync: bool,         // default: false
-    /// When set (Unix only), apply this mode to the temp file and final file
-    /// (e.g., `0o600` for owner-only read/write).
-    pub unix_mode: Option<u32>, // default: None
+    /// File sync policy for the temporary file before persist.
+    pub file_sync: FileSyncPolicy, // default: SyncAll
+    /// Parent-directory sync policy after persist.
+    pub parent_dir_sync: ParentDirSyncPolicy, // default: SkipSync
+    /// Persistence permission policy.
+    pub mode: PersistMode, // default: SensitiveOwnerOnly
 }
 ```
 

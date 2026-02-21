@@ -137,11 +137,11 @@ pub enum SettingsFilterMode {
     Filtering,
 }
 
-impl SettingsFilterMode {
-    #[must_use]
-    pub const fn is_filtering(self) -> bool {
-        matches!(self, Self::Filtering)
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DetailView {
+    #[default]
+    Hidden,
+    Visible(SettingsCategory),
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -150,7 +150,7 @@ pub struct SettingsModalState {
     pub selected: usize,
     pub filter: DraftInput,
     pub filter_mode: SettingsFilterMode,
-    pub detail_view: Option<SettingsCategory>,
+    pub detail_view: DetailView,
 }
 
 impl DraftInput {
@@ -597,7 +597,7 @@ impl InputState {
 #[cfg(test)]
 mod tests {
     use super::{
-        CommandDraftMut, CommandDraftRef, CommandStateOwned, DraftInput, FileSelectMut,
+        CommandDraftMut, CommandDraftRef, CommandStateOwned, DetailView, DraftInput, FileSelectMut,
         FileSelectRef, InputMode, InputState, InsertDraftMut, ModelSelectMut, ModelSelectRef,
         SettingsCategory, SettingsFilterMode, SettingsSurface,
     };
@@ -658,7 +658,7 @@ mod tests {
         if let InputState::Settings { modal, .. } = state {
             assert_eq!(modal.surface, SettingsSurface::Resolve);
             assert_eq!(modal.filter_mode, SettingsFilterMode::Browsing);
-            assert_eq!(modal.detail_view, None);
+            assert_eq!(modal.detail_view, DetailView::Hidden);
         } else {
             panic!("Expected Settings state");
         }

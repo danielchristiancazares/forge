@@ -37,7 +37,8 @@ use forge_engine::{
 };
 use forge_types::sanitize_path_for_display;
 use forge_types::ui::{
-    AnimPhase, ChangeKind, DiffExpansion, InputMode, SettingsCategory, SettingsSurface,
+    AnimPhase, AsciiOnly, ChangeKind, DetailView, DiffExpansion, HighContrast, InputMode,
+    ReducedMotion, SettingsCategory, SettingsSurface, ShowThinking,
 };
 
 use self::diff_render::render_tool_result_lines;
@@ -167,7 +168,11 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, palette: &Palette, g
 
     let multiline = mode == InputMode::Insert && app.draft_text().contains('\n');
     let prompt_char = if mode == InputMode::Insert {
-        if options.ascii_only { ">" } else { "❯" }
+        if matches!(options.ascii_only, AsciiOnly::Enabled) {
+            ">"
+        } else {
+            "❯"
+        }
     } else {
         ""
     };
@@ -1240,9 +1245,9 @@ fn settings_category_summary(app: &App, category: SettingsCategory) -> String {
         SettingsCategory::History => "available".to_string(),
         SettingsCategory::Appearance => {
             let options = app.settings_configured_ui_options();
-            let mut summary = if options.high_contrast {
+            let mut summary = if matches!(options.high_contrast, HighContrast::Enabled) {
                 "high-contrast".to_string()
-            } else if options.ascii_only {
+            } else if matches!(options.ascii_only, AsciiOnly::Enabled) {
                 "ascii".to_string()
             } else {
                 "default".to_string()
@@ -1544,10 +1549,19 @@ fn settings_detail_lines(
             let draft = editor.map_or(defaults, |state| state.draft);
             let selected = editor.map(|state| state.selected);
             let items = [
-                ("ASCII only", draft.ascii_only),
-                ("High contrast", draft.high_contrast),
-                ("Reduced motion", draft.reduced_motion),
-                ("Show thinking blocks", draft.show_thinking),
+                ("ASCII only", matches!(draft.ascii_only, AsciiOnly::Enabled)),
+                (
+                    "High contrast",
+                    matches!(draft.high_contrast, HighContrast::Enabled),
+                ),
+                (
+                    "Reduced motion",
+                    matches!(draft.reduced_motion, ReducedMotion::Enabled),
+                ),
+                (
+                    "Show thinking blocks",
+                    matches!(draft.show_thinking, ShowThinking::Enabled),
+                ),
             ];
 
             for (index, (label, enabled)) in items.into_iter().enumerate() {
@@ -1699,7 +1713,7 @@ fn draw_settings_modal(
                 SettingsSurface::Root,
                 String::new(),
                 SettingsFilterMode::Browsing,
-                None,
+                DetailView::Hidden,
                 0,
             ),
         };
@@ -1730,7 +1744,7 @@ fn draw_settings_modal(
             let categories = app.settings_categories();
             let selected_index = root_selected_index.min(categories.len().saturating_sub(1));
 
-            if let Some(category) = detail_view {
+            if let DetailView::Visible(category) = detail_view {
                 lines.extend(settings_detail_lines(
                     app,
                     category,
@@ -1739,7 +1753,7 @@ fn draw_settings_modal(
                     content_width,
                 ));
             } else {
-                let filter_style = if filter_mode.is_filtering() {
+                let filter_style = if matches!(filter_mode, SettingsFilterMode::Filtering) {
                     Style::default()
                         .fg(palette.yellow)
                         .add_modifier(Modifier::BOLD)
@@ -1807,7 +1821,7 @@ fn draw_settings_modal(
                     "─".repeat(content_width),
                     Style::default().fg(palette.primary_dim),
                 )));
-                if filter_mode.is_filtering() {
+                if matches!(filter_mode, SettingsFilterMode::Filtering) {
                     lines.push(Line::from(vec![
                         Span::styled("Type", styles::key_highlight(palette)),
                         Span::styled(" filter  ", styles::key_hint(palette)),
@@ -1860,8 +1874,8 @@ fn draw_settings_modal(
 
     let title = match surface {
         SettingsSurface::Root => {
-            if let Some(category) = root_detail_view {
-                let separator = if app.ui_options().ascii_only {
+            if let DetailView::Visible(category) = root_detail_view {
+                let separator = if matches!(app.ui_options().ascii_only, AsciiOnly::Enabled) {
                     ">"
                 } else {
                     "›"

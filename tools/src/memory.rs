@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{RiskLevel, ToolCtx, ToolError, ToolExecutor, ToolFut, parse_args};
+use super::{RiskLevel, ToolCtx, ToolCtxLibrarian, ToolError, ToolExecutor, ToolFut, parse_args};
 
 /// Tool for storing facts in the Librarian's memory.
 #[derive(Debug, Default)]
@@ -75,8 +75,11 @@ impl ToolExecutor for MemoryTool {
                 .filter(|e| !e.is_empty())
                 .collect();
 
-            let Some(librarian_arc) = &ctx.librarian else {
-                return Ok("Memory not available (Librarian disabled)".to_string());
+            let librarian_arc = match &ctx.librarian {
+                ToolCtxLibrarian::Enabled(librarian_arc) => librarian_arc,
+                ToolCtxLibrarian::Disabled => {
+                    return Ok("Memory not available (Librarian disabled)".to_string());
+                }
             };
 
             let mut librarian = librarian_arc.lock().await;

@@ -7,7 +7,9 @@ use forge_context::FactWithStaleness;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{ToolCtx, ToolError, ToolExecutor, ToolFut, parse_args, sanitize_output};
+use super::{
+    ToolCtx, ToolCtxLibrarian, ToolError, ToolExecutor, ToolFut, parse_args, sanitize_output,
+};
 
 /// Tool for recalling facts from the Librarian.
 #[derive(Debug, Default)]
@@ -62,8 +64,11 @@ impl ToolExecutor for RecallTool {
                 });
             }
 
-            let Some(librarian_arc) = &ctx.librarian else {
-                return Ok("Memory not available (Librarian disabled)".to_string());
+            let librarian_arc = match &ctx.librarian {
+                ToolCtxLibrarian::Enabled(librarian_arc) => librarian_arc,
+                ToolCtxLibrarian::Disabled => {
+                    return Ok("Memory not available (Librarian disabled)".to_string());
+                }
             };
 
             // Search facts by keyword with staleness info

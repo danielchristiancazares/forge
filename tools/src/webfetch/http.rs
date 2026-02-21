@@ -7,7 +7,7 @@
 //! - HTTP fetching with redirect handling (FR-WF-07)
 //! - Content-Type detection and validation (FR-WF-10)
 use super::resolved::{ResolvedConfig, TimeoutSetting};
-use super::types::{ErrorCode, Note, SsrfBlockReason, TimeoutPhase, WebFetchError};
+use super::types::{ErrorCode, Note, Retryability, SsrfBlockReason, TimeoutPhase, WebFetchError};
 use futures_util::StreamExt;
 use reqwest::Method;
 use reqwest::header::{CONTENT_TYPE, HeaderName, HeaderValue, LOCATION};
@@ -421,13 +421,12 @@ pub async fn fetch(
                 .with_detail("content_type", final_media_type));
             }
 
-            let (charset, charset_fallback) = determine_charset(header_charset, &body, is_html);
+            let charset_resolution = determine_charset(header_charset, &body, is_html);
 
             return Ok(HttpResponse {
                 final_url: current_url,
                 body,
-                charset,
-                charset_fallback,
+                charset_resolution,
             });
         }
 
@@ -440,11 +439,14 @@ pub async fn fetch(
         }
 
         if status.is_client_error() {
-            let retryable = matches!(status.as_u16(), 408 | 429);
+            let retryability = match status.as_u16() {
+                408 | 429 => Retryability::Retryable,
+                _ => Retryability::NotRetryable,
+            };
             return Err(WebFetchError::new(
                 ErrorCode::Http4xx,
                 format!("HTTP {}", status.as_u16()),
-                retryable,
+                matches!(retryability, Retryability::Retryable),
             )
             .with_detail("status", status.as_u16().to_string())
             .with_detail(
@@ -478,11 +480,16 @@ pub struct HttpResponse {
     /// Response body bytes.
     pub body: Vec<u8>,
 
-    /// Detected charset.
-    pub charset: Option<String>,
+    /// Charset resolution state for response decoding.
+    pub charset_resolution: CharsetResolution,
+}
 
-    /// Whether charset was detected via fallback.
-    pub charset_fallback: bool,
+#[derive(Debug, Clone)]
+pub enum CharsetResolution {
+    Header(String),
+    HtmlMeta(String),
+    HeaderFallbackUtf8,
+    DefaultUtf8,
 }
 
 #[derive(Clone)]
@@ -904,22 +911,22 @@ fn determine_charset(
     header_charset: Option<String>,
     body: &[u8],
     is_html: bool,
-) -> (Option<String>, bool) {
+) -> CharsetResolution {
     if let Some(header) = header_charset {
         if let Some(norm) = normalize_charset(header) {
-            return (Some(norm.to_string()), false);
+            return CharsetResolution::Header(norm.to_string());
         }
-        return (Some("utf-8".to_string()), true);
+        return CharsetResolution::HeaderFallbackUtf8;
     }
 
     if is_html
         && let Some(meta) = sniff_charset_from_html(body)
         && let Some(norm) = normalize_charset(meta)
     {
-        return (Some(norm.to_string()), false);
+        return CharsetResolution::HtmlMeta(norm.to_string());
     }
 
-    (Some("utf-8".to_string()), true)
+    CharsetResolution::DefaultUtf8
 }
 
 fn normalize_charset(charset: String) -> Option<&'static str> {

@@ -24,7 +24,7 @@
 //! | String validation | [`NonEmptyString`], [`NonEmptyStaticStr`], [`PersistableContent`], [`EmptyStringError`] |
 //! | Provider/model | [`Provider`], [`PredefinedModel`], [`InternalModel`], [`ModelName`], [`ModelParseError`], [`EnumParseError`], [`ApiKey`] |
 //! | OpenAI options | [`OpenAIReasoningEffort`], [`OpenAIReasoningSummary`], [`OpenAITextVerbosity`], [`OpenAITruncation`], [`OpenAIRequestOptions`] |
-//! | Output config | [`OutputLimits`], [`OutputLimitsError`], [`ThinkingBudget`], [`ThinkingState`], [`CacheHint`] |
+//! | Output config | [`OutputLimits`], [`OutputLimitsError`], [`ThinkingBudget`], [`ThinkingState`], [`CacheHint`], [`CacheBudget`], [`CacheBudgetError`] |
 //! | Streaming | [`StreamEvent`], [`StreamFinishReason`], [`ApiUsage`] |
 //! | Tool calling | [`ToolDefinition`], [`ToolCall`], [`ToolResult`] |
 //! | Messages | [`SystemMessage`], [`UserMessage`], [`AssistantMessage`], [`ThinkingMessage`], [`ClaudeSignatureRef`], [`Message`], [`CacheableMessage`] |
@@ -45,8 +45,8 @@ mod sanitize;
 mod text;
 
 pub use budget::{
-    CacheBudget, CacheBudgetTake, CacheHint, OutputLimits, OutputLimitsError, ThinkingBudget,
-    ThinkingState,
+    CacheBudget, CacheBudgetError, CacheBudgetTake, CacheHint, OutputLimits, OutputLimitsError,
+    ThinkingBudget, ThinkingState,
 };
 pub use confusables::{HomoglyphWarning, MixedScriptDetection, detect_mixed_script};
 pub use ids::{MessageId, StepId, ToolBatchId};
@@ -682,6 +682,12 @@ pub struct ApiUsage {
     pub output_tokens: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiUsagePresence {
+    Unused,
+    Used,
+}
+
 impl ApiUsage {
     #[must_use]
     pub const fn non_cached_input_tokens(&self) -> u32 {
@@ -700,8 +706,12 @@ impl ApiUsage {
     }
 
     #[must_use]
-    pub const fn has_data(&self) -> bool {
-        self.input_tokens > 0 || self.output_tokens > 0
+    pub const fn presence(&self) -> ApiUsagePresence {
+        if self.input_tokens > 0 || self.output_tokens > 0 {
+            ApiUsagePresence::Used
+        } else {
+            ApiUsagePresence::Unused
+        }
     }
 
     #[must_use]
@@ -713,15 +723,39 @@ impl ApiUsage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolVisibility {
+    #[default]
+    Visible,
+    Hidden,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolProviderScope {
+    #[default]
+    AllProviders,
+    ProviderScoped(Provider),
+}
+
+const fn tool_visibility_is_visible(value: &ToolVisibility) -> bool {
+    matches!(value, ToolVisibility::Visible)
+}
+
+const fn provider_scope_is_all(value: &ToolProviderScope) -> bool {
+    matches!(value, ToolProviderScope::AllProviders)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub hidden: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<Provider>,
+    #[serde(default, skip_serializing_if = "tool_visibility_is_visible")]
+    pub visibility: ToolVisibility,
+    #[serde(default, skip_serializing_if = "provider_scope_is_all")]
+    pub provider_scope: ToolProviderScope,
 }
 
 impl ToolDefinition {
@@ -734,8 +768,8 @@ impl ToolDefinition {
             name: name.into(),
             description: description.into(),
             parameters,
-            hidden: false,
-            provider: None,
+            visibility: ToolVisibility::Visible,
+            provider_scope: ToolProviderScope::AllProviders,
         }
     }
 }
@@ -903,13 +937,14 @@ mod tests {
     use std::time::SystemTime;
 
     use super::{
-        ApiKey, ApiUsage, CacheBudget, CacheBudgetTake, CacheHint, CacheableMessage,
-        ENV_CREDENTIAL_PATTERNS, ENV_INJECTION_PATTERNS, ENV_SECRET_DENYLIST, InternalModel,
-        Message, NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort, OpenAIReasoningItem,
-        OpenAIReasoningSummary, OpenAIReasoningSummaryPart, OpenAIRequestOptions,
-        OpenAITextVerbosity, OpenAITruncation, OutputLimits, OutputLimitsError, PersistableContent,
-        Provider, StreamFinishReason, ThinkingBudget, ThinkingMessage, ThinkingReplayState,
-        ThinkingState, ThoughtSignature, ToolCall, ToolResult,
+        ApiKey, ApiUsage, ApiUsagePresence, CacheBudget, CacheBudgetTake, CacheHint,
+        CacheableMessage, ENV_CREDENTIAL_PATTERNS, ENV_INJECTION_PATTERNS, ENV_SECRET_DENYLIST,
+        InternalModel, Message, NonEmptyStaticStr, NonEmptyString, OpenAIReasoningEffort,
+        OpenAIReasoningItem, OpenAIReasoningSummary, OpenAIReasoningSummaryPart,
+        OpenAIRequestOptions, OpenAITextVerbosity, OpenAITruncation, OutputLimits,
+        OutputLimitsError, PersistableContent, Provider, StreamFinishReason, ThinkingBudget,
+        ThinkingMessage, ThinkingReplayState, ThinkingState, ThoughtSignature, ToolCall,
+        ToolResult,
     };
 
     #[test]
@@ -1358,7 +1393,7 @@ mod tests {
         assert_eq!(usage.cache_read_tokens, 0);
         assert_eq!(usage.cache_creation_tokens, 0);
         assert_eq!(usage.output_tokens, 0);
-        assert!(!usage.has_data());
+        assert_eq!(usage.presence(), ApiUsagePresence::Unused);
     }
 
     #[test]
@@ -1405,21 +1440,23 @@ mod tests {
     }
 
     #[test]
-    fn api_usage_has_data() {
-        assert!(!ApiUsage::default().has_data());
+    fn api_usage_presence() {
+        assert_eq!(ApiUsage::default().presence(), ApiUsagePresence::Unused);
         assert!(
             ApiUsage {
                 input_tokens: 1,
                 ..Default::default()
             }
-            .has_data()
+            .presence()
+                == ApiUsagePresence::Used
         );
         assert!(
             ApiUsage {
                 output_tokens: 1,
                 ..Default::default()
             }
-            .has_data()
+            .presence()
+                == ApiUsagePresence::Used
         );
     }
 
@@ -1582,10 +1619,16 @@ mod tests {
     }
 
     #[test]
-    fn cache_budget_clamps_at_max() {
-        assert_eq!(CacheBudget::new(10).remaining(), CacheBudget::MAX);
-        assert_eq!(CacheBudget::new(4).remaining(), 4);
-        assert_eq!(CacheBudget::new(0).remaining(), 0);
+    fn cache_budget_try_new_rejects_exceeding_max() {
+        let err = CacheBudget::try_new(10).unwrap_err();
+        assert_eq!(err.slots, 10);
+        assert_eq!(err.max, CacheBudget::MAX);
+    }
+
+    #[test]
+    fn cache_budget_try_new_accepts_valid_slots() {
+        assert_eq!(CacheBudget::try_new(4).unwrap().remaining(), 4);
+        assert_eq!(CacheBudget::try_new(0).unwrap().remaining(), 0);
     }
 
     #[test]
@@ -1612,10 +1655,10 @@ mod tests {
 
     #[test]
     fn cache_budget_exhausted_returns_explicit_outcome() {
-        let b = CacheBudget::new(0);
+        let b = CacheBudget::try_new(0).unwrap();
         assert!(matches!(b.take_one(), CacheBudgetTake::Exhausted));
 
-        let CacheBudgetTake::Remaining(b) = CacheBudget::new(1).take_one() else {
+        let CacheBudgetTake::Remaining(b) = CacheBudget::try_new(1).unwrap().take_one() else {
             panic!("expected remaining budget");
         };
         assert!(matches!(b.take_one(), CacheBudgetTake::Exhausted));

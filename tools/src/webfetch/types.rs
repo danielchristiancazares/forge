@@ -16,7 +16,7 @@ use crate::default_true;
 /// Per FR-WF-02, the request schema includes:
 /// - `url` (required): The URL to fetch
 /// - `max_chunk_tokens` (optional): Token budget per chunk [128, 2048]
-/// - `no_cache` (optional): Bypass cache
+/// - `cache_preference` (optional): Cache behavior
 #[derive(Debug, Clone)]
 pub struct WebFetchInput {
     /// The URL to fetch (validated, non-empty).
@@ -29,8 +29,16 @@ pub struct WebFetchInput {
     /// Must be in range [128, 2048] per FR-WF-02a.
     pub max_chunk_tokens: Option<u32>,
 
-    /// If true, bypass cache and fetch fresh. Default: false.
-    pub no_cache: bool,
+    /// Cache policy for this request.
+    pub cache_preference: CachePreference,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CachePreference {
+    #[default]
+    UseCache,
+    BypassCache,
 }
 
 impl WebFetchInput {
@@ -72,7 +80,7 @@ impl WebFetchInput {
             url: parsed,
             original_url: original,
             max_chunk_tokens: None,
-            no_cache: false,
+            cache_preference: CachePreference::UseCache,
         })
     }
 
@@ -101,9 +109,19 @@ impl WebFetchInput {
     }
 
     #[must_use]
-    pub fn with_no_cache(mut self, no_cache: bool) -> Self {
-        self.no_cache = no_cache;
+    pub fn with_cache_preference(mut self, cache_preference: CachePreference) -> Self {
+        self.cache_preference = cache_preference;
         self
+    }
+
+    #[must_use]
+    pub const fn max_chunk_tokens(&self) -> Option<u32> {
+        self.max_chunk_tokens
+    }
+
+    #[must_use]
+    pub const fn cache_preference(&self) -> CachePreference {
+        self.cache_preference
     }
 
     #[must_use]
@@ -115,6 +133,13 @@ impl WebFetchInput {
     pub fn original_url(&self) -> &str {
         &self.original_url
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", content = "reason", rename_all = "snake_case")]
+pub enum OutputCompleteness {
+    Complete,
+    Truncated(TruncationReason),
 }
 
 /// Successful response from `WebFetch`.
@@ -142,12 +167,8 @@ pub struct WebFetchOutput {
     /// Content chunks. FR-WF-03b.
     pub chunks: Vec<FetchChunk>,
 
-    /// True if content is incomplete. FR-WF-TRUNC-01.
-    pub truncated: bool,
-
-    /// Reason for truncation (if truncated). FR-WF-TRUNC-REASON-01.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub truncation_reason: Option<TruncationReason>,
+    /// Completeness marker for extracted output.
+    pub completeness: OutputCompleteness,
 
     /// Condition tokens from fetch pipeline. FR-WF-03c.
     pub notes: Vec<Note>,
@@ -382,7 +403,7 @@ pub struct RobotsConfig {
 /// Per FR-WF-18 and FR-WF-18a, errors contain:
 /// - `code`: Stable error code from registry
 /// - `message`: Human-readable description
-/// - `retryable`: Whether retry may succeed
+/// - `retryability`: Whether retry may succeed
 /// - `details`: Optional error-specific context
 #[derive(Debug, Clone, Error)]
 #[error("{message}")]
@@ -394,7 +415,7 @@ pub struct WebFetchError {
     pub message: String,
 
     /// Whether retry may succeed.
-    pub retryable: bool,
+    pub retryability: Retryability,
 
     /// Error-specific context.
     pub details: ErrorDetails,
@@ -405,7 +426,7 @@ impl WebFetchError {
         Self {
             code,
             message: message.into(),
-            retryable,
+            retryability: Retryability::from_bool(retryable),
             details: ErrorDetails::default(),
         }
     }
@@ -423,7 +444,7 @@ impl WebFetchError {
             "error": true,
             "code": self.code,
             "message": self.message,
-            "retryable": self.retryable,
+            "retryability": self.retryability,
         });
 
         if !self.details.0.is_empty() {
@@ -437,6 +458,24 @@ impl WebFetchError {
         }
 
         obj
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Retryability {
+    Retryable,
+    NotRetryable,
+}
+
+impl Retryability {
+    #[must_use]
+    pub const fn from_bool(retryable: bool) -> Self {
+        if retryable {
+            Self::Retryable
+        } else {
+            Self::NotRetryable
+        }
     }
 }
 
@@ -495,8 +534,8 @@ impl ErrorCode {
     ///
     /// Note: Some codes have conditional retryability (e.g., `http_4xx` for 408/429).
     #[must_use]
-    pub fn default_retryable(&self) -> bool {
-        matches!(
+    pub fn default_retryability(&self) -> Retryability {
+        if matches!(
             self,
             ErrorCode::DnsFailed
                 | ErrorCode::RobotsUnavailable
@@ -504,7 +543,11 @@ impl ErrorCode {
                 | ErrorCode::Network
                 | ErrorCode::Http5xx
                 | ErrorCode::Internal
-        )
+        ) {
+            Retryability::Retryable
+        } else {
+            Retryability::NotRetryable
+        }
     }
 }
 

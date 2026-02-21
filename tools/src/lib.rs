@@ -42,7 +42,8 @@ use serde::de::DeserializeOwned;
 use change_recording::ChangeRecorder;
 use forge_context::Librarian;
 use forge_types::{
-    HomoglyphWarning, MixedScriptDetection, Provider, ToolDefinition, detect_mixed_script,
+    HomoglyphWarning, MixedScriptDetection, Provider, ToolDefinition, ToolProviderScope,
+    ToolVisibility, detect_mixed_script,
 };
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
@@ -52,7 +53,8 @@ pub use search::SearchToolConfig;
 pub use shell::DetectedShell;
 pub use webfetch::WebFetchToolConfig;
 pub use windows_run::{
-    MacOsRunSandboxPolicy, RunSandboxFallbackMode, RunSandboxPolicy, WindowsRunSandboxPolicy,
+    MacOsRunSandboxPolicy, NetworkPolicy, RunSandboxFallbackMode, RunSandboxMode, RunSandboxPolicy,
+    ShellConstraint, WindowsRunSandboxPolicy,
 };
 
 /// Tool execution future type alias.
@@ -83,6 +85,27 @@ pub enum ApprovalMode {
     Default,
     /// Deny all tools unless explicitly allowlisted.
     Strict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolApprovalRequirement {
+    Never,
+    Always,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolEffectProfile {
+    Pure,
+    ReadsUserData,
+    SideEffecting,
+    SideEffectingAndReadsUserData,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolMetadata {
+    pub approval_requirement: ToolApprovalRequirement,
+    pub visibility: ToolVisibility,
+    pub provider_scope: ToolProviderScope,
 }
 
 /// Policy for tool approval and deny/allow lists.
@@ -280,8 +303,39 @@ pub trait ToolExecutor: Send + Sync + UnwindSafe {
     fn reads_user_data(&self, _args: &Value) -> bool {
         false
     }
+    fn effect_profile(&self, args: &Value) -> ToolEffectProfile {
+        match (self.is_side_effecting(args), self.reads_user_data(args)) {
+            (false, false) => ToolEffectProfile::Pure,
+            (false, true) => ToolEffectProfile::ReadsUserData,
+            (true, false) => ToolEffectProfile::SideEffecting,
+            (true, true) => ToolEffectProfile::SideEffectingAndReadsUserData,
+        }
+    }
     fn requires_approval(&self) -> bool {
         false
+    }
+    fn approval_requirement(&self) -> ToolApprovalRequirement {
+        if self.requires_approval() {
+            ToolApprovalRequirement::Always
+        } else {
+            ToolApprovalRequirement::Never
+        }
+    }
+    fn metadata(&self) -> ToolMetadata {
+        let visibility = if self.is_hidden() {
+            ToolVisibility::Hidden
+        } else {
+            ToolVisibility::Visible
+        };
+        let provider_scope = self.target_provider().map_or(
+            ToolProviderScope::AllProviders,
+            ToolProviderScope::ProviderScoped,
+        );
+        ToolMetadata {
+            approval_requirement: self.approval_requirement(),
+            visibility,
+            provider_scope,
+        }
     }
     fn risk_level(&self, args: &Value) -> RiskLevel {
         if self.is_side_effecting(args) {
@@ -366,9 +420,10 @@ impl ToolRegistry {
             .executors
             .values()
             .map(|exec| {
+                let metadata = exec.metadata();
                 let mut def = ToolDefinition::new(exec.name(), exec.description(), exec.schema());
-                def.hidden = exec.is_hidden();
-                def.provider = exec.target_provider();
+                def.visibility = metadata.visibility;
+                def.provider_scope = metadata.provider_scope;
                 def
             })
             .chain(self.schema_only.iter().cloned())
@@ -454,10 +509,16 @@ pub struct ToolCtx {
     pub env_sanitizer: EnvSanitizer,
     pub file_cache: Arc<Mutex<ToolFileCache>>,
     pub turn_changes: ChangeRecorder,
-    /// The Librarian for fact recall (Context Infinity).
-    pub librarian: Option<Arc<Mutex<Librarian>>>,
+    /// The Librarian capability for context memory tools.
+    pub librarian: ToolCtxLibrarian,
     /// Command blacklist for blocking catastrophic commands.
     pub command_blacklist: CommandBlacklist,
+}
+
+#[derive(Debug, Clone)]
+pub enum ToolCtxLibrarian {
+    Disabled,
+    Enabled(Arc<Mutex<Librarian>>),
 }
 
 /// Per-batch limits for tool execution.

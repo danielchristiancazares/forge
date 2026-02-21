@@ -29,6 +29,14 @@ pub enum CacheHint {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheBudget(u8);
 
+/// Error when creating a cache budget with invalid slot count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("cache budget slots ({slots}) exceeds maximum ({max})")]
+pub struct CacheBudgetError {
+    pub slots: u8,
+    pub max: u8,
+}
+
 /// Outcome of attempting to consume one cache slot from a budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheBudgetTake {
@@ -39,9 +47,19 @@ pub enum CacheBudgetTake {
 impl CacheBudget {
     pub const MAX: u8 = 4;
 
-    #[must_use]
-    pub fn new(slots: u8) -> Self {
-        Self(slots.min(Self::MAX))
+    /// Create a cache budget with the given slot count.
+    ///
+    /// Returns an error if `slots > MAX`. The boundary decides whether to
+    /// reject, default, or map invalid input (IFA).
+    pub fn try_new(slots: u8) -> Result<Self, CacheBudgetError> {
+        if slots > Self::MAX {
+            Err(CacheBudgetError {
+                slots,
+                max: Self::MAX,
+            })
+        } else {
+            Ok(Self(slots))
+        }
     }
 
     #[must_use]
@@ -97,13 +115,6 @@ impl ThinkingBudget {
 pub enum ThinkingState {
     Disabled,
     Enabled(ThinkingBudget),
-}
-
-impl ThinkingState {
-    #[must_use]
-    pub const fn is_enabled(self) -> bool {
-        matches!(self, ThinkingState::Enabled(_))
-    }
 }
 
 /// Validated output configuration that guarantees invariants.

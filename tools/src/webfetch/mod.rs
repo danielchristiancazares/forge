@@ -13,8 +13,9 @@ use resolved::{CachePolicy, ResolvedConfig, ResolvedRequest};
 use robots::RobotsResult;
 
 pub use types::{
-    ErrorCode, ErrorDetails, FetchChunk, HttpConfig, Note, RobotsConfig, SecurityConfig,
-    TruncationReason, WebFetchConfig, WebFetchError, WebFetchInput, WebFetchOutput,
+    CachePreference, ErrorCode, ErrorDetails, FetchChunk, HttpConfig, Note, OutputCompleteness,
+    RobotsConfig, SecurityConfig, TruncationReason, WebFetchConfig, WebFetchError, WebFetchInput,
+    WebFetchOutput,
 };
 
 use serde::Deserialize;
@@ -47,7 +48,7 @@ pub async fn fetch(
 
     let max_chunk_tokens = request.max_chunk_tokens;
 
-    if !request.no_cache
+    if !matches!(request.cache_preference, CachePreference::BypassCache)
         && let Some(output) = check_cache(&request, &resolved)?
     {
         return Ok(output);
@@ -57,7 +58,7 @@ pub async fn fetch(
 
     check_robots(&request.url, &resolved, &mut notes).await?;
 
-    let (html, final_url, charset_fallback) =
+    let (html, final_url, charset_resolution) =
         fetch_content(&request, &resolved, &resolved_ips, &mut notes).await?;
 
     let extracted = extract::extract(&html, &final_url)?;
@@ -79,7 +80,10 @@ pub async fn fetch(
         }
     }
 
-    if charset_fallback {
+    if matches!(
+        charset_resolution,
+        http::CharsetResolution::HeaderFallbackUtf8 | http::CharsetResolution::DefaultUtf8
+    ) {
         notes.push(Note::CharsetFallback);
     }
 
@@ -93,8 +97,7 @@ pub async fn fetch(
         title: extracted.title,
         language: extracted.language,
         chunks,
-        truncated: false,
-        truncation_reason: None,
+        completeness: OutputCompleteness::Complete,
         notes,
     })
 }
@@ -122,8 +125,7 @@ fn check_cache(
                 title: entry.title,
                 language: entry.language,
                 chunks,
-                truncated: false,
-                truncation_reason: None,
+                completeness: OutputCompleteness::Complete,
                 notes: vec![Note::CacheHit],
             }))
         }
@@ -158,28 +160,42 @@ async fn fetch_content(
     config: &ResolvedConfig,
     resolved_ips: &[IpAddr],
     notes: &mut Vec<Note>,
-) -> Result<(String, url::Url, bool), WebFetchError> {
+) -> Result<(String, url::Url, http::CharsetResolution), WebFetchError> {
     let response = http::fetch(&input.url, resolved_ips, config, notes).await?;
-    let charset_fallback = response.charset_fallback;
-    let html = decode_body(&response.body, response.charset.as_deref())?;
-    Ok((html, response.final_url, charset_fallback))
+    let html = decode_body(&response.body, &response.charset_resolution)?;
+    Ok((html, response.final_url, response.charset_resolution))
 }
 
-fn decode_body(body: &[u8], charset: Option<&str>) -> Result<String, WebFetchError> {
-    match charset {
-        Some("utf-8" | "UTF-8") | None => String::from_utf8(body.to_vec()).map_err(|e| {
-            WebFetchError::new(
-                ErrorCode::ExtractionFailed,
-                format!("invalid UTF-8 in response body: {e}"),
-                false,
-            )
-        }),
-        Some(other) => {
+fn decode_body(
+    body: &[u8],
+    charset_resolution: &http::CharsetResolution,
+) -> Result<String, WebFetchError> {
+    match charset_resolution {
+        http::CharsetResolution::Header(charset) | http::CharsetResolution::HtmlMeta(charset) => {
+            if matches!(charset.as_str(), "utf-8" | "UTF-8") {
+                return String::from_utf8(body.to_vec()).map_err(|e| {
+                    WebFetchError::new(
+                        ErrorCode::ExtractionFailed,
+                        format!("invalid UTF-8 in response body: {e}"),
+                        false,
+                    )
+                });
+            }
+
             tracing::warn!(
                 "charset {} not fully supported, using UTF-8 fallback",
-                other
+                charset
             );
             Ok(String::from_utf8_lossy(body).into_owned())
+        }
+        http::CharsetResolution::HeaderFallbackUtf8 | http::CharsetResolution::DefaultUtf8 => {
+            String::from_utf8(body.to_vec()).map_err(|e| {
+                WebFetchError::new(
+                    ErrorCode::ExtractionFailed,
+                    format!("invalid UTF-8 in response body: {e}"),
+                    false,
+                )
+            })
         }
     }
 }
@@ -259,7 +275,7 @@ struct WebFetchArgs {
     url: String,
     max_chunk_tokens: Option<u32>,
     #[serde(default)]
-    no_cache: bool,
+    cache_preference: CachePreference,
 }
 
 impl ToolExecutor for WebFetchTool {
@@ -286,10 +302,11 @@ impl ToolExecutor for WebFetchTool {
                     "maximum": 2048,
                     "description": "Maximum tokens per content chunk (default: 600)"
                 },
-                "no_cache": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Bypass cache and fetch fresh content"
+                "cache_preference": {
+                    "type": "string",
+                    "enum": ["use_cache", "bypass_cache"],
+                    "default": "use_cache",
+                    "description": "Cache behavior for this fetch request"
                 }
             },
             "required": ["url"]
@@ -337,7 +354,7 @@ impl ToolExecutor for WebFetchTool {
                     })?;
             }
 
-            input = input.with_no_cache(typed.no_cache);
+            input = input.with_cache_preference(typed.cache_preference);
 
             let config = self.build_config();
 
@@ -363,8 +380,7 @@ fn serialize_output(output: &WebFetchOutput) -> Result<String, ToolError> {
 }
 
 fn mark_tool_truncation(output: &mut WebFetchOutput) {
-    output.truncated = true;
-    output.truncation_reason = Some(TruncationReason::ToolOutputLimit);
+    output.completeness = OutputCompleteness::Truncated(TruncationReason::ToolOutputLimit);
     if !output.notes.contains(&Note::ToolOutputLimit) {
         output.notes.push(Note::ToolOutputLimit);
         output.notes.sort_by_key(Note::order);
@@ -431,7 +447,8 @@ fn shrink_output_to_fit(mut output: WebFetchOutput, max_bytes: usize) -> Result<
 #[cfg(test)]
 mod unit_tests {
     use super::{
-        FetchChunk, WebFetchOutput, WebFetchToolConfig, canonicalize_url, shrink_output_to_fit,
+        FetchChunk, OutputCompleteness, WebFetchOutput, WebFetchToolConfig, canonicalize_url,
+        shrink_output_to_fit,
     };
 
     #[test]
@@ -468,15 +485,17 @@ mod unit_tests {
             title: Some("Example".to_string()),
             language: Some("en".to_string()),
             chunks,
-            truncated: false,
-            truncation_reason: None,
+            completeness: OutputCompleteness::Complete,
             notes: Vec::new(),
         };
 
         let json = shrink_output_to_fit(output, 200).expect("shrink output");
         assert!(json.len() <= 200);
         let parsed: WebFetchOutput = serde_json::from_str(&json).expect("valid json");
-        assert!(parsed.truncated);
+        assert!(matches!(
+            parsed.completeness,
+            OutputCompleteness::Truncated(_)
+        ));
     }
 
     #[test]

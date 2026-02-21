@@ -927,8 +927,8 @@ impl super::App {
                 match serde_json::to_string_pretty(&export) {
                     Ok(json) => {
                         let opts = forge_utils::AtomicWriteOptions {
-                            sync_all: true,
-                            dir_sync: false,
+                            file_sync: forge_utils::FileSyncPolicy::SyncAll,
+                            parent_dir_sync: forge_utils::ParentDirSyncPolicy::SkipSync,
                             mode: forge_utils::PersistMode::SensitiveOwnerOnly,
                         };
                         match forge_utils::atomic_write_with_options(&path, json.as_bytes(), opts) {

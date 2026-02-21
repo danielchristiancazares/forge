@@ -14,14 +14,16 @@ mod view_state;
 pub use animation::AnimPhase;
 pub use history::{InputHistory, NavOutcome};
 pub use input::{
-    CommandDraftMut, CommandDraftRef, CommandStateOwned, DraftInput, FileSelectMut, FileSelectRef,
-    InputMode, InputState, InsertDraftMut, ModelSelectMut, ModelSelectRef, SettingsCategory,
-    SettingsFilterMode, SettingsModalMut, SettingsModalRef, SettingsModalState, SettingsSurface,
+    CommandDraftMut, CommandDraftRef, CommandStateOwned, DetailView, DraftInput, FileSelectMut,
+    FileSelectRef, InputMode, InputState, InsertDraftMut, ModelSelectMut, ModelSelectRef,
+    SettingsCategory, SettingsFilterMode, SettingsModalMut, SettingsModalRef, SettingsModalState,
+    SettingsSurface,
 };
 pub use modal::{ModalEffect, ModalEffectKind};
 pub use panel::{PanelEffect, PanelEffectKind};
 pub use scroll::ScrollState;
 pub use view_state::{
-    ActiveFilesPanel, ChangeKind, DiffExpansion, FilesPanelState, TranscriptRenderAction,
-    UiOptions, ViewState,
+    ActiveFilesPanel, AsciiOnly, ChangeKind, DiffExpansion, FilesPanelState, HighContrast,
+    ModalState, PanelState, ReducedMotion, ShowThinking, TranscriptRenderAction, UiOptions,
+    ViewState,
 };

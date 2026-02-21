@@ -12,7 +12,7 @@ pub enum AnimPhase {
     Completed,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EffectTimer {
     elapsed: Duration,
     duration: Duration,

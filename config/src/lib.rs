@@ -1,7 +1,7 @@
 use forge_types::{LspConfig, ServerConfig, ToolDefinition};
 use forge_utils::{
-    AtomicWriteOptions, atomic_write_with_options, recover_bak_file, set_owner_only_dir_acl,
-    set_owner_only_file_acl,
+    AtomicWriteOptions, FileSyncPolicy, ParentDirSyncPolicy, atomic_write_with_options,
+    recover_bak_file, set_owner_only_dir_acl, set_owner_only_file_acl,
 };
 use serde::Deserialize;
 use std::{
@@ -673,8 +673,8 @@ fn persist_config_doc(path: &Path, doc: &toml_edit::DocumentMut) -> io::Result<(
         path,
         serialized.as_bytes(),
         AtomicWriteOptions {
-            sync_all: true,
-            dir_sync: true,
+            file_sync: FileSyncPolicy::SyncAll,
+            parent_dir_sync: ParentDirSyncPolicy::SyncBestEffort,
             mode: forge_utils::PersistMode::Default,
         },
     )?;

@@ -42,7 +42,10 @@ fn tool_args_journal_flush_interval() -> Duration {
 
 use forge_context::{BeginSessionError, TokenCounter};
 use forge_providers::gemini;
-use forge_types::{CacheBudget, CacheBudgetTake, CacheHint, ModelName, Provider, ToolDefinition};
+use forge_types::{
+    ApiUsagePresence, CacheBudget, CacheBudgetTake, CacheHint, ModelName, Provider, ToolDefinition,
+    ToolProviderScope,
+};
 
 use super::{
     ABORTED_JOURNAL_BADGE, ActiveStream, CacheableMessage, ContextPreparation,
@@ -255,7 +258,10 @@ impl super::App {
                 .core
                 .tool_definitions
                 .iter()
-                .filter(|t| t.provider.is_none() || t.provider == Some(provider))
+                .filter(|t| match t.provider_scope {
+                    ToolProviderScope::AllProviders => true,
+                    ToolProviderScope::ProviderScoped(scoped) => scoped == provider,
+                })
                 .collect();
             if tools.is_empty() {
                 0
@@ -297,7 +303,10 @@ impl super::App {
             .core
             .tool_definitions
             .iter()
-            .filter(|t| t.provider.is_none() || t.provider == Some(provider))
+            .filter(|t| match t.provider_scope {
+                ToolProviderScope::AllProviders => true,
+                ToolProviderScope::ProviderScoped(scoped) => scoped == provider,
+            })
             .cloned()
             .collect();
 
@@ -865,7 +874,7 @@ impl super::App {
         }
 
         // Aggregate API usage for this turn
-        if stream_usage.has_data() {
+        if matches!(stream_usage.presence(), ApiUsagePresence::Used) {
             self.core.turn_usage.record_call(stream_usage);
         }
 

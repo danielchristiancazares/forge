@@ -32,12 +32,14 @@ use crate::state::{
 use crate::thinking::ThinkingPayload;
 use crate::tools::{self, sandbox::Sandbox};
 use crate::ui::{
-    DisplayItem, DraftInput, InputMode, InputState, PredefinedModel, ScrollState, SettingsCategory,
-    SettingsFilterMode, SettingsSurface, TranscriptRenderAction, UiOptions, ViewState,
+    DetailView, DisplayItem, DraftInput, InputMode, InputState, PredefinedModel, ScrollState,
+    SettingsCategory, SettingsFilterMode, SettingsSurface, ShowThinking, TranscriptRenderAction,
+    UiOptions, ViewState,
 };
 use forge_context::{ContextManager, StreamJournal, ToolJournal};
 use forge_providers::ApiConfig;
 use forge_types::plan::{self, editor};
+use forge_types::ui::{AsciiOnly, HighContrast, ReducedMotion};
 use forge_types::{
     ApiKey, Message, ModelName, NonEmptyString, OpenAIReasoningEffort, OpenAIRequestOptions,
     OutputLimits, PhaseInput, Plan, PlanState, PlanStepId, Provider, SecretString, StepInput,
@@ -194,10 +196,10 @@ fn settings_filter_mode(app: &App) -> SettingsFilterMode {
     }
 }
 
-fn settings_detail_view(app: &App) -> Option<SettingsCategory> {
+fn settings_detail_view(app: &App) -> DetailView {
     match app.settings_access() {
         SettingsAccess::Active { detail_view, .. } => detail_view,
-        SettingsAccess::Inactive => None,
+        SettingsAccess::Inactive => DetailView::Hidden,
     }
 }
 
@@ -458,7 +460,7 @@ fn process_command_settings_opens_settings_modal() {
     assert_eq!(settings_filter_text(&app), Some(""));
     assert_eq!(settings_filter_mode(&app), SettingsFilterMode::Browsing);
     assert_eq!(settings_selected_index(&app), Some(0));
-    assert_eq!(settings_detail_view(&app), None);
+    assert_eq!(settings_detail_view(&app), DetailView::Hidden);
     assert_eq!(settings_surface(&app), Some(SettingsSurface::Root));
 }
 
@@ -478,7 +480,7 @@ fn settings_access_reports_root_modal_state() {
             surface: SettingsSurface::Root,
             filter_text: "",
             filter_mode: SettingsFilterMode::Browsing,
-            detail_view: None,
+            detail_view: DetailView::Hidden,
             selected_index: 0,
         }
     ));
@@ -576,7 +578,10 @@ fn settings_resolve_activate_selected_jumps_to_target_detail() {
     app.settings_resolve_activate_selected();
 
     assert_eq!(settings_surface(&app), Some(SettingsSurface::Root));
-    assert_eq!(settings_detail_view(&app), Some(SettingsCategory::Tools));
+    assert_eq!(
+        settings_detail_view(&app),
+        DetailView::Visible(SettingsCategory::Tools)
+    );
 }
 
 #[test]
@@ -597,10 +602,10 @@ fn runtime_snapshot_lists_pending_next_turn_settings() {
     app.core.turn_config.staged.model = ModelName::from_predefined(PredefinedModel::Gpt52Pro);
     app.core.turn_config.staged.context_memory_enabled = false;
     app.core.turn_config.staged.ui_options = UiOptions {
-        ascii_only: true,
-        high_contrast: true,
-        reduced_motion: false,
-        show_thinking: false,
+        ascii_only: AsciiOnly::Enabled,
+        high_contrast: HighContrast::Enabled,
+        reduced_motion: ReducedMotion::Disabled,
+        show_thinking: ShowThinking::Disabled,
     };
 
     let snapshot = app.runtime_snapshot();
@@ -630,10 +635,10 @@ fn resolve_cascade_includes_context_memory_and_ui_defaults_layers() {
     let mut app = test_app();
     app.core.turn_config.staged.context_memory_enabled = false;
     app.core.turn_config.staged.ui_options = UiOptions {
-        ascii_only: false,
-        high_contrast: true,
-        reduced_motion: true,
-        show_thinking: false,
+        ascii_only: AsciiOnly::Disabled,
+        high_contrast: HighContrast::Enabled,
+        reduced_motion: ReducedMotion::Enabled,
+        show_thinking: ShowThinking::Disabled,
     };
 
     let cascade = app.resolve_cascade();
@@ -731,7 +736,10 @@ fn settings_close_or_exit_blocks_with_unsaved_detail_changes() {
     app.settings_detail_toggle_selected();
     app.settings_close_or_exit();
 
-    assert_eq!(settings_detail_view(&app), Some(SettingsCategory::Models));
+    assert_eq!(
+        settings_detail_view(&app),
+        DetailView::Visible(SettingsCategory::Models)
+    );
     assert_eq!(
         last_notification(&app),
         Some("Unsaved settings changes. Press s to save or r to revert before leaving.")
@@ -748,7 +756,7 @@ fn settings_close_or_exit_allows_leaving_detail_after_revert() {
     app.settings_revert_edits();
     app.settings_close_or_exit();
 
-    assert_eq!(settings_detail_view(&app), None);
+    assert_eq!(settings_detail_view(&app), DetailView::Hidden);
     assert_eq!(app.input_mode(), InputMode::Settings);
 }
 
@@ -774,7 +782,10 @@ fn settings_activate_models_initializes_editor_snapshot() {
 
     open_models_settings(&mut app);
 
-    assert_eq!(settings_detail_view(&app), Some(SettingsCategory::Models));
+    assert_eq!(
+        settings_detail_view(&app),
+        DetailView::Visible(SettingsCategory::Models)
+    );
     assert_eq!(
         app.settings_model_editor_snapshot(),
         Some(ModelEditorSnapshot {
@@ -842,7 +853,10 @@ fn settings_activate_tools_initializes_editor_snapshot() {
 
     open_tools_settings(&mut app);
 
-    assert_eq!(settings_detail_view(&app), Some(SettingsCategory::Tools));
+    assert_eq!(
+        settings_detail_view(&app),
+        DetailView::Visible(SettingsCategory::Tools)
+    );
     assert_eq!(
         app.settings_tools_editor_snapshot(),
         Some(ToolsEditorSnapshot {
@@ -903,7 +917,10 @@ fn settings_activate_context_initializes_editor_snapshot() {
 
     open_context_settings(&mut app);
 
-    assert_eq!(settings_detail_view(&app), Some(SettingsCategory::Context));
+    assert_eq!(
+        settings_detail_view(&app),
+        DetailView::Visible(SettingsCategory::Context)
+    );
     assert_eq!(
         app.settings_context_editor_snapshot(),
         Some(ContextEditorSnapshot {
@@ -948,7 +965,7 @@ fn settings_activate_appearance_initializes_editor_snapshot() {
 
     assert_eq!(
         settings_detail_view(&app),
-        Some(SettingsCategory::Appearance)
+        DetailView::Visible(SettingsCategory::Appearance)
     );
     assert_eq!(
         app.settings_appearance_editor_snapshot(),
@@ -970,7 +987,7 @@ fn settings_appearance_toggle_and_revert_updates_dirty_state() {
         app.settings_appearance_editor_snapshot(),
         Some(AppearanceEditorSnapshot {
             draft: UiOptions {
-                ascii_only: true,
+                ascii_only: AsciiOnly::Enabled,
                 ..UiOptions::default()
             },
             selected: 0,
@@ -993,10 +1010,10 @@ fn settings_appearance_toggle_and_revert_updates_dirty_state() {
 fn apply_pending_turn_settings_consumes_staged_defaults() {
     let mut app = test_app();
     let pending = UiOptions {
-        ascii_only: true,
-        high_contrast: true,
-        reduced_motion: true,
-        show_thinking: true,
+        ascii_only: AsciiOnly::Enabled,
+        high_contrast: HighContrast::Enabled,
+        reduced_motion: ReducedMotion::Enabled,
+        show_thinking: ShowThinking::Enabled,
     };
     app.core.turn_config.staged.ui_options = pending;
 

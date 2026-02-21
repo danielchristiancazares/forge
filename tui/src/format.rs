@@ -1,6 +1,7 @@
 use ratatui::{style::Style, text::Span};
 
 use forge_engine::CompletedTurnUsage;
+use forge_types::ApiUsagePresence;
 
 use crate::theme::Palette;
 
@@ -54,7 +55,7 @@ pub(crate) fn format_api_usage(usage: &CompletedTurnUsage) -> String {
     let CompletedTurnUsage::Available(usage) = usage else {
         return String::new();
     };
-    if !usage.total.has_data() {
+    if matches!(usage.total.presence(), ApiUsagePresence::Unused) {
         return String::new();
     }
 

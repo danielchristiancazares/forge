@@ -17,7 +17,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use url::Url;
 
-use forge_utils::{AtomicWriteOptions, atomic_write_with_options};
+use forge_utils::{
+    AtomicWriteOptions, FileSyncPolicy, ParentDirSyncPolicy, atomic_write_with_options,
+};
 
 use super::resolved::CacheSettings;
 use super::types::{ErrorCode, WebFetchError};
@@ -263,8 +265,8 @@ impl Cache {
             &path,
             content.as_bytes(),
             AtomicWriteOptions {
-                sync_all: false,
-                dir_sync: false,
+                file_sync: FileSyncPolicy::SkipSync,
+                parent_dir_sync: ParentDirSyncPolicy::SkipSync,
                 mode: forge_utils::PersistMode::SensitiveOwnerOnly,
             },
         )?;

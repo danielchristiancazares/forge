@@ -3,6 +3,7 @@ use crate::PredefinedModel;
 use crate::tools;
 use crate::ui::UiOptions;
 use forge_types::ModelName;
+use forge_types::ui::{AsciiOnly, HighContrast, ReducedMotion, ShowThinking};
 use tools::ApprovalMode;
 
 pub(crate) const APPEARANCE_SETTINGS_COUNT: usize = 4;
@@ -77,10 +78,30 @@ impl EditorState<UiOptions> {
         let selected = self.selected();
         let mut draft = *self.draft();
         match selected {
-            0 => draft.ascii_only = !draft.ascii_only,
-            1 => draft.high_contrast = !draft.high_contrast,
-            2 => draft.reduced_motion = !draft.reduced_motion,
-            3 => draft.show_thinking = !draft.show_thinking,
+            0 => {
+                draft.ascii_only = match draft.ascii_only {
+                    AsciiOnly::Disabled => AsciiOnly::Enabled,
+                    AsciiOnly::Enabled => AsciiOnly::Disabled,
+                };
+            }
+            1 => {
+                draft.high_contrast = match draft.high_contrast {
+                    HighContrast::Disabled => HighContrast::Enabled,
+                    HighContrast::Enabled => HighContrast::Disabled,
+                };
+            }
+            2 => {
+                draft.reduced_motion = match draft.reduced_motion {
+                    ReducedMotion::Disabled => ReducedMotion::Enabled,
+                    ReducedMotion::Enabled => ReducedMotion::Disabled,
+                };
+            }
+            3 => {
+                draft.show_thinking = match draft.show_thinking {
+                    ShowThinking::Disabled => ShowThinking::Enabled,
+                    ShowThinking::Enabled => ShowThinking::Disabled,
+                };
+            }
             _ => {}
         }
         *self = Self::with_draft(*self.baseline(), draft, selected);
@@ -199,16 +220,16 @@ pub(crate) fn on_off(value: bool) -> &'static str {
 
 pub(crate) fn ui_options_display(options: UiOptions) -> String {
     let mut flags = Vec::new();
-    if options.ascii_only {
+    if matches!(options.ascii_only, AsciiOnly::Enabled) {
         flags.push("ascii_only");
     }
-    if options.high_contrast {
+    if matches!(options.high_contrast, HighContrast::Enabled) {
         flags.push("high_contrast");
     }
-    if options.reduced_motion {
+    if matches!(options.reduced_motion, ReducedMotion::Enabled) {
         flags.push("reduced_motion");
     }
-    if options.show_thinking {
+    if matches!(options.show_thinking, ShowThinking::Enabled) {
         flags.push("show_thinking");
     }
     if flags.is_empty() {

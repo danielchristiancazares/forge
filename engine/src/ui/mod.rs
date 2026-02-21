@@ -11,10 +11,11 @@ pub use forge_types::PredefinedModel;
 
 // Re-export all UI types from forge_types.
 pub use forge_types::ui::{
-    ActiveFilesPanel, ChangeKind, CommandDraftMut, CommandDraftRef, CommandStateOwned,
+    ActiveFilesPanel, ChangeKind, CommandDraftMut, CommandDraftRef, CommandStateOwned, DetailView,
     DiffExpansion, DraftInput, FileSelectMut, FileSelectRef, FilesPanelState, InputHistory,
-    InputMode, InputState, InsertDraftMut, ModalEffect, ModalEffectKind, ModelSelectMut,
-    ModelSelectRef, NavOutcome, PanelEffect, PanelEffectKind, ScrollState, SettingsCategory,
-    SettingsFilterMode, SettingsModalMut, SettingsModalRef, SettingsModalState, SettingsSurface,
-    TranscriptRenderAction, UiOptions, ViewState,
+    InputMode, InputState, InsertDraftMut, ModalEffect, ModalEffectKind, ModalState,
+    ModelSelectMut, ModelSelectRef, NavOutcome, PanelEffect, PanelEffectKind, PanelState,
+    ScrollState, SettingsCategory, SettingsFilterMode, SettingsModalMut, SettingsModalRef,
+    SettingsModalState, SettingsSurface, ShowThinking, TranscriptRenderAction, UiOptions,
+    ViewState,
 };

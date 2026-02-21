@@ -976,8 +976,8 @@ impl ToolExecutor for WriteFileTool {
                     &write_path,
                     &bytes,
                     forge_utils::AtomicWriteOptions {
-                        sync_all: true,
-                        dir_sync: true,
+                        file_sync: forge_utils::FileSyncPolicy::SyncAll,
+                        parent_dir_sync: forge_utils::ParentDirSyncPolicy::SyncBestEffort,
                         mode: forge_utils::PersistMode::Default,
                     },
                 )
@@ -1079,7 +1079,10 @@ impl ToolExecutor for RunCommandTool {
             }
 
             let policy_text = if cfg!(windows)
-                && self.run_policy.windows.enabled
+                && matches!(
+                    self.run_policy.windows.sandbox_mode,
+                    super::RunSandboxMode::Enabled
+                )
                 && super::windows_run::is_powershell_shell(&self.shell)
             {
                 Some(
@@ -1639,8 +1642,8 @@ fn apply_staged_files(staged: &[StagedFile], sandbox: &Sandbox) -> Result<(), To
         let mode = forge_utils::PersistMode::Default;
 
         let options = forge_utils::AtomicWriteOptions {
-            sync_all: true,
-            dir_sync: true,
+            file_sync: forge_utils::FileSyncPolicy::SyncAll,
+            parent_dir_sync: forge_utils::ParentDirSyncPolicy::SyncBestEffort,
             mode,
         };
 

@@ -698,14 +698,6 @@ impl SearchCompletionOutcome {
         }
     }
 
-    const fn is_truncated(self) -> bool {
-        matches!(self, Self::Truncated | Self::TimedOutTruncated)
-    }
-
-    const fn is_timed_out(self) -> bool {
-        matches!(self, Self::TimedOut | Self::TimedOutTruncated)
-    }
-
     const fn with_truncation(self) -> Self {
         match self {
             Self::Complete => Self::Truncated,
@@ -1131,10 +1123,16 @@ fn render_content(matches: &[SearchEvent], completion: SearchCompletionOutcome) 
         }
         out.push('\n');
     }
-    if completion.is_truncated() {
+    if matches!(
+        completion,
+        SearchCompletionOutcome::Truncated | SearchCompletionOutcome::TimedOutTruncated
+    ) {
         out.push_str("... [truncated]\n");
     }
-    if completion.is_timed_out() {
+    if matches!(
+        completion,
+        SearchCompletionOutcome::TimedOut | SearchCompletionOutcome::TimedOutTruncated
+    ) {
         out.push_str("... [timed out]\n");
     }
     out.trim_end().to_string()

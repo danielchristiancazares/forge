@@ -36,25 +36,31 @@ impl PersistMode {
 
 #[derive(Debug, Clone, Copy)]
 pub struct AtomicWriteOptions {
-    /// When true, `sync_all()` is called on the temp file before persisting.
-    pub sync_all: bool,
-    /// When true, best-effort `sync_all()` is called on the parent directory after
-    /// the file has been persisted (renamed).
-    ///
-    /// This reduces the window where a power loss could lose the directory entry
-    /// even though the rename has logically succeeded.
-    ///
-    /// Best-effort: errors are logged but do not fail the write.
-    pub dir_sync: bool,
+    /// File sync policy for the temp file before persisting.
+    pub file_sync: FileSyncPolicy,
+    /// Parent directory sync policy after the file has been persisted.
+    pub parent_dir_sync: ParentDirSyncPolicy,
     /// Determine the permission policy for the created file.
     pub mode: PersistMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileSyncPolicy {
+    SyncAll,
+    SkipSync,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParentDirSyncPolicy {
+    SyncBestEffort,
+    SkipSync,
 }
 
 impl Default for AtomicWriteOptions {
     fn default() -> Self {
         Self {
-            sync_all: true,
-            dir_sync: false,
+            file_sync: FileSyncPolicy::SyncAll,
+            parent_dir_sync: ParentDirSyncPolicy::SkipSync,
             // Backwards compatibility: the default option struct previously enforced 0o600.
             mode: PersistMode::SensitiveOwnerOnly,
         }
@@ -111,7 +117,7 @@ pub fn atomic_write_new_with_options(
     }
 
     tmp.write_all(bytes)?;
-    if options.sync_all {
+    if matches!(options.file_sync, FileSyncPolicy::SyncAll) {
         tmp.as_file().sync_all()?;
     }
 
@@ -127,7 +133,7 @@ pub fn atomic_write_new_with_options(
     }
     apply_windows_owner_only_acl(path, options.mode);
 
-    if options.dir_sync {
+    if matches!(options.parent_dir_sync, ParentDirSyncPolicy::SyncBestEffort) {
         best_effort_sync_parent_dir(parent);
     }
 
@@ -202,7 +208,7 @@ pub fn atomic_write_with_options(
     }
 
     tmp.write_all(bytes)?;
-    if options.sync_all {
+    if matches!(options.file_sync, FileSyncPolicy::SyncAll) {
         tmp.as_file().sync_all()?;
     }
 
@@ -236,7 +242,7 @@ pub fn atomic_write_with_options(
     }
     apply_windows_owner_only_acl(path, options.mode);
 
-    if options.dir_sync {
+    if matches!(options.parent_dir_sync, ParentDirSyncPolicy::SyncBestEffort) {
         best_effort_sync_parent_dir(parent);
     }
 
@@ -254,8 +260,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("test.txt");
         let opts = AtomicWriteOptions {
-            sync_all: false,
-            dir_sync: false,
+            file_sync: super::FileSyncPolicy::SkipSync,
+            parent_dir_sync: super::ParentDirSyncPolicy::SkipSync,
             mode: super::PersistMode::Default,
         };
 
@@ -275,8 +281,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("secure.txt");
         let opts = AtomicWriteOptions {
-            sync_all: false,
-            dir_sync: false,
+            file_sync: super::FileSyncPolicy::SkipSync,
+            parent_dir_sync: super::ParentDirSyncPolicy::SkipSync,
             mode: super::PersistMode::SensitiveOwnerOnly,
         };
 

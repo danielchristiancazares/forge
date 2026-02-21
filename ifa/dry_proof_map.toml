@@ -1,5 +1,5 @@
 version = 1
-last_updated = "2026-02-19"
+last_updated = "2026-02-20"
 
 [[entries]]
 invariant_id = "APP-INV-1"
@@ -75,3 +75,83 @@ authority_boundary_module_path = "engine::app::commands"
 invariant_id = "APP-INV-16"
 canonical_proof_type_path = "engine::ui::file_picker::FileScanState"
 authority_boundary_module_path = "engine::ui::file_picker"
+
+[[entries]]
+invariant_id = "APP-INV-17"
+canonical_proof_type_path = "types::ApiUsagePresence"
+authority_boundary_module_path = "types"
+
+[[entries]]
+invariant_id = "APP-INV-18"
+canonical_proof_type_path = "types::ToolVisibility"
+authority_boundary_module_path = "types"
+
+[[entries]]
+invariant_id = "APP-INV-19"
+canonical_proof_type_path = "types::ToolProviderScope"
+authority_boundary_module_path = "types"
+
+[[entries]]
+invariant_id = "APP-INV-20"
+canonical_proof_type_path = "tools::ToolApprovalRequirement"
+authority_boundary_module_path = "tools"
+
+[[entries]]
+invariant_id = "APP-INV-21"
+canonical_proof_type_path = "tools::ToolEffectProfile"
+authority_boundary_module_path = "tools"
+
+[[entries]]
+invariant_id = "APP-INV-22"
+canonical_proof_type_path = "tools::ToolCtxLibrarian"
+authority_boundary_module_path = "tools"
+
+[[entries]]
+invariant_id = "APP-INV-23"
+canonical_proof_type_path = "tools::webfetch::types::CachePreference"
+authority_boundary_module_path = "tools::webfetch::types"
+
+[[entries]]
+invariant_id = "APP-INV-24"
+canonical_proof_type_path = "tools::webfetch::types::OutputCompleteness"
+authority_boundary_module_path = "tools::webfetch::types"
+
+[[entries]]
+invariant_id = "APP-INV-25"
+canonical_proof_type_path = "tools::webfetch::types::Retryability"
+authority_boundary_module_path = "tools::webfetch::types"
+
+[[entries]]
+invariant_id = "APP-INV-26"
+canonical_proof_type_path = "types::ui::view_state::AsciiOnly"
+authority_boundary_module_path = "types::ui::view_state"
+
+[[entries]]
+invariant_id = "APP-INV-27"
+canonical_proof_type_path = "types::ui::input::DetailView"
+authority_boundary_module_path = "types::ui::input"
+
+[[entries]]
+invariant_id = "APP-INV-28"
+canonical_proof_type_path = "utils::atomic_write::FileSyncPolicy"
+authority_boundary_module_path = "utils::atomic_write"
+
+[[entries]]
+invariant_id = "APP-INV-29"
+canonical_proof_type_path = "utils::atomic_write::ParentDirSyncPolicy"
+authority_boundary_module_path = "utils::atomic_write"
+
+[[entries]]
+invariant_id = "APP-INV-30"
+canonical_proof_type_path = "tools::RunSandboxMode"
+authority_boundary_module_path = "tools"
+
+[[entries]]
+invariant_id = "APP-INV-31"
+canonical_proof_type_path = "tools::ShellConstraint"
+authority_boundary_module_path = "tools"
+
+[[entries]]
+invariant_id = "APP-INV-32"
+canonical_proof_type_path = "tools::NetworkPolicy"
+authority_boundary_module_path = "tools"

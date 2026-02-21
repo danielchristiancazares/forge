@@ -43,9 +43,10 @@ use tokio::sync::{Mutex, mpsc};
 
 use crate::ui::InputState;
 use crate::ui::{
-    ChangeKind, DisplayItem, DisplayLog, DraftInput, FileScanState, FilesPanelState, InputMode,
-    ModalEffect, PanelEffect, PanelEffectKind, PredefinedModel, ScrollState, SettingsCategory,
-    SettingsFilterMode, SettingsSurface, TranscriptRenderAction, UiOptions, ViewState,
+    ChangeKind, DetailView, DisplayItem, DisplayLog, DraftInput, FileScanState, FilesPanelState,
+    InputMode, ModalEffect, ModalState, PanelEffect, PanelEffectKind, PanelState, PredefinedModel,
+    ScrollState, SettingsCategory, SettingsFilterMode, SettingsSurface, ShowThinking,
+    TranscriptRenderAction, UiOptions, ViewState,
 };
 
 use forge_context::{
@@ -55,6 +56,7 @@ use forge_context::{
 };
 use forge_lsp::{DiagnosticsSnapshot, LspManager};
 use forge_providers::{self, ApiConfig, gemini::GeminiCache, gemini::GeminiCacheConfig};
+use forge_types::ui::{AsciiOnly, HighContrast, ReducedMotion};
 use forge_types::{
     ApiUsage, CacheableMessage, EmptyStringError, LspConfig, Message, MessageId, ModelName,
     NonEmptyString, OpenAIReasoningEffort, OpenAIReasoningItem, OpenAIRequestOptions, OutputLimits,
@@ -152,7 +154,7 @@ pub enum SettingsAccess<'a> {
         surface: SettingsSurface,
         filter_text: &'a str,
         filter_mode: SettingsFilterMode,
-        detail_view: Option<SettingsCategory>,
+        detail_view: DetailView,
         selected_index: usize,
     },
     Inactive,
@@ -274,12 +276,10 @@ pub(crate) enum LibrarianState {
 }
 
 impl LibrarianState {
-    /// Cross-crate boundary shim — tools::ToolCtx.librarian still takes Option.
-    // TODO(IFA): Push LibrarianState into tools crate to eliminate this bridge.
-    fn to_tool_handle(&self) -> Option<Arc<Mutex<Librarian>>> {
+    fn to_tool_handle(&self) -> tools::ToolCtxLibrarian {
         match self {
-            Self::Enabled(arc) => Some(arc.clone()),
-            Self::Disabled => None,
+            Self::Enabled(arc) => tools::ToolCtxLibrarian::Enabled(arc.clone()),
+            Self::Disabled => tools::ToolCtxLibrarian::Disabled,
         }
     }
 }
@@ -1058,23 +1058,31 @@ impl App {
         self.set_context_memory_enabled_internal(staged.context_memory_enabled, false);
         self.set_active_model(staged.model.clone());
         self.ui.view.ui_options = staged.ui_options;
-        if staged.ui_options.reduced_motion {
-            self.ui.view.modal_effect = None;
-            self.ui.view.files_panel_effect = None;
+        if matches!(staged.ui_options.reduced_motion, ReducedMotion::Enabled) {
+            self.ui.view.modal_effect = ModalState::Inactive;
+            self.ui.view.files_panel_effect = PanelState::Inactive;
         }
         self.core.turn_config.active = staged;
     }
 
     /// Toggle visibility of thinking/reasoning content in the UI.
     pub fn toggle_thinking(&mut self) {
-        self.ui.view.ui_options.show_thinking = !self.ui.view.ui_options.show_thinking;
+        self.ui.view.ui_options.show_thinking =
+            if matches!(self.ui.view.ui_options.show_thinking, ShowThinking::Enabled) {
+                ShowThinking::Disabled
+            } else {
+                ShowThinking::Enabled
+            };
     }
 
     /// Toggle visibility of the files panel.
     pub fn toggle_files_panel(&mut self) {
         let is_visible = matches!(self.ui.view.files_panel, FilesPanelState::Visible(_));
-        if self.ui.view.ui_options.reduced_motion {
-            self.ui.view.files_panel_effect = None;
+        if matches!(
+            self.ui.view.ui_options.reduced_motion,
+            ReducedMotion::Enabled
+        ) {
+            self.ui.view.files_panel_effect = PanelState::Inactive;
             if is_visible {
                 self.ui.view.files_panel = FilesPanelState::Hidden;
             } else {
@@ -1090,7 +1098,7 @@ impl App {
 
         if is_visible {
             self.ui.view.files_panel_effect =
-                Some(PanelEffect::slide_out_right(Duration::from_millis(180)));
+                PanelState::Active(PanelEffect::slide_out_right(Duration::from_millis(180)));
             self.ui.view.last_frame = Instant::now();
         } else {
             self.ui.view.files_panel = FilesPanelState::Visible(ui::ActiveFilesPanel {
@@ -1100,7 +1108,7 @@ impl App {
             });
             self.files_panel_sync_selection();
             self.ui.view.files_panel_effect =
-                Some(PanelEffect::slide_in_right(Duration::from_millis(180)));
+                PanelState::Active(PanelEffect::slide_in_right(Duration::from_millis(180)));
             self.ui.view.last_frame = Instant::now();
         }
     }
@@ -1110,13 +1118,16 @@ impl App {
         if matches!(self.ui.view.files_panel, FilesPanelState::Hidden) {
             return;
         }
-        if self.ui.view.ui_options.reduced_motion {
-            self.ui.view.files_panel_effect = None;
+        if matches!(
+            self.ui.view.ui_options.reduced_motion,
+            ReducedMotion::Enabled
+        ) {
+            self.ui.view.files_panel_effect = PanelState::Inactive;
             self.ui.view.files_panel = FilesPanelState::Hidden;
             return;
         }
         self.ui.view.files_panel_effect =
-            Some(PanelEffect::slide_out_right(Duration::from_millis(180)));
+            PanelState::Active(PanelEffect::slide_out_right(Duration::from_millis(180)));
         self.ui.view.last_frame = Instant::now();
     }
 
@@ -1125,20 +1136,23 @@ impl App {
     }
 
     pub fn files_panel_effect_mut(&mut self) -> Option<&mut PanelEffect> {
-        self.ui.view.files_panel_effect.as_mut()
+        match &mut self.ui.view.files_panel_effect {
+            PanelState::Active(e) => Some(e),
+            PanelState::Inactive => None,
+        }
     }
 
     pub fn clear_files_panel_effect(&mut self) {
-        self.ui.view.files_panel_effect = None;
+        self.ui.view.files_panel_effect = PanelState::Inactive;
     }
 
     pub fn finish_files_panel_effect(&mut self) {
-        if let Some(effect) = &self.ui.view.files_panel_effect
+        if let PanelState::Active(effect) = &self.ui.view.files_panel_effect
             && effect.kind() == PanelEffectKind::SlideOutRight
         {
             self.ui.view.files_panel = FilesPanelState::Hidden;
         }
-        self.ui.view.files_panel_effect = None;
+        self.ui.view.files_panel_effect = PanelState::Inactive;
     }
 
     pub fn session_changes(&self) -> &SessionChangeLog {
@@ -1796,7 +1810,7 @@ impl App {
             modal.surface = SettingsSurface::Root;
             modal.filter = DraftInput::default();
             modal.filter_mode = SettingsFilterMode::Browsing;
-            modal.detail_view = None;
+            modal.detail_view = DetailView::Hidden;
             if let Some(index) = SettingsCategory::ALL
                 .iter()
                 .position(|candidate| *candidate == category)
@@ -2303,11 +2317,14 @@ impl App {
     }
 
     pub fn modal_effect_mut(&mut self) -> Option<&mut ModalEffect> {
-        self.ui.view.modal_effect.as_mut()
+        match &mut self.ui.view.modal_effect {
+            ModalState::Active(e) => Some(e),
+            ModalState::Inactive => None,
+        }
     }
 
     pub fn clear_modal_effect(&mut self) {
-        self.ui.view.modal_effect = None;
+        self.ui.view.modal_effect = ModalState::Inactive;
     }
 
     pub fn input_mode(&self) -> InputMode {
@@ -2327,7 +2344,7 @@ impl App {
     pub fn enter_normal_mode(&mut self) {
         self.ui.input = mem::take(&mut self.ui.input).into_normal();
         self.reset_settings_detail_editor();
-        self.ui.view.modal_effect = None;
+        self.ui.view.modal_effect = ModalState::Inactive;
     }
 
     pub fn enter_insert_mode(&mut self) {
@@ -2346,10 +2363,14 @@ impl App {
             current.into_settings_surface(surface)
         };
         self.reset_settings_detail_editor();
-        if self.ui.view.ui_options.reduced_motion {
-            self.ui.view.modal_effect = None;
+        if matches!(
+            self.ui.view.ui_options.reduced_motion,
+            ReducedMotion::Enabled
+        ) {
+            self.ui.view.modal_effect = ModalState::Inactive;
         } else {
-            self.ui.view.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
+            self.ui.view.modal_effect =
+                ModalState::Active(ModalEffect::pop_scale(Duration::from_millis(700)));
             self.ui.view.last_frame = Instant::now();
         }
     }
@@ -2398,7 +2419,7 @@ impl App {
 
     fn open_settings_detail(&mut self, category: SettingsCategory) {
         if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
-            modal.detail_view = Some(category);
+            modal.detail_view = DetailView::Visible(category);
         }
         self.ui.settings_editor = SettingsEditorState::Inactive;
         match category {
@@ -2712,10 +2733,10 @@ impl App {
 
         let draft = *editor.draft();
         let persist = config::AppUiSettings {
-            ascii_only: draft.ascii_only,
-            high_contrast: draft.high_contrast,
-            reduced_motion: draft.reduced_motion,
-            show_thinking: draft.show_thinking,
+            ascii_only: matches!(draft.ascii_only, AsciiOnly::Enabled),
+            high_contrast: matches!(draft.high_contrast, HighContrast::Enabled),
+            reduced_motion: matches!(draft.reduced_motion, ReducedMotion::Enabled),
+            show_thinking: matches!(draft.show_thinking, ShowThinking::Enabled),
         };
         if let Err(err) =
             config::ForgeConfig::persist_ui_settings(&self.runtime.config_path, persist)
@@ -2745,12 +2766,12 @@ impl App {
             SettingsAccess::Active { .. } | SettingsAccess::Inactive => return,
         };
 
-        if filter_mode.is_filtering() {
+        if matches!(filter_mode, SettingsFilterMode::Filtering) {
             self.settings_stop_filter();
             return;
         }
 
-        if detail_view.is_some() {
+        if matches!(detail_view, DetailView::Visible(_)) {
             return;
         }
 
@@ -2772,18 +2793,18 @@ impl App {
             SettingsAccess::Inactive => return,
         };
 
-        if filter_mode.is_filtering() {
+        if matches!(filter_mode, SettingsFilterMode::Filtering) {
             self.settings_stop_filter();
             return;
         }
 
-        if detail_view.is_some() {
+        if matches!(detail_view, DetailView::Visible(_)) {
             if self.settings_has_unsaved_edits() {
                 self.push_settings_unsaved_edits_notification();
                 return;
             }
             if let ui::SettingsModalMut::Active(modal) = self.ui.input.settings_modal_mut_access() {
-                modal.detail_view = None;
+                modal.detail_view = DetailView::Hidden;
             }
             self.reset_settings_detail_editor();
             return;
@@ -3255,10 +3276,14 @@ impl App {
             .position(|m| m.to_model_name() == self.core.model)
             .unwrap_or(0);
         self.ui.input = mem::take(&mut self.ui.input).into_model_select(index);
-        if self.ui.view.ui_options.reduced_motion {
-            self.ui.view.modal_effect = None;
+        if matches!(
+            self.ui.view.ui_options.reduced_motion,
+            ReducedMotion::Enabled
+        ) {
+            self.ui.view.modal_effect = ModalState::Inactive;
         } else {
-            self.ui.view.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
+            self.ui.view.modal_effect =
+                ModalState::Active(ModalEffect::pop_scale(Duration::from_millis(700)));
             self.ui.view.last_frame = Instant::now();
         }
     }
@@ -3277,10 +3302,14 @@ impl App {
     }
 
     fn trigger_model_select_shake(&mut self) {
-        if self.ui.view.ui_options.reduced_motion {
+        if matches!(
+            self.ui.view.ui_options.reduced_motion,
+            ReducedMotion::Enabled
+        ) {
             return;
         }
-        self.ui.view.modal_effect = Some(ModalEffect::shake(Duration::from_millis(360)));
+        self.ui.view.modal_effect =
+            ModalState::Active(ModalEffect::shake(Duration::from_millis(360)));
         self.ui.view.last_frame = Instant::now();
     }
 
@@ -3338,10 +3367,14 @@ impl App {
                 .scan_files(&root, &self.runtime.tool_settings.sandbox);
         }
         self.ui.input = mem::take(&mut self.ui.input).into_file_select();
-        if self.ui.view.ui_options.reduced_motion {
-            self.ui.view.modal_effect = None;
+        if matches!(
+            self.ui.view.ui_options.reduced_motion,
+            ReducedMotion::Enabled
+        ) {
+            self.ui.view.modal_effect = ModalState::Inactive;
         } else {
-            self.ui.view.modal_effect = Some(ModalEffect::pop_scale(Duration::from_millis(700)));
+            self.ui.view.modal_effect =
+                ModalState::Active(ModalEffect::pop_scale(Duration::from_millis(700)));
             self.ui.view.last_frame = Instant::now();
         }
     }

@@ -12,7 +12,7 @@ use ratatui::{
 
 use forge_core::{DisplayItem, sanitize_display_text};
 use forge_engine::App;
-use forge_types::ui::UiOptions;
+use forge_types::ui::{AsciiOnly, HighContrast, ReducedMotion, ShowThinking, UiOptions};
 use forge_types::{Message, Provider, ToolResultOutcome, sanitize_terminal_text};
 
 use crate::diff_render::render_tool_result_lines;
@@ -67,9 +67,9 @@ impl MessageCacheKey {
         Self {
             display_version,
             width,
-            ascii_only: options.ascii_only,
-            high_contrast: options.high_contrast,
-            reduced_motion: options.reduced_motion,
+            ascii_only: matches!(options.ascii_only, AsciiOnly::Enabled),
+            high_contrast: matches!(options.high_contrast, HighContrast::Enabled),
+            reduced_motion: matches!(options.reduced_motion, ReducedMotion::Enabled),
         }
     }
 }
@@ -271,7 +271,7 @@ fn build_message_lines(
                 last_was_thinking = false;
             }
             Message::Thinking(_) => {
-                if app.ui_options().show_thinking {
+                if matches!(app.ui_options().show_thinking, ShowThinking::Enabled) {
                     render_message_static(
                         msg,
                         RenderMessageStaticCtx {
@@ -367,7 +367,7 @@ fn build_dynamic_message_lines(
         let color = provider_color(provider, palette);
         let name_style = Style::default().fg(color);
 
-        let show_thinking = app.ui_options().show_thinking;
+        let show_thinking = matches!(app.ui_options().show_thinking, ShowThinking::Enabled);
         let has_thinking = show_thinking
             && matches!(
                 provider,

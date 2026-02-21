@@ -768,13 +768,28 @@ impl App {
 
             let allowlisted = self.runtime.tool_settings.policy.is_allowlisted(&call.name);
             let needs_confirmation = match self.runtime.tool_settings.policy.mode {
-                tools::ApprovalMode::Permissive => exec.requires_approval(),
-                tools::ApprovalMode::Strict => true, // All tools require approval
-                tools::ApprovalMode::Default => {
-                    exec.requires_approval()
-                        || (exec.is_side_effecting(&call.arguments) && !allowlisted)
-                        || (exec.reads_user_data(&call.arguments) && !allowlisted)
+                tools::ApprovalMode::Permissive => {
+                    matches!(
+                        exec.approval_requirement(),
+                        tools::ToolApprovalRequirement::Always
+                    )
                 }
+                tools::ApprovalMode::Strict => true, // All tools require approval
+                tools::ApprovalMode::Default => match exec.approval_requirement() {
+                    tools::ToolApprovalRequirement::Always => true,
+                    tools::ToolApprovalRequirement::Never => {
+                        if allowlisted {
+                            false
+                        } else {
+                            matches!(
+                                exec.effect_profile(&call.arguments),
+                                tools::ToolEffectProfile::ReadsUserData
+                                    | tools::ToolEffectProfile::SideEffecting
+                                    | tools::ToolEffectProfile::SideEffectingAndReadsUserData
+                            )
+                        }
+                    }
+                },
             };
 
             if needs_confirmation {

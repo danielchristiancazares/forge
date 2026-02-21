@@ -11,7 +11,10 @@ use std::time::{Duration, Instant};
 
 use forge_config::RawLspConfig;
 use forge_lsp::DiagnosticsSnapshot;
-use forge_types::{LspConfig, ModelName, OutputLimits, Provider, SecretString, ToolDefinition};
+use forge_types::ui::{AsciiOnly, HighContrast, ReducedMotion, ShowThinking};
+use forge_types::{
+    LspConfig, ModelName, OutputLimits, Provider, SecretString, ToolDefinition, ToolVisibility,
+};
 use tokio::sync::Mutex;
 
 use super::{
@@ -473,10 +476,26 @@ impl App {
     fn ui_options_from_config(config: Option<&ForgeConfig>) -> UiOptions {
         let app = config.and_then(|cfg| cfg.app.as_ref());
         UiOptions {
-            ascii_only: app.is_some_and(|cfg| cfg.ascii_only),
-            high_contrast: app.is_some_and(|cfg| cfg.high_contrast),
-            reduced_motion: app.is_some_and(|cfg| cfg.reduced_motion),
-            show_thinking: app.is_some_and(|cfg| cfg.show_thinking),
+            ascii_only: if app.is_some_and(|cfg| cfg.ascii_only) {
+                AsciiOnly::Enabled
+            } else {
+                AsciiOnly::Disabled
+            },
+            high_contrast: if app.is_some_and(|cfg| cfg.high_contrast) {
+                HighContrast::Enabled
+            } else {
+                HighContrast::Disabled
+            },
+            reduced_motion: if app.is_some_and(|cfg| cfg.reduced_motion) {
+                ReducedMotion::Enabled
+            } else {
+                ReducedMotion::Disabled
+            },
+            show_thinking: if app.is_some_and(|cfg| cfg.show_thinking) {
+                ShowThinking::Enabled
+            } else {
+                ShowThinking::Disabled
+            },
         }
     }
 
@@ -674,15 +693,19 @@ impl App {
             .and_then(|cfg| cfg.macos.as_ref());
         let run_policy = tools::RunSandboxPolicy {
             windows: tools::WindowsRunSandboxPolicy {
-                enabled: windows_run_cfg.is_none_or(|cfg| cfg.enabled),
-                enforce_powershell_only: true,
-                block_network: true,
+                sandbox_mode: tools::RunSandboxMode::from_enabled(
+                    windows_run_cfg.is_none_or(|cfg| cfg.enabled),
+                ),
+                shell_constraint: tools::ShellConstraint::PowerShellOnly,
+                network_policy: tools::NetworkPolicy::Blocked,
                 fallback_mode: parse_run_fallback_mode(
                     windows_run_cfg.map(|cfg| cfg.fallback_mode),
                 ),
             },
             macos: tools::MacOsRunSandboxPolicy {
-                enabled: macos_run_cfg.is_none_or(|cfg| cfg.enabled),
+                sandbox_mode: tools::RunSandboxMode::from_enabled(
+                    macos_run_cfg.is_none_or(|cfg| cfg.enabled),
+                ),
                 fallback_mode: parse_run_fallback_mode(macos_run_cfg.map(|cfg| cfg.fallback_mode)),
             },
         };
@@ -868,7 +891,7 @@ impl App {
         let tool_definitions = tool_registry.definitions();
         let hidden_tools = tool_definitions
             .iter()
-            .filter(|d| d.hidden)
+            .filter(|d| matches!(d.visibility, ToolVisibility::Hidden))
             .map(|d| d.name.clone())
             .collect();
         (tool_registry, tool_definitions, hidden_tools)

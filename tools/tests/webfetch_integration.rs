@@ -4,7 +4,8 @@
 //! HTTP fetch → extraction → chunking → caching.
 
 use forge_tools::webfetch::{
-    ErrorCode, HttpConfig, Note, RobotsConfig, SecurityConfig, WebFetchConfig, WebFetchInput, fetch,
+    CachePreference, ErrorCode, HttpConfig, Note, OutputCompleteness, RobotsConfig, SecurityConfig,
+    WebFetchConfig, WebFetchInput, fetch,
 };
 use std::env;
 use std::path::Path;
@@ -203,7 +204,7 @@ async fn test_basic_fetch_success() {
 
     assert_eq!(output.title, Some("Test Page".to_string()));
     assert_eq!(output.language, Some("en".to_string()));
-    assert!(!output.truncated);
+    assert!(matches!(output.completeness, OutputCompleteness::Complete));
     assert!(!output.chunks.is_empty());
 
     let all_text: String = output.chunks.iter().map(|c| c.text.as_str()).collect();
@@ -577,15 +578,15 @@ async fn test_no_cache_bypasses_cache() {
     let input1 = WebFetchInput::new(&url).expect("valid URL");
     let _ = fetch(input1, &config).await.expect("first fetch");
 
-    // Second fetch with no_cache - should bypass
+    // Second fetch with bypass_cache preference - should bypass
     let input2 = WebFetchInput::new(&url)
         .expect("valid URL")
-        .with_no_cache(true);
+        .with_cache_preference(CachePreference::BypassCache);
     let output2 = fetch(input2, &config).await.expect("second fetch");
 
     assert!(
         !output2.notes.contains(&Note::CacheHit),
-        "no_cache fetch should bypass cache"
+        "bypass_cache fetch should bypass cache"
     );
 }
 

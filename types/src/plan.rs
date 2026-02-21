@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::num::NonZeroU32;
 
 use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
@@ -18,9 +19,10 @@ use crate::NonEmptyString;
 ///
 /// Named `PlanStepId` to avoid collision with `context::StepId` (stream
 /// recovery). Plan-scoped, monotonically assigned at construction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+/// Zero is structurally unrepresentable via `NonZeroU32`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct PlanStepId(u32);
+pub struct PlanStepId(NonZeroU32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[error("plan step id must be a non-zero 32-bit integer")]
@@ -28,21 +30,16 @@ pub struct PlanStepIdError;
 
 impl PlanStepId {
     pub fn try_new(value: u32) -> Result<Self, PlanStepIdError> {
-        if value == 0 {
-            Err(PlanStepIdError)
-        } else {
-            Ok(Self(value))
-        }
+        NonZeroU32::new(value).map(Self).ok_or(PlanStepIdError)
     }
 
     pub(crate) fn new_unchecked(value: u32) -> Self {
-        assert!(value > 0, "PlanStepId::new_unchecked requires value > 0");
-        Self(value)
+        Self(NonZeroU32::new(value).expect("PlanStepId::new_unchecked requires value > 0"))
     }
 
     #[must_use]
     pub const fn value(self) -> u32 {
-        self.0
+        self.0.get()
     }
 }
 
@@ -60,16 +57,6 @@ impl TryFrom<u64> for PlanStepId {
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         let narrowed = u32::try_from(value).map_err(|_err| PlanStepIdError)?;
         Self::try_new(narrowed)
-    }
-}
-
-impl<'de> Deserialize<'de> for PlanStepId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let raw = u32::deserialize(deserializer)?;
-        Self::try_new(raw).map_err(D::Error::custom)
     }
 }
 
@@ -197,7 +184,7 @@ impl<'de> Deserialize<'de> for PlanStep {
         }
 
         #[derive(Deserialize)]
-        enum CurrentWire {
+        enum StepWire {
             Pending(StepDataWire),
             Active(StepDataWire),
             Complete(CompleteWire),
@@ -205,91 +192,41 @@ impl<'de> Deserialize<'de> for PlanStep {
             Skipped(SkippedWire),
         }
 
-        #[derive(Deserialize)]
-        struct LegacyWire {
-            id: PlanStepId,
-            description: String,
-            status: LegacyStatus,
-            #[serde(default)]
-            depends_on: Vec<PlanStepId>,
-        }
-
-        #[derive(Deserialize)]
-        enum LegacyStatus {
-            Pending,
-            Active,
-            Complete(String),
-            Failed(String),
-            Skipped(String),
-        }
-
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Wire {
-            Current(CurrentWire),
-            Legacy(LegacyWire),
-        }
-
-        match Wire::deserialize(deserializer)? {
-            Wire::Current(c) => Ok(match c {
-                CurrentWire::Pending(s) => Self::Pending(PendingStep(StepData {
-                    id: s.id,
-                    description: s.description,
-                    depends_on: s.depends_on,
-                })),
-                CurrentWire::Active(s) => Self::Active(ActiveStep(StepData {
-                    id: s.id,
-                    description: s.description,
-                    depends_on: s.depends_on,
-                })),
-                CurrentWire::Complete(s) => Self::Complete(CompletedStep {
-                    data: StepData {
-                        id: s.data.id,
-                        description: s.data.description,
-                        depends_on: s.data.depends_on,
-                    },
-                    outcome: s.outcome,
-                }),
-                CurrentWire::Failed(s) => Self::Failed(FailedStep {
-                    data: StepData {
-                        id: s.data.id,
-                        description: s.data.description,
-                        depends_on: s.data.depends_on,
-                    },
-                    reason: s.reason,
-                }),
-                CurrentWire::Skipped(s) => Self::Skipped(SkippedStep {
-                    data: StepData {
-                        id: s.data.id,
-                        description: s.data.description,
-                        depends_on: s.data.depends_on,
-                    },
-                    reason: s.reason,
-                }),
-            }),
-            Wire::Legacy(l) => {
-                let data = StepData {
-                    id: l.id,
-                    description: l.description,
-                    depends_on: l.depends_on,
-                };
-                Ok(match l.status {
-                    LegacyStatus::Pending => Self::Pending(PendingStep(data)),
-                    LegacyStatus::Active => Self::Active(ActiveStep(data)),
-                    LegacyStatus::Complete(outcome) => Self::Complete(CompletedStep {
-                        data,
-                        outcome: NonEmptyString::new(outcome).map_err(D::Error::custom)?,
-                    }),
-                    LegacyStatus::Failed(reason) => Self::Failed(FailedStep {
-                        data,
-                        reason: NonEmptyString::new(reason).map_err(D::Error::custom)?,
-                    }),
-                    LegacyStatus::Skipped(reason) => Self::Skipped(SkippedStep {
-                        data,
-                        reason: NonEmptyString::new(reason).map_err(D::Error::custom)?,
-                    }),
-                })
-            }
+        match StepWire::deserialize(deserializer)? {
+            StepWire::Pending(s) => Ok(Self::Pending(PendingStep(StepData {
+                id: s.id,
+                description: s.description,
+                depends_on: s.depends_on,
+            }))),
+            StepWire::Active(s) => Ok(Self::Active(ActiveStep(StepData {
+                id: s.id,
+                description: s.description,
+                depends_on: s.depends_on,
+            }))),
+            StepWire::Complete(s) => Ok(Self::Complete(CompletedStep {
+                data: StepData {
+                    id: s.data.id,
+                    description: s.data.description,
+                    depends_on: s.data.depends_on,
+                },
+                outcome: s.outcome,
+            })),
+            StepWire::Failed(s) => Ok(Self::Failed(FailedStep {
+                data: StepData {
+                    id: s.data.id,
+                    description: s.data.description,
+                    depends_on: s.data.depends_on,
+                },
+                reason: s.reason,
+            })),
+            StepWire::Skipped(s) => Ok(Self::Skipped(SkippedStep {
+                data: StepData {
+                    id: s.data.id,
+                    description: s.data.description,
+                    depends_on: s.data.depends_on,
+                },
+                reason: s.reason,
+            })),
         }
     }
 }
@@ -454,6 +391,12 @@ pub struct Phase {
     steps: Vec<PlanStep>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhaseCompletion {
+    Complete,
+    Incomplete,
+}
+
 impl Phase {
     #[must_use]
     pub fn name(&self) -> &str {
@@ -465,10 +408,14 @@ impl Phase {
         &self.steps
     }
 
-    /// Whether all steps in this phase are satisfied (Complete or Skipped).
+    /// Completion state for this phase based on step satisfaction.
     #[must_use]
-    pub fn is_complete(&self) -> bool {
-        self.steps.iter().all(PlanStep::is_satisfied)
+    pub fn completion(&self) -> PhaseCompletion {
+        if self.steps.iter().all(PlanStep::is_satisfied) {
+            PhaseCompletion::Complete
+        } else {
+            PhaseCompletion::Incomplete
+        }
     }
 
     /// Whether all steps are terminal (Complete, Failed, or Skipped).
@@ -560,10 +507,24 @@ pub enum CompletionStatus {
 /// DAG-backed phased plan. Always non-empty (IFA §2.1).
 ///
 /// Construction via [`Plan::new`] validates all invariants. Invalid plans
-/// are unrepresentable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// are unrepresentable. Deserialization validates on load.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Plan {
     phases: Vec<Phase>,
+}
+
+impl<'de> Deserialize<'de> for Plan {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct PlanWire {
+            phases: Vec<Phase>,
+        }
+        let wire = PlanWire::deserialize(deserializer)?;
+        Plan::new(wire.phases).map_err(D::Error::custom)
+    }
 }
 
 impl Plan {
@@ -691,7 +652,9 @@ impl Plan {
     pub fn eligible_phase_index(&self) -> PhaseEligibility {
         for (i, phase) in self.phases.iter().enumerate() {
             // Check if all prior phases are complete.
-            let prior_complete = self.phases[..i].iter().all(Phase::is_complete);
+            let prior_complete = self.phases[..i]
+                .iter()
+                .all(|p| matches!(p.completion(), PhaseCompletion::Complete));
             if !prior_complete {
                 return PhaseEligibility::BlockedByIncompletePriorPhase;
             }
@@ -740,7 +703,11 @@ impl Plan {
     /// Try to produce a `CompletedPlan` proof.
     #[must_use]
     pub fn try_complete(&self) -> CompletionStatus {
-        if self.phases.iter().all(Phase::is_complete) {
+        if self
+            .phases
+            .iter()
+            .all(|phase| matches!(phase.completion(), PhaseCompletion::Complete))
+        {
             CompletionStatus::Complete(CompletedPlan {
                 phase_count: self.phases.len(),
                 step_count: self.step_count(),
@@ -773,7 +740,11 @@ impl Plan {
         let mut out = String::new();
 
         let eligibility = self.eligible_phase_index();
-        let completed_phases = self.phases.iter().filter(|p| p.is_complete()).count();
+        let completed_phases = self
+            .phases
+            .iter()
+            .filter(|p| matches!(p.completion(), PhaseCompletion::Complete))
+            .count();
 
         // Header line.
         match eligibility {
@@ -803,12 +774,13 @@ impl Plan {
 
         for (i, phase) in self.phases.iter().enumerate() {
             out.push('\n');
-            let phase_indicator = if phase.is_complete() {
-                " ✓"
-            } else if matches!(eligibility, PhaseEligibility::Eligible(idx) if idx == i) {
-                " →"
-            } else {
-                ""
+            let phase_indicator = match (
+                phase.completion(),
+                matches!(eligibility, PhaseEligibility::Eligible(idx) if idx == i),
+            ) {
+                (PhaseCompletion::Complete, _) => " ✓",
+                (PhaseCompletion::Incomplete, true) => " →",
+                (PhaseCompletion::Incomplete, false) => "",
             };
             out.push_str(&format!(
                 "Phase {}: {}{}\n",
@@ -942,7 +914,8 @@ pub enum EditValidationError {
 pub mod editor {
     use super::{
         ActiveStepQuery, EditOp, EditValidationError, HashSet, NonEmptyString, PendingStep, Phase,
-        Plan, PlanStep, PlanStepId, PlanTransitionError, PlanValidationError, StepData,
+        PhaseCompletion, Plan, PlanStep, PlanStepId, PlanTransitionError, PlanValidationError,
+        StepData,
     };
     use thiserror::Error;
 
@@ -1084,7 +1057,10 @@ pub mod editor {
                 if phase_index >= plan.phases.len() {
                     return Err(EditValidationError::PhaseOutOfRange(phase_index));
                 }
-                if plan.phases[phase_index].is_complete() {
+                if matches!(
+                    plan.phases[phase_index].completion(),
+                    PhaseCompletion::Complete
+                ) {
                     return Err(EditValidationError::PhaseAlreadyComplete(phase_index));
                 }
                 let next_id = next_step_id(&plan);
@@ -1399,57 +1375,9 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_legacy_pending_step() {
-        let json = r#"{"id":1,"description":"Do something","status":"Pending","depends_on":[]}"#;
-        let step: super::PlanStep = serde_json::from_str(json).unwrap();
-        assert!(step.is_pending());
-        assert_eq!(step.id(), step_id(1));
-        assert_eq!(step.description(), "Do something");
-    }
-
-    #[test]
-    fn deserialize_legacy_active_step() {
-        let json = r#"{"id":2,"description":"In progress","status":"Active","depends_on":[1]}"#;
-        let step: super::PlanStep = serde_json::from_str(json).unwrap();
-        assert!(step.is_active());
-        assert_eq!(step.depends_on(), &[step_id(1)]);
-    }
-
-    #[test]
-    fn deserialize_legacy_complete_step() {
-        let json =
-            r#"{"id":3,"description":"Done","status":{"Complete":"all good"},"depends_on":[]}"#;
-        let step: super::PlanStep = serde_json::from_str(json).unwrap();
-        assert!(step.is_terminal());
-        assert!(step.is_satisfied());
-    }
-
-    #[test]
-    fn deserialize_legacy_failed_step() {
-        let json = r#"{"id":4,"description":"Broke","status":{"Failed":"oops"},"depends_on":[]}"#;
-        let step: super::PlanStep = serde_json::from_str(json).unwrap();
-        assert!(step.is_terminal());
-        assert!(!step.is_satisfied());
-    }
-
-    #[test]
-    fn deserialize_legacy_skipped_step() {
-        let json =
-            r#"{"id":5,"description":"Nope","status":{"Skipped":"not needed"},"depends_on":[]}"#;
-        let step: super::PlanStep = serde_json::from_str(json).unwrap();
-        assert!(step.is_terminal());
-        assert!(step.is_satisfied());
-    }
-
-    #[test]
-    fn deserialize_legacy_plan_state_active() {
-        let json = concat!(
-            r#"{"Active":{"phases":[{"name":"Phase 1","steps":["#,
-            r#"{"id":1,"description":"step one","status":"Active","depends_on":[]},"#,
-            r#"{"id":2,"description":"step two","status":"Pending","depends_on":[1]}"#,
-            r#"]}]}}"#
-        );
-        let state: super::PlanState = serde_json::from_str(json).unwrap();
-        assert!(matches!(state, super::PlanState::Active(plan) if plan.step_count() == 2));
+    fn plan_deserialize_validates_on_load() {
+        let invalid = r#"{"phases":[{"name":"Phase 1","steps":[{"Pending":{"id":1,"description":"x","depends_on":[99]}}]}]}"#;
+        let err: Result<Plan, _> = serde_json::from_str(invalid);
+        assert!(err.is_err());
     }
 }

@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use url::Url;
 
-use super::types::{WebFetchConfig, WebFetchError, WebFetchInput};
+use super::types::{CachePreference, WebFetchConfig, WebFetchError, WebFetchInput};
 
 pub(crate) const DEFAULT_USER_AGENT: &str = "forge-webfetch/1.0";
 pub(crate) const DEFAULT_ALLOWED_PORTS: &[u16] = &[80, 443];
@@ -38,19 +38,19 @@ pub(crate) struct ResolvedRequest {
     pub url: Url,
     pub requested_url: String,
     pub max_chunk_tokens: u32,
-    pub no_cache: bool,
+    pub cache_preference: CachePreference,
 }
 
 impl ResolvedRequest {
     pub fn from_input(input: WebFetchInput, config: &ResolvedConfig) -> Self {
         let max_chunk_tokens = input
-            .max_chunk_tokens
+            .max_chunk_tokens()
             .unwrap_or(config.default_max_chunk_tokens);
         Self {
             url: input.url().clone(),
             requested_url: input.original_url().to_string(),
             max_chunk_tokens,
-            no_cache: input.no_cache,
+            cache_preference: input.cache_preference(),
         }
     }
 }
